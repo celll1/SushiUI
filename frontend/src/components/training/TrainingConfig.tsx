@@ -303,24 +303,30 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const loraAlpha = params.lora_alpha ?? 16;
   const loraDtype = params.lora_dtype ?? "fp32";
 
-  // Advanced
-  const [saveEvery, setSaveEvery] = useState(100);
-  const [saveEveryUnit, setSaveEveryUnit] = useState<"steps" | "epochs">("steps");
-  const [sampleEvery, setSampleEvery] = useState(100);
-  const [resumeFromCheckpoint, setResumeFromCheckpoint] = useState<string | null>("latest");
+  // Advanced (Phase 3e: migrated to params)
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
+  const saveEvery = params.save_every ?? 100;
+  const saveEveryUnit = (params.save_every_unit ?? "steps") as "steps" | "epochs";
+  const sampleEvery = params.sample_every ?? 100;
+  const resumeFromCheckpoint = params.resume_from_checkpoint ?? null;
 
-  // Sample generation
-  const [samplePrompts, setSamplePrompts] = useState<SamplePrompt[]>([
-    { positive: "", negative: "" }
-  ]);
-  const [sampleWidth, setSampleWidth] = useState(1024);
-  const [sampleHeight, setSampleHeight] = useState(1024);
-  const [sampleSteps, setSampleSteps] = useState(28);
-  const [sampleCfgScale, setSampleCfgScale] = useState(7.0);
-  const [sampleSampler, setSampleSampler] = useState("euler");
-  const [sampleScheduleType, setSampleScheduleType] = useState("uniform");
-  const [sampleSeed, setSampleSeed] = useState(-1);
+  // Sample generation (Phase 3e: migrated to params)
+  const samplePrompts = params.sample_prompts ?? [];
+  const setSamplePrompts = useCallback((next: SamplePrompt[] | ((prev: SamplePrompt[]) => SamplePrompt[])) => {
+    setParams(prev => ({
+      ...prev,
+      sample_prompts: typeof next === "function"
+        ? (next as (p: SamplePrompt[]) => SamplePrompt[])(prev.sample_prompts ?? [])
+        : next,
+    }));
+  }, []);
+  const sampleWidth = params.sample_width ?? 1024;
+  const sampleHeight = params.sample_height ?? 1024;
+  const sampleSteps = params.sample_steps ?? 28;
+  const sampleCfgScale = params.sample_cfg_scale ?? 7.0;
+  const sampleSampler = params.sample_sampler ?? "euler";
+  const sampleScheduleType = params.sample_schedule_type ?? "uniform";
+  const sampleSeed = params.sample_seed ?? -1;
   const [conditionImagePreviews, setConditionImagePreviews] = useState<Record<number, string>>({});
   const conditionImageInputRefs = useRef<Record<number, HTMLInputElement | null>>({});
   const [referenceImagePreviews, setReferenceImagePreviews] = useState<Record<number, string>>({});
@@ -520,18 +526,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         optimizer_reset_strategy: params.optimizer_reset_strategy,
         optimizer_pruning_ratio: params.optimizer_pruning_ratio,
       } : {}),
-      save_every: saveEvery,
-      save_every_unit: saveEveryUnit,
-      sample_every: sampleEvery,
-      sample_prompts: samplePrompts,
-      sample_width: sampleWidth,
-      sample_height: sampleHeight,
-      sample_steps: sampleSteps,
-      sample_cfg_scale: sampleCfgScale,
-      sample_sampler: sampleSampler,
-      sample_schedule_type: sampleScheduleType,
-      sample_seed: sampleSeed,
-      resume_from_checkpoint: resumeFromCheckpoint || undefined,
+      save_every: params.save_every,
+      save_every_unit: params.save_every_unit,
+      sample_every: params.sample_every,
+      sample_prompts: params.sample_prompts,
+      sample_width: params.sample_width,
+      sample_height: params.sample_height,
+      sample_steps: params.sample_steps,
+      sample_cfg_scale: params.sample_cfg_scale,
+      sample_sampler: params.sample_sampler,
+      sample_schedule_type: params.sample_schedule_type,
+      sample_seed: params.sample_seed,
+      resume_from_checkpoint: params.resume_from_checkpoint || undefined,
       debug_latents: debugLatents,
       debug_latents_every: debugLatentsEvery,
       enable_bucketing: enableBucketing,
@@ -614,9 +620,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
-    saveEvery, saveEveryUnit, sampleEvery, samplePrompts,
-    sampleWidth, sampleHeight, sampleSteps, sampleCfgScale, sampleSampler, sampleScheduleType, sampleSeed,
-    resumeFromCheckpoint, debugLatents, debugLatentsEvery, enableBucketing, baseResolutions, bucketStrategy,
+    debugLatents, debugLatentsEvery, enableBucketing, baseResolutions, bucketStrategy,
     multiResolutionMode, cacheLatentsToDisk, forceRecache, trainUnet, trainTextEncoder, trainImageEncoder,
     unetLr, textEncoderLr, textEncoder1Lr, textEncoder2Lr, imageEncoderLr, weightDtype, trainingDtype,
     outputDtype, vaeDtype, mixedPrecision, useFlashAttention, minSnrGamma, reconstructionLossWeight,
@@ -698,9 +702,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.optimizer_stochastic_rounding !== undefined) setParams(prev => ({ ...prev, optimizer_stochastic_rounding: params.optimizer_stochastic_rounding }));
 
     // Save/Resume
-    if (params.save_every !== undefined) setSaveEvery(params.save_every);
-    if (params.save_every_unit !== undefined) setSaveEveryUnit(params.save_every_unit);
-    if (params.resume_from_checkpoint !== undefined) setResumeFromCheckpoint(params.resume_from_checkpoint);
+    if (params.save_every !== undefined) setParams(prev => ({ ...prev, save_every: params.save_every }));
+    if (params.save_every_unit !== undefined) setParams(prev => ({ ...prev, save_every_unit: params.save_every_unit }));
+    if (params.resume_from_checkpoint !== undefined) setParams(prev => ({ ...prev, resume_from_checkpoint: params.resume_from_checkpoint }));
 
     // Component training
     if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
@@ -770,15 +774,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
 
     // Sample
-    if (params.sample_every !== undefined) setSampleEvery(params.sample_every);
-    if (params.sample_prompts && params.sample_prompts.length > 0) setSamplePrompts(params.sample_prompts);
-    if (params.sample_width !== undefined) setSampleWidth(params.sample_width);
-    if (params.sample_height !== undefined) setSampleHeight(params.sample_height);
-    if (params.sample_steps !== undefined) setSampleSteps(params.sample_steps);
-    if (params.sample_cfg_scale !== undefined) setSampleCfgScale(params.sample_cfg_scale);
-    if (params.sample_sampler !== undefined) setSampleSampler(params.sample_sampler);
-    if (params.sample_schedule_type !== undefined) setSampleScheduleType(params.sample_schedule_type);
-    if (params.sample_seed !== undefined) setSampleSeed(params.sample_seed);
+    if (params.sample_every !== undefined) setParams(prev => ({ ...prev, sample_every: params.sample_every }));
+    if (params.sample_prompts && params.sample_prompts.length > 0) setParams(prev => ({ ...prev, sample_prompts: params.sample_prompts }));
+    if (params.sample_width !== undefined) setParams(prev => ({ ...prev, sample_width: params.sample_width }));
+    if (params.sample_height !== undefined) setParams(prev => ({ ...prev, sample_height: params.sample_height }));
+    if (params.sample_steps !== undefined) setParams(prev => ({ ...prev, sample_steps: params.sample_steps }));
+    if (params.sample_cfg_scale !== undefined) setParams(prev => ({ ...prev, sample_cfg_scale: params.sample_cfg_scale }));
+    if (params.sample_sampler !== undefined) setParams(prev => ({ ...prev, sample_sampler: params.sample_sampler }));
+    if (params.sample_schedule_type !== undefined) setParams(prev => ({ ...prev, sample_schedule_type: params.sample_schedule_type }));
+    if (params.sample_seed !== undefined) setParams(prev => ({ ...prev, sample_seed: params.sample_seed }));
 
     // Debug
     if (params.debug_latents !== undefined) setDebugLatents(params.debug_latents);
@@ -1160,8 +1164,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const url = referenceImagePreviews[firstIndex];
     const img = new Image();
     img.onload = () => {
-      setSampleWidth(Math.floor(img.naturalWidth / 8) * 8);
-      setSampleHeight(Math.floor(img.naturalHeight / 8) * 8);
+      updateParam("sample_width", Math.floor(img.naturalWidth / 8) * 8);
+      updateParam("sample_height", Math.floor(img.naturalHeight / 8) * 8);
     };
     img.src = url;
   };
@@ -1229,13 +1233,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           updated[0].negative = params.negative_prompt || "";
           setSamplePrompts(updated);
         }
-        if (params.width) setSampleWidth(params.width);
-        if (params.height) setSampleHeight(params.height);
-        if (params.steps) setSampleSteps(params.steps);
-        if (params.cfg_scale) setSampleCfgScale(params.cfg_scale);
-        if (params.sampler) setSampleSampler(params.sampler);
-        if (params.schedule_type) setSampleScheduleType(params.schedule_type);
-        if (params.seed) setSampleSeed(params.seed);
+        if (params.width) updateParam("sample_width", params.width);
+        if (params.height) updateParam("sample_height", params.height);
+        if (params.steps) updateParam("sample_steps", params.steps);
+        if (params.cfg_scale) updateParam("sample_cfg_scale", params.cfg_scale);
+        if (params.sampler) updateParam("sample_sampler", params.sampler);
+        if (params.schedule_type) updateParam("sample_schedule_type", params.schedule_type);
+        if (params.seed) updateParam("sample_seed", params.seed);
       }
     } catch (err) {
       console.error("Failed to import from generation panel:", err);
@@ -1403,18 +1407,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.loraRank !== undefined) updateParam("lora_rank", config.loraRank);
     if (config.loraAlpha !== undefined) updateParam("lora_alpha", config.loraAlpha);
     if (config.loraDtype !== undefined) updateParam("lora_dtype", config.loraDtype);
-    if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
-    if (config.saveEveryUnit !== undefined) setSaveEveryUnit(config.saveEveryUnit);
-    if (config.sampleEvery !== undefined) setSampleEvery(config.sampleEvery);
-    if (config.resumeFromCheckpoint !== undefined) setResumeFromCheckpoint(config.resumeFromCheckpoint);
-    if (config.samplePrompts !== undefined) setSamplePrompts(config.samplePrompts);
-    if (config.sampleWidth !== undefined) setSampleWidth(config.sampleWidth);
-    if (config.sampleHeight !== undefined) setSampleHeight(config.sampleHeight);
-    if (config.sampleSteps !== undefined) setSampleSteps(config.sampleSteps);
-    if (config.sampleCfgScale !== undefined) setSampleCfgScale(config.sampleCfgScale);
-    if (config.sampleSampler !== undefined) setSampleSampler(config.sampleSampler);
-    if (config.sampleScheduleType !== undefined) setSampleScheduleType(config.sampleScheduleType);
-    if (config.sampleSeed !== undefined) setSampleSeed(config.sampleSeed);
+    if (config.saveEvery !== undefined) updateParam("save_every", config.saveEvery);
+    if (config.saveEveryUnit !== undefined) updateParam("save_every_unit", config.saveEveryUnit);
+    if (config.sampleEvery !== undefined) updateParam("sample_every", config.sampleEvery);
+    if (config.resumeFromCheckpoint !== undefined) updateParam("resume_from_checkpoint", config.resumeFromCheckpoint);
+    if (config.samplePrompts !== undefined) updateParam("sample_prompts", config.samplePrompts);
+    if (config.sampleWidth !== undefined) updateParam("sample_width", config.sampleWidth);
+    if (config.sampleHeight !== undefined) updateParam("sample_height", config.sampleHeight);
+    if (config.sampleSteps !== undefined) updateParam("sample_steps", config.sampleSteps);
+    if (config.sampleCfgScale !== undefined) updateParam("sample_cfg_scale", config.sampleCfgScale);
+    if (config.sampleSampler !== undefined) updateParam("sample_sampler", config.sampleSampler);
+    if (config.sampleScheduleType !== undefined) updateParam("sample_schedule_type", config.sampleScheduleType);
+    if (config.sampleSeed !== undefined) updateParam("sample_seed", config.sampleSeed);
     if (config.debugLatents !== undefined) setDebugLatents(config.debugLatents);
     if (config.debugLatentsEvery !== undefined) setDebugLatentsEvery(config.debugLatentsEvery);
     if (config.useReferenceImages !== undefined) setUseReferenceImages(config.useReferenceImages);
@@ -3459,7 +3463,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="radio"
                   checked={saveEveryUnit === "steps"}
-                  onChange={() => setSaveEveryUnit("steps")}
+                  onChange={() => updateParam("save_every_unit", "steps")}
                   className="text-blue-500 focus:ring-blue-500"
                 />
                 <span className="text-sm">Steps</span>
@@ -3468,7 +3472,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="radio"
                   checked={saveEveryUnit === "epochs"}
-                  onChange={() => setSaveEveryUnit("epochs")}
+                  onChange={() => updateParam("save_every_unit", "epochs")}
                   className="text-blue-500 focus:ring-blue-500"
                 />
                 <span className="text-sm">Epochs</span>
@@ -3478,7 +3482,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="1"
               value={saveEvery}
-              onChange={(e) => setSaveEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSaveEvery(100); }}
+              onChange={(e) => updateParam("save_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("save_every", 100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
             />
@@ -3489,7 +3493,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <label className="block text-sm text-gray-400 mb-1.5">Resume from Checkpoint</label>
             <select
               value={resumeFromCheckpoint || ""}
-              onChange={(e) => setResumeFromCheckpoint(e.target.value || null)}
+              onChange={(e) => updateParam("resume_from_checkpoint", e.target.value || null)}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
             >
               <option value="">Start from Beginning</option>
@@ -3517,7 +3521,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               type="number"
               min="0"
               value={sampleEvery}
-              onChange={(e) => setSampleEvery(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleEvery(100); }}
+              onChange={(e) => updateParam("sample_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_every", 100); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="e.g., 100 (0 to disable)"
             />
@@ -3751,7 +3755,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleWidth}
-                onChange={(e) => setSampleWidth(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleWidth(1024); }}
+                onChange={(e) => updateParam("sample_width", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_width", 1024); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -3763,7 +3767,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="2048"
                 step="8"
                 value={sampleHeight}
-                onChange={(e) => setSampleHeight(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleHeight(1024); }}
+                onChange={(e) => updateParam("sample_height", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_height", 1024); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -3774,7 +3778,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 min="1"
                 max="150"
                 value={sampleSteps}
-                onChange={(e) => setSampleSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleSteps(28); }}
+                onChange={(e) => updateParam("sample_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_steps", 28); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -3786,7 +3790,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 max="30"
                 step="0.5"
                 value={sampleCfgScale}
-                onChange={(e) => setSampleCfgScale(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setSampleCfgScale(7.0); }}
+                onChange={(e) => updateParam("sample_cfg_scale", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("sample_cfg_scale", 7.0); }}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -3794,7 +3798,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Sampler</label>
               <select
                 value={sampleSampler}
-                onChange={(e) => setSampleSampler(e.target.value)}
+                onChange={(e) => updateParam("sample_sampler", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 {samplers.map((sampler) => (
@@ -3808,7 +3812,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Schedule Type</label>
               <select
                 value={sampleScheduleType}
-                onChange={(e) => setSampleScheduleType(e.target.value)}
+                onChange={(e) => updateParam("sample_schedule_type", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 {scheduleTypes.map((scheduleType) => (
@@ -3826,7 +3830,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <input
               type="number"
               value={sampleSeed}
-              onChange={(e) => setSampleSeed(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setSampleSeed(42); }}
+              onChange={(e) => updateParam("sample_seed", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("sample_seed", 42); }}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder="-1 for random"
             />

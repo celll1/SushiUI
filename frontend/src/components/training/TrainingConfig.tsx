@@ -363,15 +363,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const cacheLatentsToDisk = params.cache_latents_to_disk ?? true;
   const forceRecache = params.force_recache ?? false;
 
-  // Component-specific training
-  const [trainUnet, setTrainUnet] = useState(true);
-  const [trainTextEncoder, setTrainTextEncoder] = useState(true);
-  const [trainImageEncoder, setTrainImageEncoder] = useState(false);  // DEUS Image Encoder (future T2I)
-  const [unetLr, setUnetLr] = useState<string>("1e-5");
-  const [textEncoderLr, setTextEncoderLr] = useState<string>("1e-6");
-  const [textEncoder1Lr, setTextEncoder1Lr] = useState<string>("");
-  const [textEncoder2Lr, setTextEncoder2Lr] = useState<string>("");
-  const [imageEncoderLr, setImageEncoderLr] = useState<string>("");  // DEUS Image Encoder LR
+  // Component-specific training (Phase 3g: migrated to params)
+  const trainUnet = params.train_unet ?? true;
+  const trainTextEncoder = params.train_text_encoder ?? true;
+  const trainImageEncoder = params.train_image_encoder ?? false;
+  // Local text states preserve in-progress numeric input (scientific notation)
+  const [localUnetLrText, setLocalUnetLrText] = useState<string>("1e-5");
+  const [localTextEncoderLrText, setLocalTextEncoderLrText] = useState<string>("1e-6");
+  const [localTextEncoder1LrText, setLocalTextEncoder1LrText] = useState<string>("");
+  const [localTextEncoder2LrText, setLocalTextEncoder2LrText] = useState<string>("");
+  const [localImageEncoderLrText, setLocalImageEncoderLrText] = useState<string>("");
+  const unetLr = localUnetLrText;
+  const textEncoderLr = localTextEncoderLrText;
+  const textEncoder1Lr = localTextEncoder1LrText;
+  const textEncoder2Lr = localTextEncoder2LrText;
+  const imageEncoderLr = localImageEncoderLrText;
 
   // Precision and dtype settings (VRAM optimization)
   const [weightDtype, setWeightDtype] = useState<string>("fp32");
@@ -546,14 +552,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       multi_resolution_mode: params.enable_bucketing ? params.multi_resolution_mode : undefined,
       cache_latents_to_disk: params.cache_latents_to_disk,
       force_recache: params.force_recache,
-      train_unet: trainUnet,
-      train_text_encoder: trainTextEncoder,
-      train_image_encoder: trainImageEncoder,
-      unet_lr: unetLr ? parseFloat(unetLr) : null,
-      text_encoder_lr: textEncoderLr ? parseFloat(textEncoderLr) : null,
-      text_encoder_1_lr: textEncoder1Lr ? parseFloat(textEncoder1Lr) : null,
-      text_encoder_2_lr: textEncoder2Lr ? parseFloat(textEncoder2Lr) : null,
-      image_encoder_lr: imageEncoderLr ? parseFloat(imageEncoderLr) : null,
+      train_unet: params.train_unet,
+      train_text_encoder: params.train_text_encoder,
+      train_image_encoder: params.train_image_encoder,
+      unet_lr: localUnetLrText ? parseFloat(localUnetLrText) : null,
+      text_encoder_lr: localTextEncoderLrText ? parseFloat(localTextEncoderLrText) : null,
+      text_encoder_1_lr: localTextEncoder1LrText ? parseFloat(localTextEncoder1LrText) : null,
+      text_encoder_2_lr: localTextEncoder2LrText ? parseFloat(localTextEncoder2LrText) : null,
+      image_encoder_lr: localImageEncoderLrText ? parseFloat(localImageEncoderLrText) : null,
       weight_dtype: weightDtype,
       training_dtype: trainingDtype,
       output_dtype: outputDtype,
@@ -620,8 +626,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
-    trainUnet, trainTextEncoder, trainImageEncoder,
-    unetLr, textEncoderLr, textEncoder1Lr, textEncoder2Lr, imageEncoderLr, weightDtype, trainingDtype,
+    localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText, localTextEncoder2LrText, localImageEncoderLrText,
+    weightDtype, trainingDtype,
     outputDtype, vaeDtype, mixedPrecision, useFlashAttention, minSnrGamma, reconstructionLossWeight,
     textEncodingMode, textEncodingSwapInterval, useReferenceImages, visionEncoderPath, trainVisionEncoder,
     visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval, latentEncodingMode,
@@ -706,14 +712,29 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.resume_from_checkpoint !== undefined) setParams(prev => ({ ...prev, resume_from_checkpoint: params.resume_from_checkpoint }));
 
     // Component training
-    if (params.train_unet !== undefined) setTrainUnet(params.train_unet);
-    if (params.train_text_encoder !== undefined) setTrainTextEncoder(params.train_text_encoder);
-    if (params.train_image_encoder !== undefined) setTrainImageEncoder(params.train_image_encoder);
-    if (params.unet_lr !== undefined && params.unet_lr !== null) setUnetLr(params.unet_lr.toString());
-    if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) setTextEncoderLr(params.text_encoder_lr.toString());
-    if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) setTextEncoder1Lr(params.text_encoder_1_lr.toString());
-    if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) setTextEncoder2Lr(params.text_encoder_2_lr.toString());
-    if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) setImageEncoderLr(params.image_encoder_lr.toString());
+    if (params.train_unet !== undefined) setParams(prev => ({ ...prev, train_unet: params.train_unet }));
+    if (params.train_text_encoder !== undefined) setParams(prev => ({ ...prev, train_text_encoder: params.train_text_encoder }));
+    if (params.train_image_encoder !== undefined) setParams(prev => ({ ...prev, train_image_encoder: params.train_image_encoder }));
+    if (params.unet_lr !== undefined && params.unet_lr !== null) {
+      setParams(prev => ({ ...prev, unet_lr: params.unet_lr }));
+      setLocalUnetLrText(params.unet_lr.toString());
+    }
+    if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) {
+      setParams(prev => ({ ...prev, text_encoder_lr: params.text_encoder_lr }));
+      setLocalTextEncoderLrText(params.text_encoder_lr.toString());
+    }
+    if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) {
+      setParams(prev => ({ ...prev, text_encoder_1_lr: params.text_encoder_1_lr }));
+      setLocalTextEncoder1LrText(params.text_encoder_1_lr.toString());
+    }
+    if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) {
+      setParams(prev => ({ ...prev, text_encoder_2_lr: params.text_encoder_2_lr }));
+      setLocalTextEncoder2LrText(params.text_encoder_2_lr.toString());
+    }
+    if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) {
+      setParams(prev => ({ ...prev, image_encoder_lr: params.image_encoder_lr }));
+      setLocalImageEncoderLrText(params.image_encoder_lr.toString());
+    }
 
     // Precision
     if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
@@ -907,7 +928,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setOutputDtype("bf16");
       setVaeDtype("fp32");
       // Z-Image/FLUX.2: Cannot train text encoder (frozen)
-      setTrainTextEncoder(false);
+      updateParam("train_text_encoder", false);
       // Z-Image/FLUX.2: VE not supported — clear selection
       setVisionEncoderPath("");
       setTrainVisionEncoder(false);
@@ -1433,12 +1454,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.multiResolutionMode !== undefined) updateParam("multi_resolution_mode", config.multiResolutionMode);
     if (config.cacheLatentsToDisk !== undefined) updateParam("cache_latents_to_disk", config.cacheLatentsToDisk);
     if (config.forceRecache !== undefined) updateParam("force_recache", config.forceRecache);
-    if (config.trainUnet !== undefined) setTrainUnet(config.trainUnet);
-    if (config.trainTextEncoder !== undefined) setTrainTextEncoder(config.trainTextEncoder);
-    if (config.unetLr !== undefined) setUnetLr(config.unetLr);
-    if (config.textEncoderLr !== undefined) setTextEncoderLr(config.textEncoderLr);
-    if (config.textEncoder1Lr !== undefined) setTextEncoder1Lr(config.textEncoder1Lr);
-    if (config.textEncoder2Lr !== undefined) setTextEncoder2Lr(config.textEncoder2Lr);
+    if (config.trainUnet !== undefined) updateParam("train_unet", config.trainUnet);
+    if (config.trainTextEncoder !== undefined) updateParam("train_text_encoder", config.trainTextEncoder);
+    if (config.unetLr !== undefined) {
+      const v = parseFloat(config.unetLr);
+      if (!isNaN(v)) updateParam("unet_lr", v);
+      setLocalUnetLrText(config.unetLr);
+    }
+    if (config.textEncoderLr !== undefined) {
+      const v = parseFloat(config.textEncoderLr);
+      if (!isNaN(v)) updateParam("text_encoder_lr", v);
+      setLocalTextEncoderLrText(config.textEncoderLr);
+    }
+    if (config.textEncoder1Lr !== undefined) {
+      const v = parseFloat(config.textEncoder1Lr);
+      if (!isNaN(v)) updateParam("text_encoder_1_lr", v);
+      setLocalTextEncoder1LrText(config.textEncoder1Lr);
+    }
+    if (config.textEncoder2Lr !== undefined) {
+      const v = parseFloat(config.textEncoder2Lr);
+      if (!isNaN(v)) updateParam("text_encoder_2_lr", v);
+      setLocalTextEncoder2LrText(config.textEncoder2Lr);
+    }
     if (config.weightDtype !== undefined) setWeightDtype(config.weightDtype);
     if (config.trainingDtype !== undefined) setTrainingDtype(config.trainingDtype);
     if (config.outputDtype !== undefined) setOutputDtype(config.outputDtype);
@@ -2857,7 +2894,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="checkbox"
                   id="train-unet"
                   checked={trainUnet}
-                  onChange={(e) => setTrainUnet(e.target.checked)}
+                  onChange={(e) => updateParam("train_unet", e.target.checked)}
                   className="w-4 h-4"
                 />
                 <label htmlFor="train-unet" className="text-xs text-gray-300 cursor-pointer">
@@ -2871,7 +2908,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   type="checkbox"
                   id="train-text-encoder"
                   checked={trainTextEncoder}
-                  onChange={(e) => setTrainTextEncoder(e.target.checked)}
+                  onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
                   disabled={isZImageModel(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
@@ -2892,7 +2929,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="text"
                   value={unetLr}
-                  onChange={(e) => setUnetLr(e.target.value)}
+                  onChange={(e) => setLocalUnetLrText(e.target.value)}
+                  onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("unet_lr", isNaN(v) ? null : v); }}
                   placeholder={`Default: ${learningRate} (e.g., 1e-4)`}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -2909,7 +2947,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="text"
                     value={textEncoderLr}
-                    onChange={(e) => setTextEncoderLr(e.target.value)}
+                    onChange={(e) => setLocalTextEncoderLrText(e.target.value)}
+                    onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_lr", isNaN(v) ? null : v); }}
                     placeholder={`Default: ${learningRate} (e.g., 1e-5)`}
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                   />
@@ -2928,7 +2967,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="text"
                         value={textEncoder1Lr}
-                        onChange={(e) => setTextEncoder1Lr(e.target.value)}
+                        onChange={(e) => setLocalTextEncoder1LrText(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_1_lr", isNaN(v) ? null : v); }}
                         placeholder={`Default: ${textEncoderLr || learningRate}`}
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />
@@ -2942,7 +2982,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="text"
                         value={textEncoder2Lr}
-                        onChange={(e) => setTextEncoder2Lr(e.target.value)}
+                        onChange={(e) => setLocalTextEncoder2LrText(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); updateParam("text_encoder_2_lr", isNaN(v) ? null : v); }}
                         placeholder={`Default: ${textEncoderLr || learningRate}`}
                         className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                       />

@@ -121,9 +121,12 @@ _YAML_FIELD_LOCATIONS = {
 ### フロントエンド（UIを追加する場合）
 - `frontend/src/utils/api.ts` の `TrainingRunCreateRequest` インターフェース: フィールド追加
 - `frontend/src/components/training/TrainingConfig.tsx`:
-  - state変数 / UI入力欄
-  - `handleSubmit`の`requestData`に含める
-  - Edit Config読み戻し処理（自動的にバックエンドからparams辞書として返る）
+  - `useState` 宣言を追加（既存のグループに併記）
+  - UI入力欄を追加
+  - **`getRequestData()` ヘルパー** に1行追加（送信時の値マッピング）
+  - **`applyParamsToState()` ヘルパー** に1行追加（Edit Config復元時のsetter）
+
+`getRequestData()`/`applyParamsToState()` は同じ場所（loadTrainingRunParamsの直前）に並んでいるので、追加忘れが視覚的に検出しやすい構造になっています。`handleSubmit`/`loadTrainingRunParams`本体は変更不要です。
 
 ### ❌ 触ってはいけない箇所（自動処理される）
 
@@ -139,8 +142,9 @@ _YAML_FIELD_LOCATIONS = {
 | 旧ミスパターン | 現在の状態 |
 |-----|---------|
 | 4つのgenerate_*_config関数のうち1つに追加忘れ | ✅ `_build_train_section()`で一元化 |
-| `handleSubmit`の`requestData`に追加忘れ | ⚠️ フロントエンドはまだ手動（Phase 3未完） |
+| `handleSubmit`の`requestData`に追加忘れ | ✅ `getRequestData()`に集約 |
 | `get_training_run_params`の読み戻し追加忘れ | ✅ Pydanticスキーマ駆動 |
+| `loadTrainingRunParams`のsetter追加忘れ | ✅ `applyParamsToState()`に集約 |
 | Pydanticモデルに追加忘れ | ⚠️ 手動だがSSoTなので一目瞭然 |
 
 ---

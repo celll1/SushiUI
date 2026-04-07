@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
@@ -74,8 +74,144 @@ const OPTIMIZER_CONFIGS: Record<string, {
   }
 };
 
+// ============================================================
+// Single-state migration (Phase 3a foundation)
+// ============================================================
+// All training parameters will be progressively migrated into this single
+// `params` object. See SINGLE_STATE_MIGRATION_PLAN.md for details.
+const DEFAULT_PARAMS: TrainingRunCreateRequest = {
+  training_method: "lora",
+  base_model_path: "",
+  dataset_configs: [],
+  total_steps: 1000,
+  epochs: undefined,
+  batch_size: 4,
+  learning_rate: 1e-5,
+  lr_scheduler: "constant",
+  lr_warmup_steps: 0,
+  optimizer: "adamw8bit",
+  optimizer_is_paged: false,
+  optimizer_cautious: false,
+  optimizer_beta1: 0.9,
+  optimizer_beta2: 0.999,
+  optimizer_epsilon: 1e-8,
+  optimizer_weight_decay: 0.01,
+  optimizer_schedule_free: false,
+  optimizer_schedule_free_r: 0.0,
+  optimizer_schedule_free_weight_lr_power: 2.0,
+  optimizer_use_radam: false,
+  optimizer_stochastic_rounding: false,
+  lora_rank: 16,
+  lora_alpha: 16,
+  lora_dtype: "fp32",
+  relora_merge_every: 500,
+  relora_merge_unit: "steps",
+  restart_warmup_steps: 100,
+  optimizer_reset_strategy: "full_reset",
+  optimizer_pruning_ratio: 0.9,
+  save_every: 100,
+  save_every_unit: "steps",
+  sample_every: 100,
+  sample_prompts: [{ positive: "", negative: "" }],
+  resume_from_checkpoint: "latest",
+  sample_width: 1024,
+  sample_height: 1024,
+  sample_steps: 28,
+  sample_cfg_scale: 7.0,
+  sample_sampler: "euler",
+  sample_schedule_type: "uniform",
+  sample_seed: -1,
+  debug_latents: false,
+  debug_latents_every: 50,
+  enable_bucketing: false,
+  base_resolutions: [1024],
+  bucket_strategy: "resize",
+  multi_resolution_mode: "max",
+  cache_latents_to_disk: true,
+  force_recache: false,
+  train_unet: true,
+  train_text_encoder: true,
+  train_image_encoder: false,
+  unet_lr: 1e-5,
+  text_encoder_lr: 1e-6,
+  text_encoder_1_lr: null,
+  text_encoder_2_lr: null,
+  image_encoder_lr: null,
+  weight_dtype: "fp32",
+  training_dtype: "fp16",
+  output_dtype: "fp32",
+  vae_dtype: "fp32",
+  mixed_precision: true,
+  use_flash_attention: false,
+  min_snr_gamma: 5.0,
+  reconstruction_loss_weight: 0.0,
+  text_encoding_mode: "swap_onthefly",
+  text_encoding_swap_interval: 256,
+  latent_encoding_mode: "swap_onthefly",
+  latent_encoding_swap_interval: 256,
+  blocks_to_swap: 0,
+  use_pinned_memory: false,
+  num_optimizer_groups: 0,
+  multi_noise_timesteps: 1,
+  multi_noise_mode: "independent",
+  trajectory_blend_alpha: 0.7,
+  timestep_sampling: {
+    distribution: "uniform",
+    min_timestep: 0.0,
+    max_timestep: 1.0,
+  },
+  regularization_type: null,
+  snr_regularization_weight: 0.0,
+  snr_timestep_adaptive: true,
+  snr_penalty_mode: "relu",
+  energy_regularization_weight: 0.0,
+  energy_timestep_adaptive: true,
+  energy_penalty_mode: "under",
+  energy_normalize_by_pixels: true,
+  noise_process: "auto",
+  prediction_target: "auto",
+  strict_validation: false,
+  use_reference_images: false,
+  vision_encoder_path: null,
+  train_vision_encoder: false,
+  vision_encoder_lr: null,
+  gradient_routing_ve: false,
+  param_tracking: false,
+  param_tracking_interval: 100,
+  controlnet_type: "standard",
+  controlnet_pretrained_path: null,
+  controlnet_init_from_unet: true,
+  lllite_conditioning_channels: 32,
+  lllite_rank: 64,
+  condition_preprocessors: null,
+  condition_cache_mode: "on_the_fly",
+};
+
 export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRunUpdated }: TrainingConfigProps) {
   console.log(`[TrainingConfig] Component mounted/re-rendered, editRunId=${editRunId}`);
+
+  // ============================================================
+  // Single-state migration (Phase 3a)
+  // ============================================================
+  // `params` will progressively absorb all individual useState fields.
+  // For now it lives alongside the existing useStates; subsequent phases
+  // will migrate UI inputs onto `params.x` / `updateParam("x", v)` and
+  // remove the corresponding useState declarations.
+  const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
+
+  const updateParam = useCallback(
+    <K extends keyof TrainingRunCreateRequest>(
+      key: K,
+      value: TrainingRunCreateRequest[K]
+    ) => {
+      setParams((prev) => ({ ...prev, [key]: value }));
+    },
+    []
+  );
+  // Suppress unused warnings during the migration period
+  void params;
+  void updateParam;
+
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runName, setRunName] = useState("");
@@ -94,6 +230,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Flag to track if we are in the middle of restoring from YAML
   // When true, optimizer useEffect will NOT reset hyperparameters to defaults
   const restoringFromYAMLRef = useRef(false);
+
+  // Tracks which editRunId has already been restored from YAML.
+  // Prevents React StrictMode's double-invoked mount effect from calling
+  // loadTrainingRunParams twice — the second async fetch would otherwise
+  // overwrite user edits made between the two restorations.
+  const loadedEditRunIdRef = useRef<number | null>(null);
 
   // Multiple datasets support
   const [datasetConfigs, setDatasetConfigs] = useState<DatasetConfig[]>([
@@ -698,7 +840,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
   useEffect(() => {
     // If in edit mode, load YAML parameters first (fast)
-    if (editRunId) {
+    // Guard: only restore once per editRunId (prevents StrictMode double-invoke
+    // from triggering a second async fetch that would overwrite user edits).
+    if (editRunId && loadedEditRunIdRef.current !== editRunId) {
+      loadedEditRunIdRef.current = editRunId;
       loadTrainingRunParams(editRunId);
     }
 

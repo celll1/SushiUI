@@ -1495,6 +1495,43 @@ export interface TrainingRunCreateRequest {
   lllite_rank?: number;
   condition_preprocessors?: string[] | null;
   condition_cache_mode?: string;
+  // Optimizer hyperparameters
+  optimizer_is_paged?: boolean;
+  optimizer_cautious?: boolean;
+  optimizer_beta1?: number;
+  optimizer_beta2?: number;
+  optimizer_epsilon?: number;
+  optimizer_weight_decay?: number;
+  optimizer_schedule_free?: boolean;
+  optimizer_schedule_free_r?: number;
+  optimizer_schedule_free_weight_lr_power?: number;
+  optimizer_use_radam?: boolean;
+  optimizer_stochastic_rounding?: boolean;
+  // LoRA
+  lora_dtype?: "fp32" | "fp16" | "bf16";
+  // Component training (image encoder)
+  train_image_encoder?: boolean;
+  image_encoder_lr?: number | null;
+  // Reconstruction loss
+  reconstruction_loss_weight?: number;
+  // Regularization
+  regularization_type?: string | null;
+  snr_regularization_weight?: number;
+  snr_timestep_adaptive?: boolean;
+  snr_penalty_mode?: string;
+  energy_regularization_weight?: number;
+  energy_timestep_adaptive?: boolean;
+  energy_penalty_mode?: string;
+  energy_normalize_by_pixels?: boolean;
+  // Unified Training Framework
+  noise_process?: string;
+  prediction_target?: string;
+  strict_validation?: boolean;
+  // Priority training
+  priority_training?: {
+    entries: string[];
+    multiplier: number;
+  };
 }
 
 export interface TrainingRunListResponse {

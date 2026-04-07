@@ -1,5 +1,9 @@
 # TrainingConfig.tsx 単一state object移行計画書
 
+## ✅ 完了 (2026-04-07)
+
+Phase 3a〜3m すべて完了。`TrainingConfig.tsx` は単一 `params: TrainingRunCreateRequest` state を中心とした設計になり、約96フィールドが移行済み。実際の移行履歴は `git log --oneline -- frontend/src/components/training/TrainingConfig.tsx | grep "Phase 3"` を参照。
+
 ## Context
 
 `frontend/src/components/training/TrainingConfig.tsx`（3919行）には現在約120個の`useState`フックが存在し、トレーニングパラメータごとに個別のstate変数を管理している。Phase 3で`getRequestData()` / `applyParamsToState()`ヘルパーを導入してサイレントドロップは防止済みだが、以下の問題が残っている:

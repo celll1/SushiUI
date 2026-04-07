@@ -195,12 +195,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   console.log(`[TrainingConfig] Component mounted/re-rendered, editRunId=${editRunId}`);
 
   // ============================================================
-  // Single-state migration (Phase 3a)
+  // Single-state form (Phase 3a–3m complete)
   // ============================================================
-  // `params` will progressively absorb all individual useState fields.
-  // For now it lives alongside the existing useStates; subsequent phases
-  // will migrate UI inputs onto `params.x` / `updateParam("x", v)` and
-  // remove the corresponding useState declarations.
+  // All top-level TrainingRunCreateRequest fields live in `params`.
+  // UI inputs read via const aliases (e.g. `const batchSize = params.batch_size ?? 4`)
+  // and write via `updateParam("batch_size", v)`.
+  //
+  // Remaining useState declarations are strictly for:
+  //   - API-loaded data (datasets, presets, samplers, ...)
+  //   - UI-only toggles (showPresetDialog, loading, error, ...)
+  //   - Local numeric-input text buffers (localLrText, localBeta1Text, ...)
+  //     which preserve in-progress scientific-notation input and sync to
+  //     params.* on blur
+  //   - Derived UI states that feed into nested objects on submit
+  //     (timestep_sampling, priority_training)
+  //   - `useEpochs` radio state (total_steps vs epochs exclusive)
+  //
+  // Adding a new top-level param:
+  //   1. Add field to TrainingRunCreateRequest in frontend/src/utils/api.ts
+  //   2. Add backend Pydantic field
+  //   3. Add default to DEFAULT_PARAMS above
+  //   4. Add UI input: read `params.x`, write via `updateParam("x", v)`
+  //   No changes to getRequestData/applyParamsToState required.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
 
   const updateParam = useCallback(
@@ -625,226 +641,174 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         multiplier: priorityMultiplier,
       } : undefined,
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
+    // Core: entire params object (single source of truth for ~90 fields)
+    params,
+    // Non-params form state
+    datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs,
+    // Local text states (numeric-input helpers; written on blur but read here)
+    localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
-    localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText, localTextEncoder2LrText, localImageEncoderLrText,
-    localVisionEncoderLrText,
+    localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText,
+    localTextEncoder2LrText, localImageEncoderLrText, localVisionEncoderLrText,
+    // Derived-UI states that feed back into timestep_sampling / priority_training
     timestepDistribution, timestepMin, timestepMax, timestepMean,
     timestepStd, timestepAlpha, timestepBeta,
     priorityEnabled, priorityText, priorityMultiplier,
   ]);
 
   /**
-   * Apply an incoming params dict (from get_training_run_params API) to all useStates.
+   * Apply an incoming params dict (from get_training_run_params API) to all state.
    * Used by loadTrainingRunParams() for Edit Config restoration.
+   *
+   * Strategy:
+   *   1. Merge known top-level TrainingRunCreateRequest fields into `params`
+   *      via a single setParams call (one render).
+   *   2. Sync local text states for numeric inputs (scientific notation).
+   *   3. Restore UI-only states (runName, baseModelPath, trainingMethod,
+   *      datasetConfigs, useEpochs, timestep_sampling breakdown,
+   *      priority_training breakdown).
    */
-  const applyParamsToState = useCallback((params: any) => {
-    if (params.run_name) setRunName(params.run_name);
-    if (params.base_model_path !== undefined) setBaseModelPath(params.base_model_path || "");
-    if (params.training_method) setTrainingMethod(params.training_method);
-    if (params.dataset_configs) setDatasetConfigs(params.dataset_configs);
+  const applyParamsToState = useCallback((incoming: any) => {
+    // --- UI-only / non-params states ---
+    if (incoming.run_name) setRunName(incoming.run_name);
+    if (incoming.base_model_path !== undefined) setBaseModelPath(incoming.base_model_path || "");
+    if (incoming.training_method) setTrainingMethod(incoming.training_method);
+    if (incoming.dataset_configs) setDatasetConfigs(incoming.dataset_configs);
 
-    // LoRA
-    if (params.lora_rank !== undefined) setParams(prev => ({ ...prev, lora_rank: params.lora_rank }));
-    if (params.lora_alpha !== undefined) setParams(prev => ({ ...prev, lora_alpha: params.lora_alpha }));
-    if (params.lora_dtype !== undefined) setParams(prev => ({ ...prev, lora_dtype: params.lora_dtype as "fp32" | "fp16" | "bf16" }));
+    // Exclusive steps/epochs radio state
+    if (incoming.total_steps !== undefined && incoming.total_steps !== null) setUseEpochs(false);
+    if (incoming.epochs !== undefined && incoming.epochs !== null) setUseEpochs(true);
 
-    // Steps/epochs
-    if (params.total_steps !== undefined && params.total_steps !== null) {
-      setParams(prev => ({ ...prev, total_steps: params.total_steps }));
-      setUseEpochs(false);
+    // --- Fields that require local text sync (numeric-input helpers) ---
+    if (incoming.learning_rate !== undefined && incoming.learning_rate !== null) {
+      setLocalLrText(incoming.learning_rate.toString());
     }
-    if (params.epochs !== undefined && params.epochs !== null) {
-      setParams(prev => ({ ...prev, epochs: params.epochs }));
-      setUseEpochs(true);
+    if (incoming.optimizer_beta1 !== undefined && incoming.optimizer_beta1 !== null) {
+      setLocalBeta1Text(incoming.optimizer_beta1.toString());
     }
-
-    // Core training
-    if (params.batch_size !== undefined) setParams(prev => ({ ...prev, batch_size: params.batch_size }));
-    if (params.learning_rate !== undefined && params.learning_rate !== null) {
-      setParams(prev => ({ ...prev, learning_rate: params.learning_rate }));
-      setLocalLrText(params.learning_rate.toString());
+    if (incoming.optimizer_beta2 !== undefined && incoming.optimizer_beta2 !== null) {
+      setLocalBeta2Text(incoming.optimizer_beta2.toString());
     }
-    if (params.lr_scheduler !== undefined) setParams(prev => ({ ...prev, lr_scheduler: params.lr_scheduler }));
-    if (params.lr_warmup_steps !== undefined) setParams(prev => ({ ...prev, lr_warmup_steps: params.lr_warmup_steps }));
-    if (params.optimizer !== undefined) setParams(prev => ({ ...prev, optimizer: params.optimizer }));
-
-    // Optimizer hyperparameters
-    if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) {
-      setParams(prev => ({ ...prev, optimizer_beta1: params.optimizer_beta1 }));
-      setLocalBeta1Text(params.optimizer_beta1.toString());
+    if (incoming.optimizer_epsilon !== undefined && incoming.optimizer_epsilon !== null) {
+      setLocalEpsilonText(incoming.optimizer_epsilon.toString());
     }
-    if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) {
-      setParams(prev => ({ ...prev, optimizer_beta2: params.optimizer_beta2 }));
-      setLocalBeta2Text(params.optimizer_beta2.toString());
+    if (incoming.optimizer_weight_decay !== undefined && incoming.optimizer_weight_decay !== null) {
+      setLocalWeightDecayText(incoming.optimizer_weight_decay.toString());
     }
-    if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) {
-      setParams(prev => ({ ...prev, optimizer_epsilon: params.optimizer_epsilon }));
-      setLocalEpsilonText(params.optimizer_epsilon.toString());
+    if (incoming.optimizer_schedule_free_r !== undefined) {
+      setLocalScheduleFreeRText(incoming.optimizer_schedule_free_r.toString());
     }
-    if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) {
-      setParams(prev => ({ ...prev, optimizer_weight_decay: params.optimizer_weight_decay }));
-      setLocalWeightDecayText(params.optimizer_weight_decay.toString());
+    if (incoming.optimizer_schedule_free_weight_lr_power !== undefined) {
+      setLocalScheduleFreeWeightLrPowerText(incoming.optimizer_schedule_free_weight_lr_power.toString());
     }
-    if (params.optimizer_is_paged !== undefined) setParams(prev => ({ ...prev, optimizer_is_paged: params.optimizer_is_paged }));
-    if (params.optimizer_cautious !== undefined) setParams(prev => ({ ...prev, optimizer_cautious: params.optimizer_cautious }));
-    if (params.optimizer_schedule_free !== undefined) setParams(prev => ({ ...prev, optimizer_schedule_free: params.optimizer_schedule_free }));
-    if (params.optimizer_schedule_free_r !== undefined) {
-      setParams(prev => ({ ...prev, optimizer_schedule_free_r: params.optimizer_schedule_free_r }));
-      setLocalScheduleFreeRText(params.optimizer_schedule_free_r.toString());
+    if (incoming.unet_lr !== undefined && incoming.unet_lr !== null) {
+      setLocalUnetLrText(incoming.unet_lr.toString());
     }
-    if (params.optimizer_schedule_free_weight_lr_power !== undefined) {
-      setParams(prev => ({ ...prev, optimizer_schedule_free_weight_lr_power: params.optimizer_schedule_free_weight_lr_power }));
-      setLocalScheduleFreeWeightLrPowerText(params.optimizer_schedule_free_weight_lr_power.toString());
+    if (incoming.text_encoder_lr !== undefined && incoming.text_encoder_lr !== null) {
+      setLocalTextEncoderLrText(incoming.text_encoder_lr.toString());
     }
-    if (params.optimizer_use_radam !== undefined) setParams(prev => ({ ...prev, optimizer_use_radam: params.optimizer_use_radam }));
-    if (params.optimizer_stochastic_rounding !== undefined) setParams(prev => ({ ...prev, optimizer_stochastic_rounding: params.optimizer_stochastic_rounding }));
-
-    // Save/Resume
-    if (params.save_every !== undefined) setParams(prev => ({ ...prev, save_every: params.save_every }));
-    if (params.save_every_unit !== undefined) setParams(prev => ({ ...prev, save_every_unit: params.save_every_unit }));
-    if (params.resume_from_checkpoint !== undefined) setParams(prev => ({ ...prev, resume_from_checkpoint: params.resume_from_checkpoint }));
-
-    // Component training
-    if (params.train_unet !== undefined) setParams(prev => ({ ...prev, train_unet: params.train_unet }));
-    if (params.train_text_encoder !== undefined) setParams(prev => ({ ...prev, train_text_encoder: params.train_text_encoder }));
-    if (params.train_image_encoder !== undefined) setParams(prev => ({ ...prev, train_image_encoder: params.train_image_encoder }));
-    if (params.unet_lr !== undefined && params.unet_lr !== null) {
-      setParams(prev => ({ ...prev, unet_lr: params.unet_lr }));
-      setLocalUnetLrText(params.unet_lr.toString());
+    if (incoming.text_encoder_1_lr !== undefined && incoming.text_encoder_1_lr !== null) {
+      setLocalTextEncoder1LrText(incoming.text_encoder_1_lr.toString());
     }
-    if (params.text_encoder_lr !== undefined && params.text_encoder_lr !== null) {
-      setParams(prev => ({ ...prev, text_encoder_lr: params.text_encoder_lr }));
-      setLocalTextEncoderLrText(params.text_encoder_lr.toString());
+    if (incoming.text_encoder_2_lr !== undefined && incoming.text_encoder_2_lr !== null) {
+      setLocalTextEncoder2LrText(incoming.text_encoder_2_lr.toString());
     }
-    if (params.text_encoder_1_lr !== undefined && params.text_encoder_1_lr !== null) {
-      setParams(prev => ({ ...prev, text_encoder_1_lr: params.text_encoder_1_lr }));
-      setLocalTextEncoder1LrText(params.text_encoder_1_lr.toString());
+    if (incoming.image_encoder_lr !== undefined && incoming.image_encoder_lr !== null) {
+      setLocalImageEncoderLrText(incoming.image_encoder_lr.toString());
     }
-    if (params.text_encoder_2_lr !== undefined && params.text_encoder_2_lr !== null) {
-      setParams(prev => ({ ...prev, text_encoder_2_lr: params.text_encoder_2_lr }));
-      setLocalTextEncoder2LrText(params.text_encoder_2_lr.toString());
-    }
-    if (params.image_encoder_lr !== undefined && params.image_encoder_lr !== null) {
-      setParams(prev => ({ ...prev, image_encoder_lr: params.image_encoder_lr }));
-      setLocalImageEncoderLrText(params.image_encoder_lr.toString());
+    if (incoming.vision_encoder_lr !== undefined) {
+      setLocalVisionEncoderLrText(incoming.vision_encoder_lr != null ? String(incoming.vision_encoder_lr) : "");
     }
 
-    // Precision
-    if (params.weight_dtype !== undefined) setParams(prev => ({ ...prev, weight_dtype: params.weight_dtype }));
-    if (params.training_dtype !== undefined) setParams(prev => ({ ...prev, training_dtype: params.training_dtype }));
-    if (params.output_dtype !== undefined) setParams(prev => ({ ...prev, output_dtype: params.output_dtype }));
-    if (params.vae_dtype !== undefined) setParams(prev => ({ ...prev, vae_dtype: params.vae_dtype }));
-    if (params.mixed_precision !== undefined) setParams(prev => ({ ...prev, mixed_precision: params.mixed_precision }));
-    if (params.use_flash_attention !== undefined) setParams(prev => ({ ...prev, use_flash_attention: params.use_flash_attention }));
-    if (params.min_snr_gamma !== undefined) setParams(prev => ({ ...prev, min_snr_gamma: params.min_snr_gamma }));
-    if (params.reconstruction_loss_weight !== undefined) setParams(prev => ({ ...prev, reconstruction_loss_weight: params.reconstruction_loss_weight }));
-
-    // Memory optimization
-    if (params.text_encoding_mode !== undefined) setParams(prev => ({ ...prev, text_encoding_mode: params.text_encoding_mode }));
-    if (params.text_encoding_swap_interval !== undefined) setParams(prev => ({ ...prev, text_encoding_swap_interval: params.text_encoding_swap_interval }));
-    if (params.latent_encoding_mode !== undefined) setParams(prev => ({ ...prev, latent_encoding_mode: params.latent_encoding_mode }));
-    if (params.latent_encoding_swap_interval !== undefined) setParams(prev => ({ ...prev, latent_encoding_swap_interval: params.latent_encoding_swap_interval }));
-    if (params.blocks_to_swap !== undefined) setParams(prev => ({ ...prev, blocks_to_swap: params.blocks_to_swap }));
-    if (params.use_pinned_memory !== undefined) setParams(prev => ({ ...prev, use_pinned_memory: params.use_pinned_memory }));
-    if (params.num_optimizer_groups !== undefined) setParams(prev => ({ ...prev, num_optimizer_groups: params.num_optimizer_groups }));
-
-    // MNT
-    if (params.multi_noise_timesteps !== undefined) setParams(prev => ({ ...prev, multi_noise_timesteps: params.multi_noise_timesteps }));
-    if (params.multi_noise_mode !== undefined) setParams(prev => ({ ...prev, multi_noise_mode: params.multi_noise_mode }));
-    if (params.trajectory_blend_alpha !== undefined) setParams(prev => ({ ...prev, trajectory_blend_alpha: params.trajectory_blend_alpha }));
-    if (params.timestep_sampling) {
-      if (params.timestep_sampling.distribution !== undefined) setTimestepDistribution(params.timestep_sampling.distribution);
-      if (params.timestep_sampling.min_timestep !== undefined) setTimestepMin(params.timestep_sampling.min_timestep);
-      if (params.timestep_sampling.max_timestep !== undefined) setTimestepMax(params.timestep_sampling.max_timestep);
-      if (params.timestep_sampling.mean !== undefined) setTimestepMean(params.timestep_sampling.mean);
-      if (params.timestep_sampling.std !== undefined) setTimestepStd(params.timestep_sampling.std);
-      if (params.timestep_sampling.alpha !== undefined) setTimestepAlpha(params.timestep_sampling.alpha);
-      if (params.timestep_sampling.beta !== undefined) setTimestepBeta(params.timestep_sampling.beta);
+    // --- timestep_sampling (nested object expands to several UI states) ---
+    if (incoming.timestep_sampling) {
+      const ts = incoming.timestep_sampling;
+      if (ts.distribution !== undefined) setTimestepDistribution(ts.distribution);
+      if (ts.min_timestep !== undefined) setTimestepMin(ts.min_timestep);
+      if (ts.max_timestep !== undefined) setTimestepMax(ts.max_timestep);
+      if (ts.mean !== undefined) setTimestepMean(ts.mean);
+      if (ts.std !== undefined) setTimestepStd(ts.std);
+      if (ts.alpha !== undefined) setTimestepAlpha(ts.alpha);
+      if (ts.beta !== undefined) setTimestepBeta(ts.beta);
     }
 
-    // Regularization
-    if (params.regularization_type !== undefined) setParams(prev => ({ ...prev, regularization_type: params.regularization_type || "none" }));
-    if (params.snr_regularization_weight !== undefined) setParams(prev => ({ ...prev, snr_regularization_weight: params.snr_regularization_weight }));
-    if (params.snr_timestep_adaptive !== undefined) setParams(prev => ({ ...prev, snr_timestep_adaptive: params.snr_timestep_adaptive }));
-    if (params.snr_penalty_mode !== undefined) setParams(prev => ({ ...prev, snr_penalty_mode: params.snr_penalty_mode }));
-    if (params.energy_regularization_weight !== undefined) setParams(prev => ({ ...prev, energy_regularization_weight: params.energy_regularization_weight }));
-    if (params.energy_timestep_adaptive !== undefined) setParams(prev => ({ ...prev, energy_timestep_adaptive: params.energy_timestep_adaptive }));
-    if (params.energy_penalty_mode !== undefined) setParams(prev => ({ ...prev, energy_penalty_mode: params.energy_penalty_mode }));
-    if (params.energy_normalize_by_pixels !== undefined) setParams(prev => ({ ...prev, energy_normalize_by_pixels: params.energy_normalize_by_pixels }));
-
-    // Unified Training Framework
-    if (params.noise_process !== undefined) setParams(prev => ({ ...prev, noise_process: params.noise_process }));
-    if (params.prediction_target !== undefined) setParams(prev => ({ ...prev, prediction_target: params.prediction_target }));
-    if (params.strict_validation !== undefined) setParams(prev => ({ ...prev, strict_validation: params.strict_validation }));
-
-    // ControlNet
-    if (params.controlnet_type !== undefined) setParams(prev => ({ ...prev, controlnet_type: params.controlnet_type as "standard" | "lllite" }));
-    if (params.controlnet_pretrained_path !== undefined && params.controlnet_pretrained_path !== null) setParams(prev => ({ ...prev, controlnet_pretrained_path: params.controlnet_pretrained_path }));
-    if (params.controlnet_init_from_unet !== undefined) setParams(prev => ({ ...prev, controlnet_init_from_unet: params.controlnet_init_from_unet }));
-    if (params.lllite_conditioning_channels !== undefined) setParams(prev => ({ ...prev, lllite_conditioning_channels: params.lllite_conditioning_channels }));
-    if (params.lllite_rank !== undefined) setParams(prev => ({ ...prev, lllite_rank: params.lllite_rank }));
-    if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setParams(prev => ({ ...prev, condition_preprocessors: params.condition_preprocessors }));
-    if (params.condition_cache_mode !== undefined) setParams(prev => ({ ...prev, condition_cache_mode: params.condition_cache_mode as "on_the_fly" | "pre_generate" }));
-
-    // Sample
-    if (params.sample_every !== undefined) setParams(prev => ({ ...prev, sample_every: params.sample_every }));
-    if (params.sample_prompts && params.sample_prompts.length > 0) setParams(prev => ({ ...prev, sample_prompts: params.sample_prompts }));
-    if (params.sample_width !== undefined) setParams(prev => ({ ...prev, sample_width: params.sample_width }));
-    if (params.sample_height !== undefined) setParams(prev => ({ ...prev, sample_height: params.sample_height }));
-    if (params.sample_steps !== undefined) setParams(prev => ({ ...prev, sample_steps: params.sample_steps }));
-    if (params.sample_cfg_scale !== undefined) setParams(prev => ({ ...prev, sample_cfg_scale: params.sample_cfg_scale }));
-    if (params.sample_sampler !== undefined) setParams(prev => ({ ...prev, sample_sampler: params.sample_sampler }));
-    if (params.sample_schedule_type !== undefined) setParams(prev => ({ ...prev, sample_schedule_type: params.sample_schedule_type }));
-    if (params.sample_seed !== undefined) setParams(prev => ({ ...prev, sample_seed: params.sample_seed }));
-
-    // Debug
-    if (params.debug_latents !== undefined) setParams(prev => ({ ...prev, debug_latents: params.debug_latents }));
-    if (params.debug_latents_every !== undefined) setParams(prev => ({ ...prev, debug_latents_every: params.debug_latents_every }));
-
-    // Bucketing
-    if (params.enable_bucketing !== undefined) setParams(prev => ({ ...prev, enable_bucketing: params.enable_bucketing }));
-    if (params.base_resolutions !== undefined && params.base_resolutions !== null) {
-      setParams(prev => ({ ...prev, base_resolutions: params.base_resolutions }));
-    } else if (params.base_resolutions === null) {
-      setParams(prev => ({ ...prev, base_resolutions: [1024] }));
-    }
-    if (params.bucket_strategy !== undefined) setParams(prev => ({ ...prev, bucket_strategy: params.bucket_strategy }));
-    if (params.multi_resolution_mode !== undefined) setParams(prev => ({ ...prev, multi_resolution_mode: params.multi_resolution_mode }));
-
-    // Cache
-    if (params.cache_latents_to_disk !== undefined) setParams(prev => ({ ...prev, cache_latents_to_disk: params.cache_latents_to_disk }));
-    if (params.force_recache !== undefined) setParams(prev => ({ ...prev, force_recache: params.force_recache }));
-
-    // Reference images / Vision encoder
-    if (params.use_reference_images !== undefined) setParams(prev => ({ ...prev, use_reference_images: params.use_reference_images }));
-    if (params.vision_encoder_path !== undefined) setParams(prev => ({ ...prev, vision_encoder_path: params.vision_encoder_path || "" }));
-    if (params.train_vision_encoder !== undefined) setParams(prev => ({ ...prev, train_vision_encoder: params.train_vision_encoder }));
-    if (params.gradient_routing_ve !== undefined) setParams(prev => ({ ...prev, gradient_routing_ve: params.gradient_routing_ve }));
-    if (params.vision_encoder_lr !== undefined) {
-      setParams(prev => ({ ...prev, vision_encoder_lr: params.vision_encoder_lr }));
-      setLocalVisionEncoderLrText(params.vision_encoder_lr != null ? String(params.vision_encoder_lr) : "");
-    }
-    if (params.param_tracking !== undefined) setParams(prev => ({ ...prev, param_tracking: params.param_tracking }));
-    if (params.param_tracking_interval !== undefined) setParams(prev => ({ ...prev, param_tracking_interval: params.param_tracking_interval }));
-
-    // Priority training
-    if (params.priority_training) {
+    // --- priority_training (object expands to 3 UI states) ---
+    if (incoming.priority_training) {
       setPriorityEnabled(true);
-      const entries = params.priority_training.entries || [];
+      const entries = incoming.priority_training.entries || [];
       setPriorityText(entries.map((e: any) => typeof e === "string" ? e : JSON.stringify(e)).join("\n"));
-      setPriorityMultiplier(params.priority_training.multiplier || 1);
+      setPriorityMultiplier(incoming.priority_training.multiplier || 1);
     }
 
-    // ReLoRA
-    if (params.relora_merge_every !== undefined) setParams(prev => ({ ...prev, relora_merge_every: params.relora_merge_every }));
-    if (params.relora_merge_unit !== undefined) setParams(prev => ({ ...prev, relora_merge_unit: params.relora_merge_unit }));
-    if (params.restart_warmup_steps !== undefined) setParams(prev => ({ ...prev, restart_warmup_steps: params.restart_warmup_steps }));
-    if (params.optimizer_reset_strategy !== undefined) setParams(prev => ({ ...prev, optimizer_reset_strategy: params.optimizer_reset_strategy }));
-    if (params.optimizer_pruning_ratio !== undefined) setParams(prev => ({ ...prev, optimizer_pruning_ratio: params.optimizer_pruning_ratio }));
+    // --- Single batched params update: merge every known top-level field ---
+    // Fields that need special defaulting/coercion are handled explicitly;
+    // all others are forwarded when present (undefined means "don't touch").
+    const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
+      "lora_rank", "lora_alpha", "lora_dtype",
+      "total_steps", "epochs",
+      "batch_size", "learning_rate", "lr_scheduler", "lr_warmup_steps", "optimizer",
+      "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
+      "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
+      "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
+      "optimizer_use_radam", "optimizer_stochastic_rounding",
+      "save_every", "save_every_unit", "resume_from_checkpoint",
+      "train_unet", "train_text_encoder", "train_image_encoder",
+      "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
+      "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
+      "mixed_precision", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
+      "text_encoding_mode", "text_encoding_swap_interval",
+      "latent_encoding_mode", "latent_encoding_swap_interval",
+      "blocks_to_swap", "use_pinned_memory", "num_optimizer_groups",
+      "multi_noise_timesteps", "multi_noise_mode", "trajectory_blend_alpha",
+      "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
+      "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
+      "energy_normalize_by_pixels",
+      "noise_process", "prediction_target", "strict_validation",
+      "controlnet_type", "controlnet_init_from_unet",
+      "lllite_conditioning_channels", "lllite_rank",
+      "condition_cache_mode",
+      "sample_every", "sample_prompts", "sample_width", "sample_height",
+      "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
+      "debug_latents", "debug_latents_every",
+      "enable_bucketing", "bucket_strategy", "multi_resolution_mode",
+      "cache_latents_to_disk", "force_recache",
+      "use_reference_images", "train_vision_encoder", "gradient_routing_ve",
+      "vision_encoder_lr", "param_tracking", "param_tracking_interval",
+      "relora_merge_every", "relora_merge_unit", "restart_warmup_steps",
+      "optimizer_reset_strategy", "optimizer_pruning_ratio",
+    ];
+    const patch: Partial<TrainingRunCreateRequest> = {};
+    for (const key of PARAM_KEYS) {
+      if (incoming[key] !== undefined) {
+        (patch as any)[key] = incoming[key];
+      }
+    }
+    // Fields with custom coercion rules
+    if (incoming.regularization_type !== undefined) {
+      patch.regularization_type = incoming.regularization_type || "none";
+    }
+    if (incoming.vision_encoder_path !== undefined) {
+      patch.vision_encoder_path = incoming.vision_encoder_path || "";
+    }
+    if (incoming.controlnet_pretrained_path !== undefined && incoming.controlnet_pretrained_path !== null) {
+      patch.controlnet_pretrained_path = incoming.controlnet_pretrained_path;
+    }
+    if (incoming.condition_preprocessors !== undefined && incoming.condition_preprocessors !== null) {
+      patch.condition_preprocessors = incoming.condition_preprocessors;
+    }
+    if (incoming.base_resolutions !== undefined) {
+      patch.base_resolutions = incoming.base_resolutions === null ? [1024] : incoming.base_resolutions;
+    }
+    // sample_prompts: only overwrite when non-empty (preserve default)
+    if (incoming.sample_prompts && incoming.sample_prompts.length > 0) {
+      patch.sample_prompts = incoming.sample_prompts;
+    } else {
+      delete patch.sample_prompts;
+    }
+
+    setParams(prev => ({ ...prev, ...patch }));
   }, []);
 
   // Load training run parameters for edit mode

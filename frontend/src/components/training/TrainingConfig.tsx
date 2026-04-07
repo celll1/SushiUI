@@ -273,18 +273,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const lrScheduler = params.lr_scheduler ?? "constant";
   const optimizer = params.optimizer ?? "adamw8bit";
 
-  // Optimizer-specific options
-  const [optimizerIsPaged, setOptimizerIsPaged] = useState(false);
-  const [optimizerCautious, setOptimizerCautious] = useState(false);
-  const [optimizerBeta1, setOptimizerBeta1] = useState<string>("0.9");
-  const [optimizerBeta2, setOptimizerBeta2] = useState<string>("0.999");
-  const [optimizerEpsilon, setOptimizerEpsilon] = useState<string>("1e-8");
-  const [optimizerWeightDecay, setOptimizerWeightDecay] = useState<string>("0.01");
-  const [optimizerScheduleFree, setOptimizerScheduleFree] = useState(false);
-  const [optimizerScheduleFreeR, setOptimizerScheduleFreeR] = useState<string>("0.0");
-  const [optimizerScheduleFreeWeightLrPower, setOptimizerScheduleFreeWeightLrPower] = useState<string>("2.0");
-  const [optimizerUseRadam, setOptimizerUseRadam] = useState(false);
-  const [optimizerStochasticRounding, setOptimizerStochasticRounding] = useState(false);
+  // Optimizer-specific options (Phase 3c: migrated to params)
+  // Local text states preserve in-progress numeric input (e.g. "1e-")
+  const [localBeta1Text, setLocalBeta1Text] = useState<string>("0.9");
+  const [localBeta2Text, setLocalBeta2Text] = useState<string>("0.999");
+  const [localEpsilonText, setLocalEpsilonText] = useState<string>("1e-8");
+  const [localWeightDecayText, setLocalWeightDecayText] = useState<string>("0.01");
+  const [localScheduleFreeRText, setLocalScheduleFreeRText] = useState<string>("0.0");
+  const [localScheduleFreeWeightLrPowerText, setLocalScheduleFreeWeightLrPowerText] = useState<string>("2.0");
+  // Convenience read-only aliases into params
+  const optimizerIsPaged = params.optimizer_is_paged ?? false;
+  const optimizerCautious = params.optimizer_cautious ?? false;
+  const optimizerBeta1 = localBeta1Text;
+  const optimizerBeta2 = localBeta2Text;
+  const optimizerEpsilon = localEpsilonText;
+  const optimizerWeightDecay = localWeightDecayText;
+  const optimizerScheduleFree = params.optimizer_schedule_free ?? false;
+  const optimizerScheduleFreeR = localScheduleFreeRText;
+  const optimizerScheduleFreeWeightLrPower = localScheduleFreeWeightLrPowerText;
+  const optimizerUseRadam = params.optimizer_use_radam ?? false;
+  const optimizerStochasticRounding = params.optimizer_stochastic_rounding ?? false;
 
   // LoRA parameters
   const [loraRank, setLoraRank] = useState(16);
@@ -487,17 +495,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lr_scheduler: params.lr_scheduler,
       lr_warmup_steps: params.lr_warmup_steps,
       optimizer: params.optimizer,
-      optimizer_is_paged: optimizerIsPaged,
-      optimizer_cautious: optimizerCautious,
-      optimizer_beta1: optimizerBeta1 ? parseFloat(optimizerBeta1) : undefined,
-      optimizer_beta2: optimizerBeta2 ? parseFloat(optimizerBeta2) : undefined,
-      optimizer_epsilon: optimizerEpsilon ? parseFloat(optimizerEpsilon) : undefined,
-      optimizer_weight_decay: optimizerWeightDecay ? parseFloat(optimizerWeightDecay) : undefined,
-      optimizer_schedule_free: optimizerScheduleFree,
-      optimizer_schedule_free_r: optimizerScheduleFreeR ? parseFloat(optimizerScheduleFreeR) : 0.0,
-      optimizer_schedule_free_weight_lr_power: optimizerScheduleFreeWeightLrPower ? parseFloat(optimizerScheduleFreeWeightLrPower) : 2.0,
-      optimizer_use_radam: optimizerUseRadam,
-      optimizer_stochastic_rounding: optimizerStochasticRounding,
+      optimizer_is_paged: params.optimizer_is_paged,
+      optimizer_cautious: params.optimizer_cautious,
+      optimizer_beta1: localBeta1Text ? parseFloat(localBeta1Text) : undefined,
+      optimizer_beta2: localBeta2Text ? parseFloat(localBeta2Text) : undefined,
+      optimizer_epsilon: localEpsilonText ? parseFloat(localEpsilonText) : undefined,
+      optimizer_weight_decay: localWeightDecayText ? parseFloat(localWeightDecayText) : undefined,
+      optimizer_schedule_free: params.optimizer_schedule_free,
+      optimizer_schedule_free_r: localScheduleFreeRText ? parseFloat(localScheduleFreeRText) : 0.0,
+      optimizer_schedule_free_weight_lr_power: localScheduleFreeWeightLrPowerText ? parseFloat(localScheduleFreeWeightLrPowerText) : 2.0,
+      optimizer_use_radam: params.optimizer_use_radam,
+      optimizer_stochastic_rounding: params.optimizer_stochastic_rounding,
       lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? loraRank : undefined,
       lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? loraAlpha : undefined,
       lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? loraDtype : undefined,
@@ -600,9 +608,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
-    optimizerIsPaged, optimizerCautious,
-    optimizerBeta1, optimizerBeta2, optimizerEpsilon, optimizerWeightDecay, optimizerScheduleFree,
-    optimizerScheduleFreeR, optimizerScheduleFreeWeightLrPower, optimizerUseRadam, optimizerStochasticRounding,
+    localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
+    localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
     loraRank, loraAlpha, loraDtype, reloraMergeEvery, reloraMergeUnit, restartWarmupSteps,
     optimizerResetStrategy, optimizerPruningRatio, saveEvery, saveEveryUnit, sampleEvery, samplePrompts,
     sampleWidth, sampleHeight, sampleSteps, sampleCfgScale, sampleSampler, sampleScheduleType, sampleSeed,
@@ -657,17 +664,35 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.optimizer !== undefined) setParams(prev => ({ ...prev, optimizer: params.optimizer }));
 
     // Optimizer hyperparameters
-    if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) setOptimizerBeta1(params.optimizer_beta1.toString());
-    if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) setOptimizerBeta2(params.optimizer_beta2.toString());
-    if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) setOptimizerEpsilon(params.optimizer_epsilon.toString());
-    if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) setOptimizerWeightDecay(params.optimizer_weight_decay.toString());
-    if (params.optimizer_is_paged !== undefined) setOptimizerIsPaged(params.optimizer_is_paged);
-    if (params.optimizer_cautious !== undefined) setOptimizerCautious(params.optimizer_cautious);
-    if (params.optimizer_schedule_free !== undefined) setOptimizerScheduleFree(params.optimizer_schedule_free);
-    if (params.optimizer_schedule_free_r !== undefined) setOptimizerScheduleFreeR(params.optimizer_schedule_free_r.toString());
-    if (params.optimizer_schedule_free_weight_lr_power !== undefined) setOptimizerScheduleFreeWeightLrPower(params.optimizer_schedule_free_weight_lr_power.toString());
-    if (params.optimizer_use_radam !== undefined) setOptimizerUseRadam(params.optimizer_use_radam);
-    if (params.optimizer_stochastic_rounding !== undefined) setOptimizerStochasticRounding(params.optimizer_stochastic_rounding);
+    if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) {
+      setParams(prev => ({ ...prev, optimizer_beta1: params.optimizer_beta1 }));
+      setLocalBeta1Text(params.optimizer_beta1.toString());
+    }
+    if (params.optimizer_beta2 !== undefined && params.optimizer_beta2 !== null) {
+      setParams(prev => ({ ...prev, optimizer_beta2: params.optimizer_beta2 }));
+      setLocalBeta2Text(params.optimizer_beta2.toString());
+    }
+    if (params.optimizer_epsilon !== undefined && params.optimizer_epsilon !== null) {
+      setParams(prev => ({ ...prev, optimizer_epsilon: params.optimizer_epsilon }));
+      setLocalEpsilonText(params.optimizer_epsilon.toString());
+    }
+    if (params.optimizer_weight_decay !== undefined && params.optimizer_weight_decay !== null) {
+      setParams(prev => ({ ...prev, optimizer_weight_decay: params.optimizer_weight_decay }));
+      setLocalWeightDecayText(params.optimizer_weight_decay.toString());
+    }
+    if (params.optimizer_is_paged !== undefined) setParams(prev => ({ ...prev, optimizer_is_paged: params.optimizer_is_paged }));
+    if (params.optimizer_cautious !== undefined) setParams(prev => ({ ...prev, optimizer_cautious: params.optimizer_cautious }));
+    if (params.optimizer_schedule_free !== undefined) setParams(prev => ({ ...prev, optimizer_schedule_free: params.optimizer_schedule_free }));
+    if (params.optimizer_schedule_free_r !== undefined) {
+      setParams(prev => ({ ...prev, optimizer_schedule_free_r: params.optimizer_schedule_free_r }));
+      setLocalScheduleFreeRText(params.optimizer_schedule_free_r.toString());
+    }
+    if (params.optimizer_schedule_free_weight_lr_power !== undefined) {
+      setParams(prev => ({ ...prev, optimizer_schedule_free_weight_lr_power: params.optimizer_schedule_free_weight_lr_power }));
+      setLocalScheduleFreeWeightLrPowerText(params.optimizer_schedule_free_weight_lr_power.toString());
+    }
+    if (params.optimizer_use_radam !== undefined) setParams(prev => ({ ...prev, optimizer_use_radam: params.optimizer_use_radam }));
+    if (params.optimizer_stochastic_rounding !== undefined) setParams(prev => ({ ...prev, optimizer_stochastic_rounding: params.optimizer_stochastic_rounding }));
 
     // Save/Resume
     if (params.save_every !== undefined) setSaveEvery(params.save_every);
@@ -898,15 +923,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (!config) return;
 
     const { beta1, beta2, epsilon, weight_decay } = config.defaults;
-    if (beta1 !== undefined) setOptimizerBeta1(beta1);
-    if (beta2 !== undefined) setOptimizerBeta2(beta2);
-    if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
-    if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+    if (beta1 !== undefined) {
+      setLocalBeta1Text(beta1);
+      updateParam("optimizer_beta1", parseFloat(beta1));
+    }
+    if (beta2 !== undefined) {
+      setLocalBeta2Text(beta2);
+      updateParam("optimizer_beta2", parseFloat(beta2));
+    }
+    if (epsilon !== undefined) {
+      setLocalEpsilonText(epsilon);
+      updateParam("optimizer_epsilon", parseFloat(epsilon));
+    }
+    if (weight_decay !== undefined) {
+      setLocalWeightDecayText(weight_decay);
+      updateParam("optimizer_weight_decay", parseFloat(weight_decay));
+    }
 
     // Reset options that are not supported by the new optimizer
-    if (!config.supportsPaged) setOptimizerIsPaged(false);
-    if (!config.supportsCautious) setOptimizerCautious(false);
-  }, [params.optimizer]);
+    if (!config.supportsPaged) updateParam("optimizer_is_paged", false);
+    if (!config.supportsCautious) updateParam("optimizer_cautious", false);
+  }, [params.optimizer, updateParam]);
 
   const loadDatasets = async () => {
     const startTime = performance.now();
@@ -1212,15 +1249,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       learningRate: localLrText,
       lrScheduler: params.lr_scheduler,
       optimizer: params.optimizer,
-      optimizerIsPaged,
-      optimizerCautious,
-      optimizerBeta1,
-      optimizerBeta2,
-      optimizerEpsilon,
-      optimizerWeightDecay,
-      optimizerScheduleFree,
-      optimizerScheduleFreeR,
-      optimizerScheduleFreeWeightLrPower,
+      optimizerIsPaged: params.optimizer_is_paged,
+      optimizerCautious: params.optimizer_cautious,
+      optimizerBeta1: localBeta1Text,
+      optimizerBeta2: localBeta2Text,
+      optimizerEpsilon: localEpsilonText,
+      optimizerWeightDecay: localWeightDecayText,
+      optimizerScheduleFree: params.optimizer_schedule_free,
+      optimizerScheduleFreeR: localScheduleFreeRText,
+      optimizerScheduleFreeWeightLrPower: localScheduleFreeWeightLrPowerText,
       loraRank,
       loraAlpha,
       saveEvery,
@@ -1326,15 +1363,39 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     if (config.lrScheduler !== undefined) updateParam("lr_scheduler", config.lrScheduler);
     if (config.optimizer !== undefined) updateParam("optimizer", config.optimizer);
-    if (config.optimizerIsPaged !== undefined) setOptimizerIsPaged(config.optimizerIsPaged);
-    if (config.optimizerCautious !== undefined) setOptimizerCautious(config.optimizerCautious);
-    if (config.optimizerBeta1 !== undefined) setOptimizerBeta1(config.optimizerBeta1);
-    if (config.optimizerBeta2 !== undefined) setOptimizerBeta2(config.optimizerBeta2);
-    if (config.optimizerEpsilon !== undefined) setOptimizerEpsilon(config.optimizerEpsilon);
-    if (config.optimizerWeightDecay !== undefined) setOptimizerWeightDecay(config.optimizerWeightDecay);
-    if (config.optimizerScheduleFree !== undefined) setOptimizerScheduleFree(config.optimizerScheduleFree);
-    if (config.optimizerScheduleFreeR !== undefined) setOptimizerScheduleFreeR(config.optimizerScheduleFreeR);
-    if (config.optimizerScheduleFreeWeightLrPower !== undefined) setOptimizerScheduleFreeWeightLrPower(config.optimizerScheduleFreeWeightLrPower);
+    if (config.optimizerIsPaged !== undefined) updateParam("optimizer_is_paged", config.optimizerIsPaged);
+    if (config.optimizerCautious !== undefined) updateParam("optimizer_cautious", config.optimizerCautious);
+    if (config.optimizerBeta1 !== undefined) {
+      const v = parseFloat(config.optimizerBeta1);
+      if (!isNaN(v)) updateParam("optimizer_beta1", v);
+      setLocalBeta1Text(config.optimizerBeta1);
+    }
+    if (config.optimizerBeta2 !== undefined) {
+      const v = parseFloat(config.optimizerBeta2);
+      if (!isNaN(v)) updateParam("optimizer_beta2", v);
+      setLocalBeta2Text(config.optimizerBeta2);
+    }
+    if (config.optimizerEpsilon !== undefined) {
+      const v = parseFloat(config.optimizerEpsilon);
+      if (!isNaN(v)) updateParam("optimizer_epsilon", v);
+      setLocalEpsilonText(config.optimizerEpsilon);
+    }
+    if (config.optimizerWeightDecay !== undefined) {
+      const v = parseFloat(config.optimizerWeightDecay);
+      if (!isNaN(v)) updateParam("optimizer_weight_decay", v);
+      setLocalWeightDecayText(config.optimizerWeightDecay);
+    }
+    if (config.optimizerScheduleFree !== undefined) updateParam("optimizer_schedule_free", config.optimizerScheduleFree);
+    if (config.optimizerScheduleFreeR !== undefined) {
+      const v = parseFloat(config.optimizerScheduleFreeR);
+      if (!isNaN(v)) updateParam("optimizer_schedule_free_r", v);
+      setLocalScheduleFreeRText(config.optimizerScheduleFreeR);
+    }
+    if (config.optimizerScheduleFreeWeightLrPower !== undefined) {
+      const v = parseFloat(config.optimizerScheduleFreeWeightLrPower);
+      if (!isNaN(v)) updateParam("optimizer_schedule_free_weight_lr_power", v);
+      setLocalScheduleFreeWeightLrPowerText(config.optimizerScheduleFreeWeightLrPower);
+    }
     if (config.loraRank !== undefined) setLoraRank(config.loraRank);
     if (config.loraAlpha !== undefined) setLoraAlpha(config.loraAlpha);
     if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
@@ -2588,7 +2649,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="optimizer-is-paged"
                       checked={optimizerIsPaged}
-                      onChange={(e) => setOptimizerIsPaged(e.target.checked)}
+                      onChange={(e) => updateParam("optimizer_is_paged", e.target.checked)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="optimizer-is-paged" className="text-xs text-gray-300 cursor-pointer">
@@ -2604,7 +2665,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="optimizer-cautious"
                       checked={optimizerCautious}
-                      onChange={(e) => setOptimizerCautious(e.target.checked)}
+                      onChange={(e) => updateParam("optimizer_cautious", e.target.checked)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="optimizer-cautious" className="text-xs text-gray-300 cursor-pointer">
@@ -2621,7 +2682,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         type="checkbox"
                         id="optimizer-schedule-free"
                         checked={optimizerScheduleFree}
-                        onChange={(e) => setOptimizerScheduleFree(e.target.checked)}
+                        onChange={(e) => updateParam("optimizer_schedule_free", e.target.checked)}
                         className="w-4 h-4"
                       />
                       <label htmlFor="optimizer-schedule-free" className="text-xs text-gray-300 cursor-pointer">
@@ -2637,7 +2698,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                             type="checkbox"
                             id="optimizer-use-radam"
                             checked={optimizerUseRadam}
-                            onChange={(e) => setOptimizerUseRadam(e.target.checked)}
+                            onChange={(e) => updateParam("optimizer_use_radam", e.target.checked)}
                             className="w-4 h-4"
                           />
                           <label htmlFor="optimizer-use-radam" className="text-xs text-gray-300 cursor-pointer">
@@ -2652,7 +2713,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                               <input
                                 type="checkbox"
                                 checked={optimizerStochasticRounding}
-                                onChange={(e) => setOptimizerStochasticRounding(e.target.checked)}
+                                onChange={(e) => updateParam("optimizer_stochastic_rounding", e.target.checked)}
                                 className="mr-2"
                               />
                               Stochastic Rounding (BF16)
@@ -2670,7 +2731,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                             <input
                               type="text"
                               value={optimizerScheduleFreeR}
-                              onChange={(e) => setOptimizerScheduleFreeR(e.target.value)}
+                              onChange={(e) => setLocalScheduleFreeRText(e.target.value)}
+                              onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateParam("optimizer_schedule_free_r", v); }}
                               className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
                             />
                             <p className="text-xs text-gray-500 mt-1">Default: 0.0 (no warmup)</p>
@@ -2683,7 +2745,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                           <input
                             type="text"
                             value={optimizerScheduleFreeWeightLrPower}
-                            onChange={(e) => setOptimizerScheduleFreeWeightLrPower(e.target.value)}
+                            onChange={(e) => setLocalScheduleFreeWeightLrPowerText(e.target.value)}
+                            onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateParam("optimizer_schedule_free_weight_lr_power", v); }}
                             className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
                           />
                           <p className="text-xs text-gray-500 mt-1">Default: 2.0</p>
@@ -2704,10 +2767,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       const config = OPTIMIZER_CONFIGS[optimizer];
                       if (!config) return;
                       const { beta1, beta2, epsilon, weight_decay } = config.defaults;
-                      if (beta1 !== undefined) setOptimizerBeta1(beta1);
-                      if (beta2 !== undefined) setOptimizerBeta2(beta2);
-                      if (epsilon !== undefined) setOptimizerEpsilon(epsilon);
-                      if (weight_decay !== undefined) setOptimizerWeightDecay(weight_decay);
+                      if (beta1 !== undefined) { setLocalBeta1Text(beta1); updateParam("optimizer_beta1", parseFloat(beta1)); }
+                      if (beta2 !== undefined) { setLocalBeta2Text(beta2); updateParam("optimizer_beta2", parseFloat(beta2)); }
+                      if (epsilon !== undefined) { setLocalEpsilonText(epsilon); updateParam("optimizer_epsilon", parseFloat(epsilon)); }
+                      if (weight_decay !== undefined) { setLocalWeightDecayText(weight_decay); updateParam("optimizer_weight_decay", parseFloat(weight_decay)); }
                     }}
                     className="text-xs text-blue-400 hover:text-blue-300"
                   >
@@ -2723,7 +2786,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="text"
                         value={optimizerBeta1}
-                        onChange={(e) => setOptimizerBeta1(e.target.value)}
+                        onChange={(e) => setLocalBeta1Text(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateParam("optimizer_beta1", v); }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -2736,7 +2800,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="text"
                         value={optimizerBeta2}
-                        onChange={(e) => setOptimizerBeta2(e.target.value)}
+                        onChange={(e) => setLocalBeta2Text(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateParam("optimizer_beta2", v); }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -2749,7 +2814,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <input
                         type="text"
                         value={optimizerEpsilon}
-                        onChange={(e) => setOptimizerEpsilon(e.target.value)}
+                        onChange={(e) => setLocalEpsilonText(e.target.value)}
+                        onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateParam("optimizer_epsilon", v); }}
                         className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
                       />
                     </div>
@@ -2761,7 +2827,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="text"
                       value={optimizerWeightDecay}
-                      onChange={(e) => setOptimizerWeightDecay(e.target.value)}
+                      onChange={(e) => setLocalWeightDecayText(e.target.value)}
+                      onBlur={(e) => { const v = parseFloat(e.target.value); if (!isNaN(v)) updateParam("optimizer_weight_decay", v); }}
                       className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
                     />
                   </div>

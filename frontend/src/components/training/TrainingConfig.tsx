@@ -208,10 +208,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     },
     []
   );
-  // Suppress unused warnings during the migration period
-  void params;
-  void updateParam;
-
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runName, setRunName] = useState("");
@@ -265,15 +261,17 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [optimizerResetStrategy, setOptimizerResetStrategy] = useState<"full_reset" | "magnitude_pruning" | "random_pruning">("full_reset");
   const [optimizerPruningRatio, setOptimizerPruningRatio] = useState(0.9);
 
-  // Training parameters
+  // Training parameters (Phase 3b: migrated to params)
   const [useEpochs, setUseEpochs] = useState(false);
-  const [totalSteps, setTotalSteps] = useState(1000);
-  const [epochs, setEpochs] = useState(10);
-  const [batchSize, setBatchSize] = useState(4);
-  const [learningRate, setLearningRate] = useState<string>("1e-5");
-  const [lrScheduler, setLrScheduler] = useState("constant");
-  const [lrWarmupSteps, setLrWarmupSteps] = useState(0);
-  const [optimizer, setOptimizer] = useState("adamw8bit");
+  // Local text state for learning rate (preserves in-progress scientific notation input)
+  const [localLrText, setLocalLrText] = useState<string>(String(DEFAULT_PARAMS.learning_rate ?? "1e-5"));
+  // Convenience read-only aliases into params (used by existing UI code)
+  const totalSteps = params.total_steps ?? 1000;
+  const epochs = params.epochs ?? 10;
+  const batchSize = params.batch_size ?? 4;
+  const learningRate = localLrText;
+  const lrScheduler = params.lr_scheduler ?? "constant";
+  const optimizer = params.optimizer ?? "adamw8bit";
 
   // Optimizer-specific options
   const [optimizerIsPaged, setOptimizerIsPaged] = useState(false);
@@ -482,13 +480,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       run_name: runName.trim() || undefined,
       training_method: trainingMethod,
       base_model_path: baseModelPath.trim(),
-      total_steps: useEpochs ? undefined : totalSteps,
-      epochs: useEpochs ? epochs : undefined,
-      batch_size: batchSize,
-      learning_rate: parseFloat(learningRate),
-      lr_scheduler: lrScheduler,
-      lr_warmup_steps: lrWarmupSteps,
-      optimizer: optimizer,
+      total_steps: useEpochs ? undefined : params.total_steps,
+      epochs: useEpochs ? params.epochs : undefined,
+      batch_size: params.batch_size,
+      learning_rate: parseFloat(localLrText),
+      lr_scheduler: params.lr_scheduler,
+      lr_warmup_steps: params.lr_warmup_steps,
+      optimizer: params.optimizer,
       optimizer_is_paged: optimizerIsPaged,
       optimizer_cautious: optimizerCautious,
       optimizer_beta1: optimizerBeta1 ? parseFloat(optimizerBeta1) : undefined,
@@ -601,8 +599,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, totalSteps, epochs, batchSize,
-    learningRate, lrScheduler, lrWarmupSteps, optimizer, optimizerIsPaged, optimizerCautious,
+    datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
+    optimizerIsPaged, optimizerCautious,
     optimizerBeta1, optimizerBeta2, optimizerEpsilon, optimizerWeightDecay, optimizerScheduleFree,
     optimizerScheduleFreeR, optimizerScheduleFreeWeightLrPower, optimizerUseRadam, optimizerStochasticRounding,
     loraRank, loraAlpha, loraDtype, reloraMergeEvery, reloraMergeUnit, restartWarmupSteps,
@@ -640,20 +638,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     // Steps/epochs
     if (params.total_steps !== undefined && params.total_steps !== null) {
-      setTotalSteps(params.total_steps);
+      setParams(prev => ({ ...prev, total_steps: params.total_steps }));
       setUseEpochs(false);
     }
     if (params.epochs !== undefined && params.epochs !== null) {
-      setEpochs(params.epochs);
+      setParams(prev => ({ ...prev, epochs: params.epochs }));
       setUseEpochs(true);
     }
 
     // Core training
-    if (params.batch_size !== undefined) setBatchSize(params.batch_size);
-    if (params.learning_rate !== undefined && params.learning_rate !== null) setLearningRate(params.learning_rate.toString());
-    if (params.lr_scheduler !== undefined) setLrScheduler(params.lr_scheduler);
-    if (params.lr_warmup_steps !== undefined) setLrWarmupSteps(params.lr_warmup_steps);
-    if (params.optimizer !== undefined) setOptimizer(params.optimizer);
+    if (params.batch_size !== undefined) setParams(prev => ({ ...prev, batch_size: params.batch_size }));
+    if (params.learning_rate !== undefined && params.learning_rate !== null) {
+      setParams(prev => ({ ...prev, learning_rate: params.learning_rate }));
+      setLocalLrText(params.learning_rate.toString());
+    }
+    if (params.lr_scheduler !== undefined) setParams(prev => ({ ...prev, lr_scheduler: params.lr_scheduler }));
+    if (params.lr_warmup_steps !== undefined) setParams(prev => ({ ...prev, lr_warmup_steps: params.lr_warmup_steps }));
+    if (params.optimizer !== undefined) setParams(prev => ({ ...prev, optimizer: params.optimizer }));
 
     // Optimizer hyperparameters
     if (params.optimizer_beta1 !== undefined && params.optimizer_beta1 !== null) setOptimizerBeta1(params.optimizer_beta1.toString());
@@ -905,7 +906,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // Reset options that are not supported by the new optimizer
     if (!config.supportsPaged) setOptimizerIsPaged(false);
     if (!config.supportsCautious) setOptimizerCautious(false);
-  }, [optimizer]);
+  }, [params.optimizer]);
 
   const loadDatasets = async () => {
     const startTime = performance.now();
@@ -1205,12 +1206,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const getCurrentConfig = () => {
     return {
       useEpochs,
-      totalSteps,
-      epochs,
-      batchSize,
-      learningRate,
-      lrScheduler,
-      optimizer,
+      totalSteps: params.total_steps,
+      epochs: params.epochs,
+      batchSize: params.batch_size,
+      learningRate: localLrText,
+      lrScheduler: params.lr_scheduler,
+      optimizer: params.optimizer,
       optimizerIsPaged,
       optimizerCautious,
       optimizerBeta1,
@@ -1315,12 +1316,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
     // Apply config (excluding dataset and model path)
     if (config.useEpochs !== undefined) setUseEpochs(config.useEpochs);
-    if (config.totalSteps !== undefined) setTotalSteps(config.totalSteps);
-    if (config.epochs !== undefined) setEpochs(config.epochs);
-    if (config.batchSize !== undefined) setBatchSize(config.batchSize);
-    if (config.learningRate !== undefined) setLearningRate(config.learningRate);
-    if (config.lrScheduler !== undefined) setLrScheduler(config.lrScheduler);
-    if (config.optimizer !== undefined) setOptimizer(config.optimizer);
+    if (config.totalSteps !== undefined) updateParam("total_steps", config.totalSteps);
+    if (config.epochs !== undefined) updateParam("epochs", config.epochs);
+    if (config.batchSize !== undefined) updateParam("batch_size", config.batchSize);
+    if (config.learningRate !== undefined) {
+      const v = parseFloat(config.learningRate);
+      if (!isNaN(v)) updateParam("learning_rate", v);
+      setLocalLrText(config.learningRate);
+    }
+    if (config.lrScheduler !== undefined) updateParam("lr_scheduler", config.lrScheduler);
+    if (config.optimizer !== undefined) updateParam("optimizer", config.optimizer);
     if (config.optimizerIsPaged !== undefined) setOptimizerIsPaged(config.optimizerIsPaged);
     if (config.optimizerCautious !== undefined) setOptimizerCautious(config.optimizerCautious);
     if (config.optimizerBeta1 !== undefined) setOptimizerBeta1(config.optimizerBeta1);
@@ -2058,7 +2063,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={totalSteps}
-                  onChange={(e) => setTotalSteps(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setTotalSteps(1000); }}
+                  onChange={(e) => updateParam("total_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("total_steps", 1000); }}
                   min="1"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -2069,7 +2074,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={epochs}
-                  onChange={(e) => setEpochs(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setEpochs(10); }}
+                  onChange={(e) => updateParam("epochs", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("epochs", 10); }}
                   min="1"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -2081,7 +2086,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={batchSize}
-                onChange={(e) => setBatchSize(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setBatchSize(4); }}
+                onChange={(e) => updateParam("batch_size", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("batch_size", 4); }}
                 min="1"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
@@ -2524,8 +2529,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
               <input
                 type="text"
-                value={learningRate}
-                onChange={(e) => setLearningRate(e.target.value)}
+                value={localLrText}
+                onChange={(e) => setLocalLrText(e.target.value)}
+                onBlur={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v)) updateParam("learning_rate", v);
+                }}
                 placeholder="e.g., 1e-4"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
@@ -2535,7 +2544,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">LR Scheduler</label>
               <select
                 value={lrScheduler}
-                onChange={(e) => setLrScheduler(e.target.value)}
+                onChange={(e) => updateParam("lr_scheduler", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="constant">Constant</option>
@@ -2550,7 +2559,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <label className="block text-xs text-gray-400 mb-1">Optimizer</label>
                 <select
                   value={optimizer}
-                  onChange={(e) => setOptimizer(e.target.value)}
+                  onChange={(e) => updateParam("optimizer", e.target.value)}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 >
                   <option value="adamw">AdamW</option>

@@ -249,14 +249,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [baseModelPath, setBaseModelPath] = useState("");
 
   // ControlNet parameters
-  const [controlnetType, setControlnetType] = useState<"standard" | "lllite">("standard");
-  const [controlnetPretrainedPath, setControlnetPretrainedPath] = useState("");
-  const [controlnetInitFromUnet, setControlnetInitFromUnet] = useState(true);
+  // ControlNet parameters (Phase 3l: migrated to params)
+  const controlnetType = (params.controlnet_type ?? "standard") as "standard" | "lllite";
+  const controlnetPretrainedPath = params.controlnet_pretrained_path ?? "";
+  const controlnetInitFromUnet = params.controlnet_init_from_unet ?? true;
   const [availableControlNets, setAvailableControlNets] = useState<{path: string; name: string}[]>([]);
-  const [llliteConditioningChannels, setLlliteConditioningChannels] = useState(32);
-  const [llliteRank, setLlliteRank] = useState(64);
-  const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
-  const [conditionCacheMode, setConditionCacheMode] = useState<"on_the_fly" | "pre_generate">("on_the_fly");
+  const llliteConditioningChannels = params.lllite_conditioning_channels ?? 32;
+  const llliteRank = params.lllite_rank ?? 64;
+  const conditionPreprocessors = params.condition_preprocessors ?? [];
+  const conditionCacheMode = (params.condition_cache_mode ?? "on_the_fly") as "on_the_fly" | "pre_generate";
 
   // ReLoRA parameters (Phase 3d: migrated to params)
   const reloraMergeEvery = params.relora_merge_every ?? 500;
@@ -612,13 +613,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       noise_process: params.noise_process,
       prediction_target: params.prediction_target,
       strict_validation: params.strict_validation,
-      controlnet_type: trainingMethod === "controlnet" ? controlnetType : undefined,
-      controlnet_pretrained_path: trainingMethod === "controlnet" && controlnetPretrainedPath ? controlnetPretrainedPath : undefined,
-      controlnet_init_from_unet: trainingMethod === "controlnet" ? controlnetInitFromUnet : undefined,
-      lllite_conditioning_channels: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteConditioningChannels : undefined,
-      lllite_rank: trainingMethod === "controlnet" && controlnetType === "lllite" ? llliteRank : undefined,
-      condition_preprocessors: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionPreprocessors : undefined,
-      condition_cache_mode: trainingMethod === "controlnet" && conditionPreprocessors.length > 0 ? conditionCacheMode : undefined,
+      controlnet_type: trainingMethod === "controlnet" ? params.controlnet_type : undefined,
+      controlnet_pretrained_path: trainingMethod === "controlnet" && params.controlnet_pretrained_path ? params.controlnet_pretrained_path : undefined,
+      controlnet_init_from_unet: trainingMethod === "controlnet" ? params.controlnet_init_from_unet : undefined,
+      lllite_conditioning_channels: trainingMethod === "controlnet" && params.controlnet_type === "lllite" ? params.lllite_conditioning_channels : undefined,
+      lllite_rank: trainingMethod === "controlnet" && params.controlnet_type === "lllite" ? params.lllite_rank : undefined,
+      condition_preprocessors: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_preprocessors : undefined,
+      condition_cache_mode: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_cache_mode : undefined,
       priority_training: priorityEnabled && priorityText.trim() ? {
         entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
         multiplier: priorityMultiplier,
@@ -632,9 +633,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText, localTextEncoder2LrText, localImageEncoderLrText,
     localVisionEncoderLrText,
     timestepDistribution, timestepMin, timestepMax, timestepMean,
-    timestepStd, timestepAlpha, timestepBeta, controlnetType,
-    controlnetPretrainedPath, controlnetInitFromUnet, llliteConditioningChannels, llliteRank,
-    conditionPreprocessors, conditionCacheMode, priorityEnabled, priorityText, priorityMultiplier,
+    timestepStd, timestepAlpha, timestepBeta,
+    priorityEnabled, priorityText, priorityMultiplier,
   ]);
 
   /**
@@ -782,13 +782,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.strict_validation !== undefined) setParams(prev => ({ ...prev, strict_validation: params.strict_validation }));
 
     // ControlNet
-    if (params.controlnet_type !== undefined) setControlnetType(params.controlnet_type as "standard" | "lllite");
-    if (params.controlnet_pretrained_path !== undefined && params.controlnet_pretrained_path !== null) setControlnetPretrainedPath(params.controlnet_pretrained_path);
-    if (params.controlnet_init_from_unet !== undefined) setControlnetInitFromUnet(params.controlnet_init_from_unet);
-    if (params.lllite_conditioning_channels !== undefined) setLlliteConditioningChannels(params.lllite_conditioning_channels);
-    if (params.lllite_rank !== undefined) setLlliteRank(params.lllite_rank);
-    if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setConditionPreprocessors(params.condition_preprocessors);
-    if (params.condition_cache_mode !== undefined) setConditionCacheMode(params.condition_cache_mode as "on_the_fly" | "pre_generate");
+    if (params.controlnet_type !== undefined) setParams(prev => ({ ...prev, controlnet_type: params.controlnet_type as "standard" | "lllite" }));
+    if (params.controlnet_pretrained_path !== undefined && params.controlnet_pretrained_path !== null) setParams(prev => ({ ...prev, controlnet_pretrained_path: params.controlnet_pretrained_path }));
+    if (params.controlnet_init_from_unet !== undefined) setParams(prev => ({ ...prev, controlnet_init_from_unet: params.controlnet_init_from_unet }));
+    if (params.lllite_conditioning_channels !== undefined) setParams(prev => ({ ...prev, lllite_conditioning_channels: params.lllite_conditioning_channels }));
+    if (params.lllite_rank !== undefined) setParams(prev => ({ ...prev, lllite_rank: params.lllite_rank }));
+    if (params.condition_preprocessors !== undefined && params.condition_preprocessors !== null) setParams(prev => ({ ...prev, condition_preprocessors: params.condition_preprocessors }));
+    if (params.condition_cache_mode !== undefined) setParams(prev => ({ ...prev, condition_cache_mode: params.condition_cache_mode as "on_the_fly" | "pre_generate" }));
 
     // Sample
     if (params.sample_every !== undefined) setParams(prev => ({ ...prev, sample_every: params.sample_every }));
@@ -1502,13 +1502,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.timestepBeta !== undefined) setTimestepBeta(config.timestepBeta);
 
     // ControlNet parameters
-    if (config.controlnetType !== undefined) setControlnetType(config.controlnetType);
-    if (config.controlnetPretrainedPath !== undefined) setControlnetPretrainedPath(config.controlnetPretrainedPath);
-    if (config.controlnetInitFromUnet !== undefined) setControlnetInitFromUnet(config.controlnetInitFromUnet);
-    if (config.llliteConditioningChannels !== undefined) setLlliteConditioningChannels(config.llliteConditioningChannels);
-    if (config.llliteRank !== undefined) setLlliteRank(config.llliteRank);
-    if (config.conditionPreprocessors !== undefined) setConditionPreprocessors(config.conditionPreprocessors);
-    if (config.conditionCacheMode !== undefined) setConditionCacheMode(config.conditionCacheMode);
+    if (config.controlnetType !== undefined) updateParam("controlnet_type", config.controlnetType);
+    if (config.controlnetPretrainedPath !== undefined) updateParam("controlnet_pretrained_path", config.controlnetPretrainedPath);
+    if (config.controlnetInitFromUnet !== undefined) updateParam("controlnet_init_from_unet", config.controlnetInitFromUnet);
+    if (config.llliteConditioningChannels !== undefined) updateParam("lllite_conditioning_channels", config.llliteConditioningChannels);
+    if (config.llliteRank !== undefined) updateParam("lllite_rank", config.llliteRank);
+    if (config.conditionPreprocessors !== undefined) updateParam("condition_preprocessors", config.conditionPreprocessors);
+    if (config.conditionCacheMode !== undefined) updateParam("condition_cache_mode", config.conditionCacheMode);
     // Legacy: sampleConditionImagePath is now per-prompt (ignored here)
 
     // ReLoRA parameters
@@ -2028,7 +2028,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">ControlNet Type</label>
               <select
                 value={controlnetType}
-                onChange={(e) => setControlnetType(e.target.value as "standard" | "lllite")}
+                onChange={(e) => updateParam("controlnet_type", e.target.value as "standard" | "lllite")}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="standard">Standard (diffusers ControlNetModel)</option>
@@ -2042,7 +2042,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="checkbox"
                     checked={controlnetInitFromUnet}
-                    onChange={(e) => setControlnetInitFromUnet(e.target.checked)}
+                    onChange={(e) => updateParam("controlnet_init_from_unet", e.target.checked)}
                     className="w-4 h-4"
                   />
                   <span className="text-sm">Initialize from UNet weights</span>
@@ -2055,7 +2055,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Pretrained ControlNet (optional)</label>
               <select
                 value={controlnetPretrainedPath}
-                onChange={(e) => setControlnetPretrainedPath(e.target.value)}
+                onChange={(e) => updateParam("controlnet_pretrained_path", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="">None (initialize from scratch)</option>
@@ -2073,7 +2073,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="number"
                     value={llliteConditioningChannels}
-                    onChange={(e) => setLlliteConditioningChannels(parseInt(e.target.value) || 32)}
+                    onChange={(e) => updateParam("lllite_conditioning_channels", parseInt(e.target.value) || 32)}
                     min="8"
                     max="128"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -2084,7 +2084,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <input
                     type="number"
                     value={llliteRank}
-                    onChange={(e) => setLlliteRank(parseInt(e.target.value) || 64)}
+                    onChange={(e) => updateParam("lllite_rank", parseInt(e.target.value) || 64)}
                     min="4"
                     max="256"
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -2103,9 +2103,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       checked={conditionPreprocessors.includes(pp)}
                       onChange={(e) => {
                         if (e.target.checked) {
-                          setConditionPreprocessors([...conditionPreprocessors, pp]);
+                          updateParam("condition_preprocessors", [...conditionPreprocessors, pp]);
                         } else {
-                          setConditionPreprocessors(conditionPreprocessors.filter(p => p !== pp));
+                          updateParam("condition_preprocessors", conditionPreprocessors.filter(p => p !== pp));
                         }
                       }}
                       className="w-3.5 h-3.5"
@@ -2122,7 +2122,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <label className="block text-xs text-gray-400 mb-1">Cache Mode</label>
                 <select
                   value={conditionCacheMode}
-                  onChange={(e) => setConditionCacheMode(e.target.value as "on_the_fly" | "pre_generate")}
+                  onChange={(e) => updateParam("condition_cache_mode", e.target.value as "on_the_fly" | "pre_generate")}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 >
                   <option value="on_the_fly">On-the-fly (generate during training)</option>

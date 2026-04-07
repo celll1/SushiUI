@@ -1413,12 +1413,14 @@ export interface TrainingRunCreateRequest {
   batch_size?: number;
   learning_rate?: number;
   lr_scheduler?: string;
+  lr_warmup_steps?: number;
   optimizer?: string;
   lora_rank?: number;
   lora_alpha?: number;
   network_type?: string;
   save_every?: number;
   save_every_unit?: string;
+  max_step_saves_to_keep?: number | null;
   sample_every?: number;
   sample_prompts?: SamplePrompt[];
   resume_from_checkpoint?: string | null;

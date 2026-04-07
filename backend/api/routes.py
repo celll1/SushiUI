@@ -4468,6 +4468,7 @@ class TrainingRunCreateRequest(BaseModel):
     batch_size: int = 1
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
+    lr_warmup_steps: int = 0  # Linear warmup steps before lr_scheduler kicks in
     optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
     optimizer_is_paged: bool = False
     optimizer_cautious: bool = False
@@ -4490,6 +4491,7 @@ class TrainingRunCreateRequest(BaseModel):
     # Advanced
     save_every: int = 100
     save_every_unit: str = "steps"  # "steps" or "epochs"
+    max_step_saves_to_keep: Optional[int] = None  # None = use training method default (LoRA:10, FullFT:3, ControlNet:5)
     sample_every: int = 100
     sample_prompts: List[Dict[str, str]] = []  # List of {positive: str, negative: str, condition_image_path?: str}
     resume_from_checkpoint: Optional[str] = None  # Checkpoint filename to resume from (e.g., "lora_step_100.safetensors")
@@ -4722,6 +4724,7 @@ async def create_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4739,6 +4742,7 @@ async def create_training_run(
                 lora_dtype=request.lora_dtype or "fp32",
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
@@ -4811,7 +4815,7 @@ async def create_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
-                lr_warmup_steps=0,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4829,7 +4833,7 @@ async def create_training_run(
                 lora_dtype=request.lora_dtype,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
-                max_step_saves_to_keep=request.max_step_saves_to_keep,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts or None,
                 debug_latents=request.debug_latents,
@@ -4913,6 +4917,7 @@ async def create_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -4927,6 +4932,7 @@ async def create_training_run(
                 optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
@@ -4991,6 +4997,7 @@ async def create_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -5005,6 +5012,7 @@ async def create_training_run(
                 optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
@@ -5239,6 +5247,7 @@ async def get_training_run_params(
         "lora_dtype": network_config.get("lora_dtype", "fp32") if job == "lora" else None,
         "save_every": save_config.get("save_every", training_params.get("save_every", 100)),
         "save_every_unit": save_config.get("save_every_unit", training_params.get("save_every_unit", "steps")),
+        "max_step_saves_to_keep": save_config.get("max_step_saves_to_keep"),  # None = use training method default
         "resume_from_checkpoint": training_params.get("resume_from_checkpoint"),
         "sample_every": sample_config.get("sample_every", training_params.get("sample_every", 100)),
         "sample_prompts": sample_config.get("prompts", []),
@@ -5401,6 +5410,7 @@ async def update_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -5418,6 +5428,7 @@ async def update_training_run(
                 lora_dtype=request.lora_dtype or "fp32",
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
@@ -5490,6 +5501,7 @@ async def update_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -5504,6 +5516,7 @@ async def update_training_run(
                 optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,
@@ -5568,6 +5581,7 @@ async def update_training_run(
                 batch_size=request.batch_size,
                 learning_rate=request.learning_rate,
                 lr_scheduler=request.lr_scheduler,
+                lr_warmup_steps=request.lr_warmup_steps,
                 optimizer=request.optimizer,
                 optimizer_is_paged=request.optimizer_is_paged,
                 optimizer_cautious=request.optimizer_cautious,
@@ -5582,6 +5596,7 @@ async def update_training_run(
                 optimizer_stochastic_rounding=request.optimizer_stochastic_rounding,
                 save_every=request.save_every,
                 save_every_unit=request.save_every_unit,
+                **({"max_step_saves_to_keep": request.max_step_saves_to_keep} if request.max_step_saves_to_keep is not None else {}),
                 sample_every=request.sample_every,
                 sample_prompts=resolved_sample_prompts,
                 debug_latents=request.debug_latents,

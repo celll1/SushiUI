@@ -5352,6 +5352,7 @@ async def update_training_run(
         dataset_configs_for_yaml = []
         if request.dataset_configs:
             for config in request.dataset_configs:
+                print(f"[Training][DEBUG] dataset_config received: id={config.dataset_id}, ve_reconstruction_mode={config.ve_reconstruction_mode!r}")
                 # Store dict format for total_steps calculation
                 dataset_configs.append({
                     "dataset_id": config.dataset_id,

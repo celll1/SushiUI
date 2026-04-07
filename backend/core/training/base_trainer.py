@@ -6899,6 +6899,13 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Assigning images to buckets...")
             for dataset in datasets:
                 for item in dataset.items:
+                    # For ve_reconstruction_mode items: inject reference_images BEFORE bucketing
+                    # so bucket_manager records has_reference=True and includes reference_images
+                    # in image_info. This must happen here, not in the epoch loop, because
+                    # bucket_manager creates new image_info dicts that would lose the flag.
+                    if item.get("_ve_reconstruction_mode") and not item.get("reference_images"):
+                        item["reference_images"] = [item["image_path"]]
+
                     width = item.get("width", 1024)
                     height = item.get("height", 1024)
                     # Check if item has reference images
@@ -6914,6 +6921,10 @@ class BaseTrainer(ABC):
                         has_reference=has_reference,
                         reference_images=reference_images if reference_images else None,
                     )
+                    # Propagate _ve_reconstruction_mode into image_info so training step
+                    # can zero text embeddings for these items.
+                    if item.get("_ve_reconstruction_mode"):
+                        image_info["_ve_reconstruction_mode"] = True
                     # Update item with bucket dimensions
                     item["width"] = image_info["bucket_width"]
                     item["height"] = image_info["bucket_height"]

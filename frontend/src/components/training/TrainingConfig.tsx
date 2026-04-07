@@ -416,19 +416,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [timestepBeta, setTimestepBeta] = useState<number>(2.0);   // For beta
 
   // Regularization settings (prevent overbaking)
-  const [regularizationType, setRegularizationType] = useState<string>("none");  // Deprecated, kept for API compatibility
-  const [snrRegularizationWeight, setSnrRegularizationWeight] = useState<number>(0.0);  // 0.0 = disabled
-  const [snrTimestepAdaptive, setSnrTimestepAdaptive] = useState<boolean>(true);
-  const [snrPenaltyMode, setSnrPenaltyMode] = useState<string>("relu");
-  const [energyRegularizationWeight, setEnergyRegularizationWeight] = useState<number>(0.0);  // 0.0 = disabled
-  const [energyTimestepAdaptive, setEnergyTimestepAdaptive] = useState<boolean>(true);
-  const [energyPenaltyMode, setEnergyPenaltyMode] = useState<string>("under");  // Changed from "abs" to "under" (recommended)
-  const [energyNormalizeByPixels, setEnergyNormalizeByPixels] = useState<boolean>(true);
+  // Regularization (Phase 3j: migrated to params)
+  const regularizationType = params.regularization_type ?? "none";
+  const snrRegularizationWeight = params.snr_regularization_weight ?? 0.0;
+  const snrTimestepAdaptive = params.snr_timestep_adaptive ?? true;
+  const snrPenaltyMode = params.snr_penalty_mode ?? "relu";
+  const energyRegularizationWeight = params.energy_regularization_weight ?? 0.0;
+  const energyTimestepAdaptive = params.energy_timestep_adaptive ?? true;
+  const energyPenaltyMode = params.energy_penalty_mode ?? "under";
+  const energyNormalizeByPixels = params.energy_normalize_by_pixels ?? true;
 
   // Unified Training Framework settings
-  const [noiseProcess, setNoiseProcess] = useState<string>("auto");  // "auto", "ddpm", "flow"
-  const [predictionTarget, setPredictionTarget] = useState<string>("auto");  // "auto", "epsilon", "velocity", "sample"
-  const [strictValidation, setStrictValidation] = useState<boolean>(false);  // Abort on mismatch
+  // Unified Training Framework (Phase 3j: migrated to params)
+  const noiseProcess = params.noise_process ?? "auto";
+  const predictionTarget = params.prediction_target ?? "auto";
+  const strictValidation = params.strict_validation ?? false;
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -599,16 +601,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         } : {}),
       },
       regularization_type: regularizationType !== "none" ? regularizationType : null,
-      snr_regularization_weight: snrRegularizationWeight,
-      snr_timestep_adaptive: snrTimestepAdaptive,
-      snr_penalty_mode: snrPenaltyMode,
-      energy_regularization_weight: energyRegularizationWeight,
-      energy_timestep_adaptive: energyTimestepAdaptive,
-      energy_penalty_mode: energyPenaltyMode,
-      energy_normalize_by_pixels: energyNormalizeByPixels,
-      noise_process: noiseProcess,
-      prediction_target: predictionTarget,
-      strict_validation: strictValidation,
+      snr_regularization_weight: params.snr_regularization_weight,
+      snr_timestep_adaptive: params.snr_timestep_adaptive,
+      snr_penalty_mode: params.snr_penalty_mode,
+      energy_regularization_weight: params.energy_regularization_weight,
+      energy_timestep_adaptive: params.energy_timestep_adaptive,
+      energy_penalty_mode: params.energy_penalty_mode,
+      energy_normalize_by_pixels: params.energy_normalize_by_pixels,
+      noise_process: params.noise_process,
+      prediction_target: params.prediction_target,
+      strict_validation: params.strict_validation,
       controlnet_type: trainingMethod === "controlnet" ? controlnetType : undefined,
       controlnet_pretrained_path: trainingMethod === "controlnet" && controlnetPretrainedPath ? controlnetPretrainedPath : undefined,
       controlnet_init_from_unet: trainingMethod === "controlnet" ? controlnetInitFromUnet : undefined,
@@ -630,9 +632,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     useReferenceImages, visionEncoderPath, trainVisionEncoder,
     visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval,
     timestepDistribution, timestepMin, timestepMax, timestepMean,
-    timestepStd, timestepAlpha, timestepBeta, regularizationType, snrRegularizationWeight,
-    snrTimestepAdaptive, snrPenaltyMode, energyRegularizationWeight, energyTimestepAdaptive, energyPenaltyMode,
-    energyNormalizeByPixels, noiseProcess, predictionTarget, strictValidation, controlnetType,
+    timestepStd, timestepAlpha, timestepBeta, controlnetType,
     controlnetPretrainedPath, controlnetInitFromUnet, llliteConditioningChannels, llliteRank,
     conditionPreprocessors, conditionCacheMode, priorityEnabled, priorityText, priorityMultiplier,
   ]);
@@ -767,19 +767,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
 
     // Regularization
-    if (params.regularization_type !== undefined) setRegularizationType(params.regularization_type || "none");
-    if (params.snr_regularization_weight !== undefined) setSnrRegularizationWeight(params.snr_regularization_weight);
-    if (params.snr_timestep_adaptive !== undefined) setSnrTimestepAdaptive(params.snr_timestep_adaptive);
-    if (params.snr_penalty_mode !== undefined) setSnrPenaltyMode(params.snr_penalty_mode);
-    if (params.energy_regularization_weight !== undefined) setEnergyRegularizationWeight(params.energy_regularization_weight);
-    if (params.energy_timestep_adaptive !== undefined) setEnergyTimestepAdaptive(params.energy_timestep_adaptive);
-    if (params.energy_penalty_mode !== undefined) setEnergyPenaltyMode(params.energy_penalty_mode);
-    if (params.energy_normalize_by_pixels !== undefined) setEnergyNormalizeByPixels(params.energy_normalize_by_pixels);
+    if (params.regularization_type !== undefined) setParams(prev => ({ ...prev, regularization_type: params.regularization_type || "none" }));
+    if (params.snr_regularization_weight !== undefined) setParams(prev => ({ ...prev, snr_regularization_weight: params.snr_regularization_weight }));
+    if (params.snr_timestep_adaptive !== undefined) setParams(prev => ({ ...prev, snr_timestep_adaptive: params.snr_timestep_adaptive }));
+    if (params.snr_penalty_mode !== undefined) setParams(prev => ({ ...prev, snr_penalty_mode: params.snr_penalty_mode }));
+    if (params.energy_regularization_weight !== undefined) setParams(prev => ({ ...prev, energy_regularization_weight: params.energy_regularization_weight }));
+    if (params.energy_timestep_adaptive !== undefined) setParams(prev => ({ ...prev, energy_timestep_adaptive: params.energy_timestep_adaptive }));
+    if (params.energy_penalty_mode !== undefined) setParams(prev => ({ ...prev, energy_penalty_mode: params.energy_penalty_mode }));
+    if (params.energy_normalize_by_pixels !== undefined) setParams(prev => ({ ...prev, energy_normalize_by_pixels: params.energy_normalize_by_pixels }));
 
     // Unified Training Framework
-    if (params.noise_process !== undefined) setNoiseProcess(params.noise_process);
-    if (params.prediction_target !== undefined) setPredictionTarget(params.prediction_target);
-    if (params.strict_validation !== undefined) setStrictValidation(params.strict_validation);
+    if (params.noise_process !== undefined) setParams(prev => ({ ...prev, noise_process: params.noise_process }));
+    if (params.prediction_target !== undefined) setParams(prev => ({ ...prev, prediction_target: params.prediction_target }));
+    if (params.strict_validation !== undefined) setParams(prev => ({ ...prev, strict_validation: params.strict_validation }));
 
     // ControlNet
     if (params.controlnet_type !== undefined) setControlnetType(params.controlnet_type as "standard" | "lllite");
@@ -2417,7 +2417,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="enable-snr-reg"
                       checked={snrRegularizationWeight > 0}
-                      onChange={(e) => setSnrRegularizationWeight(e.target.checked ? 0.1 : 0.0)}
+                      onChange={(e) => updateParam("snr_regularization_weight", e.target.checked ? 0.1 : 0.0)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="enable-snr-reg" className="text-xs text-gray-400 cursor-pointer">
@@ -2438,7 +2438,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={snrRegularizationWeight}
-                      onChange={(e) => setSnrRegularizationWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setSnrRegularizationWeight(0.0); }}
+                      onChange={(e) => updateParam("snr_regularization_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("snr_regularization_weight", 0.0); }}
                       min="0.0"
                       max="1.0"
                       step="0.01"
@@ -2452,7 +2452,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="snr-timestep-adaptive"
                       checked={snrTimestepAdaptive}
-                      onChange={(e) => setSnrTimestepAdaptive(e.target.checked)}
+                      onChange={(e) => updateParam("snr_timestep_adaptive", e.target.checked)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="snr-timestep-adaptive" className="text-xs text-gray-300 cursor-pointer">
@@ -2466,7 +2466,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </label>
                     <select
                       value={snrPenaltyMode}
-                      onChange={(e) => setSnrPenaltyMode(e.target.value)}
+                      onChange={(e) => updateParam("snr_penalty_mode", e.target.value)}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
                       <option value="relu">ReLU (one-sided, penalize only over-denoising)</option>
@@ -2488,7 +2488,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="enable-energy-reg"
                       checked={energyRegularizationWeight > 0}
-                      onChange={(e) => setEnergyRegularizationWeight(e.target.checked ? 0.1 : 0.0)}
+                      onChange={(e) => updateParam("energy_regularization_weight", e.target.checked ? 0.1 : 0.0)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="enable-energy-reg" className="text-xs text-gray-400 cursor-pointer">
@@ -2509,7 +2509,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <input
                       type="number"
                       value={energyRegularizationWeight}
-                      onChange={(e) => setEnergyRegularizationWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setEnergyRegularizationWeight(0.0); }}
+                      onChange={(e) => updateParam("energy_regularization_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("energy_regularization_weight", 0.0); }}
                       min="0.0"
                       max="1.0"
                       step="0.01"
@@ -2523,7 +2523,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="energy-timestep-adaptive"
                       checked={energyTimestepAdaptive}
-                      onChange={(e) => setEnergyTimestepAdaptive(e.target.checked)}
+                      onChange={(e) => updateParam("energy_timestep_adaptive", e.target.checked)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="energy-timestep-adaptive" className="text-xs text-gray-300 cursor-pointer">
@@ -2537,7 +2537,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </label>
                     <select
                       value={energyPenaltyMode}
-                      onChange={(e) => setEnergyPenaltyMode(e.target.value)}
+                      onChange={(e) => updateParam("energy_penalty_mode", e.target.value)}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
                       <option value="under">Under (one-sided, penalize only energy loss - recommended)</option>
@@ -2550,7 +2550,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="energy-normalize-by-pixels"
                       checked={energyNormalizeByPixels}
-                      onChange={(e) => setEnergyNormalizeByPixels(e.target.checked)}
+                      onChange={(e) => updateParam("energy_normalize_by_pixels", e.target.checked)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="energy-normalize-by-pixels" className="text-xs text-gray-300 cursor-pointer">
@@ -2579,7 +2579,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </label>
                     <select
                       value={noiseProcess}
-                      onChange={(e) => setNoiseProcess(e.target.value)}
+                      onChange={(e) => updateParam("noise_process", e.target.value)}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
                       <option value="auto">Auto (detect from model)</option>
@@ -2597,7 +2597,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </label>
                     <select
                       value={predictionTarget}
-                      onChange={(e) => setPredictionTarget(e.target.value)}
+                      onChange={(e) => updateParam("prediction_target", e.target.value)}
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     >
                       <option value="auto">Auto (detect from model)</option>
@@ -2615,7 +2615,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       type="checkbox"
                       id="strict-validation"
                       checked={strictValidation}
-                      onChange={(e) => setStrictValidation(e.target.checked)}
+                      onChange={(e) => updateParam("strict_validation", e.target.checked)}
                       className="w-4 h-4"
                     />
                     <label htmlFor="strict-validation" className="text-xs text-gray-300 cursor-pointer">

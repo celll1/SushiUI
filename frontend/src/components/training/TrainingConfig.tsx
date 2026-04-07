@@ -258,12 +258,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [conditionPreprocessors, setConditionPreprocessors] = useState<string[]>([]);
   const [conditionCacheMode, setConditionCacheMode] = useState<"on_the_fly" | "pre_generate">("on_the_fly");
 
-  // ReLoRA parameters
-  const [reloraMergeEvery, setReloraMergeEvery] = useState(500);
-  const [reloraMergeUnit, setReloraMergeUnit] = useState<"steps" | "epochs">("steps");
-  const [restartWarmupSteps, setRestartWarmupSteps] = useState(100);
-  const [optimizerResetStrategy, setOptimizerResetStrategy] = useState<"full_reset" | "magnitude_pruning" | "random_pruning">("full_reset");
-  const [optimizerPruningRatio, setOptimizerPruningRatio] = useState(0.9);
+  // ReLoRA parameters (Phase 3d: migrated to params)
+  const reloraMergeEvery = params.relora_merge_every ?? 500;
+  const reloraMergeUnit = params.relora_merge_unit ?? "steps";
+  const restartWarmupSteps = params.restart_warmup_steps ?? 100;
+  const optimizerResetStrategy = params.optimizer_reset_strategy ?? "full_reset";
+  const optimizerPruningRatio = params.optimizer_pruning_ratio ?? 0.9;
 
   // Training parameters (Phase 3b: migrated to params)
   const [useEpochs, setUseEpochs] = useState(false);
@@ -298,10 +298,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const optimizerUseRadam = params.optimizer_use_radam ?? false;
   const optimizerStochasticRounding = params.optimizer_stochastic_rounding ?? false;
 
-  // LoRA parameters
-  const [loraRank, setLoraRank] = useState(16);
-  const [loraAlpha, setLoraAlpha] = useState(16);
-  const [loraDtype, setLoraDtype] = useState<"fp32" | "fp16" | "bf16">("fp32");
+  // LoRA parameters (Phase 3d: migrated to params)
+  const loraRank = params.lora_rank ?? 16;
+  const loraAlpha = params.lora_alpha ?? 16;
+  const loraDtype = params.lora_dtype ?? "fp32";
 
   // Advanced
   const [saveEvery, setSaveEvery] = useState(100);
@@ -510,15 +510,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizer_schedule_free_weight_lr_power: localScheduleFreeWeightLrPowerText ? parseFloat(localScheduleFreeWeightLrPowerText) : 2.0,
       optimizer_use_radam: params.optimizer_use_radam,
       optimizer_stochastic_rounding: params.optimizer_stochastic_rounding,
-      lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? loraRank : undefined,
-      lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? loraAlpha : undefined,
-      lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? loraDtype : undefined,
+      lora_rank: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_rank : undefined,
+      lora_alpha: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_alpha : undefined,
+      lora_dtype: (trainingMethod === "lora" || trainingMethod === "relora") ? params.lora_dtype : undefined,
       ...(trainingMethod === "relora" ? {
-        relora_merge_every: reloraMergeEvery,
-        relora_merge_unit: reloraMergeUnit,
-        restart_warmup_steps: restartWarmupSteps,
-        optimizer_reset_strategy: optimizerResetStrategy,
-        optimizer_pruning_ratio: optimizerPruningRatio,
+        relora_merge_every: params.relora_merge_every,
+        relora_merge_unit: params.relora_merge_unit,
+        restart_warmup_steps: params.restart_warmup_steps,
+        optimizer_reset_strategy: params.optimizer_reset_strategy,
+        optimizer_pruning_ratio: params.optimizer_pruning_ratio,
       } : {}),
       save_every: saveEvery,
       save_every_unit: saveEveryUnit,
@@ -614,8 +614,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     datasetConfigs, runName, trainingMethod, baseModelPath, useEpochs, params, localLrText,
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
-    loraRank, loraAlpha, loraDtype, reloraMergeEvery, reloraMergeUnit, restartWarmupSteps,
-    optimizerResetStrategy, optimizerPruningRatio, saveEvery, saveEveryUnit, sampleEvery, samplePrompts,
+    saveEvery, saveEveryUnit, sampleEvery, samplePrompts,
     sampleWidth, sampleHeight, sampleSteps, sampleCfgScale, sampleSampler, sampleScheduleType, sampleSeed,
     resumeFromCheckpoint, debugLatents, debugLatentsEvery, enableBucketing, baseResolutions, bucketStrategy,
     multiResolutionMode, cacheLatentsToDisk, forceRecache, trainUnet, trainTextEncoder, trainImageEncoder,
@@ -643,9 +642,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (params.dataset_configs) setDatasetConfigs(params.dataset_configs);
 
     // LoRA
-    if (params.lora_rank !== undefined) setLoraRank(params.lora_rank);
-    if (params.lora_alpha !== undefined) setLoraAlpha(params.lora_alpha);
-    if (params.lora_dtype !== undefined) setLoraDtype(params.lora_dtype as "fp32" | "fp16" | "bf16");
+    if (params.lora_rank !== undefined) setParams(prev => ({ ...prev, lora_rank: params.lora_rank }));
+    if (params.lora_alpha !== undefined) setParams(prev => ({ ...prev, lora_alpha: params.lora_alpha }));
+    if (params.lora_dtype !== undefined) setParams(prev => ({ ...prev, lora_dtype: params.lora_dtype as "fp32" | "fp16" | "bf16" }));
 
     // Steps/epochs
     if (params.total_steps !== undefined && params.total_steps !== null) {
@@ -817,11 +816,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
 
     // ReLoRA
-    if (params.relora_merge_every !== undefined) setReloraMergeEvery(params.relora_merge_every);
-    if (params.relora_merge_unit !== undefined) setReloraMergeUnit(params.relora_merge_unit);
-    if (params.restart_warmup_steps !== undefined) setRestartWarmupSteps(params.restart_warmup_steps);
-    if (params.optimizer_reset_strategy !== undefined) setOptimizerResetStrategy(params.optimizer_reset_strategy);
-    if (params.optimizer_pruning_ratio !== undefined) setOptimizerPruningRatio(params.optimizer_pruning_ratio);
+    if (params.relora_merge_every !== undefined) setParams(prev => ({ ...prev, relora_merge_every: params.relora_merge_every }));
+    if (params.relora_merge_unit !== undefined) setParams(prev => ({ ...prev, relora_merge_unit: params.relora_merge_unit }));
+    if (params.restart_warmup_steps !== undefined) setParams(prev => ({ ...prev, restart_warmup_steps: params.restart_warmup_steps }));
+    if (params.optimizer_reset_strategy !== undefined) setParams(prev => ({ ...prev, optimizer_reset_strategy: params.optimizer_reset_strategy }));
+    if (params.optimizer_pruning_ratio !== undefined) setParams(prev => ({ ...prev, optimizer_pruning_ratio: params.optimizer_pruning_ratio }));
   }, []);
 
   // Load training run parameters for edit mode
@@ -1262,8 +1261,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       optimizerScheduleFree: params.optimizer_schedule_free,
       optimizerScheduleFreeR: localScheduleFreeRText,
       optimizerScheduleFreeWeightLrPower: localScheduleFreeWeightLrPowerText,
-      loraRank,
-      loraAlpha,
+      loraRank: params.lora_rank,
+      loraAlpha: params.lora_alpha,
+      loraDtype: params.lora_dtype,
       saveEvery,
       saveEveryUnit,
       sampleEvery,
@@ -1318,11 +1318,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       conditionPreprocessors,
       conditionCacheMode,
       // ReLoRA parameters
-      reloraMergeEvery,
-      reloraMergeUnit,
-      restartWarmupSteps,
-      optimizerResetStrategy,
-      optimizerPruningRatio,
+      reloraMergeEvery: params.relora_merge_every,
+      reloraMergeUnit: params.relora_merge_unit,
+      restartWarmupSteps: params.restart_warmup_steps,
+      optimizerResetStrategy: params.optimizer_reset_strategy,
+      optimizerPruningRatio: params.optimizer_pruning_ratio,
     };
   };
 
@@ -1400,8 +1400,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (!isNaN(v)) updateParam("optimizer_schedule_free_weight_lr_power", v);
       setLocalScheduleFreeWeightLrPowerText(config.optimizerScheduleFreeWeightLrPower);
     }
-    if (config.loraRank !== undefined) setLoraRank(config.loraRank);
-    if (config.loraAlpha !== undefined) setLoraAlpha(config.loraAlpha);
+    if (config.loraRank !== undefined) updateParam("lora_rank", config.loraRank);
+    if (config.loraAlpha !== undefined) updateParam("lora_alpha", config.loraAlpha);
+    if (config.loraDtype !== undefined) updateParam("lora_dtype", config.loraDtype);
     if (config.saveEvery !== undefined) setSaveEvery(config.saveEvery);
     if (config.saveEveryUnit !== undefined) setSaveEveryUnit(config.saveEveryUnit);
     if (config.sampleEvery !== undefined) setSampleEvery(config.sampleEvery);
@@ -1470,11 +1471,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // Legacy: sampleConditionImagePath is now per-prompt (ignored here)
 
     // ReLoRA parameters
-    if (config.reloraMergeEvery !== undefined) setReloraMergeEvery(config.reloraMergeEvery);
-    if (config.reloraMergeUnit !== undefined) setReloraMergeUnit(config.reloraMergeUnit);
-    if (config.restartWarmupSteps !== undefined) setRestartWarmupSteps(config.restartWarmupSteps);
-    if (config.optimizerResetStrategy !== undefined) setOptimizerResetStrategy(config.optimizerResetStrategy);
-    if (config.optimizerPruningRatio !== undefined) setOptimizerPruningRatio(config.optimizerPruningRatio);
+    if (config.reloraMergeEvery !== undefined) updateParam("relora_merge_every", config.reloraMergeEvery);
+    if (config.reloraMergeUnit !== undefined) updateParam("relora_merge_unit", config.reloraMergeUnit);
+    if (config.restartWarmupSteps !== undefined) updateParam("restart_warmup_steps", config.restartWarmupSteps);
+    if (config.optimizerResetStrategy !== undefined) updateParam("optimizer_reset_strategy", config.optimizerResetStrategy);
+    if (config.optimizerPruningRatio !== undefined) updateParam("optimizer_pruning_ratio", config.optimizerPruningRatio);
 
     // Also switch to the preset's training method
     if (preset.training_method) setTrainingMethod(preset.training_method);
@@ -1865,7 +1866,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={loraRank}
-                  onChange={(e) => setLoraRank(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLoraRank(16); }}
+                  onChange={(e) => updateParam("lora_rank", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("lora_rank", 16); }}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1877,7 +1878,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={loraAlpha}
-                  onChange={(e) => setLoraAlpha(e.target.value === ''  ? '' as any : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setLoraAlpha(16); }}
+                  onChange={(e) => updateParam("lora_alpha", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("lora_alpha", 16); }}
                   min="1"
                   max="256"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
@@ -1889,7 +1890,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">LoRA Weight Dtype</label>
               <select
                 value={loraDtype}
-                onChange={(e) => setLoraDtype(e.target.value as "fp32" | "fp16" | "bf16")}
+                onChange={(e) => updateParam("lora_dtype", e.target.value as "fp32" | "fp16" | "bf16")}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="fp32">FP32 (Full Precision)</option>
@@ -1911,8 +1912,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <input
                   type="number"
                   value={reloraMergeEvery}
-                  onChange={(e) => setReloraMergeEvery(e.target.value === '' ? '' as any : parseInt(e.target.value))}
-                  onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setReloraMergeEvery(500); }}
+                  onChange={(e) => updateParam("relora_merge_every", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                  onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("relora_merge_every", 500); }}
                   min="1"
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 />
@@ -1922,7 +1923,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <label className="block text-xs text-gray-400 mb-1">Merge Unit</label>
                 <select
                   value={reloraMergeUnit}
-                  onChange={(e) => setReloraMergeUnit(e.target.value as "steps" | "epochs")}
+                  onChange={(e) => updateParam("relora_merge_unit", e.target.value as "steps" | "epochs")}
                   className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                 >
                   <option value="steps">Steps</option>
@@ -1936,8 +1937,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <input
                 type="number"
                 value={restartWarmupSteps}
-                onChange={(e) => setRestartWarmupSteps(e.target.value === '' ? '' as any : parseInt(e.target.value))}
-                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) setRestartWarmupSteps(100); }}
+                onChange={(e) => updateParam("restart_warmup_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("restart_warmup_steps", 100); }}
                 min="0"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
@@ -1948,7 +1949,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Optimizer Reset Strategy</label>
               <select
                 value={optimizerResetStrategy}
-                onChange={(e) => setOptimizerResetStrategy(e.target.value as "full_reset" | "magnitude_pruning" | "random_pruning")}
+                onChange={(e) => updateParam("optimizer_reset_strategy", e.target.value as "full_reset" | "magnitude_pruning" | "random_pruning")}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="full_reset">Full Reset (Clear all optimizer state)</option>
@@ -1968,7 +1969,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   max="1"
                   step="0.05"
                   value={optimizerPruningRatio}
-                  onChange={(e) => setOptimizerPruningRatio(parseFloat(e.target.value))}
+                  onChange={(e) => updateParam("optimizer_pruning_ratio", parseFloat(e.target.value))}
                   className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
                 />
                 <p className="text-xs text-gray-500 mt-1">Fraction of optimizer state entries to prune (set to 0)</p>

@@ -11,6 +11,184 @@ import yaml
 from core.training.dataset_params import extract_dataset_params
 
 
+def _build_train_section(
+    p: Dict[str, Any],
+    *,
+    total_steps: Optional[int],
+    epochs: Optional[int],
+    train_unet: bool,
+    train_text_encoder: bool,
+    train_image_encoder: bool = False,
+    learning_rate: Optional[float] = None,
+    component_lr_always_emit: bool = False,
+    bucketing_always_emit: bool = False,
+    include_block_swap: bool = True,
+    include_vision_encoder: bool = True,
+    include_param_tracking: bool = True,
+    include_reference_images: bool = True,
+    include_priority_training: bool = True,
+    include_image_encoder_lr: bool = True,
+    include_te_split_lrs: bool = True,
+) -> Dict[str, Any]:
+    """Build the 'train' section dict shared across all generate_*_config functions.
+
+    p: dict of training parameters (TrainingRunCreateRequest model_dump or kwargs).
+    learning_rate: explicit learning rate (defaults to p["learning_rate"]).
+    component_lr_always_emit: if True, emit unet_lr/text_encoder_lr always with fallback to lr.
+    bucketing_always_emit: if True, emit base_resolutions/bucket_strategy/multi_resolution_mode always.
+
+    The flags `include_*` allow each training method to opt in/out of optional sections.
+    """
+    lr = learning_rate if learning_rate is not None else p["learning_rate"]
+    train: Dict[str, Any] = {
+        "batch_size": p["batch_size"],
+        **({"steps": total_steps} if total_steps else {"epochs": epochs}),
+        "gradient_accumulation_steps": 1,
+        "train_unet": train_unet,
+        "train_text_encoder": train_text_encoder,
+        "train_image_encoder": train_image_encoder,
+        # Unified training framework
+        "noise_process": p["noise_process"],
+        "prediction_target": p["prediction_target"],
+        "strict_validation": p["strict_validation"],
+        # Optimizer
+        "optimizer": p["optimizer"],
+        "lr": lr,
+        "lr_scheduler": p["lr_scheduler"],
+    }
+
+    # Conditional optimizer fields
+    if p.get("lr_warmup_steps", 0) > 0:
+        train["lr_warmup_steps"] = p["lr_warmup_steps"]
+    if p.get("optimizer_is_paged"):
+        train["optimizer_is_paged"] = p["optimizer_is_paged"]
+    if p.get("optimizer_cautious"):
+        train["optimizer_cautious"] = p["optimizer_cautious"]
+    if p.get("optimizer_beta1") is not None:
+        train["optimizer_beta1"] = p["optimizer_beta1"]
+    if p.get("optimizer_beta2") is not None:
+        train["optimizer_beta2"] = p["optimizer_beta2"]
+    if p.get("optimizer_epsilon") is not None:
+        train["optimizer_epsilon"] = p["optimizer_epsilon"]
+    if p.get("optimizer_weight_decay") is not None:
+        train["optimizer_weight_decay"] = p["optimizer_weight_decay"]
+    if p.get("optimizer_schedule_free"):
+        train["optimizer_schedule_free"] = p["optimizer_schedule_free"]
+        if p.get("optimizer_schedule_free_r", 0.0) != 0.0:
+            train["optimizer_schedule_free_r"] = p["optimizer_schedule_free_r"]
+        if p.get("optimizer_schedule_free_weight_lr_power", 2.0) != 2.0:
+            train["optimizer_schedule_free_weight_lr_power"] = p["optimizer_schedule_free_weight_lr_power"]
+        if p.get("optimizer_use_radam"):
+            train["optimizer_use_radam"] = p["optimizer_use_radam"]
+    if p.get("optimizer_stochastic_rounding"):
+        train["optimizer_stochastic_rounding"] = p["optimizer_stochastic_rounding"]
+
+    # Component learning rates
+    if component_lr_always_emit:
+        # LoRA-style: always emit with fallback to learning_rate
+        train["unet_lr"] = p.get("unet_lr") if p.get("unet_lr") is not None else lr
+        train["text_encoder_lr"] = p.get("text_encoder_lr") if p.get("text_encoder_lr") is not None else lr
+        if include_te_split_lrs:
+            te_lr = p.get("text_encoder_lr") if p.get("text_encoder_lr") is not None else lr
+            train["text_encoder_1_lr"] = p.get("text_encoder_1_lr") if p.get("text_encoder_1_lr") is not None else te_lr
+            train["text_encoder_2_lr"] = p.get("text_encoder_2_lr") if p.get("text_encoder_2_lr") is not None else te_lr
+        if include_image_encoder_lr:
+            train["image_encoder_lr"] = p.get("image_encoder_lr") if p.get("image_encoder_lr") is not None else lr
+    else:
+        # Full FT / ControlNet style: only emit if not None
+        if p.get("unet_lr") is not None:
+            train["unet_lr"] = p["unet_lr"]
+        if p.get("text_encoder_lr") is not None:
+            train["text_encoder_lr"] = p["text_encoder_lr"]
+        if include_te_split_lrs:
+            if p.get("text_encoder_1_lr") is not None:
+                train["text_encoder_1_lr"] = p["text_encoder_1_lr"]
+            if p.get("text_encoder_2_lr") is not None:
+                train["text_encoder_2_lr"] = p["text_encoder_2_lr"]
+        if include_image_encoder_lr and p.get("image_encoder_lr") is not None:
+            train["image_encoder_lr"] = p["image_encoder_lr"]
+
+    # Mixed precision and dtype
+    train["mixed_precision"] = p["mixed_precision"]
+
+    # Bucketing
+    if bucketing_always_emit:
+        train["enable_bucketing"] = p["enable_bucketing"]
+        train["base_resolutions"] = p.get("base_resolutions") or [1024]
+        train["bucket_strategy"] = p["bucket_strategy"]
+        train["multi_resolution_mode"] = p["multi_resolution_mode"]
+    else:
+        if p.get("enable_bucketing"):
+            train["enable_bucketing"] = True
+            train["base_resolutions"] = p.get("base_resolutions") or [1024]
+            train["bucket_strategy"] = p["bucket_strategy"]
+            train["multi_resolution_mode"] = p["multi_resolution_mode"]
+
+    # Common training fields
+    train["use_flash_attention"] = p["use_flash_attention"]
+    train["min_snr_gamma"] = p["min_snr_gamma"]
+    train["reconstruction_loss_weight"] = p.get("reconstruction_loss_weight", 0.0)
+
+    # Block Swap (training VRAM optimization) - LoRA/Full FT only
+    if include_block_swap:
+        train["blocks_to_swap"] = p.get("blocks_to_swap", 0)
+        train["use_pinned_memory"] = p.get("use_pinned_memory", False)
+        train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)
+
+    # Text/Latent encoding
+    train["text_encoding_mode"] = p["text_encoding_mode"]
+    train["text_encoding_swap_interval"] = p["text_encoding_swap_interval"]
+
+    # Reference images / Vision encoder
+    if include_reference_images:
+        train["use_reference_images"] = p.get("use_reference_images", False)
+    if include_vision_encoder:
+        if p.get("vision_encoder_path"):
+            train["vision_encoder_path"] = p["vision_encoder_path"]
+        train["train_vision_encoder"] = p.get("train_vision_encoder", False)
+        if p.get("vision_encoder_lr") is not None:
+            train["vision_encoder_lr"] = p["vision_encoder_lr"]
+        train["gradient_routing_ve"] = p.get("gradient_routing_ve", False)
+
+    # Param tracking
+    if include_param_tracking:
+        train["param_tracking"] = p.get("param_tracking", False)
+        train["param_tracking_interval"] = p.get("param_tracking_interval", 100)
+
+    # Priority training
+    if include_priority_training and p.get("priority_training"):
+        train["priority_training"] = p["priority_training"]
+
+    train["latent_encoding_mode"] = p["latent_encoding_mode"]
+    train["latent_encoding_swap_interval"] = p["latent_encoding_swap_interval"]
+
+    train["debug_latents"] = p["debug_latents"]
+    train["debug_latents_every"] = p["debug_latents_every"]
+
+    # Multi Noise-Timestep
+    train["multi_noise_timesteps"] = p.get("multi_noise_timesteps", 1)
+    train["multi_noise_mode"] = p.get("multi_noise_mode", "independent")
+    train["trajectory_blend_alpha"] = p.get("trajectory_blend_alpha", 0.7)
+    if p.get("timestep_sampling"):
+        train["timestep_sampling"] = p["timestep_sampling"]
+
+    # Resume
+    train["resume_from_checkpoint"] = p.get("resume_from_checkpoint")
+
+    # Regularization
+    if p.get("regularization_type"):
+        train["regularization_type"] = p["regularization_type"]
+    train["snr_regularization_weight"] = p["snr_regularization_weight"]
+    train["snr_timestep_adaptive"] = p["snr_timestep_adaptive"]
+    train["snr_penalty_mode"] = p["snr_penalty_mode"]
+    train["energy_regularization_weight"] = p["energy_regularization_weight"]
+    train["energy_timestep_adaptive"] = p["energy_timestep_adaptive"]
+    train["energy_penalty_mode"] = p["energy_penalty_mode"]
+    train["energy_normalize_by_pixels"] = p["energy_normalize_by_pixels"]
+
+    return train
+
+
 class TrainingConfigGenerator:
     """Generate ai-toolkit YAML config from training parameters."""
 
@@ -240,80 +418,79 @@ class TrainingConfigGenerator:
                             "max_step_saves_to_keep": max_step_saves_to_keep,
                         },
                         "datasets": datasets_array,
-                        "train": {
-                            "batch_size": batch_size,
-                            **({"steps": total_steps} if total_steps else {"epochs": epochs}),
-                            "gradient_accumulation_steps": 1,
-                            "train_unet": train_unet,
-                            "train_text_encoder": train_text_encoder,
-                            "train_image_encoder": train_image_encoder,
-                            # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
-                            # Unified training framework (replaces noise_scheduler)
-                            "noise_process": noise_process,  # "auto", "ddpm", "flow"
-                            "prediction_target": prediction_target,  # "auto", "epsilon", "velocity", "sample"
-                            "strict_validation": strict_validation,
-                            "optimizer": optimizer,
-                            "lr": learning_rate,
-                            "lr_scheduler": lr_scheduler,
-                            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
-                            **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
-                            **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
-                            **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
-                            **({"optimizer_beta2": optimizer_beta2} if optimizer_beta2 is not None else {}),
-                            **({"optimizer_epsilon": optimizer_epsilon} if optimizer_epsilon is not None else {}),
-                            **({"optimizer_weight_decay": optimizer_weight_decay} if optimizer_weight_decay is not None else {}),
-                            **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
-                            **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
-                            **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
-                            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
-                            **({"optimizer_stochastic_rounding": optimizer_stochastic_rounding} if optimizer_stochastic_rounding else {}),
-                            "unet_lr": unet_lr if unet_lr is not None else learning_rate,
-                            "text_encoder_lr": text_encoder_lr if text_encoder_lr is not None else learning_rate,
-                            "text_encoder_1_lr": text_encoder_1_lr if text_encoder_1_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
-                            "text_encoder_2_lr": text_encoder_2_lr if text_encoder_2_lr is not None else (text_encoder_lr if text_encoder_lr is not None else learning_rate),
-                            "image_encoder_lr": image_encoder_lr if image_encoder_lr is not None else learning_rate,
-                            "mixed_precision": mixed_precision,  # Enable autocast for mixed precision
-                            "debug_latents": debug_latents,
-                            "debug_latents_every": debug_latents_every,
-                            "enable_bucketing": enable_bucketing,
-                            "base_resolutions": base_resolutions or [1024],
-                            "bucket_strategy": bucket_strategy,
-                            "multi_resolution_mode": multi_resolution_mode,
-                            "use_flash_attention": use_flash_attention,
-                            "min_snr_gamma": min_snr_gamma,
-                            "reconstruction_loss_weight": reconstruction_loss_weight,
-                            "blocks_to_swap": blocks_to_swap,
-                            "use_pinned_memory": use_pinned_memory,
-                            "num_optimizer_groups": num_optimizer_groups,
-                            "text_encoding_mode": text_encoding_mode,
-                            "text_encoding_swap_interval": text_encoding_swap_interval,
-                            # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
-                            "use_reference_images": use_reference_images,
-                            # Vision Encoder settings (SigLIP2 for SDXL/SD1.5)
-                            **({"vision_encoder_path": vision_encoder_path} if vision_encoder_path else {}),
-                            "train_vision_encoder": train_vision_encoder,
-                            **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
-                            "gradient_routing_ve": gradient_routing_ve,
-                            "param_tracking": param_tracking,
-                            "param_tracking_interval": param_tracking_interval,
-                            **({"priority_training": priority_training} if priority_training else {}),
-                            "latent_encoding_mode": latent_encoding_mode,
-                            "latent_encoding_swap_interval": latent_encoding_swap_interval,
-                            "multi_noise_timesteps": multi_noise_timesteps,
-                            "multi_noise_mode": multi_noise_mode,
-                            "trajectory_blend_alpha": trajectory_blend_alpha,
-                            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
-                            "resume_from_checkpoint": resume_from_checkpoint,  # Always output (None, "latest", or checkpoint filename)
-                            # Regularization settings
-                            **({"regularization_type": regularization_type} if regularization_type else {}),
-                            "snr_regularization_weight": snr_regularization_weight,
-                            "snr_timestep_adaptive": snr_timestep_adaptive,
-                            "snr_penalty_mode": snr_penalty_mode,
-                            "energy_regularization_weight": energy_regularization_weight,
-                            "energy_timestep_adaptive": energy_timestep_adaptive,
-                            "energy_penalty_mode": energy_penalty_mode,
-                            "energy_normalize_by_pixels": energy_normalize_by_pixels,
-                        },
+                        "train": _build_train_section(
+                            {
+                                "batch_size": batch_size,
+                                "learning_rate": learning_rate,
+                                "lr_scheduler": lr_scheduler,
+                                "lr_warmup_steps": lr_warmup_steps,
+                                "optimizer": optimizer,
+                                "optimizer_is_paged": optimizer_is_paged,
+                                "optimizer_cautious": optimizer_cautious,
+                                "optimizer_beta1": optimizer_beta1,
+                                "optimizer_beta2": optimizer_beta2,
+                                "optimizer_epsilon": optimizer_epsilon,
+                                "optimizer_weight_decay": optimizer_weight_decay,
+                                "optimizer_schedule_free": optimizer_schedule_free,
+                                "optimizer_schedule_free_r": optimizer_schedule_free_r,
+                                "optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power,
+                                "optimizer_use_radam": optimizer_use_radam,
+                                "optimizer_stochastic_rounding": optimizer_stochastic_rounding,
+                                "unet_lr": unet_lr,
+                                "text_encoder_lr": text_encoder_lr,
+                                "text_encoder_1_lr": text_encoder_1_lr,
+                                "text_encoder_2_lr": text_encoder_2_lr,
+                                "image_encoder_lr": image_encoder_lr,
+                                "mixed_precision": mixed_precision,
+                                "debug_latents": debug_latents,
+                                "debug_latents_every": debug_latents_every,
+                                "enable_bucketing": enable_bucketing,
+                                "base_resolutions": base_resolutions,
+                                "bucket_strategy": bucket_strategy,
+                                "multi_resolution_mode": multi_resolution_mode,
+                                "use_flash_attention": use_flash_attention,
+                                "min_snr_gamma": min_snr_gamma,
+                                "reconstruction_loss_weight": reconstruction_loss_weight,
+                                "blocks_to_swap": blocks_to_swap,
+                                "use_pinned_memory": use_pinned_memory,
+                                "num_optimizer_groups": num_optimizer_groups,
+                                "text_encoding_mode": text_encoding_mode,
+                                "text_encoding_swap_interval": text_encoding_swap_interval,
+                                "use_reference_images": use_reference_images,
+                                "vision_encoder_path": vision_encoder_path,
+                                "train_vision_encoder": train_vision_encoder,
+                                "vision_encoder_lr": vision_encoder_lr,
+                                "gradient_routing_ve": gradient_routing_ve,
+                                "param_tracking": param_tracking,
+                                "param_tracking_interval": param_tracking_interval,
+                                "priority_training": priority_training,
+                                "latent_encoding_mode": latent_encoding_mode,
+                                "latent_encoding_swap_interval": latent_encoding_swap_interval,
+                                "multi_noise_timesteps": multi_noise_timesteps,
+                                "multi_noise_mode": multi_noise_mode,
+                                "trajectory_blend_alpha": trajectory_blend_alpha,
+                                "timestep_sampling": timestep_sampling_config,
+                                "resume_from_checkpoint": resume_from_checkpoint,
+                                "regularization_type": regularization_type,
+                                "snr_regularization_weight": snr_regularization_weight,
+                                "snr_timestep_adaptive": snr_timestep_adaptive,
+                                "snr_penalty_mode": snr_penalty_mode,
+                                "energy_regularization_weight": energy_regularization_weight,
+                                "energy_timestep_adaptive": energy_timestep_adaptive,
+                                "energy_penalty_mode": energy_penalty_mode,
+                                "energy_normalize_by_pixels": energy_normalize_by_pixels,
+                                "noise_process": noise_process,
+                                "prediction_target": prediction_target,
+                                "strict_validation": strict_validation,
+                            },
+                            total_steps=total_steps,
+                            epochs=epochs,
+                            train_unet=train_unet,
+                            train_text_encoder=train_text_encoder,
+                            train_image_encoder=train_image_encoder,
+                            component_lr_always_emit=True,
+                            bucketing_always_emit=True,
+                        ),
                         "model": {
                             "name_or_path": base_model_path,
                         },
@@ -710,91 +887,80 @@ class TrainingConfigGenerator:
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
 
-        # Build train config
-        train_config = {
-            "batch_size": batch_size,
-            **({"steps": total_steps} if total_steps else {"epochs": epochs}),
-            "gradient_accumulation_steps": 1,
-            "train_unet": train_unet,
-            "train_text_encoder": train_text_encoder,
-            "train_image_encoder": train_image_encoder,
-            # Note: Gradient checkpointing is always enabled (hardcoded in BaseTrainer for VRAM efficiency)
-            "optimizer": optimizer,
-            "lr": learning_rate,
-            "lr_scheduler": lr_scheduler,
-            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
-            **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
-            **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
-            **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
-            **({"optimizer_beta2": optimizer_beta2} if optimizer_beta2 is not None else {}),
-            **({"optimizer_epsilon": optimizer_epsilon} if optimizer_epsilon is not None else {}),
-            **({"optimizer_weight_decay": optimizer_weight_decay} if optimizer_weight_decay is not None else {}),
-            **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
-            **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
-            **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
-            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
-            **({"optimizer_stochastic_rounding": optimizer_stochastic_rounding} if optimizer_stochastic_rounding else {}),
-            "mixed_precision": mixed_precision,
-            "use_flash_attention": use_flash_attention,
-            "min_snr_gamma": min_snr_gamma,
-            "reconstruction_loss_weight": reconstruction_loss_weight,
-            "blocks_to_swap": blocks_to_swap,
-            "use_pinned_memory": use_pinned_memory,
-            "num_optimizer_groups": num_optimizer_groups,
-            "text_encoding_mode": text_encoding_mode,
-            "text_encoding_swap_interval": text_encoding_swap_interval,
-            # Reference image settings (FLUX.2 only - uses latent concatenation for conditioning)
-            "use_reference_images": use_reference_images,
-            # Vision Encoder settings (SigLIP2 for SDXL/SD1.5)
-            **({"vision_encoder_path": vision_encoder_path} if vision_encoder_path else {}),
-            "train_vision_encoder": train_vision_encoder,
-            **({"vision_encoder_lr": vision_encoder_lr} if vision_encoder_lr is not None else {}),
-            "gradient_routing_ve": gradient_routing_ve,
-            "param_tracking": param_tracking,
-            "param_tracking_interval": param_tracking_interval,
-            **({"priority_training": priority_training} if priority_training else {}),
-            "latent_encoding_mode": latent_encoding_mode,
-            "latent_encoding_swap_interval": latent_encoding_swap_interval,
-            "debug_latents": debug_latents,
-            "debug_latents_every": debug_latents_every,
-            "multi_noise_timesteps": multi_noise_timesteps,
-            "multi_noise_mode": multi_noise_mode,
-            "trajectory_blend_alpha": trajectory_blend_alpha,
-            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
-            "resume_from_checkpoint": resume_from_checkpoint,  # Always output (None, "latest", or checkpoint filename)
-            # Regularization settings
-            **({"regularization_type": regularization_type} if regularization_type else {}),
-            "snr_regularization_weight": snr_regularization_weight,
-            "snr_timestep_adaptive": snr_timestep_adaptive,
-            "snr_penalty_mode": snr_penalty_mode,
-            "energy_regularization_weight": energy_regularization_weight,
-            "energy_timestep_adaptive": energy_timestep_adaptive,
-            "energy_penalty_mode": energy_penalty_mode,
-            "energy_normalize_by_pixels": energy_normalize_by_pixels,
-            # Unified training framework settings
-            "noise_process": noise_process,
-            "prediction_target": prediction_target,
-            "strict_validation": strict_validation,
-        }
-
-        # Add component-specific learning rates if specified
-        if unet_lr is not None:
-            train_config["unet_lr"] = unet_lr
-        if text_encoder_lr is not None:
-            train_config["text_encoder_lr"] = text_encoder_lr
-        if text_encoder_1_lr is not None:
-            train_config["text_encoder_1_lr"] = text_encoder_1_lr
-        if text_encoder_2_lr is not None:
-            train_config["text_encoder_2_lr"] = text_encoder_2_lr
-        if image_encoder_lr is not None:
-            train_config["image_encoder_lr"] = image_encoder_lr
-
-        # Add bucketing parameters
-        if enable_bucketing:
-            train_config["enable_bucketing"] = True
-            train_config["base_resolutions"] = base_resolutions or [1024]
-            train_config["bucket_strategy"] = bucket_strategy
-            train_config["multi_resolution_mode"] = multi_resolution_mode
+        # Build train config via shared helper
+        train_config = _build_train_section(
+            {
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "lr_scheduler": lr_scheduler,
+                "lr_warmup_steps": lr_warmup_steps,
+                "optimizer": optimizer,
+                "optimizer_is_paged": optimizer_is_paged,
+                "optimizer_cautious": optimizer_cautious,
+                "optimizer_beta1": optimizer_beta1,
+                "optimizer_beta2": optimizer_beta2,
+                "optimizer_epsilon": optimizer_epsilon,
+                "optimizer_weight_decay": optimizer_weight_decay,
+                "optimizer_schedule_free": optimizer_schedule_free,
+                "optimizer_schedule_free_r": optimizer_schedule_free_r,
+                "optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power,
+                "optimizer_use_radam": optimizer_use_radam,
+                "optimizer_stochastic_rounding": optimizer_stochastic_rounding,
+                "unet_lr": unet_lr,
+                "text_encoder_lr": text_encoder_lr,
+                "text_encoder_1_lr": text_encoder_1_lr,
+                "text_encoder_2_lr": text_encoder_2_lr,
+                "image_encoder_lr": image_encoder_lr,
+                "mixed_precision": mixed_precision,
+                "debug_latents": debug_latents,
+                "debug_latents_every": debug_latents_every,
+                "enable_bucketing": enable_bucketing,
+                "base_resolutions": base_resolutions,
+                "bucket_strategy": bucket_strategy,
+                "multi_resolution_mode": multi_resolution_mode,
+                "use_flash_attention": use_flash_attention,
+                "min_snr_gamma": min_snr_gamma,
+                "reconstruction_loss_weight": reconstruction_loss_weight,
+                "blocks_to_swap": blocks_to_swap,
+                "use_pinned_memory": use_pinned_memory,
+                "num_optimizer_groups": num_optimizer_groups,
+                "text_encoding_mode": text_encoding_mode,
+                "text_encoding_swap_interval": text_encoding_swap_interval,
+                "use_reference_images": use_reference_images,
+                "vision_encoder_path": vision_encoder_path,
+                "train_vision_encoder": train_vision_encoder,
+                "vision_encoder_lr": vision_encoder_lr,
+                "gradient_routing_ve": gradient_routing_ve,
+                "param_tracking": param_tracking,
+                "param_tracking_interval": param_tracking_interval,
+                "priority_training": priority_training,
+                "latent_encoding_mode": latent_encoding_mode,
+                "latent_encoding_swap_interval": latent_encoding_swap_interval,
+                "multi_noise_timesteps": multi_noise_timesteps,
+                "multi_noise_mode": multi_noise_mode,
+                "trajectory_blend_alpha": trajectory_blend_alpha,
+                "timestep_sampling": timestep_sampling_config,
+                "resume_from_checkpoint": resume_from_checkpoint,
+                "regularization_type": regularization_type,
+                "snr_regularization_weight": snr_regularization_weight,
+                "snr_timestep_adaptive": snr_timestep_adaptive,
+                "snr_penalty_mode": snr_penalty_mode,
+                "energy_regularization_weight": energy_regularization_weight,
+                "energy_timestep_adaptive": energy_timestep_adaptive,
+                "energy_penalty_mode": energy_penalty_mode,
+                "energy_normalize_by_pixels": energy_normalize_by_pixels,
+                "noise_process": noise_process,
+                "prediction_target": prediction_target,
+                "strict_validation": strict_validation,
+            },
+            total_steps=total_steps,
+            epochs=epochs,
+            train_unet=train_unet,
+            train_text_encoder=train_text_encoder,
+            train_image_encoder=train_image_encoder,
+            component_lr_always_emit=False,
+            bucketing_always_emit=False,
+        )
 
         # Build datasets array
         # NOTE: caption_processing settings are NOT saved to YAML
@@ -1002,70 +1168,75 @@ class TrainingConfigGenerator:
         if total_steps is not None and epochs is not None:
             raise ValueError("Cannot specify both total_steps and epochs")
 
-        # Build train config
-        train_config = {
-            "batch_size": batch_size,
-            **({"steps": total_steps} if total_steps else {"epochs": epochs}),
-            "gradient_accumulation_steps": 1,
-            # ControlNet training: UNet/TE are always frozen
-            "train_unet": False,
-            "train_text_encoder": False,
-            "train_image_encoder": False,
-            "optimizer": optimizer,
-            "lr": learning_rate,
-            "lr_scheduler": lr_scheduler,
-            **({"lr_warmup_steps": lr_warmup_steps} if lr_warmup_steps > 0 else {}),
-            **({"optimizer_is_paged": optimizer_is_paged} if optimizer_is_paged else {}),
-            **({"optimizer_cautious": optimizer_cautious} if optimizer_cautious else {}),
-            **({"optimizer_beta1": optimizer_beta1} if optimizer_beta1 is not None else {}),
-            **({"optimizer_beta2": optimizer_beta2} if optimizer_beta2 is not None else {}),
-            **({"optimizer_epsilon": optimizer_epsilon} if optimizer_epsilon is not None else {}),
-            **({"optimizer_weight_decay": optimizer_weight_decay} if optimizer_weight_decay is not None else {}),
-            **({"optimizer_schedule_free": optimizer_schedule_free} if optimizer_schedule_free else {}),
-            **({"optimizer_schedule_free_r": optimizer_schedule_free_r} if optimizer_schedule_free and optimizer_schedule_free_r != 0.0 else {}),
-            **({"optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power} if optimizer_schedule_free and optimizer_schedule_free_weight_lr_power != 2.0 else {}),
-            **({"optimizer_use_radam": optimizer_use_radam} if optimizer_schedule_free and optimizer_use_radam else {}),
-            **({"optimizer_stochastic_rounding": optimizer_stochastic_rounding} if optimizer_stochastic_rounding else {}),
-            "mixed_precision": mixed_precision,
-            "use_flash_attention": use_flash_attention,
-            "min_snr_gamma": min_snr_gamma,
-            "reconstruction_loss_weight": reconstruction_loss_weight,
-            "text_encoding_mode": text_encoding_mode,
-            "text_encoding_swap_interval": text_encoding_swap_interval,
-            "latent_encoding_mode": latent_encoding_mode,
-            "latent_encoding_swap_interval": latent_encoding_swap_interval,
-            "debug_latents": debug_latents,
-            "debug_latents_every": debug_latents_every,
-            "multi_noise_timesteps": multi_noise_timesteps,
-            "multi_noise_mode": multi_noise_mode,
-            "trajectory_blend_alpha": trajectory_blend_alpha,
-            **({"timestep_sampling": timestep_sampling_config} if timestep_sampling_config else {}),
-            "resume_from_checkpoint": resume_from_checkpoint,
-            # Regularization settings
-            **({"regularization_type": regularization_type} if regularization_type else {}),
-            "snr_regularization_weight": snr_regularization_weight,
-            "snr_timestep_adaptive": snr_timestep_adaptive,
-            "snr_penalty_mode": snr_penalty_mode,
-            "energy_regularization_weight": energy_regularization_weight,
-            "energy_timestep_adaptive": energy_timestep_adaptive,
-            "energy_penalty_mode": energy_penalty_mode,
-            "energy_normalize_by_pixels": energy_normalize_by_pixels,
-            # Unified training framework settings
-            "noise_process": noise_process,
-            "prediction_target": prediction_target,
-            "strict_validation": strict_validation,
-        }
-
-        # UNet LR is used as ControlNet LR (ControlNet mirrors UNet architecture)
-        if unet_lr is not None:
-            train_config["unet_lr"] = unet_lr
-
-        # Add bucketing parameters
-        if enable_bucketing:
-            train_config["enable_bucketing"] = True
-            train_config["base_resolutions"] = base_resolutions or [512]
-            train_config["bucket_strategy"] = bucket_strategy
-            train_config["multi_resolution_mode"] = multi_resolution_mode
+        # Build train config via shared helper
+        # ControlNet specifics: train_unet/te always False, no block swap, no vision encoder,
+        # no param tracking, no reference images, no priority training, no image_encoder_lr,
+        # no split TE LRs.
+        train_config = _build_train_section(
+            {
+                "batch_size": batch_size,
+                "learning_rate": learning_rate,
+                "lr_scheduler": lr_scheduler,
+                "lr_warmup_steps": lr_warmup_steps,
+                "optimizer": optimizer,
+                "optimizer_is_paged": optimizer_is_paged,
+                "optimizer_cautious": optimizer_cautious,
+                "optimizer_beta1": optimizer_beta1,
+                "optimizer_beta2": optimizer_beta2,
+                "optimizer_epsilon": optimizer_epsilon,
+                "optimizer_weight_decay": optimizer_weight_decay,
+                "optimizer_schedule_free": optimizer_schedule_free,
+                "optimizer_schedule_free_r": optimizer_schedule_free_r,
+                "optimizer_schedule_free_weight_lr_power": optimizer_schedule_free_weight_lr_power,
+                "optimizer_use_radam": optimizer_use_radam,
+                "optimizer_stochastic_rounding": optimizer_stochastic_rounding,
+                "unet_lr": unet_lr,  # Used as ControlNet LR
+                "mixed_precision": mixed_precision,
+                "debug_latents": debug_latents,
+                "debug_latents_every": debug_latents_every,
+                "enable_bucketing": enable_bucketing,
+                "base_resolutions": base_resolutions or [512] if enable_bucketing else None,
+                "bucket_strategy": bucket_strategy,
+                "multi_resolution_mode": multi_resolution_mode,
+                "use_flash_attention": use_flash_attention,
+                "min_snr_gamma": min_snr_gamma,
+                "reconstruction_loss_weight": reconstruction_loss_weight,
+                "text_encoding_mode": text_encoding_mode,
+                "text_encoding_swap_interval": text_encoding_swap_interval,
+                "latent_encoding_mode": latent_encoding_mode,
+                "latent_encoding_swap_interval": latent_encoding_swap_interval,
+                "multi_noise_timesteps": multi_noise_timesteps,
+                "multi_noise_mode": multi_noise_mode,
+                "trajectory_blend_alpha": trajectory_blend_alpha,
+                "timestep_sampling": timestep_sampling_config,
+                "resume_from_checkpoint": resume_from_checkpoint,
+                "regularization_type": regularization_type,
+                "snr_regularization_weight": snr_regularization_weight,
+                "snr_timestep_adaptive": snr_timestep_adaptive,
+                "snr_penalty_mode": snr_penalty_mode,
+                "energy_regularization_weight": energy_regularization_weight,
+                "energy_timestep_adaptive": energy_timestep_adaptive,
+                "energy_penalty_mode": energy_penalty_mode,
+                "energy_normalize_by_pixels": energy_normalize_by_pixels,
+                "noise_process": noise_process,
+                "prediction_target": prediction_target,
+                "strict_validation": strict_validation,
+            },
+            total_steps=total_steps,
+            epochs=epochs,
+            train_unet=False,
+            train_text_encoder=False,
+            train_image_encoder=False,
+            component_lr_always_emit=False,
+            bucketing_always_emit=False,
+            include_block_swap=False,
+            include_vision_encoder=False,
+            include_param_tracking=False,
+            include_reference_images=False,
+            include_priority_training=False,
+            include_image_encoder_lr=False,
+            include_te_split_lrs=False,
+        )
 
         # Build datasets array
         datasets_array = []

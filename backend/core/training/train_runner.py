@@ -939,10 +939,11 @@ def main():
         if yaml_datasets:
             # Build dataset_configs from YAML datasets section
             for yaml_ds in yaml_datasets:
+                from core.training.dataset_params import read_dataset_params
                 ds_config = {
                     "dataset_id": yaml_ds.get("dataset_id"),
-                    "caption_types": yaml_ds.get("caption_types", []),
-                    "filters": {}
+                    "filters": {},
+                    **read_dataset_params(yaml_ds),
                 }
                 # If dataset_id is missing in YAML, try to resolve from folder_path
                 if not ds_config["dataset_id"] and yaml_ds.get("folder_path"):
@@ -1006,8 +1007,10 @@ def main():
 
             # Get dataset items with caching support
             # On resume: loads from cache (fast), on first run: fetches from DB and caches
-            caption_types = ds_config.get("caption_types", [])
-            ve_reconstruction_mode = ds_config.get("ve_reconstruction_mode", False)
+            from core.training.dataset_params import read_dataset_params
+            ds_params = read_dataset_params(ds_config)
+            caption_types = ds_params["caption_types"]
+            ve_reconstruction_mode = ds_params["ve_reconstruction_mode"]
             output_dir = Path(run.output_dir)
             is_resume = start_epoch > 0
             dataset_items = get_dataset_items_cached(
@@ -1094,8 +1097,10 @@ def main():
                     return None  # Signal to caller that reload was skipped (use existing items)
 
                 self._has_been_reloaded = True
+                from core.training.dataset_params import read_dataset_params
                 dataset_id = self.dataset_config["dataset_id"]
-                caption_types = self.dataset_config.get("caption_types", [])
+                ds_params = read_dataset_params(self.dataset_config)
+                caption_types = ds_params["caption_types"]
 
                 # Use cached loading - caption processing is applied per-epoch
                 items = get_dataset_items_cached(

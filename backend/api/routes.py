@@ -4640,6 +4640,9 @@ async def create_training_run(
 
         # Build dataset_configs_for_yaml (with path, caption_types, and dataset_id)
         # NOTE: caption_processing is NOT saved to YAML - read from database at training time
+        # Dataset-level params (caption_types, ve_reconstruction_mode, etc.) are
+        # automatically propagated via extract_dataset_params() from dataset_params.py
+        from core.training.dataset_params import extract_dataset_params
         dataset_configs_for_yaml = []
         for config in dataset_configs:
             dataset = datasets_db.query(Dataset).filter(Dataset.id == config["dataset_id"]).first()
@@ -4647,13 +4650,8 @@ async def create_training_run(
                 yaml_config = {
                     "dataset_id": config["dataset_id"],  # Include dataset_id for YAML editing support
                     "path": dataset.path,
+                    **extract_dataset_params(config),
                 }
-                # Add caption_types if specified
-                if config.get("caption_types"):
-                    yaml_config["caption_types"] = config["caption_types"]
-                # Add ve_reconstruction_mode if specified
-                if config.get("ve_reconstruction_mode"):
-                    yaml_config["ve_reconstruction_mode"] = True
                 dataset_configs_for_yaml.append(yaml_config)
 
         # Generate run_id and auto-generate run_name if not provided
@@ -5192,13 +5190,12 @@ async def get_training_run_params(
         dataset = datasets_db.query(Dataset).filter(Dataset.path == dataset_path).first()
         if dataset:
             print(f"[get_training_run_params] Found dataset: id={dataset.id}, name={dataset.name}")
+            from core.training.dataset_params import read_dataset_params
             entry = {
                 "dataset_id": dataset.id,
-                "caption_types": ds_config.get("caption_types", []),
-                "filters": {}
+                "filters": {},
+                **read_dataset_params(ds_config),
             }
-            if ds_config.get("ve_reconstruction_mode"):
-                entry["ve_reconstruction_mode"] = True
             dataset_configs.append(entry)
         else:
             print(f"[get_training_run_params] Dataset not found in database for path: {dataset_path}")
@@ -5352,12 +5349,13 @@ async def update_training_run(
         dataset_configs_for_yaml = []
         if request.dataset_configs:
             for config in request.dataset_configs:
-                print(f"[Training][DEBUG] dataset_config received: id={config.dataset_id}, ve_reconstruction_mode={config.ve_reconstruction_mode!r}")
+                from core.training.dataset_params import extract_dataset_params
+                config_dict = config.model_dump()
                 # Store dict format for total_steps calculation
                 dataset_configs.append({
                     "dataset_id": config.dataset_id,
-                    "caption_types": config.caption_types,
-                    "filters": {}
+                    "filters": {},
+                    **extract_dataset_params(config_dict),
                 })
                 # Build YAML format (with dataset_id for YAML editing support)
                 dataset = datasets_db.query(Dataset).filter(Dataset.id == config.dataset_id).first()
@@ -5365,11 +5363,8 @@ async def update_training_run(
                     yaml_config = {
                         "dataset_id": config.dataset_id,  # Include dataset_id for YAML editing support
                         "path": dataset.path,
+                        **extract_dataset_params(config_dict),
                     }
-                    if config.caption_types:
-                        yaml_config["caption_types"] = config.caption_types
-                    if config.ve_reconstruction_mode:
-                        yaml_config["ve_reconstruction_mode"] = True
                     dataset_configs_for_yaml.append(yaml_config)
 
         # Get primary dataset

@@ -8,6 +8,8 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 import yaml
 
+from core.training.dataset_params import extract_dataset_params
+
 
 class TrainingConfigGenerator:
     """Generate ai-toolkit YAML config from training parameters."""
@@ -195,13 +197,8 @@ class TrainingConfigGenerator:
                     "resolution": base_resolutions or [512, 768, 1024],
                 }
 
-                # Add caption_types if specified
-                if ds_caption_types:
-                    dataset_entry["caption_types"] = ds_caption_types
-
-                # Add ve_reconstruction_mode if specified
-                if ds_config.get("ve_reconstruction_mode"):
-                    dataset_entry["ve_reconstruction_mode"] = True
+                # Add dataset-level params (caption_types, ve_reconstruction_mode, etc.)
+                dataset_entry.update(extract_dataset_params(ds_config))
 
                 datasets_array.append(dataset_entry)
         else:
@@ -819,9 +816,8 @@ class TrainingConfigGenerator:
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
 
-                # Add caption_types if specified
-                if ds_caption_types:
-                    dataset_entry["caption_types"] = ds_caption_types
+                # Add dataset-level params (caption_types, ve_reconstruction_mode, etc.)
+                dataset_entry.update(extract_dataset_params(ds_config))
 
                 datasets_array.append(dataset_entry)
         else:
@@ -1086,8 +1082,8 @@ class TrainingConfigGenerator:
                     **({"dataset_id": ds_dataset_id} if ds_dataset_id else {}),
                 }
 
-                if ds_caption_types:
-                    dataset_entry["caption_types"] = ds_caption_types
+                # Add dataset-level params (caption_types, ve_reconstruction_mode, etc.)
+                dataset_entry.update(extract_dataset_params(ds_config))
 
                 datasets_array.append(dataset_entry)
         else:

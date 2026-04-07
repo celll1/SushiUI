@@ -379,15 +379,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const textEncoder2Lr = localTextEncoder2LrText;
   const imageEncoderLr = localImageEncoderLrText;
 
-  // Precision and dtype settings (VRAM optimization)
-  const [weightDtype, setWeightDtype] = useState<string>("fp32");
-  const [trainingDtype, setTrainingDtype] = useState<string>("fp16");
-  const [outputDtype, setOutputDtype] = useState<string>("fp32");
-  const [vaeDtype, setVaeDtype] = useState<string>("fp32");
-  const [mixedPrecision, setMixedPrecision] = useState(true);
-  const [useFlashAttention, setUseFlashAttention] = useState(false);
-  const [minSnrGamma, setMinSnrGamma] = useState<number>(5.0);
-  const [reconstructionLossWeight, setReconstructionLossWeight] = useState<number>(0.0);
+  // Precision and dtype settings (Phase 3h: migrated to params)
+  const weightDtype = params.weight_dtype ?? "fp32";
+  const trainingDtype = params.training_dtype ?? "fp16";
+  const outputDtype = params.output_dtype ?? "fp32";
+  const vaeDtype = params.vae_dtype ?? "fp32";
+  const mixedPrecision = params.mixed_precision ?? true;
+  const useFlashAttention = params.use_flash_attention ?? false;
+  const minSnrGamma = params.min_snr_gamma ?? 5.0;
+  const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
 
   // Text encoding mode
   const [textEncodingMode, setTextEncodingMode] = useState<string>("swap_onthefly");
@@ -560,14 +560,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       text_encoder_1_lr: localTextEncoder1LrText ? parseFloat(localTextEncoder1LrText) : null,
       text_encoder_2_lr: localTextEncoder2LrText ? parseFloat(localTextEncoder2LrText) : null,
       image_encoder_lr: localImageEncoderLrText ? parseFloat(localImageEncoderLrText) : null,
-      weight_dtype: weightDtype,
-      training_dtype: trainingDtype,
-      output_dtype: outputDtype,
-      vae_dtype: vaeDtype,
-      mixed_precision: mixedPrecision,
-      use_flash_attention: useFlashAttention,
-      min_snr_gamma: minSnrGamma,
-      reconstruction_loss_weight: reconstructionLossWeight,
+      weight_dtype: params.weight_dtype,
+      training_dtype: params.training_dtype,
+      output_dtype: params.output_dtype,
+      vae_dtype: params.vae_dtype,
+      mixed_precision: params.mixed_precision,
+      use_flash_attention: params.use_flash_attention,
+      min_snr_gamma: params.min_snr_gamma,
+      reconstruction_loss_weight: params.reconstruction_loss_weight,
       text_encoding_mode: textEncodingMode,
       text_encoding_swap_interval: textEncodingSwapInterval,
       use_reference_images: useReferenceImages,
@@ -627,8 +627,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     localBeta1Text, localBeta2Text, localEpsilonText, localWeightDecayText,
     localScheduleFreeRText, localScheduleFreeWeightLrPowerText,
     localUnetLrText, localTextEncoderLrText, localTextEncoder1LrText, localTextEncoder2LrText, localImageEncoderLrText,
-    weightDtype, trainingDtype,
-    outputDtype, vaeDtype, mixedPrecision, useFlashAttention, minSnrGamma, reconstructionLossWeight,
     textEncodingMode, textEncodingSwapInterval, useReferenceImages, visionEncoderPath, trainVisionEncoder,
     visionEncoderLr, gradientRoutingVE, paramTracking, paramTrackingInterval, latentEncodingMode,
     latentEncodingSwapInterval, blocksToSwap, usePinnedMemory, numOptimizerGroups, multiNoiseTimesteps,
@@ -737,14 +735,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
 
     // Precision
-    if (params.weight_dtype !== undefined) setWeightDtype(params.weight_dtype);
-    if (params.training_dtype !== undefined) setTrainingDtype(params.training_dtype);
-    if (params.output_dtype !== undefined) setOutputDtype(params.output_dtype);
-    if (params.vae_dtype !== undefined) setVaeDtype(params.vae_dtype);
-    if (params.mixed_precision !== undefined) setMixedPrecision(params.mixed_precision);
-    if (params.use_flash_attention !== undefined) setUseFlashAttention(params.use_flash_attention);
-    if (params.min_snr_gamma !== undefined) setMinSnrGamma(params.min_snr_gamma);
-    if (params.reconstruction_loss_weight !== undefined) setReconstructionLossWeight(params.reconstruction_loss_weight);
+    if (params.weight_dtype !== undefined) setParams(prev => ({ ...prev, weight_dtype: params.weight_dtype }));
+    if (params.training_dtype !== undefined) setParams(prev => ({ ...prev, training_dtype: params.training_dtype }));
+    if (params.output_dtype !== undefined) setParams(prev => ({ ...prev, output_dtype: params.output_dtype }));
+    if (params.vae_dtype !== undefined) setParams(prev => ({ ...prev, vae_dtype: params.vae_dtype }));
+    if (params.mixed_precision !== undefined) setParams(prev => ({ ...prev, mixed_precision: params.mixed_precision }));
+    if (params.use_flash_attention !== undefined) setParams(prev => ({ ...prev, use_flash_attention: params.use_flash_attention }));
+    if (params.min_snr_gamma !== undefined) setParams(prev => ({ ...prev, min_snr_gamma: params.min_snr_gamma }));
+    if (params.reconstruction_loss_weight !== undefined) setParams(prev => ({ ...prev, reconstruction_loss_weight: params.reconstruction_loss_weight }));
 
     // Memory optimization
     if (params.text_encoding_mode !== undefined) setTextEncodingMode(params.text_encoding_mode);
@@ -923,10 +921,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // - Z-Image/FLUX.2: VAE=fp32, weight=bf16, training=bf16, save=bf16
     if (arch === "zimage" || arch === "flux2") {
       // Z-Image/FLUX.2: bf16 for weights/training/output, fp32 for VAE
-      setWeightDtype("bf16");
-      setTrainingDtype("bf16");
-      setOutputDtype("bf16");
-      setVaeDtype("fp32");
+      updateParam("weight_dtype", "bf16");
+      updateParam("training_dtype", "bf16");
+      updateParam("output_dtype", "bf16");
+      updateParam("vae_dtype", "fp32");
       // Z-Image/FLUX.2: Cannot train text encoder (frozen)
       updateParam("train_text_encoder", false);
       // Z-Image/FLUX.2: VE not supported — clear selection
@@ -934,11 +932,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       setTrainVisionEncoder(false);
     } else {
       // SD1.5/SDXL/DEUS: fp32 for weights, fp16 for training/output/VAE
-      setWeightDtype("fp32");
-      setTrainingDtype("fp16");
-      setOutputDtype("fp16");
-      setVaeDtype("fp16");
+      updateParam("weight_dtype", "fp32");
+      updateParam("training_dtype", "fp16");
+      updateParam("output_dtype", "fp16");
+      updateParam("vae_dtype", "fp16");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath]);
 
   // Reset optimizer hyperparameters when optimizer changes
@@ -1476,14 +1475,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       if (!isNaN(v)) updateParam("text_encoder_2_lr", v);
       setLocalTextEncoder2LrText(config.textEncoder2Lr);
     }
-    if (config.weightDtype !== undefined) setWeightDtype(config.weightDtype);
-    if (config.trainingDtype !== undefined) setTrainingDtype(config.trainingDtype);
-    if (config.outputDtype !== undefined) setOutputDtype(config.outputDtype);
-    if (config.vaeDtype !== undefined) setVaeDtype(config.vaeDtype);
-    if (config.mixedPrecision !== undefined) setMixedPrecision(config.mixedPrecision);
-    if (config.useFlashAttention !== undefined) setUseFlashAttention(config.useFlashAttention);
-    if (config.minSnrGamma !== undefined) setMinSnrGamma(config.minSnrGamma);
-    if (config.reconstructionLossWeight !== undefined) setReconstructionLossWeight(config.reconstructionLossWeight);
+    if (config.weightDtype !== undefined) updateParam("weight_dtype", config.weightDtype);
+    if (config.trainingDtype !== undefined) updateParam("training_dtype", config.trainingDtype);
+    if (config.outputDtype !== undefined) updateParam("output_dtype", config.outputDtype);
+    if (config.vaeDtype !== undefined) updateParam("vae_dtype", config.vaeDtype);
+    if (config.mixedPrecision !== undefined) updateParam("mixed_precision", config.mixedPrecision);
+    if (config.useFlashAttention !== undefined) updateParam("use_flash_attention", config.useFlashAttention);
+    if (config.minSnrGamma !== undefined) updateParam("min_snr_gamma", config.minSnrGamma);
+    if (config.reconstructionLossWeight !== undefined) updateParam("reconstruction_loss_weight", config.reconstructionLossWeight);
     if (config.textEncodingMode !== undefined) setTextEncodingMode(config.textEncodingMode);
     if (config.textEncodingSwapInterval !== undefined) setTextEncodingSwapInterval(config.textEncodingSwapInterval);
     if (config.latentEncodingMode !== undefined) setLatentEncodingMode(config.latentEncodingMode);
@@ -3053,7 +3052,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Weight dtype</label>
               <select
                 value={weightDtype}
-                onChange={(e) => setWeightDtype(e.target.value)}
+                onChange={(e) => updateParam("weight_dtype", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="fp32">FP32 (推奨)</option>
@@ -3069,7 +3068,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Training dtype</label>
               <select
                 value={trainingDtype}
-                onChange={(e) => setTrainingDtype(e.target.value)}
+                onChange={(e) => updateParam("training_dtype", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="fp32">FP32</option>
@@ -3087,7 +3086,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">Output dtype</label>
               <select
                 value={outputDtype}
-                onChange={(e) => setOutputDtype(e.target.value)}
+                onChange={(e) => updateParam("output_dtype", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="fp32">FP32</option>
@@ -3101,7 +3100,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <label className="block text-xs text-gray-400 mb-1">VAE dtype</label>
               <select
                 value={vaeDtype}
-                onChange={(e) => setVaeDtype(e.target.value)}
+                onChange={(e) => updateParam("vae_dtype", e.target.value)}
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="fp32">FP32 (推奨)</option>
@@ -3120,7 +3119,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="checkbox"
                 id="mixed-precision"
                 checked={mixedPrecision}
-                onChange={(e) => setMixedPrecision(e.target.checked)}
+                onChange={(e) => updateParam("mixed_precision", e.target.checked)}
                 className="w-4 h-4"
               />
               <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
@@ -3134,7 +3133,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="checkbox"
                 id="use-flash-attention"
                 checked={useFlashAttention}
-                onChange={(e) => setUseFlashAttention(e.target.checked)}
+                onChange={(e) => updateParam("use_flash_attention", e.target.checked)}
                 className="w-4 h-4"
               />
               <label htmlFor="use-flash-attention" className="text-xs text-gray-300 cursor-pointer">
@@ -3151,8 +3150,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="min-snr-gamma"
                 value={minSnrGamma}
-                onChange={(e) => setMinSnrGamma(e.target.value === ''  ? '' as any : parseFloat(e.target.value))}
-                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setMinSnrGamma(5.0); }}
+                onChange={(e) => updateParam("min_snr_gamma", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("min_snr_gamma", 5.0); }}
                 step={0.5}
                 min={0}
                 max={20}
@@ -3172,8 +3171,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 type="number"
                 id="reconstruction-loss-weight"
                 value={reconstructionLossWeight}
-                onChange={(e) => setReconstructionLossWeight(e.target.value === ''  ? '' as any : parseFloat(e.target.value))}
-                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) setReconstructionLossWeight(0.0); }}
+                onChange={(e) => updateParam("reconstruction_loss_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("reconstruction_loss_weight", 0.0); }}
                 step={0.05}
                 min={0}
                 max={1.0}

@@ -1114,6 +1114,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const { addToQueue, updateQueueItem, updateQueueItemByLoop, cancelLoopGroup, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue, generateForever, setGenerateForever } = useGenerationQueue();
   const [showForeverMenu, setShowForeverMenu] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isLongPressTriggeredRef = useRef(false);
+  const longPressPositionRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [resolutionStep, setResolutionStep] = useState(64);
   const [aspectRatioPresets, setAspectRatioPresets] = useState<Array<{ label: string; ratio: number }>>([
     { label: "1:1", ratio: 1 / 1 },
@@ -1252,6 +1255,43 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         negative_prompt: processedNegativePrompt,
       } as Img2ImgParams, loopGroupId);
     }
+  };
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const toFixedViewportPosition = (clientX: number, clientY: number) => {
+    const visualViewport = window.visualViewport;
+    return {
+      x: clientX + (visualViewport?.offsetLeft ?? 0),
+      y: clientY + (visualViewport?.offsetTop ?? 0),
+    };
+  };
+
+  const handleGenerateTouchStart = (e: React.TouchEvent<HTMLButtonElement>) => {
+    isLongPressTriggeredRef.current = false;
+    const touch = e.touches[0];
+    if (touch) {
+      const pos = toFixedViewportPosition(touch.clientX, touch.clientY);
+      longPressPositionRef.current = pos;
+    }
+    clearLongPressTimer();
+    longPressTimerRef.current = setTimeout(() => {
+      isLongPressTriggeredRef.current = true;
+      setMenuPosition({
+        x: Math.max(16, longPressPositionRef.current.x - 80),
+        y: Math.max(16, longPressPositionRef.current.y - 56),
+      });
+      setShowForeverMenu(true);
+    }, 500);
+  };
+
+  const handleGenerateTouchEnd = () => {
+    clearLongPressTimer();
   };
 
   // Add loop generation steps to queue immediately (without base image URL)
@@ -2602,10 +2642,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               {/* Action Buttons - Desktop only (hidden on mobile) */}
               <div className="hidden lg:flex gap-2 relative">
                 <Button
-                  onClick={handleAddToQueue}
+                  onClick={() => {
+                    if (isLongPressTriggeredRef.current) {
+                      isLongPressTriggeredRef.current = false;
+                      return;
+                    }
+                    handleAddToQueue();
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
-                    setMenuPosition({ x: e.clientX, y: e.clientY });
+                    const pos = toFixedViewportPosition(e.clientX, e.clientY);
+                    setMenuPosition({ x: pos.x, y: pos.y });
                     setShowForeverMenu(true);
                   }}
                   className="flex-1"
@@ -2614,30 +2661,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   {isGenerating ? "Add to Queue" : generateForever ? "Generate Forever ∞" : "Generate"}
                 </Button>
 
-                {/* Right-click menu for generate forever */}
-                {showForeverMenu && (
-                  <>
-                    <div
-                      className="fixed inset-0 z-40"
-                      onClick={() => setShowForeverMenu(false)}
-                    />
-                    <div
-                      className="fixed z-50 bg-gray-800 border border-gray-600 rounded shadow-lg py-1"
-                      style={{ left: menuPosition.x, top: menuPosition.y }}
-                    >
-                      <button
-                        onClick={() => {
-                          setGenerateForever(!generateForever);
-                          setShowForeverMenu(false);
-                        }}
-                        className="w-full px-4 py-2 text-left hover:bg-gray-700 flex items-center gap-2"
-                      >
-                        <span className="w-4">{generateForever ? "✓" : ""}</span>
-                        <span>Generate Forever</span>
-                      </button>
-                    </div>
-                  </>
-                )}
                 {isGenerating && (
                   <Button
                     onClick={async () => {
@@ -2678,12 +2701,22 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   {isMobileControlsOpen && (
                     <>
                       <Button
-                        onClick={handleAddToQueue}
+                        onClick={() => {
+                          if (isLongPressTriggeredRef.current) {
+                            isLongPressTriggeredRef.current = false;
+                            return;
+                          }
+                          handleAddToQueue();
+                        }}
                         onContextMenu={(e) => {
                           e.preventDefault();
-                          setMenuPosition({ x: e.clientX, y: e.clientY });
+                          const pos = toFixedViewportPosition(e.clientX, e.clientY);
+                          setMenuPosition({ x: pos.x, y: pos.y });
                           setShowForeverMenu(true);
                         }}
+                        onTouchStart={handleGenerateTouchStart}
+                        onTouchEnd={handleGenerateTouchEnd}
+                        onTouchCancel={handleGenerateTouchEnd}
                         className="flex-1"
                         size="lg"
                       >
@@ -2731,6 +2764,31 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   </button>
                 </div>
               </div>
+
+              {/* Context/long-press menu for generate forever */}
+              {showForeverMenu && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40"
+                    onClick={() => setShowForeverMenu(false)}
+                  />
+                  <div
+                    className="fixed z-50 bg-gray-800 border border-gray-600 rounded shadow-lg py-1"
+                    style={{ left: menuPosition.x, top: menuPosition.y }}
+                  >
+                    <button
+                      onClick={() => {
+                        setGenerateForever(!generateForever);
+                        setShowForeverMenu(false);
+                      }}
+                      className="w-full px-4 py-2 text-left hover:bg-gray-700 flex items-center gap-2"
+                    >
+                      <span className="w-4">{generateForever ? "✓" : ""}</span>
+                      <span>Generate Forever</span>
+                    </button>
+                  </div>
+                </>
+              )}
 
               {/* Preview Predicted x0 toggle */}
               <div className="flex items-center gap-2">

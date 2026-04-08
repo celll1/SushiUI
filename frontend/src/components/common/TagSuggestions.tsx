@@ -63,23 +63,32 @@ export default function TagSuggestions({
 
   // Adjust position to prevent overflow
   useEffect(() => {
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
+    const visualViewport = window.visualViewport;
+    const viewportWidth = visualViewport?.width ?? window.innerWidth;
+    const viewportHeight = visualViewport?.height ?? window.innerHeight;
+    const viewportOffsetLeft = visualViewport?.offsetLeft ?? 0;
+    const viewportOffsetTop = visualViewport?.offsetTop ?? 0;
     const suggestionsWidth = isMobile ? Math.min(viewportWidth - 32, 300) : 500;
     const suggestionsHeight = 256; // max-h-64 = 16rem = 256px
 
-    let newLeft = position.left;
-    let newTop = position.top;
+    // Convert visual viewport-based coordinates (clientX/clientY, getBoundingClientRect)
+    // into layout viewport coordinates used by position: fixed.
+    let newLeft = position.left + viewportOffsetLeft;
+    let newTop = position.top + viewportOffsetTop;
+    const minLeft = viewportOffsetLeft + 16;
+    const minTop = viewportOffsetTop + 16;
+    const maxRight = viewportOffsetLeft + viewportWidth - 16;
+    const maxBottom = viewportOffsetTop + viewportHeight - 16;
 
     // Prevent horizontal overflow
-    if (newLeft + suggestionsWidth > viewportWidth - 16) {
-      newLeft = Math.max(16, viewportWidth - suggestionsWidth - 16);
+    if (newLeft + suggestionsWidth > maxRight) {
+      newLeft = Math.max(minLeft, maxRight - suggestionsWidth);
     }
 
     // Prevent vertical overflow
-    if (newTop + suggestionsHeight > viewportHeight - 16) {
+    if (newTop + suggestionsHeight > maxBottom) {
       // Show above cursor instead
-      newTop = Math.max(16, position.top - suggestionsHeight - 10);
+      newTop = Math.max(minTop, newTop - suggestionsHeight - 10);
     }
 
     setAdjustedPosition({ top: newTop, left: newLeft });
@@ -140,8 +149,8 @@ export default function TagSuggestions({
         top: adjustedPosition.top + 'px',
         left: adjustedPosition.left + 'px',
         minWidth: isMobile ? "auto" : "300px",
-        maxWidth: isMobile ? `${Math.min(window.innerWidth - 32, 300)}px` : "500px",
-        width: isMobile ? `${Math.min(window.innerWidth - 32, 300)}px` : "auto",
+        maxWidth: isMobile ? `${Math.min((window.visualViewport?.width ?? window.innerWidth) - 32, 300)}px` : "500px",
+        width: isMobile ? `${Math.min((window.visualViewport?.width ?? window.innerWidth) - 32, 300)}px` : "auto",
       }}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}

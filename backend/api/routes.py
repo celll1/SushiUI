@@ -6725,7 +6725,8 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
     _tagger_training_threads[run_id] = thread
     thread.start()
 
-    return {"status": "started", "run_id": run_id}
+    training_db.refresh(run)
+    return {"message": "started", "run": run.to_dict()}
 
 
 @router.post("/tagger-training/runs/{run_id}/stop")
@@ -6736,7 +6737,8 @@ def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_tra
         raise HTTPException(status_code=404, detail="Tagger training run not found")
     run.status = "stopped"
     training_db.commit()
-    return {"status": "stop_requested", "run_id": run_id}
+    training_db.refresh(run)
+    return {"message": "stop_requested", "run": run.to_dict()}
 
 
 @router.delete("/tagger-training/runs/{run_id}")

@@ -8,6 +8,7 @@ import {
   Dataset,
   TaggerTrainingRun,
   TaggerTrainingRunCreateRequest,
+  TaggerDatasetConfig,
 } from "@/utils/api";
 
 interface TaggerTrainingConfigProps {
@@ -15,11 +16,10 @@ interface TaggerTrainingConfigProps {
   onRunCreated: (run: TaggerTrainingRun) => void;
 }
 
-const DEFAULT_CONFIG: TaggerTrainingRunCreateRequest = {
+const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = {
   run_name: "",
   training_method: "lora",
   vision_encoder_path: "",
-  dataset_configs: [],
   lora_rank: 32,
   lora_alpha: 16,
   learning_rate: 3e-4,
@@ -36,13 +36,17 @@ const DEFAULT_CONFIG: TaggerTrainingRunCreateRequest = {
   save_best_only: true,
 };
 
+type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
+
 export default function TaggerTrainingConfig({
   onClose,
   onRunCreated,
 }: TaggerTrainingConfigProps) {
-  const [config, setConfig] = useState<TaggerTrainingRunCreateRequest>(DEFAULT_CONFIG);
+  const [config, setConfig] = useState<ConfigState>(DEFAULT_CONFIG);
+  // selectedDatasetIds tracks numeric dataset.id values
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [vocabPreview, setVocabPreview] = useState<{ total_tags: number; sample_tags: string[] } | null>(null);
+  const [vocabPreview, setVocabPreview] = useState<{ num_tags: number; category_counts: Record<string, number> } | null>(null);
   const [vocabLoading, setVocabLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,13 +61,13 @@ export default function TaggerTrainingConfig({
   }, []);
 
   const loadVocabPreview = useCallback(async () => {
-    if (config.dataset_configs.length === 0) {
+    if (selectedDatasetIds.length === 0) {
       setVocabPreview(null);
       return;
     }
     setVocabLoading(true);
     try {
-      const preview = await getTaggerVocabularyPreview(config.dataset_configs);
+      const preview = await getTaggerVocabularyPreview(selectedDatasetIds);
       setVocabPreview(preview);
     } catch (err) {
       console.error("[TaggerTrainingConfig] Vocab preview error:", err);
@@ -71,18 +75,18 @@ export default function TaggerTrainingConfig({
     } finally {
       setVocabLoading(false);
     }
-  }, [config.dataset_configs]);
+  }, [selectedDatasetIds]);
 
   useEffect(() => {
     loadVocabPreview();
   }, [loadVocabPreview]);
 
-  const handleDatasetToggle = (datasetId: string) => {
-    const current = config.dataset_configs;
-    const updated = current.includes(datasetId)
-      ? current.filter((id) => id !== datasetId)
-      : [...current, datasetId];
-    setConfig({ ...config, dataset_configs: updated });
+  const handleDatasetToggle = (datasetId: number) => {
+    setSelectedDatasetIds((prev) =>
+      prev.includes(datasetId)
+        ? prev.filter((id) => id !== datasetId)
+        : [...prev, datasetId]
+    );
   };
 
   const handleCreate = async () => {
@@ -90,14 +94,21 @@ export default function TaggerTrainingConfig({
       setError("Run name is required.");
       return;
     }
-    if (config.dataset_configs.length === 0) {
+    if (selectedDatasetIds.length === 0) {
       setError("At least one dataset must be selected.");
       return;
     }
     setCreating(true);
     setError(null);
     try {
-      const run = await createTaggerTrainingRun(config);
+      const datasetConfigs: TaggerDatasetConfig[] = selectedDatasetIds.map((id) => ({
+        dataset_id: id,
+        caption_types: [],
+      }));
+      const run = await createTaggerTrainingRun({
+        ...config,
+        dataset_configs: datasetConfigs,
+      });
       onRunCreated(run);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -107,9 +118,9 @@ export default function TaggerTrainingConfig({
     }
   };
 
-  const setField = <K extends keyof TaggerTrainingRunCreateRequest>(
+  const setField = <K extends keyof ConfigState>(
     key: K,
-    value: TaggerTrainingRunCreateRequest[K]
+    value: ConfigState[K]
   ) => setConfig((prev) => ({ ...prev, [key]: value }));
 
   return (
@@ -189,8 +200,7 @@ export default function TaggerTrainingConfig({
           ) : (
             <div className="flex flex-wrap gap-2">
               {tagDatasets.map((dataset) => {
-                const id = dataset.unique_id || String(dataset.id);
-                const selected = config.dataset_configs.includes(id);
+                const selected = selectedDatasetIds.includes(dataset.id);
                 return (
                   <label
                     key={dataset.id}
@@ -203,7 +213,7 @@ export default function TaggerTrainingConfig({
                     <input
                       type="checkbox"
                       checked={selected}
-                      onChange={() => handleDatasetToggle(id)}
+                      onChange={() => handleDatasetToggle(dataset.id)}
                       className="accent-blue-500"
                     />
                     <span className="font-medium">{dataset.name}</span>
@@ -217,19 +227,20 @@ export default function TaggerTrainingConfig({
           )}
 
           {/* Vocab preview */}
-          {config.dataset_configs.length > 0 && (
+          {selectedDatasetIds.length > 0 && (
             <div className="mt-3 p-3 bg-gray-800 rounded border border-gray-700 text-xs">
               {vocabLoading ? (
                 <span className="text-gray-400">Building vocabulary preview...</span>
               ) : vocabPreview ? (
                 <>
                   <div className="text-green-400 font-medium mb-1">
-                    Vocabulary: {vocabPreview.total_tags.toLocaleString()} tags
+                    Vocabulary: {vocabPreview.num_tags.toLocaleString()} tags
                   </div>
-                  {vocabPreview.sample_tags.length > 0 && (
-                    <div className="text-gray-400">
-                      Sample: {vocabPreview.sample_tags.slice(0, 10).join(", ")}
-                      {vocabPreview.sample_tags.length > 10 && "..."}
+                  {Object.keys(vocabPreview.category_counts).length > 0 && (
+                    <div className="text-gray-400 flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                      {Object.entries(vocabPreview.category_counts).map(([cat, count]) => (
+                        <span key={cat}>{cat}: {count.toLocaleString()}</span>
+                      ))}
                     </div>
                   )}
                 </>

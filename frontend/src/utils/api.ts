@@ -1981,11 +1981,16 @@ export interface TaggerTrainingRun {
   updated_at: string;
 }
 
+export interface TaggerDatasetConfig {
+  dataset_id: number;
+  caption_types?: string[];
+}
+
 export interface TaggerTrainingRunCreateRequest {
   run_name: string;
   training_method: "full" | "lora";
   vision_encoder_path: string;
-  dataset_configs: string[];
+  dataset_configs: TaggerDatasetConfig[];
   lora_rank?: number;
   lora_alpha?: number;
   learning_rate?: number;
@@ -2012,9 +2017,8 @@ export interface TaggerTrainingMetric {
 }
 
 export interface TaggerVocabularyPreview {
-  total_tags: number;
-  dataset_ids: string[];
-  sample_tags: string[];
+  num_tags: number;
+  category_counts: Record<string, number>;
 }
 
 export const createTaggerTrainingRun = async (
@@ -2060,9 +2064,9 @@ export const getTaggerTrainingMetrics = async (
 };
 
 export const getTaggerVocabularyPreview = async (
-  datasetIds: string[]
+  datasetIds: number[]
 ): Promise<TaggerVocabularyPreview> => {
-  const response = await api.get("/tagger-training/vocabulary", {
+  const response = await api.get("/tagger-training/vocabulary-preview", {
     params: { dataset_ids: datasetIds.join(",") },
   });
   return response.data;

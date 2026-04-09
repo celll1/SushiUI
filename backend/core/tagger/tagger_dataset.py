@@ -69,7 +69,7 @@ class TaggerDataset(Dataset):
         datasets_db,
         caption_types: Optional[List[str]],
     ) -> None:
-        from backend.database.models import DatasetItem, DatasetCaption
+        from database.models import DatasetItem, DatasetCaption
 
         for dataset_id in dataset_ids:
             items = (

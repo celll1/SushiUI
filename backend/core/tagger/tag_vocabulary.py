@@ -66,7 +66,7 @@ class TagVocabulary:
         datasets_db : SQLAlchemy session for datasets.db
         min_count   : minimum occurrence count to include a tag
         """
-        from backend.database.models import DatasetItem, DatasetCaption
+        from database.models import DatasetItem, DatasetCaption
 
         tag_counts: Dict[str, int] = defaultdict(int)
         tag_categories: Dict[str, str] = {}

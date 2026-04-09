@@ -47,8 +47,8 @@ export default function TaggerTrainingConfig({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Show all datasets (user selects tags-format datasets)
-  const tagDatasets = datasets;
+  // Only show datasets that have tags-format captions
+  const tagDatasets = datasets.filter((d) => d.has_tags_captions);
 
   useEffect(() => {
     listDatasets()
@@ -184,20 +184,20 @@ export default function TaggerTrainingConfig({
             <p className="text-sm text-gray-500">Loading datasets...</p>
           ) : tagDatasets.length === 0 ? (
             <p className="text-sm text-gray-500">
-              No datasets found. Create a dataset and add tag captions first.
+              No datasets with tags-format captions found. Scan a dataset that has tag captions first.
             </p>
           ) : (
-            <div className="space-y-2">
+            <div className="flex flex-wrap gap-2">
               {tagDatasets.map((dataset) => {
                 const id = dataset.unique_id || String(dataset.id);
                 const selected = config.dataset_configs.includes(id);
                 return (
                   <label
                     key={dataset.id}
-                    className={`flex items-center gap-3 p-3 rounded border cursor-pointer transition-colors ${
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer transition-colors text-sm ${
                       selected
-                        ? "border-blue-500 bg-blue-900/20"
-                        : "border-gray-600 bg-gray-800 hover:bg-gray-700"
+                        ? "border-blue-500 bg-blue-900/30 text-white"
+                        : "border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700"
                     }`}
                   >
                     <input
@@ -206,12 +206,10 @@ export default function TaggerTrainingConfig({
                       onChange={() => handleDatasetToggle(id)}
                       className="accent-blue-500"
                     />
-                    <div>
-                      <div className="text-sm font-medium">{dataset.name}</div>
-                      <div className="text-xs text-gray-400">
-                        {dataset.total_items} images · {dataset.total_tags} tags
-                      </div>
-                    </div>
+                    <span className="font-medium">{dataset.name}</span>
+                    <span className="text-xs text-gray-400">
+                      {dataset.total_items.toLocaleString()} imgs · {dataset.total_tags.toLocaleString()} tagged
+                    </span>
                   </label>
                 );
               })}

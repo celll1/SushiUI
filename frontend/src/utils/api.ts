@@ -1021,6 +1021,7 @@ export interface Dataset {
   total_items: number;
   total_captions: number;
   total_tags: number;
+  has_tags_captions?: boolean;
   tag_statistics?: Record<string, { count: number }>;
   created_at: string;
   updated_at: string;

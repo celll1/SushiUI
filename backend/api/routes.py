@@ -2731,17 +2731,24 @@ class DatasetCreateRequest(BaseModel):
 
 def update_dataset_statistics(dataset: Dataset, db: Session):
     """Update dataset statistics by counting items and captions"""
+    item_ids_subq = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset.id)
     total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
     total_captions = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(
-            db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset.id)
-        )
+        DatasetCaption.item_id.in_(item_ids_subq)
+    ).count()
+    # Count items that have at least one tags-format caption
+    total_tags = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id.in_(item_ids_subq),
+        DatasetCaption.is_tags_format == True
     ).count()
 
     # Only update if values changed (avoid unnecessary writes)
-    if dataset.total_items != total_items or dataset.total_captions != total_captions:
+    if (dataset.total_items != total_items
+            or dataset.total_captions != total_captions
+            or dataset.total_tags != total_tags):
         dataset.total_items = total_items
         dataset.total_captions = total_captions
+        dataset.total_tags = total_tags
         db.commit()
 
 @router.get("/datasets")

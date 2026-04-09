@@ -1,0 +1,402 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  getTaggerTrainingRun,
+  getTaggerTrainingMetrics,
+  startTaggerTrainingRun,
+  stopTaggerTrainingRun,
+  deleteTaggerTrainingRun,
+  TaggerTrainingRun,
+  TaggerTrainingMetric,
+} from "@/utils/api";
+
+interface TaggerTrainingMonitorProps {
+  run: TaggerTrainingRun;
+  onClose: () => void;
+  onStatusChange: (run: TaggerTrainingRun) => void;
+  onDelete: () => void;
+}
+
+function MiniChart({
+  data,
+  valueKey,
+  color,
+  height = 80,
+}: {
+  data: TaggerTrainingMetric[];
+  valueKey: "loss" | "f1";
+  color: string;
+  height?: number;
+}) {
+  const points = data
+    .map((d) => ({ step: d.step, value: d[valueKey] }))
+    .filter((d): d is { step: number; value: number } => d.value !== null);
+
+  if (points.length < 2) {
+    return (
+      <div
+        className="flex items-center justify-center text-gray-500 text-xs"
+        style={{ height }}
+      >
+        Not enough data
+      </div>
+    );
+  }
+
+  const minV = Math.min(...points.map((p) => p.value));
+  const maxV = Math.max(...points.map((p) => p.value));
+  const range = maxV - minV || 1;
+  const minStep = points[0].step;
+  const maxStep = points[points.length - 1].step;
+  const stepRange = maxStep - minStep || 1;
+
+  const w = 400;
+  const h = height;
+  const pad = 4;
+
+  const toX = (step: number) =>
+    pad + ((step - minStep) / stepRange) * (w - 2 * pad);
+  const toY = (v: number) =>
+    pad + ((maxV - v) / range) * (h - 2 * pad);
+
+  const pathD = points
+    .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toY(p.value).toFixed(1)}`)
+    .join(" ");
+
+  return (
+    <svg
+      viewBox={`0 0 ${w} ${h}`}
+      className="w-full"
+      style={{ height }}
+      preserveAspectRatio="none"
+    >
+      <path d={pathD} fill="none" stroke={color} strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+export default function TaggerTrainingMonitor({
+  run: initialRun,
+  onClose,
+  onStatusChange,
+  onDelete,
+}: TaggerTrainingMonitorProps) {
+  const [run, setRun] = useState<TaggerTrainingRun>(initialRun);
+  const [metrics, setMetrics] = useState<TaggerTrainingMetric[]>([]);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
+  const updateRun = useCallback((updated: TaggerTrainingRun) => {
+    setRun(updated);
+    onStatusChange(updated);
+  }, [onStatusChange]);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const updated = await getTaggerTrainingRun(run.run_id);
+      updateRun(updated);
+    } catch (err) {
+      console.error("[TaggerMonitor] Failed to fetch status:", err);
+    }
+  }, [run.run_id, updateRun]);
+
+  const fetchMetrics = useCallback(async () => {
+    try {
+      const data = await getTaggerTrainingMetrics(run.run_id);
+      setMetrics(data);
+    } catch (err) {
+      console.error("[TaggerMonitor] Failed to fetch metrics:", err);
+    }
+  }, [run.run_id]);
+
+  // Poll when running
+  useEffect(() => {
+    const isActive = run.status === "running" || run.status === "starting";
+
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+
+    if (!isActive) return;
+
+    pollingRef.current = setInterval(async () => {
+      await fetchStatus();
+      await fetchMetrics();
+    }, 3000);
+
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
+      }
+    };
+  }, [run.status, fetchStatus, fetchMetrics]);
+
+  // Load metrics on mount
+  useEffect(() => {
+    fetchMetrics();
+  }, [fetchMetrics]);
+
+  const handleStart = async () => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      const result = await startTaggerTrainingRun(run.run_id);
+      updateRun(result.run);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleStop = async () => {
+    setActionLoading(true);
+    setError(null);
+    try {
+      const result = await stopTaggerTrainingRun(run.run_id);
+      updateRun(result.run);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setActionLoading(true);
+    try {
+      await deleteTaggerTrainingRun(run.run_id);
+      onDelete();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setError(msg);
+      setActionLoading(false);
+    }
+  };
+
+  const isActive = run.status === "running" || run.status === "starting";
+  const canStart = run.status === "idle" || run.status === "failed" || run.status === "stopped";
+  const canStop = isActive;
+
+  const lossData = metrics.filter((m) => m.loss !== null);
+  const f1Data = metrics.filter((m) => m.f1 !== null);
+
+  const statusColor =
+    run.status === "running" ? "text-blue-400" :
+    run.status === "completed" ? "text-green-400" :
+    run.status === "failed" ? "text-red-400" :
+    run.status === "stopped" ? "text-yellow-400" :
+    "text-gray-400";
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center justify-between p-4 border-b border-gray-700 flex-shrink-0">
+        <div>
+          <h2 className="text-lg font-semibold">{run.run_name}</h2>
+          <div className="flex items-center gap-3 mt-0.5">
+            <span className={`text-sm font-medium ${statusColor}`}>{run.status}</span>
+            <span className="text-xs text-gray-500">
+              {run.training_method.toUpperCase()} · {run.num_tags} tags
+            </span>
+          </div>
+        </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+
+        {/* Progress */}
+        {(isActive || run.progress > 0) && (
+          <section>
+            <div className="flex items-center justify-between text-sm mb-1">
+              <span className="text-gray-400">
+                Epoch {run.current_epoch} · Step {run.current_step}
+              </span>
+              <span className="text-gray-300">{run.progress.toFixed(1)}%</span>
+            </div>
+            <div className="w-full bg-gray-700 rounded-full h-2">
+              <div
+                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
+                style={{ width: `${run.progress}%` }}
+              />
+            </div>
+          </section>
+        )}
+
+        {/* Stats */}
+        <section className="grid grid-cols-3 gap-3">
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-xs text-gray-400 mb-1">Best F1</div>
+            <div className="text-lg font-mono text-green-400">
+              {run.best_f1 !== null ? run.best_f1.toFixed(4) : "—"}
+            </div>
+          </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-xs text-gray-400 mb-1">Best Threshold</div>
+            <div className="text-lg font-mono text-blue-400">
+              {run.best_threshold !== null ? run.best_threshold.toFixed(3) : "—"}
+            </div>
+          </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-xs text-gray-400 mb-1">Latest Loss</div>
+            <div className="text-lg font-mono text-orange-400">
+              {run.latest_loss !== null ? run.latest_loss.toFixed(4) : "—"}
+            </div>
+          </div>
+        </section>
+
+        {/* Loss chart */}
+        {lossData.length >= 2 && (
+          <section>
+            <div className="text-sm font-medium text-gray-300 mb-2">Training Loss</div>
+            <div className="bg-gray-800 rounded p-2 border border-gray-700">
+              <MiniChart data={lossData} valueKey="loss" color="#f97316" height={80} />
+            </div>
+          </section>
+        )}
+
+        {/* F1 chart */}
+        {f1Data.length >= 2 && (
+          <section>
+            <div className="text-sm font-medium text-gray-300 mb-2">Validation F1</div>
+            <div className="bg-gray-800 rounded p-2 border border-gray-700">
+              <MiniChart data={f1Data} valueKey="f1" color="#22c55e" height={80} />
+            </div>
+          </section>
+        )}
+
+        {/* Error message */}
+        {run.error_message && (
+          <section>
+            <div className="text-sm font-medium text-red-400 mb-1">Error</div>
+            <div className="bg-red-900/20 border border-red-700 rounded p-3 text-xs text-red-300 font-mono whitespace-pre-wrap">
+              {run.error_message}
+            </div>
+          </section>
+        )}
+
+        {/* Checkpoint paths */}
+        {(run.head_checkpoint_path || run.lora_checkpoint_path) && (
+          <section>
+            <div className="text-sm font-medium text-gray-300 mb-2">Checkpoints</div>
+            <div className="space-y-1">
+              {run.head_checkpoint_path && (
+                <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate">
+                  Head: {run.head_checkpoint_path}
+                </div>
+              )}
+              {run.lora_checkpoint_path && (
+                <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate">
+                  LoRA: {run.lora_checkpoint_path}
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* Config info */}
+        <section>
+          <div className="text-sm font-medium text-gray-300 mb-2">Configuration</div>
+          <div className="text-xs text-gray-400 bg-gray-800 rounded p-3 space-y-1">
+            <div>Vision encoder: <span className="text-gray-300 font-mono">{run.vision_encoder_path}</span></div>
+            <div>Datasets: <span className="text-gray-300">{run.dataset_configs.length}</span></div>
+            {run.config && typeof run.config === "object" && (
+              <>
+                {run.config.learning_rate !== undefined && (
+                  <div>Learning rate: <span className="text-gray-300">{String(run.config.learning_rate)}</span></div>
+                )}
+                {run.config.epochs !== undefined && (
+                  <div>Epochs: <span className="text-gray-300">{String(run.config.epochs)}</span></div>
+                )}
+                {run.config.batch_size !== undefined && (
+                  <div>Batch size: <span className="text-gray-300">{String(run.config.batch_size)}</span></div>
+                )}
+                {run.config.optimizer !== undefined && (
+                  <div>Optimizer: <span className="text-gray-300">{String(run.config.optimizer)}</span></div>
+                )}
+                {run.config.mixed_precision !== undefined && (
+                  <div>Mixed precision: <span className="text-gray-300">{String(run.config.mixed_precision)}</span></div>
+                )}
+              </>
+            )}
+          </div>
+        </section>
+
+        {/* Action error */}
+        {error && (
+          <div className="p-3 bg-red-900/30 border border-red-700 rounded text-sm text-red-400">
+            {error}
+          </div>
+        )}
+
+        {/* Delete confirmation */}
+        {confirmDelete && (
+          <div className="p-4 bg-gray-800 border border-red-700 rounded">
+            <p className="text-sm text-gray-300 mb-3">
+              Delete this tagger run? This cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={handleDelete}
+                disabled={actionLoading}
+                className="px-3 py-1.5 bg-red-700 hover:bg-red-600 disabled:bg-gray-600 rounded text-sm transition-colors"
+              >
+                {actionLoading ? "Deleting..." : "Delete"}
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                className="px-3 py-1.5 text-sm text-gray-400 hover:text-white transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Footer actions */}
+      <div className="flex-shrink-0 p-4 border-t border-gray-700 flex justify-between items-center">
+        <button
+          onClick={() => setConfirmDelete(true)}
+          disabled={actionLoading || isActive}
+          className="px-3 py-1.5 text-sm text-red-400 hover:text-red-300 disabled:text-gray-600 transition-colors"
+        >
+          Delete
+        </button>
+        <div className="flex gap-2">
+          {canStart && (
+            <button
+              onClick={handleStart}
+              disabled={actionLoading}
+              className="px-4 py-2 bg-green-700 hover:bg-green-600 disabled:bg-gray-600 disabled:text-gray-400 rounded text-sm transition-colors"
+            >
+              {actionLoading ? "Starting..." : "Start Training"}
+            </button>
+          )}
+          {canStop && (
+            <button
+              onClick={handleStop}
+              disabled={actionLoading}
+              className="px-4 py-2 bg-yellow-700 hover:bg-yellow-600 disabled:bg-gray-600 disabled:text-gray-400 rounded text-sm transition-colors"
+            >
+              {actionLoading ? "Stopping..." : "Stop"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

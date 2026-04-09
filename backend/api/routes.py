@@ -15,7 +15,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from database import get_gallery_db, get_datasets_db, get_training_db, get_db  # Legacy
-from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset
+from database.models import GeneratedImage, UserSettings, Dataset, DatasetItem, DatasetCaption, TagDictionary, TrainingRun, TrainingCheckpoint, TrainingSample, TrainingPreset, TaggerTrainingRun, TaggerTrainingMetrics
 from core.pipeline import pipeline_manager
 from core.utils.taesd import taesd_manager
 from core.extensions.lora_manager import lora_manager
@@ -6508,4 +6508,274 @@ async def debug_vram_force_release():
         "before": {"allocated_mb": round(before_allocated, 2), "reserved_mb": round(before_reserved, 2)},
         "after": {"allocated_mb": round(after_allocated, 2), "reserved_mb": round(after_reserved, 2)},
         "freed_mb": round(freed, 2),
+    }
+
+
+# ============================================================
+# Tagger Training API
+# ============================================================
+
+class TaggerTrainingRunCreateRequest(BaseModel):
+    run_name: Optional[str] = None
+    vision_encoder_path: str
+    dataset_configs: List[Dict[str, Any]]          # [{dataset_id, caption_types}]
+    training_method: str = "lora"                  # "lora" | "full"
+    lora_rank: int = 32
+    lora_alpha: float = 16.0
+    learning_rate: float = 3e-4
+    head_lr_multiplier: float = 10.0
+    optimizer: str = "adamw8bit"
+    warmup_steps: int = 100
+    epochs: int = 10
+    batch_size: int = 32
+    num_workers: int = 4
+    mixed_precision: str = "bf16"
+    gradient_checkpointing: bool = True
+    weight_decay: float = 1e-4
+    loss_gamma_neg: float = 4.0
+    loss_gamma_pos: float = 1.0
+    loss_clip: float = 0.05
+    validate_every: int = 1
+    val_split: float = 0.05
+    vocab_min_count: int = 1
+    output_dir: Optional[str] = None
+
+
+# Active tagger training threads
+_tagger_training_threads: Dict[str, Any] = {}
+
+
+def _make_tagger_progress_callback(run_id: str, training_db_factory):
+    """Returns a callback that writes progress to DB."""
+    def callback(rid: str, event_type: str, data: dict):
+        db = training_db_factory()
+        try:
+            run = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == rid).first()
+            if not run:
+                return
+            if event_type == "step":
+                run.current_step = data.get("step", run.current_step)
+                run.latest_loss  = data.get("loss")
+                run.latest_lr    = data.get("lr")
+                run.progress     = data.get("progress", run.progress)
+                # Save step metrics
+                metric = TaggerTrainingMetrics(
+                    run_id=rid,
+                    step=data.get("step", 0),
+                    epoch=data.get("epoch"),
+                    loss=data.get("loss"),
+                    learning_rate=data.get("lr"),
+                )
+                db.merge(metric)
+            elif event_type == "epoch":
+                run.current_epoch = data.get("epoch", run.current_epoch)
+                run.latest_loss   = data.get("loss")
+                if data.get("f1") is not None:
+                    metric = TaggerTrainingMetrics(
+                        run_id=rid,
+                        step=run.current_step,
+                        epoch=data.get("epoch"),
+                        loss=data.get("loss"),
+                        f1=data.get("f1"),
+                        threshold=data.get("threshold"),
+                    )
+                    db.merge(metric)
+            elif event_type == "checkpoint":
+                if data.get("name") == "best_f1":
+                    run.best_f1 = data.get("f1")
+                    run.best_checkpoint_path = os.path.join(
+                        run.output_dir or "", "best_f1.safetensors"
+                    )
+            elif event_type == "phase":
+                pass
+            elif event_type == "completed":
+                run.status         = "completed"
+                run.progress       = 1.0
+                run.best_f1        = data.get("best_f1")
+                run.best_threshold = data.get("best_threshold")
+                run.total_steps    = data.get("total_steps")
+                run.completed_at   = datetime.now()
+                run.latest_checkpoint_path = os.path.join(run.output_dir or "", "latest.safetensors")
+            db.commit()
+        except Exception as e:
+            print(f"[TaggerCallback] DB error: {e}")
+            db.rollback()
+        finally:
+            db.close()
+    return callback
+
+
+@router.post("/tagger-training/runs")
+def create_tagger_training_run(
+    request: TaggerTrainingRunCreateRequest,
+    training_db: Session = Depends(get_training_db),
+):
+    """Create a new tagger training run record."""
+    import uuid as _uuid
+
+    run_id = str(_uuid.uuid4())
+    run_name = request.run_name or f"tagger-{run_id[:8]}"
+
+    # Determine output directory
+    output_dir = request.output_dir or os.path.join(
+        settings.root_dir, "tagger_models", run_id
+    )
+
+    config = request.dict()
+    config["vision_encoder_path"] = request.vision_encoder_path
+
+    run = TaggerTrainingRun(
+        run_id=run_id,
+        run_name=run_name,
+        status="pending",
+        training_method=request.training_method,
+        vision_encoder_path=request.vision_encoder_path,
+        dataset_configs=request.dataset_configs,
+        output_dir=output_dir,
+        config=config,
+        total_epochs=request.epochs,
+    )
+    training_db.add(run)
+    training_db.commit()
+    training_db.refresh(run)
+    return run.to_dict()
+
+
+@router.get("/tagger-training/runs")
+def list_tagger_training_runs(training_db: Session = Depends(get_training_db)):
+    """List all tagger training runs."""
+    runs = training_db.query(TaggerTrainingRun).order_by(TaggerTrainingRun.created_at.desc()).all()
+    return [r.to_dict() for r in runs]
+
+
+@router.get("/tagger-training/runs/{run_id}")
+def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Get a tagger training run by run_id."""
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+    return run.to_dict()
+
+
+@router.post("/tagger-training/runs/{run_id}/start")
+def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Start a tagger training run in a background thread."""
+    import threading
+    from database import TrainingSessionLocal
+
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if run.status == "running":
+        raise HTTPException(status_code=400, detail="Run is already running")
+
+    run.status     = "running"
+    run.started_at = datetime.now()
+    training_db.commit()
+
+    config         = run.config or {}
+    dataset_configs = run.dataset_configs or []
+    dataset_ids    = [dc["dataset_id"] for dc in dataset_configs]
+    output_dir     = run.output_dir
+
+    callback = _make_tagger_progress_callback(run_id, TrainingSessionLocal)
+
+    def _run():
+        from core.tagger.tagger_trainer import run_tagger_training
+        db = TrainingSessionLocal()
+        try:
+            result = run_tagger_training(
+                run_id=run_id,
+                config=config,
+                dataset_ids=dataset_ids,
+                output_dir=output_dir,
+                progress_callback=callback,
+            )
+            # Save vocabulary to DB
+            vocab_path = os.path.join(output_dir, "vocabulary.json")
+            if os.path.isfile(vocab_path):
+                import json as _json
+                with open(vocab_path, "r", encoding="utf-8") as f:
+                    vocab = _json.load(f)
+                row = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+                if row:
+                    row.tag_vocabulary = vocab
+                    row.num_tags = vocab.get("num_tags")
+                    db.commit()
+        except Exception as e:
+            row = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+            if row:
+                row.status = "failed"
+                row.error_message = str(e)
+                db.commit()
+            print(f"[TaggerTraining] Run {run_id} failed: {e}")
+            import traceback; traceback.print_exc()
+        finally:
+            db.close()
+            _tagger_training_threads.pop(run_id, None)
+
+    thread = threading.Thread(target=_run, daemon=True, name=f"tagger-{run_id[:8]}")
+    _tagger_training_threads[run_id] = thread
+    thread.start()
+
+    return {"status": "started", "run_id": run_id}
+
+
+@router.post("/tagger-training/runs/{run_id}/stop")
+def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Request stop for a running tagger training run."""
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+    run.status = "stopped"
+    training_db.commit()
+    return {"status": "stop_requested", "run_id": run_id}
+
+
+@router.delete("/tagger-training/runs/{run_id}")
+def delete_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Delete a tagger training run record."""
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+    training_db.delete(run)
+    training_db.commit()
+    return {"deleted": run_id}
+
+
+@router.get("/tagger-training/runs/{run_id}/metrics")
+def get_tagger_training_metrics(
+    run_id: str,
+    since_step: int = 0,
+    training_db: Session = Depends(get_training_db),
+):
+    """Get per-step metrics for a tagger training run."""
+    metrics = (
+        training_db.query(TaggerTrainingMetrics)
+        .filter(
+            TaggerTrainingMetrics.run_id == run_id,
+            TaggerTrainingMetrics.step >= since_step,
+        )
+        .order_by(TaggerTrainingMetrics.step)
+        .all()
+    )
+    return [m.to_dict() for m in metrics]
+
+
+@router.get("/tagger-training/vocabulary-preview")
+def preview_tagger_vocabulary(
+    dataset_ids: str,
+    datasets_db: Session = Depends(get_datasets_db),
+):
+    """Preview tag vocabulary for given dataset IDs (comma-separated).
+
+    Returns tag count and category breakdown without full vocab.
+    """
+    from core.tagger.tag_vocabulary import TagVocabulary
+
+    ids = [int(i) for i in dataset_ids.split(",") if i.strip()]
+    vocab = TagVocabulary.build_from_dataset_ids(ids, datasets_db, min_count=1)
+    return {
+        "num_tags": vocab.num_tags,
+        "category_counts": vocab.category_counts(),
     }

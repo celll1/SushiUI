@@ -32,7 +32,8 @@ def init_db():
     from .models import (
         GeneratedImage, UserSettings,  # Gallery
         Dataset, DatasetItem, DatasetCaption, TagDictionary,  # Datasets
-        TrainingRun, TrainingCheckpoint, TrainingSample  # Training
+        TrainingRun, TrainingCheckpoint, TrainingSample,  # Training
+        TaggerTrainingRun, TaggerTrainingMetrics  # Tagger Training
     )
     from .auto_migrate import auto_migrate_all_databases
     import uuid

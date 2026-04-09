@@ -6,7 +6,9 @@ import ProtectedRoute from "@/components/common/ProtectedRoute";
 import TrainingList from "@/components/training/TrainingList";
 import TrainingConfig from "@/components/training/TrainingConfig";
 import TrainingMonitor from "@/components/training/TrainingMonitor";
-import { listTrainingRuns, TrainingRun } from "@/utils/api";
+import TaggerTrainingConfig from "@/components/training/tagger/TaggerTrainingConfig";
+import TaggerTrainingMonitor from "@/components/training/tagger/TaggerTrainingMonitor";
+import { listTrainingRuns, listTaggerTrainingRuns, TrainingRun, TaggerTrainingRun } from "@/utils/api";
 
 export default function TrainingPage() {
   return (
@@ -17,11 +19,21 @@ export default function TrainingPage() {
 }
 
 function TrainingPageContent() {
+  const [trainingMode, setTrainingMode] = useState<"model" | "tagger">("model");
+
+  // Model training state
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [showConfig, setShowConfig] = useState(false);
   const [editRunId, setEditRunId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Tagger training state
+  const [taggerRuns, setTaggerRuns] = useState<TaggerTrainingRun[]>([]);
+  const [selectedTaggerRunId, setSelectedTaggerRunId] = useState<string | null>(null);
+  const [showTaggerConfig, setShowTaggerConfig] = useState(false);
+  const [taggerLoading, setTaggerLoading] = useState(false);
+
   const [isMobile, setIsMobile] = useState(false);
   const [showMobileDetail, setShowMobileDetail] = useState(false);
 
@@ -47,56 +59,90 @@ function TrainingPageContent() {
     }
   }, []);
 
+  const loadTaggerRuns = useCallback(async () => {
+    setTaggerLoading(true);
+    try {
+      const data = await listTaggerTrainingRuns();
+      setTaggerRuns(data);
+    } catch (err) {
+      console.error("[TrainingPage] Failed to load tagger runs:", err);
+    } finally {
+      setTaggerLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadRuns();
   }, [loadRuns]);
 
-  // Poll running trainings to update list
+  useEffect(() => {
+    if (trainingMode === "tagger") {
+      loadTaggerRuns();
+    }
+  }, [trainingMode, loadTaggerRuns]);
+
+  // Poll running model trainings to update list
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     const hasRunningTraining = runs.some(r => r.status === "running" || r.status === "starting");
-    // console.log(`[TrainingPage] Poll effect: hasRunningTraining=${hasRunningTraining}, runs count=${runs.length}`);
 
-    // Clear existing interval
     if (pollingIntervalRef.current) {
       clearInterval(pollingIntervalRef.current);
       pollingIntervalRef.current = null;
     }
 
-    if (!hasRunningTraining) {
-      // console.log(`[TrainingPage] No running training, skipping poll`);
-      return;
-    }
-
-    // console.log(`[TrainingPage] Starting list polling (every 3s)`);
+    if (!hasRunningTraining) return;
 
     pollingIntervalRef.current = setInterval(() => {
-      // console.log(`[TrainingPage] Polling training runs list...`);
       loadRuns();
-    }, 3000); // Poll every 3 seconds
+    }, 3000);
 
     return () => {
       if (pollingIntervalRef.current) {
-        // console.log(`[TrainingPage] Stopping list polling`);
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
       }
     };
   }, [runs, loadRuns]);
 
+  // Poll running tagger trainings to update list
+  const taggerPollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const hasRunningTagger = taggerRuns.some(
+      r => r.status === "running" || r.status === "starting"
+    );
+
+    if (taggerPollingIntervalRef.current) {
+      clearInterval(taggerPollingIntervalRef.current);
+      taggerPollingIntervalRef.current = null;
+    }
+
+    if (!hasRunningTagger) return;
+
+    taggerPollingIntervalRef.current = setInterval(() => {
+      loadTaggerRuns();
+    }, 3000);
+
+    return () => {
+      if (taggerPollingIntervalRef.current) {
+        clearInterval(taggerPollingIntervalRef.current);
+        taggerPollingIntervalRef.current = null;
+      }
+    };
+  }, [taggerRuns, loadTaggerRuns]);
+
+  // Model training handlers
   const handleCreateRun = () => {
     setSelectedRunId(null);
-    setEditRunId(null); // Creating new run
+    setEditRunId(null);
     setShowConfig(true);
   };
 
   const handleEditRun = (runId: number) => {
-    console.log(`[TrainingPage] handleEditRun called for runId=${runId}`);
-    const startTime = performance.now();
     setEditRunId(runId);
     setShowConfig(true);
-    console.log(`[TrainingPage] State updated in ${performance.now() - startTime}ms`);
   };
 
   const handleRunCreated = (newRun: TrainingRun) => {
@@ -118,9 +164,7 @@ function TrainingPageContent() {
   const handleSelectRun = (id: number) => {
     setSelectedRunId(id);
     setShowConfig(false);
-    if (isMobile) {
-      setShowMobileDetail(true);
-    }
+    if (isMobile) setShowMobileDetail(true);
   };
 
   const handleStatusChange = (updatedRun: TrainingRun) => {
@@ -134,7 +178,46 @@ function TrainingPageContent() {
     setSelectedRunId(null);
   };
 
+  // Tagger training handlers
+  const handleCreateTaggerRun = () => {
+    setSelectedTaggerRunId(null);
+    setShowTaggerConfig(true);
+    if (isMobile) setShowMobileDetail(true);
+  };
+
+  const handleSelectTaggerRun = (runId: string) => {
+    setSelectedTaggerRunId(runId);
+    setShowTaggerConfig(false);
+    if (isMobile) setShowMobileDetail(true);
+  };
+
+  const handleTaggerRunCreated = (newRun: TaggerTrainingRun) => {
+    setTaggerRuns([newRun, ...taggerRuns]);
+    setShowTaggerConfig(false);
+    setSelectedTaggerRunId(newRun.run_id);
+  };
+
+  const handleTaggerStatusChange = (updatedRun: TaggerTrainingRun) => {
+    setTaggerRuns((prev) =>
+      prev.map((r) => (r.run_id === updatedRun.run_id ? updatedRun : r))
+    );
+  };
+
+  const handleTaggerDelete = (deletedRunId: string) => {
+    setTaggerRuns((prev) => prev.filter((r) => r.run_id !== deletedRunId));
+    setSelectedTaggerRunId(null);
+    if (isMobile) setShowMobileDetail(false);
+  };
+
   const selectedRun = runs.find(r => r.id === selectedRunId);
+  const selectedTaggerRun = taggerRuns.find(r => r.run_id === selectedTaggerRunId);
+
+  const handleTabChange = (mode: "model" | "tagger") => {
+    setTrainingMode(mode);
+    setShowMobileDetail(false);
+    setShowConfig(false);
+    setShowTaggerConfig(false);
+  };
 
   return (
     <div className="flex h-screen">
@@ -142,79 +225,198 @@ function TrainingPageContent() {
       <main className="flex-1 flex flex-col overflow-hidden pt-16 lg:pt-0">
         {/* Header */}
         <div className="flex-shrink-0 p-3 sm:p-4 border-b border-gray-700">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             {/* Mobile: Back button when showing detail */}
             {isMobile && showMobileDetail && (
               <button
                 onClick={() => setShowMobileDetail(false)}
-                className="mr-2 text-gray-400 hover:text-white transition-colors"
+                className="mr-1 text-gray-400 hover:text-white transition-colors flex-shrink-0"
               >
                 <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                 </svg>
               </button>
             )}
-            <h1 className="text-lg sm:text-xl font-bold">Training</h1>
-            <button
-              onClick={handleCreateRun}
-              className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
-            >
-              {isMobile ? "New" : "New Training Run"}
-            </button>
+
+            {/* Tab buttons */}
+            <div className="flex rounded-md overflow-hidden border border-gray-600 flex-shrink-0">
+              <button
+                onClick={() => handleTabChange("model")}
+                className={`px-3 py-1.5 text-xs sm:text-sm transition-colors ${
+                  trainingMode === "model"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                {isMobile ? "Model" : "Model Training"}
+              </button>
+              <button
+                onClick={() => handleTabChange("tagger")}
+                className={`px-3 py-1.5 text-xs sm:text-sm transition-colors border-l border-gray-600 ${
+                  trainingMode === "tagger"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+                }`}
+              >
+                {isMobile ? "Tagger" : "Tagger Training"}
+              </button>
+            </div>
+
+            <div className="flex-1" />
+
+            {/* New run button */}
+            {trainingMode === "model" ? (
+              <button
+                onClick={handleCreateRun}
+                className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
+              >
+                {isMobile ? "New" : "New Training Run"}
+              </button>
+            ) : (
+              <button
+                onClick={handleCreateTaggerRun}
+                className="px-2 sm:px-3 py-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs sm:text-sm transition-colors whitespace-nowrap"
+              >
+                {isMobile ? "New" : "New Tagger Run"}
+              </button>
+            )}
           </div>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-hidden flex">
-          {/* Training Runs List - Hidden on mobile when detail is shown */}
-          <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
-            <TrainingList
-              runs={runs}
-              selectedRunId={selectedRunId}
-              onSelectRun={handleSelectRun}
-              onRefresh={loadRuns}
-              loading={loading}
-            />
-          </div>
-
-          {/* Config or Monitor - Hidden on mobile when list is shown */}
-          <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
-            {showConfig ? (
-              <TrainingConfig
-                onClose={() => {
-                  setShowConfig(false);
-                  setEditRunId(null);
-                  if (isMobile) {
-                    setShowMobileDetail(false);
-                  }
-                }}
-                onRunCreated={handleRunCreated}
-                editRunId={editRunId}
-                onRunUpdated={handleRunUpdated}
-              />
-            ) : selectedRun ? (
-              <TrainingMonitor
-                key={selectedRun.id}
-                run={selectedRun}
-                onClose={() => {
-                  setSelectedRunId(null);
-                  if (isMobile) {
-                    setShowMobileDetail(false);
-                  }
-                }}
-                onStatusChange={handleStatusChange}
-                onDelete={() => handleDelete(selectedRun.id)}
-                onEditConfig={() => handleEditRun(selectedRun.id)}
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-gray-400">
-                <div className="text-center p-4">
-                  <p className="text-base sm:text-lg font-medium">No training run selected</p>
-                  <p className="text-xs sm:text-sm mt-2">Select a run from the list or create a new one</p>
-                </div>
+          {trainingMode === "model" ? (
+            <>
+              {/* Model Training Runs List */}
+              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto`}>
+                <TrainingList
+                  runs={runs}
+                  selectedRunId={selectedRunId}
+                  onSelectRun={handleSelectRun}
+                  onRefresh={loadRuns}
+                  loading={loading}
+                />
               </div>
-            )}
-          </div>
+
+              {/* Model Training Config or Monitor */}
+              <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
+                {showConfig ? (
+                  <TrainingConfig
+                    onClose={() => {
+                      setShowConfig(false);
+                      setEditRunId(null);
+                      if (isMobile) setShowMobileDetail(false);
+                    }}
+                    onRunCreated={handleRunCreated}
+                    editRunId={editRunId}
+                    onRunUpdated={handleRunUpdated}
+                  />
+                ) : selectedRun ? (
+                  <TrainingMonitor
+                    key={selectedRun.id}
+                    run={selectedRun}
+                    onClose={() => {
+                      setSelectedRunId(null);
+                      if (isMobile) setShowMobileDetail(false);
+                    }}
+                    onStatusChange={handleStatusChange}
+                    onDelete={() => handleDelete(selectedRun.id)}
+                    onEditConfig={() => handleEditRun(selectedRun.id)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-400">
+                    <div className="text-center p-4">
+                      <p className="text-base sm:text-lg font-medium">No training run selected</p>
+                      <p className="text-xs sm:text-sm mt-2">Select a run from the list or create a new one</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Tagger Training Runs List */}
+              <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto flex-col`}>
+                {taggerLoading ? (
+                  <div className="flex items-center justify-center p-8 text-gray-400 text-sm">
+                    Loading...
+                  </div>
+                ) : taggerRuns.length === 0 ? (
+                  <div className="flex items-center justify-center p-8 text-gray-400 text-sm text-center">
+                    No tagger runs yet.<br />Create a new one to get started.
+                  </div>
+                ) : (
+                  <div className="flex-1">
+                    {taggerRuns.map((run) => (
+                      <button
+                        key={run.run_id}
+                        onClick={() => handleSelectTaggerRun(run.run_id)}
+                        className={`w-full text-left px-4 py-3 border-b border-gray-700 hover:bg-gray-700/50 transition-colors ${
+                          selectedTaggerRunId === run.run_id ? "bg-gray-700" : ""
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium truncate">{run.run_name}</span>
+                          <span className={`text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${
+                            run.status === "running" ? "bg-blue-600 text-white" :
+                            run.status === "completed" ? "bg-green-700 text-white" :
+                            run.status === "failed" ? "bg-red-700 text-white" :
+                            run.status === "stopped" ? "bg-yellow-700 text-white" :
+                            "bg-gray-600 text-gray-300"
+                          }`}>
+                            {run.status}
+                          </span>
+                        </div>
+                        <div className="text-xs text-gray-400 mt-1">
+                          {run.training_method.toUpperCase()} · {run.num_tags} tags
+                          {run.best_f1 !== null && ` · F1: ${run.best_f1.toFixed(3)}`}
+                        </div>
+                        {(run.status === "running" || run.status === "starting") && (
+                          <div className="mt-1.5 w-full bg-gray-600 rounded-full h-1">
+                            <div
+                              className="bg-blue-500 h-1 rounded-full transition-all"
+                              style={{ width: `${run.progress}%` }}
+                            />
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Tagger Training Config or Monitor */}
+              <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
+                {showTaggerConfig ? (
+                  <TaggerTrainingConfig
+                    onClose={() => {
+                      setShowTaggerConfig(false);
+                      if (isMobile) setShowMobileDetail(false);
+                    }}
+                    onRunCreated={handleTaggerRunCreated}
+                  />
+                ) : selectedTaggerRun ? (
+                  <TaggerTrainingMonitor
+                    key={selectedTaggerRun.run_id}
+                    run={selectedTaggerRun}
+                    onClose={() => {
+                      setSelectedTaggerRunId(null);
+                      if (isMobile) setShowMobileDetail(false);
+                    }}
+                    onStatusChange={handleTaggerStatusChange}
+                    onDelete={() => handleTaggerDelete(selectedTaggerRun.run_id)}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center h-full text-gray-400">
+                    <div className="text-center p-4">
+                      <p className="text-base sm:text-lg font-medium">No tagger run selected</p>
+                      <p className="text-xs sm:text-sm mt-2">Select a run from the list or create a new one</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </main>
     </div>

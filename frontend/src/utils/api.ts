@@ -1008,6 +1008,7 @@ export interface CaptionProcessingConfig {
 
 export interface Dataset {
   id: number;
+  unique_id?: string;
   name: string;
   path: string;
   description?: string;
@@ -1951,5 +1952,117 @@ export const debugVramInspection = async () => {
 
 export const debugVramForceRelease = async () => {
   const response = await api.post("/debug/vram/release");
+  return response.data;
+};
+
+// ==================== Tagger Training ====================
+
+export interface TaggerTrainingRun {
+  run_id: string;
+  run_name: string;
+  status: "idle" | "starting" | "running" | "completed" | "failed" | "stopped";
+  progress: number;
+  current_epoch: number;
+  current_step: number;
+  training_method: "full" | "lora";
+  vision_encoder_path: string;
+  dataset_configs: string[];
+  config: Record<string, unknown>;
+  num_tags: number;
+  tag_vocabulary: Record<string, unknown> | null;
+  best_f1: number | null;
+  best_threshold: number | null;
+  latest_loss: number | null;
+  head_checkpoint_path: string | null;
+  lora_checkpoint_path: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaggerTrainingRunCreateRequest {
+  run_name: string;
+  training_method: "full" | "lora";
+  vision_encoder_path: string;
+  dataset_configs: string[];
+  lora_rank?: number;
+  lora_alpha?: number;
+  learning_rate?: number;
+  head_lr_multiplier?: number;
+  optimizer?: string;
+  warmup_steps?: number;
+  epochs?: number;
+  batch_size?: number;
+  mixed_precision?: string;
+  gradient_checkpointing?: boolean;
+  loss_gamma_neg?: number;
+  loss_gamma_pos?: number;
+  validate_every?: number;
+  save_best_only?: boolean;
+}
+
+export interface TaggerTrainingMetric {
+  step: number;
+  epoch: number;
+  loss: number | null;
+  f1: number | null;
+  threshold: number | null;
+  learning_rate: number | null;
+}
+
+export interface TaggerVocabularyPreview {
+  total_tags: number;
+  dataset_ids: string[];
+  sample_tags: string[];
+}
+
+export const createTaggerTrainingRun = async (
+  data: TaggerTrainingRunCreateRequest
+): Promise<TaggerTrainingRun> => {
+  const response = await api.post("/tagger-training/runs", data);
+  return response.data;
+};
+
+export const listTaggerTrainingRuns = async (): Promise<TaggerTrainingRun[]> => {
+  const response = await api.get("/tagger-training/runs");
+  return response.data;
+};
+
+export const getTaggerTrainingRun = async (runId: string): Promise<TaggerTrainingRun> => {
+  const response = await api.get(`/tagger-training/runs/${runId}`);
+  return response.data;
+};
+
+export const startTaggerTrainingRun = async (
+  runId: string
+): Promise<{ message: string; run: TaggerTrainingRun }> => {
+  const response = await api.post(`/tagger-training/runs/${runId}/start`);
+  return response.data;
+};
+
+export const stopTaggerTrainingRun = async (
+  runId: string
+): Promise<{ message: string; run: TaggerTrainingRun }> => {
+  const response = await api.post(`/tagger-training/runs/${runId}/stop`);
+  return response.data;
+};
+
+export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
+  await api.delete(`/tagger-training/runs/${runId}`);
+};
+
+export const getTaggerTrainingMetrics = async (
+  runId: string
+): Promise<TaggerTrainingMetric[]> => {
+  const response = await api.get(`/tagger-training/runs/${runId}/metrics`);
+  return response.data;
+};
+
+export const getTaggerVocabularyPreview = async (
+  datasetIds: string[]
+): Promise<TaggerVocabularyPreview> => {
+  const response = await api.get("/tagger-training/vocabulary", {
+    params: { dataset_ids: datasetIds.join(",") },
+  });
   return response.data;
 };

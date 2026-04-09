@@ -425,7 +425,7 @@ def run_tagger_training(
 
     Called from the API route handler in a background thread.
     """
-    from backend.database import DatasetsSessionLocal
+    from database import DatasetsSessionLocal
 
     datasets_db = DatasetsSessionLocal()
     try:

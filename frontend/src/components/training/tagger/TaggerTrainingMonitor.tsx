@@ -182,7 +182,7 @@ export default function TaggerTrainingMonitor({
   };
 
   const isActive = run.status === "running" || run.status === "starting";
-  const canStart = run.status === "idle" || run.status === "pending" || run.status === "failed" || run.status === "stopped";
+  const canStart = !isActive && run.status !== "completed";
   const canStop = isActive;
 
   const lossData = metrics.filter((m) => m.loss !== null);

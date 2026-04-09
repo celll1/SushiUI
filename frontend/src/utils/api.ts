@@ -1961,7 +1961,7 @@ export const debugVramForceRelease = async () => {
 export interface TaggerTrainingRun {
   run_id: string;
   run_name: string;
-  status: "idle" | "starting" | "running" | "completed" | "failed" | "stopped";
+  status: "idle" | "pending" | "starting" | "running" | "completed" | "failed" | "stopped";
   progress: number;
   current_epoch: number;
   current_step: number;

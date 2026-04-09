@@ -742,3 +742,118 @@ class TrainingMetrics(TrainingBase):
             "param_cumulative_drift_ve": self.param_cumulative_drift_ve,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }
+
+
+# ============================================================
+# Tagger Training Models (training.db)
+# ============================================================
+
+class TaggerTrainingRun(TrainingBase):
+    """Training run for SigLIP2-based image tagger."""
+    __tablename__ = "tagger_training_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(String, unique=True, index=True, nullable=False, default=lambda: str(uuid.uuid4()))
+    run_name = Column(String, nullable=False, default="")
+
+    # Status
+    status = Column(String, default="pending", index=True)  # pending|running|paused|completed|failed|stopped
+    progress = Column(Float, default=0.0)   # 0.0 - 1.0
+    current_epoch = Column(Integer, default=0)
+    total_epochs = Column(Integer, default=0)
+    current_step = Column(Integer, default=0)
+    total_steps = Column(Integer, default=0)
+
+    # Configuration
+    training_method = Column(String, default="lora")        # "lora" | "full"
+    vision_encoder_path = Column(String, nullable=False)    # path to .safetensors
+    dataset_configs = Column(JSON, nullable=True)           # [{dataset_id: int, caption_types: [str]}]
+    output_dir = Column(String, nullable=True)
+
+    # Hyperparameters (stored as JSON for flexibility)
+    config = Column(JSON, nullable=True)                    # full config dict
+
+    # Vocabulary snapshot
+    num_tags = Column(Integer, nullable=True)
+    tag_vocabulary = Column(JSON, nullable=True)            # {tag_to_idx, idx_to_tag, tag_to_category, num_tags}
+
+    # Best metrics
+    best_f1 = Column(Float, nullable=True)
+    best_threshold = Column(Float, nullable=True)
+    latest_loss = Column(Float, nullable=True)
+    latest_lr = Column(Float, nullable=True)
+
+    # Checkpoints
+    best_checkpoint_path = Column(String, nullable=True)
+    latest_checkpoint_path = Column(String, nullable=True)
+
+    # Error info
+    error_message = Column(Text, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=get_local_now)
+    updated_at = Column(DateTime, default=get_local_now, onupdate=get_local_now)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "run_id": self.run_id,
+            "run_name": self.run_name,
+            "status": self.status,
+            "progress": self.progress,
+            "current_epoch": self.current_epoch,
+            "total_epochs": self.total_epochs,
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "training_method": self.training_method,
+            "vision_encoder_path": self.vision_encoder_path,
+            "dataset_configs": self.dataset_configs,
+            "output_dir": self.output_dir,
+            "config": self.config,
+            "num_tags": self.num_tags,
+            "tag_vocabulary": self.tag_vocabulary,
+            "best_f1": self.best_f1,
+            "best_threshold": self.best_threshold,
+            "latest_loss": self.latest_loss,
+            "latest_lr": self.latest_lr,
+            "best_checkpoint_path": self.best_checkpoint_path,
+            "latest_checkpoint_path": self.latest_checkpoint_path,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+
+class TaggerTrainingMetrics(TrainingBase):
+    """Per-step metrics for tagger training runs."""
+    __tablename__ = "tagger_training_metrics"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, nullable=False, index=True)
+    step = Column(Integer, nullable=False)
+    epoch = Column(Integer, nullable=True)
+    loss = Column(Float, nullable=True)
+    f1 = Column(Float, nullable=True)
+    threshold = Column(Float, nullable=True)
+    learning_rate = Column(Float, nullable=True)
+    timestamp = Column(DateTime, default=get_local_now)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "step", name="uq_tagger_run_step"),
+        Index("idx_tagger_run_step", "run_id", "step"),
+    )
+
+    def to_dict(self):
+        return {
+            "step": self.step,
+            "epoch": self.epoch,
+            "loss": self.loss,
+            "f1": self.f1,
+            "threshold": self.threshold,
+            "learning_rate": self.learning_rate,
+            "timestamp": self.timestamp.isoformat() if self.timestamp else None,
+        }

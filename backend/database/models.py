@@ -246,6 +246,7 @@ class Dataset(DatasetBase):
             "total_items": self.total_items,
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
+            "has_tags_captions": (self.total_tags or 0) > 0,
             "tag_statistics": self.tag_statistics or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

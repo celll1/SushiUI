@@ -76,6 +76,9 @@ def _load_vision_encoder(safetensors_path: str) -> nn.Module:
     from transformers import AutoModel
     import tempfile, shutil
 
+    # Strip surrounding quotes that may come from user input
+    safetensors_path = safetensors_path.strip().strip('"').strip("'")
+
     # We need the full model just to get architecture, then replace state_dict
     # Use HF cached model if available, else load from hub temporarily
     REPO_ID = "google/siglip2-so400m-patch16-naflex"

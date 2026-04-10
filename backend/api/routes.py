@@ -6655,6 +6655,16 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     run.best_checkpoint_path = os.path.join(
                         run.output_dir or "", "best_f1.safetensors"
                     )
+                elif data.get("path"):
+                    # Step-based checkpoint: append path to checkpoint_paths list
+                    paths = list(run.checkpoint_paths or [])
+                    ckpt_path = data["path"]
+                    if ckpt_path not in paths:
+                        paths.append(ckpt_path)
+                    run.checkpoint_paths = paths
+            elif event_type == "resume":
+                run.resumed_from_step = data.get("resumed_from_step")
+                run.last_resumed_at   = datetime.now()
             elif event_type == "phase":
                 pass
             elif event_type == "completed":
@@ -6729,7 +6739,7 @@ def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_trai
 
 @router.post("/tagger-training/runs/{run_id}/start")
 def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
-    """Start a tagger training run in a background thread."""
+    """Start or resume a tagger training run in a background thread."""
     import threading
     from database import TrainingSessionLocal
 
@@ -6743,10 +6753,15 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
     run.started_at = datetime.now()
     training_db.commit()
 
-    config         = run.config or {}
+    config          = run.config or {}
     dataset_configs = run.dataset_configs or []
-    dataset_ids    = [dc["dataset_id"] for dc in dataset_configs]
-    output_dir     = run.output_dir
+    dataset_ids     = [dc["dataset_id"] for dc in dataset_configs]
+    output_dir      = run.output_dir
+
+    # Pass output_dir so the trainer auto-detects any resumable checkpoint
+    # (latest_state.json or step_XXXXXX_state.json).  When no checkpoint exists,
+    # the trainer simply starts from epoch 1.
+    resume_from_checkpoint = output_dir if output_dir and os.path.isdir(output_dir) else None
 
     callback = _make_tagger_progress_callback(run_id, TrainingSessionLocal)
 
@@ -6760,6 +6775,7 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
                 dataset_ids=dataset_ids,
                 output_dir=output_dir,
                 progress_callback=callback,
+                resume_from_checkpoint=resume_from_checkpoint,
             )
             # Save vocabulary to DB
             vocab_path = os.path.join(output_dir, "vocabulary.json")

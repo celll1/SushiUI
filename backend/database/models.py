@@ -788,6 +788,11 @@ class TaggerTrainingRun(TrainingBase):
     # Checkpoints
     best_checkpoint_path = Column(String, nullable=True)
     latest_checkpoint_path = Column(String, nullable=True)
+    checkpoint_paths = Column(JSON, default=list)          # list of step checkpoint paths
+
+    # Resume tracking
+    resumed_from_step = Column(Integer, nullable=True)     # global_step at last resume
+    last_resumed_at = Column(DateTime, nullable=True)
 
     # Error info
     error_message = Column(Text, nullable=True)
@@ -823,6 +828,9 @@ class TaggerTrainingRun(TrainingBase):
             "latest_lr": self.latest_lr,
             "best_checkpoint_path": self.best_checkpoint_path,
             "latest_checkpoint_path": self.latest_checkpoint_path,
+            "checkpoint_paths": self.checkpoint_paths or [],
+            "resumed_from_step": self.resumed_from_step,
+            "last_resumed_at": self.last_resumed_at.isoformat() if self.last_resumed_at else None,
             "error_message": self.error_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

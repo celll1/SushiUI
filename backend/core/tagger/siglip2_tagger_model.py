@@ -304,6 +304,11 @@ class SigLIP2TaggerModel(nn.Module):
         model.load_state_dict(state_dict, strict=True)
         return model
 
+    def load_weights_inplace(self, ckpt_path: str) -> None:
+        """Load full model weights from checkpoint into this instance (for resume)."""
+        state_dict = load_file(ckpt_path)
+        self.load_state_dict(state_dict, strict=True)
+
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]
 
@@ -468,6 +473,18 @@ class SigLIP2TaggerLoRAModel(nn.Module):
                 lora_module.lora_B.data.copy_(saved[f"{prefix}.lora_B"])
 
         return model
+
+    def load_weights_inplace(self, ckpt_path: str) -> None:
+        """Load LoRA + head weights from checkpoint into this instance (for resume)."""
+        saved = load_file(ckpt_path)
+        self.head.weight.data.copy_(saved["head.weight"])
+        self.head.bias.data.copy_(saved["head.bias"])
+        for module_name, lora_module in self._lora_modules.items():
+            prefix = f"lora.{module_name}"
+            if f"{prefix}.lora_A" in saved:
+                lora_module.lora_A.data.copy_(saved[f"{prefix}.lora_A"])
+            if f"{prefix}.lora_B" in saved:
+                lora_module.lora_B.data.copy_(saved[f"{prefix}.lora_B"])
 
     def trainable_parameters(self):
         return [p for p in self.parameters() if p.requires_grad]

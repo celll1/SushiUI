@@ -7,14 +7,18 @@ Supports:
   - Gradient checkpointing
   - Cosine LR schedule with linear warmup
   - Validation: F1 macro, threshold optimization
-  - Checkpoint saving (best F1 + latest)
+  - Checkpoint saving (best F1 + latest + step-based)
+  - Resume from checkpoint (epoch-boundary or mid-epoch with RNG state)
   - Progress callback for WebSocket updates
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import random
+import re as _re
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -121,6 +125,105 @@ def _find_best_threshold(
 
 
 # ------------------------------------------------------------------
+# Checkpoint state helpers
+# ------------------------------------------------------------------
+
+def _save_training_state(
+    output_dir: str,
+    name: str,
+    epoch: int,
+    global_step: int,
+    batch_idx: int,
+    best_f1: float,
+    best_threshold: float,
+) -> None:
+    """Save training state JSON for resume (epoch, step, batch_idx, RNG state)."""
+    rs = random.getstate()
+    state = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "batch_idx": batch_idx,
+        "best_f1": best_f1,
+        "best_threshold": best_threshold,
+        "random_state": {
+            "version": rs[0],
+            "state": list(rs[1]),
+            "gauss_next": rs[2],
+        },
+        "torch_rng_state": base64.b64encode(
+            torch.get_rng_state().numpy().tobytes()
+        ).decode("utf-8"),
+    }
+    path = os.path.join(output_dir, f"{name}_state.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+
+
+def _load_training_state(output_dir: str, name: str) -> Optional[Dict[str, Any]]:
+    """Load training state JSON. Returns None if not found."""
+    path = os.path.join(output_dir, f"{name}_state.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
+    """Save optimizer state dict to <name>_optimizer.pt."""
+    path = os.path.join(output_dir, f"{name}_optimizer.pt")
+    torch.save(optimizer.state_dict(), path)
+
+
+def _load_optimizer_state(optimizer: Any, output_dir: str, name: str) -> bool:
+    """Load optimizer state dict from <name>_optimizer.pt. Returns True if loaded."""
+    path = os.path.join(output_dir, f"{name}_optimizer.pt")
+    if not os.path.isfile(path):
+        return False
+    state = torch.load(path, map_location="cpu", weights_only=True)
+    optimizer.load_state_dict(state)
+    return True
+
+
+def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """Find the best checkpoint to resume from.
+
+    Priority:
+    1. latest_state.json + latest.safetensors  (epoch-boundary save)
+    2. step_XXXXXX_state.json with highest step (mid-epoch save)
+
+    Returns (checkpoint_name, state_dict) or None if no resumable checkpoint exists.
+    """
+    if not os.path.isdir(output_dir):
+        return None
+
+    # Priority 1: epoch-boundary "latest" checkpoint
+    state = _load_training_state(output_dir, "latest")
+    if state is not None and os.path.isfile(os.path.join(output_dir, "latest.safetensors")):
+        return "latest", state
+
+    # Priority 2: step checkpoint with highest step number
+    best_step = -1
+    best_name: Optional[str] = None
+    for fn in os.listdir(output_dir):
+        m = _re.match(r"^step_(\d+)_state\.json$", fn)
+        if m:
+            step = int(m.group(1))
+            ckpt_name = f"step_{step:06d}"
+            if step > best_step and os.path.isfile(
+                os.path.join(output_dir, f"{ckpt_name}.safetensors")
+            ):
+                best_step = step
+                best_name = ckpt_name
+
+    if best_name is not None:
+        state = _load_training_state(output_dir, best_name)
+        if state is not None:
+            return best_name, state
+
+    return None
+
+
+# ------------------------------------------------------------------
 # Main trainer
 # ------------------------------------------------------------------
 
@@ -168,6 +271,8 @@ class TaggerTrainer:
         train_loader: DataLoader,
         val_loader: Optional[DataLoader],
         processor: AutoProcessor,
+        resume_state: Optional[Dict[str, Any]] = None,
+        resume_ckpt_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run training loop. Returns summary metrics dict."""
         cfg = self.config
@@ -185,6 +290,13 @@ class TaggerTrainer:
             hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
         )
         model = model.to(device)
+
+        # Load checkpoint weights if resuming (before any training)
+        if resume_state is not None and resume_ckpt_name is not None:
+            ckpt_path = os.path.join(self.output_dir, f"{resume_ckpt_name}.safetensors")
+            if os.path.isfile(ckpt_path):
+                model.load_weights_inplace(ckpt_path)
+                print(f"[TaggerTrainer] Loaded checkpoint weights from {resume_ckpt_name}")
 
         # Gradient checkpointing
         if cfg.get("gradient_checkpointing", True):
@@ -205,9 +317,8 @@ class TaggerTrainer:
         trainable = model.trainable_parameters() if hasattr(model, "trainable_parameters") else [
             p for p in model.parameters() if p.requires_grad
         ]
-        # Build param groups: head gets higher LR
-        head_params = list(model.head.parameters())
-        head_ids     = {id(p) for p in head_params}
+        head_params    = list(model.head.parameters())
+        head_ids       = {id(p) for p in head_params}
         encoder_params = [p for p in trainable if id(p) not in head_ids]
 
         param_groups = [
@@ -222,7 +333,7 @@ class TaggerTrainer:
         )
 
         # LR schedule: linear warmup → cosine decay
-        epochs      = int(cfg.get("epochs", 10))
+        epochs       = int(cfg.get("epochs", 10))
         warmup_steps = int(cfg.get("warmup_steps", 100))
         total_steps  = epochs * len(train_loader)
 
@@ -238,32 +349,93 @@ class TaggerTrainer:
             clip=float(cfg.get("loss_clip", 0.05)),
         ).to(device)
 
+        # Step-based checkpoint interval (0 = disabled)
+        save_every_n_steps = int(cfg.get("save_every_n_steps", 500))
+
         # Training state
         best_f1         = 0.0
         best_threshold  = 0.35
         global_step     = 0
+        resume_epoch    = 1   # first epoch to process (1-indexed)
+        resume_batch_idx = -1  # last already-processed batch in resume_epoch (-1 = none)
         metrics_history: List[Dict] = []
+
+        # ------------------------------------------------------------------
+        # Resume from checkpoint
+        # ------------------------------------------------------------------
+        if resume_state is not None:
+            resume_epoch     = resume_state["epoch"]         # next epoch to train
+            resume_batch_idx = resume_state["batch_idx"]     # last completed batch (-1 = full epoch done)
+            global_step      = resume_state["global_step"]
+            best_f1          = resume_state.get("best_f1", 0.0)
+            best_threshold   = resume_state.get("best_threshold", 0.35)
+
+            # Restore Python RNG state
+            rs = resume_state.get("random_state")
+            if rs:
+                random.setstate((rs["version"], tuple(rs["state"]), rs["gauss_next"]))
+
+            # Restore PyTorch CPU RNG state
+            torch_rng = resume_state.get("torch_rng_state")
+            if torch_rng:
+                rng_bytes = base64.b64decode(torch_rng)
+                torch.set_rng_state(
+                    torch.frombuffer(bytearray(rng_bytes), dtype=torch.uint8)
+                )
+
+            # Restore optimizer state
+            if resume_ckpt_name:
+                loaded = _load_optimizer_state(optimizer, self.output_dir, resume_ckpt_name)
+                if loaded:
+                    print(f"[TaggerTrainer] Optimizer state restored from {resume_ckpt_name}")
+
+            # Fast-forward LR scheduler to match resumed global_step
+            for _ in range(global_step):
+                scheduler.step()
+
+            print(
+                f"[TaggerTrainer] Resuming from step {global_step} "
+                f"(epoch {resume_epoch}, batch {resume_batch_idx})"
+            )
+            self._emit("phase", {
+                "phase": "resuming",
+                "message": f"Resuming from step {global_step} (epoch {resume_epoch})",
+            })
 
         self._emit("phase", {"phase": "training", "message": "Training started"})
 
+        # ------------------------------------------------------------------
+        # Training loop
+        # ------------------------------------------------------------------
         for epoch in range(1, epochs + 1):
             if self._stop_requested:
                 break
 
+            # Skip epochs that were fully completed before the resume point
+            if epoch < resume_epoch:
+                continue
+
             model.train()
-            epoch_loss = 0.0
+            epoch_loss       = 0.0
+            batches_processed = 0
 
             for batch_idx, batch in enumerate(train_loader):
+                # Skip batches already processed in the resume epoch
+                if epoch == resume_epoch and batch_idx <= resume_batch_idx:
+                    continue
+
                 if batch is None:
                     continue  # entire batch was corrupt images
+
                 pv, pam, ss, labels, loss_masks = batch
+
                 if self._stop_requested:
                     break
 
-                pv        = pv.to(device)
-                pam       = pam.to(device)
-                ss        = ss.to(device)
-                labels    = labels.to(device)
+                pv         = pv.to(device)
+                pam        = pam.to(device)
+                ss         = ss.to(device)
+                labels     = labels.to(device)
                 loss_masks = loss_masks.to(device)
 
                 optimizer.zero_grad()
@@ -288,8 +460,9 @@ class TaggerTrainer:
                     optimizer.step()
 
                 scheduler.step()
-                global_step += 1
-                epoch_loss  += loss.item()
+                global_step      += 1
+                epoch_loss       += loss.item()
+                batches_processed += 1
 
                 # Progress callback every 10 steps
                 if global_step % 10 == 0:
@@ -302,7 +475,25 @@ class TaggerTrainer:
                         "progress": global_step / total_steps,
                     })
 
-            avg_loss = epoch_loss / max(len(train_loader), 1)
+                # Step-based checkpoint (model + state + optimizer)
+                if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
+                    ckpt_name = f"step_{global_step:06d}"
+                    metadata  = self._make_metadata(epoch, global_step, best_f1, best_threshold)
+                    ckpt_path = model.save_checkpoint(self.output_dir, ckpt_name, metadata)
+                    _save_training_state(
+                        self.output_dir, ckpt_name,
+                        epoch, global_step, batch_idx,
+                        best_f1, best_threshold,
+                    )
+                    _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+                    self._emit("checkpoint", {
+                        "name": ckpt_name,
+                        "step": global_step,
+                        "epoch": epoch,
+                        "path": ckpt_path,
+                    })
+
+            avg_loss = epoch_loss / max(batches_processed, 1)
 
             # Validation
             val_metrics: Dict[str, Any] = {}
@@ -318,9 +509,17 @@ class TaggerTrainer:
                     model.save_checkpoint(self.output_dir, "best_f1", metadata)
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
-            # Save latest checkpoint
+            # Save latest checkpoint at epoch boundary.
+            # State records epoch+1 / batch_idx=-1 so that on resume we start fresh
+            # at the beginning of the next epoch.
             metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
             model.save_checkpoint(self.output_dir, "latest", metadata)
+            _save_training_state(
+                self.output_dir, "latest",
+                epoch + 1, global_step, -1,
+                best_f1, best_threshold,
+            )
+            _save_optimizer_state(optimizer, self.output_dir, "latest")
 
             epoch_summary = {
                 "epoch": epoch,
@@ -457,7 +656,6 @@ class TaggerTrainer:
             f1 = _compute_f1_macro(all_preds, all_labels, threshold=thr)
             curve[f"{thr:.2f}"] = round(f1, 6)
 
-        # Best threshold: max F1, tie-break by lowest threshold (prefer recall)
         best_thr_str = max(curve, key=lambda k: (curve[k], -float(k)))
         optimal_threshold = float(best_thr_str)
         print(f"[TaggerTrainer] Threshold grid done. Optimal: {optimal_threshold:.2f} F1={curve[best_thr_str]:.4f}")
@@ -504,10 +702,17 @@ def run_tagger_training(
     dataset_ids: List[int],
     output_dir: str,
     progress_callback: Optional[Callable] = None,
+    resume_from_checkpoint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Top-level function to build everything and start training.
 
     Called from the API route handler in a background thread.
+
+    Parameters
+    ----------
+    resume_from_checkpoint : directory path to scan for a resumable checkpoint.
+        If a valid checkpoint is found (latest_state.json or step_XXXXXX_state.json),
+        training resumes from that point; otherwise starts from epoch 1.
     """
     from database import DatasetsSessionLocal
 
@@ -519,7 +724,6 @@ def run_tagger_training(
         })
         excl_cats = config.get("excluded_categories") or None
         ban_tags  = config.get("ban_tags") or None
-        # ban_tags may be a newline-separated string from the UI
         if isinstance(ban_tags, str):
             ban_tags = [t.strip() for t in ban_tags.splitlines() if t.strip()] or None
         vocabulary = TagVocabulary.build_from_dataset_ids(
@@ -554,8 +758,8 @@ def run_tagger_training(
             generator=torch.Generator().manual_seed(42),
         )
 
-        batch_size   = int(config.get("batch_size", 32))
-        num_workers  = int(config.get("num_workers", 4))
+        batch_size  = int(config.get("batch_size", 32))
+        num_workers = int(config.get("num_workers", 4))
         # Windows spawn mode re-imports main.py in each worker (triggers init_db) and
         # cannot pickle large dataset sample lists — use single-process loading.
         import sys as _sys
@@ -571,6 +775,23 @@ def run_tagger_training(
             pin_memory=(effective_workers > 0),
         )
 
+        # ------------------------------------------------------------------
+        # Detect resume checkpoint
+        # ------------------------------------------------------------------
+        resume_state: Optional[Dict[str, Any]] = None
+        resume_ckpt_name: Optional[str] = None
+
+        if resume_from_checkpoint:
+            result = _find_resume_checkpoint(resume_from_checkpoint)
+            if result is not None:
+                resume_ckpt_name, resume_state = result
+                print(
+                    f"[TaggerTraining] Found resume checkpoint: {resume_ckpt_name} "
+                    f"(step {resume_state['global_step']}, epoch {resume_state['epoch']})"
+                )
+            else:
+                print("[TaggerTraining] No resumable checkpoint found; starting from scratch")
+
         # Run trainer
         trainer = TaggerTrainer(
             run_id=run_id,
@@ -579,7 +800,21 @@ def run_tagger_training(
             output_dir=output_dir,
             progress_callback=progress_callback,
         )
-        return trainer.train(train_loader, val_loader, processor)
+
+        # Load checkpoint weights into the model before training starts
+        # (trainer.train() builds the model, so we pass resume info and let it handle loading)
+        if resume_state is not None and resume_ckpt_name is not None:
+            # Notify the API about the resume step for DB recording
+            progress_callback and progress_callback(run_id, "resume", {
+                "resumed_from_step": resume_state["global_step"],
+                "resume_ckpt_name": resume_ckpt_name,
+            })
+
+        return trainer.train(
+            train_loader, val_loader, processor,
+            resume_state=resume_state,
+            resume_ckpt_name=resume_ckpt_name,
+        )
 
     finally:
         datasets_db.close()

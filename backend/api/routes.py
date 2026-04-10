@@ -6560,33 +6560,40 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             run = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == rid).first()
             if not run:
                 return
+            def _upsert_metric(step: int, **kwargs):
+                existing = db.query(TaggerTrainingMetrics).filter(
+                    TaggerTrainingMetrics.run_id == rid,
+                    TaggerTrainingMetrics.step == step,
+                ).first()
+                if existing:
+                    for k, v in kwargs.items():
+                        if v is not None:
+                            setattr(existing, k, v)
+                else:
+                    db.add(TaggerTrainingMetrics(run_id=rid, step=step, **kwargs))
+
             if event_type == "step":
                 run.current_step = data.get("step", run.current_step)
                 run.latest_loss  = data.get("loss")
                 run.latest_lr    = data.get("lr")
                 run.progress     = data.get("progress", run.progress)
-                # Save step metrics
-                metric = TaggerTrainingMetrics(
-                    run_id=rid,
+                _upsert_metric(
                     step=data.get("step", 0),
                     epoch=data.get("epoch"),
                     loss=data.get("loss"),
                     learning_rate=data.get("lr"),
                 )
-                db.merge(metric)
             elif event_type == "epoch":
                 run.current_epoch = data.get("epoch", run.current_epoch)
                 run.latest_loss   = data.get("loss")
                 if data.get("f1") is not None:
-                    metric = TaggerTrainingMetrics(
-                        run_id=rid,
+                    _upsert_metric(
                         step=run.current_step,
                         epoch=data.get("epoch"),
                         loss=data.get("loss"),
                         f1=data.get("f1"),
                         threshold=data.get("threshold"),
                     )
-                    db.merge(metric)
             elif event_type == "checkpoint":
                 if data.get("name") == "best_f1":
                     run.best_f1 = data.get("f1")

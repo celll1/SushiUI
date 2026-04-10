@@ -556,13 +556,19 @@ def run_tagger_training(
 
         batch_size   = int(config.get("batch_size", 32))
         num_workers  = int(config.get("num_workers", 4))
+        # Windows spawn mode re-imports main.py in each worker (triggers init_db) and
+        # cannot pickle large dataset sample lists — use single-process loading.
+        import sys as _sys
+        effective_workers = 0 if _sys.platform == "win32" else num_workers
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
-            num_workers=num_workers, collate_fn=tagger_collate_fn, pin_memory=True,
+            num_workers=effective_workers, collate_fn=tagger_collate_fn,
+            pin_memory=(effective_workers > 0),
         )
         val_loader = DataLoader(
             val_ds, batch_size=batch_size, shuffle=False,
-            num_workers=num_workers, collate_fn=tagger_collate_fn, pin_memory=True,
+            num_workers=effective_workers, collate_fn=tagger_collate_fn,
+            pin_memory=(effective_workers > 0),
         )
 
         # Run trainer

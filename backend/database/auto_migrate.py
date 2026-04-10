@@ -69,107 +69,69 @@ def get_db_columns(engine, table_name):
 
 def auto_migrate(engine, base, db_name="database"):
     """
-    Automatically migrate database schema to match model definitions
+    Automatically migrate database schema to match model definitions.
 
-    Args:
-        engine: SQLAlchemy engine for the database
-        base: Declarative base (GalleryBase, DatasetBase, or TrainingBase)
-        db_name: Name of the database for logging (e.g., "gallery.db")
-
-    This function:
-    1. Compares model definitions with actual database schema
-    2. Adds any missing columns to existing tables
-    3. Creates tables that don't exist
-
-    Note: This does NOT handle:
-    - Column deletions (old columns are kept)
-    - Column type changes (requires manual migration)
-    - Column renames (requires manual migration)
+    Returns a list of strings describing applied changes (empty = nothing changed).
     """
-    print(f"[AutoMigrate] Starting migration for {db_name}...")
+    applied = []
 
     try:
         with engine.connect() as conn:
-            # Get all model classes from Base
-            models = []
-            for mapper in base.registry.mappers:
-                models.append(mapper.class_)
+            models = [mapper.class_ for mapper in base.registry.mappers]
 
             for model_class in models:
                 table_name = model_class.__tablename__
-                print(f"[AutoMigrate] [{db_name}] Checking table: {table_name}")
-
-                # Get model columns
                 model_columns = get_model_columns(model_class)
-
-                # Get existing database columns
                 db_columns = get_db_columns(engine, table_name)
 
-                # If table doesn't exist, it will be created by create_all()
                 if not db_columns:
-                    print(f"[AutoMigrate] [{db_name}] Table {table_name} does not exist, will be created by create_all()")
+                    # Will be created by create_all(); no action needed here
                     continue
 
-                # Find missing columns
                 missing_columns = set(model_columns.keys()) - db_columns
+                for col_name in missing_columns:
+                    col_definition = model_columns[col_name]
+                    try:
+                        sql = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_definition}"
+                        conn.execute(text(sql))
+                        conn.commit()
+                        applied.append(f"{table_name}.{col_name}")
+                        print(f"[AutoMigrate] {db_name}: added column {table_name}.{col_name}")
+                    except OperationalError as e:
+                        print(f"[AutoMigrate] {db_name}: failed to add {table_name}.{col_name}: {e}")
 
-                if missing_columns:
-                    print(f"[AutoMigrate] [{db_name}] Found {len(missing_columns)} missing column(s) in {table_name}: {missing_columns}")
-
-                    for col_name in missing_columns:
-                        col_definition = model_columns[col_name]
-
-                        # SQLite ALTER TABLE only supports ADD COLUMN
-                        try:
-                            sql = f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_definition}"
-                            print(f"[AutoMigrate] [{db_name}] Executing: {sql}")
-                            conn.execute(text(sql))
-                            conn.commit()
-                            print(f"[AutoMigrate] [{db_name}] ✓ Added column {col_name} to {table_name}")
-                        except OperationalError as e:
-                            print(f"[AutoMigrate] [{db_name}] ✗ Failed to add column {col_name}: {e}")
-                            # Continue with other columns even if one fails
-                else:
-                    print(f"[AutoMigrate] [{db_name}] ✓ Table {table_name} is up to date")
-
-            print(f"[AutoMigrate] Migration completed for {db_name}")
-            return True
+        return applied
 
     except Exception as e:
         print(f"[AutoMigrate] Error during migration for {db_name}: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        return []
 
 
 def auto_migrate_all_databases():
     """
-    Run auto-migration for all databases (gallery.db, datasets.db, training.db)
+    Run auto-migration for all databases (gallery.db, datasets.db, training.db).
+    Prints a single summary line; only prints details when columns are added.
     """
     from config.settings import settings
 
-    print("[AutoMigrate] ========================================")
-    print("[AutoMigrate] Starting auto-migration for all databases")
-    print("[AutoMigrate] ========================================")
-
-    # Gallery database
-    gallery_db_path = os.path.join(settings.root_dir, "gallery.db")
-    gallery_engine = create_engine(f"sqlite:///{gallery_db_path}", connect_args={"check_same_thread": False})
-    auto_migrate(gallery_engine, GalleryBase, "gallery.db")
-
-    # Datasets database
+    gallery_db_path  = os.path.join(settings.root_dir, "gallery.db")
     datasets_db_path = os.path.join(settings.root_dir, "datasets.db")
-    datasets_engine = create_engine(f"sqlite:///{datasets_db_path}", connect_args={"check_same_thread": False})
-    auto_migrate(datasets_engine, DatasetBase, "datasets.db")
-
-    # Training database
     training_db_path = os.path.join(settings.root_dir, "training.db")
-    training_engine = create_engine(f"sqlite:///{training_db_path}", connect_args={"check_same_thread": False})
-    auto_migrate(training_engine, TrainingBase, "training.db")
 
-    print("[AutoMigrate] ========================================")
-    print("[AutoMigrate] All databases migrated successfully")
-    print("[AutoMigrate] ========================================")
+    gallery_engine  = create_engine(f"sqlite:///{gallery_db_path}",  connect_args={"check_same_thread": False})
+    datasets_engine = create_engine(f"sqlite:///{datasets_db_path}", connect_args={"check_same_thread": False})
+    training_engine = create_engine(f"sqlite:///{training_db_path}", connect_args={"check_same_thread": False})
+
+    changes = (
+        auto_migrate(gallery_engine,  GalleryBase,  "gallery.db")  +
+        auto_migrate(datasets_engine, DatasetBase,  "datasets.db") +
+        auto_migrate(training_engine, TrainingBase, "training.db")
+    )
+
+    if not changes:
+        print("[AutoMigrate] All schemas up to date")
 
 
 if __name__ == "__main__":

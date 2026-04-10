@@ -27,8 +27,14 @@ engine = gallery_engine
 SessionLocal = GallerySessionLocal
 Base = GalleryBase
 
+_db_initialized = False
+
 def init_db():
-    """Initialize all databases"""
+    """Initialize all databases (no-op if already called)."""
+    global _db_initialized
+    if _db_initialized:
+        return
+    _db_initialized = True
     from .models import (
         GeneratedImage, UserSettings,  # Gallery
         Dataset, DatasetItem, DatasetCaption, TagDictionary,  # Datasets

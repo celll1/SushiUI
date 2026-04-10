@@ -113,26 +113,20 @@ class TaggerDataset(Dataset):
         return len(self._samples)
 
     def __getitem__(self, idx: int):
-        # Retry with a different sample on load error (truncated / corrupt images)
-        for attempt in range(len(self._samples)):
-            sample_idx = (idx + attempt) % len(self._samples)
-            image_path, tags = self._samples[sample_idx]
-            try:
-                image = _load_image(image_path)
-                inputs = self.processor(images=[image], return_tensors="pt")
-            except Exception as e:
-                if attempt == 0:
-                    print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
-                continue
+        image_path, tags = self._samples[idx]
+        try:
+            image = _load_image(image_path)
+            inputs = self.processor(images=[image], return_tensors="pt")
+        except Exception as e:
+            print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
+            return None  # filtered out by tagger_collate_fn
 
-            pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, 768]
-            pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
-            spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
+        pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, 768]
+        pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
+        spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
 
-            label, loss_mask = self._build_label_and_mask(tags)
-            return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
-
-        raise RuntimeError(f"[TaggerDataset] No valid images found starting at idx {idx}")
+        label, loss_mask = self._build_label_and_mask(tags)
+        return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
 
     # ------------------------------------------------------------------
     # Label / mask construction
@@ -213,6 +207,22 @@ def tagger_collate_fn(batch):
     loss_masks = torch.stack(loss_masks_list)
 
     return pixel_values, pixel_attention_mask, spatial_shapes, labels, loss_masks
+
+
+# ------------------------------------------------------------------
+# Collate function — filters out None items (corrupt images)
+# ------------------------------------------------------------------
+
+def tagger_collate_fn(batch):
+    """Drop None items (corrupt/unreadable images) and collate the rest.
+
+    Returns None if the entire batch is empty after filtering so the
+    training loop can skip it.
+    """
+    valid = [item for item in batch if item is not None]
+    if not valid:
+        return None
+    return torch.utils.data.dataloader.default_collate(valid)
 
 
 # ------------------------------------------------------------------

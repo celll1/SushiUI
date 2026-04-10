@@ -2008,6 +2008,8 @@ export interface TaggerTrainingRunCreateRequest {
   save_best_only?: boolean;
   excluded_categories?: string[];
   ban_tags?: string;
+  cls_dim?: number;
+  head_hidden_dim?: number;
 }
 
 export interface TaggerTrainingMetric {

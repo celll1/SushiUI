@@ -36,6 +36,8 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   save_best_only: true,
   excluded_categories: [] as string[],
   ban_tags: "",
+  cls_dim: undefined as number | undefined,
+  head_hidden_dim: undefined as number | undefined,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -344,6 +346,56 @@ export default function TaggerTrainingConfig({
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
+            </div>
+          </section>
+        )}
+
+        {/* Custom Attention Pooling (Full FT only) + MLP head */}
+        {config.training_method === "full" && (
+          <section>
+            <label className="block text-sm font-medium text-gray-300 mb-3">Custom Pooling Head <span className="text-xs text-gray-500">(Full FT only)</span></label>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Custom Attention Pooling dim <span className="text-gray-600">(empty = use pooler_output)</span></label>
+                <input
+                  type="number"
+                  min={64}
+                  max={4096}
+                  placeholder="e.g. 768"
+                  value={config.cls_dim ?? ""}
+                  onChange={(e) => setField("cls_dim" as keyof ConfigState, e.target.value === "" ? undefined : (parseInt(e.target.value) || undefined) as ConfigState[keyof ConfigState])}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">MLP head hidden dim <span className="text-gray-600">(empty = single linear)</span></label>
+                <input
+                  type="number"
+                  min={64}
+                  max={8192}
+                  placeholder="e.g. 1024"
+                  value={config.head_hidden_dim ?? ""}
+                  onChange={(e) => setField("head_hidden_dim" as keyof ConfigState, e.target.value === "" ? undefined : (parseInt(e.target.value) || undefined) as ConfigState[keyof ConfigState])}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          </section>
+        )}
+        {config.training_method === "lora" && (
+          <section>
+            <label className="block text-sm font-medium text-gray-300 mb-3">MLP Head</label>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Hidden dim <span className="text-gray-600">(empty = single linear)</span></label>
+              <input
+                type="number"
+                min={64}
+                max={8192}
+                placeholder="e.g. 1024"
+                value={config.head_hidden_dim ?? ""}
+                onChange={(e) => setField("head_hidden_dim" as keyof ConfigState, e.target.value === "" ? undefined : (parseInt(e.target.value) || undefined) as ConfigState[keyof ConfigState])}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-blue-500"
+              />
             </div>
           </section>
         )}

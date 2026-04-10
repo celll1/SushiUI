@@ -93,6 +93,56 @@ def _load_vision_encoder(safetensors_path: str) -> nn.Module:
 
 
 # ------------------------------------------------------------------
+# Custom Attention Pooling (for Full FT with configurable output dim)
+# ------------------------------------------------------------------
+
+class CustomAttentionPooling(nn.Module):
+    """Replace SigLIP2's built-in pooler with a learnable attention pooling.
+
+    Takes last_hidden_state [B, N, in_dim] and produces [B, out_dim].
+    A single learnable query attends over all patch tokens.
+    """
+
+    def __init__(self, in_dim: int, out_dim: int, num_heads: int = 8) -> None:
+        super().__init__()
+        # Adjust num_heads so out_dim is divisible
+        while out_dim % num_heads != 0 and num_heads > 1:
+            num_heads //= 2
+        self.query  = nn.Parameter(torch.zeros(1, 1, out_dim))
+        nn.init.normal_(self.query, std=0.02)
+        self.proj_k = nn.Linear(in_dim, out_dim)
+        self.proj_v = nn.Linear(in_dim, out_dim)
+        self.attn   = nn.MultiheadAttention(out_dim, num_heads, batch_first=True)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: [B, N, in_dim] → [B, out_dim]"""
+        k = self.proj_k(x)                           # [B, N, out_dim]
+        v = self.proj_v(x)
+        q = self.query.expand(x.size(0), -1, -1)     # [B, 1, out_dim]
+        out, _ = self.attn(q, k, v)
+        return out.squeeze(1)                         # [B, out_dim]
+
+
+def _build_head(pool_dim: int, num_tags: int, head_hidden_dim: Optional[int]) -> nn.Module:
+    """Build classification head: 1-layer Linear or 2-layer MLP."""
+    if head_hidden_dim:
+        head = nn.Sequential(
+            nn.Linear(pool_dim, head_hidden_dim),
+            nn.GELU(),
+            nn.Linear(head_hidden_dim, num_tags),
+        )
+        nn.init.zeros_(head[0].weight)
+        nn.init.zeros_(head[0].bias)
+        nn.init.zeros_(head[2].weight)
+        nn.init.zeros_(head[2].bias)
+    else:
+        head = nn.Linear(pool_dim, num_tags)
+        nn.init.zeros_(head.weight)
+        nn.init.zeros_(head.bias)
+    return head
+
+
+# ------------------------------------------------------------------
 # Full-parameter model
 # ------------------------------------------------------------------
 
@@ -105,6 +155,11 @@ class SigLIP2TaggerModel(nn.Module):
     vision_encoder    : pre-loaded vision encoder nn.Module
     freeze_encoder    : if True, gradients do not flow through vision encoder
     hidden_size       : vision encoder output dimension (1152 for so400m)
+    cls_dim           : if set, use CustomAttentionPooling(1152 → cls_dim)
+                        instead of built-in pooler_output; Full FT only
+    head_hidden_dim   : if set, insert a hidden layer in the classification
+                        head: Linear(pool_dim → head_hidden_dim) → GELU
+                        → Linear(head_hidden_dim → num_tags)
     """
 
     HIDDEN_SIZE = 1152  # so400m
@@ -115,12 +170,25 @@ class SigLIP2TaggerModel(nn.Module):
         vision_encoder: nn.Module,
         freeze_encoder: bool = False,
         hidden_size: int = HIDDEN_SIZE,
+        cls_dim: Optional[int] = None,
+        head_hidden_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
-        self.head = nn.Linear(hidden_size, num_tags)
-        nn.init.zeros_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
+        self.cls_dim        = cls_dim
+        self.head_hidden_dim = head_hidden_dim
+
+        # Custom attention pooler (replaces built-in pooler_output)
+        if cls_dim:
+            self.custom_pooler: Optional[CustomAttentionPooling] = CustomAttentionPooling(
+                in_dim=hidden_size, out_dim=cls_dim
+            )
+            pool_dim = cls_dim
+        else:
+            self.custom_pooler = None
+            pool_dim = hidden_size
+
+        self.head = _build_head(pool_dim, num_tags, head_hidden_dim)
 
         if freeze_encoder:
             for p in self.vision_encoder.parameters():
@@ -138,8 +206,11 @@ class SigLIP2TaggerModel(nn.Module):
             attention_mask=pixel_attention_mask,
             spatial_shapes=spatial_shapes,
         )
-        pooled = out.pooler_output  # [B, 1152]
-        return self.head(pooled)    # [B, num_tags]
+        if self.custom_pooler is not None:
+            pooled = self.custom_pooler(out.last_hidden_state)  # [B, cls_dim]
+        else:
+            pooled = out.pooler_output  # [B, 1152]
+        return self.head(pooled)        # [B, num_tags]
 
     # ------------------------------------------------------------------
     # Save / load
@@ -182,8 +253,15 @@ class SigLIP2TaggerModel(nn.Module):
             if num_tags is None:
                 raise ValueError("num_tags must be provided or present in metadata")
 
+        cls_dim        = metadata.get("cls_dim")
+        head_hidden_dim = metadata.get("head_hidden_dim")
         vision_encoder = _load_vision_encoder(vision_encoder_path)
-        model = cls(num_tags=num_tags, vision_encoder=vision_encoder)
+        model = cls(
+            num_tags=num_tags,
+            vision_encoder=vision_encoder,
+            cls_dim=cls_dim,
+            head_hidden_dim=head_hidden_dim,
+        )
         state_dict = load_file(checkpoint_path)
         model.load_state_dict(state_dict, strict=True)
         return model
@@ -227,14 +305,17 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.0,
         hidden_size: int = HIDDEN_SIZE,
+        head_hidden_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
         self.lora_rank = lora_rank
         self.lora_alpha = lora_alpha
-        self.head = nn.Linear(hidden_size, num_tags)
-        nn.init.zeros_(self.head.weight)
-        nn.init.zeros_(self.head.bias)
+        self.head_hidden_dim = head_hidden_dim
+        self.head = _build_head(hidden_size, num_tags, head_hidden_dim)
+        # Zero-init all head weights for stable start
+        for p in self.head.parameters():
+            nn.init.zeros_(p)
 
         # Freeze all encoder parameters first
         for p in self.vision_encoder.parameters():
@@ -296,9 +377,9 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             prefix = f"lora.{module_name}"
             sd[f"{prefix}.lora_A"] = lora_module.lora_A.detach().contiguous()
             sd[f"{prefix}.lora_B"] = lora_module.lora_B.detach().contiguous()
-        # Head parameters
-        sd["head.weight"] = self.head.weight.detach().contiguous()
-        sd["head.bias"]   = self.head.bias.detach().contiguous()
+        # Head parameters (generic: works for Linear or MLP Sequential)
+        for key, tensor in self.head.state_dict().items():
+            sd[f"head.{key}"] = tensor.detach().contiguous()
 
         if metadata is None:
             metadata = {}
@@ -306,6 +387,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             "lora_rank": self.lora_rank,
             "lora_alpha": self.lora_alpha,
             "num_lora_modules": len(self._lora_modules),
+            "head_hidden_dim": self.head_hidden_dim,
         })
 
         save_file(sd, path_st)
@@ -334,8 +416,9 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             if num_tags is None:
                 raise ValueError("num_tags must be provided or present in metadata")
 
-        lora_rank  = metadata.get("lora_rank", lora_rank)
-        lora_alpha = metadata.get("lora_alpha", lora_alpha)
+        lora_rank       = metadata.get("lora_rank", lora_rank)
+        lora_alpha      = metadata.get("lora_alpha", lora_alpha)
+        head_hidden_dim = metadata.get("head_hidden_dim", None)
 
         vision_encoder = _load_vision_encoder(vision_encoder_path)
         model = cls(
@@ -343,13 +426,14 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
+            head_hidden_dim=head_hidden_dim,
         )
 
         saved = load_file(checkpoint_path)
 
-        # Restore head
-        model.head.weight.data.copy_(saved["head.weight"])
-        model.head.bias.data.copy_(saved["head.bias"])
+        # Restore head (generic state_dict restore)
+        head_sd = {k[len("head."):]: v for k, v in saved.items() if k.startswith("head.")}
+        model.head.load_state_dict(head_sd)
 
         # Restore LoRA weights
         for module_name, lora_module in model._lora_modules.items():
@@ -386,6 +470,8 @@ def build_tagger_model(
     lora_rank: int = 32,
     lora_alpha: float = 16.0,
     freeze_encoder: bool = False,
+    cls_dim: Optional[int] = None,
+    head_hidden_dim: Optional[int] = None,
 ) -> nn.Module:
     """Build the appropriate tagger model.
 
@@ -397,22 +483,29 @@ def build_tagger_model(
     lora_rank       : LoRA rank (only used when training_method="lora")
     lora_alpha      : LoRA alpha
     freeze_encoder  : freeze encoder entirely (only used when training_method="full")
+    cls_dim         : custom attention pooling output dim (Full FT only)
+    head_hidden_dim : hidden layer dim in classification MLP head (both modes)
     """
     print(f"[TaggerModel] Loading vision encoder from: {vision_encoder_path}")
     vision_encoder = _load_vision_encoder(vision_encoder_path)
 
     if training_method == "lora":
+        if cls_dim:
+            print("[TaggerModel] Warning: cls_dim is ignored for LoRA training (no custom pooler)")
         return SigLIP2TaggerLoRAModel(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
             lora_alpha=float(lora_alpha),
+            head_hidden_dim=head_hidden_dim,
         )
     elif training_method == "full":
         return SigLIP2TaggerModel(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             freeze_encoder=freeze_encoder,
+            cls_dim=cls_dim,
+            head_hidden_dim=head_hidden_dim,
         )
     else:
         raise ValueError(f"Unknown training_method: {training_method!r}. Use 'full' or 'lora'.")

@@ -6546,6 +6546,10 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     val_split: float = 0.05
     vocab_min_count: int = 1
     output_dir: Optional[str] = None
+    excluded_categories: Optional[List[str]] = None
+    ban_tags: Optional[str] = None
+    cls_dim: Optional[int] = None
+    head_hidden_dim: Optional[int] = None
 
 
 # Active tagger training threads

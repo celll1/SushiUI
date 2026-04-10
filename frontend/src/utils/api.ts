@@ -1973,6 +1973,7 @@ export interface TaggerTrainingRun {
   tag_vocabulary: Record<string, unknown> | null;
   best_f1: number | null;
   best_threshold: number | null;
+  threshold_f1_curve: Record<string, number> | null;
   latest_loss: number | null;
   head_checkpoint_path: string | null;
   lora_checkpoint_path: string | null;

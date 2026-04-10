@@ -6573,10 +6573,11 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     db.add(TaggerTrainingMetrics(run_id=rid, step=step, **kwargs))
 
             if event_type == "step":
-                run.current_step = data.get("step", run.current_step)
-                run.latest_loss  = data.get("loss")
-                run.latest_lr    = data.get("lr")
-                run.progress     = data.get("progress", run.progress)
+                run.current_step  = data.get("step", run.current_step)
+                run.current_epoch = data.get("epoch", run.current_epoch)
+                run.latest_loss   = data.get("loss")
+                run.latest_lr     = data.get("lr")
+                run.progress      = data.get("progress", run.progress)
                 _upsert_metric(
                     step=data.get("step", 0),
                     epoch=data.get("epoch"),
@@ -6606,7 +6607,8 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.status         = "completed"
                 run.progress       = 1.0
                 run.best_f1        = data.get("best_f1")
-                run.best_threshold = data.get("best_threshold")
+                run.best_threshold = data.get("optimal_threshold") or data.get("best_threshold")
+                run.threshold_f1_curve = data.get("threshold_f1_curve")
                 run.total_steps    = data.get("total_steps")
                 run.completed_at   = datetime.now()
                 run.latest_checkpoint_path = os.path.join(run.output_dir or "", "latest.safetensors")

@@ -375,7 +375,7 @@ function TrainingPageContent() {
                           <div className="mt-1.5 w-full bg-gray-600 rounded-full h-1">
                             <div
                               className="bg-blue-500 h-1 rounded-full transition-all"
-                              style={{ width: `${run.progress}%` }}
+                              style={{ width: `${run.progress * 100}%` }}
                             />
                           </div>
                         )}

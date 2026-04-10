@@ -181,6 +181,8 @@ class TaggerTrainer:
             vision_encoder_path=cfg["vision_encoder_path"],
             lora_rank=cfg.get("lora_rank", 32),
             lora_alpha=float(cfg.get("lora_alpha", 16.0)),
+            cls_dim=cfg.get("cls_dim") or None,
+            head_hidden_dim=cfg.get("head_hidden_dim") or None,
         )
         model = model.to(device)
 

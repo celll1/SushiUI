@@ -99,6 +99,19 @@ class TagVocabulary:
                         if norm not in tag_categories:
                             tag_categories[norm] = category
 
+        # Resolve "__lookup__" sentinels via taglist_cache (batch, O(1) per tag)
+        lookup_tags = [t for t, c in tag_categories.items() if c == "__lookup__"]
+        if lookup_tags:
+            try:
+                from utils.taglist_cache import taglist_cache
+                resolved = taglist_cache.get_categories_batch(lookup_tags)
+                for norm_tag in lookup_tags:
+                    tag_categories[norm_tag] = resolved.get(norm_tag, "General")
+            except Exception:
+                # taglist_cache not initialized or unavailable — fall back to General
+                for norm_tag in lookup_tags:
+                    tag_categories[norm_tag] = "General"
+
         # Filter by min_count
         filtered: Dict[str, int] = {t: c for t, c in tag_counts.items() if c >= min_count}
 
@@ -209,7 +222,9 @@ class TagVocabulary:
 def _parse_caption_tags(caption) -> List[Tuple[str, str]]:
     """Extract (tag, category) pairs from a DatasetCaption row.
 
-    Prefers tag_data JSON (has category info); falls back to content string.
+    Prefers tag_data JSON (has category info); falls back to content string
+    with category="__lookup__" sentinel so the caller can batch-resolve
+    categories via taglist_cache.
     """
     if caption.tag_data:
         try:
@@ -223,9 +238,10 @@ def _parse_caption_tags(caption) -> List[Tuple[str, str]]:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    # Fallback: parse comma-separated content
+    # Fallback: parse comma-separated content.
+    # Use "__lookup__" sentinel so build_from_dataset_ids can resolve via taglist_cache.
     if caption.content:
         tags = [t.strip() for t in caption.content.split(",") if t.strip()]
-        return [(t, "General") for t in tags]
+        return [(t, "__lookup__") for t in tags]
 
     return []

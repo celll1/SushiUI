@@ -1917,6 +1917,11 @@ export const cancelBatchOperation = async (datasetId: number): Promise<{ message
   return response.data;
 };
 
+export const backfillTagData = async (datasetId: number): Promise<BatchOperationResponse> => {
+  const response = await api.post(`/datasets/${datasetId}/backfill-tag-data`);
+  return response.data;
+};
+
 // Tag Dictionary Search API was removed - use tagSuggestions.ts instead
 
 // ==================== Debug VRAM Inspection ====================

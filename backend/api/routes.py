@@ -3217,7 +3217,20 @@ async def scan_dataset(
     from utils.caption_detector import classify_field, scan_json_fields
     print(f"[Dataset Scan] Loading taglist for format detection...")
     taglist = load_all_tags(settings.root_dir)
+    taglist_cache.initialize(settings.root_dir)
     print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
+
+    def _build_tag_data_json(content: str) -> str:
+        """Build tag_data JSON string from comma-separated tag content."""
+        import json as _json
+        tags = [t.strip() for t in content.split(",") if t.strip()]
+        if not tags:
+            return "[]"
+        cats = taglist_cache.get_categories_batch(tags)
+        return _json.dumps(
+            [{"tag": t, "category": cats.get(t, "General")} for t in tags],
+            ensure_ascii=False,
+        )
 
     # Pre-scan with 2-pass scanner: detect suffix captions + count images in one pass
     from utils.dataset_scanner import scan_directory_structure
@@ -3503,6 +3516,8 @@ async def scan_dataset(
                                         existing_cap.tag_match_rate = match_rate
                                         existing_cap.source = "file"
                                         existing_cap.source_field = detected_caption_type
+                                        if is_tags_format:
+                                            existing_cap.tag_data = _build_tag_data_json(content)
                                         existing_cap.updated_at = datetime.utcnow()
                                     else:
                                         # Create new
@@ -3513,6 +3528,7 @@ async def scan_dataset(
                                             field_category=field_category,
                                             is_tags_format=is_tags_format,
                                             tag_match_rate=match_rate,
+                                            tag_data=_build_tag_data_json(content) if is_tags_format else None,
                                             source="file",
                                             source_field=detected_caption_type
                                         )
@@ -3547,17 +3563,21 @@ async def scan_dataset(
                                         existing_tags.tag_match_rate = result["tag_match_rate"]
                                         existing_tags.source = "file"
                                         existing_tags.source_field = result["source_field"]
+                                        if result["is_tags_format"]:
+                                            existing_tags.tag_data = _build_tag_data_json(result["content"])
                                         existing_tags.updated_at = datetime.utcnow()
                                         continue  # Skip adding new caption
 
                                 # Create new caption (for non-tags fields or first tags field)
+                                _is_tags = result["is_tags_format"]
                                 caption = DatasetCaption(
                                     item_id=item.id,
                                     caption_type=caption_type,
                                     content=result["content"],
                                     field_category=result["field_category"],
-                                    is_tags_format=result["is_tags_format"],
+                                    is_tags_format=_is_tags,
                                     tag_match_rate=result["tag_match_rate"],
+                                    tag_data=_build_tag_data_json(result["content"]) if _is_tags else None,
                                     source="file",
                                     source_field=result["source_field"]
                                 )
@@ -3590,6 +3610,8 @@ async def scan_dataset(
                                         existing_cap.tag_match_rate = match_rate
                                         existing_cap.source = "file"
                                         existing_cap.source_field = suffix
+                                        if is_tags_format:
+                                            existing_cap.tag_data = _build_tag_data_json(content)
                                         existing_cap.updated_at = datetime.utcnow()
                                     else:
                                         caption = DatasetCaption(
@@ -3599,6 +3621,7 @@ async def scan_dataset(
                                             field_category=field_category,
                                             is_tags_format=is_tags_format,
                                             tag_match_rate=match_rate,
+                                            tag_data=_build_tag_data_json(content) if is_tags_format else None,
                                             source="file",
                                             source_field=suffix
                                         )
@@ -6275,10 +6298,12 @@ from api.batch_operations import (
     BatchTaggerRequest,
     BatchReorderTagsRequest,
     BatchReplaceTagRequest,
+    BatchBackfillTagDataRequest,
     BatchOperationResponse,
     batch_tagger_inference,
     batch_reorder_tags,
     batch_replace_tag,
+    batch_backfill_tag_data,
     cancel_batch_operation,
 )
 
@@ -6356,6 +6381,31 @@ async def batch_replace_tag_endpoint(
     print(f"[BatchReplace] Processed: {result.processed_count}, Updated: {result.updated_count}, Skipped: {result.skipped_count}, Failed: {result.failed_count}")
 
     return result
+
+@router.post("/datasets/{dataset_id}/backfill-tag-data", response_model=BatchOperationResponse)
+async def backfill_tag_data_endpoint(
+    dataset_id: int,
+    db: Session = Depends(get_datasets_db)
+):
+    """
+    Populate tag_data JSON for all is_tags_format=True captions that currently
+    have tag_data=NULL in this dataset.
+
+    This fixes captions created by bulk import/scan that have comma-separated
+    tags in 'content' but no category information in 'tag_data'.
+    """
+    request = BatchBackfillTagDataRequest(dataset_id=dataset_id)
+
+    def send_progress(current: int, total: int, message: str):
+        manager.send_progress_sync(current, total, message)
+
+    result = await batch_backfill_tag_data(request, db, send_progress)
+
+    print(f"[BackfillTagData] {result.message}")
+    print(f"[BackfillTagData] Processed: {result.processed_count}, Updated: {result.updated_count}, Failed: {result.failed_count}")
+
+    return result
+
 
 @router.post("/datasets/{dataset_id}/batch-cancel")
 async def batch_cancel_endpoint(dataset_id: int):

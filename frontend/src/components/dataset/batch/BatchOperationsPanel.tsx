@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from "react";
-import { Sparkles, ArrowDownUp, Replace, X } from "lucide-react";
+import { Sparkles, ArrowDownUp, Replace, X, RefreshCw } from "lucide-react";
 import ConfirmDialog from "@/components/common/ConfirmDialog";
 import {
   batchTaggerInference,
   batchReorderTags,
   batchReplaceTag,
+  backfillTagData,
   cancelBatchOperation,
   BatchTaggerRequest,
   BatchReorderTagsRequest,
@@ -206,6 +207,31 @@ export default function BatchOperationsPanel({
   };
 
   // ============================================================
+  // Backfill tag_data
+  // ============================================================
+
+  const [showBackfillConfirm, setShowBackfillConfirm] = useState(false);
+
+  const handleBackfillTagData = async () => {
+    setShowBackfillConfirm(false);
+    setIsProcessing(true);
+    setProgress(0);
+    setProgressMessage("Backfilling tag_data...");
+    wsClient.connect();
+
+    try {
+      const result = await backfillTagData(datasetId);
+      console.log(`[BackfillTagData] ${result.message}`);
+      setProgressMessage(result.message);
+      setTimeout(() => setIsProcessing(false), 2000);
+    } catch (error) {
+      console.error("[BackfillTagData] Error:", error);
+      setProgressMessage("Backfill failed. Check console for details.");
+      setTimeout(() => setIsProcessing(false), 3000);
+    }
+  };
+
+  // ============================================================
   // Cancel Operation
   // ============================================================
 
@@ -262,6 +288,19 @@ export default function BatchOperationsPanel({
         ) : (
           <span>Target: All {totalItems} items</span>
         )}
+      </div>
+
+      {/* Dataset-level Operations */}
+      <div className="border-t border-gray-700 pt-3">
+        <button
+          onClick={() => setShowBackfillConfirm(true)}
+          disabled={isProcessing}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-teal-700 hover:bg-teal-600 disabled:bg-gray-700 disabled:cursor-not-allowed rounded text-xs font-medium transition-colors"
+          title="Populate tag category data for all captions that were imported without category info"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          <span>Backfill Tag Categories</span>
+        </button>
       </div>
 
       {/* Progress Bar */}
@@ -327,6 +366,26 @@ export default function BatchOperationsPanel({
           </div>
         }
         confirmText="Reorder Tags"
+      />
+
+      <ConfirmDialog
+        isOpen={showBackfillConfirm}
+        onClose={() => setShowBackfillConfirm(false)}
+        onConfirm={handleBackfillTagData}
+        title="Backfill Tag Categories"
+        message={
+          <div>
+            <p className="text-sm text-gray-300 mb-2">
+              Populate category information for all captions that were imported without it?
+            </p>
+            <ul className="text-xs text-gray-400 space-y-1">
+              <li>• Processes all is_tags_format captions where tag_data is NULL</li>
+              <li>• Categories are resolved from the taglist cache</li>
+              <li>• Required for Excluded Categories filtering in tagger training</li>
+            </ul>
+          </div>
+        }
+        confirmText="Backfill"
       />
 
       {/* Replace Tag Dialog */}

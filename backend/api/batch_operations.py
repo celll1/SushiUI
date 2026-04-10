@@ -52,6 +52,10 @@ class BatchReplaceTagRequest(BaseModel):
     to_tag: str
     normalize_match: bool = True  # Use normalized matching (whitespace, underscores)
 
+class BatchBackfillTagDataRequest(BaseModel):
+    dataset_id: int
+    batch_size: int = 1000  # Number of captions to process per commit
+
 class BatchOperationResponse(BaseModel):
     status: str
     processed_count: int
@@ -664,4 +668,135 @@ async def batch_replace_tag(
         skipped_count=skipped,
         failed_count=failed,
         message=message
+    )
+
+
+# ============================================================
+# Batch Backfill tag_data
+# ============================================================
+
+async def batch_backfill_tag_data(
+    request: "BatchBackfillTagDataRequest",
+    db,
+    send_progress_callback=None,
+) -> BatchOperationResponse:
+    """
+    Populate tag_data JSON for all is_tags_format=True captions that currently
+    have tag_data=NULL (i.e. captions created by bulk import / scan).
+
+    Uses taglist_cache.get_categories_batch() for batch category lookup.
+    Processes in batches to avoid excessive memory usage.
+    """
+    import json
+    from database.models import DatasetCaption, DatasetItem
+
+    def send_progress(current, total, message):
+        if send_progress_callback:
+            send_progress_callback(current, total, message)
+
+    taglist_cache.initialize(settings.root_dir)
+
+    # Count captions that need backfilling for this dataset
+    item_ids_subq = (
+        db.query(DatasetItem.id)
+        .filter(DatasetItem.dataset_id == request.dataset_id)
+        .subquery()
+    )
+
+    total = (
+        db.query(DatasetCaption)
+        .filter(
+            DatasetCaption.item_id.in_(item_ids_subq),
+            DatasetCaption.is_tags_format == True,
+            DatasetCaption.tag_data == None,
+        )
+        .count()
+    )
+
+    if total == 0:
+        msg = "All tag_data already populated, nothing to backfill."
+        send_progress(0, 0, msg)
+        return BatchOperationResponse(
+            status="completed",
+            processed_count=0,
+            updated_count=0,
+            skipped_count=0,
+            failed_count=0,
+            message=msg,
+        )
+
+    send_progress(0, total, f"Backfilling tag_data for {total} captions...")
+
+    processed = 0
+    updated = 0
+    failed = 0
+    batch_size = request.batch_size
+
+    while True:
+        if is_batch_operation_cancelled():
+            break
+
+        batch = (
+            db.query(DatasetCaption)
+            .filter(
+                DatasetCaption.item_id.in_(item_ids_subq),
+                DatasetCaption.is_tags_format == True,
+                DatasetCaption.tag_data == None,
+            )
+            .limit(batch_size)
+            .all()
+        )
+        if not batch:
+            break
+
+        # Collect all unique tag strings in this batch for one bulk lookup
+        all_tags: List[str] = []
+        caption_tags: Dict[int, List[str]] = {}
+        for caption in batch:
+            if caption.content:
+                tags = [t.strip() for t in caption.content.split(",") if t.strip()]
+                caption_tags[caption.id] = tags
+                all_tags.extend(tags)
+            else:
+                caption_tags[caption.id] = []
+
+        # Batch-resolve categories
+        categories = taglist_cache.get_categories_batch(list(set(all_tags))) if all_tags else {}
+
+        for caption in batch:
+            try:
+                tags = caption_tags.get(caption.id, [])
+                if not tags:
+                    caption.tag_data = "[]"
+                else:
+                    tag_data = [
+                        {"tag": t, "category": categories.get(t, "General")}
+                        for t in tags
+                    ]
+                    caption.tag_data = json.dumps(tag_data, ensure_ascii=False)
+                updated += 1
+            except Exception as e:
+                print(f"[BackfillTagData] Failed caption {caption.id}: {e}")
+                failed += 1
+
+            processed += 1
+
+        db.commit()
+        send_progress(processed, total, f"Backfilled {processed}/{total} captions...")
+
+    cancelled = is_batch_operation_cancelled()
+    status = "cancelled" if cancelled else "completed"
+    message = f"Backfill tag_data: {updated} updated, {failed} failed"
+    if cancelled:
+        message += " (cancelled)"
+
+    send_progress(total, total, message)
+
+    return BatchOperationResponse(
+        status=status,
+        processed_count=processed,
+        updated_count=updated,
+        skipped_count=0,
+        failed_count=failed,
+        message=message,
     )

@@ -2006,6 +2006,8 @@ export interface TaggerTrainingRunCreateRequest {
   loss_gamma_pos?: number;
   validate_every?: number;
   save_best_only?: boolean;
+  excluded_categories?: string[];
+  ban_tags?: string;
 }
 
 export interface TaggerTrainingMetric {
@@ -2065,10 +2067,13 @@ export const getTaggerTrainingMetrics = async (
 };
 
 export const getTaggerVocabularyPreview = async (
-  datasetIds: number[]
+  datasetIds: number[],
+  excludedCategories: string[] = [],
+  banTags: string = "",
 ): Promise<TaggerVocabularyPreview> => {
-  const response = await api.get("/tagger-training/vocabulary-preview", {
-    params: { dataset_ids: datasetIds.join(",") },
-  });
+  const params: Record<string, string> = { dataset_ids: datasetIds.join(",") };
+  if (excludedCategories.length > 0) params.excluded_categories = excludedCategories.join(",");
+  if (banTags.trim()) params.ban_tags = banTags;
+  const response = await api.get("/tagger-training/vocabulary-preview", { params });
   return response.data;
 };

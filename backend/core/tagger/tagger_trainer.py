@@ -506,10 +506,17 @@ def run_tagger_training(
         progress_callback and progress_callback(run_id, "phase", {
             "phase": "vocabulary", "message": "Building tag vocabulary..."
         })
+        excl_cats = config.get("excluded_categories") or None
+        ban_tags  = config.get("ban_tags") or None
+        # ban_tags may be a newline-separated string from the UI
+        if isinstance(ban_tags, str):
+            ban_tags = [t.strip() for t in ban_tags.splitlines() if t.strip()] or None
         vocabulary = TagVocabulary.build_from_dataset_ids(
             dataset_ids=dataset_ids,
             datasets_db=datasets_db,
             min_count=config.get("vocab_min_count", 1),
+            excluded_categories=excl_cats,
+            ban_tags=ban_tags,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")
 

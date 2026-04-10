@@ -6783,16 +6783,30 @@ def get_tagger_training_metrics(
 @router.get("/tagger-training/vocabulary-preview")
 def preview_tagger_vocabulary(
     dataset_ids: str,
+    excluded_categories: Optional[str] = None,
+    ban_tags: Optional[str] = None,
     datasets_db: Session = Depends(get_datasets_db),
 ):
     """Preview tag vocabulary for given dataset IDs (comma-separated).
 
     Returns tag count and category breakdown without full vocab.
+
+    Parameters
+    ----------
+    dataset_ids         : comma-separated dataset IDs
+    excluded_categories : comma-separated category names to exclude
+    ban_tags            : newline or comma-separated tag patterns (fnmatch wildcards)
     """
     from core.tagger.tag_vocabulary import TagVocabulary
 
     ids = [int(i) for i in dataset_ids.split(",") if i.strip()]
-    vocab = TagVocabulary.build_from_dataset_ids(ids, datasets_db, min_count=1)
+    excl_cats = [c.strip() for c in excluded_categories.split(",") if c.strip()] if excluded_categories else None
+    ban_list  = [t.strip() for t in (ban_tags or "").replace(",", "\n").splitlines() if t.strip()] or None
+    vocab = TagVocabulary.build_from_dataset_ids(
+        ids, datasets_db, min_count=1,
+        excluded_categories=excl_cats,
+        ban_tags=ban_list,
+    )
     return {
         "num_tags": vocab.num_tags,
         "category_counts": vocab.category_counts(),

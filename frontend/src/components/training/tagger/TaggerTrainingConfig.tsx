@@ -34,6 +34,8 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   loss_gamma_pos: 1,
   validate_every: 1,
   save_best_only: true,
+  excluded_categories: [] as string[],
+  ban_tags: "",
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -67,7 +69,11 @@ export default function TaggerTrainingConfig({
     }
     setVocabLoading(true);
     try {
-      const preview = await getTaggerVocabularyPreview(selectedDatasetIds);
+      const preview = await getTaggerVocabularyPreview(
+        selectedDatasetIds,
+        (config.excluded_categories as string[]) || [],
+        typeof config.ban_tags === "string" ? config.ban_tags : "",
+      );
       setVocabPreview(preview);
     } catch (err) {
       console.error("[TaggerTrainingConfig] Vocab preview error:", err);
@@ -75,7 +81,7 @@ export default function TaggerTrainingConfig({
     } finally {
       setVocabLoading(false);
     }
-  }, [selectedDatasetIds]);
+  }, [selectedDatasetIds, config.excluded_categories, config.ban_tags]);
 
   useEffect(() => {
     loadVocabPreview();
@@ -249,6 +255,66 @@ export default function TaggerTrainingConfig({
               )}
             </div>
           )}
+        </section>
+
+        {/* Tag Filtering */}
+        <section>
+          <label className="block text-sm font-medium text-gray-300 mb-3">Tag Filtering</label>
+
+          {/* Excluded Categories */}
+          {vocabPreview && Object.keys(vocabPreview.category_counts).length > 0 && (
+            <div className="mb-4">
+              <label className="block text-xs text-gray-400 mb-2">
+                Excluded Categories
+                <span className="text-gray-500 ml-1">(checked categories will NOT be trained)</span>
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {Object.entries(vocabPreview.category_counts).map(([cat, count]) => {
+                  const excluded = (config.excluded_categories as string[]).includes(cat);
+                  return (
+                    <label
+                      key={cat}
+                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded border cursor-pointer text-xs transition-colors ${
+                        excluded
+                          ? "border-red-500 bg-red-900/30 text-red-300"
+                          : "border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={excluded}
+                        onChange={() => {
+                          const curr = (config.excluded_categories as string[]);
+                          setField(
+                            "excluded_categories" as keyof ConfigState,
+                            (excluded ? curr.filter((c) => c !== cat) : [...curr, cat]) as ConfigState[keyof ConfigState]
+                          );
+                        }}
+                        className="accent-red-500"
+                      />
+                      <span>{cat}</span>
+                      <span className="text-gray-500">({count.toLocaleString()})</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Ban Tags */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">
+              Ban Tags
+              <span className="text-gray-500 ml-1 font-normal">— one per line. Exact tag or wildcard (* matches any string, ? matches one char). e.g. <code className="text-gray-400">some tag</code>, <code className="text-gray-400">prefix_*</code>, <code className="text-gray-400">bad*</code></span>
+            </label>
+            <textarea
+              value={typeof config.ban_tags === "string" ? config.ban_tags : ""}
+              onChange={(e) => setField("ban_tags" as keyof ConfigState, e.target.value as ConfigState[keyof ConfigState])}
+              placeholder={"some tag\nprefix_*\nbad*\n"}
+              rows={4}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-600 font-mono focus:outline-none focus:border-blue-500 resize-y"
+            />
+          </div>
         </section>
 
         {/* LoRA parameters */}

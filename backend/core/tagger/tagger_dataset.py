@@ -220,10 +220,8 @@ def tagger_collate_fn(batch):
 # ------------------------------------------------------------------
 
 def _load_image(path: str) -> Image.Image:
-    from PIL import ImageFile
-    ImageFile.LOAD_TRUNCATED_IMAGES = True
     img = Image.open(path)
-    img.load()  # force decode so truncation is caught here, not inside the processor
+    img.load()  # force full decode here so truncation raises OSError before reaching the processor
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])

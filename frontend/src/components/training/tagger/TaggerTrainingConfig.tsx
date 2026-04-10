@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import {
   createTaggerTrainingRun,
-  getTaggerVocabularyPreview,
   listDatasets,
   Dataset,
   TaggerTrainingRun,
@@ -50,10 +49,11 @@ export default function TaggerTrainingConfig({
   // selectedDatasetIds tracks numeric dataset.id values
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [vocabPreview, setVocabPreview] = useState<{ num_tags: number; category_counts: Record<string, number> } | null>(null);
-  const [vocabLoading, setVocabLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Fixed category list — same order as backend CATEGORY_ORDER
+  const ALL_CATEGORIES = ["General", "Character", "Copyright", "Artist", "Meta", "Rating", "Quality", "Model"];
 
   // Only show datasets that have tags-format captions
   const tagDatasets = datasets.filter((d) => d.has_tags_captions);
@@ -63,31 +63,6 @@ export default function TaggerTrainingConfig({
       .then((res) => setDatasets(res.datasets || []))
       .catch(console.error);
   }, []);
-
-  const loadVocabPreview = useCallback(async () => {
-    if (selectedDatasetIds.length === 0) {
-      setVocabPreview(null);
-      return;
-    }
-    setVocabLoading(true);
-    try {
-      const preview = await getTaggerVocabularyPreview(
-        selectedDatasetIds,
-        (config.excluded_categories as string[]) || [],
-        typeof config.ban_tags === "string" ? config.ban_tags : "",
-      );
-      setVocabPreview(preview);
-    } catch (err) {
-      console.error("[TaggerTrainingConfig] Vocab preview error:", err);
-      setVocabPreview(null);
-    } finally {
-      setVocabLoading(false);
-    }
-  }, [selectedDatasetIds, config.excluded_categories, config.ban_tags]);
-
-  useEffect(() => {
-    loadVocabPreview();
-  }, [loadVocabPreview]);
 
   const handleDatasetToggle = (datasetId: number) => {
     setSelectedDatasetIds((prev) =>
@@ -234,29 +209,6 @@ export default function TaggerTrainingConfig({
             </div>
           )}
 
-          {/* Vocab preview */}
-          {selectedDatasetIds.length > 0 && (
-            <div className="mt-3 p-3 bg-gray-800 rounded border border-gray-700 text-xs">
-              {vocabLoading ? (
-                <span className="text-gray-400">Building vocabulary preview...</span>
-              ) : vocabPreview ? (
-                <>
-                  <div className="text-green-400 font-medium mb-1">
-                    Vocabulary: {vocabPreview.num_tags.toLocaleString()} tags
-                  </div>
-                  {Object.keys(vocabPreview.category_counts).length > 0 && (
-                    <div className="text-gray-400 flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
-                      {Object.entries(vocabPreview.category_counts).map(([cat, count]) => (
-                        <span key={cat}>{cat}: {count.toLocaleString()}</span>
-                      ))}
-                    </div>
-                  )}
-                </>
-              ) : (
-                <span className="text-gray-500">Vocabulary preview unavailable</span>
-              )}
-            </div>
-          )}
         </section>
 
         {/* Tag Filtering */}
@@ -264,44 +216,41 @@ export default function TaggerTrainingConfig({
           <label className="block text-sm font-medium text-gray-300 mb-3">Tag Filtering</label>
 
           {/* Excluded Categories */}
-          {vocabPreview && Object.keys(vocabPreview.category_counts).length > 0 && (
-            <div className="mb-4">
-              <label className="block text-xs text-gray-400 mb-2">
-                Excluded Categories
-                <span className="text-gray-500 ml-1">(checked categories will NOT be trained)</span>
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {Object.entries(vocabPreview.category_counts).map(([cat, count]) => {
-                  const excluded = (config.excluded_categories as string[]).includes(cat);
-                  return (
-                    <label
-                      key={cat}
-                      className={`flex items-center gap-1.5 px-2.5 py-1 rounded border cursor-pointer text-xs transition-colors ${
-                        excluded
-                          ? "border-red-500 bg-red-900/30 text-red-300"
-                          : "border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700"
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={excluded}
-                        onChange={() => {
-                          const curr = (config.excluded_categories as string[]);
-                          setField(
-                            "excluded_categories" as keyof ConfigState,
-                            (excluded ? curr.filter((c) => c !== cat) : [...curr, cat]) as ConfigState[keyof ConfigState]
-                          );
-                        }}
-                        className="accent-red-500"
-                      />
-                      <span>{cat}</span>
-                      <span className="text-gray-500">({count.toLocaleString()})</span>
-                    </label>
-                  );
-                })}
-              </div>
+          <div className="mb-4">
+            <label className="block text-xs text-gray-400 mb-2">
+              Excluded Categories
+              <span className="text-gray-500 ml-1">(checked categories will NOT be trained)</span>
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {ALL_CATEGORIES.map((cat) => {
+                const excluded = (config.excluded_categories as string[]).includes(cat);
+                return (
+                  <label
+                    key={cat}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded border cursor-pointer text-xs transition-colors ${
+                      excluded
+                        ? "border-red-500 bg-red-900/30 text-red-300"
+                        : "border-gray-600 bg-gray-800 text-gray-300 hover:bg-gray-700"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={excluded}
+                      onChange={() => {
+                        const curr = (config.excluded_categories as string[]);
+                        setField(
+                          "excluded_categories" as keyof ConfigState,
+                          (excluded ? curr.filter((c) => c !== cat) : [...curr, cat]) as ConfigState[keyof ConfigState]
+                        );
+                      }}
+                      className="accent-red-500"
+                    />
+                    <span>{cat}</span>
+                  </label>
+                );
+              })}
             </div>
-          )}
+          </div>
 
           {/* Ban Tags */}
           <div>

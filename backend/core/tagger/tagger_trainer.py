@@ -128,23 +128,10 @@ def _find_best_threshold(
 # Checkpoint state helpers
 # ------------------------------------------------------------------
 
-def _save_training_state(
-    output_dir: str,
-    name: str,
-    epoch: int,
-    global_step: int,
-    batch_idx: int,
-    best_f1: float,
-    best_threshold: float,
-) -> None:
-    """Save training state JSON for resume (epoch, step, batch_idx, RNG state)."""
+def _capture_rng() -> Dict[str, Any]:
+    """Capture current Python + PyTorch CPU RNG state as a serialisable dict."""
     rs = random.getstate()
-    state = {
-        "epoch": epoch,
-        "global_step": global_step,
-        "batch_idx": batch_idx,
-        "best_f1": best_f1,
-        "best_threshold": best_threshold,
+    return {
         "random_state": {
             "version": rs[0],
             "state": list(rs[1]),
@@ -154,6 +141,45 @@ def _save_training_state(
             torch.get_rng_state().numpy().tobytes()
         ).decode("utf-8"),
     }
+
+
+def _restore_rng(rng_snapshot: Dict[str, Any]) -> None:
+    """Restore Python + PyTorch CPU RNG state from a snapshot produced by _capture_rng."""
+    rs = rng_snapshot.get("random_state")
+    if rs:
+        random.setstate((rs["version"], tuple(rs["state"]), rs["gauss_next"]))
+    torch_rng = rng_snapshot.get("torch_rng_state")
+    if torch_rng:
+        rng_bytes = base64.b64decode(torch_rng)
+        torch.set_rng_state(torch.frombuffer(bytearray(rng_bytes), dtype=torch.uint8))
+
+
+def _save_training_state(
+    output_dir: str,
+    name: str,
+    epoch: int,
+    global_step: int,
+    batch_idx: int,
+    best_f1: float,
+    best_threshold: float,
+    epoch_start_rng: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Save training state JSON for resume.
+
+    epoch_start_rng must be the RNG snapshot captured *before* iterating the
+    DataLoader for `epoch`.  On resume, restoring this snapshot and re-iterating
+    the DataLoader from batch 0 (while skipping ≤ batch_idx) reproduces the
+    exact same shuffle permutation and therefore the exact same batch sequence.
+    """
+    state: Dict[str, Any] = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "batch_idx": batch_idx,
+        "best_f1": best_f1,
+        "best_threshold": best_threshold,
+    }
+    if epoch_start_rng is not None:
+        state["epoch_start_rng"] = epoch_start_rng
     path = os.path.join(output_dir, f"{name}_state.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f)
@@ -363,25 +389,18 @@ class TaggerTrainer:
         # ------------------------------------------------------------------
         # Resume from checkpoint
         # ------------------------------------------------------------------
+        # epoch_start_rng_for_resume: the RNG snapshot saved at the start of
+        # resume_epoch.  Restoring it before iterating the DataLoader reproduces
+        # the exact shuffle permutation and therefore the exact batch order.
+        epoch_start_rng_for_resume: Optional[Dict[str, Any]] = None
+
         if resume_state is not None:
             resume_epoch     = resume_state["epoch"]         # next epoch to train
             resume_batch_idx = resume_state["batch_idx"]     # last completed batch (-1 = full epoch done)
             global_step      = resume_state["global_step"]
             best_f1          = resume_state.get("best_f1", 0.0)
             best_threshold   = resume_state.get("best_threshold", 0.35)
-
-            # Restore Python RNG state
-            rs = resume_state.get("random_state")
-            if rs:
-                random.setstate((rs["version"], tuple(rs["state"]), rs["gauss_next"]))
-
-            # Restore PyTorch CPU RNG state
-            torch_rng = resume_state.get("torch_rng_state")
-            if torch_rng:
-                rng_bytes = base64.b64decode(torch_rng)
-                torch.set_rng_state(
-                    torch.frombuffer(bytearray(rng_bytes), dtype=torch.uint8)
-                )
+            epoch_start_rng_for_resume = resume_state.get("epoch_start_rng")
 
             # Restore optimizer state
             if resume_ckpt_name:
@@ -414,6 +433,27 @@ class TaggerTrainer:
             # Skip epochs that were fully completed before the resume point
             if epoch < resume_epoch:
                 continue
+
+            # -------------------------------------------------------
+            # Capture / restore epoch-start RNG state
+            #
+            # PyTorch DataLoader (shuffle=True) calls torch.randperm at the
+            # very start of each iteration, consuming the RNG to generate the
+            # epoch permutation.  To reproduce the exact batch order on resume
+            # we must restore the RNG to where it was *before* that randperm
+            # call, then let the DataLoader re-generate the same permutation,
+            # and simply skip the already-processed batches.
+            # -------------------------------------------------------
+            if epoch == resume_epoch and epoch_start_rng_for_resume is not None:
+                # Restore the saved epoch-start RNG so the DataLoader produces
+                # the same shuffle permutation as the interrupted run.
+                _restore_rng(epoch_start_rng_for_resume)
+                epoch_start_rng_for_resume = None  # only needed once
+
+            # Snapshot the RNG right before the DataLoader begins iterating
+            # (i.e. before torch.randperm is called).  This will be stored in
+            # every step-checkpoint so that future resumes can replay it.
+            epoch_start_rng = _capture_rng()
 
             model.train()
             epoch_loss       = 0.0
@@ -484,6 +524,7 @@ class TaggerTrainer:
                         self.output_dir, ckpt_name,
                         epoch, global_step, batch_idx,
                         best_f1, best_threshold,
+                        epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                     self._emit("checkpoint", {
@@ -510,8 +551,10 @@ class TaggerTrainer:
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
-            # State records epoch+1 / batch_idx=-1 so that on resume we start fresh
-            # at the beginning of the next epoch.
+            # epoch+1 / batch_idx=-1 means "start of next epoch, no batches to skip".
+            # epoch_start_rng is not needed for epoch-boundary resumes (batch_idx=-1
+            # means we start the next epoch fresh and capture a new epoch_start_rng
+            # at that time), so we omit it to keep the file compact.
             metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
             model.save_checkpoint(self.output_dir, "latest", metadata)
             _save_training_state(

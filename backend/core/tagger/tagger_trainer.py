@@ -185,42 +185,42 @@ def _load_optimizer_state(optimizer: Any, output_dir: str, name: str) -> bool:
 
 
 def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Find the best checkpoint to resume from.
+    """Find the checkpoint with the highest global_step to resume from.
 
-    Priority:
-    1. latest_state.json + latest.safetensors  (epoch-boundary save)
-    2. step_XXXXXX_state.json with highest step (mid-epoch save)
+    Considers both epoch-boundary checkpoints (latest_state.json) and
+    step-based checkpoints (step_XXXXXX_state.json).  The one with the
+    largest global_step wins, so mid-epoch stops are always preferred over
+    an earlier epoch-boundary save.
 
-    Returns (checkpoint_name, state_dict) or None if no resumable checkpoint exists.
+    Returns (checkpoint_name, state_dict) or None if nothing resumable exists.
     """
     if not os.path.isdir(output_dir):
         return None
 
-    # Priority 1: epoch-boundary "latest" checkpoint
+    candidates: List[Tuple[int, str, Dict[str, Any]]] = []
+
+    # Epoch-boundary checkpoint ("latest")
     state = _load_training_state(output_dir, "latest")
     if state is not None and os.path.isfile(os.path.join(output_dir, "latest.safetensors")):
-        return "latest", state
+        candidates.append((state.get("global_step", 0), "latest", state))
 
-    # Priority 2: step checkpoint with highest step number
-    best_step = -1
-    best_name: Optional[str] = None
+    # Step-based checkpoints
     for fn in os.listdir(output_dir):
         m = _re.match(r"^step_(\d+)_state\.json$", fn)
         if m:
-            step = int(m.group(1))
-            ckpt_name = f"step_{step:06d}"
-            if step > best_step and os.path.isfile(
-                os.path.join(output_dir, f"{ckpt_name}.safetensors")
-            ):
-                best_step = step
-                best_name = ckpt_name
+            ckpt_name = f"step_{int(m.group(1)):06d}"
+            if os.path.isfile(os.path.join(output_dir, f"{ckpt_name}.safetensors")):
+                s = _load_training_state(output_dir, ckpt_name)
+                if s is not None:
+                    candidates.append((s.get("global_step", 0), ckpt_name, s))
 
-    if best_name is not None:
-        state = _load_training_state(output_dir, best_name)
-        if state is not None:
-            return best_name, state
+    if not candidates:
+        return None
 
-    return None
+    # Pick the checkpoint that advanced furthest in training
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _, best_name, best_state = candidates[0]
+    return best_name, best_state
 
 
 # ------------------------------------------------------------------

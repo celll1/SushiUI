@@ -6549,7 +6549,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     excluded_categories: Optional[List[str]] = None
     ban_tags: Optional[str] = None
     cls_dim: Optional[int] = None
-    head_hidden_dim: Optional[int] = None
+    hidden_proj_dim: Optional[int] = None
 
 
 # Active tagger training threads

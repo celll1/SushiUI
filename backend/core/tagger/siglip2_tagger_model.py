@@ -1,8 +1,25 @@
 """
 SigLIP2 Tagger Model.
 
-Architecture:
-    SigLIP2 Vision Encoder (frozen or LoRA) → pooler_output [B, 1152] → Linear(1152, num_tags)
+Architecture options (Full FT):
+
+  Default (cls_dim=None):
+    pooler_output [B, 1152] -> Linear(1152, num_tags)
+
+  Custom Attention Pooling (cls_dim set, hidden_proj_dim=None):
+    last_hidden_state [B, N, 1152]
+        -> proj_k/proj_v: Linear(1152 -> cls_dim)
+        -> MHA(Q=[B,1,cls_dim], K/V=[B,N,cls_dim])
+        -> [B, cls_dim]
+        -> Linear(cls_dim, num_tags)
+
+  Custom Attention Pooling + hidden projection (cls_dim and hidden_proj_dim set):
+    last_hidden_state [B, N, 1152]
+        -> proj_k/proj_v: Linear(1152 -> hidden_proj_dim)
+        -> [B, N, hidden_proj_dim]  <- extractable via get_token_features() for SDXL
+        -> MHA(Q=[B,1,cls_dim], K/V=[B,N,hidden_proj_dim]; kdim=vdim=hidden_proj_dim)
+        -> [B, cls_dim]
+        -> Linear(cls_dim, num_tags)
 
 Two variants:
     SigLIP2TaggerModel     : full-parameter training (vision encoder fully trainable or frozen)
@@ -14,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -74,13 +91,10 @@ class LoRALinear(nn.Module):
 def _load_vision_encoder(safetensors_path: str) -> nn.Module:
     """Load SigLIP2 so400m vision encoder from safetensors file."""
     from transformers import AutoModel
-    import tempfile, shutil
 
     # Strip surrounding quotes that may come from user input
     safetensors_path = safetensors_path.strip().strip('"').strip("'")
 
-    # We need the full model just to get architecture, then replace state_dict
-    # Use HF cached model if available, else load from hub temporarily
     REPO_ID = "google/siglip2-so400m-patch16-naflex"
     full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32)
     vision_encoder = full_model.vision_model
@@ -93,53 +107,76 @@ def _load_vision_encoder(safetensors_path: str) -> nn.Module:
 
 
 # ------------------------------------------------------------------
-# Custom Attention Pooling (for Full FT with configurable output dim)
+# Custom Attention Pooling
 # ------------------------------------------------------------------
 
 class CustomAttentionPooling(nn.Module):
-    """Replace SigLIP2's built-in pooler with a learnable attention pooling.
+    """Learnable single-query attention pooling over patch tokens.
 
-    Takes last_hidden_state [B, N, in_dim] and produces [B, out_dim].
-    A single learnable query attends over all patch tokens.
+    Parameters
+    ----------
+    in_dim          : input token dimension (1152 for SigLIP2 so400m)
+    cls_dim         : output dimension (query space / pooled vector size)
+    hidden_proj_dim : if set, proj_k/proj_v expand tokens to this dimension
+                      (larger than in_dim for richer representations).
+                      MHA uses kdim=vdim=hidden_proj_dim with embed_dim=cls_dim.
+                      If None, proj_k/proj_v map directly to cls_dim (no overhead).
+    num_heads       : MHA heads; auto-halved until cls_dim % num_heads == 0
     """
 
-    def __init__(self, in_dim: int, out_dim: int, num_heads: int = 8) -> None:
+    def __init__(
+        self,
+        in_dim: int,
+        cls_dim: int,
+        hidden_proj_dim: Optional[int] = None,
+        num_heads: int = 8,
+    ) -> None:
         super().__init__()
-        # Adjust num_heads so out_dim is divisible
-        while out_dim % num_heads != 0 and num_heads > 1:
+        self.hidden_proj_dim = hidden_proj_dim
+        kv_dim = hidden_proj_dim if hidden_proj_dim else cls_dim
+
+        # Adjust num_heads so cls_dim is divisible
+        while cls_dim % num_heads != 0 and num_heads > 1:
             num_heads //= 2
-        self.query  = nn.Parameter(torch.zeros(1, 1, out_dim))
+
+        self.query  = nn.Parameter(torch.zeros(1, 1, cls_dim))
         nn.init.normal_(self.query, std=0.02)
-        self.proj_k = nn.Linear(in_dim, out_dim)
-        self.proj_v = nn.Linear(in_dim, out_dim)
-        self.attn   = nn.MultiheadAttention(out_dim, num_heads, batch_first=True)
+        self.proj_k = nn.Linear(in_dim, kv_dim)
+        self.proj_v = nn.Linear(in_dim, kv_dim)
+
+        if hidden_proj_dim:
+            # K/V live in hidden_proj_dim space; Q lives in cls_dim space
+            self.attn = nn.MultiheadAttention(
+                embed_dim=cls_dim,
+                num_heads=num_heads,
+                kdim=hidden_proj_dim,
+                vdim=hidden_proj_dim,
+                batch_first=True,
+            )
+        else:
+            # All in cls_dim space — no extra overhead
+            self.attn = nn.MultiheadAttention(cls_dim, num_heads, batch_first=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: [B, N, in_dim] → [B, out_dim]"""
-        k = self.proj_k(x)                           # [B, N, out_dim]
-        v = self.proj_v(x)
-        q = self.query.expand(x.size(0), -1, -1)     # [B, 1, out_dim]
+        """x: [B, N, in_dim] -> [B, cls_dim]"""
+        k = self.proj_k(x)                        # [B, N, kv_dim]
+        v = self.proj_v(x)                        # [B, N, kv_dim]
+        q = self.query.expand(x.size(0), -1, -1)  # [B, 1, cls_dim]
         out, _ = self.attn(q, k, v)
-        return out.squeeze(1)                         # [B, out_dim]
+        return out.squeeze(1)                      # [B, cls_dim]
 
+    def get_token_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Return [B, N, hidden_proj_dim] token features for external use (e.g. SDXL).
 
-def _build_head(pool_dim: int, num_tags: int, head_hidden_dim: Optional[int]) -> nn.Module:
-    """Build classification head: 1-layer Linear or 2-layer MLP."""
-    if head_hidden_dim:
-        head = nn.Sequential(
-            nn.Linear(pool_dim, head_hidden_dim),
-            nn.GELU(),
-            nn.Linear(head_hidden_dim, num_tags),
-        )
-        nn.init.zeros_(head[0].weight)
-        nn.init.zeros_(head[0].bias)
-        nn.init.zeros_(head[2].weight)
-        nn.init.zeros_(head[2].bias)
-    else:
-        head = nn.Linear(pool_dim, num_tags)
-        nn.init.zeros_(head.weight)
-        nn.init.zeros_(head.bias)
-    return head
+        Reuses proj_v weights; only available when hidden_proj_dim is set.
+        Raises RuntimeError otherwise.
+        """
+        if self.hidden_proj_dim is None:
+            raise RuntimeError(
+                "get_token_features() requires hidden_proj_dim to be set. "
+                "Use hidden_proj_dim > 0 in the model config."
+            )
+        return self.proj_v(x)  # [B, N, hidden_proj_dim]
 
 
 # ------------------------------------------------------------------
@@ -147,19 +184,20 @@ def _build_head(pool_dim: int, num_tags: int, head_hidden_dim: Optional[int]) ->
 # ------------------------------------------------------------------
 
 class SigLIP2TaggerModel(nn.Module):
-    """SigLIP2 vision encoder + classification head.
+    """SigLIP2 vision encoder + classification head (full-parameter training).
 
     Parameters
     ----------
-    num_tags          : number of output classes
-    vision_encoder    : pre-loaded vision encoder nn.Module
-    freeze_encoder    : if True, gradients do not flow through vision encoder
-    hidden_size       : vision encoder output dimension (1152 for so400m)
-    cls_dim           : if set, use CustomAttentionPooling(1152 → cls_dim)
-                        instead of built-in pooler_output; Full FT only
-    head_hidden_dim   : if set, insert a hidden layer in the classification
-                        head: Linear(pool_dim → head_hidden_dim) → GELU
-                        → Linear(head_hidden_dim → num_tags)
+    num_tags         : number of output classes
+    vision_encoder   : pre-loaded vision encoder nn.Module
+    freeze_encoder   : if True, gradients do not flow through vision encoder
+    hidden_size      : vision encoder hidden dimension (1152 for so400m)
+    cls_dim          : if set, use CustomAttentionPooling instead of pooler_output.
+                       Sets the query/output dimension of attention pooling.
+    hidden_proj_dim  : if set (requires cls_dim), proj_k/proj_v expand tokens to
+                       hidden_proj_dim before attention pooling. The expanded token
+                       features [B, N, hidden_proj_dim] are accessible via
+                       custom_pooler.get_token_features() for SDXL conditioning.
     """
 
     HIDDEN_SIZE = 1152  # so400m
@@ -171,24 +209,27 @@ class SigLIP2TaggerModel(nn.Module):
         freeze_encoder: bool = False,
         hidden_size: int = HIDDEN_SIZE,
         cls_dim: Optional[int] = None,
-        head_hidden_dim: Optional[int] = None,
+        hidden_proj_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
-        self.vision_encoder = vision_encoder
-        self.cls_dim        = cls_dim
-        self.head_hidden_dim = head_hidden_dim
+        self.vision_encoder  = vision_encoder
+        self.cls_dim         = cls_dim
+        self.hidden_proj_dim = hidden_proj_dim
 
-        # Custom attention pooler (replaces built-in pooler_output)
         if cls_dim:
             self.custom_pooler: Optional[CustomAttentionPooling] = CustomAttentionPooling(
-                in_dim=hidden_size, out_dim=cls_dim
+                in_dim=hidden_size,
+                cls_dim=cls_dim,
+                hidden_proj_dim=hidden_proj_dim,
             )
             pool_dim = cls_dim
         else:
             self.custom_pooler = None
             pool_dim = hidden_size
 
-        self.head = _build_head(pool_dim, num_tags, head_hidden_dim)
+        self.head = nn.Linear(pool_dim, num_tags)
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
 
         if freeze_encoder:
             for p in self.vision_encoder.parameters():
@@ -209,20 +250,17 @@ class SigLIP2TaggerModel(nn.Module):
         if self.custom_pooler is not None:
             pooled = self.custom_pooler(out.last_hidden_state)  # [B, cls_dim]
         else:
-            pooled = out.pooler_output  # [B, 1152]
-        return self.head(pooled)        # [B, num_tags]
+            pooled = out.pooler_output                          # [B, 1152]
+        return self.head(pooled)                                # [B, num_tags]
 
     # ------------------------------------------------------------------
     # Save / load
     # ------------------------------------------------------------------
 
     def save_checkpoint(self, output_dir: str, name: str, metadata: Optional[dict] = None) -> str:
-        """Save model weights and metadata JSON.
-
-        Returns path to saved safetensors file.
-        """
+        """Save model weights and metadata JSON. Returns path to safetensors file."""
         os.makedirs(output_dir, exist_ok=True)
-        path_st  = os.path.join(output_dir, f"{name}.safetensors")
+        path_st   = os.path.join(output_dir, f"{name}.safetensors")
         path_meta = os.path.join(output_dir, f"{name}_metadata.json")
 
         sd = {k: v.contiguous() for k, v in self.state_dict().items()}
@@ -253,14 +291,14 @@ class SigLIP2TaggerModel(nn.Module):
             if num_tags is None:
                 raise ValueError("num_tags must be provided or present in metadata")
 
-        cls_dim        = metadata.get("cls_dim")
-        head_hidden_dim = metadata.get("head_hidden_dim")
-        vision_encoder = _load_vision_encoder(vision_encoder_path)
+        cls_dim         = metadata.get("cls_dim")
+        hidden_proj_dim = metadata.get("hidden_proj_dim")
+        vision_encoder  = _load_vision_encoder(vision_encoder_path)
         model = cls(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             cls_dim=cls_dim,
-            head_hidden_dim=head_hidden_dim,
+            hidden_proj_dim=hidden_proj_dim,
         )
         state_dict = load_file(checkpoint_path)
         model.load_state_dict(state_dict, strict=True)
@@ -270,7 +308,7 @@ class SigLIP2TaggerModel(nn.Module):
         return [p for p in self.parameters() if p.requires_grad]
 
     def parameter_count(self) -> Dict[str, int]:
-        total = sum(p.numel() for p in self.parameters())
+        total    = sum(p.numel() for p in self.parameters())
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return {"total": total, "trainable": trainable}
 
@@ -283,11 +321,10 @@ class SigLIP2TaggerLoRAModel(nn.Module):
     """SigLIP2 vision encoder with LoRA adapters + classification head.
 
     LoRA is applied to attention projection layers in the vision encoder.
-    The head is always fully trainable.
-    The base encoder weights (non-LoRA) are frozen.
+    The head is always fully trainable. The base encoder weights are frozen.
+    Uses pooler_output [B, 1152] -> Linear head (no custom pooling for LoRA).
     """
 
-    # Regex patterns for target modules in SigLIP2 vision encoder
     LORA_TARGET_PATTERNS: List[str] = [
         r"encoder\.layers\.\d+\.self_attn\.q_proj$",
         r"encoder\.layers\.\d+\.self_attn\.k_proj$",
@@ -305,17 +342,15 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.0,
         hidden_size: int = HIDDEN_SIZE,
-        head_hidden_dim: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
-        self.lora_rank = lora_rank
+        self.lora_rank  = lora_rank
         self.lora_alpha = lora_alpha
-        self.head_hidden_dim = head_hidden_dim
-        self.head = _build_head(hidden_size, num_tags, head_hidden_dim)
-        # Zero-init all head weights for stable start
-        for p in self.head.parameters():
-            nn.init.zeros_(p)
+
+        self.head = nn.Linear(hidden_size, num_tags)
+        nn.init.zeros_(self.head.weight)
+        nn.init.zeros_(self.head.bias)
 
         # Freeze all encoder parameters first
         for p in self.vision_encoder.parameters():
@@ -334,15 +369,13 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             if not any(p.match(name) for p in patterns):
                 continue
 
-            # Navigate to parent module and replace child
-            parts = name.split(".")
+            parts  = name.split(".")
             parent = self.vision_encoder
             for part in parts[:-1]:
                 parent = getattr(parent, part)
-            child_name = parts[-1]
 
             lora_linear = LoRALinear(module, rank=rank, alpha=alpha, dropout=dropout)
-            setattr(parent, child_name, lora_linear)
+            setattr(parent, parts[-1], lora_linear)
             self._lora_modules[name] = lora_linear
 
         print(f"[TaggerLoRA] Injected LoRA into {len(self._lora_modules)} modules")
@@ -358,8 +391,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             attention_mask=pixel_attention_mask,
             spatial_shapes=spatial_shapes,
         )
-        pooled = out.pooler_output  # [B, 1152]
-        return self.head(pooled)    # [B, num_tags]
+        return self.head(out.pooler_output)  # [B, num_tags]
 
     # ------------------------------------------------------------------
     # Save / load (saves only LoRA + head, not full encoder)
@@ -372,22 +404,19 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         path_meta = os.path.join(output_dir, f"{name}_metadata.json")
 
         sd: Dict[str, torch.Tensor] = {}
-        # LoRA parameters (prefixed with "lora.")
         for module_name, lora_module in self._lora_modules.items():
             prefix = f"lora.{module_name}"
             sd[f"{prefix}.lora_A"] = lora_module.lora_A.detach().contiguous()
             sd[f"{prefix}.lora_B"] = lora_module.lora_B.detach().contiguous()
-        # Head parameters (generic: works for Linear or MLP Sequential)
-        for key, tensor in self.head.state_dict().items():
-            sd[f"head.{key}"] = tensor.detach().contiguous()
+        sd["head.weight"] = self.head.weight.detach().contiguous()
+        sd["head.bias"]   = self.head.bias.detach().contiguous()
 
         if metadata is None:
             metadata = {}
         metadata.update({
-            "lora_rank": self.lora_rank,
-            "lora_alpha": self.lora_alpha,
+            "lora_rank":        self.lora_rank,
+            "lora_alpha":       self.lora_alpha,
             "num_lora_modules": len(self._lora_modules),
-            "head_hidden_dim": self.head_hidden_dim,
         })
 
         save_file(sd, path_st)
@@ -416,9 +445,8 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             if num_tags is None:
                 raise ValueError("num_tags must be provided or present in metadata")
 
-        lora_rank       = metadata.get("lora_rank", lora_rank)
-        lora_alpha      = metadata.get("lora_alpha", lora_alpha)
-        head_hidden_dim = metadata.get("head_hidden_dim", None)
+        lora_rank  = metadata.get("lora_rank",  lora_rank)
+        lora_alpha = metadata.get("lora_alpha", lora_alpha)
 
         vision_encoder = _load_vision_encoder(vision_encoder_path)
         model = cls(
@@ -426,23 +454,18 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
-            head_hidden_dim=head_hidden_dim,
         )
 
         saved = load_file(checkpoint_path)
+        model.head.weight.data.copy_(saved["head.weight"])
+        model.head.bias.data.copy_(saved["head.bias"])
 
-        # Restore head (generic state_dict restore)
-        head_sd = {k[len("head."):]: v for k, v in saved.items() if k.startswith("head.")}
-        model.head.load_state_dict(head_sd)
-
-        # Restore LoRA weights
         for module_name, lora_module in model._lora_modules.items():
             prefix = f"lora.{module_name}"
-            key_A, key_B = f"{prefix}.lora_A", f"{prefix}.lora_B"
-            if key_A in saved:
-                lora_module.lora_A.data.copy_(saved[key_A])
-            if key_B in saved:
-                lora_module.lora_B.data.copy_(saved[key_B])
+            if f"{prefix}.lora_A" in saved:
+                lora_module.lora_A.data.copy_(saved[f"{prefix}.lora_A"])
+            if f"{prefix}.lora_B" in saved:
+                lora_module.lora_B.data.copy_(saved[f"{prefix}.lora_B"])
 
         return model
 
@@ -471,41 +494,42 @@ def build_tagger_model(
     lora_alpha: float = 16.0,
     freeze_encoder: bool = False,
     cls_dim: Optional[int] = None,
-    head_hidden_dim: Optional[int] = None,
+    hidden_proj_dim: Optional[int] = None,
 ) -> nn.Module:
     """Build the appropriate tagger model.
 
     Parameters
     ----------
-    training_method : "full" | "lora"
-    num_tags        : number of output tag classes
+    training_method     : "full" | "lora"
+    num_tags            : number of output tag classes
     vision_encoder_path : path to siglip2_so400m_vision_encoder.safetensors
-    lora_rank       : LoRA rank (only used when training_method="lora")
-    lora_alpha      : LoRA alpha
-    freeze_encoder  : freeze encoder entirely (only used when training_method="full")
-    cls_dim         : custom attention pooling output dim (Full FT only)
-    head_hidden_dim : hidden layer dim in classification MLP head (both modes)
+    lora_rank           : LoRA rank (lora mode only)
+    lora_alpha          : LoRA alpha (lora mode only)
+    freeze_encoder      : freeze encoder entirely (full mode only)
+    cls_dim             : CustomAttentionPooling output dim (full mode only)
+    hidden_proj_dim     : proj_k/proj_v expansion dim; requires cls_dim (full mode only)
     """
     print(f"[TaggerModel] Loading vision encoder from: {vision_encoder_path}")
     vision_encoder = _load_vision_encoder(vision_encoder_path)
 
     if training_method == "lora":
         if cls_dim:
-            print("[TaggerModel] Warning: cls_dim is ignored for LoRA training (no custom pooler)")
+            print("[TaggerModel] Warning: cls_dim / hidden_proj_dim are ignored for LoRA training")
         return SigLIP2TaggerLoRAModel(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
             lora_alpha=float(lora_alpha),
-            head_hidden_dim=head_hidden_dim,
         )
     elif training_method == "full":
+        if hidden_proj_dim and not cls_dim:
+            raise ValueError("hidden_proj_dim requires cls_dim to be set")
         return SigLIP2TaggerModel(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             freeze_encoder=freeze_encoder,
             cls_dim=cls_dim,
-            head_hidden_dim=head_hidden_dim,
+            hidden_proj_dim=hidden_proj_dim,
         )
     else:
         raise ValueError(f"Unknown training_method: {training_method!r}. Use 'full' or 'lora'.")

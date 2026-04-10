@@ -2009,7 +2009,7 @@ export interface TaggerTrainingRunCreateRequest {
   excluded_categories?: string[];
   ban_tags?: string;
   cls_dim?: number;
-  head_hidden_dim?: number;
+  hidden_proj_dim?: number;
 }
 
 export interface TaggerTrainingMetric {

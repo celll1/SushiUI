@@ -182,7 +182,7 @@ class TaggerTrainer:
             lora_rank=cfg.get("lora_rank", 32),
             lora_alpha=float(cfg.get("lora_alpha", 16.0)),
             cls_dim=cfg.get("cls_dim") or None,
-            head_hidden_dim=cfg.get("head_hidden_dim") or None,
+            hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
         )
         model = model.to(device)
 

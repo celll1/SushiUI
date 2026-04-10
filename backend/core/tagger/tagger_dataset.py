@@ -113,20 +113,26 @@ class TaggerDataset(Dataset):
         return len(self._samples)
 
     def __getitem__(self, idx: int):
-        image_path, tags = self._samples[idx]
+        # Retry with a different sample on load error (truncated / corrupt images)
+        for attempt in range(len(self._samples)):
+            sample_idx = (idx + attempt) % len(self._samples)
+            image_path, tags = self._samples[sample_idx]
+            try:
+                image = _load_image(image_path)
+                inputs = self.processor(images=[image], return_tensors="pt")
+            except Exception as e:
+                if attempt == 0:
+                    print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
+                continue
 
-        # Load and preprocess image with SigLIP2 NaFlex processor
-        image = _load_image(image_path)
-        inputs = self.processor(images=[image], return_tensors="pt")
+            pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, 768]
+            pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
+            spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
 
-        pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, 768]
-        pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
-        spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
+            label, loss_mask = self._build_label_and_mask(tags)
+            return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
 
-        # Build multi-hot label and loss_mask
-        label, loss_mask = self._build_label_and_mask(tags)
-
-        return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
+        raise RuntimeError(f"[TaggerDataset] No valid images found starting at idx {idx}")
 
     # ------------------------------------------------------------------
     # Label / mask construction
@@ -214,7 +220,10 @@ def tagger_collate_fn(batch):
 # ------------------------------------------------------------------
 
 def _load_image(path: str) -> Image.Image:
+    from PIL import ImageFile
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
     img = Image.open(path)
+    img.load()  # force decode so truncation is caught here, not inside the processor
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])

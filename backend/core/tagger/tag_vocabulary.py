@@ -7,10 +7,11 @@ builds tag->index mapping with category information.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 # Quality tag groups (same as tagutl/lora.py)
 QUALITY_TAG_GROUPS: Dict[str, List[str]] = {
@@ -57,14 +58,19 @@ class TagVocabulary:
         dataset_ids: List[int],
         datasets_db,
         min_count: int = 1,
+        excluded_categories: Optional[List[str]] = None,
+        ban_tags: Optional[List[str]] = None,
     ) -> "TagVocabulary":
         """Build vocabulary by scanning DatasetCaption rows for given dataset IDs.
 
         Parameters
         ----------
-        dataset_ids : list of Dataset.id values
-        datasets_db : SQLAlchemy session for datasets.db
-        min_count   : minimum occurrence count to include a tag
+        dataset_ids         : list of Dataset.id values
+        datasets_db         : SQLAlchemy session for datasets.db
+        min_count           : minimum occurrence count to include a tag
+        excluded_categories : categories to exclude entirely (e.g. ["Artist"])
+        ban_tags            : tag patterns to exclude; supports fnmatch wildcards
+                              (e.g. ["some tag", "prefix_*", "bad*"])
         """
         from database.models import DatasetItem, DatasetCaption
 
@@ -88,10 +94,23 @@ class TagVocabulary:
                         if norm not in tag_categories:
                             tag_categories[norm] = category
 
-        # Filter by min_count and sort deterministically
-        selected = sorted(
-            [t for t, c in tag_counts.items() if c >= min_count]
-        )
+        # Filter by min_count
+        filtered: Dict[str, int] = {t: c for t, c in tag_counts.items() if c >= min_count}
+
+        # Filter by excluded_categories
+        if excluded_categories:
+            excl: Set[str] = {c.strip() for c in excluded_categories}
+            filtered = {t: c for t, c in filtered.items()
+                        if tag_categories.get(t, "General") not in excl}
+
+        # Filter by ban_tags (fnmatch wildcards supported)
+        if ban_tags:
+            ban_patterns = [p.strip() for p in ban_tags if p.strip()]
+            filtered = {t: c for t, c in filtered.items()
+                        if not any(fnmatch.fnmatch(t, pat) for pat in ban_patterns)}
+
+        # Sort deterministically (alphabetical for now; Commit 3 will change ordering)
+        selected = sorted(filtered.keys())
 
         vocab = cls()
         for idx, tag in enumerate(selected):

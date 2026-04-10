@@ -6851,17 +6851,85 @@ def preview_tagger_vocabulary(
     excluded_categories : comma-separated category names to exclude
     ban_tags            : newline or comma-separated tag patterns (fnmatch wildcards)
     """
-    from core.tagger.tag_vocabulary import TagVocabulary
+    import json as _json
+    import fnmatch
+    from collections import defaultdict
+    from database.models import DatasetItem, DatasetCaption
+    from core.tagger.tag_vocabulary import normalize_tag, CATEGORY_ORDER
+    from utils.taglist_cache import taglist_cache
 
     ids = [int(i) for i in dataset_ids.split(",") if i.strip()]
-    excl_cats = [c.strip() for c in excluded_categories.split(",") if c.strip()] if excluded_categories else None
-    ban_list  = [t.strip() for t in (ban_tags or "").replace(",", "\n").splitlines() if t.strip()] or None
-    vocab = TagVocabulary.build_from_dataset_ids(
-        ids, datasets_db, min_count=1,
-        excluded_categories=excl_cats,
-        ban_tags=ban_list,
+    excl_cats = {c.strip() for c in excluded_categories.split(",") if c.strip()} if excluded_categories else set()
+    ban_list  = [t.strip() for t in (ban_tags or "").replace(",", "\n").splitlines() if t.strip()]
+
+    taglist_cache.initialize(settings.root_dir)
+
+    # Fetch only the columns we need — avoids loading full ORM objects for large datasets
+    rows = (
+        datasets_db.query(DatasetCaption.tag_data, DatasetCaption.content)
+        .join(DatasetItem, DatasetCaption.item_id == DatasetItem.id)
+        .filter(
+            DatasetItem.dataset_id.in_(ids),
+            DatasetCaption.is_tags_format == True,
+        )
+        .all()
     )
+
+    tag_counts: dict = defaultdict(int)
+    tag_categories: dict = {}
+    lookup_needed: list = []
+
+    for tag_data_json, content in rows:
+        if tag_data_json:
+            try:
+                items = _json.loads(tag_data_json) if isinstance(tag_data_json, str) else tag_data_json
+                if isinstance(items, list):
+                    for item in items:
+                        if isinstance(item, dict) and "tag" in item:
+                            norm = normalize_tag(item["tag"])
+                            tag_counts[norm] += 1
+                            if norm not in tag_categories:
+                                tag_categories[norm] = item.get("category", "General")
+                    continue
+            except Exception:
+                pass
+        # Fallback: parse content, resolve categories later
+        if content:
+            for t in content.split(","):
+                t = t.strip()
+                if t:
+                    norm = normalize_tag(t)
+                    tag_counts[norm] += 1
+                    if norm not in tag_categories:
+                        tag_categories[norm] = "__lookup__"
+                        lookup_needed.append(norm)
+
+    # Batch-resolve any __lookup__ sentinels
+    if lookup_needed:
+        resolved = taglist_cache.get_categories_batch(list(set(lookup_needed)))
+        for norm_tag in lookup_needed:
+            if tag_categories.get(norm_tag) == "__lookup__":
+                tag_categories[norm_tag] = resolved.get(norm_tag, "General")
+
+    # Apply filters
+    if excl_cats:
+        tag_counts = {t: c for t, c in tag_counts.items()
+                      if tag_categories.get(t, "General") not in excl_cats}
+    if ban_list:
+        tag_counts = {t: c for t, c in tag_counts.items()
+                      if not any(fnmatch.fnmatch(t, pat) for pat in ban_list)}
+
+    # Category counts (sorted by CATEGORY_ORDER)
+    cat_counts: dict = defaultdict(int)
+    for tag in tag_counts:
+        cat_counts[tag_categories.get(tag, "General")] += 1
+
+    sorted_cat_counts = dict(
+        sorted(cat_counts.items(),
+               key=lambda kv: CATEGORY_ORDER.index(kv[0]) if kv[0] in CATEGORY_ORDER else len(CATEGORY_ORDER))
+    )
+
     return {
-        "num_tags": vocab.num_tags,
-        "category_counts": vocab.category_counts(),
+        "num_tags": len(tag_counts),
+        "category_counts": sorted_cat_counts,
     }

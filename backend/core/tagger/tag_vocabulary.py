@@ -82,22 +82,23 @@ class TagVocabulary:
         tag_counts: Dict[str, int] = defaultdict(int)
         tag_categories: Dict[str, str] = {}
 
-        for dataset_id in dataset_ids:
-            items = (
-                datasets_db.query(DatasetItem)
-                .filter(DatasetItem.dataset_id == dataset_id)
-                .all()
+        # Single JOIN query — avoids N+1 (one query per item for lazy caption load)
+        captions = (
+            datasets_db.query(DatasetCaption)
+            .join(DatasetItem, DatasetCaption.item_id == DatasetItem.id)
+            .filter(
+                DatasetItem.dataset_id.in_(dataset_ids),
+                DatasetCaption.is_tags_format == True,
             )
-            for item in items:
-                for caption in item.captions:
-                    if not caption.is_tags_format:
-                        continue
-                    tags_with_cats = _parse_caption_tags(caption)
-                    for tag, category in tags_with_cats:
-                        norm = normalize_tag(tag)
-                        tag_counts[norm] += 1
-                        if norm not in tag_categories:
-                            tag_categories[norm] = category
+            .all()
+        )
+        for caption in captions:
+            tags_with_cats = _parse_caption_tags(caption)
+            for tag, category in tags_with_cats:
+                norm = normalize_tag(tag)
+                tag_counts[norm] += 1
+                if norm not in tag_categories:
+                    tag_categories[norm] = category
 
         # Resolve "__lookup__" sentinels via taglist_cache (batch, O(1) per tag)
         lookup_tags = [t for t, c in tag_categories.items() if c == "__lookup__"]

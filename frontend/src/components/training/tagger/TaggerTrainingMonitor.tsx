@@ -225,12 +225,12 @@ export default function TaggerTrainingMonitor({
               <span className="text-gray-400">
                 Epoch {run.current_epoch} · Step {run.current_step}
               </span>
-              <span className="text-gray-300">{run.progress.toFixed(1)}%</span>
+              <span className="text-gray-300">{(run.progress * 100).toFixed(1)}%</span>
             </div>
             <div className="w-full bg-gray-700 rounded-full h-2">
               <div
                 className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${run.progress}%` }}
+                style={{ width: `${run.progress * 100}%` }}
               />
             </div>
           </section>
@@ -306,6 +306,50 @@ export default function TaggerTrainingMonitor({
             </div>
           </section>
         )}
+
+        {/* Threshold F1 Curve */}
+        {run.threshold_f1_curve && Object.keys(run.threshold_f1_curve).length > 0 && (() => {
+          const curve = run.threshold_f1_curve!;
+          const bestThr = Object.keys(curve).reduce((a, b) => curve[a] >= curve[b] ? a : b);
+          return (
+            <section>
+              <div className="text-sm font-medium text-gray-300 mb-2">Threshold Grid Search</div>
+              <div className="bg-gray-800 rounded p-2 border border-gray-700 overflow-x-auto">
+                <table className="text-xs w-full">
+                  <thead>
+                    <tr className="text-gray-400 border-b border-gray-700">
+                      <th className="text-left pb-1 pr-4">Threshold</th>
+                      <th className="text-left pb-1 pr-4">F1</th>
+                      <th className="text-left pb-1">Bar</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(curve).map(([thr, f1]) => {
+                      const isBest = thr === bestThr;
+                      return (
+                        <tr key={thr} className={isBest ? "text-green-400 font-bold" : "text-gray-300"}>
+                          <td className="pr-4 py-0.5">{thr}</td>
+                          <td className="pr-4 py-0.5 font-mono">{(f1 as number).toFixed(4)}</td>
+                          <td className="py-0.5 w-32">
+                            <div className="bg-gray-700 rounded-full h-1.5 w-full">
+                              <div
+                                className={`h-1.5 rounded-full ${isBest ? "bg-green-400" : "bg-blue-500"}`}
+                                style={{ width: `${Math.min((f1 as number) * 100, 100)}%` }}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <div className="text-xs text-green-400 mt-1">
+                Optimal threshold: {bestThr} (F1={curve[bestThr].toFixed(4)})
+              </div>
+            </section>
+          );
+        })()}
 
         {/* Config info */}
         <section>

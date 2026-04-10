@@ -332,17 +332,30 @@ class TaggerTrainer:
                 **val_metrics,
             })
 
-        self._emit("completed", {
+        # Final threshold grid search on validation set
+        final_search = self._final_threshold_search(
+            model, val_loader, device, amp_dtype if use_amp else None
+        )
+        if final_search:
+            best_threshold = final_search["optimal_threshold"]
+
+        completed_data: Dict[str, Any] = {
             "best_f1": best_f1,
             "best_threshold": best_threshold,
             "total_steps": global_step,
-        })
+        }
+        if final_search:
+            completed_data["threshold_f1_curve"] = final_search["threshold_f1_curve"]
+            completed_data["optimal_threshold"]  = final_search["optimal_threshold"]
+
+        self._emit("completed", completed_data)
 
         return {
             "best_f1": best_f1,
             "best_threshold": best_threshold,
             "total_steps": global_step,
             "metrics_history": metrics_history,
+            **(final_search or {}),
         }
 
     # ------------------------------------------------------------------
@@ -381,6 +394,66 @@ class TaggerTrainer:
 
         threshold, f1 = _find_best_threshold(all_preds, all_labels)
         return {"f1": f1, "threshold": threshold}
+
+    def _collect_val_preds(
+        self,
+        model: nn.Module,
+        loader: DataLoader,
+        device: torch.device,
+        amp_dtype: Optional[torch.dtype],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Collect all validation predictions and labels as tensors."""
+        model.eval()
+        all_preds  = []
+        all_labels = []
+        with torch.no_grad():
+            for pv, pam, ss, labels, _ in loader:
+                pv  = pv.to(device)
+                pam = pam.to(device)
+                ss  = ss.to(device)
+                if amp_dtype is not None:
+                    with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                        logits = model(pv, pam, ss)
+                else:
+                    logits = model(pv, pam, ss)
+                all_preds.append(torch.sigmoid(logits).cpu())
+                all_labels.append(labels)
+        return torch.cat(all_preds, dim=0), torch.cat(all_labels, dim=0)
+
+    def _final_threshold_search(
+        self,
+        model: nn.Module,
+        val_loader: Optional[DataLoader],
+        device: torch.device,
+        amp_dtype: Optional[torch.dtype],
+    ) -> Optional[Dict[str, Any]]:
+        """Run full threshold grid search (0.05–0.95) on val set.
+
+        Returns dict with 'threshold_f1_curve' and 'optimal_threshold',
+        or None if val_loader is unavailable.
+        """
+        if val_loader is None:
+            return None
+
+        print("[TaggerTrainer] Running final threshold grid search...")
+        self._emit("phase", {"phase": "threshold_search", "message": "Running threshold grid search..."})
+
+        all_preds, all_labels = self._collect_val_preds(model, val_loader, device, amp_dtype)
+
+        thresholds = [round(t * 0.05, 2) for t in range(1, 20)]  # 0.05 to 0.95
+        curve: Dict[str, float] = {}
+        for thr in thresholds:
+            f1 = _compute_f1_macro(all_preds, all_labels, threshold=thr)
+            curve[f"{thr:.2f}"] = round(f1, 6)
+
+        # Best threshold: max F1, tie-break by lowest threshold (prefer recall)
+        best_thr_str = max(curve, key=lambda k: (curve[k], -float(k)))
+        optimal_threshold = float(best_thr_str)
+        print(f"[TaggerTrainer] Threshold grid done. Optimal: {optimal_threshold:.2f} F1={curve[best_thr_str]:.4f}")
+        return {
+            "threshold_f1_curve": curve,
+            "optimal_threshold": optimal_threshold,
+        }
 
     # ------------------------------------------------------------------
     # Helpers

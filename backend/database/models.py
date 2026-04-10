@@ -781,6 +781,7 @@ class TaggerTrainingRun(TrainingBase):
     # Best metrics
     best_f1 = Column(Float, nullable=True)
     best_threshold = Column(Float, nullable=True)
+    threshold_f1_curve = Column(JSON, nullable=True)   # {"0.05": f1, ..., "0.95": f1}
     latest_loss = Column(Float, nullable=True)
     latest_lr = Column(Float, nullable=True)
 
@@ -817,6 +818,7 @@ class TaggerTrainingRun(TrainingBase):
             "tag_vocabulary": self.tag_vocabulary,
             "best_f1": self.best_f1,
             "best_threshold": self.best_threshold,
+            "threshold_f1_curve": self.threshold_f1_curve,
             "latest_loss": self.latest_loss,
             "latest_lr": self.latest_lr,
             "best_checkpoint_path": self.best_checkpoint_path,

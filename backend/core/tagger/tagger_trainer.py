@@ -253,7 +253,10 @@ class TaggerTrainer:
             model.train()
             epoch_loss = 0.0
 
-            for batch_idx, (pv, pam, ss, labels, loss_masks) in enumerate(train_loader):
+            for batch_idx, batch in enumerate(train_loader):
+                if batch is None:
+                    continue  # entire batch was corrupt images
+                pv, pam, ss, labels, loss_masks = batch
                 if self._stop_requested:
                     break
 
@@ -376,7 +379,10 @@ class TaggerTrainer:
         all_labels = []
 
         with torch.no_grad():
-            for pv, pam, ss, labels, _ in loader:
+            for batch in loader:
+                if batch is None:
+                    continue
+                pv, pam, ss, labels, _ = batch
                 pv    = pv.to(device)
                 pam   = pam.to(device)
                 ss    = ss.to(device)
@@ -409,7 +415,10 @@ class TaggerTrainer:
         all_preds  = []
         all_labels = []
         with torch.no_grad():
-            for pv, pam, ss, labels, _ in loader:
+            for batch in loader:
+                if batch is None:
+                    continue
+                pv, pam, ss, labels, _ = batch
                 pv  = pv.to(device)
                 pam = pam.to(device)
                 ss  = ss.to(device)

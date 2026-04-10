@@ -13,6 +13,11 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
+# Category sort order for vocabulary organization
+CATEGORY_ORDER: List[str] = [
+    "General", "Character", "Copyright", "Artist", "Meta", "Rating", "Quality", "Model"
+]
+
 # Quality tag groups (same as tagutl/lora.py)
 QUALITY_TAG_GROUPS: Dict[str, List[str]] = {
     "high_quality_group": ["best quality", "high quality", "normal quality", "medium quality"],
@@ -109,8 +114,13 @@ class TagVocabulary:
             filtered = {t: c for t, c in filtered.items()
                         if not any(fnmatch.fnmatch(t, pat) for pat in ban_patterns)}
 
-        # Sort deterministically (alphabetical for now; Commit 3 will change ordering)
-        selected = sorted(filtered.keys())
+        # Sort: category order first, then alphabetically within each category
+        def _sort_key(tag: str) -> tuple:
+            cat = tag_categories.get(tag, "General")
+            cat_rank = CATEGORY_ORDER.index(cat) if cat in CATEGORY_ORDER else len(CATEGORY_ORDER)
+            return (cat_rank, tag)
+
+        selected = sorted(filtered.keys(), key=_sort_key)
 
         vocab = cls()
         for idx, tag in enumerate(selected):
@@ -136,11 +146,25 @@ class TagVocabulary:
     # ------------------------------------------------------------------
 
     def to_dict(self) -> dict:
+        # Build categories section: category -> sorted list of tags
+        categories: Dict[str, List[str]] = {}
+        for tag, cat in self.tag_to_category.items():
+            categories.setdefault(cat, []).append(tag)
+        # Sort within each category alphabetically; sort category keys by CATEGORY_ORDER
+        sorted_categories: Dict[str, List[str]] = {}
+        cat_keys = sorted(
+            categories.keys(),
+            key=lambda c: CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else len(CATEGORY_ORDER),
+        )
+        for cat in cat_keys:
+            sorted_categories[cat] = sorted(categories[cat])
+
         return {
             "tag_to_idx": self.tag_to_idx,
             "idx_to_tag": {str(k): v for k, v in self.idx_to_tag.items()},
             "tag_to_category": self.tag_to_category,
             "num_tags": len(self.tag_to_idx),
+            "categories": sorted_categories,
         }
 
     def to_json(self) -> str:

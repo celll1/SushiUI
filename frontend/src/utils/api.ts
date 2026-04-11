@@ -2017,6 +2017,7 @@ export interface TaggerTrainingRunCreateRequest {
   save_best_only?: boolean;
   excluded_categories?: string[];
   ban_tags?: string;
+  vocab_min_count?: number;
   cls_dim?: number;
   hidden_proj_dim?: number;
   init_head_from?: string;

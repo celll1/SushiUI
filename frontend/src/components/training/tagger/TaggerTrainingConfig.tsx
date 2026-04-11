@@ -28,6 +28,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   warmup_steps: 100,
   epochs: 10,
   batch_size: 32,
+  vocab_min_count: 10,
   num_workers: 4,
   num_workers_override: null as number | null,
   save_every_n_steps: 500,
@@ -397,6 +398,18 @@ export default function TaggerTrainingConfig({
                 max={1000}
                 value={config.epochs}
                 onChange={(e) => setField("epochs", parseInt(e.target.value) || 10)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Min Tag Count
+              </label>
+              <input
+                type="number"
+                min={1}
+                value={config.vocab_min_count}
+                onChange={(e) => setField("vocab_min_count", parseInt(e.target.value) || 1)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>

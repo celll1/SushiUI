@@ -6597,7 +6597,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     loss_clip: float = 0.05
     validate_every: int = 1
     val_split: float = 0.05
-    vocab_min_count: int = 1
+    vocab_min_count: int = 10
     output_dir: Optional[str] = None
     excluded_categories: Optional[List[str]] = None
     ban_tags: Optional[str] = None

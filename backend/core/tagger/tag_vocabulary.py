@@ -39,7 +39,13 @@ def normalize_tag(tag: str) -> str:
        "fate \\(series\\)" and "fate (series)" collapse to the same key
     """
     tag = tag.strip().replace("_", " ").lower()
-    tag = re.sub(r"\\(.)", r"\1", tag)  # unescape: \X → X
+    # Unescape backslash sequences repeatedly until stable
+    # (handles multiply-escaped tags like \\\\( → \\( → ()
+    while True:
+        unescaped = re.sub(r"\\(.)", r"\1", tag)
+        if unescaped == tag:
+            break
+        tag = unescaped
     return tag
 
 

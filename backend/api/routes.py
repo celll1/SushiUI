@@ -6603,6 +6603,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     ban_tags: Optional[str] = None
     cls_dim: Optional[int] = None
     hidden_proj_dim: Optional[int] = None
+    init_head_from: Optional[str] = None
 
 
 # Active tagger training threads

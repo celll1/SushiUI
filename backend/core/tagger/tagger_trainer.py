@@ -375,6 +375,8 @@ class TaggerTrainer:
             lora_alpha=float(cfg.get("lora_alpha", 16.0)),
             cls_dim=cfg.get("cls_dim") or None,
             hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
+            init_head_from=cfg.get("init_head_from") or None,
+            new_vocab=self.vocabulary.tag_to_idx if cfg.get("init_head_from") else None,
         )
         model = model.to(device)
 

@@ -560,6 +560,91 @@ class SigLIP2TaggerLoRAModel(nn.Module):
 # Factory
 # ------------------------------------------------------------------
 
+def _inherit_head(
+    model: nn.Module,
+    checkpoint_path: str,
+    new_num_tags: int,
+    new_vocab: Optional[Dict[str, int]] = None,
+) -> None:
+    """Copy head weights from *checkpoint_path* into *model* using tag-name alignment.
+
+    Tag-name alignment
+    ------------------
+    The checkpoint directory is expected to contain a ``vocabulary.json`` file
+    (produced by TagVocabulary.to_dict()) that maps tag names to their old indices.
+    The new vocabulary (*new_vocab*: tag → new_idx) is used to look up each old tag
+    so weights are placed at the correct new index regardless of ordering changes.
+
+    Tags present in the old vocabulary but absent from the new one are simply
+    dropped — the new head rows for those positions remain zero-initialized.
+    Tags present in the new vocabulary but absent from the old one are
+    zero-initialized (new tags to learn from scratch).
+
+    If no vocabulary.json is found next to the checkpoint, falls back to
+    positional copy (old row i → new row i, up to min(old, new) rows) with a
+    warning.  This handles the exact-same-vocabulary case safely.
+    """
+    import json as _json
+
+    saved = load_file(checkpoint_path)
+    if "head.weight" not in saved:
+        print(f"[TaggerModel] _inherit_head: no head.weight in {checkpoint_path}, skipping")
+        return
+
+    src_w = saved["head.weight"].float()  # [old_num_tags, hidden]
+    src_b = saved["head.bias"].float()    # [old_num_tags]
+    hidden = src_w.shape[1]
+
+    # Build new head (zero-initialized) on CPU
+    new_head = nn.Linear(hidden, new_num_tags)
+    nn.init.zeros_(new_head.weight)
+    nn.init.zeros_(new_head.bias)
+
+    # Try to load old vocabulary for tag-name-based alignment
+    ckpt_dir   = os.path.dirname(os.path.abspath(checkpoint_path))
+    vocab_path = os.path.join(ckpt_dir, "vocabulary.json")
+
+    copied = skipped = 0
+
+    if os.path.isfile(vocab_path) and new_vocab is not None:
+        with open(vocab_path, "r", encoding="utf-8") as f:
+            old_vocab_data = _json.load(f)
+        old_tag_to_idx: Dict[str, int] = {
+            k: int(v) for k, v in old_vocab_data["tag_to_idx"].items()
+        }
+        # For each tag in the new vocabulary, copy the row from the old head if it existed
+        for tag, new_idx in new_vocab.items():
+            old_idx = old_tag_to_idx.get(tag)
+            if old_idx is None:
+                skipped += 1
+                continue  # new tag — stays zero-initialized
+            if old_idx >= src_w.shape[0]:
+                skipped += 1
+                continue  # shouldn't happen, but guard anyway
+            new_head.weight.data[new_idx] = src_w[old_idx]
+            new_head.bias.data[new_idx]   = src_b[old_idx]
+            copied += 1
+        old_size = len(old_tag_to_idx)
+        print(f"[TaggerModel] Head inherited via tag-name alignment: "
+              f"{copied} tags copied, {skipped} new/missing tags zero-initialized "
+              f"(old vocab: {old_size}, new vocab: {new_num_tags})")
+    else:
+        # Fallback: positional copy — safe only when vocab order is unchanged
+        if not os.path.isfile(vocab_path):
+            print(f"[TaggerModel] Warning: vocabulary.json not found in {ckpt_dir}, "
+                  f"falling back to positional head copy (assumes identical tag order)")
+        copy_rows = min(src_w.shape[0], new_num_tags)
+        new_head.weight.data[:copy_rows] = src_w[:copy_rows]
+        new_head.bias.data[:copy_rows]   = src_b[:copy_rows]
+        copied = copy_rows
+        print(f"[TaggerModel] Head inherited (positional): {copy_rows} rows copied, "
+              f"{new_num_tags - copy_rows} new rows zero-initialized")
+
+    # Move to same device as existing head
+    device = next(model.head.parameters()).device
+    model.head = new_head.to(device)
+
+
 def build_tagger_model(
     training_method: str,
     num_tags: int,
@@ -569,6 +654,8 @@ def build_tagger_model(
     freeze_encoder: bool = False,
     cls_dim: Optional[int] = None,
     hidden_proj_dim: Optional[int] = None,
+    init_head_from: Optional[str] = None,
+    new_vocab: Optional[Dict[str, int]] = None,
 ) -> nn.Module:
     """Build the appropriate tagger model.
 
@@ -576,12 +663,23 @@ def build_tagger_model(
     ----------
     training_method     : "full" | "lora"
     num_tags            : number of output tag classes
-    vision_encoder_path : path to siglip2_so400m_vision_encoder.safetensors
+    vision_encoder_path : path to siglip2_so400m_vision_encoder.safetensors,
+                          OR a tagger LoRA checkpoint — LoRA weights will be merged
+                          into the base encoder automatically.
     lora_rank           : LoRA rank (lora mode only)
     lora_alpha          : LoRA alpha (lora mode only)
     freeze_encoder      : freeze encoder entirely (full mode only)
     cls_dim             : CustomAttentionPooling output dim (full mode only)
     hidden_proj_dim     : proj_k/proj_v expansion dim; requires cls_dim (full mode only)
+    init_head_from      : optional path to a tagger checkpoint whose head.weight/bias
+                          should be inherited.  Tag-name alignment is used when
+                          vocabulary.json is present in the same directory: each tag in
+                          the new vocabulary is looked up in the old vocabulary and its
+                          weight row is placed at the correct new index.  Tags absent
+                          from the old vocabulary are zero-initialized.  Old tags not
+                          present in the new vocabulary are simply dropped (not an error).
+    new_vocab           : new tag→idx mapping (TagVocabulary.tag_to_idx) required for
+                          tag-name alignment; falls back to positional copy if None.
     """
     print(f"[TaggerModel] Loading vision encoder from: {vision_encoder_path}")
     vision_encoder = _load_vision_encoder(vision_encoder_path)
@@ -589,7 +687,7 @@ def build_tagger_model(
     if training_method == "lora":
         if cls_dim:
             print("[TaggerModel] Warning: cls_dim / hidden_proj_dim are ignored for LoRA training")
-        return SigLIP2TaggerLoRAModel(
+        model = SigLIP2TaggerLoRAModel(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
@@ -598,7 +696,7 @@ def build_tagger_model(
     elif training_method == "full":
         if hidden_proj_dim and not cls_dim:
             raise ValueError("hidden_proj_dim requires cls_dim to be set")
-        return SigLIP2TaggerModel(
+        model = SigLIP2TaggerModel(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
             freeze_encoder=freeze_encoder,
@@ -607,3 +705,8 @@ def build_tagger_model(
         )
     else:
         raise ValueError(f"Unknown training_method: {training_method!r}. Use 'full' or 'lora'.")
+
+    if init_head_from:
+        _inherit_head(model, init_head_from, num_tags, new_vocab=new_vocab)
+
+    return model

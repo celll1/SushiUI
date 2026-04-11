@@ -2019,6 +2019,7 @@ export interface TaggerTrainingRunCreateRequest {
   ban_tags?: string;
   cls_dim?: number;
   hidden_proj_dim?: number;
+  init_head_from?: string;
 }
 
 export interface TaggerTrainingMetric {

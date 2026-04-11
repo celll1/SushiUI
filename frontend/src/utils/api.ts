@@ -2005,6 +2005,8 @@ export interface TaggerTrainingRunCreateRequest {
   warmup_steps?: number;
   epochs?: number;
   batch_size?: number;
+  num_workers?: number;
+  num_workers_override?: number | null;
   mixed_precision?: string;
   gradient_checkpointing?: boolean;
   loss_gamma_neg?: number;

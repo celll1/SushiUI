@@ -241,6 +241,36 @@ def _load_optimizer_state(optimizer: Any, output_dir: str, name: str) -> bool:
     return True
 
 
+def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
+    """Delete oldest step-based checkpoints, keeping the most recent *keep_last_n*.
+
+    Each checkpoint consists of three files:
+      step_XXXXXX.safetensors
+      step_XXXXXX_state.json
+      step_XXXXXX_optimizer.pt
+
+    Only step_* checkpoints are pruned; 'latest' and 'best_f1' are never touched.
+    """
+    if keep_last_n <= 0:
+        return
+
+    step_names: List[Tuple[int, str]] = []
+    for fn in os.listdir(output_dir):
+        m = _re.match(r"^step_(\d+)\.safetensors$", fn)
+        if m:
+            step_names.append((int(m.group(1)), f"step_{int(m.group(1)):06d}"))
+
+    step_names.sort(key=lambda x: x[0])          # ascending → oldest first
+    to_delete = step_names[:-keep_last_n] if len(step_names) > keep_last_n else []
+
+    for _, name in to_delete:
+        for suffix in (".safetensors", "_state.json", "_optimizer.pt"):
+            path = os.path.join(output_dir, f"{name}{suffix}")
+            if os.path.isfile(path):
+                os.remove(path)
+        print(f"[TaggerTrainer] Pruned old checkpoint: {name}")
+
+
 def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Find the checkpoint with the highest global_step to resume from.
 
@@ -407,7 +437,9 @@ class TaggerTrainer:
         ).to(device)
 
         # Step-based checkpoint interval (0 = disabled)
-        save_every_n_steps = int(cfg.get("save_every_n_steps", 500))
+        save_every_n_steps    = int(cfg.get("save_every_n_steps", 500))
+        # How many step checkpoints to keep (0 = keep all)
+        keep_last_n_checkpoints = int(cfg.get("keep_last_n_checkpoints", 0))
 
         # Training state
         best_f1         = 0.0
@@ -567,6 +599,8 @@ class TaggerTrainer:
                         epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+                    if keep_last_n_checkpoints > 0:
+                        _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
                         "name": ckpt_name,
                         "step": global_step,

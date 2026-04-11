@@ -19,7 +19,9 @@ import json
 import os
 import random
 import re as _re
+import threading
 import time
+from queue import Queue as _Queue
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
@@ -122,6 +124,35 @@ def _find_best_threshold(
             return thr, best_f1
 
     return best_thr, best_f1
+
+
+# ------------------------------------------------------------------
+# Prefetch helper
+# ------------------------------------------------------------------
+
+def _prefetch_loader(loader, maxsize: int = 2):
+    """Iterate *loader* in a background thread, yielding batches via a bounded queue.
+
+    On Windows (num_workers=0) PIL decode and NaFlex processing release the GIL,
+    so the background thread runs concurrently with GPU training in the main thread.
+    maxsize=2 bounds memory to ~2 batches worth of tensors.
+    """
+    _END = object()
+    q = _Queue(maxsize=maxsize)
+
+    def _worker():
+        try:
+            for batch in loader:
+                q.put(batch)
+        finally:
+            q.put(_END)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is _END:
+            break
+        yield item
 
 
 # ------------------------------------------------------------------
@@ -459,7 +490,16 @@ class TaggerTrainer:
             epoch_loss       = 0.0
             batches_processed = 0
 
-            for batch_idx, batch in enumerate(train_loader):
+            # When num_workers=0 (single-process), use a background thread to
+            # prefetch the next batch while the GPU processes the current one.
+            # PIL decode and NaFlex transforms release the GIL, so true CPU/GPU
+            # parallelism is achievable.  With num_workers>0, the DataLoader
+            # already handles prefetching via worker processes.
+            loader_iter = (
+                _prefetch_loader(train_loader) if effective_workers == 0
+                else iter(train_loader)
+            )
+            for batch_idx, batch in enumerate(loader_iter):
                 # Skip batches already processed in the resume epoch
                 if epoch == resume_epoch and batch_idx <= resume_batch_idx:
                     continue
@@ -803,10 +843,17 @@ def run_tagger_training(
 
         batch_size  = int(config.get("batch_size", 32))
         num_workers = int(config.get("num_workers", 4))
-        # Windows spawn mode re-imports main.py in each worker (triggers init_db) and
-        # cannot pickle large dataset sample lists — use single-process loading.
+        # num_workers_override: explicit override (int >= 0 forces that value; None = auto).
+        # On Windows, spawn mode re-imports main.py per worker and pickles the full sample
+        # list — this can cause MemoryError with large datasets.  The default now allows
+        # the configured num_workers even on Windows; set num_workers_override=0 in config
+        # to force single-process loading if MemoryErrors occur.
         import sys as _sys
-        effective_workers = 0 if _sys.platform == "win32" else num_workers
+        num_workers_override = config.get("num_workers_override")
+        if num_workers_override is not None and int(num_workers_override) >= 0:
+            effective_workers = int(num_workers_override)
+        else:
+            effective_workers = num_workers
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=effective_workers, collate_fn=tagger_collate_fn,

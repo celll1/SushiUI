@@ -32,7 +32,7 @@ function TrainingPageContent() {
   const [taggerRuns, setTaggerRuns] = useState<TaggerTrainingRun[]>([]);
   const [selectedTaggerRunId, setSelectedTaggerRunId] = useState<string | null>(null);
   const [showTaggerConfig, setShowTaggerConfig] = useState(false);
-  const [taggerLoading, setTaggerLoading] = useState(false);
+  const [taggerLoading, setTaggerLoading] = useState(true);
 
   const [isMobile, setIsMobile] = useState(false);
   const [showMobileDetail, setShowMobileDetail] = useState(false);
@@ -60,7 +60,6 @@ function TrainingPageContent() {
   }, []);
 
   const loadTaggerRuns = useCallback(async () => {
-    setTaggerLoading(true);
     try {
       const data = await listTaggerTrainingRuns();
       setTaggerRuns(data);
@@ -337,7 +336,7 @@ function TrainingPageContent() {
             <>
               {/* Tagger Training Runs List */}
               <div className={`${isMobile && showMobileDetail ? 'hidden' : 'flex'} ${isMobile ? 'w-full' : 'w-64 lg:w-80'} flex-shrink-0 ${!isMobile && 'border-r border-gray-700'} overflow-y-auto flex-col`}>
-                {taggerLoading ? (
+                {taggerLoading && taggerRuns.length === 0 ? (
                   <div className="flex items-center justify-center p-8 text-gray-400 text-sm">
                     Loading...
                   </div>

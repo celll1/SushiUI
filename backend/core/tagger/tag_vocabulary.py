@@ -29,8 +29,18 @@ RATING_TAGS: List[str] = ["rating:general", "rating:sensitive", "rating:question
 
 
 def normalize_tag(tag: str) -> str:
-    """Normalize tag: strip whitespace, replace underscores with spaces, lowercase."""
-    return tag.strip().replace("_", " ").lower()
+    """Normalize tag for consistent matching.
+
+    Steps applied in order:
+    1. Strip leading/trailing whitespace
+    2. Replace underscores with spaces  (danbooru convention)
+    3. Lowercase
+    4. Remove backslash escaping        e.g. \\( → (  so that
+       "fate \\(series\\)" and "fate (series)" collapse to the same key
+    """
+    tag = tag.strip().replace("_", " ").lower()
+    tag = re.sub(r"\\(.)", r"\1", tag)  # unescape: \X → X
+    return tag
 
 
 class TagVocabulary:

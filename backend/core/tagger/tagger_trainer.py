@@ -528,7 +528,7 @@ class TaggerTrainer:
             # parallelism is achievable.  With num_workers>0, the DataLoader
             # already handles prefetching via worker processes.
             loader_iter = (
-                _prefetch_loader(train_loader) if effective_workers == 0
+                _prefetch_loader(train_loader) if train_loader.num_workers == 0
                 else iter(train_loader)
             )
             for batch_idx, batch in enumerate(loader_iter):

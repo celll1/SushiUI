@@ -29,6 +29,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   batch_size: 32,
   num_workers: 4,
   num_workers_override: null as number | null,
+  save_every_n_steps: 500,
   mixed_precision: "bf16",
   gradient_checkpointing: true,
   loss_gamma_neg: 4,
@@ -417,6 +418,20 @@ export default function TaggerTrainingConfig({
                   const v = e.target.value === "" ? null : parseInt(e.target.value);
                   setField("num_workers_override", v);
                 }}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Save Every N Steps
+                <span className="text-gray-500 ml-1">(0 = disabled)</span>
+              </label>
+              <input
+                type="number"
+                min={0}
+                step={100}
+                value={config.save_every_n_steps}
+                onChange={(e) => setField("save_every_n_steps", parseInt(e.target.value) || 0)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>

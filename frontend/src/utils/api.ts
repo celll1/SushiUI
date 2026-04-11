@@ -2007,6 +2007,7 @@ export interface TaggerTrainingRunCreateRequest {
   batch_size?: number;
   num_workers?: number;
   num_workers_override?: number | null;
+  save_every_n_steps?: number;
   mixed_precision?: string;
   gradient_checkpointing?: boolean;
   loss_gamma_neg?: number;

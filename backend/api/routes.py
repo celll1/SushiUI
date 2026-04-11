@@ -6587,6 +6587,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     batch_size: int = 32
     num_workers: int = 4
     num_workers_override: Optional[int] = None
+    save_every_n_steps: int = 500
     mixed_precision: str = "bf16"
     gradient_checkpointing: bool = True
     weight_decay: float = 1e-4

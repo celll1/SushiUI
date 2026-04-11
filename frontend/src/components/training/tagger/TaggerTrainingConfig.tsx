@@ -27,6 +27,8 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   warmup_steps: 100,
   epochs: 10,
   batch_size: 32,
+  num_workers: 4,
+  num_workers_override: null as number | null,
   mixed_precision: "bf16",
   gradient_checkpointing: true,
   loss_gamma_neg: 4,
@@ -386,6 +388,35 @@ export default function TaggerTrainingConfig({
                 max={512}
                 value={config.batch_size}
                 onChange={(e) => setField("batch_size", parseInt(e.target.value) || 32)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Num Workers</label>
+              <input
+                type="number"
+                min={0}
+                max={16}
+                value={config.num_workers}
+                onChange={(e) => setField("num_workers", parseInt(e.target.value) || 0)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Num Workers Override
+                <span className="text-gray-500 ml-1">(0 = force single-process)</span>
+              </label>
+              <input
+                type="number"
+                min={0}
+                max={16}
+                placeholder="not set"
+                value={config.num_workers_override ?? ""}
+                onChange={(e) => {
+                  const v = e.target.value === "" ? null : parseInt(e.target.value);
+                  setField("num_workers_override", v);
+                }}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>

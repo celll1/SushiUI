@@ -101,7 +101,64 @@ def _load_vision_encoder(safetensors_path: str) -> nn.Module:
 
     # Load our fine-tuned / custom weights
     state_dict = load_file(safetensors_path)
-    vision_encoder.load_state_dict(state_dict, strict=True)
+
+    lora_keys = [k for k in state_dict if k.startswith("lora.")]
+    if lora_keys:
+        # This is a tagger LoRA checkpoint — merge LoRA deltas into the base weights
+        # before returning the vision encoder.
+        # Key format: "lora.encoder.layers.N.self_attn.{proj}.lora_A/B"
+        # → maps to vision_encoder: "encoder.layers.N.self_attn.{proj}.weight"
+        # Merge formula: W += (lora_A @ lora_B).T * (lora_alpha / lora_rank)
+        # lora_rank is inferred from lora_A shape[:, 1]; lora_alpha from metadata if present.
+        meta_path = safetensors_path.replace(".safetensors", "_metadata.json")
+        lora_alpha: float = 1.0
+        lora_rank: int = 1
+        if os.path.isfile(meta_path):
+            import json as _json
+            with open(meta_path, "r", encoding="utf-8") as _f:
+                _meta = _json.load(_f)
+            lora_alpha = float(_meta.get("lora_alpha", 1.0))
+            lora_rank  = int(_meta.get("lora_rank", 1))
+        else:
+            # Infer rank from first lora_A tensor (shape: [in_features, rank])
+            _first_A = next(v for k, v in state_dict.items() if k.endswith(".lora_A"))
+            lora_rank = _first_A.shape[1]
+            lora_alpha = float(lora_rank)  # default scale=1 when alpha==rank
+
+        scale = lora_alpha / lora_rank
+
+        # Collect pairs: module_path -> (lora_A, lora_B)
+        _lora_pairs: dict = {}
+        for k, v in state_dict.items():
+            if not k.startswith("lora."):
+                continue
+            # strip "lora." prefix and ".lora_A" / ".lora_B" suffix
+            if k.endswith(".lora_A"):
+                mod_path = k[len("lora."):-len(".lora_A")]
+                _lora_pairs.setdefault(mod_path, {})["A"] = v
+            elif k.endswith(".lora_B"):
+                mod_path = k[len("lora."):-len(".lora_B")]
+                _lora_pairs.setdefault(mod_path, {})["B"] = v
+
+        vs_dict = vision_encoder.state_dict()
+        merged = 0
+        for mod_path, ab in _lora_pairs.items():
+            if "A" not in ab or "B" not in ab:
+                continue
+            weight_key = f"{mod_path}.weight"
+            if weight_key not in vs_dict:
+                continue
+            lora_A = ab["A"].float()
+            lora_B = ab["B"].float()
+            delta = (lora_A @ lora_B).T * scale
+            vs_dict[weight_key] = vs_dict[weight_key].float() + delta
+            merged += 1
+
+        vision_encoder.load_state_dict(vs_dict, strict=True)
+        print(f"[VisionEncoder] Merged {merged} LoRA modules from {os.path.basename(safetensors_path)} (alpha={lora_alpha}, rank={lora_rank})")
+    else:
+        # Pure vision encoder weights
+        vision_encoder.load_state_dict(state_dict, strict=True)
 
     return vision_encoder
 

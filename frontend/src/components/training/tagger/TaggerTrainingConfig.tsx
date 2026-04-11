@@ -19,6 +19,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   run_name: "",
   training_method: "lora",
   vision_encoder_path: "",
+  init_head_from: "",
   lora_rank: 32,
   lora_alpha: 16,
   learning_rate: 3e-4,
@@ -169,7 +170,24 @@ export default function TaggerTrainingConfig({
             className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Path to siglip2_so400m_vision_encoder.safetensors (relative to project root or absolute)
+            Path to siglip2_so400m_vision_encoder.safetensors, or a tagger LoRA checkpoint to merge and continue training from.
+          </p>
+        </section>
+
+        {/* Init head from */}
+        <section>
+          <label className="block text-sm font-medium text-gray-300 mb-1">
+            Init Head From <span className="text-gray-500 font-normal">(optional)</span>
+          </label>
+          <input
+            type="text"
+            value={config.init_head_from ?? ""}
+            onChange={(e) => setField("init_head_from", e.target.value)}
+            placeholder="leave empty to zero-initialize head"
+            className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Path to a tagger checkpoint to inherit head weights from. Rows are copied and expanded (zero-init) or trimmed to match the current vocabulary size.
           </p>
         </section>
 

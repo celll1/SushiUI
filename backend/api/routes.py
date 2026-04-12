@@ -2530,6 +2530,100 @@ async def unload_tagger_model():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ============================================================================
+# SigLIP2 Tagger Endpoints
+# ============================================================================
+
+from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
+
+class SigLIP2LoadRequest(BaseModel):
+    checkpoint_path: str
+    vision_encoder_path: str = ""
+    vocab_path: str = ""
+    lora_rank: int = 32
+    lora_alpha: float = 16.0
+
+class SigLIP2PredictRequest(BaseModel):
+    image_base64: str
+    threshold: float = 0.35
+
+class SigLIP2MergeLoRARequest(BaseModel):
+    output_path: str
+
+class SigLIP2ExportONNXRequest(BaseModel):
+    output_path: str
+    max_num_patches: int = 256
+
+
+@router.post("/tagger/siglip2/load")
+async def siglip2_load(request: SigLIP2LoadRequest):
+    """Load a SigLIP2 tagger checkpoint (full or LoRA, auto-detected)."""
+    try:
+        mgr = get_siglip2_inference_manager()
+        result = mgr.load_model(
+            checkpoint_path=request.checkpoint_path,
+            vocab_path=request.vocab_path,
+            vision_encoder_path=request.vision_encoder_path,
+            lora_rank=request.lora_rank,
+            lora_alpha=request.lora_alpha,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tagger/siglip2/predict")
+async def siglip2_predict(request: SigLIP2PredictRequest):
+    """Run inference with the loaded SigLIP2 model."""
+    try:
+        import base64
+        mgr = get_siglip2_inference_manager()
+        image_bytes = base64.b64decode(request.image_base64)
+        result = mgr.predict(image_bytes=image_bytes, threshold=request.threshold)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tagger/siglip2/status")
+async def siglip2_status():
+    """Return loaded model status."""
+    return get_siglip2_inference_manager().status
+
+
+@router.post("/tagger/siglip2/unload")
+async def siglip2_unload():
+    """Unload the SigLIP2 model."""
+    get_siglip2_inference_manager().unload()
+    return {"status": "ok"}
+
+
+@router.post("/tagger/siglip2/merge-lora")
+async def siglip2_merge_lora(request: SigLIP2MergeLoRARequest):
+    """Merge LoRA weights into the vision encoder and save as a full model."""
+    try:
+        mgr = get_siglip2_inference_manager()
+        saved_path = mgr.merge_lora_and_save(request.output_path)
+        return {"saved_path": saved_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tagger/siglip2/export-onnx")
+async def siglip2_export_onnx(request: SigLIP2ExportONNXRequest):
+    """Export the loaded model to ONNX format."""
+    try:
+        mgr = get_siglip2_inference_manager()
+        onnx_path, vocab_path = mgr.export_onnx(
+            output_path=request.output_path,
+            max_num_patches=request.max_num_patches,
+        )
+        return {"saved_path": onnx_path, "vocab_path": vocab_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/system/gpu-stats")
 async def get_gpu_stats():
     """Get GPU statistics (VRAM, utilization, temperature)"""

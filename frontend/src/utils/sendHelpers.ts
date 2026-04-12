@@ -250,6 +250,18 @@ export async function sendImageToInpaint(
 }
 
 /**
+ * Sends base64 image to img2img panel (no fetching needed)
+ */
+export async function sendBase64ImageToImg2Img(
+  base64Image: string,
+  storageKey: string = "img2img_input_image"
+): Promise<void> {
+  const tempRef = await saveTempImage(base64Image);
+  localStorage.setItem(storageKey, tempRef);
+  window.dispatchEvent(new Event("img2img_input_updated"));
+}
+
+/**
  * Sends base64 image from txt2img to inpaint (no fetching needed)
  */
 export async function sendBase64ImageToInpaint(

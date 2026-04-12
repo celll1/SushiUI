@@ -936,6 +936,70 @@ export const unloadTaggerModel = async () => {
   return response.data;
 };
 
+// ─── SigLIP2 Tagger ───────────────────────────────────────────────────────────
+
+export interface SigLIP2LoadRequest {
+  checkpoint_path: string;
+  vision_encoder_path?: string;
+  vocab_path: string;
+  lora_rank?: number;
+  lora_alpha?: number;
+}
+
+export interface SigLIP2TagResult {
+  tag: string;
+  prob: number;
+  category: string;
+}
+
+export interface SigLIP2PredictResponse {
+  tags: SigLIP2TagResult[];
+  quality_top: SigLIP2TagResult | null;
+  rating_top: SigLIP2TagResult | null;
+  num_predicted: number;
+}
+
+export interface SigLIP2StatusResponse {
+  loaded: boolean;
+  checkpoint_path: string;
+  vocab_path: string;
+  model_type: string;
+  num_tags: number;
+}
+
+export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
+  const response = await api.post("/tagger/siglip2/load", req);
+  return response.data as { status: string; model_type: string; num_tags: number };
+};
+
+export const predictSigLIP2Tags = async (
+  image_base64: string,
+  threshold: number = 0.35,
+): Promise<SigLIP2PredictResponse> => {
+  const response = await api.post("/tagger/siglip2/predict", { image_base64, threshold });
+  return response.data;
+};
+
+export const getSigLIP2Status = async (): Promise<SigLIP2StatusResponse> => {
+  const response = await api.get("/tagger/siglip2/status");
+  return response.data;
+};
+
+export const unloadSigLIP2Model = async () => {
+  const response = await api.post("/tagger/siglip2/unload");
+  return response.data;
+};
+
+export const mergeSigLIP2LoRA = async (output_path: string) => {
+  const response = await api.post("/tagger/siglip2/merge-lora", { output_path });
+  return response.data as { saved_path: string };
+};
+
+export const exportSigLIP2ONNX = async (output_path: string, max_num_patches: number = 256) => {
+  const response = await api.post("/tagger/siglip2/export-onnx", { output_path, max_num_patches });
+  return response.data as { saved_path: string; vocab_path: string };
+};
+
 export const addTagToCategory = async (
   tag: string,
   category: string,

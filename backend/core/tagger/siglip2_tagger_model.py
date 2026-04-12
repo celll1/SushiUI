@@ -96,7 +96,13 @@ def _load_vision_encoder(safetensors_path: str) -> nn.Module:
     safetensors_path = safetensors_path.strip().strip('"').strip("'")
 
     REPO_ID = "google/siglip2-so400m-patch16-naflex"
-    full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32)
+    # Try local cache first to avoid network access and reduce peak memory.
+    try:
+        full_model = AutoModel.from_pretrained(
+            REPO_ID, dtype=torch.float32, local_files_only=True
+        )
+    except Exception:
+        full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32)
     vision_encoder = full_model.vision_model
 
     # Load our fine-tuned / custom weights

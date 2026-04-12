@@ -1000,6 +1000,19 @@ export const exportSigLIP2ONNX = async (output_path: string, max_num_patches: nu
   return response.data as { saved_path: string; vocab_path: string };
 };
 
+export interface SigLIP2CheckpointMeta {
+  lora_rank?: number;
+  lora_alpha?: number;
+  num_tags?: number;
+  training_method?: string;
+  [key: string]: unknown;
+}
+
+export const getSigLIP2CheckpointMeta = async (path: string): Promise<SigLIP2CheckpointMeta> => {
+  const response = await api.get("/tagger/siglip2/checkpoint-meta", { params: { path } });
+  return response.data as SigLIP2CheckpointMeta;
+};
+
 export const addTagToCategory = async (
   tag: string,
   category: string,

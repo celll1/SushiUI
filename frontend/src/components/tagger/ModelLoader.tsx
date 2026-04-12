@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   loadSigLIP2Model,
   unloadSigLIP2Model,
   getSigLIP2Status,
+  getSigLIP2CheckpointMeta,
   SigLIP2StatusResponse,
 } from "@/utils/api";
 
@@ -22,6 +23,10 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
   const [loading,            setLoading]            = useState(false);
   const [error,              setError]              = useState<string | null>(null);
   const [status,             setStatus]             = useState<SigLIP2StatusResponse | null>(null);
+  // null = not fetched, "found" = meta loaded, "not_found" = no meta
+  const [metaStatus,         setMetaStatus]         = useState<"found" | "not_found" | null>(null);
+
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Fetch status on mount
   useEffect(() => {
@@ -30,12 +35,37 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
       .catch(() => {});
   }, []);
 
-  // Auto-complete vocab path when checkpoint path changes
+  // Auto-complete vocab path when checkpoint path changes, and fetch metadata
   const handleCheckpointChange = (val: string) => {
     setCheckpointPath(val);
+    setMetaStatus(null);
+
     if (!vocabPath) {
       const dir = val.replace(/[/\\][^/\\]*$/, "");
       if (dir) setVocabPath(dir + "/vocabulary.json");
+    }
+
+    // Debounce metadata fetch (500ms)
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (val.endsWith(".safetensors")) {
+      debounceRef.current = setTimeout(async () => {
+        try {
+          const meta = await getSigLIP2CheckpointMeta(val);
+          if (meta.lora_rank !== undefined) {
+            setLoraRank(meta.lora_rank);
+            setModelType("lora");
+          }
+          if (meta.lora_alpha !== undefined) {
+            setLoraAlpha(meta.lora_alpha);
+          }
+          if (meta.training_method === "full") {
+            setModelType("full");
+          }
+          setMetaStatus("found");
+        } catch {
+          setMetaStatus("not_found");
+        }
+      }, 500);
     }
   };
 
@@ -72,8 +102,8 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
     }
   };
 
-  const inputCls = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500";
-  const labelCls = "block text-xs text-gray-400 mb-1";
+  const inputCls = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500";
+  const labelCls = "block text-sm text-gray-400 mb-1";
 
   return (
     <div className="space-y-3 p-3">
@@ -81,7 +111,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
 
       {/* Status badge */}
       {status && (
-        <div className={`text-xs px-2 py-1 rounded ${status.loaded ? "bg-green-900 text-green-300" : "bg-gray-800 text-gray-400"}`}>
+        <div className={`text-sm px-2 py-1 rounded ${status.loaded ? "bg-green-900 text-green-300" : "bg-gray-800 text-gray-400"}`}>
           {status.loaded
             ? `Loaded · ${status.model_type} · ${status.num_tags.toLocaleString()} tags`
             : "Not loaded"}
@@ -111,6 +141,13 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
           placeholder="D:\tagger_models\...\latest.safetensors"
           className={inputCls}
         />
+        {/* Metadata indicator */}
+        {metaStatus === "found" && (
+          <p className="text-xs text-green-400 mt-0.5">✓ Metadata loaded — rank/alpha auto-filled</p>
+        )}
+        {metaStatus === "not_found" && (
+          <p className="text-xs text-gray-500 mt-0.5">No metadata file found alongside checkpoint</p>
+        )}
       </div>
 
       {/* Vision encoder (always required) */}
@@ -166,7 +203,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
 
       {/* Error */}
       {error && (
-        <div className="text-xs text-red-400 bg-red-900/30 rounded px-2 py-1 break-all">
+        <div className="text-sm text-red-400 bg-red-900/30 rounded px-2 py-1 break-all">
           {error}
         </div>
       )}
@@ -176,7 +213,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
         <button
           onClick={handleLoad}
           disabled={loading || !checkpointPath}
-          className="flex-1 py-1.5 rounded text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
+          className="flex-1 py-1.5 rounded text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white transition-colors"
         >
           {loading ? "Loading…" : "Load"}
         </button>
@@ -184,7 +221,7 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
           <button
             onClick={handleUnload}
             disabled={loading}
-            className="px-3 py-1.5 rounded text-xs font-medium bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
+            className="px-3 py-1.5 rounded text-sm font-medium bg-gray-700 hover:bg-gray-600 text-gray-200 transition-colors"
           >
             Unload
           </button>

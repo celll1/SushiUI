@@ -2592,6 +2592,22 @@ async def siglip2_status():
     return get_siglip2_inference_manager().status
 
 
+@router.get("/tagger/siglip2/checkpoint-meta")
+async def siglip2_checkpoint_meta(path: str):
+    """Read _metadata.json alongside the given safetensors checkpoint path.
+    Returns lora_rank, lora_alpha, num_tags, training_method and any other fields present."""
+    import json as _json
+    meta_path = path.replace(".safetensors", "_metadata.json")
+    if not os.path.isfile(meta_path):
+        raise HTTPException(status_code=404, detail=f"Metadata file not found: {meta_path}")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/tagger/siglip2/unload")
 async def siglip2_unload():
     """Unload the SigLIP2 model."""

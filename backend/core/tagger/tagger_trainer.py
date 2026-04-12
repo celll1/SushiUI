@@ -853,6 +853,7 @@ def run_tagger_training(
             ban_tags=ban_tags,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")
+        progress_callback and progress_callback(run_id, "vocab", {"num_tags": vocabulary.num_tags})
 
         # Build processor
         REPO_ID = "google/siglip2-so400m-patch16-naflex"

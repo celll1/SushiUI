@@ -6666,6 +6666,8 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     if ckpt_path not in paths:
                         paths.append(ckpt_path)
                     run.checkpoint_paths = paths
+            elif event_type == "vocab":
+                run.num_tags = data.get("num_tags")
             elif event_type == "resume":
                 run.resumed_from_step = data.get("resumed_from_step")
                 run.last_resumed_at   = datetime.now()

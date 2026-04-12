@@ -467,6 +467,8 @@ class TaggerTrainer:
 
         # Step-based checkpoint interval (0 = disabled)
         save_every_n_steps    = int(cfg.get("save_every_n_steps", 500))
+        # Epoch-based checkpoint interval (0 = disabled)
+        save_every_n_epochs   = int(cfg.get("save_every_n_epochs", 0))
         # How many step checkpoints to keep (0 = keep all)
         keep_last_n_checkpoints = int(cfg.get("keep_last_n_checkpoints", 3))
         # "lora" = save LoRA+head only (compact); "merged" = merge LoRA into encoder and save full model
@@ -662,6 +664,12 @@ class TaggerTrainer:
             # at that time), so we omit it to keep the file compact.
             metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
             _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
+
+            # Epoch-based checkpoint (model only; training state = same as latest)
+            if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
+                ckpt_name = f"epoch_{epoch:04d}"
+                _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
+                self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
             _save_training_state(
                 self.output_dir, "latest",
                 epoch + 1, global_step, -1,

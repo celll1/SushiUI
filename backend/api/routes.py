@@ -2592,6 +2592,18 @@ async def siglip2_status():
     return get_siglip2_inference_manager().status
 
 
+@router.get("/tagger/siglip2/vocabulary")
+async def siglip2_vocabulary():
+    """Return the vocabulary of the currently loaded SigLIP2 model."""
+    mgr = get_siglip2_inference_manager()
+    if not mgr.status.get("loaded"):
+        raise HTTPException(status_code=400, detail="No model loaded")
+    vocab = mgr.vocabulary
+    if not vocab:
+        raise HTTPException(status_code=404, detail="Vocabulary not available")
+    return vocab
+
+
 @router.get("/tagger/siglip2/checkpoint-meta")
 async def siglip2_checkpoint_meta(path: str):
     """Read _metadata.json alongside the given safetensors checkpoint path.
@@ -6698,6 +6710,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     num_workers: int = 4
     num_workers_override: Optional[int] = None
     save_every_n_steps: int = 500
+    save_every_n_epochs: int = 0
     keep_last_n_checkpoints: int = 3
     checkpoint_save_mode: str = "lora"
     mixed_precision: str = "bf16"
@@ -6852,6 +6865,32 @@ def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_trai
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
     return run.to_dict()
+
+
+@router.get("/tagger-training/runs/{run_id}/vocabulary")
+def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Return the tag vocabulary for a tagger training run.
+
+    Returns the vocabulary stored in the DB (tag_vocabulary column), or reads
+    vocabulary.json from the output_dir if the DB field is not yet populated.
+    """
+    import json as _json
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+
+    # Prefer DB-cached vocabulary
+    if run.tag_vocabulary:
+        return run.tag_vocabulary
+
+    # Fall back to reading vocabulary.json from disk
+    if run.output_dir:
+        vocab_path = os.path.join(run.output_dir, "vocabulary.json")
+        if os.path.isfile(vocab_path):
+            with open(vocab_path, "r", encoding="utf-8") as f:
+                return _json.load(f)
+
+    raise HTTPException(status_code=404, detail="Vocabulary not yet available for this run")
 
 
 @router.post("/tagger-training/runs/{run_id}/start")

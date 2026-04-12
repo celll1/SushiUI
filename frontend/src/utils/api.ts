@@ -1013,6 +1013,24 @@ export const getSigLIP2CheckpointMeta = async (path: string): Promise<SigLIP2Che
   return response.data as SigLIP2CheckpointMeta;
 };
 
+export interface VocabularyData {
+  num_tags: number;
+  tag_to_idx: Record<string, number>;
+  idx_to_tag: Record<string, string>;
+  tag_to_category: Record<string, string>;
+  categories: Record<string, string[]>;
+}
+
+export const getTaggerRunVocabulary = async (runId: string): Promise<VocabularyData> => {
+  const response = await api.get(`/tagger-training/runs/${runId}/vocabulary`);
+  return response.data as VocabularyData;
+};
+
+export const getSigLIP2LoadedVocabulary = async (): Promise<VocabularyData> => {
+  const response = await api.get("/tagger/siglip2/vocabulary");
+  return response.data as VocabularyData;
+};
+
 export const addTagToCategory = async (
   tag: string,
   category: string,
@@ -2085,6 +2103,7 @@ export interface TaggerTrainingRunCreateRequest {
   num_workers?: number;
   num_workers_override?: number | null;
   save_every_n_steps?: number;
+  save_every_n_epochs?: number;
   keep_last_n_checkpoints?: number;
   checkpoint_save_mode?: string;
   mixed_precision?: string;

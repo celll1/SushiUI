@@ -10,6 +10,7 @@ import {
   TaggerTrainingRun,
   TaggerTrainingMetric,
 } from "@/utils/api";
+import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -355,28 +356,67 @@ export default function TaggerTrainingMonitor({
         <section>
           <div className="text-sm font-medium text-gray-300 mb-2">Configuration</div>
           <div className="text-xs text-gray-400 bg-gray-800 rounded p-3 space-y-1">
-            <div>Vision encoder: <span className="text-gray-300 font-mono">{run.vision_encoder_path}</span></div>
+            <div className="flex gap-1">
+              <span className="shrink-0">Vision encoder:</span>
+              <span className="text-gray-300 font-mono truncate" title={run.vision_encoder_path}>{run.vision_encoder_path}</span>
+            </div>
             <div>Datasets: <span className="text-gray-300">{run.dataset_configs.length}</span></div>
-            {run.config && typeof run.config === "object" && (
-              <>
-                {run.config.learning_rate !== undefined && (
-                  <div>Learning rate: <span className="text-gray-300">{String(run.config.learning_rate)}</span></div>
-                )}
-                {run.config.epochs !== undefined && (
-                  <div>Epochs: <span className="text-gray-300">{String(run.config.epochs)}</span></div>
-                )}
-                {run.config.batch_size !== undefined && (
-                  <div>Batch size: <span className="text-gray-300">{String(run.config.batch_size)}</span></div>
-                )}
-                {run.config.optimizer !== undefined && (
-                  <div>Optimizer: <span className="text-gray-300">{String(run.config.optimizer)}</span></div>
-                )}
-                {run.config.mixed_precision !== undefined && (
-                  <div>Mixed precision: <span className="text-gray-300">{String(run.config.mixed_precision)}</span></div>
-                )}
-              </>
-            )}
           </div>
+          {run.config && typeof run.config === "object" && (() => {
+            const CONFIG_LABELS: Record<string, string> = {
+              learning_rate: "LR",
+              head_lr_multiplier: "Head LR ×",
+              epochs: "Epochs",
+              batch_size: "Batch size",
+              optimizer: "Optimizer",
+              mixed_precision: "Precision",
+              lora_rank: "LoRA rank",
+              lora_alpha: "LoRA alpha",
+              warmup_steps: "Warmup steps",
+              save_every_n_steps: "Save / N steps",
+              save_every_n_epochs: "Save / N epochs",
+              keep_last_n_checkpoints: "Keep last N",
+              checkpoint_save_mode: "Save mode",
+              loss_gamma_neg: "γ- (loss)",
+              loss_gamma_pos: "γ+ (loss)",
+              gradient_checkpointing: "Grad ckpt",
+              validate_every: "Validate / epochs",
+              vocab_min_count: "Min tag count",
+              val_split: "Val split",
+              excluded_categories: "Excl. cats",
+              ban_tags: "Ban tags",
+              init_head_from: "Init head from",
+              cls_dim: "CLS dim",
+              hidden_proj_dim: "Hidden proj dim",
+              num_workers: "Workers",
+              num_workers_override: "Workers (override)",
+              weight_decay: "Weight decay",
+              loss_clip: "Loss clip",
+            };
+            const entries = Object.entries(CONFIG_LABELS)
+              .map(([key, label]) => ({ key, label, value: (run.config as Record<string, unknown>)[key] }))
+              .filter(({ value }) => value !== undefined && value !== null && value !== "");
+            return (
+              <div className="mt-2 bg-gray-800 rounded p-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                {entries.map(({ key, label, value }) => {
+                  const display = Array.isArray(value)
+                    ? value.join(", ") || "—"
+                    : String(value);
+                  return (
+                    <div key={key} className="flex gap-1 min-w-0">
+                      <span className="text-gray-500 shrink-0">{label}:</span>
+                      <span className="text-gray-300 truncate" title={display}>{display}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </section>
+
+        {/* Vocabulary browser */}
+        <section>
+          <VocabularyBrowser runId={run.run_id} />
         </section>
 
         {/* Action error */}

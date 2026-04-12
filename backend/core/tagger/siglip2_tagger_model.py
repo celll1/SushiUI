@@ -487,6 +487,81 @@ class SigLIP2TaggerLoRAModel(nn.Module):
 
         return path_st
 
+    def save_merged_checkpoint(
+        self,
+        output_dir: str,
+        name: str,
+        metadata: Optional[dict] = None,
+    ) -> str:
+        """Merge LoRA weights into the vision encoder and save as a full model checkpoint.
+
+        The resulting file is compatible with ``SigLIP2TaggerModel.load_checkpoint``
+        (no LoRA keys, full vision encoder weights included).
+        """
+        import copy as _copy
+
+        os.makedirs(output_dir, exist_ok=True)
+        path_st   = os.path.join(output_dir, f"{name}.safetensors")
+        path_meta = os.path.join(output_dir, f"{name}_metadata.json")
+
+        # Build merged state dict by deep-copying the full model state dict.
+        # LoRALinear modules store the original weight as ``base_layer.weight``
+        # plus ``lora_A`` / ``lora_B``; we materialise the merged weight and
+        # produce a state dict that looks like a plain SigLIP2TaggerModel.
+        merged_sd: Dict[str, torch.Tensor] = {}
+        scale = self.lora_alpha / self.lora_rank
+
+        # Collect merged weights for all LoRA-replaced Linear layers first.
+        merged_weights: Dict[str, torch.Tensor] = {}
+        for module_path, lora_module in self._lora_modules.items():
+            # lora_A: [in_features, rank], lora_B: [rank, out_features]
+            # merged delta: (lora_A @ lora_B).T  →  [out_features, in_features]
+            A = lora_module.lora_A.float()  # [in, rank]
+            B = lora_module.lora_B.float()  # [rank, out]
+            delta = (A @ B).T * scale       # [out, in]
+            w     = lora_module.base_layer.weight.float() + delta
+            merged_weights[module_path + ".weight"] = w
+            if lora_module.base_layer.bias is not None:
+                merged_weights[module_path + ".bias"] = lora_module.base_layer.bias.float()
+
+        # Build full state dict with the same key format as SigLIP2TaggerModel.
+        # Keys from vision_encoder are stored under "vision_encoder.*".
+        for k, v in self.state_dict().items():
+            # Translate LoRALinear keys: "vision_encoder.*.lora_A" etc. → skip or replace
+            # LoRALinear keys look like "vision_encoder.<path>.lora_A" / "lora_B" / "base_layer.weight"
+            matched = False
+            for module_path in self._lora_modules:
+                ve_prefix = f"vision_encoder.{module_path}"
+                if k.startswith(ve_prefix + "."):
+                    # This key belongs to a LoRA module – skip (handled below)
+                    matched = True
+                    break
+            if not matched:
+                # Regular non-LoRA key: copy as-is but cast to float16 for compactness
+                merged_sd[k] = v.detach().to(torch.float16).contiguous()
+
+        # Insert merged Linear weights
+        for relative_path, tensor in merged_weights.items():
+            full_key = f"vision_encoder.{relative_path}"
+            merged_sd[full_key] = tensor.to(torch.float16).contiguous()
+
+        # Head
+        merged_sd["head.weight"] = self.head.weight.detach().to(torch.float16).contiguous()
+        merged_sd["head.bias"]   = self.head.bias.detach().to(torch.float16).contiguous()
+
+        save_file(merged_sd, path_st)
+
+        if metadata is None:
+            metadata = {}
+        metadata.update({
+            "checkpoint_type": "merged",
+            "num_lora_modules_merged": len(self._lora_modules),
+        })
+        with open(path_meta, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+
+        return path_st
+
     @classmethod
     def load_checkpoint(
         cls,

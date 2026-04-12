@@ -32,7 +32,8 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   num_workers: 4,
   num_workers_override: null as number | null,
   save_every_n_steps: 500,
-  keep_last_n_checkpoints: 0,
+  keep_last_n_checkpoints: 3,
+  checkpoint_save_mode: "lora",
   mixed_precision: "bf16",
   gradient_checkpointing: true,
   loss_gamma_neg: 4,
@@ -479,6 +480,19 @@ export default function TaggerTrainingConfig({
                 onChange={(e) => setField("keep_last_n_checkpoints", parseInt(e.target.value) || 0)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">
+                Checkpoint Save Mode
+              </label>
+              <select
+                value={config.checkpoint_save_mode}
+                onChange={(e) => setField("checkpoint_save_mode", e.target.value)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              >
+                <option value="lora">LoRA only (compact, requires base encoder)</option>
+                <option value="merged">Merged full model (standalone, larger file)</option>
+              </select>
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Warmup Steps</label>

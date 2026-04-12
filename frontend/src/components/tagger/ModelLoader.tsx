@@ -8,6 +8,7 @@ import {
   getSigLIP2CheckpointMeta,
   SigLIP2StatusResponse,
 } from "@/utils/api";
+import VocabularyBrowser from "./VocabularyBrowser";
 
 interface ModelLoaderProps {
   onStatusChange: (status: SigLIP2StatusResponse) => void;
@@ -116,6 +117,11 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
             ? `Loaded · ${status.model_type} · ${status.num_tags.toLocaleString()} tags`
             : "Not loaded"}
         </div>
+      )}
+
+      {/* Vocabulary browser (only when model is loaded) */}
+      {status?.loaded && (
+        <VocabularyBrowser useLoadedModel />
       )}
 
       {/* Model type */}

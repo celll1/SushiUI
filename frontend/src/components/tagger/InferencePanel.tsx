@@ -29,10 +29,10 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Threshold state
-  const [globalThreshold,  setGlobalThreshold]  = useState(0.35);
+  const [globalThreshold,  setGlobalThreshold]  = useState(0.55);
   const [thresholdMode,    setThresholdMode]     = useState<"global" | "per-category">("global");
   const [categoryThresholds, setCategoryThresholds] = useState<CategoryThresholds>(() =>
-    Object.fromEntries(THRESHOLD_CATEGORIES.map(c => [c, 0.35]))
+    Object.fromEntries(THRESHOLD_CATEGORIES.map(c => [c, 0.55]))
   );
 
   // Inference state

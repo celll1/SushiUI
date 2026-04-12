@@ -271,6 +271,33 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
         print(f"[TaggerTrainer] Pruned old checkpoint: {name}")
 
 
+def _save_model_checkpoint(
+    model,
+    output_dir: str,
+    name: str,
+    metadata: Optional[Dict],
+    save_mode: str,
+) -> str:
+    """Dispatch to the appropriate save method based on *save_mode*.
+
+    ``save_mode="lora"``   – compact LoRA+head only (SigLIP2TaggerLoRAModel)
+                             or full weights (SigLIP2TaggerModel).
+    ``save_mode="merged"`` – merge LoRA into vision encoder and save full model
+                             (SigLIP2TaggerLoRAModel only; falls back to normal
+                              save for non-LoRA models).
+    The metadata is augmented with a ``checkpoint_save_mode`` key.
+    """
+    from core.tagger.siglip2_tagger_model import SigLIP2TaggerLoRAModel
+
+    if metadata is None:
+        metadata = {}
+    metadata["checkpoint_save_mode"] = save_mode
+
+    if save_mode == "merged" and isinstance(model, SigLIP2TaggerLoRAModel):
+        return model.save_merged_checkpoint(output_dir, name, metadata)
+    return model.save_checkpoint(output_dir, name, metadata)
+
+
 def _find_resume_checkpoint(output_dir: str) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Find the checkpoint with the highest global_step to resume from.
 
@@ -441,7 +468,9 @@ class TaggerTrainer:
         # Step-based checkpoint interval (0 = disabled)
         save_every_n_steps    = int(cfg.get("save_every_n_steps", 500))
         # How many step checkpoints to keep (0 = keep all)
-        keep_last_n_checkpoints = int(cfg.get("keep_last_n_checkpoints", 0))
+        keep_last_n_checkpoints = int(cfg.get("keep_last_n_checkpoints", 3))
+        # "lora" = save LoRA+head only (compact); "merged" = merge LoRA into encoder and save full model
+        checkpoint_save_mode = cfg.get("checkpoint_save_mode", "lora")
 
         # Training state
         best_f1         = 0.0
@@ -593,7 +622,7 @@ class TaggerTrainer:
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
                     ckpt_name = f"step_{global_step:06d}"
                     metadata  = self._make_metadata(epoch, global_step, best_f1, best_threshold)
-                    ckpt_path = model.save_checkpoint(self.output_dir, ckpt_name, metadata)
+                    ckpt_path = _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
                     _save_training_state(
                         self.output_dir, ckpt_name,
                         epoch, global_step, batch_idx,
@@ -623,7 +652,7 @@ class TaggerTrainer:
                     best_f1        = epoch_f1
                     best_threshold = epoch_thr
                     metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
-                    model.save_checkpoint(self.output_dir, "best_f1", metadata)
+                    _save_model_checkpoint(model, self.output_dir, "best_f1", metadata, checkpoint_save_mode)
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
@@ -632,7 +661,7 @@ class TaggerTrainer:
             # means we start the next epoch fresh and capture a new epoch_start_rng
             # at that time), so we omit it to keep the file compact.
             metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
-            model.save_checkpoint(self.output_dir, "latest", metadata)
+            _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
             _save_training_state(
                 self.output_dir, "latest",
                 epoch + 1, global_step, -1,

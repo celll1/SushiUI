@@ -6588,7 +6588,8 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     num_workers: int = 4
     num_workers_override: Optional[int] = None
     save_every_n_steps: int = 500
-    keep_last_n_checkpoints: int = 0
+    keep_last_n_checkpoints: int = 3
+    checkpoint_save_mode: str = "lora"
     mixed_precision: str = "bf16"
     gradient_checkpointing: bool = True
     weight_decay: float = 1e-4

@@ -1,9 +1,13 @@
 "use client";
 
-import React from "react";
+import React, { useState } from "react";
 import { SigLIP2TagResult } from "@/utils/api";
 
 // ─── Category colour mapping ─────────────────────────────────────────────────
+
+const CATEGORY_ORDER = [
+  "Quality", "Rating", "Character", "Copyright", "General", "Artist", "Meta", "Unknown",
+];
 
 const CATEGORY_BAR_COLOR: Record<string, string> = {
   Quality:   "bg-yellow-500",
@@ -43,30 +47,33 @@ interface BarRowProps {
   category: string;
   selected: boolean;
   onToggle: (tag: string) => void;
+  showCategory?: boolean;
 }
 
-function BarRow({ tag, prob, category, selected, onToggle }: BarRowProps) {
+function BarRow({ tag, prob, category, selected, onToggle, showCategory = true }: BarRowProps) {
   const pct = `${(prob * 100).toFixed(1)}%`;
 
   return (
     <button
       onClick={() => onToggle(tag)}
-      className={`w-full flex items-center gap-2 px-2 py-0.5 rounded text-left hover:bg-gray-700 transition-colors ${
+      className={`w-full flex items-center gap-2 px-2 py-1 rounded text-left hover:bg-gray-700 transition-colors ${
         selected ? "bg-gray-700 ring-1 ring-blue-500" : ""
       }`}
     >
       {/* Category badge */}
-      <span className={`text-[9px] w-14 shrink-0 ${textColor(category)}`}>
-        {category}
-      </span>
+      {showCategory && (
+        <span className={`text-xs w-16 shrink-0 ${textColor(category)}`}>
+          {category}
+        </span>
+      )}
 
       {/* Tag name */}
-      <span className="text-xs text-gray-200 w-44 shrink-0 truncate" title={tag}>
+      <span className="text-sm text-gray-200 flex-1 truncate" title={tag}>
         {tag}
       </span>
 
       {/* Bar */}
-      <div className="flex-1 h-3 bg-gray-800 rounded overflow-hidden">
+      <div className="w-32 h-3.5 bg-gray-800 rounded overflow-hidden shrink-0">
         <div
           className={`h-full rounded transition-all ${barColor(category)}`}
           style={{ width: pct }}
@@ -74,13 +81,71 @@ function BarRow({ tag, prob, category, selected, onToggle }: BarRowProps) {
       </div>
 
       {/* Probability */}
-      <span className="text-[10px] text-gray-400 w-10 text-right shrink-0">{pct}</span>
+      <span className="text-xs text-gray-400 w-12 text-right shrink-0">{pct}</span>
 
       {/* Checkbox indicator */}
-      <span className={`text-[10px] w-4 shrink-0 ${selected ? "text-blue-400" : "text-gray-600"}`}>
+      <span className={`text-sm w-4 shrink-0 ${selected ? "text-blue-400" : "text-gray-600"}`}>
         {selected ? "✓" : "○"}
       </span>
     </button>
+  );
+}
+
+// ─── Category group section ───────────────────────────────────────────────────
+
+interface CategoryGroupProps {
+  category: string;
+  items: SigLIP2TagResult[];
+  selectedTags: Set<string>;
+  onToggle: (tag: string) => void;
+  onSelectGroup: (tags: string[]) => void;
+  onDeselectGroup: (tags: string[]) => void;
+}
+
+function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup, onDeselectGroup }: CategoryGroupProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const tagNames = items.map(t => t.tag);
+  const selectedCount = tagNames.filter(t => selectedTags.has(t)).length;
+
+  return (
+    <div className="border border-gray-700 rounded mb-2">
+      <div className="flex items-center gap-2 px-2 py-1.5 bg-gray-800 rounded-t">
+        <button onClick={() => setCollapsed(c => !c)} className="text-gray-400 hover:text-white text-xs">
+          {collapsed ? "▶" : "▼"}
+        </button>
+        <span className={`text-sm font-medium ${textColor(category)}`}>{category}</span>
+        <span className="text-xs text-gray-500 ml-1">({selectedCount}/{items.length})</span>
+        <div className="ml-auto flex gap-2">
+          <button
+            onClick={() => onSelectGroup(tagNames)}
+            className="text-xs text-blue-400 hover:text-blue-300 underline"
+          >
+            All
+          </button>
+          <button
+            onClick={() => onDeselectGroup(tagNames)}
+            className="text-xs text-gray-400 hover:text-gray-300 underline"
+          >
+            None
+          </button>
+        </div>
+      </div>
+      {!collapsed && (
+        <div className="p-1 space-y-0.5">
+          {items.map(item => (
+            <BarRow
+              key={item.tag}
+              tag={item.tag}
+              prob={item.prob}
+              category={item.category}
+              selected={selectedTags.has(item.tag)}
+              onToggle={onToggle}
+              showCategory={false}
+            />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -107,48 +172,73 @@ export default function TagResultsChart({
   onSelectAll,
   onDeselectAll,
 }: TagResultsChartProps) {
-  if (tags.length === 0 && !qualityTop && !ratingTop) {
+  const [viewMode, setViewMode] = useState<"flat" | "grouped">("flat");
+
+  const handleSelectGroup = (tagNames: string[]) => {
+    tagNames.forEach(t => { if (!selectedTags.has(t)) onTagToggle(t); });
+  };
+  const handleDeselectGroup = (tagNames: string[]) => {
+    tagNames.forEach(t => { if (selectedTags.has(t)) onTagToggle(t); });
+  };
+
+  const pinnedItems = [qualityTop, ratingTop].filter(Boolean) as SigLIP2TagResult[];
+  const totalCount = tags.length + pinnedItems.length;
+
+  if (totalCount === 0) {
     return (
-      <div className="flex items-center justify-center h-40 text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-40 text-gray-400 text-sm">
         No tags predicted above threshold {threshold.toFixed(2)}
       </div>
     );
   }
 
-  const pinnedItems = [qualityTop, ratingTop].filter(Boolean) as SigLIP2TagResult[];
+  // Group tags by category
+  const grouped: Record<string, SigLIP2TagResult[]> = {};
+  for (const t of tags) {
+    (grouped[t.category] ??= []).push(t);
+  }
 
   return (
     <div className="space-y-1">
       {/* Legend */}
-      <div className="flex flex-wrap gap-x-3 gap-y-1 px-2 pb-1">
-        {Object.entries(CATEGORY_TEXT_COLOR).map(([cat, cls]) => (
-          <span key={cat} className={`text-[9px] ${cls}`}>● {cat}</span>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 px-2 pb-1">
+        {CATEGORY_ORDER.filter(c => CATEGORY_TEXT_COLOR[c]).map((cat) => (
+          <span key={cat} className={`text-xs ${textColor(cat)}`}>● {cat}</span>
         ))}
       </div>
 
-      {/* Select-all / Deselect-all */}
-      <div className="flex gap-2 px-2 pb-1">
-        <button
-          onClick={onSelectAll}
-          className="text-[10px] text-blue-400 hover:text-blue-300 underline"
-        >
+      {/* Toolbar */}
+      <div className="flex items-center gap-3 px-2 pb-1">
+        <button onClick={onSelectAll} className="text-xs text-blue-400 hover:text-blue-300 underline">
           Select all
         </button>
-        <button
-          onClick={onDeselectAll}
-          className="text-[10px] text-gray-400 hover:text-gray-300 underline"
-        >
+        <button onClick={onDeselectAll} className="text-xs text-gray-400 hover:text-gray-300 underline">
           Deselect all
         </button>
-        <span className="text-[10px] text-gray-500 ml-auto">
-          {selectedTags.size} selected / {tags.length + pinnedItems.length} total
+        <span className="text-xs text-gray-500 ml-auto mr-2">
+          {selectedTags.size} / {totalCount}
         </span>
+        {/* View mode toggle */}
+        <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
+          <button
+            onClick={() => setViewMode("flat")}
+            className={`px-2 py-0.5 ${viewMode === "flat" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+          >
+            Flat
+          </button>
+          <button
+            onClick={() => setViewMode("grouped")}
+            className={`px-2 py-0.5 ${viewMode === "grouped" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+          >
+            Grouped
+          </button>
+        </div>
       </div>
 
-      {/* Pinned: Quality & Rating (always shown, above threshold line) */}
-      {pinnedItems.length > 0 && (
+      {/* Pinned: Quality & Rating (always shown) */}
+      {pinnedItems.length > 0 && viewMode === "flat" && (
         <div className="border border-gray-700 rounded p-1 mb-1">
-          <p className="text-[9px] text-gray-500 px-2 pb-0.5">Quality / Rating (always shown)</p>
+          <p className="text-xs text-gray-500 px-2 pb-0.5">Quality / Rating (always shown)</p>
           {pinnedItems.map((item) => (
             <BarRow
               key={item.tag}
@@ -162,28 +252,87 @@ export default function TagResultsChart({
         </div>
       )}
 
-      {/* Threshold separator */}
-      {tags.length > 0 && (
+      {/* Threshold separator (flat mode only) */}
+      {viewMode === "flat" && tags.length > 0 && (
         <div className="flex items-center gap-2 px-2 py-0.5">
           <div className="h-px flex-1 bg-yellow-600 opacity-60" />
-          <span className="text-[9px] text-yellow-600">threshold {threshold.toFixed(2)}</span>
+          <span className="text-xs text-yellow-600">threshold {threshold.toFixed(2)}</span>
           <div className="h-px flex-1 bg-yellow-600 opacity-60" />
         </div>
       )}
 
-      {/* Threshold-filtered tags */}
-      <div className="space-y-0.5 max-h-[60vh] overflow-y-auto">
-        {tags.map((item) => (
-          <BarRow
-            key={item.tag}
-            tag={item.tag}
-            prob={item.prob}
-            category={item.category}
-            selected={selectedTags.has(item.tag)}
-            onToggle={onTagToggle}
-          />
-        ))}
-      </div>
+      {/* Flat view */}
+      {viewMode === "flat" && (
+        <div className="space-y-0.5">
+          {tags.map((item) => (
+            <BarRow
+              key={item.tag}
+              tag={item.tag}
+              prob={item.prob}
+              category={item.category}
+              selected={selectedTags.has(item.tag)}
+              onToggle={onTagToggle}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Grouped view */}
+      {viewMode === "grouped" && (
+        <div>
+          {/* Quality / Rating in their own groups */}
+          {pinnedItems.length > 0 && (
+            <>
+              {qualityTop && (
+                <CategoryGroup
+                  category="Quality"
+                  items={[qualityTop]}
+                  selectedTags={selectedTags}
+                  onToggle={onTagToggle}
+                  onSelectGroup={handleSelectGroup}
+                  onDeselectGroup={handleDeselectGroup}
+                />
+              )}
+              {ratingTop && (
+                <CategoryGroup
+                  category="Rating"
+                  items={[ratingTop]}
+                  selectedTags={selectedTags}
+                  onToggle={onTagToggle}
+                  onSelectGroup={handleSelectGroup}
+                  onDeselectGroup={handleDeselectGroup}
+                />
+              )}
+            </>
+          )}
+          {/* Other categories in order */}
+          {CATEGORY_ORDER.filter(c => c !== "Quality" && c !== "Rating" && grouped[c]?.length > 0).map(cat => (
+            <CategoryGroup
+              key={cat}
+              category={cat}
+              items={grouped[cat]}
+              selectedTags={selectedTags}
+              onToggle={onTagToggle}
+              onSelectGroup={handleSelectGroup}
+              onDeselectGroup={handleDeselectGroup}
+            />
+          ))}
+          {/* Any unlisted categories */}
+          {Object.keys(grouped)
+            .filter(c => !CATEGORY_ORDER.includes(c))
+            .map(cat => (
+              <CategoryGroup
+                key={cat}
+                category={cat}
+                items={grouped[cat]}
+                selectedTags={selectedTags}
+                onToggle={onTagToggle}
+                onSelectGroup={handleSelectGroup}
+                onDeselectGroup={handleDeselectGroup}
+              />
+            ))}
+        </div>
+      )}
     </div>
   );
 }

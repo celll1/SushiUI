@@ -3283,7 +3283,6 @@ async def scan_dataset(
     """Scan dataset directory and register images/captions"""
     import os
     from PIL import Image
-    import hashlib
     import warnings
 
     # Suppress PIL warnings for corrupt EXIF data
@@ -3390,9 +3389,21 @@ async def scan_dataset(
 
     print(f"[Dataset Scan] Found {total_images} images, {len(suffix_captions_by_stem)} groups with suffix captions")
 
+    # --- Path-based dedup: batch-load existing items (single query) ---
+    existing_items_rows = db.query(DatasetItem.id, DatasetItem.image_path).filter(
+        DatasetItem.dataset_id == dataset_id
+    ).all()
+    existing_paths: dict[str, int] = {row.image_path: row.id for row in existing_items_rows}
+    # Track which existing paths are still on disk (for purge at the end)
+    seen_existing_paths: set[str] = set()
+    # mtime threshold: captions updated after this are re-processed
+    last_scanned_ts = dataset.last_scanned_at.timestamp() if dataset.last_scanned_at else 0.0
+    print(f"[Dataset Scan] Loaded {len(existing_paths)} existing items from DB (path-based dedup)")
+
     # Scan directory
     items_found = 0
     captions_found = 0
+    captions_updated = 0
     files_processed = 0
 
     # Progress tracking: Phase 1 (File scan): 0-90%, Phase 2 (Tag stats): 90-100%
@@ -3554,60 +3565,85 @@ async def scan_dataset(
 
                 file_size = os.path.getsize(image_path)
 
-                # Calculate image hash
-                with open(image_path, 'rb') as f:
-                    image_hash = hashlib.sha256(f.read()).hexdigest()
-
-                # Check if item already exists
-                existing_item = db.query(DatasetItem).filter(
-                    DatasetItem.dataset_id == dataset_id,
-                    DatasetItem.image_hash == image_hash
-                ).first()
-
-                if existing_item:
+                # --- Path-based dedup (replaces SHA256 hash + per-item DB query) ---
+                existing_item_id = existing_paths.get(image_path)
+                if existing_item_id is not None:
+                    # Image already registered — mark as seen (for purge logic)
+                    seen_existing_paths.add(image_path)
                     files_processed += 1
-                    # Send progress update for skipped items too
+
+                    # Check if any caption files have been updated since last scan
+                    any_caption_updated = False
+                    for cp in caption_files:
+                        try:
+                            if os.path.getmtime(cp) > last_scanned_ts:
+                                any_caption_updated = True
+                                break
+                        except OSError:
+                            pass
+                    # Also check suffix captions
+                    if not any_caption_updated and base_name in suffix_captions_by_stem:
+                        for _, sp in suffix_captions_by_stem[base_name]:
+                            try:
+                                if os.path.getmtime(sp) > last_scanned_ts:
+                                    any_caption_updated = True
+                                    break
+                            except OSError:
+                                pass
+
+                    if not any_caption_updated:
+                        # No changes — skip entirely
+                        if files_processed % 10 == 0 or total_images < 100:
+                            manager.send_progress_sync(
+                                files_processed,
+                                total_steps,
+                                f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
+                            )
+                        continue
+
+                    # Caption files updated — re-process captions for this existing item
+                    item_id_for_captions = existing_item_id
+                    # (fall through to caption processing below)
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(
                             files_processed,
                             total_steps,
-                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
                         )
-                    continue  # Skip duplicate
+                else:
+                    # New image — register it
+                    # Build related_images for reference mode
+                    related_images_data = {}
+                    if use_reference_mode and reference_images:
+                        related_images_data["reference"] = reference_images
+                        print(f"[Dataset Scan] Group '{base_name}': {len(reference_images)} reference image(s)")
 
-                # Build related_images for reference mode
-                related_images_data = {}
-                if use_reference_mode and reference_images:
-                    # Store all reference image paths in related_images["reference"]
-                    related_images_data["reference"] = reference_images
-                    print(f"[Dataset Scan] Group '{base_name}': {len(reference_images)} reference image(s)")
-
-                # Create dataset item
-                item = DatasetItem(
-                    dataset_id=dataset_id,
-                    item_type="reference" if use_reference_mode else "single",
-                    base_name=base_name,
-                    image_path=image_path,
-                    width=width,
-                    height=height,
-                    file_size=file_size,
-                    image_hash=image_hash,
-                    related_images=related_images_data if related_images_data else None
-                )
-                db.add(item)
-                db.flush()  # Get item.id
-                items_found += 1
-                files_processed += 1
-
-                # Send progress update every 10 images or immediately if total < 100
-                if files_processed % 10 == 0 or total_images < 100:
-                    manager.send_progress_sync(
-                        files_processed,
-                        total_steps,
-                        f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                    item = DatasetItem(
+                        dataset_id=dataset_id,
+                        item_type="reference" if use_reference_mode else "single",
+                        base_name=base_name,
+                        image_path=image_path,
+                        width=width,
+                        height=height,
+                        file_size=file_size,
+                        image_hash=None,  # SHA256 no longer computed at scan time
+                        related_images=related_images_data if related_images_data else None
                     )
+                    db.add(item)
+                    db.flush()  # Get item.id
+                    item_id_for_captions = item.id
+                    items_found += 1
+                    files_processed += 1
 
-                # Process captions (TXT/JSON files)
+                    if files_processed % 10 == 0 or total_images < 100:
+                        manager.send_progress_sync(
+                            files_processed,
+                            total_steps,
+                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
+                        )
+
+                # Process captions (TXT/JSON files) — for both new and updated items
+                # Use item_id_for_captions (set above for both new and existing items)
                 for caption_path in caption_files:
                     try:
                         _, ext = os.path.splitext(caption_path)
@@ -3626,7 +3662,7 @@ async def scan_dataset(
 
                                     # Check if caption of this type already exists
                                     existing_cap = db.query(DatasetCaption).filter(
-                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.item_id == item_id_for_captions,
                                         DatasetCaption.caption_type == detected_caption_type
                                     ).first()
 
@@ -3641,10 +3677,11 @@ async def scan_dataset(
                                         if is_tags_format:
                                             existing_cap.tag_data = _build_tag_data_json(content)
                                         existing_cap.updated_at = datetime.utcnow()
+                                        captions_updated += 1
                                     else:
                                         # Create new
                                         caption = DatasetCaption(
-                                            item_id=item.id,
+                                            item_id=item_id_for_captions,
                                             caption_type=detected_caption_type,
                                             content=content,
                                             field_category=field_category,
@@ -3673,7 +3710,7 @@ async def scan_dataset(
                                 # Enforce single tags field per item
                                 if caption_type == "tags":
                                     existing_tags = db.query(DatasetCaption).filter(
-                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.item_id == item_id_for_captions,
                                         DatasetCaption.caption_type == "tags"
                                     ).first()
 
@@ -3693,7 +3730,7 @@ async def scan_dataset(
                                 # Create new caption (for non-tags fields or first tags field)
                                 _is_tags = result["is_tags_format"]
                                 caption = DatasetCaption(
-                                    item_id=item.id,
+                                    item_id=item_id_for_captions,
                                     caption_type=caption_type,
                                     content=result["content"],
                                     field_category=result["field_category"],
@@ -3722,7 +3759,7 @@ async def scan_dataset(
                                         suffix, content, taglist
                                     )
                                     existing_cap = db.query(DatasetCaption).filter(
-                                        DatasetCaption.item_id == item.id,
+                                        DatasetCaption.item_id == item_id_for_captions,
                                         DatasetCaption.caption_type == suffix
                                     ).first()
                                     if existing_cap:
@@ -3737,7 +3774,7 @@ async def scan_dataset(
                                         existing_cap.updated_at = datetime.utcnow()
                                     else:
                                         caption = DatasetCaption(
-                                            item_id=item.id,
+                                            item_id=item_id_for_captions,
                                             caption_type=suffix,
                                             content=content,
                                             field_category=field_category,
@@ -3761,11 +3798,26 @@ async def scan_dataset(
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, lambda: scan_directory(dataset.path))
 
+    # --- Purge: remove DB records whose files no longer exist on disk ---
+    stale_paths = set(existing_paths.keys()) - seen_existing_paths
+    items_purged = 0
+    if stale_paths:
+        stale_item_ids = [existing_paths[p] for p in stale_paths]
+        # Delete captions first (foreign key), then items
+        db.query(DatasetCaption).filter(
+            DatasetCaption.item_id.in_(stale_item_ids)
+        ).delete(synchronize_session=False)
+        db.query(DatasetItem).filter(
+            DatasetItem.id.in_(stale_item_ids)
+        ).delete(synchronize_session=False)
+        items_purged = len(stale_item_ids)
+        print(f"[Dataset Scan] Purged {items_purged} items whose files no longer exist on disk")
+
     # File scan complete - progress is now at ~90%
     manager.send_progress_sync(
         total_images,
         total_steps,
-        f"File scan complete: {files_processed} images processed | Starting tag statistics..."
+        f"File scan complete: {files_processed} processed, {items_purged} purged | Starting tag statistics..."
     )
 
     # Compute tag statistics with progress updates (remaining 10%)
@@ -3776,7 +3828,7 @@ async def scan_dataset(
     manager.send_progress_sync(
         total_steps,
         total_steps,
-        f"Scan complete: {items_found} items, {captions_found} captions, {len(tag_statistics)} unique tags"
+        f"Scan complete: {items_found} new, {captions_updated} updated, {items_purged} purged, {len(tag_statistics)} unique tags"
     )
 
     # Normalize is_tags_format by majority vote per caption_type
@@ -3811,9 +3863,13 @@ async def scan_dataset(
                     if ct in ("tags", "natural_language"):
                         c.caption_type = majority_type_name
 
-    # Update dataset statistics
-    dataset.total_items = items_found
-    dataset.total_captions = captions_found
+    # Update dataset statistics (count all items in DB, not just newly added)
+    dataset.total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
+    dataset.total_captions = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id.in_(
+            db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+        )
+    ).count()
     dataset.tag_statistics = tag_statistics
     dataset.last_scanned_at = datetime.utcnow()
 
@@ -3823,6 +3879,8 @@ async def scan_dataset(
     response = {
         "items_found": items_found,
         "captions_found": captions_found,
+        "captions_updated": captions_updated,
+        "items_purged": items_purged,
         "dataset": dataset.to_dict(),
     }
 

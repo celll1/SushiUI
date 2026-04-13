@@ -42,19 +42,23 @@ class TaggerDataset(Dataset):
         datasets_db,
         processor: AutoProcessor,
         caption_types: Optional[List[str]] = None,
+        alias_resolver=None,
     ) -> None:
         """
         Parameters
         ----------
-        dataset_ids   : list of Dataset.id to include
-        vocabulary    : TagVocabulary built from the same datasets
-        datasets_db   : SQLAlchemy session for datasets.db
-        processor     : SigLIP2 AutoProcessor (handles NaFlex preprocessing)
-        caption_types : restrict to these caption_type values (None = all tags-format)
+        dataset_ids    : list of Dataset.id to include
+        vocabulary     : TagVocabulary built from the same datasets
+        datasets_db    : SQLAlchemy session for datasets.db
+        processor      : SigLIP2 AutoProcessor (handles NaFlex preprocessing)
+        caption_types  : restrict to these caption_type values (None = all tags-format)
+        alias_resolver : optional TagAliasResolver; when provided, deprecated
+                         tags are resolved to canonical form during label construction
         """
         self.vocabulary = vocabulary
         self.processor = processor
         self.num_tags = vocabulary.num_tags
+        self._alias_resolver = alias_resolver
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
         self._build_samples(dataset_ids, datasets_db, caption_types)
@@ -92,18 +96,20 @@ class TaggerDataset(Dataset):
                 if tags:
                     self._samples.append((item.image_path, tags))
 
-    @staticmethod
-    def _extract_tags(caption) -> List[str]:
+    def _extract_tags(self, caption) -> List[str]:
+        raw_tags: List[str] = []
         if caption.tag_data:
             try:
                 raw = json.loads(caption.tag_data) if isinstance(caption.tag_data, str) else caption.tag_data
                 if isinstance(raw, list):
-                    return [normalize_tag(r["tag"]) for r in raw if isinstance(r, dict) and "tag" in r]
+                    raw_tags = [r["tag"] for r in raw if isinstance(r, dict) and "tag" in r]
             except (json.JSONDecodeError, TypeError):
                 pass
-        if caption.content:
-            return [normalize_tag(t) for t in caption.content.split(",") if t.strip()]
-        return []
+        if not raw_tags and caption.content:
+            raw_tags = [t.strip() for t in caption.content.split(",") if t.strip()]
+        if self._alias_resolver:
+            return [self._alias_resolver.resolve(t) for t in raw_tags]
+        return [normalize_tag(t) for t in raw_tags]
 
     # ------------------------------------------------------------------
     # Dataset interface

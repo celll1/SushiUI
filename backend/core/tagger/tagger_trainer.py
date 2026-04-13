@@ -837,6 +837,7 @@ class TaggerTrainer:
             "lora_rank": self.config.get("lora_rank"),
             "lora_alpha": self.config.get("lora_alpha"),
             "training_method": self.config.get("training_method"),
+            "use_tag_aliases": bool(self.config.get("use_tag_aliases", False)),
             "category_counts": self.vocabulary.category_counts(),
         }
 
@@ -882,12 +883,30 @@ def run_tagger_training(
         ban_tags  = config.get("ban_tags") or None
         if isinstance(ban_tags, str):
             ban_tags = [t.strip() for t in ban_tags.splitlines() if t.strip()] or None
+
+        # Build tag alias resolver if requested
+        use_tag_aliases = bool(config.get("use_tag_aliases", False))
+        alias_resolver = None
+        if use_tag_aliases:
+            from .tag_alias_resolver import TagAliasResolver
+            try:
+                from config import settings as _settings
+                alias_path = os.path.join(_settings.root_dir, "tagother", "tag_aliases.json")
+            except Exception:
+                alias_path = os.path.join(output_dir, "..", "..", "tagother", "tag_aliases.json")
+            if os.path.isfile(alias_path):
+                alias_resolver = TagAliasResolver.load(alias_path)
+                print(f"[TaggerTraining] Loaded {len(alias_resolver)} tag aliases from {alias_path}")
+            else:
+                print(f"[TaggerTraining] WARNING: use_tag_aliases=True but tag_aliases.json not found at {alias_path}")
+
         vocabulary = TagVocabulary.build_from_dataset_ids(
             dataset_ids=dataset_ids,
             datasets_db=datasets_db,
             min_count=config.get("vocab_min_count", 1),
             excluded_categories=excl_cats,
             ban_tags=ban_tags,
+            alias_resolver=alias_resolver,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")
         progress_callback and progress_callback(run_id, "vocab", {"num_tags": vocabulary.num_tags})
@@ -906,6 +925,7 @@ def run_tagger_training(
             vocabulary=vocabulary,
             datasets_db=datasets_db,
             processor=processor,
+            alias_resolver=alias_resolver,
         )
 
         val_size   = max(1, int(len(full_ds) * val_split))

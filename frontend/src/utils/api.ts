@@ -2114,6 +2114,7 @@ export interface TaggerTrainingRunCreateRequest {
   save_best_only?: boolean;
   excluded_categories?: string[];
   ban_tags?: string;
+  use_tag_aliases?: boolean;
   vocab_min_count?: number;
   cls_dim?: number;
   hidden_proj_dim?: number;

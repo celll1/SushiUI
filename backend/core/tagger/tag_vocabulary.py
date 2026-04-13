@@ -81,6 +81,7 @@ class TagVocabulary:
         min_count: int = 1,
         excluded_categories: Optional[List[str]] = None,
         ban_tags: Optional[List[str]] = None,
+        alias_resolver=None,
     ) -> "TagVocabulary":
         """Build vocabulary by scanning DatasetCaption rows for given dataset IDs.
 
@@ -92,6 +93,8 @@ class TagVocabulary:
         excluded_categories : categories to exclude entirely (e.g. ["Artist"])
         ban_tags            : tag patterns to exclude; supports fnmatch wildcards
                               (e.g. ["some tag", "prefix_*", "bad*"])
+        alias_resolver      : optional TagAliasResolver; when provided, deprecated
+                              tags are resolved to canonical form before counting
         """
         from database.models import DatasetItem, DatasetCaption
 
@@ -111,7 +114,7 @@ class TagVocabulary:
         for caption in captions:
             tags_with_cats = _parse_caption_tags(caption)
             for tag, category in tags_with_cats:
-                norm = normalize_tag(tag)
+                norm = alias_resolver.resolve(tag) if alias_resolver else normalize_tag(tag)
                 tag_counts[norm] += 1
                 if norm not in tag_categories:
                     tag_categories[norm] = category

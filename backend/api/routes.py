@@ -6725,6 +6725,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     output_dir: Optional[str] = None
     excluded_categories: Optional[List[str]] = None
     ban_tags: Optional[str] = None
+    use_tag_aliases: bool = False
     cls_dim: Optional[int] = None
     hidden_proj_dim: Optional[int] = None
     init_head_from: Optional[str] = None

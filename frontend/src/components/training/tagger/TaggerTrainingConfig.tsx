@@ -43,6 +43,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   save_best_only: true,
   excluded_categories: [] as string[],
   ban_tags: "",
+  use_tag_aliases: false,
   cls_dim: undefined as number | undefined,
   hidden_proj_dim: undefined as number | undefined,
 };
@@ -290,6 +291,20 @@ export default function TaggerTrainingConfig({
               rows={4}
               className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-600 font-mono focus:outline-none focus:border-blue-500 resize-y"
             />
+          </div>
+
+          {/* Tag alias resolution */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={config.use_tag_aliases ?? false}
+                onChange={(e) => setField("use_tag_aliases", e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+              />
+              <span className="text-sm text-gray-300">Resolve tag aliases</span>
+              <span className="text-xs text-gray-500">(maps deprecated tags to canonical form via tagother/tag_aliases.json)</span>
+            </label>
           </div>
         </section>
 

@@ -308,7 +308,13 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
     ).all()
 
     dataset_items = []
+    skipped_missing = 0
     for item in items:
+        # Skip items whose image file no longer exists on disk
+        if not os.path.exists(item.image_path):
+            skipped_missing += 1
+            continue
+
         # Find primary caption
         primary_caption = None
         if caption_types:
@@ -342,6 +348,10 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
             "related_images": item.related_images,
         }
         dataset_items.append(item_dict)
+
+    if skipped_missing > 0:
+        print(f"[get_dataset_items_fast] WARNING: Skipped {skipped_missing} items whose image files no longer exist on disk. "
+              f"Re-scan the dataset to clean up stale records.")
 
     return dataset_items
 

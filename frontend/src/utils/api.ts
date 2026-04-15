@@ -2078,6 +2078,7 @@ export interface TaggerTrainingRun {
   head_checkpoint_path: string | null;
   lora_checkpoint_path: string | null;
   error_message: string | null;
+  status_message: string | null;
   created_at: string;
   updated_at: string;
 }

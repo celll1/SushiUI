@@ -2143,6 +2143,14 @@ export const createTaggerTrainingRun = async (
   return response.data;
 };
 
+export const updateTaggerTrainingRun = async (
+  runId: string,
+  data: TaggerTrainingRunCreateRequest
+): Promise<TaggerTrainingRun> => {
+  const response = await api.patch(`/tagger-training/runs/${runId}`, data);
+  return response.data;
+};
+
 export const listTaggerTrainingRuns = async (): Promise<TaggerTrainingRun[]> => {
   const response = await api.get("/tagger-training/runs");
   return response.data;

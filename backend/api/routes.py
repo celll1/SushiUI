@@ -6928,6 +6928,43 @@ def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_trai
     return run.to_dict()
 
 
+@router.patch("/tagger-training/runs/{run_id}")
+def update_tagger_training_run(
+    run_id: str,
+    request: TaggerTrainingRunCreateRequest,
+    training_db: Session = Depends(get_training_db),
+):
+    """Update configuration of a pending/stopped/failed tagger training run."""
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Tagger training run not found")
+    if run.status not in ("pending", "stopped", "failed"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot edit a run with status '{run.status}'. Only pending/stopped/failed runs can be edited."
+        )
+
+    config = request.dict()
+    config["vision_encoder_path"] = request.vision_encoder_path
+
+    run.run_name            = request.run_name or run.run_name
+    run.training_method     = request.training_method
+    run.vision_encoder_path = request.vision_encoder_path
+    run.dataset_configs     = request.dataset_configs
+    run.config              = config
+    run.total_epochs        = request.epochs
+    # Reset progress/metrics so re-run starts clean
+    run.status              = "pending"
+    run.progress            = 0.0
+    run.current_epoch       = 0
+    run.current_step        = 0
+    run.status_message      = None
+
+    training_db.commit()
+    training_db.refresh(run)
+    return run.to_dict()
+
+
 @router.get("/tagger-training/runs/{run_id}/vocabulary")
 def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(get_training_db)):
     """Return the tag vocabulary for a tagger training run.

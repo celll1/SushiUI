@@ -17,6 +17,7 @@ interface TaggerTrainingMonitorProps {
   onClose: () => void;
   onStatusChange: (run: TaggerTrainingRun) => void;
   onDelete: () => void;
+  onEditConfig?: () => void;
 }
 
 function MiniChart({
@@ -82,6 +83,7 @@ export default function TaggerTrainingMonitor({
   onClose,
   onStatusChange,
   onDelete,
+  onEditConfig,
 }: TaggerTrainingMonitorProps) {
   const [run, setRun] = useState<TaggerTrainingRun>(initialRun);
   const [metrics, setMetrics] = useState<TaggerTrainingMetric[]>([]);
@@ -463,6 +465,15 @@ export default function TaggerTrainingMonitor({
           Delete
         </button>
         <div className="flex gap-2">
+          {onEditConfig && ["pending", "stopped", "failed"].includes(run.status) && (
+            <button
+              onClick={onEditConfig}
+              disabled={actionLoading}
+              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-600 disabled:text-gray-400 rounded text-sm transition-colors"
+            >
+              Edit Config
+            </button>
+          )}
           {canStart && (
             <button
               onClick={handleStart}

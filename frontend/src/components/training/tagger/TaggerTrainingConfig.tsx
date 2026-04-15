@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import {
   createTaggerTrainingRun,
+  updateTaggerTrainingRun,
   listDatasets,
   Dataset,
   TaggerTrainingRun,
@@ -13,6 +14,8 @@ import {
 interface TaggerTrainingConfigProps {
   onClose: () => void;
   onRunCreated: (run: TaggerTrainingRun) => void;
+  /** If provided, the form operates in edit mode for this run. */
+  editRun?: TaggerTrainingRun;
 }
 
 const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = {
@@ -53,12 +56,55 @@ type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
 export default function TaggerTrainingConfig({
   onClose,
   onRunCreated,
+  editRun,
 }: TaggerTrainingConfigProps) {
-  const [config, setConfig] = useState<ConfigState>(DEFAULT_CONFIG);
+  const isEditMode = !!editRun;
+
+  // Derive initial config from editRun when in edit mode
+  const initialConfig: ConfigState = isEditMode
+    ? {
+        run_name: editRun.run_name,
+        training_method: (editRun.config?.training_method as ConfigState["training_method"]) ?? DEFAULT_CONFIG.training_method,
+        vision_encoder_path: editRun.vision_encoder_path,
+        init_head_from: (editRun.config?.init_head_from as string) ?? DEFAULT_CONFIG.init_head_from,
+        lora_rank: (editRun.config?.lora_rank as number) ?? DEFAULT_CONFIG.lora_rank,
+        lora_alpha: (editRun.config?.lora_alpha as number) ?? DEFAULT_CONFIG.lora_alpha,
+        learning_rate: (editRun.config?.learning_rate as number) ?? DEFAULT_CONFIG.learning_rate,
+        head_lr_multiplier: (editRun.config?.head_lr_multiplier as number) ?? DEFAULT_CONFIG.head_lr_multiplier,
+        optimizer: (editRun.config?.optimizer as string) ?? DEFAULT_CONFIG.optimizer,
+        warmup_steps: (editRun.config?.warmup_steps as number) ?? DEFAULT_CONFIG.warmup_steps,
+        epochs: (editRun.config?.epochs as number) ?? DEFAULT_CONFIG.epochs,
+        batch_size: (editRun.config?.batch_size as number) ?? DEFAULT_CONFIG.batch_size,
+        vocab_min_count: (editRun.config?.vocab_min_count as number) ?? DEFAULT_CONFIG.vocab_min_count,
+        num_workers: (editRun.config?.num_workers as number) ?? DEFAULT_CONFIG.num_workers,
+        num_workers_override: (editRun.config?.num_workers_override as number | null) ?? DEFAULT_CONFIG.num_workers_override,
+        save_every_n_steps: (editRun.config?.save_every_n_steps as number) ?? DEFAULT_CONFIG.save_every_n_steps,
+        save_every_n_epochs: (editRun.config?.save_every_n_epochs as number) ?? DEFAULT_CONFIG.save_every_n_epochs,
+        keep_last_n_checkpoints: (editRun.config?.keep_last_n_checkpoints as number) ?? DEFAULT_CONFIG.keep_last_n_checkpoints,
+        checkpoint_save_mode: (editRun.config?.checkpoint_save_mode as string) ?? DEFAULT_CONFIG.checkpoint_save_mode,
+        mixed_precision: (editRun.config?.mixed_precision as string) ?? DEFAULT_CONFIG.mixed_precision,
+        gradient_checkpointing: (editRun.config?.gradient_checkpointing as boolean) ?? DEFAULT_CONFIG.gradient_checkpointing,
+        loss_gamma_neg: (editRun.config?.loss_gamma_neg as number) ?? DEFAULT_CONFIG.loss_gamma_neg,
+        loss_gamma_pos: (editRun.config?.loss_gamma_pos as number) ?? DEFAULT_CONFIG.loss_gamma_pos,
+        validate_every: (editRun.config?.validate_every as number) ?? DEFAULT_CONFIG.validate_every,
+        save_best_only: (editRun.config?.save_best_only as boolean) ?? DEFAULT_CONFIG.save_best_only,
+        excluded_categories: (editRun.config?.excluded_categories as string[]) ?? DEFAULT_CONFIG.excluded_categories,
+        ban_tags: (editRun.config?.ban_tags as string) ?? DEFAULT_CONFIG.ban_tags,
+        use_tag_aliases: (editRun.config?.use_tag_aliases as boolean) ?? DEFAULT_CONFIG.use_tag_aliases,
+        cls_dim: (editRun.config?.cls_dim as number | undefined) ?? DEFAULT_CONFIG.cls_dim,
+        hidden_proj_dim: (editRun.config?.hidden_proj_dim as number | undefined) ?? DEFAULT_CONFIG.hidden_proj_dim,
+      }
+    : DEFAULT_CONFIG;
+
+  const initialDatasetIds: number[] = isEditMode
+    ? ((editRun.dataset_configs as TaggerDatasetConfig[]) ?? []).map((dc) => dc.dataset_id)
+    : [];
+
+  const [config, setConfig] = useState<ConfigState>(initialConfig);
   // selectedDatasetIds tracks numeric dataset.id values
-  const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>([]);
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>(initialDatasetIds);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
-  const [creating, setCreating] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Fixed category list — same order as backend CATEGORY_ORDER
@@ -81,7 +127,7 @@ export default function TaggerTrainingConfig({
     );
   };
 
-  const handleCreate = async () => {
+  const handleSave = async () => {
     if (!config.run_name.trim()) {
       setError("Run name is required.");
       return;
@@ -90,23 +136,23 @@ export default function TaggerTrainingConfig({
       setError("At least one dataset must be selected.");
       return;
     }
-    setCreating(true);
+    setSaving(true);
     setError(null);
     try {
       const datasetConfigs: TaggerDatasetConfig[] = selectedDatasetIds.map((id) => ({
         dataset_id: id,
         caption_types: [],
       }));
-      const run = await createTaggerTrainingRun({
-        ...config,
-        dataset_configs: datasetConfigs,
-      });
+      const payload = { ...config, dataset_configs: datasetConfigs };
+      const run = isEditMode
+        ? await updateTaggerTrainingRun(editRun.run_id, payload)
+        : await createTaggerTrainingRun(payload);
       onRunCreated(run);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
     } finally {
-      setCreating(false);
+      setSaving(false);
     }
   };
 
@@ -119,7 +165,7 @@ export default function TaggerTrainingConfig({
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-700 flex-shrink-0">
-        <h2 className="text-lg font-semibold">New Tagger Training Run</h2>
+        <h2 className="text-lg font-semibold">{isEditMode ? "Edit Training Run" : "New Tagger Training Run"}</h2>
         <button onClick={onClose} className="text-gray-400 hover:text-white transition-colors">
           <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -649,11 +695,13 @@ export default function TaggerTrainingConfig({
           Cancel
         </button>
         <button
-          onClick={handleCreate}
-          disabled={creating}
+          onClick={handleSave}
+          disabled={saving}
           className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:text-gray-400 rounded text-sm transition-colors"
         >
-          {creating ? "Creating..." : "Create Run"}
+          {saving
+            ? (isEditMode ? "Saving..." : "Creating...")
+            : (isEditMode ? "Save Changes" : "Create Run")}
         </button>
       </div>
     </div>

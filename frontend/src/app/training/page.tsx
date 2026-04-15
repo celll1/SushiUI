@@ -32,6 +32,7 @@ function TrainingPageContent() {
   const [taggerRuns, setTaggerRuns] = useState<TaggerTrainingRun[]>([]);
   const [selectedTaggerRunId, setSelectedTaggerRunId] = useState<string | null>(null);
   const [showTaggerConfig, setShowTaggerConfig] = useState(false);
+  const [editingTaggerRun, setEditingTaggerRun] = useState<TaggerTrainingRun | null>(null);
   const [taggerLoading, setTaggerLoading] = useState(true);
 
   const [isMobile, setIsMobile] = useState(false);
@@ -191,9 +192,18 @@ function TrainingPageContent() {
   };
 
   const handleTaggerRunCreated = (newRun: TaggerTrainingRun) => {
-    setTaggerRuns([newRun, ...taggerRuns]);
+    setTaggerRuns((prev) => {
+      const exists = prev.some((r) => r.run_id === newRun.run_id);
+      return exists ? prev.map((r) => (r.run_id === newRun.run_id ? newRun : r)) : [newRun, ...prev];
+    });
     setShowTaggerConfig(false);
+    setEditingTaggerRun(null);
     setSelectedTaggerRunId(newRun.run_id);
+  };
+
+  const handleTaggerEditConfig = (run: TaggerTrainingRun) => {
+    setEditingTaggerRun(run);
+    setShowTaggerConfig(true);
   };
 
   const handleTaggerStatusChange = (updatedRun: TaggerTrainingRun) => {
@@ -390,9 +400,11 @@ function TrainingPageContent() {
                   <TaggerTrainingConfig
                     onClose={() => {
                       setShowTaggerConfig(false);
+                      setEditingTaggerRun(null);
                       if (isMobile) setShowMobileDetail(false);
                     }}
                     onRunCreated={handleTaggerRunCreated}
+                    editRun={editingTaggerRun ?? undefined}
                   />
                 ) : selectedTaggerRun ? (
                   <TaggerTrainingMonitor
@@ -404,6 +416,7 @@ function TrainingPageContent() {
                     }}
                     onStatusChange={handleTaggerStatusChange}
                     onDelete={() => handleTaggerDelete(selectedTaggerRun.run_id)}
+                    onEditConfig={() => handleTaggerEditConfig(selectedTaggerRun)}
                   />
                 ) : (
                   <div className="flex items-center justify-center h-full text-gray-400">

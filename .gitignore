@@ -23,6 +23,7 @@ tagger_models/
 taglist/
 taglist_gel/
 tagother/
+tagalias/
 *.safetensors
 *.ckpt
 *.pt
@@ -154,3 +155,4 @@ update_cfg_two_pass.py
 docs/MIXED_PRECISION_COMPARISON.md
 docs/FLUX2_IMAGE_EDIT_IMPLEMENTATION.md
 docs/FLUX2_IMAGE_EDIT_HYBRID_ANALYSIS.md
+run_tagger_inference.py

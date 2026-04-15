@@ -796,6 +796,7 @@ class TaggerTrainingRun(TrainingBase):
 
     # Error info
     error_message = Column(Text, nullable=True)
+    status_message = Column(String, nullable=True)  # Human-readable phase message during preparation
 
     # Timestamps
     created_at = Column(DateTime, default=get_local_now)
@@ -832,6 +833,7 @@ class TaggerTrainingRun(TrainingBase):
             "resumed_from_step": self.resumed_from_step,
             "last_resumed_at": self.last_resumed_at.isoformat() if self.last_resumed_at else None,
             "error_message": self.error_message,
+            "status_message": self.status_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,

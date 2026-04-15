@@ -393,6 +393,9 @@ class TaggerTrainer:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # Build model
+        print(f"[TaggerTrainer] === Phase: model build ===")
+        print(f"[TaggerTrainer] Building model (method={cfg.get('training_method', 'lora')}, "
+              f"num_tags={self.vocabulary.num_tags}, device={device})...")
         self._emit("phase", {"phase": "initializing", "message": "Building model..."})
         model = build_tagger_model(
             training_method=cfg.get("training_method", "lora"),
@@ -405,7 +408,11 @@ class TaggerTrainer:
             init_head_from=cfg.get("init_head_from") or None,
             new_vocab=self.vocabulary.tag_to_idx if cfg.get("init_head_from") else None,
         )
+        trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        total_count     = sum(p.numel() for p in model.parameters())
+        print(f"[TaggerTrainer] Model built: {trainable_count:,} trainable / {total_count:,} total parameters")
         model = model.to(device)
+        print(f"[TaggerTrainer] Model moved to {device}")
 
         # Load checkpoint weights if resuming (before any training)
         if resume_state is not None and resume_ckpt_name is not None:
@@ -447,11 +454,15 @@ class TaggerTrainer:
             lr=base_lr,
             weight_decay=float(cfg.get("weight_decay", 1e-4)),
         )
+        print(f"[TaggerTrainer] Optimizer: {cfg.get('optimizer', 'adamw8bit')}, "
+              f"base_lr={base_lr}, head_lr={base_lr * head_lr_mult} (x{head_lr_mult})")
 
         # LR schedule: linear warmup → cosine decay
         epochs       = int(cfg.get("epochs", 10))
         warmup_steps = int(cfg.get("warmup_steps", 100))
         total_steps  = epochs * len(train_loader)
+        print(f"[TaggerTrainer] Schedule: {epochs} epochs, {total_steps} total steps, "
+              f"{warmup_steps} warmup steps")
 
         warmup_scheduler = LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
         cosine_scheduler = CosineAnnealingLR(optimizer, T_max=max(total_steps - warmup_steps, 1), eta_min=1e-7)
@@ -517,6 +528,9 @@ class TaggerTrainer:
                 "message": f"Resuming from step {global_step} (epoch {resume_epoch})",
             })
 
+        print(f"[TaggerTrainer] === Phase: training ===")
+        print(f"[TaggerTrainer] Training started: {epochs} epochs, "
+              f"{len(train_loader)} steps/epoch, amp={'on ('+mp+')' if use_amp else 'off'}")
         self._emit("phase", {"phase": "training", "message": "Training started"})
 
         # ------------------------------------------------------------------
@@ -551,6 +565,7 @@ class TaggerTrainer:
             # every step-checkpoint so that future resumes can replay it.
             epoch_start_rng = _capture_rng()
 
+            print(f"[TaggerTrainer] --- Epoch {epoch}/{epochs} ---")
             model.train()
             epoch_loss       = 0.0
             batches_processed = 0
@@ -876,6 +891,8 @@ def run_tagger_training(
     datasets_db = DatasetsSessionLocal()
     try:
         # Build vocabulary
+        print(f"[TaggerTraining] === Phase: vocabulary ===")
+        print(f"[TaggerTraining] Building tag vocabulary from {len(dataset_ids)} dataset(s)...")
         progress_callback and progress_callback(run_id, "phase", {
             "phase": "vocabulary", "message": "Building tag vocabulary..."
         })
@@ -909,13 +926,22 @@ def run_tagger_training(
             alias_resolver=alias_resolver,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")
+        if excl_cats:
+            print(f"[TaggerTraining] Excluded categories: {excl_cats}")
+        if ban_tags:
+            print(f"[TaggerTraining] Banned tags: {len(ban_tags)} entries")
         progress_callback and progress_callback(run_id, "vocab", {"num_tags": vocabulary.num_tags})
 
         # Build processor
+        print(f"[TaggerTraining] === Phase: processor ===")
+        print(f"[TaggerTraining] Loading processor...")
         REPO_ID = "google/siglip2-so400m-patch16-naflex"
         processor = AutoProcessor.from_pretrained(REPO_ID)
+        print(f"[TaggerTraining] Processor loaded (repo: {REPO_ID})")
 
         # Build datasets
+        print(f"[TaggerTraining] === Phase: dataset ===")
+        print(f"[TaggerTraining] Building TaggerDataset ({vocabulary.num_tags} tags)...")
         progress_callback and progress_callback(run_id, "phase", {
             "phase": "dataset", "message": f"Loading dataset ({vocabulary.num_tags} tags)..."
         })
@@ -927,6 +953,7 @@ def run_tagger_training(
             processor=processor,
             alias_resolver=alias_resolver,
         )
+        print(f"[TaggerTraining] Dataset: {len(full_ds)} samples total")
 
         val_size   = max(1, int(len(full_ds) * val_split))
         train_size = len(full_ds) - val_size
@@ -934,6 +961,7 @@ def run_tagger_training(
             full_ds, [train_size, val_size],
             generator=torch.Generator().manual_seed(42),
         )
+        print(f"[TaggerTraining] Split: {train_size} train / {val_size} val (val_split={val_split})")
 
         batch_size  = int(config.get("batch_size", 32))
         num_workers = int(config.get("num_workers", 4))
@@ -948,6 +976,7 @@ def run_tagger_training(
             effective_workers = int(num_workers_override)
         else:
             effective_workers = num_workers
+        print(f"[TaggerTraining] DataLoader: batch_size={batch_size}, num_workers={effective_workers}")
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=effective_workers, collate_fn=tagger_collate_fn,
@@ -958,6 +987,8 @@ def run_tagger_training(
             num_workers=effective_workers, collate_fn=tagger_collate_fn,
             pin_memory=(effective_workers > 0),
         )
+        steps_per_epoch = len(train_loader)
+        print(f"[TaggerTraining] Steps per epoch: {steps_per_epoch}")
 
         # ------------------------------------------------------------------
         # Detect resume checkpoint

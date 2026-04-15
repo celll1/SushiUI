@@ -224,7 +224,9 @@ export default function TaggerTrainingMonitor({
           <section>
             <div className="flex items-center justify-between text-sm mb-1">
               <span className="text-gray-400">
-                Epoch {run.current_epoch} · Step {run.current_step}
+                {run.status_message
+                  ? run.status_message
+                  : `Epoch ${run.current_epoch} · Step ${run.current_step}`}
               </span>
               <span className="text-gray-300">{(run.progress * 100).toFixed(1)}%</span>
             </div>

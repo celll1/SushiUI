@@ -6819,6 +6819,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.latest_loss   = data.get("loss")
                 run.latest_lr     = data.get("lr")
                 run.progress      = data.get("progress", run.progress)
+                run.status_message = None  # clear preparation message once training steps begin
                 _upsert_metric(
                     step=data.get("step", 0),
                     epoch=data.get("epoch"),
@@ -6855,7 +6856,8 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.resumed_from_step = data.get("resumed_from_step")
                 run.last_resumed_at   = datetime.now()
             elif event_type == "phase":
-                pass
+                msg = data.get("message") or data.get("phase") or ""
+                run.status_message = msg
             elif event_type == "completed":
                 run.status         = "completed"
                 run.progress       = 1.0

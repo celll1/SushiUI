@@ -76,25 +76,65 @@ class TaggerDataset(Dataset):
         from database.models import DatasetItem, DatasetCaption
 
         for dataset_id in dataset_ids:
+            print(f"[TaggerDataset] Loading dataset_id={dataset_id}...")
+
+            # Bulk-load all items for this dataset in one query
             items = (
                 datasets_db.query(DatasetItem)
                 .filter(DatasetItem.dataset_id == dataset_id)
                 .all()
             )
-            for item in items:
-                if not item.image_path or not os.path.isfile(item.image_path):
+            print(f"[TaggerDataset]   {len(items)} items loaded")
+
+            # Collect item ids that have a valid image path
+            valid_item_ids = [
+                item.id for item in items
+                if item.image_path and os.path.isfile(item.image_path)
+            ]
+            item_path_map: Dict[int, str] = {
+                item.id: item.image_path for item in items
+                if item.image_path and os.path.isfile(item.image_path)
+            }
+            skipped = len(items) - len(valid_item_ids)
+            if skipped:
+                print(f"[TaggerDataset]   {skipped} items skipped (missing image files)")
+
+            if not valid_item_ids:
+                continue
+
+            # Bulk-load all captions for valid items in one query (avoids N+1)
+            caption_query = (
+                datasets_db.query(DatasetCaption)
+                .filter(
+                    DatasetCaption.item_id.in_(valid_item_ids),
+                    DatasetCaption.is_tags_format == True,  # noqa: E712
+                )
+            )
+            if caption_types:
+                caption_query = caption_query.filter(
+                    DatasetCaption.caption_type.in_(caption_types)
+                )
+            captions = caption_query.all()
+            print(f"[TaggerDataset]   {len(captions)} tag captions loaded")
+
+            # Group captions by item_id
+            from collections import defaultdict
+            captions_by_item: Dict[int, list] = defaultdict(list)
+            for cap in captions:
+                captions_by_item[cap.item_id].append(cap)
+
+            # Build samples
+            for item_id in valid_item_ids:
+                item_captions = captions_by_item.get(item_id)
+                if not item_captions:
                     continue
-
                 tags: List[str] = []
-                for caption in item.captions:
-                    if not caption.is_tags_format:
-                        continue
-                    if caption_types and caption.caption_type not in caption_types:
-                        continue
+                for caption in item_captions:
                     tags.extend(self._extract_tags(caption))
-
                 if tags:
-                    self._samples.append((item.image_path, tags))
+                    self._samples.append((item_path_map[item_id], tags))
+
+            print(f"[TaggerDataset]   {len(self._samples)} samples so far")
 
     def _extract_tags(self, caption) -> List[str]:
         raw_tags: List[str] = []

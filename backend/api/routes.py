@@ -7003,8 +7003,9 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
     if run.status == "running":
         raise HTTPException(status_code=400, detail="Run is already running")
 
-    run.status     = "running"
-    run.started_at = datetime.now()
+    run.status        = "running"
+    run.started_at    = datetime.now()
+    run.error_message = None
     training_db.commit()
 
     config          = run.config or {}

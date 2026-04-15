@@ -102,26 +102,26 @@ class TaggerDataset(Dataset):
             if not valid_item_ids:
                 continue
 
-            # Bulk-load all captions for valid items in one query (avoids N+1)
-            caption_query = (
-                datasets_db.query(DatasetCaption)
-                .filter(
-                    DatasetCaption.item_id.in_(valid_item_ids),
-                    DatasetCaption.is_tags_format == True,  # noqa: E712
-                )
-            )
-            if caption_types:
-                caption_query = caption_query.filter(
-                    DatasetCaption.caption_type.in_(caption_types)
-                )
-            captions = caption_query.all()
-            print(f"[TaggerDataset]   {len(captions)} tag captions loaded")
-
-            # Group captions by item_id
+            # Bulk-load captions in chunks to stay within SQLite's 999-variable limit
+            CHUNK = 500
             from collections import defaultdict
             captions_by_item: Dict[int, list] = defaultdict(list)
-            for cap in captions:
-                captions_by_item[cap.item_id].append(cap)
+            total_captions = 0
+            for i in range(0, len(valid_item_ids), CHUNK):
+                chunk_ids = valid_item_ids[i:i + CHUNK]
+                q = (
+                    datasets_db.query(DatasetCaption)
+                    .filter(
+                        DatasetCaption.item_id.in_(chunk_ids),
+                        DatasetCaption.is_tags_format == True,  # noqa: E712
+                    )
+                )
+                if caption_types:
+                    q = q.filter(DatasetCaption.caption_type.in_(caption_types))
+                for cap in q.all():
+                    captions_by_item[cap.item_id].append(cap)
+                    total_captions += 1
+            print(f"[TaggerDataset]   {total_captions} tag captions loaded")
 
             # Build samples
             for item_id in valid_item_ids:

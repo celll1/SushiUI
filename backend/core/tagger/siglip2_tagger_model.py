@@ -646,6 +646,7 @@ def _inherit_head(
     checkpoint_path: str,
     new_num_tags: int,
     new_vocab: Optional[Dict[str, int]] = None,
+    old_tag_to_idx: Optional[Dict[str, int]] = None,
 ) -> None:
     """Copy head weights from *checkpoint_path* into *model* using tag-name alignment.
 
@@ -687,15 +688,20 @@ def _inherit_head(
 
     copied = skipped = 0
 
-    if os.path.isfile(vocab_path) and new_vocab is not None:
+    # Resolve old_tag_to_idx: caller may supply it directly (resume path);
+    # otherwise fall back to reading vocabulary.json next to the checkpoint.
+    _old_tag_to_idx: Optional[Dict[str, int]] = old_tag_to_idx
+    if _old_tag_to_idx is None and os.path.isfile(vocab_path):
         with open(vocab_path, "r", encoding="utf-8") as f:
             old_vocab_data = _json.load(f)
-        old_tag_to_idx: Dict[str, int] = {
+        _old_tag_to_idx = {
             k: int(v) for k, v in old_vocab_data["tag_to_idx"].items()
         }
+
+    if _old_tag_to_idx is not None and new_vocab is not None:
         # For each tag in the new vocabulary, copy the row from the old head if it existed
         for tag, new_idx in new_vocab.items():
-            old_idx = old_tag_to_idx.get(tag)
+            old_idx = _old_tag_to_idx.get(tag)
             if old_idx is None:
                 skipped += 1
                 continue  # new tag — stays zero-initialized
@@ -705,13 +711,13 @@ def _inherit_head(
             new_head.weight.data[new_idx] = src_w[old_idx]
             new_head.bias.data[new_idx]   = src_b[old_idx]
             copied += 1
-        old_size = len(old_tag_to_idx)
+        old_size = len(_old_tag_to_idx)
         print(f"[TaggerModel] Head inherited via tag-name alignment: "
               f"{copied} tags copied, {skipped} new/missing tags zero-initialized "
               f"(old vocab: {old_size}, new vocab: {new_num_tags})")
     else:
         # Fallback: positional copy — safe only when vocab order is unchanged
-        if not os.path.isfile(vocab_path):
+        if not os.path.isfile(vocab_path) and old_tag_to_idx is None:
             print(f"[TaggerModel] Warning: vocabulary.json not found in {ckpt_dir}, "
                   f"falling back to positional head copy (assumes identical tag order)")
         copy_rows = min(src_w.shape[0], new_num_tags)

@@ -32,9 +32,12 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
 
+from safetensors.torch import load_file as _load_safetensors_file
+
 from .siglip2_tagger_model import (
     SigLIP2TaggerLoRAModel,
     SigLIP2TaggerModel,
+    _inherit_head,
     build_tagger_model,
 )
 from .tag_vocabulary import TagVocabulary
@@ -360,12 +363,14 @@ class TaggerTrainer:
         vocabulary: TagVocabulary,
         output_dir: str,
         progress_callback: Optional[Callable] = None,
+        old_vocabulary: Optional[TagVocabulary] = None,
     ) -> None:
         self.run_id = run_id
         self.config = config
         self.vocabulary = vocabulary
         self.output_dir = output_dir
         self.callback = progress_callback
+        self.old_vocabulary = old_vocabulary
         self._stop_requested = False
 
         os.makedirs(output_dir, exist_ok=True)
@@ -418,8 +423,35 @@ class TaggerTrainer:
         if resume_state is not None and resume_ckpt_name is not None:
             ckpt_path = os.path.join(self.output_dir, f"{resume_ckpt_name}.safetensors")
             if os.path.isfile(ckpt_path):
-                model.load_weights_inplace(ckpt_path)
-                print(f"[TaggerTrainer] Loaded checkpoint weights from {resume_ckpt_name}")
+                _saved = _load_safetensors_file(ckpt_path)
+                _ckpt_num_tags = _saved["head.weight"].shape[0] if "head.weight" in _saved else None
+                _vocab_mismatch = _ckpt_num_tags is not None and _ckpt_num_tags != self.vocabulary.num_tags
+
+                if _vocab_mismatch:
+                    print(f"[TaggerTrainer] Vocabulary mismatch: checkpoint={_ckpt_num_tags}, "
+                          f"current={self.vocabulary.num_tags}. Aligning by tag name...")
+                    old_tag_to_idx = self.old_vocabulary.tag_to_idx if self.old_vocabulary else None
+                    if old_tag_to_idx is None:
+                        print("[TaggerTrainer] WARNING: old_vocabulary unavailable, falling back to positional copy")
+                    _inherit_head(
+                        model=model,
+                        checkpoint_path=ckpt_path,
+                        new_num_tags=self.vocabulary.num_tags,
+                        new_vocab=self.vocabulary.tag_to_idx,
+                        old_tag_to_idx=old_tag_to_idx,
+                    )
+                    # LoRA weights are vocab-independent — copy them separately
+                    if isinstance(model, SigLIP2TaggerLoRAModel):
+                        for module_name, lora_module in model._lora_modules.items():
+                            prefix = f"lora.{module_name}"
+                            if f"{prefix}.lora_A" in _saved:
+                                lora_module.lora_A.data.copy_(_saved[f"{prefix}.lora_A"])
+                            if f"{prefix}.lora_B" in _saved:
+                                lora_module.lora_B.data.copy_(_saved[f"{prefix}.lora_B"])
+                        print(f"[TaggerTrainer] LoRA weights restored from {resume_ckpt_name}")
+                else:
+                    model.load_weights_inplace(ckpt_path)
+                    print(f"[TaggerTrainer] Loaded checkpoint weights from {resume_ckpt_name}")
 
         # Gradient checkpointing
         if cfg.get("gradient_checkpointing", True):
@@ -1007,6 +1039,18 @@ def run_tagger_training(
             else:
                 print("[TaggerTraining] No resumable checkpoint found; starting from scratch")
 
+        # Read the old vocabulary.json BEFORE TaggerTrainer overwrites it
+        old_vocabulary: Optional[TagVocabulary] = None
+        if resume_ckpt_name is not None:
+            old_vocab_path = os.path.join(output_dir, "vocabulary.json")
+            if os.path.isfile(old_vocab_path):
+                try:
+                    with open(old_vocab_path, "r", encoding="utf-8") as _f:
+                        old_vocabulary = TagVocabulary.from_dict(json.load(_f))
+                    print(f"[TaggerTraining] Loaded old vocabulary ({old_vocabulary.num_tags} tags) for head alignment")
+                except Exception as _e:
+                    print(f"[TaggerTraining] WARNING: could not load old vocabulary: {_e}")
+
         # Run trainer
         trainer = TaggerTrainer(
             run_id=run_id,
@@ -1014,6 +1058,7 @@ def run_tagger_training(
             vocabulary=vocabulary,
             output_dir=output_dir,
             progress_callback=progress_callback,
+            old_vocabulary=old_vocabulary,
         )
 
         # Load checkpoint weights into the model before training starts

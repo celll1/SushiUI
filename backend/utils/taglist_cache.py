@@ -302,7 +302,7 @@ class TaglistCache:
 
         Returns:
             Category name ("General", "Character", "Artist", etc.)
-            Defaults to "General" if tag not found
+            Returns "Unknown" if tag not found in any taglist
         """
         if not self._root_dir:
             raise RuntimeError("TaglistCache not initialized. Call initialize(root_dir) first.")
@@ -311,7 +311,7 @@ class TaglistCache:
         self.reload_if_needed()
 
         normalized = self._normalize_tag(tag)
-        return self._category_map.get(normalized, "General")
+        return self._category_map.get(normalized, "Unknown")
 
     def get_categories_batch(self, tags: List[str]) -> Dict[str, str]:
         """
@@ -332,7 +332,7 @@ class TaglistCache:
         result = {}
         for tag in tags:
             normalized = self._normalize_tag(tag)
-            result[tag] = self._category_map.get(normalized, "General")
+            result[tag] = self._category_map.get(normalized, "Unknown")
 
         return result
 

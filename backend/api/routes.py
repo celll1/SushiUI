@@ -3380,7 +3380,7 @@ async def scan_dataset(
             return "[]"
         cats = taglist_cache.get_categories_batch(tags)
         return _json.dumps(
-            [{"tag": t, "category": cats.get(t, "General")} for t in tags],
+            [{"tag": t, "category": cats.get(t, "Unknown")} for t in tags],
             ensure_ascii=False,
         )
 

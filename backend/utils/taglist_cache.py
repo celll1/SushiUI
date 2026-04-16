@@ -87,7 +87,12 @@ class TaglistCache:
 
     def _normalize_tag(self, tag: str) -> str:
         """
-        Normalize tag for matching: lowercase, replace underscores with spaces.
+        Normalize tag for matching: remove SD-style backslash escapes,
+        lowercase, replace underscores with spaces.
+
+        Danbooru taglist stores tags as "shimakaze (kancolle)" (unescaped),
+        but captions may contain "shimakaze \\(kancolle\\)" (SD-escaped).
+        Both must normalize to the same key.
 
         Args:
             tag: Raw tag string
@@ -95,6 +100,8 @@ class TaglistCache:
         Returns:
             Normalized tag string
         """
+        # Remove SD-style backslash escapes: \( -> (, \) -> ), \/ -> /
+        tag = tag.replace('\\(', '(').replace('\\)', ')').replace('\\/', '/')
         return tag.lower().replace('_', ' ').strip()
 
     def _get_taglist_path(self, category: str) -> str:

@@ -607,14 +607,35 @@ class TaggerTrainer:
             # PIL decode and NaFlex transforms release the GIL, so true CPU/GPU
             # parallelism is achievable.  With num_workers>0, the DataLoader
             # already handles prefetching via worker processes.
+            if epoch == resume_epoch and resume_batch_idx >= 0:
+                # Efficiently skip already-processed batches by reconstructing the
+                # same shuffle permutation (RNG was restored to epoch-start state above)
+                # and slicing off the first (resume_batch_idx + 1) batches.
+                # This avoids loading/decoding thousands of images just to discard them.
+                _bs = train_loader.batch_size or 1
+                _ds = train_loader.dataset
+                _full_perm = torch.randperm(len(_ds)).tolist()
+                _skip_items = (resume_batch_idx + 1) * _bs
+                _resume_subset = torch.utils.data.Subset(_ds, _full_perm[_skip_items:])
+                _resume_loader = DataLoader(
+                    _resume_subset, batch_size=_bs, shuffle=False,
+                    num_workers=train_loader.num_workers,
+                    collate_fn=tagger_collate_fn, pin_memory=False,
+                )
+                print(f"[TaggerTrainer] Skipped {resume_batch_idx + 1} batches efficiently "
+                      f"(resume from batch {resume_batch_idx + 1})")
+                _loader_for_epoch = _resume_loader
+                _batch_idx_offset = resume_batch_idx + 1
+            else:
+                _loader_for_epoch = train_loader
+                _batch_idx_offset = 0
+
             loader_iter = (
-                _prefetch_loader(train_loader) if train_loader.num_workers == 0
-                else iter(train_loader)
+                _prefetch_loader(_loader_for_epoch) if _loader_for_epoch.num_workers == 0
+                else iter(_loader_for_epoch)
             )
-            for batch_idx, batch in enumerate(loader_iter):
-                # Skip batches already processed in the resume epoch
-                if epoch == resume_epoch and batch_idx <= resume_batch_idx:
-                    continue
+            for _loop_idx, batch in enumerate(loader_iter):
+                batch_idx = _loop_idx + _batch_idx_offset
 
                 if batch is None:
                     continue  # entire batch was corrupt images

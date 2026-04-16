@@ -714,7 +714,7 @@ def _inherit_head(
         old_size = len(_old_tag_to_idx)
         print(f"[TaggerModel] Head inherited via tag-name alignment: "
               f"{copied} tags copied, {skipped} new/missing tags zero-initialized "
-              f"(old vocab: {old_size}, new vocab: {new_num_tags})")
+              f"(checkpoint head: {src_w.shape[0]}, old vocab: {old_size}, new vocab: {new_num_tags})")
     else:
         # Fallback: positional copy — safe only when vocab order is unchanged
         if not os.path.isfile(vocab_path) and old_tag_to_idx is None:

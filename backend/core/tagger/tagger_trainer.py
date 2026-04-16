@@ -980,12 +980,12 @@ def run_tagger_training(
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
             num_workers=effective_workers, collate_fn=tagger_collate_fn,
-            pin_memory=(effective_workers > 0),
+            pin_memory=False,
         )
         val_loader = DataLoader(
             val_ds, batch_size=batch_size, shuffle=False,
             num_workers=effective_workers, collate_fn=tagger_collate_fn,
-            pin_memory=(effective_workers > 0),
+            pin_memory=False,
         )
         steps_per_epoch = len(train_loader)
         print(f"[TaggerTraining] Steps per epoch: {steps_per_epoch}")

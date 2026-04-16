@@ -544,11 +544,13 @@ const SPECIAL_TAGS = {
     { tag: "best quality", category: "Quality" },
     { tag: "high quality", category: "Quality" },
     { tag: "great quality", category: "Quality" },
-    { tag: "normal quality", category: "Quality" },
-    { tag: "low quality", category: "Quality" },
-    { tag: "worst quality", category: "Quality" },
-    { tag: "masterpiece", category: "Quality" },
     { tag: "amazing quality", category: "Quality" },
+    { tag: "masterpiece", category: "Quality" },
+    { tag: "normal quality", category: "Quality" },
+    { tag: "medium quality", category: "Quality" },
+    { tag: "low quality", category: "Quality" },
+    { tag: "bad quality", category: "Quality" },
+    { tag: "worst quality", category: "Quality" },
   ],
 };
 

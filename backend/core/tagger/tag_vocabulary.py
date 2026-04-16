@@ -222,17 +222,36 @@ class TagVocabulary:
     # ------------------------------------------------------------------
 
     def _build_special_indices(self) -> None:
-        """Populate rating_indices and quality_indices from current tag_to_idx."""
+        """Populate rating_indices and quality_indices from current tag_to_idx.
+
+        Also corrects tag_to_category for any Quality/Rating tag that was
+        mis-classified (e.g. danbooru stores 'bad quality' as General).
+        """
         self.rating_indices = []
         self.quality_indices = {k: [] for k in QUALITY_TAG_GROUPS}
 
+        # Pre-build normalized lookup sets for O(1) membership test
+        _rating_norms: Set[str] = {normalize_tag(r) for r in RATING_TAGS}
+        _quality_norms: Dict[str, Set[str]] = {
+            gname: {normalize_tag(t) for t in gtags}
+            for gname, gtags in QUALITY_TAG_GROUPS.items()
+        }
+        _all_quality_norms: Set[str] = {n for s in _quality_norms.values() for n in s}
+
         for tag, idx in self.tag_to_idx.items():
             norm = normalize_tag(tag)
-            if norm in [normalize_tag(r) for r in RATING_TAGS]:
+            if norm in _rating_norms:
                 self.rating_indices.append(idx)
-            for group_name, group_tags in QUALITY_TAG_GROUPS.items():
-                if norm in [normalize_tag(t) for t in group_tags]:
-                    self.quality_indices[group_name].append(idx)
+                # Correct category if mis-classified
+                if self.tag_to_category.get(tag) != "Rating":
+                    self.tag_to_category[tag] = "Rating"
+            if norm in _all_quality_norms:
+                # Correct category if mis-classified (e.g. danbooru General)
+                if self.tag_to_category.get(tag) != "Quality":
+                    self.tag_to_category[tag] = "Quality"
+                for group_name, group_norms in _quality_norms.items():
+                    if norm in group_norms:
+                        self.quality_indices[group_name].append(idx)
 
 
 # ------------------------------------------------------------------

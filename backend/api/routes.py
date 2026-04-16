@@ -3417,7 +3417,7 @@ async def scan_dataset(
     print(f"[Dataset Scan] Starting directory scan...")
 
     def scan_directory(dir_path, current_depth=0):
-        nonlocal items_found, captions_found, files_processed
+        nonlocal items_found, captions_found, captions_updated, files_processed
 
         try:
             entries = os.listdir(dir_path)

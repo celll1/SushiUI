@@ -712,9 +712,13 @@ class TaggerTrainer:
             avg_loss = epoch_loss / max(batches_processed, 1)
 
             # Validation
+            # val_max_batches caps memory usage: num_tags=84k×batch×float16 can be huge.
+            # Default 256 batches ≈ 4096 samples ≈ 689 MB for 84k-tag vocab.
+            val_max_batches = int(cfg.get("val_max_batches", 256)) or None
             val_metrics: Dict[str, Any] = {}
             if val_loader and epoch % int(cfg.get("validate_every", 1)) == 0:
-                val_metrics = self._validate(model, val_loader, device, amp_dtype if use_amp else None)
+                val_metrics = self._validate(model, val_loader, device, amp_dtype if use_amp else None,
+                                             max_batches=val_max_batches)
                 epoch_f1  = val_metrics.get("f1", 0.0)
                 epoch_thr = val_metrics.get("threshold", 0.35)
 
@@ -762,7 +766,8 @@ class TaggerTrainer:
 
         # Final threshold grid search on validation set
         final_search = self._final_threshold_search(
-            model, val_loader, device, amp_dtype if use_amp else None
+            model, val_loader, device, amp_dtype if use_amp else None,
+            max_batches=val_max_batches,
         )
         if final_search:
             best_threshold = final_search["optimal_threshold"]
@@ -796,13 +801,16 @@ class TaggerTrainer:
         loader: DataLoader,
         device: torch.device,
         amp_dtype: Optional[torch.dtype],
+        max_batches: Optional[int] = None,
     ) -> Dict[str, Any]:
         model.eval()
         all_preds  = []
         all_labels = []
 
         with torch.no_grad():
-            for batch in loader:
+            for i, batch in enumerate(loader):
+                if max_batches is not None and i >= max_batches:
+                    break
                 if batch is None:
                     continue
                 pv, pam, ss, labels, _ = batch
@@ -816,9 +824,10 @@ class TaggerTrainer:
                 else:
                     logits = model(pv, pam, ss)
 
-                probs = torch.sigmoid(logits).cpu()
+                # float16 to halve memory usage (84k tags × many samples)
+                probs = torch.sigmoid(logits).to(torch.float16).cpu()
                 all_preds.append(probs)
-                all_labels.append(labels)
+                all_labels.append(labels.to(torch.float16))
 
         all_preds  = torch.cat(all_preds,  dim=0)
         all_labels = torch.cat(all_labels, dim=0)
@@ -832,13 +841,16 @@ class TaggerTrainer:
         loader: DataLoader,
         device: torch.device,
         amp_dtype: Optional[torch.dtype],
+        max_batches: Optional[int] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Collect all validation predictions and labels as tensors."""
+        """Collect validation predictions and labels as float16 tensors."""
         model.eval()
         all_preds  = []
         all_labels = []
         with torch.no_grad():
-            for batch in loader:
+            for i, batch in enumerate(loader):
+                if max_batches is not None and i >= max_batches:
+                    break
                 if batch is None:
                     continue
                 pv, pam, ss, labels, _ = batch
@@ -850,8 +862,8 @@ class TaggerTrainer:
                         logits = model(pv, pam, ss)
                 else:
                     logits = model(pv, pam, ss)
-                all_preds.append(torch.sigmoid(logits).cpu())
-                all_labels.append(labels)
+                all_preds.append(torch.sigmoid(logits).to(torch.float16).cpu())
+                all_labels.append(labels.to(torch.float16))
         return torch.cat(all_preds, dim=0), torch.cat(all_labels, dim=0)
 
     def _final_threshold_search(
@@ -860,6 +872,7 @@ class TaggerTrainer:
         val_loader: Optional[DataLoader],
         device: torch.device,
         amp_dtype: Optional[torch.dtype],
+        max_batches: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """Run full threshold grid search (0.05–0.95) on val set.
 
@@ -872,7 +885,8 @@ class TaggerTrainer:
         print("[TaggerTrainer] Running final threshold grid search...")
         self._emit("phase", {"phase": "threshold_search", "message": "Running threshold grid search..."})
 
-        all_preds, all_labels = self._collect_val_preds(model, val_loader, device, amp_dtype)
+        all_preds, all_labels = self._collect_val_preds(model, val_loader, device, amp_dtype,
+                                                         max_batches=max_batches)
 
         thresholds = [round(t * 0.05, 2) for t in range(1, 20)]  # 0.05 to 0.95
         curve: Dict[str, float] = {}

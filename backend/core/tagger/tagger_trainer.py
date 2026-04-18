@@ -942,6 +942,7 @@ def run_tagger_training(
     output_dir: str,
     progress_callback: Optional[Callable] = None,
     resume_from_checkpoint: Optional[str] = None,
+    trainer_holder: Optional[List] = None,
 ) -> Dict[str, Any]:
     """Top-level function to build everything and start training.
 
@@ -1095,6 +1096,9 @@ def run_tagger_training(
             progress_callback=progress_callback,
             old_vocabulary=old_vocabulary,
         )
+        # Expose trainer reference so the API can call trainer.stop()
+        if trainer_holder is not None:
+            trainer_holder.append(trainer)
 
         # Load checkpoint weights into the model before training starts
         # (trainer.train() builds the model, so we pass resume info and let it handle loading)

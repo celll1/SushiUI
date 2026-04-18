@@ -7051,6 +7051,8 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
 
     callback = _make_tagger_progress_callback(run_id, TrainingSessionLocal)
 
+    trainer_holder: list = []
+
     def _run():
         from core.tagger.tagger_trainer import run_tagger_training
         db = TrainingSessionLocal()
@@ -7062,6 +7064,7 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
                 output_dir=output_dir,
                 progress_callback=callback,
                 resume_from_checkpoint=resume_from_checkpoint,
+                trainer_holder=trainer_holder,
             )
             # Save vocabulary to DB
             vocab_path = os.path.join(output_dir, "vocabulary.json")
@@ -7086,8 +7089,9 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
             db.close()
             _tagger_training_threads.pop(run_id, None)
 
+
     thread = threading.Thread(target=_run, daemon=True, name=f"tagger-{run_id[:8]}")
-    _tagger_training_threads[run_id] = thread
+    _tagger_training_threads[run_id] = {"thread": thread, "trainer_holder": trainer_holder}
     thread.start()
 
     training_db.refresh(run)
@@ -7100,6 +7104,17 @@ def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_tra
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
+
+    # Signal the trainer to stop at the next checkpoint boundary
+    entry = _tagger_training_threads.get(run_id)
+    if entry:
+        trainer_holder = entry.get("trainer_holder", [])
+        if trainer_holder:
+            trainer_holder[0].stop()
+            print(f"[TaggerTraining] Stop signal sent to trainer {run_id}")
+        else:
+            print(f"[TaggerTraining] Stop requested for {run_id} but trainer not yet initialized")
+
     run.status = "stopped"
     training_db.commit()
     training_db.refresh(run)

@@ -339,10 +339,16 @@ class SigLIP2TaggerModel(nn.Module):
     def load_checkpoint(
         cls,
         checkpoint_path: str,
-        vision_encoder_path: str,
+        vision_encoder_path: str = "",
         num_tags: Optional[int] = None,
     ) -> "SigLIP2TaggerModel":
-        """Load model from checkpoint safetensors."""
+        """Load model from checkpoint safetensors.
+
+        For merged (full) checkpoints *vision_encoder_path* may be omitted — the
+        checkpoint already contains all vision encoder weights.  In that case the
+        HuggingFace base model is used only to supply the module structure, and
+        all weights are then overwritten by the checkpoint.
+        """
         meta_path = checkpoint_path.replace(".safetensors", "_metadata.json")
         metadata: dict = {}
         if os.path.isfile(meta_path):
@@ -356,7 +362,20 @@ class SigLIP2TaggerModel(nn.Module):
 
         cls_dim         = metadata.get("cls_dim")
         hidden_proj_dim = metadata.get("hidden_proj_dim")
-        vision_encoder  = _load_vision_encoder(vision_encoder_path)
+
+        if vision_encoder_path:
+            vision_encoder = _load_vision_encoder(vision_encoder_path)
+        else:
+            # Merged checkpoint: load HuggingFace base model for structure only;
+            # all weights will be overwritten by the checkpoint state dict below.
+            from transformers import AutoModel
+            REPO_ID = "google/siglip2-so400m-patch16-naflex"
+            try:
+                full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32, local_files_only=True)
+            except Exception:
+                full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32)
+            vision_encoder = full_model.vision_model
+
         model = cls(
             num_tags=num_tags,
             vision_encoder=vision_encoder,

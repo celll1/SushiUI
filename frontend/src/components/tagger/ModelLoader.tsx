@@ -251,17 +251,19 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
         )}
       </div>
 
-      {/* Vision encoder (always required) */}
-      <div>
-        <label className={labelCls}>Vision Encoder Path (.safetensors)</label>
-        <input
-          type="text"
-          value={visionEncoderPath}
-          onChange={(e) => setVisionEncoderPath(e.target.value)}
-          placeholder="D:\...\siglip2_so400m_vision_encoder.safetensors"
-          className={inputCls}
-        />
-      </div>
+      {/* Vision encoder (LoRA only — full/merged models include encoder weights) */}
+      {modelType === "lora" && (
+        <div>
+          <label className={labelCls}>Vision Encoder Path (.safetensors)</label>
+          <input
+            type="text"
+            value={visionEncoderPath}
+            onChange={(e) => setVisionEncoderPath(e.target.value)}
+            placeholder="D:\...\siglip2_so400m_vision_encoder.safetensors"
+            className={inputCls}
+          />
+        </div>
+      )}
 
       {/* Vocabulary */}
       <div>

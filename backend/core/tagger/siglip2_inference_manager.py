@@ -130,10 +130,8 @@ class SigLIP2InferenceManager:
                 lora_alpha=lora_alpha,
             )
         else:
-            if not vision_encoder_path:
-                raise ValueError(
-                    "vision_encoder_path is required to load the vision encoder."
-                )
+            # vision_encoder_path is optional for merged (full) checkpoints —
+            # the checkpoint already contains all vision encoder weights.
             model = SigLIP2TaggerModel.load_checkpoint(
                 checkpoint_path=checkpoint_path,
                 vision_encoder_path=vision_encoder_path,

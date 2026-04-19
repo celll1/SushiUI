@@ -88,12 +88,12 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
           <p className={disabledNote}>Only available for LoRA models</p>
         )}
         <div>
-          <label className={labelCls}>Output Directory</label>
+          <label className={labelCls}>Output Directory <span className="text-gray-600">— optional</span></label>
           <input
             type="text"
             value={mergeOutput}
             onChange={(e) => setMergeOutput(e.target.value)}
-            placeholder="D:\...\merged_model_dir"
+            placeholder="Auto: {checkpoint_dir}/merged/"
             disabled={!modelLoaded || modelType !== "lora"}
             className={inputCls}
           />
@@ -106,7 +106,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
         )}
         <button
           onClick={handleMerge}
-          disabled={!modelLoaded || modelType !== "lora" || !mergeOutput || merging}
+          disabled={!modelLoaded || modelType !== "lora" || merging}
           className="w-full py-1.5 rounded text-xs font-medium bg-purple-700 hover:bg-purple-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
         >
           {merging ? "Merging…" : "Merge & Save"}
@@ -117,12 +117,12 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
       <div className="space-y-2">
         <h4 className="text-xs font-medium text-gray-300">Export ONNX</h4>
         <div>
-          <label className={labelCls}>Output Path (.onnx)</label>
+          <label className={labelCls}>Output Path (.onnx) <span className="text-gray-600">— optional</span></label>
           <input
             type="text"
             value={onnxOutput}
             onChange={(e) => setOnnxOutput(e.target.value)}
-            placeholder="D:\...\model.onnx"
+            placeholder="Auto: {checkpoint_dir}/onnx/{name}.onnx"
             disabled={!modelLoaded}
             className={inputCls}
           />
@@ -151,7 +151,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
         )}
         <button
           onClick={handleExportONNX}
-          disabled={!modelLoaded || !onnxOutput || exporting}
+          disabled={!modelLoaded || exporting}
           className="w-full py-1.5 rounded text-xs font-medium bg-teal-700 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
         >
           {exporting ? "Exporting…" : "Export ONNX"}

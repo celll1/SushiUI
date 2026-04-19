@@ -1159,30 +1159,43 @@ def run_tagger_training(
                 if _repo_from_meta:
                     print(f"[TaggerTraining] vision_encoder_repo read from checkpoint metadata: {_repo_from_meta}")
 
-        # For LoRA training on a locally fine-tuned base: copy the base model into
-        # output_dir so the LoRA checkpoint is self-contained and the absolute path
-        # is not leaked in metadata.
-        _ve_path_for_copy = config.get("vision_encoder_path", "")
-        if (
-            config.get("training_method") == "lora"
-            and _ve_path_for_copy
-            and _ve_path_for_copy.endswith(".safetensors")
-            and not _is_hf_repo_or_url(_ve_path_for_copy)[0]
-            and os.path.isfile(_ve_path_for_copy)
-        ):
+        # Save base model into training directory for self-contained checkpoints.
+        # Controlled by save_base_model (default True).
+        # - Local safetensors: copy file (+ _metadata.json) into output_dir
+        # - HF repo: extract vision encoder weights via siglip2_extractor
+        # Stores relative filename "base_model.safetensors" in config so _make_metadata
+        # can write it without leaking absolute paths.
+        if config.get("save_base_model", True):
             import shutil as _shutil
             _base_dst = os.path.join(output_dir, "base_model.safetensors")
-            if not os.path.isfile(_base_dst):
-                print(f"[TaggerTraining] Copying base model to training directory: {_base_dst}")
+            _ve_path_for_copy = config.get("vision_encoder_path", "")
+            _is_hf_ve, _resolved_ve_id = _is_hf_repo_or_url(_ve_path_for_copy)
+
+            if os.path.isfile(_base_dst):
+                print(f"[TaggerTraining] Base model already present in training directory: {_base_dst}")
+                config["base_model_path"] = "base_model.safetensors"
+            elif _ve_path_for_copy and not _is_hf_ve and _ve_path_for_copy.endswith(".safetensors") and os.path.isfile(_ve_path_for_copy):
+                # Local safetensors base — copy into training directory
+                print(f"[TaggerTraining] Copying local base model to training directory: {_base_dst}")
                 _shutil.copy2(_ve_path_for_copy, _base_dst)
-                # Copy accompanying _metadata.json if present
                 _ve_meta_src = _ve_path_for_copy.replace(".safetensors", "_metadata.json")
                 if os.path.isfile(_ve_meta_src):
                     _shutil.copy2(_ve_meta_src, _base_dst.replace(".safetensors", "_metadata.json"))
-            else:
-                print(f"[TaggerTraining] Base model already present in training directory: {_base_dst}")
-            # Store relative filename only — no absolute paths in metadata
-            config["base_model_path"] = "base_model.safetensors"
+                config["base_model_path"] = "base_model.safetensors"
+            elif _is_hf_ve:
+                # HF repo base — extract vision encoder weights
+                _hf_repo = _resolved_ve_id or config.get("vision_encoder_repo", _DEFAULT_REPO)
+                print(f"[TaggerTraining] Extracting vision encoder from HF repo '{_hf_repo}' → {_base_dst}")
+                try:
+                    from core.tagger.siglip2_extractor import extract_vision_encoder as _extract_ve
+                    _extract_ve(_hf_repo, _base_dst)
+                    # Write _metadata.json with vision_encoder_repo for later loading
+                    _base_meta_dst = _base_dst.replace(".safetensors", "_metadata.json")
+                    json.dump({"vision_encoder_repo": _hf_repo}, open(_base_meta_dst, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+                    config["base_model_path"] = "base_model.safetensors"
+                    print(f"[TaggerTraining] Vision encoder extracted: {_base_dst}")
+                except Exception as _e:
+                    print(f"[TaggerTraining] WARNING: could not extract base model from HF repo: {_e}")
 
         # Read the old vocabulary.json BEFORE TaggerTrainer overwrites it
         old_vocabulary: Optional[TagVocabulary] = None

@@ -47,6 +47,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   excluded_categories: [] as string[],
   ban_tags: "",
   use_tag_aliases: false,
+  save_base_model: true,
   cls_dim: undefined as number | undefined,
   hidden_proj_dim: undefined as number | undefined,
 };
@@ -91,6 +92,7 @@ export default function TaggerTrainingConfig({
         excluded_categories: (editRun.config?.excluded_categories as string[]) ?? DEFAULT_CONFIG.excluded_categories,
         ban_tags: (editRun.config?.ban_tags as string) ?? DEFAULT_CONFIG.ban_tags,
         use_tag_aliases: (editRun.config?.use_tag_aliases as boolean) ?? DEFAULT_CONFIG.use_tag_aliases,
+        save_base_model: (editRun.config?.save_base_model as boolean) ?? DEFAULT_CONFIG.save_base_model,
         cls_dim: (editRun.config?.cls_dim as number | undefined) ?? DEFAULT_CONFIG.cls_dim,
         hidden_proj_dim: (editRun.config?.hidden_proj_dim as number | undefined) ?? DEFAULT_CONFIG.hidden_proj_dim,
       }
@@ -351,6 +353,18 @@ export default function TaggerTrainingConfig({
               />
               <span className="text-sm text-gray-300">Resolve tag aliases</span>
               <span className="text-xs text-gray-500">(maps deprecated tags to canonical form via tagother/tag_aliases.json)</span>
+            </label>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={config.save_base_model ?? true}
+                onChange={(e) => setField("save_base_model", e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+              />
+              <span className="text-sm text-gray-300">Save base model</span>
+              <span className="text-xs text-gray-500">(copies base weights into training directory for self-contained checkpoints)</span>
             </label>
           </div>
         </section>

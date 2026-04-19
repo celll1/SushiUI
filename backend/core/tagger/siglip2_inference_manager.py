@@ -258,17 +258,22 @@ class SigLIP2InferenceManager:
         if not isinstance(self.model, SigLIP2TaggerLoRAModel):
             raise ValueError("merge_lora_and_save is only valid for LoRA models.")
 
-        output_dir  = os.path.dirname(output_path)
-        output_name = os.path.splitext(os.path.basename(output_path))[0]
+        # F4: treat output_path as a directory; always save as model.safetensors
+        output_dir  = output_path.strip().strip('"').strip("'")
+        output_name = "model"
         os.makedirs(output_dir, exist_ok=True)
 
-        # Build metadata — preserve vision_encoder_repo so the merged checkpoint
-        # can be loaded without specifying vision_encoder_path.
-        meta = _read_metadata(self.checkpoint_path)
-        meta["source_checkpoint"] = self.checkpoint_path
-        meta["merged"] = True
+        # F5: build clean metadata — keep architecture/training info, strip local paths.
+        _raw_meta = _read_metadata(self.checkpoint_path)
+        from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+        _KEEP_KEYS = {
+            "num_tags", "lora_rank", "lora_alpha", "training_method",
+            "use_tag_aliases", "category_counts", "best_f1", "best_threshold",
+            "vision_encoder_repo", "cls_dim", "hidden_proj_dim",
+        }
+        meta = {k: v for k, v in _raw_meta.items() if k in _KEEP_KEYS}
+        meta["training_method"] = "full"   # merged checkpoint IS a full model
         if "vision_encoder_repo" not in meta:
-            from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
             meta["vision_encoder_repo"] = SIGLIP2_DEFAULT_REPO_ID
 
         saved = self.model.save_merged_checkpoint(output_dir, output_name, meta)

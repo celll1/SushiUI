@@ -2556,6 +2556,12 @@ class SigLIP2ExportONNXRequest(BaseModel):
     max_num_patches: int = 256
 
 
+class SigLIP2ExtractEncoderRequest(BaseModel):
+    repo_id: str
+    output_path: str
+    encoder_type: str = "vision"  # "vision" | "text"
+
+
 @router.post("/tagger/siglip2/load")
 async def siglip2_load(request: SigLIP2LoadRequest):
     """Load a SigLIP2 tagger checkpoint (full or LoRA, auto-detected)."""
@@ -2648,6 +2654,20 @@ async def siglip2_export_onnx(request: SigLIP2ExportONNXRequest):
             max_num_patches=request.max_num_patches,
         )
         return {"saved_path": onnx_path, "vocab_path": vocab_path}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tagger/siglip2/extract-encoder")
+async def siglip2_extract_encoder(request: SigLIP2ExtractEncoderRequest):
+    """Extract vision or text encoder from a HuggingFace repo and save as safetensors."""
+    try:
+        from core.tagger.siglip2_extractor import extract_vision_encoder, extract_text_encoder
+        if request.encoder_type == "text":
+            result = extract_text_encoder(request.repo_id, request.output_path)
+        else:
+            result = extract_vision_encoder(request.repo_id, request.output_path)
+        return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

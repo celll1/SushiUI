@@ -968,17 +968,11 @@ class TaggerTrainer:
             # Merged (full) checkpoints use this to reconstruct the model without
             # requiring vision_encoder_path at load time.
             "vision_encoder_repo": self.config.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
-            # For LoRA checkpoints trained on a locally fine-tuned base model,
-            # record the base model path so inference/merge can load the correct weights.
-            # Only set when the vision_encoder_path is a local safetensors file.
+            # For LoRA checkpoints trained on a locally fine-tuned base: relative
+            # filename set by run_tagger_training when it copies the base into output_dir.
             **({
-                "base_model_path": self.config["vision_encoder_path"],
-            } if (
-                self.config.get("training_method") == "lora"
-                and self.config.get("vision_encoder_path", "")
-                and self.config["vision_encoder_path"].endswith(".safetensors")
-                and not _is_hf_repo_or_url(self.config["vision_encoder_path"])[0]
-            ) else {}),
+                "base_model_path": self.config["base_model_path"],
+            } if self.config.get("base_model_path") else {}),
         }
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
@@ -1164,6 +1158,31 @@ def run_tagger_training(
                 config["vision_encoder_repo"] = _repo_from_meta or _DEFAULT_REPO
                 if _repo_from_meta:
                     print(f"[TaggerTraining] vision_encoder_repo read from checkpoint metadata: {_repo_from_meta}")
+
+        # For LoRA training on a locally fine-tuned base: copy the base model into
+        # output_dir so the LoRA checkpoint is self-contained and the absolute path
+        # is not leaked in metadata.
+        _ve_path_for_copy = config.get("vision_encoder_path", "")
+        if (
+            config.get("training_method") == "lora"
+            and _ve_path_for_copy
+            and _ve_path_for_copy.endswith(".safetensors")
+            and not _is_hf_repo_or_url(_ve_path_for_copy)[0]
+            and os.path.isfile(_ve_path_for_copy)
+        ):
+            import shutil as _shutil
+            _base_dst = os.path.join(output_dir, "base_model.safetensors")
+            if not os.path.isfile(_base_dst):
+                print(f"[TaggerTraining] Copying base model to training directory: {_base_dst}")
+                _shutil.copy2(_ve_path_for_copy, _base_dst)
+                # Copy accompanying _metadata.json if present
+                _ve_meta_src = _ve_path_for_copy.replace(".safetensors", "_metadata.json")
+                if os.path.isfile(_ve_meta_src):
+                    _shutil.copy2(_ve_meta_src, _base_dst.replace(".safetensors", "_metadata.json"))
+            else:
+                print(f"[TaggerTraining] Base model already present in training directory: {_base_dst}")
+            # Store relative filename only — no absolute paths in metadata
+            config["base_model_path"] = "base_model.safetensors"
 
         # Read the old vocabulary.json BEFORE TaggerTrainer overwrites it
         old_vocabulary: Optional[TagVocabulary] = None

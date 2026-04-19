@@ -951,7 +951,7 @@ class TaggerTrainer:
     def _make_metadata(
         self, epoch: int, step: int, best_f1: float, best_threshold: float
     ) -> Dict[str, Any]:
-        from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+        from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID, _is_hf_repo_or_url
         return {
             "run_id": self.run_id,
             "num_tags": self.vocabulary.num_tags,
@@ -968,6 +968,17 @@ class TaggerTrainer:
             # Merged (full) checkpoints use this to reconstruct the model without
             # requiring vision_encoder_path at load time.
             "vision_encoder_repo": self.config.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
+            # For LoRA checkpoints trained on a locally fine-tuned base model,
+            # record the base model path so inference/merge can load the correct weights.
+            # Only set when the vision_encoder_path is a local safetensors file.
+            **({
+                "base_model_path": self.config["vision_encoder_path"],
+            } if (
+                self.config.get("training_method") == "lora"
+                and self.config.get("vision_encoder_path", "")
+                and self.config["vision_encoder_path"].endswith(".safetensors")
+                and not _is_hf_repo_or_url(self.config["vision_encoder_path"])[0]
+            ) else {}),
         }
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:

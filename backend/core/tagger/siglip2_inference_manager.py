@@ -147,6 +147,10 @@ class SigLIP2InferenceManager:
                     # LoRA was trained on a local safetensors checkpoint rather than an HF repo,
                     # so that merge/inference uses the correct base weights.
                     _base_path = meta.get("base_model_path", "")
+                    if _base_path:
+                        # Resolve relative path (filename only) against the checkpoint directory
+                        if not os.path.isabs(_base_path):
+                            _base_path = os.path.join(os.path.dirname(checkpoint_path), _base_path)
                     if _base_path and os.path.isfile(_base_path):
                         vision_encoder_path = _base_path
                         print(f"[SigLIP2Manager] Using locally fine-tuned base from metadata: {vision_encoder_path}")

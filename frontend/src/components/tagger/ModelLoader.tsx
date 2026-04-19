@@ -254,12 +254,12 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
       {/* Vision encoder (LoRA only — full/merged models include encoder weights) */}
       {modelType === "lora" && (
         <div>
-          <label className={labelCls}>Vision Encoder Path (.safetensors)</label>
+          <label className={labelCls}>Vision Encoder Path (.safetensors) <span className="text-gray-600">— optional</span></label>
           <input
             type="text"
             value={visionEncoderPath}
             onChange={(e) => setVisionEncoderPath(e.target.value)}
-            placeholder="D:\...\siglip2_so400m_vision_encoder.safetensors"
+            placeholder="Auto-detected from checkpoint metadata (HF repo)"
             className={inputCls}
           />
         </div>

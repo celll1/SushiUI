@@ -3,6 +3,9 @@ venv/
 env/
 __pycache__/
 *.pyc
+
+# HuggingFace Spaces (separate repo)
+spaces/
 *.pyo
 *.pyd
 .Python

@@ -119,9 +119,12 @@ class SigLIP2InferenceManager:
 
         if model_type == "lora":
             if not vision_encoder_path:
-                raise ValueError(
-                    "vision_encoder_path is required for LoRA checkpoints."
-                )
+                # Fall back to the HF repo recorded in checkpoint metadata.
+                # _load_vision_encoder accepts HF repo IDs directly, so no
+                # local safetensors extraction is needed.
+                from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+                vision_encoder_path = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+                print(f"[SigLIP2Manager] vision_encoder_path not provided; using HF repo from metadata: {vision_encoder_path}")
             model = SigLIP2TaggerLoRAModel.load_checkpoint(
                 checkpoint_path=checkpoint_path,
                 vision_encoder_path=vision_encoder_path,

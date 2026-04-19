@@ -100,10 +100,16 @@ class TaglistCache:
         Returns:
             Normalized tag string
         """
-        # Remove Danbooru wiki-link parens: /( -> (, /) -> )
-        tag = tag.replace('/(', '(').replace('/)', ')')
-        # Remove SD-style backslash escapes: \( -> (, \) -> ), \/ -> /
-        tag = tag.replace('\\(', '(').replace('\\)', ')').replace('\\/', '/')
+        # Unescape parenthesis conventions (loop to handle multiple layers):
+        #   /( /)  — Danbooru wiki-link syntax
+        #   \( \)  — SD/booru caption backslash escaping
+        #   \/     — backslash before slash
+        while True:
+            prev = tag
+            tag = (tag.replace('/(', '(').replace('/)', ')')
+                      .replace('\\(', '(').replace('\\)', ')').replace('\\/', '/'))
+            if tag == prev:
+                break
         return tag.lower().replace('_', ' ').strip()
 
     def _get_taglist_path(self, category: str) -> str:

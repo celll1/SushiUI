@@ -949,6 +949,7 @@ class TaggerTrainer:
     def _make_metadata(
         self, epoch: int, step: int, best_f1: float, best_threshold: float
     ) -> Dict[str, Any]:
+        from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
         return {
             "run_id": self.run_id,
             "num_tags": self.vocabulary.num_tags,
@@ -961,6 +962,10 @@ class TaggerTrainer:
             "training_method": self.config.get("training_method"),
             "use_tag_aliases": bool(self.config.get("use_tag_aliases", False)),
             "category_counts": self.vocabulary.category_counts(),
+            # Record the HuggingFace repo used for the vision encoder architecture.
+            # Merged (full) checkpoints use this to reconstruct the model without
+            # requiring vision_encoder_path at load time.
+            "vision_encoder_repo": self.config.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
         }
 
     def _emit(self, event_type: str, data: Dict[str, Any]) -> None:

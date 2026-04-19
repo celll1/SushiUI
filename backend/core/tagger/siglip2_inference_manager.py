@@ -262,10 +262,14 @@ class SigLIP2InferenceManager:
         output_name = os.path.splitext(os.path.basename(output_path))[0]
         os.makedirs(output_dir, exist_ok=True)
 
-        # Build metadata
+        # Build metadata — preserve vision_encoder_repo so the merged checkpoint
+        # can be loaded without specifying vision_encoder_path.
         meta = _read_metadata(self.checkpoint_path)
         meta["source_checkpoint"] = self.checkpoint_path
         meta["merged"] = True
+        if "vision_encoder_repo" not in meta:
+            from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+            meta["vision_encoder_repo"] = SIGLIP2_DEFAULT_REPO_ID
 
         saved = self.model.save_merged_checkpoint(output_dir, output_name, meta)
         print(f"[SigLIP2Manager] Merged LoRA checkpoint saved → {saved}")

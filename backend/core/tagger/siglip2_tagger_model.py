@@ -38,6 +38,11 @@ import torch.nn as nn
 from safetensors.torch import load_file, save_file
 
 
+# Default HuggingFace repo ID for the SigLIP2 vision encoder.
+# Stored in checkpoint metadata so merged checkpoints can be loaded
+# without requiring the user to specify vision_encoder_path.
+SIGLIP2_DEFAULT_REPO_ID = "google/siglip2-so400m-patch16-naflex"
+
 # ------------------------------------------------------------------
 # LoRA primitives
 # ------------------------------------------------------------------
@@ -88,21 +93,24 @@ class LoRALinear(nn.Module):
 # Vision encoder loader
 # ------------------------------------------------------------------
 
-def _load_vision_encoder(safetensors_path: str) -> nn.Module:
-    """Load SigLIP2 so400m vision encoder from safetensors file."""
+def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_REPO_ID) -> nn.Module:
+    """Load SigLIP2 vision encoder from safetensors file.
+
+    *repo_id* controls which HuggingFace model is used for the module structure.
+    Defaults to ``SIGLIP2_DEFAULT_REPO_ID`` (so400m-patch16-naflex).
+    """
     from transformers import AutoModel
 
     # Strip surrounding quotes that may come from user input
     safetensors_path = safetensors_path.strip().strip('"').strip("'")
 
-    REPO_ID = "google/siglip2-so400m-patch16-naflex"
     # Try local cache first to avoid network access and reduce peak memory.
     try:
         full_model = AutoModel.from_pretrained(
-            REPO_ID, dtype=torch.float32, local_files_only=True
+            repo_id, dtype=torch.float32, local_files_only=True
         )
     except Exception:
-        full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32)
+        full_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32)
     vision_encoder = full_model.vision_model
 
     # Load our fine-tuned / custom weights
@@ -362,18 +370,18 @@ class SigLIP2TaggerModel(nn.Module):
 
         cls_dim         = metadata.get("cls_dim")
         hidden_proj_dim = metadata.get("hidden_proj_dim")
+        repo_id         = metadata.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
 
         if vision_encoder_path:
-            vision_encoder = _load_vision_encoder(vision_encoder_path)
+            vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
         else:
             # Merged checkpoint: load HuggingFace base model for structure only;
             # all weights will be overwritten by the checkpoint state dict below.
             from transformers import AutoModel
-            REPO_ID = "google/siglip2-so400m-patch16-naflex"
             try:
-                full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32, local_files_only=True)
+                full_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32, local_files_only=True)
             except Exception:
-                full_model = AutoModel.from_pretrained(REPO_ID, dtype=torch.float32)
+                full_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32)
             vision_encoder = full_model.vision_model
 
         model = cls(

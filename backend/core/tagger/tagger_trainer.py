@@ -709,6 +709,37 @@ class TaggerTrainer:
                         "path": ckpt_path,
                     })
 
+            # --- Stop checkpoint (mid-epoch or epoch-boundary) ---
+            if self._stop_requested:
+                print(f"[TaggerTrainer] Stop requested. Saving checkpoint at step {global_step}...")
+                metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
+                ckpt_name = f"step_{global_step:06d}"
+                ckpt_path = _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
+                _save_training_state(
+                    self.output_dir, ckpt_name,
+                    epoch, global_step, batch_idx,
+                    best_f1, best_threshold,
+                    epoch_start_rng=epoch_start_rng,
+                )
+                _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+                # Also update "latest" to the stop position
+                _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
+                _save_training_state(
+                    self.output_dir, "latest",
+                    epoch, global_step, batch_idx,
+                    best_f1, best_threshold,
+                    epoch_start_rng=epoch_start_rng,
+                )
+                _save_optimizer_state(optimizer, self.output_dir, "latest")
+                self._emit("checkpoint", {
+                    "name": ckpt_name,
+                    "step": global_step,
+                    "epoch": epoch,
+                    "path": ckpt_path,
+                })
+                print(f"[TaggerTrainer] Stopped. Checkpoint: {ckpt_name} (epoch {epoch}, step {global_step})")
+                break  # exit epoch loop → skips validation, epoch-end save, _final_threshold_search
+
             avg_loss = epoch_loss / max(batches_processed, 1)
 
             # Validation
@@ -763,6 +794,15 @@ class TaggerTrainer:
                 "loss": avg_loss,
                 **val_metrics,
             })
+
+        if self._stop_requested:
+            # Training was stopped mid-run; skip threshold search and "completed" event
+            return {
+                "best_f1": best_f1,
+                "best_threshold": best_threshold,
+                "total_steps": global_step,
+                "metrics_history": metrics_history,
+            }
 
         # Final threshold grid search on validation set
         final_search = self._final_threshold_search(
@@ -1116,4 +1156,8 @@ def run_tagger_training(
         )
 
     finally:
+        import gc as _gc
+        _gc.collect()
+        torch.cuda.empty_cache()
+        print("[TaggerTrainer] GPU memory freed")
         datasets_db.close()

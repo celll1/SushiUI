@@ -511,7 +511,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         path_meta = os.path.join(output_dir, f"{name}_metadata.json")
 
         # Build merged state dict by deep-copying the full model state dict.
-        # LoRALinear modules store the original weight as ``base_layer.weight``
+        # LoRALinear modules store the original weight as ``base.weight``
         # plus ``lora_A`` / ``lora_B``; we materialise the merged weight and
         # produce a state dict that looks like a plain SigLIP2TaggerModel.
         merged_sd: Dict[str, torch.Tensor] = {}
@@ -525,16 +525,16 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             A = lora_module.lora_A.float()  # [in, rank]
             B = lora_module.lora_B.float()  # [rank, out]
             delta = (A @ B).T * scale       # [out, in]
-            w     = lora_module.base_layer.weight.float() + delta
+            w     = lora_module.base.weight.float() + delta
             merged_weights[module_path + ".weight"] = w
-            if lora_module.base_layer.bias is not None:
-                merged_weights[module_path + ".bias"] = lora_module.base_layer.bias.float()
+            if lora_module.base.bias is not None:
+                merged_weights[module_path + ".bias"] = lora_module.base.bias.float()
 
         # Build full state dict with the same key format as SigLIP2TaggerModel.
         # Keys from vision_encoder are stored under "vision_encoder.*".
         for k, v in self.state_dict().items():
             # Translate LoRALinear keys: "vision_encoder.*.lora_A" etc. → skip or replace
-            # LoRALinear keys look like "vision_encoder.<path>.lora_A" / "lora_B" / "base_layer.weight"
+            # LoRALinear keys look like "vision_encoder.<path>.lora_A" / "lora_B" / "base.weight"
             matched = False
             for module_path in self._lora_modules:
                 ve_prefix = f"vision_encoder.{module_path}"

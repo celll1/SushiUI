@@ -261,8 +261,12 @@ class SigLIP2InferenceManager:
         if not isinstance(self.model, SigLIP2TaggerLoRAModel):
             raise ValueError("merge_lora_and_save is only valid for LoRA models.")
 
-        # F4: treat output_path as a directory; always save as model.safetensors
-        output_dir  = output_path.strip().strip('"').strip("'")
+        # Treat output_path as a directory; always save as model.safetensors.
+        # If empty, fall back to a "merged" subdirectory alongside the checkpoint.
+        output_dir = output_path.strip().strip('"').strip("'")
+        if not output_dir:
+            output_dir = os.path.join(os.path.dirname(self.checkpoint_path), "merged")
+            print(f"[SigLIP2Manager] output_path not specified; saving to {output_dir}")
         output_name = "model"
         os.makedirs(output_dir, exist_ok=True)
 
@@ -306,6 +310,14 @@ class SigLIP2InferenceManager:
             _load_vision_encoder,
         )
 
+        # If empty, fall back to an "onnx" subdirectory alongside the checkpoint.
+        output_path = output_path.strip().strip('"').strip("'")
+        if not output_path:
+            ckpt_stem = os.path.splitext(os.path.basename(self.checkpoint_path))[0]
+            output_path = os.path.join(
+                os.path.dirname(self.checkpoint_path), "onnx", f"{ckpt_stem}.onnx"
+            )
+            print(f"[SigLIP2Manager] output_path not specified; saving ONNX to {output_path}")
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         # If LoRA: merge into a temporary full model for export

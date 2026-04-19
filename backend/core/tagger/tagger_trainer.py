@@ -35,6 +35,7 @@ from transformers import AutoProcessor
 from safetensors.torch import load_file as _load_safetensors_file
 
 from .siglip2_tagger_model import (
+    SIGLIP2_DEFAULT_REPO_ID,
     SigLIP2TaggerLoRAModel,
     SigLIP2TaggerModel,
     _inherit_head,
@@ -412,6 +413,7 @@ class TaggerTrainer:
             hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
             init_head_from=cfg.get("init_head_from") or None,
             new_vocab=self.vocabulary.tag_to_idx if cfg.get("init_head_from") else None,
+            repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
         )
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_count     = sum(p.numel() for p in model.parameters())

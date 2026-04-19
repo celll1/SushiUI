@@ -663,8 +663,9 @@ class SigLIP2TaggerLoRAModel(nn.Module):
 
         lora_rank  = metadata.get("lora_rank",  lora_rank)
         lora_alpha = metadata.get("lora_alpha", lora_alpha)
+        repo_id    = metadata.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
 
-        vision_encoder = _load_vision_encoder(vision_encoder_path)
+        vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
         model = cls(
             num_tags=num_tags,
             vision_encoder=vision_encoder,
@@ -816,6 +817,7 @@ def build_tagger_model(
     hidden_proj_dim: Optional[int] = None,
     init_head_from: Optional[str] = None,
     new_vocab: Optional[Dict[str, int]] = None,
+    repo_id: str = SIGLIP2_DEFAULT_REPO_ID,
 ) -> nn.Module:
     """Build the appropriate tagger model.
 
@@ -842,7 +844,7 @@ def build_tagger_model(
                           tag-name alignment; falls back to positional copy if None.
     """
     print(f"[TaggerModel] Loading vision encoder from: {vision_encoder_path}")
-    vision_encoder = _load_vision_encoder(vision_encoder_path)
+    vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
 
     if training_method == "lora":
         if cls_dim:

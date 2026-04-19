@@ -8,7 +8,6 @@ tagother/tag_aliases.json (danbooru-format alias table).
 from __future__ import annotations
 
 import json
-import re
 from typing import Dict
 
 from .tag_vocabulary import normalize_tag
@@ -43,14 +42,16 @@ class TagAliasResolver:
     def to_danbooru_key(self, tag: str) -> str:
         """Convert a raw tag to danbooru lookup key format.
 
-        Steps: strip → lower → unescape backslashes → replace spaces with '_'
+        Steps: strip → lower → unescape /( /) and \( \) → replace spaces with '_'
         """
         t = tag.strip().lower()
+        # Unescape Danbooru wiki-link parens: /( /) and SD-style \( \) \/ (loop for multi-layer)
         while True:
-            u = re.sub(r"\\(.)", r"\1", t)
-            if u == t:
+            prev = t
+            t = (t.replace("/(", "(").replace("/)", ")")
+                  .replace("\\(", "(").replace("\\)", ")").replace("\\/", "/"))
+            if t == prev:
                 break
-            t = u
         return t.replace(" ", "_")
 
     def resolve(self, tag: str) -> str:

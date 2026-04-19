@@ -100,6 +100,8 @@ class TaglistCache:
         Returns:
             Normalized tag string
         """
+        # Remove Danbooru wiki-link parens: /( -> (, /) -> )
+        tag = tag.replace('/(', '(').replace('/)', ')')
         # Remove SD-style backslash escapes: \( -> (, \) -> ), \/ -> /
         tag = tag.replace('\\(', '(').replace('\\)', ')').replace('\\/', '/')
         return tag.lower().replace('_', ' ').strip()

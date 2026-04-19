@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { SigLIP2TagResult } from "@/utils/api";
 
 // ─── Category colour mapping ─────────────────────────────────────────────────
@@ -172,7 +172,11 @@ export default function TagResultsChart({
   onSelectAll,
   onDeselectAll,
 }: TagResultsChartProps) {
-  const [viewMode, setViewMode] = useState<"flat" | "grouped">("flat");
+  const [viewMode, setViewMode] = useState<"flat" | "grouped">(() => {
+    try { return (localStorage.getItem("tagger_view_mode") as "flat" | "grouped") || "grouped"; }
+    catch { return "grouped"; }
+  });
+  useEffect(() => { localStorage.setItem("tagger_view_mode", viewMode); }, [viewMode]);
 
   const handleSelectGroup = (tagNames: string[]) => {
     tagNames.forEach(t => { if (!selectedTags.has(t)) onTagToggle(t); });

@@ -365,7 +365,7 @@ class SigLIP2InferenceManager:
                     "pixel_attention_mask": {1: "num_patches"},
                     "spatial_shapes":       {0: "num_sequences"},
                 },
-                opset_version=17,
+                opset_version=18,
                 do_constant_folding=True,
             )
 

@@ -876,7 +876,19 @@ def build_tagger_model(
     else:
         raise ValueError(f"Unknown training_method: {training_method!r}. Use 'full' or 'lora'.")
 
-    if init_head_from:
-        _inherit_head(model, init_head_from, num_tags, new_vocab=new_vocab)
+    # If init_head_from is not set but vision_encoder_path is a merged tagger
+    # checkpoint (contains head.weight), auto-inherit the head from it so that
+    # weights for existing tags are preserved across vocabulary changes.
+    _effective_head_src = init_head_from
+    if not _effective_head_src and os.path.isfile(vision_encoder_path):
+        from safetensors import safe_open as _safe_open
+        with _safe_open(vision_encoder_path, framework="pt", device="cpu") as _f:
+            _keys = set(_f.keys())
+        if "head.weight" in _keys and any(k.startswith("vision_encoder.") for k in _keys):
+            _effective_head_src = vision_encoder_path
+            print(f"[TaggerModel] Auto-inheriting head from merged checkpoint: {vision_encoder_path}")
+
+    if _effective_head_src:
+        _inherit_head(model, _effective_head_src, num_tags, new_vocab=new_vocab)
 
     return model

@@ -412,7 +412,7 @@ class TaggerTrainer:
             cls_dim=cfg.get("cls_dim") or None,
             hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
             init_head_from=cfg.get("init_head_from") or None,
-            new_vocab=self.vocabulary.tag_to_idx if cfg.get("init_head_from") else None,
+            new_vocab=self.vocabulary.tag_to_idx,
             repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
         )
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)

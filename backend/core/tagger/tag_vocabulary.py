@@ -35,10 +35,14 @@ def normalize_tag(tag: str) -> str:
     1. Strip leading/trailing whitespace
     2. Replace underscores with spaces  (danbooru convention)
     3. Lowercase
-    4. Remove backslash escaping        e.g. \\( → (  so that
+    4. Remove Danbooru wiki link escaping  e.g. /(tag/) → (tag)
+       used in wiki text to denote literal parentheses in tag names
+    5. Remove backslash escaping           e.g. \\( → (  so that
        "fate \\(series\\)" and "fate (series)" collapse to the same key
     """
     tag = tag.strip().replace("_", " ").lower()
+    # Unescape Danbooru wiki-link parens: /( → (  and /) → )
+    tag = tag.replace("/(", "(").replace("/)", ")")
     # Unescape backslash sequences repeatedly until stable
     # (handles multiply-escaped tags like \\\\( → \\( → ()
     while True:
@@ -119,18 +123,27 @@ class TagVocabulary:
                 if norm not in tag_categories:
                     tag_categories[norm] = category
 
-        # Resolve "__lookup__" sentinels via taglist_cache (batch, O(1) per tag)
-        lookup_tags = [t for t, c in tag_categories.items() if c == "__lookup__"]
+        # Resolve "__lookup__" sentinels AND "Unknown" tags via taglist_cache.
+        # "Unknown" may appear in tag_data when captions were built before a tag was
+        # added to the local taglist — re-check so newly added tags get proper categories.
+        lookup_tags = [t for t, c in tag_categories.items() if c in ("__lookup__", "Unknown")]
         if lookup_tags:
             try:
                 from utils.taglist_cache import taglist_cache
                 resolved = taglist_cache.get_categories_batch(lookup_tags)
                 for norm_tag in lookup_tags:
-                    tag_categories[norm_tag] = resolved.get(norm_tag, "General")
+                    original = tag_categories[norm_tag]
+                    found = resolved.get(norm_tag)
+                    if found:
+                        tag_categories[norm_tag] = found
+                    elif original == "__lookup__":
+                        tag_categories[norm_tag] = "General"
+                    # else: keep "Unknown" if taglist doesn't know it either
             except Exception:
-                # taglist_cache not initialized or unavailable — fall back to General
+                # taglist_cache not initialized or unavailable — fall back to General for sentinels
                 for norm_tag in lookup_tags:
-                    tag_categories[norm_tag] = "General"
+                    if tag_categories[norm_tag] == "__lookup__":
+                        tag_categories[norm_tag] = "General"
 
         # Filter by min_count
         filtered: Dict[str, int] = {t: c for t, c in tag_counts.items() if c >= min_count}

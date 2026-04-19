@@ -1013,6 +1013,26 @@ export const getSigLIP2CheckpointMeta = async (path: string): Promise<SigLIP2Che
   return response.data as SigLIP2CheckpointMeta;
 };
 
+export interface SigLIP2ExtractEncoderResponse {
+  output_path: string;
+  num_params: number;
+  hidden_size: number;
+  num_layers: number;
+}
+
+export const extractSigLIP2Encoder = async (
+  repo_id: string,
+  output_path: string,
+  encoder_type: "vision" | "text" = "vision",
+): Promise<SigLIP2ExtractEncoderResponse> => {
+  const response = await api.post("/tagger/siglip2/extract-encoder", {
+    repo_id,
+    output_path,
+    encoder_type,
+  });
+  return response.data;
+};
+
 export interface VocabularyData {
   num_tags: number;
   tag_to_idx: Record<string, number>;

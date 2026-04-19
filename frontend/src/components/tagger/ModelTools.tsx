@@ -1,7 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import { mergeSigLIP2LoRA, exportSigLIP2ONNX } from "@/utils/api";
+import {
+  mergeSigLIP2LoRA,
+  exportSigLIP2ONNX,
+  extractSigLIP2Encoder,
+  SigLIP2ExtractEncoderResponse,
+} from "@/utils/api";
 
 interface ModelToolsProps {
   modelLoaded: boolean;
@@ -18,6 +23,13 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
   const [onnxResult,     setOnnxResult]     = useState<{onnx: string; vocab: string} | null>(null);
   const [mergeError,     setMergeError]     = useState<string | null>(null);
   const [onnxError,      setOnnxError]      = useState<string | null>(null);
+
+  const [extractRepoId,  setExtractRepoId]  = useState("google/siglip2-so400m-patch16-naflex");
+  const [extractOutPath, setExtractOutPath] = useState("");
+  const [extractType,    setExtractType]    = useState<"vision" | "text">("vision");
+  const [extracting,     setExtracting]     = useState(false);
+  const [extractResult,  setExtractResult]  = useState<SigLIP2ExtractEncoderResponse | null>(null);
+  const [extractError,   setExtractError]   = useState<string | null>(null);
 
   const inputCls = "w-full bg-gray-800 border border-gray-600 rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500";
   const labelCls = "block text-xs text-gray-400 mb-1";
@@ -51,6 +63,20 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
     }
   };
 
+  const handleExtract = async () => {
+    setExtracting(true);
+    setExtractError(null);
+    setExtractResult(null);
+    try {
+      const result = await extractSigLIP2Encoder(extractRepoId, extractOutPath, extractType);
+      setExtractResult(result);
+    } catch (e: any) {
+      setExtractError(e?.response?.data?.detail ?? e?.message ?? "Extraction failed");
+    } finally {
+      setExtracting(false);
+    }
+  };
+
   return (
     <div className="space-y-4 p-3 border-t border-gray-700">
       <h3 className="text-sm font-semibold text-gray-200">Model Tools</h3>
@@ -62,12 +88,12 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
           <p className={disabledNote}>Only available for LoRA models</p>
         )}
         <div>
-          <label className={labelCls}>Output Path (.safetensors)</label>
+          <label className={labelCls}>Output Directory</label>
           <input
             type="text"
             value={mergeOutput}
             onChange={(e) => setMergeOutput(e.target.value)}
-            placeholder="D:\...\merged_model.safetensors"
+            placeholder="D:\...\merged_model_dir"
             disabled={!modelLoaded || modelType !== "lora"}
             className={inputCls}
           />
@@ -129,6 +155,58 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
           className="w-full py-1.5 rounded text-xs font-medium bg-teal-700 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
         >
           {exporting ? "Exporting…" : "Export ONNX"}
+        </button>
+      </div>
+
+      {/* ── Extract Encoder from HuggingFace ── */}
+      <div className="space-y-2">
+        <h4 className="text-xs font-medium text-gray-300">Extract Encoder from HuggingFace</h4>
+        <div>
+          <label className={labelCls}>HuggingFace Repo ID</label>
+          <input
+            type="text"
+            value={extractRepoId}
+            onChange={(e) => setExtractRepoId(e.target.value)}
+            placeholder="google/siglip2-so400m-patch16-naflex"
+            className={inputCls}
+          />
+        </div>
+        <div>
+          <label className={labelCls}>Output Path (.safetensors)</label>
+          <input
+            type="text"
+            value={extractOutPath}
+            onChange={(e) => setExtractOutPath(e.target.value)}
+            placeholder="D:\...\siglip2_so400m_vision_encoder.safetensors"
+            className={inputCls}
+          />
+        </div>
+        <div>
+          <label className={labelCls}>Encoder Type</label>
+          <select
+            value={extractType}
+            onChange={(e) => setExtractType(e.target.value as "vision" | "text")}
+            className={inputCls}
+          >
+            <option value="vision">Vision</option>
+            <option value="text">Text</option>
+          </select>
+        </div>
+        {extractError && (
+          <p className="text-xs text-red-400 break-all">{extractError}</p>
+        )}
+        {extractResult && (
+          <div className="text-xs text-green-400 space-y-0.5">
+            <p className="break-all">Saved → {extractResult.output_path}</p>
+            <p>{extractResult.num_params.toLocaleString()} params · hidden={extractResult.hidden_size} · layers={extractResult.num_layers}</p>
+          </div>
+        )}
+        <button
+          onClick={handleExtract}
+          disabled={!extractRepoId || !extractOutPath || extracting}
+          className="w-full py-1.5 rounded text-xs font-medium bg-indigo-700 hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+        >
+          {extracting ? "Extracting…" : "Extract & Save"}
         </button>
       </div>
     </div>

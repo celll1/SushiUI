@@ -220,7 +220,8 @@ export default function TaggerTrainingConfig({
             className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Path to siglip2_so400m_vision_encoder.safetensors, or a tagger LoRA checkpoint to merge and continue training from.
+            Local path to <code>siglip2_so400m_vision_encoder.safetensors</code>, a LoRA/merged tagger checkpoint,
+            or a HuggingFace repo ID (e.g. <code>google/siglip2-so400m-patch16-naflex</code>) or URL.
           </p>
         </section>
 

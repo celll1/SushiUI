@@ -1120,6 +1120,18 @@ def run_tagger_training(
             else:
                 print("[TaggerTraining] No resumable checkpoint found; starting from scratch")
 
+        # Resolve vision_encoder_repo for metadata recording.
+        # If vision_encoder_path is a HF repo ID / URL, store it in config
+        # so _make_metadata() records the correct repo ID.
+        _ve_path = config.get("vision_encoder_path", "")
+        from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO
+        _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
+        if _is_hf_ve or "vision_encoder_repo" not in config:
+            config = dict(config)  # shallow copy — do not mutate caller's dict
+            config["vision_encoder_repo"] = _resolved_ve if _is_hf_ve else _DEFAULT_REPO
+            if _is_hf_ve:
+                print(f"[TaggerTraining] HF repo detected for vision encoder: {_resolved_ve}")
+
         # Read the old vocabulary.json BEFORE TaggerTrainer overwrites it
         old_vocabulary: Optional[TagVocabulary] = None
         if resume_ckpt_name is not None:

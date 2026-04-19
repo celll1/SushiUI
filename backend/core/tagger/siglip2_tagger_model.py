@@ -43,6 +43,25 @@ from safetensors.torch import load_file, save_file
 # without requiring the user to specify vision_encoder_path.
 SIGLIP2_DEFAULT_REPO_ID = "google/siglip2-so400m-patch16-naflex"
 
+
+def _is_hf_repo_or_url(path: str) -> "tuple[bool, str]":
+    """Detect whether *path* is a HuggingFace repo ID or URL.
+
+    Returns ``(True, resolved_repo_id)`` for:
+    - ``"https://huggingface.co/google/siglip2-so400m-patch16-naflex"``
+    - ``"google/siglip2-so400m-patch16-naflex"``
+
+    Returns ``(False, "")`` for local file paths.
+    """
+    p = path.strip().strip('"').strip("'")
+    if p.startswith("https://huggingface.co/"):
+        return True, p[len("https://huggingface.co/"):]
+    # org/model-name format: contains "/", not an absolute path, not a local file
+    if "/" in p and not os.path.isabs(p) and not os.path.isfile(p):
+        return True, p
+    return False, ""
+
+
 # ------------------------------------------------------------------
 # LoRA primitives
 # ------------------------------------------------------------------
@@ -94,15 +113,30 @@ class LoRALinear(nn.Module):
 # ------------------------------------------------------------------
 
 def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_REPO_ID) -> nn.Module:
-    """Load SigLIP2 vision encoder from safetensors file.
+    """Load SigLIP2 vision encoder from a safetensors file, a HF repo ID, or URL.
 
-    *repo_id* controls which HuggingFace model is used for the module structure.
-    Defaults to ``SIGLIP2_DEFAULT_REPO_ID`` (so400m-patch16-naflex).
+    *safetensors_path* may be:
+    - A local .safetensors path (pure vision encoder, LoRA checkpoint, or merged tagger checkpoint)
+    - A HuggingFace repo ID  (e.g. ``"google/siglip2-so400m-patch16-naflex"``)
+    - A HuggingFace URL      (e.g. ``"https://huggingface.co/google/siglip2-..."`` )
+
+    *repo_id* controls which HuggingFace model is used for the module structure when
+    loading a local safetensors file.  Defaults to ``SIGLIP2_DEFAULT_REPO_ID``.
     """
     from transformers import AutoModel
 
     # Strip surrounding quotes that may come from user input
     safetensors_path = safetensors_path.strip().strip('"').strip("'")
+
+    # --- HuggingFace repo / URL shortcut ---
+    is_hf, resolved_repo = _is_hf_repo_or_url(safetensors_path)
+    if is_hf:
+        print(f"[VisionEncoder] Loading directly from HuggingFace repo: {resolved_repo}")
+        try:
+            full_model = AutoModel.from_pretrained(resolved_repo, dtype=torch.float32, local_files_only=True)
+        except Exception:
+            full_model = AutoModel.from_pretrained(resolved_repo, dtype=torch.float32)
+        return full_model.vision_model
 
     # Try local cache first to avoid network access and reduce peak memory.
     try:
@@ -115,6 +149,18 @@ def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_R
 
     # Load our fine-tuned / custom weights
     state_dict = load_file(safetensors_path)
+
+    # --- Merged tagger checkpoint detection (F2) ---
+    # Merged checkpoints have "vision_encoder.*" + "head.*" keys.
+    # Remap "vision_encoder.X" → "X" so the state_dict matches the
+    # vision_encoder module's own key space.
+    if any(k.startswith("head.") for k in state_dict):
+        print(f"[VisionEncoder] Detected merged tagger checkpoint; extracting vision encoder sub-keys.")
+        state_dict = {
+            k[len("vision_encoder."):]: v
+            for k, v in state_dict.items()
+            if k.startswith("vision_encoder.")
+        }
 
     lora_keys = [k for k in state_dict if k.startswith("lora.")]
     if lora_keys:

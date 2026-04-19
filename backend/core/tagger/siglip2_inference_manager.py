@@ -142,8 +142,19 @@ class SigLIP2InferenceManager:
             if model_type == "lora":
                 if not vision_encoder_path:
                     from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
-                    vision_encoder_path = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
-                    print(f"[SigLIP2Manager] vision_encoder_path not provided; using HF repo from metadata: {vision_encoder_path}")
+                    # Prefer base_model_path (locally fine-tuned base) over vision_encoder_repo
+                    # (HF architecture repo).  base_model_path is written by the trainer when the
+                    # LoRA was trained on a local safetensors checkpoint rather than an HF repo,
+                    # so that merge/inference uses the correct base weights.
+                    _base_path = meta.get("base_model_path", "")
+                    if _base_path and os.path.isfile(_base_path):
+                        vision_encoder_path = _base_path
+                        print(f"[SigLIP2Manager] Using locally fine-tuned base from metadata: {vision_encoder_path}")
+                    else:
+                        if _base_path:
+                            print(f"[SigLIP2Manager] WARNING: base_model_path in metadata not found ({_base_path}); falling back to HF repo")
+                        vision_encoder_path = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+                        print(f"[SigLIP2Manager] vision_encoder_path not provided; using HF repo from metadata: {vision_encoder_path}")
                 model = SigLIP2TaggerLoRAModel.load_checkpoint(
                     checkpoint_path=checkpoint_path,
                     vision_encoder_path=vision_encoder_path,

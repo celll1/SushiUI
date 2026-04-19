@@ -151,10 +151,18 @@ def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_R
     state_dict = load_file(safetensors_path)
 
     # --- Merged tagger checkpoint detection (F2) ---
-    # Merged checkpoints have "vision_encoder.*" + "head.*" keys.
-    # Remap "vision_encoder.X" → "X" so the state_dict matches the
-    # vision_encoder module's own key space.
-    if any(k.startswith("head.") for k in state_dict):
+    # Merged tagger checkpoints have BOTH:
+    #   - "head.weight" / "head.bias"  (the classification Linear layer)
+    #   - "vision_encoder.*"           (the vision encoder sub-module)
+    # NOTE: pure vision encoder safetensors also contain a "head.*" sub-module
+    # (e.g. "head.probe", "head.attention.*") that belongs to the HF vision model
+    # itself.  Using *only* "head.*" as the trigger causes false positives for
+    # pure encoder files.  The combined condition below is unambiguous.
+    _is_merged_tagger = (
+        "head.weight" in state_dict
+        and any(k.startswith("vision_encoder.") for k in state_dict)
+    )
+    if _is_merged_tagger:
         print(f"[VisionEncoder] Detected merged tagger checkpoint; extracting vision encoder sub-keys.")
         state_dict = {
             k[len("vision_encoder."):]: v

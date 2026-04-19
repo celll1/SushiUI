@@ -2576,6 +2576,8 @@ async def siglip2_load(request: SigLIP2LoadRequest):
         )
         return result
     except Exception as e:
+        import traceback
+        print(f"[SigLIP2Load] ERROR: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

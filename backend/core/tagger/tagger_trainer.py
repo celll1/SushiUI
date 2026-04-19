@@ -1122,17 +1122,37 @@ def run_tagger_training(
             else:
                 print("[TaggerTraining] No resumable checkpoint found; starting from scratch")
 
-        # Resolve vision_encoder_repo for metadata recording.
-        # If vision_encoder_path is a HF repo ID / URL, store it in config
-        # so _make_metadata() records the correct repo ID.
+        # Resolve vision_encoder_repo for metadata recording and architecture loading.
+        # Priority (highest to lowest):
+        #   1. Explicit HF repo ID / URL in vision_encoder_path
+        #   2. vision_encoder_repo already set in config (caller pre-filled)
+        #   3. _metadata.json alongside a local safetensors vision_encoder_path
+        #   4. Default (so400m)
         _ve_path = config.get("vision_encoder_path", "")
         from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO
         _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
         if _is_hf_ve or "vision_encoder_repo" not in config:
             config = dict(config)  # shallow copy — do not mutate caller's dict
-            config["vision_encoder_repo"] = _resolved_ve if _is_hf_ve else _DEFAULT_REPO
             if _is_hf_ve:
+                config["vision_encoder_repo"] = _resolved_ve
                 print(f"[TaggerTraining] HF repo detected for vision encoder: {_resolved_ve}")
+            else:
+                # Try to read vision_encoder_repo from the safetensors metadata
+                # (covers merged tagger checkpoints used as vision_encoder_path)
+                import json as _json
+                _ve_meta_path = _ve_path.strip().strip('"').strip("'")
+                _ve_meta_path = _ve_meta_path.replace(".safetensors", "_metadata.json")
+                _repo_from_meta = None
+                if os.path.isfile(_ve_meta_path):
+                    try:
+                        with open(_ve_meta_path, "r", encoding="utf-8") as _fh:
+                            _ve_meta = _json.load(_fh)
+                        _repo_from_meta = _ve_meta.get("vision_encoder_repo")
+                    except Exception:
+                        pass
+                config["vision_encoder_repo"] = _repo_from_meta or _DEFAULT_REPO
+                if _repo_from_meta:
+                    print(f"[TaggerTraining] vision_encoder_repo read from checkpoint metadata: {_repo_from_meta}")
 
         # Read the old vocabulary.json BEFORE TaggerTrainer overwrites it
         old_vocabulary: Optional[TagVocabulary] = None

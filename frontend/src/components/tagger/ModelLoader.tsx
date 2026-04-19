@@ -17,7 +17,7 @@ interface LoaderHistory {
   checkpointPath: string;
   visionEncoderPath: string;
   vocabPath: string;
-  modelType: "full" | "lora";
+  modelType: "full" | "lora" | "onnx";
   loraRank: number;
   loraAlpha: number;
 }
@@ -41,7 +41,7 @@ interface ModelLoaderProps {
 }
 
 export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
-  const [modelType,          setModelType]          = useState<"full" | "lora">("lora");
+  const [modelType,          setModelType]          = useState<"full" | "lora" | "onnx">("lora");
   const [checkpointPath,     setCheckpointPath]     = useState("");
   const [visionEncoderPath,  setVisionEncoderPath]  = useState("");
   const [vocabPath,          setVocabPath]          = useState("");
@@ -104,12 +104,25 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
     setCheckpointPath(val);
     setMetaStatus(null);
 
+    // Auto-complete vocab path
     if (!vocabPath) {
-      const dir = val.replace(/[/\\][^/\\]*$/, "");
-      if (dir) setVocabPath(dir + "/vocabulary.json");
+      if (val.endsWith(".onnx")) {
+        // ONNX vocabulary is saved alongside as {name}_vocabulary.json
+        const stem = val.replace(/\.onnx$/, "");
+        setVocabPath(stem + "_vocabulary.json");
+      } else {
+        const dir = val.replace(/[/\\][^/\\]*$/, "");
+        if (dir) setVocabPath(dir + "/vocabulary.json");
+      }
     }
 
-    // Debounce metadata fetch (500ms)
+    // ONNX auto-detect
+    if (val.endsWith(".onnx")) {
+      setModelType("onnx");
+      return;
+    }
+
+    // Debounce metadata fetch (500ms) — safetensors only
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (val.endsWith(".safetensors")) {
       debounceRef.current = setTimeout(async () => {
@@ -196,11 +209,12 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
         <label className={labelCls}>Model Type</label>
         <select
           value={modelType}
-          onChange={(e) => setModelType(e.target.value as "full" | "lora")}
+          onChange={(e) => setModelType(e.target.value as "full" | "lora" | "onnx")}
           className={inputCls}
         >
           <option value="lora">LoRA (compact)</option>
           <option value="full">Full model</option>
+          <option value="onnx">ONNX (.onnx)</option>
         </select>
       </div>
 

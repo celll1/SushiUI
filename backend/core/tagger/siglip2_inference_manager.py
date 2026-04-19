@@ -65,12 +65,13 @@ class SigLIP2InferenceManager:
 
     def __init__(self) -> None:
         self.model: Optional[nn.Module] = None
+        self.onnx_session = None  # onnxruntime.InferenceSession when model_type == "onnx"
         self.processor = None
         self.vocabulary: Optional[Dict[str, Any]] = None   # from vocabulary.json
         self.checkpoint_path: str = ""
         self.vision_encoder_path: str = ""
         self.vocab_path: str = ""
-        self.model_type: str = ""   # "full" | "lora"
+        self.model_type: str = ""   # "full" | "lora" | "onnx"
         self.device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     # ------------------------------------------------------------------
@@ -96,55 +97,14 @@ class SigLIP2InferenceManager:
         vocab_path = vocab_path.strip().strip('"').strip("'")
         vision_encoder_path = vision_encoder_path.strip().strip('"').strip("'")
 
-        # 1. Detect model type
-        model_type = _detect_model_type(checkpoint_path)
-        meta = _read_metadata(checkpoint_path)
-
-        # Override lora_rank / lora_alpha from metadata if present
-        lora_rank  = int(meta.get("lora_rank",  lora_rank))
-        lora_alpha = float(meta.get("lora_alpha", lora_alpha))
-
-        # 2. Load vocabulary
+        # 1. Load vocabulary (needed for all model types)
         with open(vocab_path, "r", encoding="utf-8") as fh:
             vocab = json.load(fh)
         idx_to_tag       = {int(k): v for k, v in vocab["idx_to_tag"].items()}
         tag_to_category  = vocab.get("tag_to_category", {})
         num_tags         = len(idx_to_tag)
 
-        # 3. Load model
-        from core.tagger.siglip2_tagger_model import (
-            SigLIP2TaggerModel,
-            SigLIP2TaggerLoRAModel,
-        )
-
-        if model_type == "lora":
-            if not vision_encoder_path:
-                # Fall back to the HF repo recorded in checkpoint metadata.
-                # _load_vision_encoder accepts HF repo IDs directly, so no
-                # local safetensors extraction is needed.
-                from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
-                vision_encoder_path = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
-                print(f"[SigLIP2Manager] vision_encoder_path not provided; using HF repo from metadata: {vision_encoder_path}")
-            model = SigLIP2TaggerLoRAModel.load_checkpoint(
-                checkpoint_path=checkpoint_path,
-                vision_encoder_path=vision_encoder_path,
-                num_tags=num_tags,
-                lora_rank=lora_rank,
-                lora_alpha=lora_alpha,
-            )
-        else:
-            # vision_encoder_path is optional for merged (full) checkpoints —
-            # the checkpoint already contains all vision encoder weights.
-            model = SigLIP2TaggerModel.load_checkpoint(
-                checkpoint_path=checkpoint_path,
-                vision_encoder_path=vision_encoder_path,
-                num_tags=num_tags,
-            )
-
-        model.eval()
-        model.to(self.device)
-
-        # 4. Load processor
+        # 2. Load processor (needed for all model types — image preprocessing)
         from transformers import AutoProcessor
         REPO_ID = "google/siglip2-so400m-patch16-naflex"
         try:
@@ -152,8 +112,57 @@ class SigLIP2InferenceManager:
         except Exception:
             processor = AutoProcessor.from_pretrained(REPO_ID)
 
-        # 5. Store state
-        self.model               = model
+        # 3. Load model (branched by type)
+        if checkpoint_path.endswith(".onnx"):
+            # --- ONNX model ---
+            import onnxruntime as ort
+            opts = ort.SessionOptions()
+            opts.log_severity_level = 2
+            self.onnx_session = ort.InferenceSession(
+                checkpoint_path,
+                sess_options=opts,
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            )
+            model_type = "onnx"
+            _provider = self.onnx_session.get_providers()[0]
+            print(f"[SigLIP2Manager] ONNX session created | provider={_provider}")
+        else:
+            # --- safetensors model (full / lora) ---
+            model_type = _detect_model_type(checkpoint_path)
+            meta = _read_metadata(checkpoint_path)
+
+            lora_rank  = int(meta.get("lora_rank",  lora_rank))
+            lora_alpha = float(meta.get("lora_alpha", lora_alpha))
+
+            from core.tagger.siglip2_tagger_model import (
+                SigLIP2TaggerModel,
+                SigLIP2TaggerLoRAModel,
+            )
+
+            if model_type == "lora":
+                if not vision_encoder_path:
+                    from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+                    vision_encoder_path = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+                    print(f"[SigLIP2Manager] vision_encoder_path not provided; using HF repo from metadata: {vision_encoder_path}")
+                model = SigLIP2TaggerLoRAModel.load_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    vision_encoder_path=vision_encoder_path,
+                    num_tags=num_tags,
+                    lora_rank=lora_rank,
+                    lora_alpha=lora_alpha,
+                )
+            else:
+                model = SigLIP2TaggerModel.load_checkpoint(
+                    checkpoint_path=checkpoint_path,
+                    vision_encoder_path=vision_encoder_path,
+                    num_tags=num_tags,
+                )
+
+            model.eval()
+            model.to(self.device)
+            self.model = model
+
+        # 4. Store state
         self.processor           = processor
         self.vocabulary          = {
             "idx_to_tag":      idx_to_tag,
@@ -194,8 +203,10 @@ class SigLIP2InferenceManager:
         Tags are filtered by *threshold* (except Quality / Rating which always
         return the top-scoring item regardless of threshold).
         """
-        if self.model is None:
+        if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded. Call load_model() first.")
+
+        import numpy as np
 
         pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
         inputs = self.processor(
@@ -203,13 +214,24 @@ class SigLIP2InferenceManager:
             return_tensors="pt",
             max_num_patches=max_num_patches,
         )
-        pixel_values    = inputs["pixel_values"].to(self.device)
-        pixel_attn_mask = inputs["pixel_attention_mask"].to(self.device)
-        spatial_shapes  = inputs["spatial_shapes"].to(self.device)
 
-        with torch.no_grad():
-            logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
-        probs = torch.sigmoid(logits[0]).cpu().numpy()  # [num_tags]
+        if self.model_type == "onnx":
+            pv_np  = inputs["pixel_values"].float().numpy()
+            pam_np = inputs["pixel_attention_mask"].float().numpy()
+            ss_np  = inputs["spatial_shapes"].numpy().astype(np.int64)
+            outputs = self.onnx_session.run(
+                ["logits"],
+                {"pixel_values": pv_np, "pixel_attention_mask": pam_np, "spatial_shapes": ss_np},
+            )
+            logits_np = outputs[0][0]  # [num_tags]
+            probs = 1.0 / (1.0 + np.exp(-logits_np.astype(np.float64)))
+        else:
+            pixel_values    = inputs["pixel_values"].to(self.device)
+            pixel_attn_mask = inputs["pixel_attention_mask"].to(self.device)
+            spatial_shapes  = inputs["spatial_shapes"].to(self.device)
+            with torch.no_grad():
+                logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
+            probs = torch.sigmoid(logits[0]).cpu().numpy()  # [num_tags]
 
         idx_to_tag      = self.vocabulary["idx_to_tag"]
         tag_to_category = self.vocabulary["tag_to_category"]
@@ -255,8 +277,10 @@ class SigLIP2InferenceManager:
 
         Only valid when model_type == 'lora'.
         """
-        if self.model is None:
+        if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded.")
+        if self.model_type == "onnx":
+            raise ValueError("Cannot merge an ONNX model. Load a LoRA safetensors checkpoint instead.")
         from core.tagger.siglip2_tagger_model import SigLIP2TaggerLoRAModel
         if not isinstance(self.model, SigLIP2TaggerLoRAModel):
             raise ValueError("merge_lora_and_save is only valid for LoRA models.")
@@ -301,8 +325,10 @@ class SigLIP2InferenceManager:
 
         Returns (onnx_path, vocab_path).
         """
-        if self.model is None:
+        if self.model is None and self.onnx_session is None:
             raise RuntimeError("No model loaded.")
+        if self.model_type == "onnx":
+            raise ValueError("Cannot export an ONNX model to ONNX. Load a safetensors checkpoint instead.")
 
         from core.tagger.siglip2_tagger_model import (
             SigLIP2TaggerLoRAModel,
@@ -394,6 +420,9 @@ class SigLIP2InferenceManager:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+        if self.onnx_session is not None:
+            del self.onnx_session
+            self.onnx_session = None
         self.processor           = None
         self.vocabulary          = None
         self.checkpoint_path     = ""
@@ -407,7 +436,7 @@ class SigLIP2InferenceManager:
     @property
     def status(self) -> Dict[str, Any]:
         return {
-            "loaded":           self.model is not None,
+            "loaded":           self.model is not None or self.onnx_session is not None,
             "checkpoint_path":  self.checkpoint_path,
             "vocab_path":       self.vocab_path,
             "model_type":       self.model_type,

@@ -116,6 +116,9 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
       {/* ── Export ONNX ── */}
       <div className="space-y-2">
         <h4 className="text-xs font-medium text-gray-300">Export ONNX</h4>
+        {modelType === "onnx" && (
+          <p className={disabledNote}>Already an ONNX model</p>
+        )}
         <div>
           <label className={labelCls}>Output Path (.onnx) <span className="text-gray-600">— optional</span></label>
           <input
@@ -151,7 +154,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
         )}
         <button
           onClick={handleExportONNX}
-          disabled={!modelLoaded || exporting}
+          disabled={!modelLoaded || exporting || modelType === "onnx"}
           className="w-full py-1.5 rounded text-xs font-medium bg-teal-700 hover:bg-teal-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
         >
           {exporting ? "Exporting…" : "Export ONNX"}

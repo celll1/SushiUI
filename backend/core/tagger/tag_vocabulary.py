@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import fnmatch
 import json
-import re
 from collections import defaultdict
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -41,15 +40,16 @@ def normalize_tag(tag: str) -> str:
        "fate \\(series\\)" and "fate (series)" collapse to the same key
     """
     tag = tag.strip().replace("_", " ").lower()
-    # Unescape Danbooru wiki-link parens: /( → (  and /) → )
-    tag = tag.replace("/(", "(").replace("/)", ")")
-    # Unescape backslash sequences repeatedly until stable
-    # (handles multiply-escaped tags like \\\\( → \\( → ()
+    # Unescape parenthesis conventions (loop to handle multiple layers):
+    #   /( /)  — Danbooru wiki-link syntax (literal parens in tag names)
+    #   \( \)  — SD/booru caption backslash escaping
+    #   \/     — backslash before slash (e.g. fate\/extra → fate/extra)
     while True:
-        unescaped = re.sub(r"\\(.)", r"\1", tag)
-        if unescaped == tag:
+        prev = tag
+        tag = (tag.replace("/(", "(").replace("/)", ")")
+                   .replace("\\(", "(").replace("\\)", ")").replace("\\/", "/"))
+        if tag == prev:
             break
-        tag = unescaped
     return tag
 
 

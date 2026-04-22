@@ -134,12 +134,15 @@ def _find_best_threshold(
 # Prefetch helper
 # ------------------------------------------------------------------
 
-def _prefetch_loader(loader, maxsize: int = 2):
+def _prefetch_loader(loader, stop_event: threading.Event, maxsize: int = 2):
     """Iterate *loader* in a background thread, yielding batches via a bounded queue.
 
     On Windows (num_workers=0) PIL decode and NaFlex processing release the GIL,
     so the background thread runs concurrently with GPU training in the main thread.
     maxsize=2 bounds memory to ~2 batches worth of tensors.
+
+    stop_event: when set, the worker thread exits its loop so the DataLoader
+    reference is released and workers/resources can be cleaned up promptly.
     """
     _END = object()
     q = _Queue(maxsize=maxsize)
@@ -147,7 +150,18 @@ def _prefetch_loader(loader, maxsize: int = 2):
     def _worker():
         try:
             for batch in loader:
-                q.put(batch)
+                if stop_event.is_set():
+                    break
+                # Use a timeout-based put so we can check stop_event even when the
+                # consumer has stopped reading (queue full after early break).
+                while True:
+                    if stop_event.is_set():
+                        return
+                    try:
+                        q.put(batch, timeout=0.1)
+                        break
+                    except Exception:
+                        continue
         finally:
             q.put(_END)
 
@@ -373,6 +387,7 @@ class TaggerTrainer:
         self.callback = progress_callback
         self.old_vocabulary = old_vocabulary
         self._stop_requested = False
+        self._stop_event = threading.Event()
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -383,6 +398,7 @@ class TaggerTrainer:
 
     def stop(self) -> None:
         self._stop_requested = True
+        self._stop_event.set()
 
     # ------------------------------------------------------------------
 
@@ -633,7 +649,7 @@ class TaggerTrainer:
                 _batch_idx_offset = 0
 
             loader_iter = (
-                _prefetch_loader(_loader_for_epoch) if _loader_for_epoch.num_workers == 0
+                _prefetch_loader(_loader_for_epoch, self._stop_event) if _loader_for_epoch.num_workers == 0
                 else iter(_loader_for_epoch)
             )
             for _loop_idx, batch in enumerate(loader_iter):
@@ -713,6 +729,16 @@ class TaggerTrainer:
 
             # --- Stop checkpoint (mid-epoch or epoch-boundary) ---
             if self._stop_requested:
+                # Release the DataLoader iterator early so worker processes
+                # (num_workers > 0) are terminated before the checkpoint is saved.
+                try:
+                    loader_iter.close()  # generator close
+                except Exception:
+                    pass
+                try:
+                    del loader_iter
+                except Exception:
+                    pass
                 print(f"[TaggerTrainer] Stop requested. Saving checkpoint at step {global_step}...")
                 metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
                 ckpt_name = f"step_{global_step:06d}"
@@ -1239,7 +1265,26 @@ def run_tagger_training(
 
     finally:
         import gc as _gc
+        # Explicitly delete DataLoaders to terminate worker processes before GC.
+        # Without this, worker processes (num_workers > 0) outlive the finally block
+        # because train_loader/val_loader locals still reference the iterators.
+        try:
+            del train_loader
+        except NameError:
+            pass
+        try:
+            del val_loader
+        except NameError:
+            pass
         _gc.collect()
+        # Synchronize CUDA streams so all pending GPU ops finish before we claim
+        # the GPU is free.  empty_cache() only releases cached (unused) memory;
+        # without synchronize() the GPU may still be executing queued kernels.
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
         torch.cuda.empty_cache()
         print("[TaggerTrainer] GPU memory freed")
         datasets_db.close()

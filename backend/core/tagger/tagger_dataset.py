@@ -197,24 +197,21 @@ class TaggerDataset(Dataset):
             for idx in voc.rating_indices:
                 loss_mask[idx] = 0.0
 
-        # Quality tags: mask within each group unless at least one is present
-        for group_name, group_indices in voc.quality_indices.items():
-            group_tags = [normalize_tag(t) for t in QUALITY_TAG_GROUPS[group_name]]
-            has_group = any(t in tag_set for t in group_tags)
-            if not has_group:
+        # Quality tags: mask ALL quality groups only when NO quality tag is present.
+        # When any quality tag IS present, leave all quality groups unmasked so that
+        # cross-group negative labels are trained (e.g. "best quality" sample must also
+        # teach the model that "bad quality"=0).  Quality groups are mutually exclusive
+        # by definition, so this negative signal is always correct.
+        all_quality_norms = {
+            normalize_tag(t)
+            for gtags in QUALITY_TAG_GROUPS.values()
+            for t in gtags
+        }
+        has_any_quality = any(t in tag_set for t in all_quality_norms)
+        if not has_any_quality:
+            for group_indices in voc.quality_indices.values():
                 for idx in group_indices:
                     loss_mask[idx] = 0.0
-            else:
-                # Mask out quality tags from OTHER groups in the same sample
-                # (mutual exclusivity across groups)
-                for other_name, other_indices in voc.quality_indices.items():
-                    if other_name == group_name:
-                        continue
-                    other_tags = [normalize_tag(t) for t in QUALITY_TAG_GROUPS[other_name]]
-                    has_other = any(t in tag_set for t in other_tags)
-                    if not has_other:
-                        for idx in other_indices:
-                            loss_mask[idx] = 0.0
 
         return label, loss_mask
 

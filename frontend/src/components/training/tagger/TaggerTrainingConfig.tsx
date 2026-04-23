@@ -40,8 +40,14 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   checkpoint_save_mode: "lora",
   mixed_precision: "bf16",
   gradient_checkpointing: true,
+  loss_function: "asl" as string,
   loss_gamma_neg: 4,
   loss_gamma_pos: 1,
+  loss_gamma0: 4.0,
+  loss_m0: 0.2,
+  loss_rho: 0.5,
+  loss_beta: 2.0,
+  loss_label_weight: "fisher" as string,
   validate_every: 1,
   save_best_only: true,
   excluded_categories: [] as string[],
@@ -85,8 +91,14 @@ export default function TaggerTrainingConfig({
         checkpoint_save_mode: (editRun.config?.checkpoint_save_mode as string) ?? DEFAULT_CONFIG.checkpoint_save_mode,
         mixed_precision: (editRun.config?.mixed_precision as string) ?? DEFAULT_CONFIG.mixed_precision,
         gradient_checkpointing: (editRun.config?.gradient_checkpointing as boolean) ?? DEFAULT_CONFIG.gradient_checkpointing,
+        loss_function: (editRun.config?.loss_function as string) ?? DEFAULT_CONFIG.loss_function,
         loss_gamma_neg: (editRun.config?.loss_gamma_neg as number) ?? DEFAULT_CONFIG.loss_gamma_neg,
         loss_gamma_pos: (editRun.config?.loss_gamma_pos as number) ?? DEFAULT_CONFIG.loss_gamma_pos,
+        loss_gamma0: (editRun.config?.loss_gamma0 as number) ?? DEFAULT_CONFIG.loss_gamma0,
+        loss_m0: (editRun.config?.loss_m0 as number) ?? DEFAULT_CONFIG.loss_m0,
+        loss_rho: (editRun.config?.loss_rho as number) ?? DEFAULT_CONFIG.loss_rho,
+        loss_beta: (editRun.config?.loss_beta as number) ?? DEFAULT_CONFIG.loss_beta,
+        loss_label_weight: (editRun.config?.loss_label_weight as string) ?? DEFAULT_CONFIG.loss_label_weight,
         validate_every: (editRun.config?.validate_every as number) ?? DEFAULT_CONFIG.validate_every,
         save_best_only: (editRun.config?.save_best_only as boolean) ?? DEFAULT_CONFIG.save_best_only,
         excluded_categories: (editRun.config?.excluded_categories as string[]) ?? DEFAULT_CONFIG.excluded_categories,
@@ -638,38 +650,137 @@ export default function TaggerTrainingConfig({
           </select>
         </section>
 
-        {/* Loss parameters */}
+        {/* Loss function selector */}
         <section>
           <label className="block text-sm font-medium text-gray-300 mb-3">
-            Asymmetric Loss Parameters
+            Loss Function
           </label>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">gamma_neg</label>
-              <input
-                type="number"
-                step="0.5"
-                min="0"
-                max="10"
-                value={config.loss_gamma_neg}
-                onChange={(e) => setField("loss_gamma_neg", parseFloat(e.target.value) || 4)}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">gamma_pos</label>
-              <input
-                type="number"
-                step="0.5"
-                min="0"
-                max="10"
-                value={config.loss_gamma_pos}
-                onChange={(e) => setField("loss_gamma_pos", parseFloat(e.target.value) || 1)}
-                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-              />
-            </div>
-          </div>
+          <select
+            value={config.loss_function}
+            onChange={(e) => setField("loss_function", e.target.value)}
+            className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+          >
+            <option value="asl">ASL (Asymmetric Loss)</option>
+            <option value="cs_asl">CS-ASL (Continuous Symmetric ASL)</option>
+            <option value="h_cs_asl">H-CS-ASL (Hierarchical CS-ASL)</option>
+            <option value="la_s_asl">LA-S-ASL (Logit-Adjusted Symmetric ASL)</option>
+            <option value="fw_bbce">FW-BBCE (Fisher-Weighted Balanced BCE)</option>
+          </select>
         </section>
+
+        {/* ASL parameters */}
+        {config.loss_function === "asl" && (
+          <section>
+            <label className="block text-sm font-medium text-gray-300 mb-3">
+              Asymmetric Loss Parameters
+            </label>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">gamma_neg</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="10"
+                  value={config.loss_gamma_neg}
+                  onChange={(e) => setField("loss_gamma_neg", parseFloat(e.target.value) || 4)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">gamma_pos</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="10"
+                  value={config.loss_gamma_pos}
+                  onChange={(e) => setField("loss_gamma_pos", parseFloat(e.target.value) || 1)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* CS-ASL / H-CS-ASL / LA-S-ASL shared parameters */}
+        {(["cs_asl", "h_cs_asl", "la_s_asl"] as string[]).includes(config.loss_function) && (
+          <section>
+            <label className="block text-sm font-medium text-gray-300 mb-3">
+              π-Adjusted Loss Parameters
+            </label>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">gamma0</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="10"
+                  value={config.loss_gamma0}
+                  onChange={(e) => setField("loss_gamma0", parseFloat(e.target.value) || 4)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">m0</label>
+                <input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={config.loss_m0}
+                  onChange={(e) => setField("loss_m0", parseFloat(e.target.value) || 0.2)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">beta</label>
+                <input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="10"
+                  value={config.loss_beta}
+                  onChange={(e) => setField("loss_beta", parseFloat(e.target.value) || 2)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              {config.loss_function !== "la_s_asl" && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">rho</label>
+                  <input
+                    type="number"
+                    step="0.05"
+                    min="0"
+                    max="1"
+                    value={config.loss_rho}
+                    onChange={(e) => setField("loss_rho", parseFloat(e.target.value) || 0.5)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {/* H-CS-ASL: label weighting */}
+        {config.loss_function === "h_cs_asl" && (
+          <section>
+            <label className="block text-sm font-medium text-gray-300 mb-3">
+              Label Weighting (H-CS-ASL)
+            </label>
+            <select
+              value={config.loss_label_weight}
+              onChange={(e) => setField("loss_label_weight", e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+            >
+              <option value="fisher">Fisher information</option>
+              <option value="entropy_fisher">Entropy × Fisher</option>
+              <option value="effective">Effective number</option>
+            </select>
+          </section>
+        )}
 
         {/* Boolean options */}
         <section className="space-y-3">

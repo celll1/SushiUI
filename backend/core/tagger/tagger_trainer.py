@@ -43,7 +43,7 @@ from .siglip2_tagger_model import (
 )
 from .tag_vocabulary import TagVocabulary
 from .tagger_dataset import TaggerDataset, tagger_collate_fn
-from .tagger_loss import AsymmetricLossOptimized
+from .tagger_loss import AsymmetricLossOptimized, CSASL, HCSASL, LASASL, FWBBCE
 
 try:
     import bitsandbytes as bnb
@@ -171,6 +171,41 @@ def _prefetch_loader(loader, stop_event: threading.Event, maxsize: int = 2):
         if item is _END:
             break
         yield item
+
+
+# ------------------------------------------------------------------
+# Label statistics for π-aware loss functions
+# ------------------------------------------------------------------
+
+def _compute_label_stats(
+    dataset,
+    num_tags: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute per-label positive rate and counts from a TaggerDataset.
+
+    Iterates label vectors only (no image I/O) for speed.
+
+    Returns
+    -------
+    pi    : Tensor [num_tags]  positive rate, clipped to [1e-4, 1-1e-4]
+    N_pos : Tensor [num_tags]  positive sample count (float)
+    N_neg : Tensor [num_tags]  negative sample count (float)
+    """
+    # Support DataLoader wrappers that expose .dataset (e.g. Subset)
+    ds = dataset
+    while not hasattr(ds, "samples") and hasattr(ds, "dataset"):
+        ds = ds.dataset
+
+    pos_counts = torch.zeros(num_tags, dtype=torch.float32)
+    total = len(ds.samples)
+    for sample in ds.samples:
+        labels, _ = ds._build_label_and_mask(sample)
+        pos_counts += labels
+
+    N_pos = pos_counts
+    N_neg = float(total) - pos_counts
+    pi = (pos_counts / max(total, 1)).clamp(1e-4, 1.0 - 1e-4)
+    return pi, N_pos, N_neg
 
 
 # ------------------------------------------------------------------
@@ -472,10 +507,19 @@ class TaggerTrainer:
                     print(f"[TaggerTrainer] Loaded checkpoint weights from {resume_ckpt_name}")
 
         # Gradient checkpointing
+        # Must be enabled via gradient_checkpointing_enable() so that the flag is
+        # set on each Siglip2EncoderLayer (GradientCheckpointingLayer subclass).
+        # Setting it on Siglip2Encoder directly has no effect.
         if cfg.get("gradient_checkpointing", True):
-            if hasattr(model, "vision_encoder") and hasattr(model.vision_encoder, "encoder"):
-                model.vision_encoder.encoder.gradient_checkpointing = True
-                print("[Trainer] Gradient checkpointing enabled")
+            if hasattr(model, "vision_encoder") and hasattr(model.vision_encoder, "gradient_checkpointing_enable"):
+                model.vision_encoder.gradient_checkpointing_enable()
+                print("[Trainer] Gradient checkpointing enabled (via gradient_checkpointing_enable)")
+            elif hasattr(model, "vision_encoder") and hasattr(model.vision_encoder, "encoder"):
+                # Fallback: set flag on each encoder layer directly
+                for layer in model.vision_encoder.encoder.layers:
+                    if hasattr(layer, "gradient_checkpointing"):
+                        layer.gradient_checkpointing = True
+                print("[Trainer] Gradient checkpointing enabled (per-layer fallback)")
 
         # Mixed precision
         mp = cfg.get("mixed_precision", "bf16").lower()
@@ -520,11 +564,42 @@ class TaggerTrainer:
                                   milestones=[warmup_steps])
 
         # Loss function
-        criterion = AsymmetricLossOptimized(
-            gamma_neg=float(cfg.get("loss_gamma_neg", 4.0)),
-            gamma_pos=float(cfg.get("loss_gamma_pos", 1.0)),
-            clip=float(cfg.get("loss_clip", 0.05)),
-        ).to(device)
+        loss_fn_name = cfg.get("loss_function", "asl")
+        if loss_fn_name == "asl":
+            criterion = AsymmetricLossOptimized(
+                gamma_neg=float(cfg.get("loss_gamma_neg", 4.0)),
+                gamma_pos=float(cfg.get("loss_gamma_pos", 1.0)),
+                clip=float(cfg.get("loss_clip", 0.05)),
+            ).to(device)
+        elif loss_fn_name in ("cs_asl", "h_cs_asl", "la_s_asl", "fw_bbce"):
+            _pi, _N_pos, _N_neg = _compute_label_stats(train_loader.dataset, num_tags)
+            _pi   = _pi.to(device)
+            _N_pos = _N_pos.to(device)
+            _N_neg = _N_neg.to(device)
+            print(f"[TaggerTrainer] π_n stats: mean={_pi.mean():.4f} "
+                  f"min={_pi.min():.4f} max={_pi.max():.4f}")
+            _kw = dict(
+                pi=_pi,
+                gamma0=float(cfg.get("loss_gamma0", 4.0)),
+                m0=float(cfg.get("loss_m0", 0.2)),
+                beta=float(cfg.get("loss_beta", 2.0)),
+                eps=1e-4,
+            )
+            if loss_fn_name == "cs_asl":
+                criterion = CSASL(**_kw, rho=float(cfg.get("loss_rho", 0.5))).to(device)
+            elif loss_fn_name == "h_cs_asl":
+                criterion = HCSASL(
+                    **_kw,
+                    rho=float(cfg.get("loss_rho", 0.5)),
+                    N_pos=_N_pos, N_neg=_N_neg,
+                    label_weight=cfg.get("loss_label_weight", "fisher"),
+                ).to(device)
+            elif loss_fn_name == "la_s_asl":
+                criterion = LASASL(**_kw).to(device)
+            elif loss_fn_name == "fw_bbce":
+                criterion = FWBBCE(pi=_pi, N_pos=_N_pos, N_neg=_N_neg, eps=1e-4).to(device)
+        else:
+            raise ValueError(f"Unknown loss_function: {loss_fn_name!r}")
 
         # Step-based checkpoint interval (0 = disabled)
         save_every_n_steps    = int(cfg.get("save_every_n_steps", 500))

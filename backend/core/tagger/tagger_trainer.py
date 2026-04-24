@@ -466,6 +466,7 @@ class TaggerTrainer:
             init_head_from=cfg.get("init_head_from") or None,
             new_vocab=self.vocabulary.tag_to_idx,
             repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
+            is_naflex=cfg.get("is_naflex", True),
         )
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_count     = sum(p.numel() for p in model.parameters())
@@ -1070,6 +1071,7 @@ class TaggerTrainer:
             # Merged (full) checkpoints use this to reconstruct the model without
             # requiring vision_encoder_path at load time.
             "vision_encoder_repo": self.config.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
+            "is_naflex": self.config.get("is_naflex", True),
             # For LoRA checkpoints trained on a locally fine-tuned base: relative
             # filename set by run_tagger_training when it copies the base into output_dir.
             **({
@@ -1192,17 +1194,16 @@ def run_tagger_training(
             processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
         except Exception:
             processor = AutoProcessor.from_pretrained(processor_repo)
-        # NaFlex compatibility check: run a tiny probe to verify the processor
-        # outputs the fields required by TaggerDataset.
+        # Probe processor to detect architecture (NaFlex vs standard fixed-resolution).
         _probe = processor(images=[_PILImage.new("RGB", (64, 64))], return_tensors="pt")
-        if "pixel_attention_mask" not in _probe or "spatial_shapes" not in _probe:
-            raise RuntimeError(
-                f"Vision encoder '{processor_repo}' does not support NaFlex preprocessing "
-                f"(missing pixel_attention_mask / spatial_shapes). "
-                f"Only NaFlex-compatible SigLIP2 models are supported "
-                f"(e.g. google/siglip2-so400m-patch16-naflex)."
-            )
-        print(f"[TaggerTraining] Processor loaded (repo: {processor_repo}, NaFlex: OK)")
+        _is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
+        _mode_str = "NaFlex (variable resolution)" if _is_naflex else "standard (fixed resolution)"
+        print(f"[TaggerTraining] Processor loaded (repo: {processor_repo}, mode: {_mode_str})")
+        # Store in config so build_tagger_model() and _make_metadata() can access it.
+        # Ensure config is a mutable dict copy (the if-branch above may not have copied it).
+        if not isinstance(config, dict):
+            config = dict(config)
+        config["is_naflex"] = _is_naflex
 
         # Build datasets
         print(f"[TaggerTraining] === Phase: dataset ===")

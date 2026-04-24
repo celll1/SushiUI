@@ -1,15 +1,27 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import {
+  fetchGenerationDefaults,
+  fetchTrainingDefaults,
+  fetchTaggerTrainingDefaults,
+  GenerationDefaultsResponse,
+} from "@/utils/api";
 
 interface StartupContextType {
   isBackendReady: boolean;
   modelLoaded: boolean;
+  generationDefaults: GenerationDefaultsResponse | null;
+  trainingDefaults: Record<string, unknown> | null;
+  taggerTrainingDefaults: Record<string, unknown> | null;
 }
 
 const StartupContext = createContext<StartupContextType>({
   isBackendReady: false,
   modelLoaded: false,
+  generationDefaults: null,
+  trainingDefaults: null,
+  taggerTrainingDefaults: null,
 });
 
 export const useStartup = () => useContext(StartupContext);
@@ -25,6 +37,9 @@ export function StartupProvider({ children }: StartupProviderProps) {
   const [isBackendReady, setIsBackendReady] = useState(false);
   const [modelLoaded, setModelLoaded] = useState(false);
   const [hasShownAlert, setHasShownAlert] = useState(false);
+  const [generationDefaults, setGenerationDefaults] = useState<GenerationDefaultsResponse | null>(null);
+  const [trainingDefaults, setTrainingDefaults] = useState<Record<string, unknown> | null>(null);
+  const [taggerTrainingDefaults, setTaggerTrainingDefaults] = useState<Record<string, unknown> | null>(null);
 
   useEffect(() => {
     // Prevent duplicate polling if already started
@@ -35,7 +50,6 @@ export function StartupProvider({ children }: StartupProviderProps) {
 
     globalPollingStarted = true;
     console.log("[StartupContext] Initializing...");
-    let hasShownAlertInSession = false;
 
     // Poll backend for model load status (always poll, don't use sessionStorage)
     const pollInterval = setInterval(async () => {
@@ -51,11 +65,20 @@ export function StartupProvider({ children }: StartupProviderProps) {
           setIsBackendReady(true);
           setModelLoaded(true);
 
-          // Show alert only once per session
-          // if (!hasShownAlertInSession) {
-          //   hasShownAlertInSession = true;
-          //   alert("Model loaded successfully!");
-          // }
+          // Fetch param schema defaults from backend (single source of truth)
+          try {
+            const [genDef, trainDef, taggerDef] = await Promise.all([
+              fetchGenerationDefaults(),
+              fetchTrainingDefaults(),
+              fetchTaggerTrainingDefaults(),
+            ]);
+            setGenerationDefaults(genDef);
+            setTrainingDefaults(trainDef);
+            setTaggerTrainingDefaults(taggerDef);
+            console.log("[StartupContext] Param defaults loaded from backend");
+          } catch (e) {
+            console.warn("[StartupContext] Failed to fetch param defaults, using hardcoded fallbacks", e);
+          }
         }
       } catch (error) {
         // Backend not ready yet, will retry
@@ -78,7 +101,13 @@ export function StartupProvider({ children }: StartupProviderProps) {
   }, []); // Empty dependency array - only run once on mount
 
   return (
-    <StartupContext.Provider value={{ isBackendReady, modelLoaded }}>
+    <StartupContext.Provider value={{
+      isBackendReady,
+      modelLoaded,
+      generationDefaults,
+      trainingDefaults,
+      taggerTrainingDefaults,
+    }}>
       {children}
     </StartupContext.Provider>
   );

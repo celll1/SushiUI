@@ -79,7 +79,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -238,6 +238,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     }
 
     // Load preview image
+
     const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
     if (savedPreview) {
       setGeneratedImage(savedPreview);
@@ -475,6 +476,15 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
     }
   }, [loopGenerationConfig, isMounted]);
+
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  useEffect(() => {
+    if (!generationDefaults) return;
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) {
+      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.txt2img as Partial<typeof DEFAULT_PARAMS>) }));
+    }
+  }, [generationDefaults]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
 import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest } from "@/utils/api";
+import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
@@ -123,7 +124,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   sample_steps: 28,
   sample_cfg_scale: 7.0,
   sample_sampler: "euler",
-  sample_schedule_type: "uniform",
+  sample_schedule_type: "sgm_uniform",
   sample_seed: -1,
   debug_latents: false,
   debug_latents_every: 50,
@@ -131,10 +132,10 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   base_resolutions: [1024],
   bucket_strategy: "resize",
   multi_resolution_mode: "max",
-  cache_latents_to_disk: true,
+  cache_latents_to_disk: false,
   force_recache: false,
   train_unet: true,
-  train_text_encoder: true,
+  train_text_encoder: false,
   train_image_encoder: false,
   unet_lr: 1e-5,
   text_encoder_lr: 1e-6,
@@ -144,7 +145,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   weight_dtype: "fp32",
   training_dtype: "fp16",
   output_dtype: "fp32",
-  vae_dtype: "fp32",
+  vae_dtype: "fp16",
   mixed_precision: true,
   use_flash_attention: false,
   min_snr_gamma: 5.0,
@@ -165,12 +166,12 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
     max_timestep: 1.0,
   },
   regularization_type: null,
-  snr_regularization_weight: 0.0,
+  snr_regularization_weight: 0.1,
   snr_timestep_adaptive: true,
   snr_penalty_mode: "relu",
-  energy_regularization_weight: 0.0,
+  energy_regularization_weight: 0.05,
   energy_timestep_adaptive: true,
-  energy_penalty_mode: "under",
+  energy_penalty_mode: "abs",
   energy_normalize_by_pixels: true,
   noise_process: "auto",
   prediction_target: "auto",
@@ -218,6 +219,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   //   4. Add UI input: read `params.x`, write via `updateParam("x", v)`
   //   No changes to getRequestData/applyParamsToState required.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
+  const { trainingDefaults } = useStartup();
+
+  // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
+  useEffect(() => {
+    if (!trainingDefaults || editRunId) return;
+    setParams(prev => ({ ...DEFAULT_PARAMS, ...(trainingDefaults as Partial<TrainingRunCreateRequest>) }));
+  }, [trainingDefaults, editRunId]);
 
   const updateParam = useCallback(
     <K extends keyof TrainingRunCreateRequest>(

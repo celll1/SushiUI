@@ -10,6 +10,7 @@ import {
   TaggerTrainingRunCreateRequest,
   TaggerDatasetConfig,
 } from "@/utils/api";
+import { useStartup } from "@/contexts/StartupContext";
 
 interface TaggerTrainingConfigProps {
   onClose: () => void;
@@ -48,15 +49,15 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   loss_rho: 0.5,
   loss_beta: 2.0,
   loss_label_weight: "fisher" as string,
-  val_split_mode: "percent" as string,
+  val_split_mode: "random" as string,
   val_split: 0.05,
-  val_fixed_size: 500,
+  val_fixed_size: undefined as number | undefined,
   validate_every: 1,
-  save_best_only: true,
+  save_best_only: false,
   excluded_categories: [] as string[],
   ban_tags: "",
   use_tag_aliases: false,
-  save_base_model: true,
+  save_base_model: false,
   cls_dim: undefined as number | undefined,
   hidden_proj_dim: undefined as number | undefined,
 };
@@ -121,6 +122,14 @@ export default function TaggerTrainingConfig({
     : [];
 
   const [config, setConfig] = useState<ConfigState>(initialConfig);
+  const { taggerTrainingDefaults } = useStartup();
+
+  // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
+  useEffect(() => {
+    if (!taggerTrainingDefaults || isEditMode) return;
+    setConfig(prev => ({ ...prev, ...(taggerTrainingDefaults as Partial<ConfigState>) }));
+  }, [taggerTrainingDefaults, isEditMode]);
+
   // selectedDatasetIds tracks numeric dataset.id values
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<number[]>(initialDatasetIds);
   const [datasets, setDatasets] = useState<Dataset[]>([]);

@@ -409,7 +409,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const weightDtype = params.weight_dtype ?? "fp32";
   const trainingDtype = params.training_dtype ?? "fp16";
   const outputDtype = params.output_dtype ?? "fp32";
-  const vaeDtype = params.vae_dtype ?? "fp32";
+  const vaeDtype = params.vae_dtype ?? "fp16";
   const mixedPrecision = params.mixed_precision ?? true;
   const useFlashAttention = params.use_flash_attention ?? false;
   const minSnrGamma = params.min_snr_gamma ?? 5.0;

@@ -259,7 +259,7 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "loss_label_weight": "fisher",
     "validate_every": 1,
     "val_split": 0.05,
-    "val_split_mode": "random",             # Fix: frontend had "percent"
+    "val_split_mode": "percent",
     "val_fixed_size": None,
     "save_best_only": False,
     "vocab_min_count": 10,

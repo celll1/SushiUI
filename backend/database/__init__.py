@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 from config.settings import settings
@@ -20,6 +20,13 @@ _sqlite_kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": Nul
 gallery_engine  = create_engine(f"sqlite:///{gallery_db_path}",  **_sqlite_kwargs)
 datasets_engine = create_engine(f"sqlite:///{datasets_db_path}", **_sqlite_kwargs)
 training_engine = create_engine(f"sqlite:///{training_db_path}", **_sqlite_kwargs)
+
+def _set_wal_mode(dbapi_conn, _):
+    dbapi_conn.execute("PRAGMA journal_mode=WAL")
+    dbapi_conn.execute("PRAGMA synchronous=NORMAL")
+
+for _engine in (gallery_engine, datasets_engine, training_engine):
+    event.listen(_engine, "connect", _set_wal_mode)
 
 # Create separate session factories
 GallerySessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=gallery_engine)

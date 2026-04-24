@@ -10,6 +10,7 @@ import {
   TaggerTrainingRun,
   TaggerTrainingMetric,
 } from "@/utils/api";
+import { wsClient, TaggerMetrics } from "@/utils/websocket";
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 
 interface TaggerTrainingMonitorProps {
@@ -91,8 +92,9 @@ export default function TaggerTrainingMonitor({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  // Track the highest step seen so incremental polls only fetch new rows
-  const lastStepRef = useRef<number>(0);
+  // Buffer incoming WS step events; flush to state at most once per second
+  const wsBufferRef = useRef<TaggerTrainingMetric[]>([]);
+  const wsFlushRef = useRef<NodeJS.Timeout | null>(null);
 
   const updateRun = useCallback((updated: TaggerTrainingRun) => {
     setRun(updated);
@@ -108,27 +110,64 @@ export default function TaggerTrainingMonitor({
     }
   }, [run.run_id, updateRun]);
 
-  const fetchMetrics = useCallback(async (incremental = false) => {
+  const fetchMetrics = useCallback(async () => {
     try {
-      const sinceStep = incremental ? lastStepRef.current : 0;
-      const data = await getTaggerTrainingMetrics(run.run_id, sinceStep);
-      if (data.length === 0) return;
-      if (incremental && sinceStep > 0) {
-        setMetrics(prev => {
-          const merged = [...prev, ...data];
-          lastStepRef.current = merged[merged.length - 1].step;
-          return merged;
-        });
-      } else {
-        setMetrics(data);
-        lastStepRef.current = data[data.length - 1]?.step ?? 0;
-      }
+      const data = await getTaggerTrainingMetrics(run.run_id);
+      if (data.length > 0) setMetrics(data);
     } catch (err) {
       console.error("[TaggerMonitor] Failed to fetch metrics:", err);
     }
   }, [run.run_id]);
 
-  // Poll when running
+  // WebSocket: receive live tagger metrics during training
+  useEffect(() => {
+    const handler = (m: TaggerMetrics) => {
+      if (m.run_id !== run.run_id) return;
+
+      const item: TaggerTrainingMetric = {
+        step: m.step,
+        epoch: m.epoch ?? null,
+        loss: m.loss ?? null,
+        f1: m.f1 ?? null,
+        threshold: m.threshold ?? null,
+        learning_rate: m.lr ?? null,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Buffer and flush at most 1x/sec to avoid per-step re-renders
+      wsBufferRef.current.push(item);
+      if (!wsFlushRef.current) {
+        wsFlushRef.current = setTimeout(() => {
+          wsFlushRef.current = null;
+          const incoming = wsBufferRef.current.splice(0);
+          if (incoming.length === 0) return;
+          setMetrics(prev => {
+            const map = new Map(prev.map(r => [r.step, r]));
+            for (const r of incoming) {
+              const existing = map.get(r.step);
+              // merge: epoch events carry f1/threshold, step events carry loss/lr
+              map.set(r.step, existing ? { ...existing, ...Object.fromEntries(
+                Object.entries(r).filter(([, v]) => v !== null && v !== undefined)
+              ) } : r);
+            }
+            return Array.from(map.values()).sort((a, b) => a.step - b.step);
+          });
+        }, 1000);
+      }
+    };
+
+    wsClient.subscribeToTaggerMetrics(handler);
+    return () => {
+      wsClient.unsubscribeFromTaggerMetrics(handler);
+      if (wsFlushRef.current) {
+        clearTimeout(wsFlushRef.current);
+        wsFlushRef.current = null;
+      }
+    };
+  }, [run.run_id]);
+
+  // Poll status only (not metrics — metrics come via WebSocket)
+  // Interval is relaxed to 10s; still needed for completion/error detection
   useEffect(() => {
     const isActive = run.status === "running" || run.status === "starting";
 
@@ -139,10 +178,7 @@ export default function TaggerTrainingMonitor({
 
     if (!isActive) return;
 
-    pollingRef.current = setInterval(async () => {
-      await fetchStatus();
-      await fetchMetrics(true);
-    }, 3000);
+    pollingRef.current = setInterval(fetchStatus, 10000);
 
     return () => {
       if (pollingRef.current) {
@@ -150,9 +186,9 @@ export default function TaggerTrainingMonitor({
         pollingRef.current = null;
       }
     };
-  }, [run.status, fetchStatus, fetchMetrics]);
+  }, [run.status, fetchStatus]);
 
-  // Load metrics on mount
+  // Load full metrics history on mount (for resumed/completed runs)
   useEffect(() => {
     fetchMetrics();
   }, [fetchMetrics]);

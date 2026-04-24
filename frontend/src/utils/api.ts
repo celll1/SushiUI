@@ -2175,11 +2175,12 @@ export interface TaggerTrainingRunCreateRequest {
 
 export interface TaggerTrainingMetric {
   step: number;
-  epoch: number;
+  epoch: number | null;
   loss: number | null;
   f1: number | null;
   threshold: number | null;
   learning_rate: number | null;
+  timestamp?: string;
 }
 
 export interface TaggerVocabularyPreview {

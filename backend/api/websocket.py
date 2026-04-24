@@ -90,6 +90,38 @@ class ConnectionManager:
         # Put message in queue (thread-safe)
         self.message_queue.put(data)
 
+    def send_tagger_metrics(
+        self,
+        run_id: str,
+        event_type: str,
+        step: int,
+        epoch: int = None,
+        loss: float = None,
+        lr: float = None,
+        f1: float = None,
+        threshold: float = None,
+        progress: float = None,
+    ):
+        """Send tagger training metrics to all connected clients.
+
+        Called from tagger progress callback after each step/epoch.
+        Thread-safe: uses message queue.
+        """
+        data = {"type": "tagger_metrics", "run_id": run_id, "event": event_type, "step": step}
+        if epoch is not None:
+            data["epoch"] = epoch
+        if loss is not None:
+            data["loss"] = loss
+        if lr is not None:
+            data["lr"] = lr
+        if f1 is not None:
+            data["f1"] = f1
+        if threshold is not None:
+            data["threshold"] = threshold
+        if progress is not None:
+            data["progress"] = progress
+        self.message_queue.put(data)
+
     async def start_sender(self):
         """Background task to send queued messages"""
         while True:

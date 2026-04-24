@@ -2231,9 +2231,12 @@ export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
 };
 
 export const getTaggerTrainingMetrics = async (
-  runId: string
+  runId: string,
+  sinceStep: number = 0
 ): Promise<TaggerTrainingMetric[]> => {
-  const response = await api.get(`/tagger-training/runs/${runId}/metrics`);
+  const response = await api.get(`/tagger-training/runs/${runId}/metrics`, {
+    params: sinceStep > 0 ? { since_step: sinceStep } : undefined,
+  });
   return response.data;
 };
 

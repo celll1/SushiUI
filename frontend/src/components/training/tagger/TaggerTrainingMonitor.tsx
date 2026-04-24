@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, memo } from "react";
 import {
   getTaggerTrainingRun,
   getTaggerTrainingMetrics,
@@ -20,7 +20,7 @@ interface TaggerTrainingMonitorProps {
   onEditConfig?: () => void;
 }
 
-function MiniChart({
+const MiniChart = memo(function MiniChart({
   data,
   valueKey,
   color,
@@ -76,7 +76,7 @@ function MiniChart({
       <path d={pathD} fill="none" stroke={color} strokeWidth="1.5" />
     </svg>
   );
-}
+});
 
 export default function TaggerTrainingMonitor({
   run: initialRun,
@@ -91,6 +91,8 @@ export default function TaggerTrainingMonitor({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  // Track the highest step seen so incremental polls only fetch new rows
+  const lastStepRef = useRef<number>(0);
 
   const updateRun = useCallback((updated: TaggerTrainingRun) => {
     setRun(updated);
@@ -106,10 +108,21 @@ export default function TaggerTrainingMonitor({
     }
   }, [run.run_id, updateRun]);
 
-  const fetchMetrics = useCallback(async () => {
+  const fetchMetrics = useCallback(async (incremental = false) => {
     try {
-      const data = await getTaggerTrainingMetrics(run.run_id);
-      setMetrics(data);
+      const sinceStep = incremental ? lastStepRef.current : 0;
+      const data = await getTaggerTrainingMetrics(run.run_id, sinceStep);
+      if (data.length === 0) return;
+      if (incremental && sinceStep > 0) {
+        setMetrics(prev => {
+          const merged = [...prev, ...data];
+          lastStepRef.current = merged[merged.length - 1].step;
+          return merged;
+        });
+      } else {
+        setMetrics(data);
+        lastStepRef.current = data[data.length - 1]?.step ?? 0;
+      }
     } catch (err) {
       console.error("[TaggerMonitor] Failed to fetch metrics:", err);
     }
@@ -128,7 +141,7 @@ export default function TaggerTrainingMonitor({
 
     pollingRef.current = setInterval(async () => {
       await fetchStatus();
-      await fetchMetrics();
+      await fetchMetrics(true);
     }, 3000);
 
     return () => {

@@ -1,5 +1,6 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import NullPool
 from config.settings import settings
 import os
 
@@ -7,13 +8,18 @@ import os
 from .models import GalleryBase, DatasetBase, TrainingBase
 
 # Create separate engines
+# NullPool: no connection pooling — each session gets a fresh connection that is
+# closed immediately on session.close().  SQLite connections are cheap to create
+# and the database has its own writer lock, so pooling provides no benefit and
+# causes QueuePool exhaustion when training threads + API requests run concurrently.
 gallery_db_path = os.path.join(settings.root_dir, "gallery.db")
 datasets_db_path = os.path.join(settings.root_dir, "datasets.db")
 training_db_path = os.path.join(settings.root_dir, "training.db")
 
-gallery_engine = create_engine(f"sqlite:///{gallery_db_path}", connect_args={"check_same_thread": False})
-datasets_engine = create_engine(f"sqlite:///{datasets_db_path}", connect_args={"check_same_thread": False})
-training_engine = create_engine(f"sqlite:///{training_db_path}", connect_args={"check_same_thread": False})
+_sqlite_kwargs = {"connect_args": {"check_same_thread": False}, "poolclass": NullPool}
+gallery_engine  = create_engine(f"sqlite:///{gallery_db_path}",  **_sqlite_kwargs)
+datasets_engine = create_engine(f"sqlite:///{datasets_db_path}", **_sqlite_kwargs)
+training_engine = create_engine(f"sqlite:///{training_db_path}", **_sqlite_kwargs)
 
 # Create separate session factories
 GallerySessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=gallery_engine)

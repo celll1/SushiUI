@@ -139,7 +139,7 @@ interface InpaintPanelProps {
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {
-  const { modelLoaded, isBackendReady } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults } = useStartup();
   const [params, setParams] = useState<InpaintParams>(DEFAULT_PARAMS);
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -681,6 +681,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
     }
   }, [loopGenerationConfig, isMounted]);
+
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  useEffect(() => {
+    if (!generationDefaults) return;
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) {
+      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.inpaint as Partial<typeof DEFAULT_PARAMS>) }));
+    }
+  }, [generationDefaults]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);

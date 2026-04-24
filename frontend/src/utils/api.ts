@@ -263,6 +263,25 @@ export interface GeneratedImage {
   nag_sigma_end?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Schema defaults — fetched once at startup, backend is source of truth
+// ---------------------------------------------------------------------------
+
+export interface GenerationDefaultsResponse {
+  txt2img: Partial<GenerationParams> & Record<string, unknown>;
+  img2img: Partial<GenerationParams> & Record<string, unknown>;
+  inpaint:  Partial<GenerationParams> & Record<string, unknown>;
+}
+
+export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
+  (await api.get("/schema/generation-defaults")).data;
+
+export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> =>
+  (await api.get("/schema/training-defaults")).data;
+
+export const fetchTaggerTrainingDefaults = async (): Promise<Record<string, unknown>> =>
+  (await api.get("/schema/tagger-training-defaults")).data;
+
 export const generateTxt2Img = async (params: GenerationParams) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
@@ -2145,6 +2164,9 @@ export interface TaggerTrainingRunCreateRequest {
   excluded_categories?: string[];
   ban_tags?: string;
   use_tag_aliases?: boolean;
+  save_base_model?: boolean;
+  weight_decay?: number;
+  loss_clip?: number;
   vocab_min_count?: number;
   cls_dim?: number;
   hidden_proj_dim?: number;

@@ -126,7 +126,7 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
@@ -637,6 +637,15 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       localStorage.setItem(LOOP_GENERATION_STORAGE_KEY, JSON.stringify(loopGenerationConfig));
     }
   }, [loopGenerationConfig, isMounted]);
+
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  useEffect(() => {
+    if (!generationDefaults) return;
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) {
+      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.img2img as Partial<typeof DEFAULT_PARAMS>) }));
+    }
+  }, [generationDefaults]);
 
   const resetToDefault = () => {
     setParams(DEFAULT_PARAMS);

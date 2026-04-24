@@ -36,6 +36,10 @@ from utils import save_image_with_metadata, create_thumbnail, calculate_image_ha
 from config.settings import settings
 from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
+from api.param_defaults import (
+    GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
+    TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
+)
 from api.generation_utils import (
     process_controlnet_configs,
     create_progress_callback_factory,
@@ -116,8 +120,8 @@ class GenerationParams(BaseModel):
     schedule_type: str = "uniform"
     seed: int = -1
     ancestral_seed: int = -1  # Seed for stochastic samplers (Euler a, DPM2 a, etc.). -1 = use main seed
-    width: int = 512
-    height: int = 512
+    width: int = 1024
+    height: int = 1024
     model: str = ""
     loras: Optional[List[LoRAConfig]] = []
     controlnets: Optional[List[ControlNetConfig]] = []
@@ -132,13 +136,13 @@ class GenerationParams(BaseModel):
     cfg_rescale_snr_alpha: float = 0.0  # SNR-based adaptive CFG (0.0 = disabled, 0.1-0.5 typical)
     # Dynamic thresholding
     dynamic_threshold_percentile: float = 0.0  # 0.0 = disabled, 99.5 = typical
-    dynamic_threshold_mimic_scale: float = 1.0  # Clamp value for static threshold
+    dynamic_threshold_mimic_scale: float = 7.0  # Clamp value for static threshold
     # NAG (Normalized Attention Guidance)
     nag_enable: bool = False  # Enable NAG
     nag_scale: float = 5.0  # NAG extrapolation scale (3-7 typical)
     nag_tau: float = 3.5  # NAG normalization threshold (2.5-3.5 typical)
     nag_alpha: float = 0.25  # NAG blending factor (0.25-0.5 typical)
-    nag_sigma_end: float = 0.0  # Sigma threshold to disable NAG (0.0 = always enabled)
+    nag_sigma_end: float = 3.0  # Sigma threshold to disable NAG (0.0 = always enabled)
     nag_negative_prompt: Optional[str] = ""  # Separate negative prompt for NAG (empty = use main negative prompt)
     # Attention processor type
     attention_type: str = "normal"  # "normal", "sage", "flash"
@@ -159,6 +163,29 @@ class Txt2ImgRequest(GenerationParams):
 
 class Img2ImgRequest(GenerationParams):
     denoising_strength: float = 0.75
+
+# ---------------------------------------------------------------------------
+# Schema endpoints — single source of truth for frontend DEFAULT_PARAMS
+# ---------------------------------------------------------------------------
+
+@router.get("/schema/generation-defaults")
+async def get_generation_defaults():
+    """Return default parameter values for all generation modes."""
+    return {
+        "txt2img": TXT2IMG_DEFAULTS,
+        "img2img": IMG2IMG_DEFAULTS,
+        "inpaint":  INPAINT_DEFAULTS,
+    }
+
+@router.get("/schema/training-defaults")
+async def get_training_defaults():
+    """Return default parameter values for LoRA/Full-FT training."""
+    return TRAINING_DEFAULTS
+
+@router.get("/schema/tagger-training-defaults")
+async def get_tagger_training_defaults():
+    """Return default parameter values for tagger training."""
+    return TAGGER_TRAINING_DEFAULTS
 
 # Routes
 @router.post("/generate/txt2img")
@@ -4769,14 +4796,18 @@ class TrainingRunCreateRequest(BaseModel):
     bucket_strategy: str = "resize"  # "resize", "crop", "random_crop"
     multi_resolution_mode: str = "max"  # "max" or "random"
     cache_latents_to_disk: bool = False  # Cache VAE latents and text embeddings to disk (default: False, in-memory cache)
+    force_recache: bool = False  # Force regeneration of disk latent cache
+    reconstruction_loss_weight: float = 0.0  # Additional reconstruction loss weight (0.0 = disabled)
 
     # Component-specific training
     train_unet: bool = True
     train_text_encoder: bool = False
+    train_image_encoder: bool = False  # Reserved for future image encoder training
     unet_lr: Optional[float] = None  # Defaults to learning_rate if None
     text_encoder_lr: Optional[float] = None  # Defaults to learning_rate if None
     text_encoder_1_lr: Optional[float] = None  # SDXL TE1 LR (defaults to text_encoder_lr if None)
     text_encoder_2_lr: Optional[float] = None  # SDXL TE2 LR (defaults to text_encoder_lr if None)
+    image_encoder_lr: Optional[float] = None  # Reserved for future image encoder LR
 
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2

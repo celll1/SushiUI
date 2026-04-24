@@ -32,6 +32,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
 
+from PIL import Image as _PILImage
 from safetensors.torch import load_file as _load_safetensors_file
 
 from .siglip2_tagger_model import (
@@ -1153,12 +1154,55 @@ def run_tagger_training(
             print(f"[TaggerTraining] Banned tags: {len(ban_tags)} entries")
         progress_callback and progress_callback(run_id, "vocab", {"num_tags": vocabulary.num_tags})
 
-        # Build processor
+        # Resolve vision_encoder_repo FIRST — processor must match the vision encoder.
+        # Priority (highest to lowest):
+        #   1. Explicit HF repo ID / URL in vision_encoder_path
+        #   2. vision_encoder_repo already set in config (caller pre-filled)
+        #   3. _metadata.json alongside a local safetensors vision_encoder_path
+        #   4. Default (patch16-naflex)
+        _ve_path = config.get("vision_encoder_path", "")
+        from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO
+        _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
+        if _is_hf_ve or "vision_encoder_repo" not in config:
+            config = dict(config)  # shallow copy — do not mutate caller's dict
+            if _is_hf_ve:
+                config["vision_encoder_repo"] = _resolved_ve
+                print(f"[TaggerTraining] HF repo detected for vision encoder: {_resolved_ve}")
+            else:
+                import json as _json
+                _ve_meta_path = _ve_path.strip().strip('"').strip("'")
+                _ve_meta_path = _ve_meta_path.replace(".safetensors", "_metadata.json")
+                _repo_from_meta = None
+                if os.path.isfile(_ve_meta_path):
+                    try:
+                        with open(_ve_meta_path, "r", encoding="utf-8") as _fh:
+                            _ve_meta = _json.load(_fh)
+                        _repo_from_meta = _ve_meta.get("vision_encoder_repo")
+                    except Exception:
+                        pass
+                config["vision_encoder_repo"] = _repo_from_meta or _DEFAULT_REPO
+
+        # Build processor — must match the vision encoder architecture.
+        # Only NaFlex-compatible models (those whose processor returns
+        # pixel_attention_mask and spatial_shapes) are supported.
+        processor_repo = config["vision_encoder_repo"]
         print(f"[TaggerTraining] === Phase: processor ===")
-        print(f"[TaggerTraining] Loading processor...")
-        REPO_ID = "google/siglip2-so400m-patch16-naflex"
-        processor = AutoProcessor.from_pretrained(REPO_ID)
-        print(f"[TaggerTraining] Processor loaded (repo: {REPO_ID})")
+        print(f"[TaggerTraining] Loading processor from {processor_repo}...")
+        try:
+            processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
+        except Exception:
+            processor = AutoProcessor.from_pretrained(processor_repo)
+        # NaFlex compatibility check: run a tiny probe to verify the processor
+        # outputs the fields required by TaggerDataset.
+        _probe = processor(images=[_PILImage.new("RGB", (64, 64))], return_tensors="pt")
+        if "pixel_attention_mask" not in _probe or "spatial_shapes" not in _probe:
+            raise RuntimeError(
+                f"Vision encoder '{processor_repo}' does not support NaFlex preprocessing "
+                f"(missing pixel_attention_mask / spatial_shapes). "
+                f"Only NaFlex-compatible SigLIP2 models are supported "
+                f"(e.g. google/siglip2-so400m-patch16-naflex)."
+            )
+        print(f"[TaggerTraining] Processor loaded (repo: {processor_repo}, NaFlex: OK)")
 
         # Build datasets
         print(f"[TaggerTraining] === Phase: dataset ===")
@@ -1234,38 +1278,6 @@ def run_tagger_training(
                 )
             else:
                 print("[TaggerTraining] No resumable checkpoint found; starting from scratch")
-
-        # Resolve vision_encoder_repo for metadata recording and architecture loading.
-        # Priority (highest to lowest):
-        #   1. Explicit HF repo ID / URL in vision_encoder_path
-        #   2. vision_encoder_repo already set in config (caller pre-filled)
-        #   3. _metadata.json alongside a local safetensors vision_encoder_path
-        #   4. Default (so400m)
-        _ve_path = config.get("vision_encoder_path", "")
-        from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO
-        _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
-        if _is_hf_ve or "vision_encoder_repo" not in config:
-            config = dict(config)  # shallow copy — do not mutate caller's dict
-            if _is_hf_ve:
-                config["vision_encoder_repo"] = _resolved_ve
-                print(f"[TaggerTraining] HF repo detected for vision encoder: {_resolved_ve}")
-            else:
-                # Try to read vision_encoder_repo from the safetensors metadata
-                # (covers merged tagger checkpoints used as vision_encoder_path)
-                import json as _json
-                _ve_meta_path = _ve_path.strip().strip('"').strip("'")
-                _ve_meta_path = _ve_meta_path.replace(".safetensors", "_metadata.json")
-                _repo_from_meta = None
-                if os.path.isfile(_ve_meta_path):
-                    try:
-                        with open(_ve_meta_path, "r", encoding="utf-8") as _fh:
-                            _ve_meta = _json.load(_fh)
-                        _repo_from_meta = _ve_meta.get("vision_encoder_repo")
-                    except Exception:
-                        pass
-                config["vision_encoder_repo"] = _repo_from_meta or _DEFAULT_REPO
-                if _repo_from_meta:
-                    print(f"[TaggerTraining] vision_encoder_repo read from checkpoint metadata: {_repo_from_meta}")
 
         # Save base model into training directory for self-contained checkpoints.
         # Controlled by save_base_model (default True).

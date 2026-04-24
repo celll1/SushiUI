@@ -1166,7 +1166,6 @@ def run_tagger_training(
         progress_callback and progress_callback(run_id, "phase", {
             "phase": "dataset", "message": f"Loading dataset ({vocabulary.num_tags} tags)..."
         })
-        val_split = float(config.get("val_split", 0.05))
         full_ds = TaggerDataset(
             dataset_ids=dataset_ids,
             vocabulary=vocabulary,
@@ -1174,15 +1173,23 @@ def run_tagger_training(
             processor=processor,
             alias_resolver=alias_resolver,
         )
-        print(f"[TaggerTraining] Dataset: {len(full_ds)} samples total")
+        total_samples = len(full_ds)
+        print(f"[TaggerTraining] Dataset: {total_samples} samples total")
 
-        val_size   = max(1, int(len(full_ds) * val_split))
-        train_size = len(full_ds) - val_size
+        val_split_mode = config.get("val_split_mode", "percent")
+        if val_split_mode == "fixed":
+            val_size = max(1, int(config.get("val_fixed_size", 500)))
+            val_size = min(val_size, total_samples - 1)  # keep at least 1 train sample
+        else:
+            val_split = float(config.get("val_split", 0.05))
+            val_size = max(1, int(total_samples * val_split))
+        train_size = total_samples - val_size
         train_ds, val_ds = torch.utils.data.random_split(
             full_ds, [train_size, val_size],
             generator=torch.Generator().manual_seed(42),
         )
-        print(f"[TaggerTraining] Split: {train_size} train / {val_size} val (val_split={val_split})")
+        print(f"[TaggerTraining] Split: {train_size} train / {val_size} val "
+              f"(mode={val_split_mode})")
 
         batch_size  = int(config.get("batch_size", 32))
         num_workers = int(config.get("num_workers", 4))

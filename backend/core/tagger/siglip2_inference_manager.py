@@ -104,15 +104,24 @@ class SigLIP2InferenceManager:
         tag_to_category  = vocab.get("tag_to_category", {})
         num_tags         = len(idx_to_tag)
 
-        # 2. Load processor (needed for all model types — image preprocessing)
-        from transformers import AutoProcessor
-        REPO_ID = "google/siglip2-so400m-patch16-naflex"
-        try:
-            processor = AutoProcessor.from_pretrained(REPO_ID, local_files_only=True)
-        except Exception:
-            processor = AutoProcessor.from_pretrained(REPO_ID)
+        # 2. Read checkpoint metadata (before processor — needed to resolve processor repo)
+        from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+        if checkpoint_path.endswith(".onnx"):
+            _meta_path = checkpoint_path.replace(".onnx", "_metadata.json")
+            meta = json.load(open(_meta_path, encoding="utf-8")) if os.path.isfile(_meta_path) else {}
+        else:
+            meta = _read_metadata(checkpoint_path)
 
-        # 3. Load model (branched by type)
+        # 3. Load processor — repo derived from metadata so it always matches the vision encoder
+        from transformers import AutoProcessor
+        processor_repo = meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+        print(f"[SigLIP2Manager] Loading processor from {processor_repo}...")
+        try:
+            processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
+        except Exception:
+            processor = AutoProcessor.from_pretrained(processor_repo)
+
+        # 4. Load model (branched by type)
         if checkpoint_path.endswith(".onnx"):
             # --- ONNX model ---
             import onnxruntime as ort
@@ -129,7 +138,7 @@ class SigLIP2InferenceManager:
         else:
             # --- safetensors model (full / lora) ---
             model_type = _detect_model_type(checkpoint_path)
-            meta = _read_metadata(checkpoint_path)
+            # meta already read above
 
             lora_rank  = int(meta.get("lora_rank",  lora_rank))
             lora_alpha = float(meta.get("lora_alpha", lora_alpha))
@@ -420,8 +429,21 @@ class SigLIP2InferenceManager:
         with open(vocab_out, "w", encoding="utf-8") as fh:
             fh.write(raw_vocab)
 
+        # Write _metadata.json alongside the ONNX so inference (and spaces app) can
+        # load the correct processor without hardcoding the repo ID.
+        from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO_ID
+        _src_meta = _read_metadata(self.checkpoint_path) if not self.checkpoint_path.endswith(".onnx") else {}
+        _onnx_meta = {
+            "vision_encoder_repo": _src_meta.get("vision_encoder_repo", _DEFAULT_REPO_ID),
+            "num_tags": num_tags,
+        }
+        _onnx_meta_path = os.path.splitext(output_path)[0] + "_metadata.json"
+        with open(_onnx_meta_path, "w", encoding="utf-8") as _fh:
+            json.dump(_onnx_meta, _fh, ensure_ascii=False, indent=2)
+
         print(f"[SigLIP2Manager] ONNX exported → {output_path}")
         print(f"[SigLIP2Manager] Vocabulary  → {vocab_out}")
+        print(f"[SigLIP2Manager] Metadata    → {_onnx_meta_path}")
         return output_path, vocab_out
 
     # ------------------------------------------------------------------

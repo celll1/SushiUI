@@ -48,6 +48,9 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   loss_rho: 0.5,
   loss_beta: 2.0,
   loss_label_weight: "fisher" as string,
+  val_split_mode: "percent" as string,
+  val_split: 0.05,
+  val_fixed_size: 500,
   validate_every: 1,
   save_best_only: true,
   excluded_categories: [] as string[],
@@ -99,6 +102,9 @@ export default function TaggerTrainingConfig({
         loss_rho: (editRun.config?.loss_rho as number) ?? DEFAULT_CONFIG.loss_rho,
         loss_beta: (editRun.config?.loss_beta as number) ?? DEFAULT_CONFIG.loss_beta,
         loss_label_weight: (editRun.config?.loss_label_weight as string) ?? DEFAULT_CONFIG.loss_label_weight,
+        val_split_mode: (editRun.config?.val_split_mode as string) ?? DEFAULT_CONFIG.val_split_mode,
+        val_split: (editRun.config?.val_split as number) ?? DEFAULT_CONFIG.val_split,
+        val_fixed_size: (editRun.config?.val_fixed_size as number) ?? DEFAULT_CONFIG.val_fixed_size,
         validate_every: (editRun.config?.validate_every as number) ?? DEFAULT_CONFIG.validate_every,
         save_best_only: (editRun.config?.save_best_only as boolean) ?? DEFAULT_CONFIG.save_best_only,
         excluded_categories: (editRun.config?.excluded_categories as string[]) ?? DEFAULT_CONFIG.excluded_categories,
@@ -618,6 +624,44 @@ export default function TaggerTrainingConfig({
                 onChange={(e) => setField("validate_every", parseInt(e.target.value) || 1)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-xs text-gray-400 mb-1">Validation Split</label>
+              <div className="flex gap-2">
+                <select
+                  value={config.val_split_mode}
+                  onChange={(e) => setField("val_split_mode", e.target.value)}
+                  className="bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="percent">Percent (%)</option>
+                  <option value="fixed">Fixed (samples)</option>
+                </select>
+                {config.val_split_mode === "fixed" ? (
+                  <input
+                    type="number"
+                    min={1}
+                    step={100}
+                    value={config.val_fixed_size}
+                    onChange={(e) => setField("val_fixed_size", parseInt(e.target.value) || 500)}
+                    className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    placeholder="500"
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    step={1}
+                    value={Math.round((config.val_split ?? 0.05) * 100)}
+                    onChange={(e) => setField("val_split", (parseInt(e.target.value) || 5) / 100)}
+                    className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    placeholder="5"
+                  />
+                )}
+                <span className="flex items-center text-xs text-gray-500">
+                  {config.val_split_mode === "fixed" ? "samples" : "%"}
+                </span>
+              </div>
             </div>
           </div>
         </section>

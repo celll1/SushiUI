@@ -2129,8 +2129,17 @@ export interface TaggerTrainingRunCreateRequest {
   checkpoint_save_mode?: string;
   mixed_precision?: string;
   gradient_checkpointing?: boolean;
+  loss_function?: string;
   loss_gamma_neg?: number;
   loss_gamma_pos?: number;
+  loss_gamma0?: number;
+  loss_m0?: number;
+  loss_rho?: number;
+  loss_beta?: number;
+  loss_label_weight?: string;
+  val_split_mode?: string;
+  val_split?: number;
+  val_fixed_size?: number;
   validate_every?: number;
   save_best_only?: boolean;
   excluded_categories?: string[];

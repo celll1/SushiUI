@@ -49,7 +49,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   loss_rho: 0.5,
   loss_beta: 2.0,
   loss_label_weight: "fisher" as string,
-  val_split_mode: "random" as string,
+  val_split_mode: "percent" as string,
   val_split: 0.05,
   val_fixed_size: undefined as number | undefined,
   validate_every: 1,
@@ -118,7 +118,7 @@ export default function TaggerTrainingConfig({
     : DEFAULT_CONFIG;
 
   const initialDatasetIds: number[] = isEditMode
-    ? ((editRun.dataset_configs as TaggerDatasetConfig[]) ?? []).map((dc) => dc.dataset_id)
+    ? ((editRun.dataset_configs as unknown as TaggerDatasetConfig[]) ?? []).map((dc) => dc.dataset_id)
     : [];
 
   const [config, setConfig] = useState<ConfigState>(initialConfig);
@@ -757,7 +757,7 @@ export default function TaggerTrainingConfig({
         )}
 
         {/* CS-ASL / H-CS-ASL / LA-S-ASL shared parameters */}
-        {(["cs_asl", "h_cs_asl", "la_s_asl"] as string[]).includes(config.loss_function) && (
+        {(["cs_asl", "h_cs_asl", "la_s_asl"] as string[]).includes(config.loss_function ?? "") && (
           <section>
             <label className="block text-sm font-medium text-gray-300 mb-3">
               π-Adjusted Loss Parameters

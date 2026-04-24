@@ -559,7 +559,7 @@ async def generate_img2img(
     text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
     enable_block_swap: bool = Form(False),
-    blocks_to_swap: int = Form(22),
+    blocks_to_swap: int = Form(GENERATION_DEFAULTS["blocks_to_swap"]),
     use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
@@ -885,7 +885,7 @@ async def generate_inpaint(
     text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
     enable_block_swap: bool = Form(False),
-    blocks_to_swap: int = Form(22),
+    blocks_to_swap: int = Form(GENERATION_DEFAULTS["blocks_to_swap"]),
     use_pinned_memory: bool = Form(False),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config

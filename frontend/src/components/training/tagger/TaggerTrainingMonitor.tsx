@@ -374,6 +374,7 @@ export default function TaggerTrainingMonitor({
               batch_size: "Batch size",
               optimizer: "Optimizer",
               mixed_precision: "Precision",
+              loss_function: "Loss fn",
               lora_rank: "LoRA rank",
               lora_alpha: "LoRA alpha",
               warmup_steps: "Warmup steps",
@@ -381,7 +382,6 @@ export default function TaggerTrainingMonitor({
               save_every_n_epochs: "Save / N epochs",
               keep_last_n_checkpoints: "Keep last N",
               checkpoint_save_mode: "Save mode",
-              loss_function: "Loss fn",
               loss_gamma_neg: "γ- (ASL)",
               loss_gamma_pos: "γ+ (ASL)",
               loss_gamma0: "γ₀",
@@ -405,9 +405,20 @@ export default function TaggerTrainingMonitor({
               weight_decay: "Weight decay",
               loss_clip: "Loss clip",
             };
+            const cfg = run.config as Record<string, unknown>;
+            const lossFn = String(cfg.loss_function ?? "asl");
+            const ASL_ONLY_KEYS = new Set(["loss_gamma_neg", "loss_gamma_pos"]);
+            const CS_ASL_KEYS   = new Set(["loss_gamma0", "loss_m0", "loss_beta", "loss_rho"]);
+            const H_CS_ASL_KEYS = new Set(["loss_label_weight"]);
             const entries = Object.entries(CONFIG_LABELS)
-              .map(([key, label]) => ({ key, label, value: (run.config as Record<string, unknown>)[key] }))
-              .filter(({ value }) => value !== undefined && value !== null && value !== "");
+              .map(([key, label]) => ({ key, label, value: cfg[key] }))
+              .filter(({ key, value }) => {
+                if (value === undefined || value === null || value === "") return false;
+                if (ASL_ONLY_KEYS.has(key) && lossFn !== "asl") return false;
+                if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
+                if (H_CS_ASL_KEYS.has(key) && lossFn !== "h_cs_asl") return false;
+                return true;
+              });
             return (
               <div className="mt-2 bg-gray-800 rounded p-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
                 {entries.map(({ key, label, value }) => {

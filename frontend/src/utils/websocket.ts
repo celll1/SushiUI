@@ -38,12 +38,26 @@ interface TrainingMetrics {
   grad_norm_vision_encoder?: number;
 }
 
+export interface TaggerMetrics {
+  run_id: string;
+  event: "step" | "epoch";
+  step: number;
+  epoch?: number;
+  loss?: number;
+  lr?: number;
+  f1?: number;
+  threshold?: number;
+  progress?: number;
+}
+
 type TrainingMetricsCallback = (metrics: TrainingMetrics) => void;
+type TaggerMetricsCallback = (metrics: TaggerMetrics) => void;
 
 class ProgressClient {
   private eventSource: EventSource | null = null;
   private callbacks: Set<ProgressCallback> = new Set();
   private trainingMetricsCallbacks: Set<TrainingMetricsCallback> = new Set();
+  private taggerMetricsCallbacks: Set<TaggerMetricsCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
 
   connect() {
@@ -103,6 +117,19 @@ class ProgressClient {
           this.trainingMetricsCallbacks.forEach((callback) => {
             callback(metrics);
           });
+        } else if (data.type === "tagger_metrics") {
+          const metrics: TaggerMetrics = {
+            run_id: data.run_id,
+            event: data.event,
+            step: data.step,
+            epoch: data.epoch,
+            loss: data.loss,
+            lr: data.lr,
+            f1: data.f1,
+            threshold: data.threshold,
+            progress: data.progress,
+          };
+          this.taggerMetricsCallbacks.forEach((cb) => cb(metrics));
         } else if (data.type === "error") {
           console.error("[SSE] Error from server:", data.message);
         } else if (data.type === "closed") {
@@ -162,10 +189,18 @@ class ProgressClient {
   unsubscribeFromTrainingMetrics(callback: TrainingMetricsCallback) {
     this.trainingMetricsCallbacks.delete(callback);
   }
+
+  subscribeToTaggerMetrics(callback: TaggerMetricsCallback) {
+    this.taggerMetricsCallbacks.add(callback);
+  }
+
+  unsubscribeFromTaggerMetrics(callback: TaggerMetricsCallback) {
+    this.taggerMetricsCallbacks.delete(callback);
+  }
 }
 
 // Export with same name for backwards compatibility
 export const wsClient = new ProgressClient();
 
 // Export types
-export type { TrainingMetrics, TrainingMetricsCallback };
+export type { TrainingMetrics, TrainingMetricsCallback, TaggerMetricsCallback };

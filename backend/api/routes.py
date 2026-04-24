@@ -6920,6 +6920,15 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     loss=data.get("loss"),
                     learning_rate=data.get("lr"),
                 )
+                manager.send_tagger_metrics(
+                    run_id=rid,
+                    event_type="step",
+                    step=data.get("step", 0),
+                    epoch=data.get("epoch"),
+                    loss=data.get("loss"),
+                    lr=data.get("lr"),
+                    progress=data.get("progress"),
+                )
             elif event_type == "epoch":
                 run.current_epoch = data.get("epoch", run.current_epoch)
                 run.latest_loss   = data.get("loss")
@@ -6931,6 +6940,15 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                         f1=data.get("f1"),
                         threshold=data.get("threshold"),
                     )
+                manager.send_tagger_metrics(
+                    run_id=rid,
+                    event_type="epoch",
+                    step=run.current_step,
+                    epoch=data.get("epoch"),
+                    loss=data.get("loss"),
+                    f1=data.get("f1"),
+                    threshold=data.get("threshold"),
+                )
             elif event_type == "checkpoint":
                 if data.get("name") == "best_f1":
                     run.best_f1 = data.get("f1")

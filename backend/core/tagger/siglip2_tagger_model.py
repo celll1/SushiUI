@@ -335,11 +335,13 @@ class SigLIP2TaggerModel(nn.Module):
         hidden_size: int = HIDDEN_SIZE,
         cls_dim: Optional[int] = None,
         hidden_proj_dim: Optional[int] = None,
+        is_naflex: bool = True,
     ) -> None:
         super().__init__()
         self.vision_encoder  = vision_encoder
         self.cls_dim         = cls_dim
         self.hidden_proj_dim = hidden_proj_dim
+        self.is_naflex       = is_naflex
 
         if cls_dim:
             self.custom_pooler: Optional[CustomAttentionPooling] = CustomAttentionPooling(
@@ -367,15 +369,18 @@ class SigLIP2TaggerModel(nn.Module):
         spatial_shapes: torch.Tensor,
     ) -> torch.Tensor:
         """Return logits [B, num_tags]."""
-        out = self.vision_encoder(
-            pixel_values=pixel_values,
-            attention_mask=pixel_attention_mask,
-            spatial_shapes=spatial_shapes,
-        )
+        if self.is_naflex:
+            out = self.vision_encoder(
+                pixel_values=pixel_values,
+                attention_mask=pixel_attention_mask,
+                spatial_shapes=spatial_shapes,
+            )
+        else:
+            out = self.vision_encoder(pixel_values=pixel_values)
         if self.custom_pooler is not None:
             pooled = self.custom_pooler(out.last_hidden_state)  # [B, cls_dim]
         else:
-            pooled = out.pooler_output                          # [B, 1152]
+            pooled = out.pooler_output                          # [B, hidden_size]
         return self.head(pooled)                                # [B, num_tags]
 
     # ------------------------------------------------------------------
@@ -425,6 +430,7 @@ class SigLIP2TaggerModel(nn.Module):
         cls_dim         = metadata.get("cls_dim")
         hidden_proj_dim = metadata.get("hidden_proj_dim")
         repo_id         = metadata.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+        is_naflex       = metadata.get("is_naflex", True)
 
         if vision_encoder_path:
             vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
@@ -443,6 +449,7 @@ class SigLIP2TaggerModel(nn.Module):
             vision_encoder=vision_encoder,
             cls_dim=cls_dim,
             hidden_proj_dim=hidden_proj_dim,
+            is_naflex=is_naflex,
         )
         state_dict = load_file(checkpoint_path)
         model.load_state_dict(state_dict, strict=True)
@@ -491,11 +498,13 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         lora_alpha: float = 16.0,
         lora_dropout: float = 0.0,
         hidden_size: int = HIDDEN_SIZE,
+        is_naflex: bool = True,
     ) -> None:
         super().__init__()
         self.vision_encoder = vision_encoder
         self.lora_rank  = lora_rank
         self.lora_alpha = lora_alpha
+        self.is_naflex  = is_naflex
 
         self.head = nn.Linear(hidden_size, num_tags)
         nn.init.zeros_(self.head.weight)
@@ -535,11 +544,14 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         pixel_attention_mask: torch.Tensor,
         spatial_shapes: torch.Tensor,
     ) -> torch.Tensor:
-        out = self.vision_encoder(
-            pixel_values=pixel_values,
-            attention_mask=pixel_attention_mask,
-            spatial_shapes=spatial_shapes,
-        )
+        if self.is_naflex:
+            out = self.vision_encoder(
+                pixel_values=pixel_values,
+                attention_mask=pixel_attention_mask,
+                spatial_shapes=spatial_shapes,
+            )
+        else:
+            out = self.vision_encoder(pixel_values=pixel_values)
         return self.head(out.pooler_output)  # [B, num_tags]
 
     # ------------------------------------------------------------------
@@ -672,6 +684,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         lora_rank  = metadata.get("lora_rank",  lora_rank)
         lora_alpha = metadata.get("lora_alpha", lora_alpha)
         repo_id    = metadata.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+        is_naflex  = metadata.get("is_naflex", True)
 
         vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
         model = cls(
@@ -679,6 +692,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
             lora_alpha=lora_alpha,
+            is_naflex=is_naflex,
         )
 
         saved = load_file(checkpoint_path)
@@ -826,6 +840,7 @@ def build_tagger_model(
     init_head_from: Optional[str] = None,
     new_vocab: Optional[Dict[str, int]] = None,
     repo_id: str = SIGLIP2_DEFAULT_REPO_ID,
+    is_naflex: bool = True,
 ) -> nn.Module:
     """Build the appropriate tagger model.
 
@@ -862,6 +877,7 @@ def build_tagger_model(
             vision_encoder=vision_encoder,
             lora_rank=lora_rank,
             lora_alpha=float(lora_alpha),
+            is_naflex=is_naflex,
         )
     elif training_method == "full":
         if hidden_proj_dim and not cls_dim:
@@ -872,6 +888,7 @@ def build_tagger_model(
             freeze_encoder=freeze_encoder,
             cls_dim=cls_dim,
             hidden_proj_dim=hidden_proj_dim,
+            is_naflex=is_naflex,
         )
     else:
         raise ValueError(f"Unknown training_method: {training_method!r}. Use 'full' or 'lora'.")

@@ -60,6 +60,11 @@ class TaggerDataset(Dataset):
         self.num_tags = vocabulary.num_tags
         self._alias_resolver = alias_resolver
 
+        # Detect NaFlex vs standard by probing the processor output
+        _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
+        self.is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
+        print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
+
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
         self._build_samples(dataset_ids, datasets_db, caption_types)
 
@@ -167,9 +172,14 @@ class TaggerDataset(Dataset):
             print(f"[TaggerDataset] Skipping corrupt image {image_path}: {e}")
             return None  # filtered out by tagger_collate_fn
 
-        pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, 768]
-        pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
-        spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
+        if self.is_naflex:
+            pixel_values         = inputs["pixel_values"].squeeze(0)          # [num_patches, patch_dim]
+            pixel_attention_mask = inputs["pixel_attention_mask"].squeeze(0)  # [num_patches]
+            spatial_shapes       = inputs["spatial_shapes"].squeeze(0)        # [2]
+        else:
+            pixel_values         = inputs["pixel_values"].squeeze(0)          # [3, H, W]
+            pixel_attention_mask = torch.zeros(0, dtype=torch.int32)          # sentinel → [B, 0] after collate
+            spatial_shapes       = torch.zeros(0, dtype=torch.int64)          # sentinel
 
         label, loss_mask = self._build_label_and_mask(tags)
         return pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask
@@ -217,24 +227,30 @@ class TaggerDataset(Dataset):
 
 
 # ------------------------------------------------------------------
-# Collate function (for variable-length NaFlex tensors)
+# Collate function — supports both NaFlex (variable patches) and standard
 # ------------------------------------------------------------------
 
 def tagger_collate_fn(batch):
-    """Collate batch items with potentially different num_patches.
+    """Collate batch items.
 
-    SigLIP2 NaFlex always outputs 256 patches per image by default,
-    so in practice shapes are identical. But we handle the general case.
+    - Filters out None entries (corrupt/unreadable images).
+    - Handles NaFlex (variable num_patches per image) by padding to max.
+    - Handles standard fixed-resolution models (pam/ss are sentinel zero-tensors).
+    Returns None if the entire batch is corrupt.
     """
-    pixel_values_list, masks_list, shapes_list, labels_list, loss_masks_list = zip(*batch)
+    valid = [item for item in batch if item is not None]
+    if not valid:
+        return None
 
-    # Stack if all same shape (usual case with default processor settings)
+    pixel_values_list, masks_list, shapes_list, labels_list, loss_masks_list = zip(*valid)
+
+    # Stack pixel_values; for NaFlex with varying patch counts, pad to max.
     try:
         pixel_values         = torch.stack(pixel_values_list)
         pixel_attention_mask = torch.stack(masks_list)
         spatial_shapes       = torch.stack(shapes_list)
     except RuntimeError:
-        # Pad to max patches if shapes differ
+        # NaFlex: different num_patches across images — pad to the maximum.
         max_patches = max(p.shape[0] for p in pixel_values_list)
         patch_dim   = pixel_values_list[0].shape[1]
         B = len(pixel_values_list)
@@ -246,26 +262,13 @@ def tagger_collate_fn(batch):
             pixel_attention_mask[i, :n] = pm
         spatial_shapes = torch.stack(shapes_list)
 
-    labels     = torch.stack(labels_list)
-    loss_masks = torch.stack(loss_masks_list)
-
-    return pixel_values, pixel_attention_mask, spatial_shapes, labels, loss_masks
-
-
-# ------------------------------------------------------------------
-# Collate function — filters out None items (corrupt images)
-# ------------------------------------------------------------------
-
-def tagger_collate_fn(batch):
-    """Drop None items (corrupt/unreadable images) and collate the rest.
-
-    Returns None if the entire batch is empty after filtering so the
-    training loop can skip it.
-    """
-    valid = [item for item in batch if item is not None]
-    if not valid:
-        return None
-    return torch.utils.data.dataloader.default_collate(valid)
+    return (
+        pixel_values,
+        pixel_attention_mask,
+        spatial_shapes,
+        torch.stack(labels_list),
+        torch.stack(loss_masks_list),
+    )
 
 
 # ------------------------------------------------------------------

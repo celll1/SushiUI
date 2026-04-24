@@ -67,6 +67,7 @@ class SigLIP2InferenceManager:
         self.model: Optional[nn.Module] = None
         self.onnx_session = None  # onnxruntime.InferenceSession when model_type == "onnx"
         self.processor = None
+        self.is_naflex: bool = True   # NaFlex (variable-res) vs standard (fixed-res)
         self.vocabulary: Optional[Dict[str, Any]] = None   # from vocabulary.json
         self.checkpoint_path: str = ""
         self.vision_encoder_path: str = ""
@@ -120,6 +121,15 @@ class SigLIP2InferenceManager:
             processor = AutoProcessor.from_pretrained(processor_repo, local_files_only=True)
         except Exception:
             processor = AutoProcessor.from_pretrained(processor_repo)
+        # Detect NaFlex vs standard by probing the processor output.
+        # Prefer metadata field (written by trainer/exporter); fall back to probe.
+        if "is_naflex" in meta:
+            is_naflex = bool(meta["is_naflex"])
+        else:
+            _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
+            is_naflex = "pixel_attention_mask" in _probe and "spatial_shapes" in _probe
+        _mode_str = "NaFlex" if is_naflex else "standard"
+        print(f"[SigLIP2Manager] Processor mode: {_mode_str}")
 
         # 4. Load model (branched by type)
         if checkpoint_path.endswith(".onnx"):
@@ -186,8 +196,9 @@ class SigLIP2InferenceManager:
             model.to(self.device)
             self.model = model
 
-        # 4. Store state
+        # 5. Store state
         self.processor           = processor
+        self.is_naflex           = is_naflex
         self.vocabulary          = {
             "idx_to_tag":      idx_to_tag,
             "tag_to_category": tag_to_category,
@@ -233,26 +244,32 @@ class SigLIP2InferenceManager:
         import numpy as np
 
         pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        inputs = self.processor(
-            images=pil_image,
-            return_tensors="pt",
-            max_num_patches=max_num_patches,
-        )
+        proc_kwargs = {"images": pil_image, "return_tensors": "pt"}
+        if self.is_naflex:
+            proc_kwargs["max_num_patches"] = max_num_patches
+        inputs = self.processor(**proc_kwargs)
 
         if self.model_type == "onnx":
-            pv_np  = inputs["pixel_values"].float().numpy()
-            pam_np = inputs["pixel_attention_mask"].float().numpy()
-            ss_np  = inputs["spatial_shapes"].numpy().astype(np.int64)
-            outputs = self.onnx_session.run(
-                ["logits"],
-                {"pixel_values": pv_np, "pixel_attention_mask": pam_np, "spatial_shapes": ss_np},
-            )
+            pv_np = inputs["pixel_values"].float().numpy()
+            if self.is_naflex:
+                pam_np = inputs["pixel_attention_mask"].float().numpy()
+                ss_np  = inputs["spatial_shapes"].numpy().astype(np.int64)
+                outputs = self.onnx_session.run(
+                    ["logits"],
+                    {"pixel_values": pv_np, "pixel_attention_mask": pam_np, "spatial_shapes": ss_np},
+                )
+            else:
+                outputs = self.onnx_session.run(["logits"], {"pixel_values": pv_np})
             logits_np = outputs[0][0]  # [num_tags]
             probs = 1.0 / (1.0 + np.exp(-logits_np.astype(np.float64)))
         else:
-            pixel_values    = inputs["pixel_values"].to(self.device)
-            pixel_attn_mask = inputs["pixel_attention_mask"].to(self.device)
-            spatial_shapes  = inputs["spatial_shapes"].to(self.device)
+            pixel_values = inputs["pixel_values"].to(self.device)
+            if self.is_naflex:
+                pixel_attn_mask = inputs["pixel_attention_mask"].to(self.device)
+                spatial_shapes  = inputs["spatial_shapes"].to(self.device)
+            else:
+                pixel_attn_mask = torch.zeros(0, dtype=torch.int32, device=self.device)
+                spatial_shapes  = torch.zeros(0, dtype=torch.int64, device=self.device)
             with torch.no_grad():
                 logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
             probs = torch.sigmoid(logits[0]).cpu().numpy()  # [num_tags]
@@ -394,30 +411,42 @@ class SigLIP2InferenceManager:
 
         # Build a dummy input using the processor on a tiny image
         dummy_img = Image.new("RGB", (64, 64), color=(128, 128, 128))
-        inputs    = self.processor(
-            images=dummy_img,
-            return_tensors="pt",
-            max_num_patches=max_num_patches,
-        )
-        dummy_pv  = inputs["pixel_values"].float()
-        dummy_pam = inputs["pixel_attention_mask"].float()
-        dummy_ss  = inputs["spatial_shapes"]
+        _proc_kw = {"images": dummy_img, "return_tensors": "pt"}
+        if self.is_naflex:
+            _proc_kw["max_num_patches"] = max_num_patches
+        inputs = self.processor(**_proc_kw)
 
         with torch.no_grad():
-            torch.onnx.export(
-                export_model,
-                (dummy_pv, dummy_pam, dummy_ss),
-                output_path,
-                input_names=["pixel_values", "pixel_attention_mask", "spatial_shapes"],
-                output_names=["logits"],
-                dynamic_axes={
-                    "pixel_values":         {1: "num_patches"},
-                    "pixel_attention_mask": {1: "num_patches"},
-                    "spatial_shapes":       {0: "num_sequences"},
-                },
-                opset_version=18,
-                do_constant_folding=True,
-            )
+            if self.is_naflex:
+                dummy_pv  = inputs["pixel_values"].float()
+                dummy_pam = inputs["pixel_attention_mask"].float()
+                dummy_ss  = inputs["spatial_shapes"]
+                torch.onnx.export(
+                    export_model,
+                    (dummy_pv, dummy_pam, dummy_ss),
+                    output_path,
+                    input_names=["pixel_values", "pixel_attention_mask", "spatial_shapes"],
+                    output_names=["logits"],
+                    dynamic_axes={
+                        "pixel_values":         {0: "batch_size", 1: "num_patches"},
+                        "pixel_attention_mask": {0: "batch_size", 1: "num_patches"},
+                        "spatial_shapes":       {0: "batch_size"},
+                    },
+                    opset_version=18,
+                    do_constant_folding=True,
+                )
+            else:
+                dummy_pv = inputs["pixel_values"].float()
+                torch.onnx.export(
+                    export_model,
+                    (dummy_pv,),
+                    output_path,
+                    input_names=["pixel_values"],
+                    output_names=["logits"],
+                    dynamic_axes={"pixel_values": {0: "batch_size"}},
+                    opset_version=18,
+                    do_constant_folding=True,
+                )
 
         # Restore model device
         export_model.to(self.device)
@@ -435,6 +464,7 @@ class SigLIP2InferenceManager:
         _src_meta = _read_metadata(self.checkpoint_path) if not self.checkpoint_path.endswith(".onnx") else {}
         _onnx_meta = {
             "vision_encoder_repo": _src_meta.get("vision_encoder_repo", _DEFAULT_REPO_ID),
+            "is_naflex": self.is_naflex,
             "num_tags": num_tags,
         }
         _onnx_meta_path = os.path.splitext(output_path)[0] + "_metadata.json"

@@ -432,10 +432,21 @@ class SigLIP2TaggerModel(nn.Module):
         repo_id         = metadata.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
         is_naflex       = metadata.get("is_naflex", True)
 
-        if vision_encoder_path:
+        # Detect merged checkpoint: contains vision_encoder.* keys so all weights
+        # are embedded — vision_encoder_path is only needed for delta (LoRA) ckpts.
+        # Even if the caller passes vision_encoder_path, skip _load_vision_encoder
+        # for merged checkpoints to avoid architecture mismatches (the weights get
+        # overwritten by model.load_state_dict below regardless).
+        from safetensors import safe_open as _safe_open
+        with _safe_open(checkpoint_path, framework="pt", device="cpu") as _f:
+            _ckpt_has_encoder = any(k.startswith("vision_encoder.") for k in _f.keys())
+
+        if vision_encoder_path and not _ckpt_has_encoder:
             vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
         else:
-            # Merged checkpoint: load HuggingFace base model for structure only;
+            if vision_encoder_path and _ckpt_has_encoder:
+                print(f"[SigLIP2Load] Merged checkpoint detected — ignoring vision_encoder_path ({os.path.basename(vision_encoder_path)}); encoder weights come from checkpoint.")
+            # Merged or no-path: load HuggingFace base model for structure only;
             # all weights will be overwritten by the checkpoint state dict below.
             from transformers import AutoModel
             try:

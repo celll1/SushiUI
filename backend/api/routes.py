@@ -7028,7 +7028,7 @@ def create_tagger_training_run(
 def list_tagger_training_runs(training_db: Session = Depends(get_training_db)):
     """List all tagger training runs."""
     runs = training_db.query(TaggerTrainingRun).order_by(TaggerTrainingRun.created_at.desc()).all()
-    return [r.to_dict() for r in runs]
+    return [r.to_list_dict() for r in runs]
 
 
 @router.get("/tagger-training/runs/{run_id}")

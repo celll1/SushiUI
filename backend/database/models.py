@@ -804,7 +804,8 @@ class TaggerTrainingRun(TrainingBase):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
 
-    def to_dict(self):
+    def to_list_dict(self):
+        """Lightweight serialization for list views — excludes large fields like tag_vocabulary."""
         return {
             "id": self.id,
             "run_id": self.run_id,
@@ -816,28 +817,33 @@ class TaggerTrainingRun(TrainingBase):
             "current_step": self.current_step,
             "total_steps": self.total_steps,
             "training_method": self.training_method,
-            "vision_encoder_path": self.vision_encoder_path,
-            "dataset_configs": self.dataset_configs,
-            "output_dir": self.output_dir,
-            "config": self.config,
             "num_tags": self.num_tags,
-            "tag_vocabulary": self.tag_vocabulary,
             "best_f1": self.best_f1,
             "best_threshold": self.best_threshold,
-            "threshold_f1_curve": self.threshold_f1_curve,
             "latest_loss": self.latest_loss,
             "latest_lr": self.latest_lr,
             "best_checkpoint_path": self.best_checkpoint_path,
             "latest_checkpoint_path": self.latest_checkpoint_path,
             "checkpoint_paths": self.checkpoint_paths or [],
-            "resumed_from_step": self.resumed_from_step,
-            "last_resumed_at": self.last_resumed_at.isoformat() if self.last_resumed_at else None,
             "error_message": self.error_message,
             "status_message": self.status_message,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+        }
+
+    def to_dict(self):
+        return {
+            **self.to_list_dict(),
+            "vision_encoder_path": self.vision_encoder_path,
+            "dataset_configs": self.dataset_configs,
+            "output_dir": self.output_dir,
+            "config": self.config,
+            "tag_vocabulary": self.tag_vocabulary,
+            "threshold_f1_curve": self.threshold_f1_curve,
+            "resumed_from_step": self.resumed_from_step,
+            "last_resumed_at": self.last_resumed_at.isoformat() if self.last_resumed_at else None,
         }
 
 

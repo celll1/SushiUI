@@ -1072,6 +1072,14 @@ class TaggerTrainer:
             # requiring vision_encoder_path at load time.
             "vision_encoder_repo": self.config.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
             "is_naflex": self.config.get("is_naflex", True),
+            # Custom pooling dimensions — required for load_checkpoint to reconstruct
+            # the correct model architecture.  Omitted when None (default pooling).
+            **({
+                "cls_dim": self.config["cls_dim"],
+            } if self.config.get("cls_dim") is not None else {}),
+            **({
+                "hidden_proj_dim": self.config["hidden_proj_dim"],
+            } if self.config.get("hidden_proj_dim") is not None else {}),
             # For LoRA checkpoints trained on a locally fine-tuned base: relative
             # filename set by run_tagger_training when it copies the base into output_dir.
             **({

@@ -10,6 +10,13 @@ class ConnectionManager:
         self.active_connections: List[WebSocket] = []
         self.message_queue = queue.Queue()
         self.sender_task = None
+        self._send_event: asyncio.Event = None
+        self._loop: asyncio.AbstractEventLoop = None
+
+    def _notify_sender(self):
+        """Wake the drain loop from any thread."""
+        if self._loop and self._send_event:
+            self._loop.call_soon_threadsafe(self._send_event.set)
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
@@ -42,8 +49,8 @@ class ConnectionManager:
             data["preview_image"] = preview_image
         if cfg_metrics:
             data["cfg_metrics"] = cfg_metrics
-        # Put message in queue (thread-safe)
         self.message_queue.put(data)
+        self._notify_sender()
 
     def send_training_metrics(
         self,
@@ -87,8 +94,8 @@ class ConnectionManager:
         if grad_norm_vision_encoder is not None:
             data["grad_norm_vision_encoder"] = grad_norm_vision_encoder
 
-        # Put message in queue (thread-safe)
         self.message_queue.put(data)
+        self._notify_sender()
 
     def send_tagger_metrics(
         self,
@@ -121,13 +128,16 @@ class ConnectionManager:
         if progress is not None:
             data["progress"] = progress
         self.message_queue.put(data)
+        self._notify_sender()
 
     async def start_sender(self):
-        """Background task to send queued messages"""
+        """Background task to drain the message queue — event-driven, no polling."""
+        self._send_event = asyncio.Event()
+        self._loop = asyncio.get_event_loop()
         while True:
             try:
-                # Check queue every 10ms
-                await asyncio.sleep(0.01)
+                await self._send_event.wait()
+                self._send_event.clear()
                 while not self.message_queue.empty():
                     try:
                         data = self.message_queue.get_nowait()

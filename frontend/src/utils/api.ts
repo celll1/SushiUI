@@ -2109,7 +2109,7 @@ export interface TaggerTrainingRun {
   dataset_configs: string[];
   config: Record<string, unknown>;
   num_tags: number;
-  tag_vocabulary: Record<string, unknown> | null;
+  tag_vocabulary?: Record<string, unknown> | null;
   best_f1: number | null;
   best_threshold: number | null;
   threshold_f1_curve: Record<string, number> | null;

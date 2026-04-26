@@ -445,6 +445,7 @@ export default function TaggerTrainingMonitor({
               val_split: "Val split (%)",
               val_fixed_size: "Val size (fixed)",
               excluded_categories: "Excl. cats",
+              use_tag_aliases: "Tag aliases",
               ban_tags: "Ban tags",
               init_head_from: "Init head from",
               cls_dim: "CLS dim",

@@ -6869,7 +6869,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     loss_label_weight: str = "fisher"
     validate_every: int = 1
     val_split: float = 0.05
-    val_split_mode: str = "random"
+    val_split_mode: str = "percent"
     val_fixed_size: Optional[int] = None
     save_best_only: bool = False
     vocab_min_count: int = 10

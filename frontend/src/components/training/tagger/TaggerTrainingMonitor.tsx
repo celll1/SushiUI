@@ -456,13 +456,20 @@ export default function TaggerTrainingMonitor({
             };
             const cfg = run.config as Record<string, unknown>;
             const lossFn = String(cfg.loss_function ?? "asl");
-            const ASL_ONLY_KEYS = new Set(["loss_gamma_neg", "loss_gamma_pos"]);
-            const CS_ASL_KEYS   = new Set(["loss_gamma0", "loss_m0", "loss_beta", "loss_rho"]);
-            const H_CS_ASL_KEYS = new Set(["loss_label_weight"]);
+            const isLora = run.training_method === "lora";
+            const LORA_ONLY_KEYS = new Set(["lora_rank", "lora_alpha"]);
+            const ASL_ONLY_KEYS  = new Set(["loss_gamma_neg", "loss_gamma_pos"]);
+            const CS_ASL_KEYS    = new Set(["loss_gamma0", "loss_m0", "loss_beta", "loss_rho"]);
+            const H_CS_ASL_KEYS  = new Set(["loss_label_weight"]);
             const entries = Object.entries(CONFIG_LABELS)
-              .map(([key, label]) => ({ key, label, value: cfg[key] }))
+              .map(([key, label]) => ({
+                key,
+                label,
+                value: key === "loss_function" ? (cfg[key] ?? "asl") : cfg[key],
+              }))
               .filter(({ key, value }) => {
                 if (value === undefined || value === null || value === "") return false;
+                if (LORA_ONLY_KEYS.has(key) && !isLora) return false;
                 if (ASL_ONLY_KEYS.has(key) && lossFn !== "asl") return false;
                 if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
                 if (H_CS_ASL_KEYS.has(key) && lossFn !== "h_cs_asl") return false;

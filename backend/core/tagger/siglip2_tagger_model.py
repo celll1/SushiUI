@@ -35,7 +35,26 @@ from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from safetensors.torch import load_file, save_file
+from safetensors.torch import load_file, save_file as _save_file_raw
+
+
+def _save_file_safe(tensors: dict, path: str) -> None:
+    """Save safetensors via a temp file to avoid Windows ERROR_USER_MAPPED_FILE (os error 1224).
+
+    On Windows, if the target path is currently memory-mapped (e.g. loaded for inference),
+    writing directly to it fails.  Writing to a sibling .tmp then os.replace() sidesteps
+    the restriction because rename updates only the directory entry.
+    """
+    tmp = path + ".tmp"
+    try:
+        _save_file_raw(tensors, tmp)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
 
 
 # Default HuggingFace repo ID for the SigLIP2 vision encoder.
@@ -394,7 +413,7 @@ class SigLIP2TaggerModel(nn.Module):
         path_meta = os.path.join(output_dir, f"{name}_metadata.json")
 
         sd = {k: v.contiguous() for k, v in self.state_dict().items()}
-        save_file(sd, path_st)
+        _save_file_safe(sd, path_st)
 
         if metadata:
             with open(path_meta, "w", encoding="utf-8") as f:
@@ -591,7 +610,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             "num_lora_modules": len(self._lora_modules),
         })
 
-        save_file(sd, path_st)
+        _save_file_safe(sd, path_st)
         with open(path_meta, "w", encoding="utf-8") as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
 
@@ -659,7 +678,7 @@ class SigLIP2TaggerLoRAModel(nn.Module):
         merged_sd["head.weight"] = self.head.weight.detach().to(torch.float16).contiguous()
         merged_sd["head.bias"]   = self.head.bias.detach().to(torch.float16).contiguous()
 
-        save_file(merged_sd, path_st)
+        _save_file_safe(merged_sd, path_st)
 
         if metadata is None:
             metadata = {}

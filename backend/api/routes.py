@@ -7033,11 +7033,11 @@ def list_tagger_training_runs(training_db: Session = Depends(get_training_db)):
 
 @router.get("/tagger-training/runs/{run_id}")
 def get_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
-    """Get a tagger training run by run_id."""
+    """Get a tagger training run by run_id (excludes tag_vocabulary; fetch /vocabulary for that)."""
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
-    return run.to_dict()
+    return run.to_list_dict()
 
 
 @router.patch("/tagger-training/runs/{run_id}")

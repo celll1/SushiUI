@@ -384,8 +384,8 @@ class SigLIP2TaggerModel(nn.Module):
     def forward(
         self,
         pixel_values: torch.Tensor,
-        pixel_attention_mask: torch.Tensor,
-        spatial_shapes: torch.Tensor,
+        pixel_attention_mask: Optional[torch.Tensor] = None,
+        spatial_shapes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Return logits [B, num_tags]."""
         if self.is_naflex:
@@ -571,8 +571,8 @@ class SigLIP2TaggerLoRAModel(nn.Module):
     def forward(
         self,
         pixel_values: torch.Tensor,
-        pixel_attention_mask: torch.Tensor,
-        spatial_shapes: torch.Tensor,
+        pixel_attention_mask: Optional[torch.Tensor] = None,
+        spatial_shapes: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if self.is_naflex:
             out = self.vision_encoder(

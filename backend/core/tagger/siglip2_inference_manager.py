@@ -434,6 +434,7 @@ class SigLIP2InferenceManager:
                     },
                     opset_version=18,
                     do_constant_folding=True,
+                    dynamo=False,
                 )
             else:
                 dummy_pv = inputs["pixel_values"].float()
@@ -446,6 +447,7 @@ class SigLIP2InferenceManager:
                     dynamic_axes={"pixel_values": {0: "batch_size"}},
                     opset_version=18,
                     do_constant_folding=True,
+                    dynamo=False,
                 )
 
         # Restore model device

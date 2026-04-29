@@ -194,13 +194,13 @@ def _compute_label_stats(
     """
     # Support DataLoader wrappers that expose .dataset (e.g. Subset)
     ds = dataset
-    while not hasattr(ds, "samples") and hasattr(ds, "dataset"):
+    while not hasattr(ds, "_samples") and hasattr(ds, "dataset"):
         ds = ds.dataset
 
     pos_counts = torch.zeros(num_tags, dtype=torch.float32)
-    total = len(ds.samples)
-    for sample in ds.samples:
-        labels, _ = ds._build_label_and_mask(sample)
+    total = len(ds._samples)
+    for _path, tags in ds._samples:
+        labels, _ = ds._build_label_and_mask(tags)
         pos_counts += labels
 
     N_pos = pos_counts

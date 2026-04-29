@@ -574,7 +574,7 @@ class TaggerTrainer:
                 clip=float(cfg.get("loss_clip", 0.05)),
             ).to(device)
         elif loss_fn_name in ("cs_asl", "h_cs_asl", "la_s_asl", "fw_bbce"):
-            _pi, _N_pos, _N_neg = _compute_label_stats(train_loader.dataset, num_tags)
+            _pi, _N_pos, _N_neg = _compute_label_stats(train_loader.dataset, self.vocabulary.num_tags)
             _pi   = _pi.to(device)
             _N_pos = _N_pos.to(device)
             _N_neg = _N_neg.to(device)

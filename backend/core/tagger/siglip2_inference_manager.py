@@ -416,39 +416,62 @@ class SigLIP2InferenceManager:
             _proc_kw["max_num_patches"] = max_num_patches
         inputs = self.processor(**_proc_kw)
 
-        with torch.no_grad():
-            if self.is_naflex:
-                dummy_pv  = inputs["pixel_values"].float()
-                dummy_pam = inputs["pixel_attention_mask"].float()
-                dummy_ss  = inputs["spatial_shapes"]
-                torch.onnx.export(
-                    export_model,
-                    (dummy_pv, dummy_pam, dummy_ss),
-                    output_path,
-                    input_names=["pixel_values", "pixel_attention_mask", "spatial_shapes"],
-                    output_names=["logits"],
-                    dynamic_axes={
-                        "pixel_values":         {0: "batch_size", 1: "num_patches"},
-                        "pixel_attention_mask": {0: "batch_size", 1: "num_patches"},
-                        "spatial_shapes":       {0: "batch_size"},
-                    },
-                    opset_version=18,
-                    do_constant_folding=True,
-                    dynamo=False,
-                )
-            else:
-                dummy_pv = inputs["pixel_values"].float()
-                torch.onnx.export(
-                    export_model,
-                    (dummy_pv,),
-                    output_path,
-                    input_names=["pixel_values"],
-                    output_names=["logits"],
-                    dynamic_axes={"pixel_values": {0: "batch_size"}},
-                    opset_version=18,
-                    do_constant_folding=True,
-                    dynamo=False,
-                )
+        # Export to a temp subdirectory so the scattered files don't pollute the
+        # final output directory.  After consolidation the temp dir is removed.
+        _out_dir  = os.path.dirname(output_path) or "."
+        _out_name = os.path.basename(output_path)
+        _tmp_dir  = tempfile.mkdtemp(dir=_out_dir, prefix=".onnx_tmp_")
+        _tmp_path = os.path.join(_tmp_dir, _out_name)
+        try:
+            with torch.no_grad():
+                if self.is_naflex:
+                    dummy_pv  = inputs["pixel_values"].float()
+                    dummy_pam = inputs["pixel_attention_mask"].float()
+                    dummy_ss  = inputs["spatial_shapes"]
+                    torch.onnx.export(
+                        export_model,
+                        (dummy_pv, dummy_pam, dummy_ss),
+                        _tmp_path,
+                        input_names=["pixel_values", "pixel_attention_mask", "spatial_shapes"],
+                        output_names=["logits"],
+                        dynamic_axes={
+                            "pixel_values":         {0: "batch_size", 1: "num_patches"},
+                            "pixel_attention_mask": {0: "batch_size", 1: "num_patches"},
+                            "spatial_shapes":       {0: "batch_size"},
+                        },
+                        opset_version=18,
+                        do_constant_folding=True,
+                        dynamo=False,
+                    )
+                else:
+                    dummy_pv = inputs["pixel_values"].float()
+                    torch.onnx.export(
+                        export_model,
+                        (dummy_pv,),
+                        _tmp_path,
+                        input_names=["pixel_values"],
+                        output_names=["logits"],
+                        dynamic_axes={"pixel_values": {0: "batch_size"}},
+                        opset_version=18,
+                        do_constant_folding=True,
+                        dynamo=False,
+                    )
+
+            # Consolidate into a single .onnx + .onnx.data pair in the final location.
+            import onnx as _onnx_lib
+            _data_file = _out_name + ".data"
+            _loaded = _onnx_lib.load(_tmp_path, load_external_data=True)
+            _onnx_lib.save_model(
+                _loaded,
+                output_path,
+                save_as_external_data=True,
+                all_tensors_to_one_file=True,
+                location=_data_file,
+                convert_attribute=True,
+            )
+            print(f"[SigLIP2Manager] External data consolidated → {_data_file}")
+        finally:
+            shutil.rmtree(_tmp_dir, ignore_errors=True)
 
         # Restore model device
         export_model.to(self.device)

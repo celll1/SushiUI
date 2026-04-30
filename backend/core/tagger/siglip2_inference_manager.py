@@ -459,8 +459,11 @@ class SigLIP2InferenceManager:
 
             # Consolidate into a single .onnx + .onnx.data pair in the final location.
             import onnx as _onnx_lib
+            import onnx.shape_inference as _onnx_si
             _data_file = _out_name + ".data"
             _loaded = _onnx_lib.load(_tmp_path, load_external_data=True)
+            # Propagate shape info through If-nodes so TensorRT can infer tensor ranks.
+            _loaded = _onnx_si.infer_shapes(_loaded, check_type=True, strict_mode=False)
             _onnx_lib.save_model(
                 _loaded,
                 output_path,

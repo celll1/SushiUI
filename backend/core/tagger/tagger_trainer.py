@@ -199,7 +199,8 @@ def _compute_label_stats(
 
     pos_counts = torch.zeros(num_tags, dtype=torch.float32)
     total = len(ds._samples)
-    for _path, tags in ds._samples:
+    from tqdm import tqdm
+    for _path, tags in tqdm(ds._samples, total=total, desc="[TaggerTraining] Computing label stats", unit="samples"):
         labels, _ = ds._build_label_and_mask(tags)
         pos_counts += labels
 

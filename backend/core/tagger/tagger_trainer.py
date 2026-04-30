@@ -756,20 +756,43 @@ class TaggerTrainer:
                     logits = model(pv, pam, ss)
                     loss   = criterion(logits, labels, loss_masks)
 
+                # Skip batch only when loss itself is NaN/Inf (backward is meaningless)
+                loss_val = loss.item()
+                if loss_val != loss_val or loss_val == float("inf"):
+                    print(f"[TaggerTrainer] WARNING: NaN/Inf loss at step {global_step}, skipping batch")
+                    optimizer.zero_grad(set_to_none=True)
+                    if scaler is not None:
+                        scaler.update()
+                    continue
+
                 if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    # Clip first — large-but-finite gradients are clipped and learned from.
+                    # clip_grad_norm_ returns the pre-clip total norm; if it is non-finite
+                    # (fp16 overflow produced Inf gradients), skip to avoid 0×Inf = NaN.
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    if not torch.isfinite(grad_norm):
+                        print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
+                              f"at step {global_step}, skipping optimizer step")
+                        optimizer.zero_grad(set_to_none=True)
+                        scaler.update()
+                        continue
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                    if not torch.isfinite(grad_norm):
+                        print(f"[TaggerTrainer] WARNING: non-finite grad norm ({grad_norm:.3g}) "
+                              f"at step {global_step}, skipping optimizer step")
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
                     optimizer.step()
 
                 scheduler.step()
                 global_step      += 1
-                epoch_loss       += loss.item()
+                epoch_loss       += loss_val
                 batches_processed += 1
 
                 # Progress callback every 10 steps

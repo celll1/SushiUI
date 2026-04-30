@@ -150,9 +150,9 @@ def _cs_asl_core(
     m_pos = m0 * phi                     # [N]
     m_neg = m0 * psi                     # [N]
 
-    # Shifted probabilities
-    p_pos = (p + m_pos).clamp(max=1.0 - eps)   # [B, N]
-    p_neg = (p - m_neg).clamp(min=eps)          # [B, N]
+    # Shifted probabilities (both sides clamped to prevent log(0) → -inf under AMP/fp16)
+    p_pos = (p + m_pos).clamp(min=eps, max=1.0 - eps)   # [B, N]
+    p_neg = (p - m_neg).clamp(min=eps, max=1.0 - eps)   # [B, N]
 
     # Focal weights (optionally stop gradient)
     if disable_grad_focal:

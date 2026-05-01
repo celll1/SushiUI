@@ -464,7 +464,7 @@ class SigLIP2TaggerModel(nn.Module):
             vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
         else:
             if vision_encoder_path and _ckpt_has_encoder:
-                print(f"[SigLIP2Load] Merged checkpoint detected — ignoring vision_encoder_path ({os.path.basename(vision_encoder_path)}); encoder weights come from checkpoint.")
+                print(f"[SigLIP2Load] Merged checkpoint detected - ignoring vision_encoder_path ({os.path.basename(vision_encoder_path)}); encoder weights come from checkpoint.")
             # Merged or no-path: load HuggingFace base model for structure only;
             # all weights will be overwritten by the checkpoint state dict below.
             from transformers import AutoModel

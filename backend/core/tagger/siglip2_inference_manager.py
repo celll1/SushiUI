@@ -462,8 +462,6 @@ class SigLIP2InferenceManager:
             import onnx.shape_inference as _onnx_si
             _data_file = _out_name + ".data"
             _loaded = _onnx_lib.load(_tmp_path, load_external_data=True)
-            # Propagate shape info through If-nodes so TensorRT can infer tensor ranks.
-            _loaded = _onnx_si.infer_shapes(_loaded, check_type=True, strict_mode=False)
             _onnx_lib.save_model(
                 _loaded,
                 output_path,
@@ -473,6 +471,12 @@ class SigLIP2InferenceManager:
                 convert_attribute=True,
             )
             print(f"[SigLIP2Manager] External data consolidated → {_data_file}")
+            # Propagate shape info through If-nodes so TensorRT can infer tensor ranks.
+            # Uses infer_shapes_path to operate on files directly, avoiding the
+            # in-memory 2GB protobuf limit that causes save_model to produce empty output.
+            _onnx_si.infer_shapes_path(output_path, output_path,
+                                        check_type=True, strict_mode=False)
+            print(f"[SigLIP2Manager] Shape inference applied (TensorRT If-node fix)")
         finally:
             shutil.rmtree(_tmp_dir, ignore_errors=True)
 

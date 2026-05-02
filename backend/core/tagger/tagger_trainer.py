@@ -586,6 +586,7 @@ class TaggerTrainer:
                 gamma0=float(cfg.get("loss_gamma0", 4.0)),
                 m0=float(cfg.get("loss_m0", 0.2)),
                 beta=float(cfg.get("loss_beta", 2.0)),
+                clip=float(cfg.get("loss_clip", 0.0)),
                 eps=1e-4,
             )
             if loss_fn_name == "cs_asl":

@@ -133,8 +133,15 @@ def _cs_asl_core(
     beta: float,
     eps: float,
     disable_grad_focal: bool,
+    clip: float = 0.0,
 ) -> torch.Tensor:
-    """Compute CS-ASL loss elements [B, N] (no reduction, no masking)."""
+    """Compute CS-ASL loss elements [B, N] (no reduction, no masking).
+
+    clip : float
+        Same semantics as ASL's clip parameter: shift (1 - p_neg) up by `clip`
+        before the log, bounding the maximum negative-sample loss at -log(clip).
+        0.0 = disabled.
+    """
     p = torch.sigmoid(x)
 
     # Class weights: α+ = (1-π)^ρ,  α- = π^ρ
@@ -163,8 +170,12 @@ def _cs_asl_core(
         w_pos = (1.0 - p).pow(gamma_pos)
         w_neg = p_neg.pow(gamma_neg)
 
-    loss_pos = a_pos * w_pos * p_pos.log()                  # [B, N]
-    loss_neg = a_neg * w_neg * (1.0 - p_neg).clamp(min=eps).log()  # [B, N]
+    loss_pos = a_pos * w_pos * p_pos.log()   # [B, N]
+
+    # Negative loss: shift (1-p_neg) up by clip to cap max loss at -log(clip),
+    # preventing high-confidence wrong negatives from dominating (same as ASL).
+    neg_prob = (1.0 - p_neg + clip).clamp(min=eps, max=1.0)
+    loss_neg = a_neg * w_neg * neg_prob.log()              # [B, N]
 
     return -(y * loss_pos + (1.0 - y) * loss_neg)           # [B, N]
 
@@ -206,6 +217,7 @@ class CSASL(nn.Module):
         m0: float = 0.2,
         rho: float = 0.5,
         beta: float = 2.0,
+        clip: float = 0.0,
         eps: float = 1e-4,
         disable_torch_grad_focal_loss: bool = False,
         reduction: str = "mean",
@@ -216,6 +228,7 @@ class CSASL(nn.Module):
         self.m0 = m0
         self.rho = rho
         self.beta = beta
+        self.clip = clip
         self.eps = eps
         self.disable_torch_grad_focal_loss = disable_torch_grad_focal_loss
         self.reduction = reduction
@@ -229,7 +242,7 @@ class CSASL(nn.Module):
         loss = _cs_asl_core(
             x, y, self.pi,
             self.gamma0, self.m0, self.rho, self.beta, self.eps,
-            self.disable_torch_grad_focal_loss,
+            self.disable_torch_grad_focal_loss, self.clip,
         )   # [B, N]
 
         if loss_mask is not None:
@@ -303,6 +316,7 @@ class HCSASL(nn.Module):
         m0: float = 0.2,
         rho: float = 0.5,
         beta: float = 2.0,
+        clip: float = 0.0,
         label_weight: str = "fisher",
         eps: float = 1e-4,
         disable_torch_grad_focal_loss: bool = False,
@@ -319,6 +333,7 @@ class HCSASL(nn.Module):
         self.m0 = m0
         self.rho = rho
         self.beta = beta
+        self.clip = clip
         self.eps = eps
         self.disable_torch_grad_focal_loss = disable_torch_grad_focal_loss
         self.reduction = reduction
@@ -332,7 +347,7 @@ class HCSASL(nn.Module):
         loss = _cs_asl_core(
             x, y, self.pi,
             self.gamma0, self.m0, self.rho, self.beta, self.eps,
-            self.disable_torch_grad_focal_loss,
+            self.disable_torch_grad_focal_loss, self.clip,
         )   # [B, N]
 
         if loss_mask is not None:
@@ -376,6 +391,7 @@ class LASASL(nn.Module):
         gamma0: float = 4.0,
         m0: float = 0.2,
         beta: float = 2.0,
+        clip: float = 0.0,
         eps: float = 1e-4,
         disable_torch_grad_focal_loss: bool = False,
         reduction: str = "mean",
@@ -388,6 +404,7 @@ class LASASL(nn.Module):
         self.gamma0 = gamma0
         self.m0 = m0
         self.beta = beta
+        self.clip = clip
         self.eps = eps
         self.disable_torch_grad_focal_loss = disable_torch_grad_focal_loss
         self.reduction = reduction
@@ -405,7 +422,7 @@ class LASASL(nn.Module):
         loss = _cs_asl_core(
             x_adj, y, self.pi,
             self.gamma0, self.m0, rho=0.0, beta=self.beta, eps=self.eps,
-            disable_grad_focal=self.disable_torch_grad_focal_loss,
+            disable_grad_focal=self.disable_torch_grad_focal_loss, clip=self.clip,
         )   # [B, N]
 
         if loss_mask is not None:

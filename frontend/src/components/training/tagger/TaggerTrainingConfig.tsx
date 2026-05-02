@@ -42,6 +42,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   mixed_precision: "bf16",
   gradient_checkpointing: true,
   loss_function: "asl" as string,
+  loss_clip: 0.05,
   loss_gamma_neg: 4,
   loss_gamma_pos: 1,
   loss_gamma0: 4.0,
@@ -752,6 +753,18 @@ export default function TaggerTrainingConfig({
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">clip</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="0.5"
+                  value={config.loss_clip}
+                  onChange={(e) => setField("loss_clip", parseFloat(e.target.value) || 0)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
             </div>
           </section>
         )}
@@ -813,6 +826,18 @@ export default function TaggerTrainingConfig({
                   />
                 </div>
               )}
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">clip</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="0.5"
+                  value={config.loss_clip}
+                  onChange={(e) => setField("loss_clip", parseFloat(e.target.value) || 0)}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
             </div>
           </section>
         )}

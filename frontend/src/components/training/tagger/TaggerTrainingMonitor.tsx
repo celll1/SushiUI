@@ -142,6 +142,7 @@ export default function TaggerTrainingMonitor({
           const incoming = wsBufferRef.current.splice(0);
           if (incoming.length === 0) return;
           setMetrics(prev => {
+            const MAX_POINTS = 2000;
             const map = new Map(prev.map(r => [r.step, r]));
             for (const r of incoming) {
               const existing = map.get(r.step);
@@ -150,7 +151,13 @@ export default function TaggerTrainingMonitor({
                 Object.entries(r).filter(([, v]) => v !== null && v !== undefined)
               ) } : r);
             }
-            return Array.from(map.values()).sort((a, b) => a.step - b.step);
+            let sorted = Array.from(map.values()).sort((a, b) => a.step - b.step);
+            // Uniform decimation to keep memory bounded
+            if (sorted.length > MAX_POINTS) {
+              const step = Math.ceil(sorted.length / MAX_POINTS);
+              sorted = sorted.filter((_, i) => i % step === 0 || i === sorted.length - 1);
+            }
+            return sorted;
           });
         }, 1000);
       }

@@ -7217,10 +7217,17 @@ def delete_tagger_training_run(run_id: str, training_db: Session = Depends(get_t
 def get_tagger_training_metrics(
     run_id: str,
     since_step: int = 0,
+    max_points: int = 2000,
     training_db: Session = Depends(get_training_db),
 ):
-    """Get per-step metrics for a tagger training run."""
-    metrics = (
+    """Get per-step metrics for a tagger training run.
+
+    Parameters
+    ----------
+    max_points : Maximum number of data points to return (uniform decimation).
+                 0 = no limit (not recommended for long runs).
+    """
+    rows = (
         training_db.query(TaggerTrainingMetrics)
         .filter(
             TaggerTrainingMetrics.run_id == run_id,
@@ -7229,7 +7236,11 @@ def get_tagger_training_metrics(
         .order_by(TaggerTrainingMetrics.step)
         .all()
     )
-    return [m.to_dict() for m in metrics]
+    data = [m.to_dict() for m in rows]
+    if max_points > 0 and len(data) > max_points:
+        step_size = len(data) // max_points
+        data = [data[i] for i in range(0, len(data), step_size)][:max_points]
+    return data
 
 
 @router.get("/tagger-training/vocabulary-preview")

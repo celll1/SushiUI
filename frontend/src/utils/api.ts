@@ -2233,11 +2233,12 @@ export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
 
 export const getTaggerTrainingMetrics = async (
   runId: string,
-  sinceStep: number = 0
+  sinceStep: number = 0,
+  maxPoints: number = 2000,
 ): Promise<TaggerTrainingMetric[]> => {
-  const response = await api.get(`/tagger-training/runs/${runId}/metrics`, {
-    params: sinceStep > 0 ? { since_step: sinceStep } : undefined,
-  });
+  const params: Record<string, number> = { max_points: maxPoints };
+  if (sinceStep > 0) params.since_step = sinceStep;
+  const response = await api.get(`/tagger-training/runs/${runId}/metrics`, { params });
   return response.data;
 };
 

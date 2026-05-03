@@ -61,8 +61,14 @@ next-env.d.ts
 
 # データベース
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
+
+# 一時スクリプト・出力
+infer_test.py
+infer_out.txt
 
 # 旧データベース（移行前）
 webui.db

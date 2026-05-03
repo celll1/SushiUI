@@ -210,6 +210,10 @@ class SigLIP2InferenceManager:
         self.model_type          = model_type
 
         # 6. Load CS-ASL logit bias correction (label_stats.npz alongside vocabulary.json)
+        # Only applied for cs_asl: the analytical equilibrium p*(pi) assumes each label's
+        # gradient converges independently.  For h_cs_asl the u_n Fisher weights → 0 for
+        # rare labels, so rare labels never converge to p* and the correction overshoots
+        # (negative bias → adds positive offset → amplifies the upward drift of h_cs_asl).
         import numpy as np
         self.logit_bias = None
         _stats_path = os.path.join(os.path.dirname(vocab_path), "label_stats.npz")
@@ -217,7 +221,7 @@ class SigLIP2InferenceManager:
             try:
                 _data = np.load(_stats_path, allow_pickle=True)
                 _fn   = str(_data["loss_fn"].flat[0]) if "loss_fn" in _data else ""
-                if _fn in ("cs_asl", "h_cs_asl"):
+                if _fn == "cs_asl":
                     _pi  = _data["pi"].astype(np.float32)
                     _rho = float(_data["rho"].flat[0]) if "rho" in _data else 0.5
                     _eps = 1e-4
@@ -227,9 +231,12 @@ class SigLIP2InferenceManager:
                     _p_star = np.clip(_p_star, _eps, 1.0 - _eps)
                     self.logit_bias = np.log(_p_star / (1.0 - _p_star)).astype(np.float32)
                     print(f"[SigLIP2Manager] CS-ASL logit bias loaded "
-                          f"(loss={_fn}, rho={_rho:.2f}) | "
+                          f"(rho={_rho:.2f}) | "
                           f"bias mean={self.logit_bias.mean():.3f}, "
                           f"range=[{self.logit_bias.min():.3f}, {self.logit_bias.max():.3f}]")
+                elif _fn == "h_cs_asl":
+                    print(f"[SigLIP2Manager] H-CS-ASL checkpoint: logit bias correction skipped "
+                          f"(rare-label Fisher weights prevent convergence to CS-ASL equilibrium)")
             except Exception as _e:
                 print(f"[SigLIP2Manager] WARNING: could not load label_stats.npz: {_e}")
 

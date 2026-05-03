@@ -87,7 +87,7 @@ def _build_optimizer(
 def _compute_f1_macro(
     all_preds: torch.Tensor,
     all_labels: torch.Tensor,
-    threshold: float = 0.35,
+    threshold: float = 0.5,
 ) -> float:
     """Compute macro F1 score across all tags."""
     preds_bin = (all_preds >= threshold).float()
@@ -114,7 +114,7 @@ def _find_best_threshold(
         thresholds = [round(t * 0.05, 2) for t in range(2, 18)]  # 0.10 to 0.85
 
     best_f1 = 0.0
-    best_thr = 0.35
+    best_thr = 0.5
     for thr in thresholds:
         f1 = _compute_f1_macro(all_preds, all_labels, threshold=thr)
         if f1 > best_f1:
@@ -581,6 +581,17 @@ class TaggerTrainer:
             _N_neg = _N_neg.to(device)
             print(f"[TaggerTrainer] π_n stats: mean={_pi.mean():.4f} "
                   f"min={_pi.min():.4f} max={_pi.max():.4f}")
+            # Save label stats for inference-time CS-ASL logit bias correction
+            if loss_fn_name in ("cs_asl", "h_cs_asl"):
+                import numpy as np
+                _stats_path = os.path.join(self.output_dir, "label_stats.npz")
+                np.savez(
+                    _stats_path,
+                    pi=_pi.cpu().numpy().astype(np.float32),
+                    loss_fn=np.array([loss_fn_name]),
+                    rho=np.array([float(cfg.get("loss_rho", 0.5))], dtype=np.float32),
+                )
+                print(f"[TaggerTrainer] Saved label stats -> {_stats_path}")
             _kw = dict(
                 pi=_pi,
                 gamma0=float(cfg.get("loss_gamma0", 4.0)),
@@ -616,7 +627,7 @@ class TaggerTrainer:
 
         # Training state
         best_f1         = 0.0
-        best_threshold  = 0.35
+        best_threshold  = 0.5
         global_step     = 0
         resume_epoch    = 1   # first epoch to process (1-indexed)
         resume_batch_idx = -1  # last already-processed batch in resume_epoch (-1 = none)
@@ -635,7 +646,7 @@ class TaggerTrainer:
             resume_batch_idx = resume_state["batch_idx"]     # last completed batch (-1 = full epoch done)
             global_step      = resume_state["global_step"]
             best_f1          = resume_state.get("best_f1", 0.0)
-            best_threshold   = resume_state.get("best_threshold", 0.35)
+            best_threshold   = resume_state.get("best_threshold", 0.5)
             epoch_start_rng_for_resume = resume_state.get("epoch_start_rng")
 
             # Restore optimizer state
@@ -881,7 +892,7 @@ class TaggerTrainer:
                 val_metrics = self._validate(model, val_loader, device, amp_dtype if use_amp else None,
                                              max_batches=val_max_batches)
                 epoch_f1  = val_metrics.get("f1", 0.0)
-                epoch_thr = val_metrics.get("threshold", 0.35)
+                epoch_thr = val_metrics.get("threshold", 0.5)
 
                 if epoch_f1 > best_f1:
                     best_f1        = epoch_f1

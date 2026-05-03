@@ -6142,12 +6142,16 @@ async def get_training_metrics(
             all_recon_loss = [d for d in all_recon_loss if d["step"] > since_step]
             all_lr = [d for d in all_lr if d["step"] > since_step]
 
-        # Decimate data if too many points (simple nth-point sampling)
+        # Decimate data if too many points (simple nth-point sampling).
+        # Always preserve the last point so the chart reflects current state.
         def decimate(data, max_points):
             if len(data) <= max_points:
                 return data
-            step_size = len(data) // max_points
-            return [data[i] for i in range(0, len(data), step_size)][:max_points]
+            step_size = max(1, len(data) // max_points)
+            indices = list(range(0, len(data), step_size))
+            if indices[-1] != len(data) - 1:
+                indices.append(len(data) - 1)
+            return [data[i] for i in indices]
 
         all_loss = decimate(all_loss, max_points)
         all_recon_loss = decimate(all_recon_loss, max_points)
@@ -7238,8 +7242,12 @@ def get_tagger_training_metrics(
     )
     data = [m.to_dict() for m in rows]
     if max_points > 0 and len(data) > max_points:
-        step_size = len(data) // max_points
-        data = [data[i] for i in range(0, len(data), step_size)][:max_points]
+        step_size = max(1, len(data) // max_points)
+        indices = list(range(0, len(data), step_size))
+        # Always include the very last point so the chart reflects current state
+        if indices[-1] != len(data) - 1:
+            indices.append(len(data) - 1)
+        data = [data[i] for i in indices]
     return data
 
 

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from tqdm import tqdm
 from transformers import AutoProcessor
 
 from .tag_vocabulary import (
@@ -92,14 +93,11 @@ class TaggerDataset(Dataset):
             print(f"[TaggerDataset]   {len(items)} items loaded")
 
             # Collect item ids that have a valid image path
-            valid_item_ids = [
-                item.id for item in items
-                if item.image_path and os.path.isfile(item.image_path)
-            ]
-            item_path_map: Dict[int, str] = {
-                item.id: item.image_path for item in items
-                if item.image_path and os.path.isfile(item.image_path)
-            }
+            item_path_map: Dict[int, str] = {}
+            for item in tqdm(items, desc=f"  Checking files (dataset {dataset_id})", unit="item", leave=False):
+                if item.image_path and os.path.isfile(item.image_path):
+                    item_path_map[item.id] = item.image_path
+            valid_item_ids = list(item_path_map.keys())
             skipped = len(items) - len(valid_item_ids)
             if skipped:
                 print(f"[TaggerDataset]   {skipped} items skipped (missing image files)")
@@ -112,7 +110,9 @@ class TaggerDataset(Dataset):
             from collections import defaultdict
             captions_by_item: Dict[int, list] = defaultdict(list)
             total_captions = 0
-            for i in range(0, len(valid_item_ids), CHUNK):
+            n_chunks = (len(valid_item_ids) + CHUNK - 1) // CHUNK
+            for i in tqdm(range(0, len(valid_item_ids), CHUNK), total=n_chunks,
+                          desc=f"  Loading captions (dataset {dataset_id})", unit="chunk", leave=False):
                 chunk_ids = valid_item_ids[i:i + CHUNK]
                 q = (
                     datasets_db.query(DatasetCaption)
@@ -129,7 +129,7 @@ class TaggerDataset(Dataset):
             print(f"[TaggerDataset]   {total_captions} tag captions loaded")
 
             # Build samples
-            for item_id in valid_item_ids:
+            for item_id in tqdm(valid_item_ids, desc=f"  Building samples (dataset {dataset_id})", unit="item", leave=False):
                 item_captions = captions_by_item.get(item_id)
                 if not item_captions:
                     continue

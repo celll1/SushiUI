@@ -74,6 +74,7 @@ class SigLIP2InferenceManager:
         self.vocab_path: str = ""
         self.model_type: str = ""   # "full" | "lora" | "onnx"
         self.device: str = "cuda" if torch.cuda.is_available() else "cpu"
+        self.logit_bias: Optional["np.ndarray"] = None  # [num_tags] float32, CS-ASL calibration
 
     # ------------------------------------------------------------------
     # Public API
@@ -208,6 +209,30 @@ class SigLIP2InferenceManager:
         self.vocab_path          = vocab_path
         self.model_type          = model_type
 
+        # 6. Load CS-ASL logit bias correction (label_stats.npz alongside vocabulary.json)
+        import numpy as np
+        self.logit_bias = None
+        _stats_path = os.path.join(os.path.dirname(vocab_path), "label_stats.npz")
+        if os.path.isfile(_stats_path):
+            try:
+                _data = np.load(_stats_path, allow_pickle=True)
+                _fn   = str(_data["loss_fn"].flat[0]) if "loss_fn" in _data else ""
+                if _fn in ("cs_asl", "h_cs_asl"):
+                    _pi  = _data["pi"].astype(np.float32)
+                    _rho = float(_data["rho"].flat[0]) if "rho" in _data else 0.5
+                    _eps = 1e-4
+                    _pi  = np.clip(_pi, _eps, 1.0 - _eps)
+                    # Analytical equilibrium: p*(pi) = pi^(1-rho) / (pi^(1-rho) + (1-pi)^(1-rho))
+                    _p_star = _pi ** (1.0 - _rho) / (_pi ** (1.0 - _rho) + (1.0 - _pi) ** (1.0 - _rho))
+                    _p_star = np.clip(_p_star, _eps, 1.0 - _eps)
+                    self.logit_bias = np.log(_p_star / (1.0 - _p_star)).astype(np.float32)
+                    print(f"[SigLIP2Manager] CS-ASL logit bias loaded "
+                          f"(loss={_fn}, rho={_rho:.2f}) | "
+                          f"bias mean={self.logit_bias.mean():.3f}, "
+                          f"range=[{self.logit_bias.min():.3f}, {self.logit_bias.max():.3f}]")
+            except Exception as _e:
+                print(f"[SigLIP2Manager] WARNING: could not load label_stats.npz: {_e}")
+
         print(
             f"[SigLIP2Manager] Loaded {model_type} model | "
             f"{num_tags} tags | {self.device}"
@@ -223,7 +248,7 @@ class SigLIP2InferenceManager:
     def predict(
         self,
         image_bytes: bytes,
-        threshold: float = 0.35,
+        threshold: float = 0.5,
         max_num_patches: int = 256,
     ) -> Dict[str, Any]:
         """Run inference on raw image bytes.
@@ -261,6 +286,8 @@ class SigLIP2InferenceManager:
             else:
                 outputs = self.onnx_session.run(["logits"], {"pixel_values": pv_np})
             logits_np = outputs[0][0]  # [num_tags]
+            if self.logit_bias is not None:
+                logits_np = logits_np - self.logit_bias
             probs = 1.0 / (1.0 + np.exp(-logits_np.astype(np.float64)))
         else:
             pixel_values = inputs["pixel_values"].to(self.device)
@@ -272,7 +299,10 @@ class SigLIP2InferenceManager:
                 spatial_shapes  = torch.zeros(0, dtype=torch.int64, device=self.device)
             with torch.no_grad():
                 logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
-            probs = torch.sigmoid(logits[0]).cpu().numpy()  # [num_tags]
+            _logits = logits[0]
+            if self.logit_bias is not None:
+                _logits = _logits - torch.from_numpy(self.logit_bias).to(_logits.device)
+            probs = torch.sigmoid(_logits).cpu().numpy()  # [num_tags]
 
         idx_to_tag      = self.vocabulary["idx_to_tag"]
         tag_to_category = self.vocabulary["tag_to_category"]
@@ -528,6 +558,7 @@ class SigLIP2InferenceManager:
         self.vision_encoder_path = ""
         self.vocab_path          = ""
         self.model_type          = ""
+        self.logit_bias          = None
         print("[SigLIP2Manager] Model unloaded.")
 
     # ------------------------------------------------------------------

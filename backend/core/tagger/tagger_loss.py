@@ -162,12 +162,15 @@ def _cs_asl_core(
     p_neg = (p - m_neg).clamp(min=eps, max=1.0 - eps)   # [B, N]
 
     # Focal weights (optionally stop gradient)
+    # Clamp (1-p) from below: when gamma_pos ∈ (0,1) and bf16 rounds 1-p to 0,
+    # the gradient gamma_pos*(1-p)^(gamma_pos-1) = 0^(negative) = inf → NaN.
+    one_minus_p = (1.0 - p).clamp(min=eps)   # [B, N]
     if disable_grad_focal:
         with torch.no_grad():
-            w_pos = (1.0 - p).pow(gamma_pos)   # [B, N]
-            w_neg = p_neg.pow(gamma_neg)         # [B, N]
+            w_pos = one_minus_p.pow(gamma_pos)   # [B, N]
+            w_neg = p_neg.pow(gamma_neg)          # [B, N]
     else:
-        w_pos = (1.0 - p).pow(gamma_pos)
+        w_pos = one_minus_p.pow(gamma_pos)
         w_neg = p_neg.pow(gamma_neg)
 
     loss_pos = a_pos * w_pos * p_pos.log()   # [B, N]

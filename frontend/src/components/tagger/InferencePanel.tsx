@@ -252,12 +252,12 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                     }`}>{cat}</span>
                     <input
                       type="range" min={0.01} max={0.99} step={0.01}
-                      value={categoryThresholds[cat] ?? 0.35}
+                      value={categoryThresholds[cat] ?? 0.5}
                       onChange={(e) => setCategoryThresholds(prev => ({ ...prev, [cat]: parseFloat(e.target.value) }))}
                       className="flex-1"
                     />
                     <span className="text-xs text-gray-400 font-mono w-9 text-right shrink-0">
-                      {(categoryThresholds[cat] ?? 0.35).toFixed(2)}
+                      {(categoryThresholds[cat] ?? 0.5).toFixed(2)}
                     </span>
                   </div>
                 ))}

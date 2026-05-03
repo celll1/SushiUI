@@ -993,7 +993,7 @@ export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
 
 export const predictSigLIP2Tags = async (
   image_base64: string,
-  threshold: number = 0.35,
+  threshold: number = 0.5,
 ): Promise<SigLIP2PredictResponse> => {
   const response = await api.post("/tagger/siglip2/predict", { image_base64, threshold });
   return response.data;

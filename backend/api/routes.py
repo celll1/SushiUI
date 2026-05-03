@@ -2573,7 +2573,7 @@ class SigLIP2LoadRequest(BaseModel):
 
 class SigLIP2PredictRequest(BaseModel):
     image_base64: str
-    threshold: float = 0.35
+    threshold: float = 0.5
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str

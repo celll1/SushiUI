@@ -109,26 +109,33 @@ def _find_best_threshold(
     all_labels: torch.Tensor,
     thresholds: Optional[List[float]] = None,
 ) -> Tuple[float, float]:
-    """Find threshold maximizing F1. Returns (best_threshold, best_f1)."""
+    """Find the threshold maximising macro F1.
+
+    Two-stage search:
+      1. Coarse grid 0.05–0.95 step 0.05 (19 points)
+      2. Refinement around the best at 0.01 step (≤8 new points)
+
+    Total ≤27 _compute_f1_macro calls.  Returns ``(best_threshold, best_f1)``
+    where both values correspond to the same threshold (consistent).
+    """
     if thresholds is None:
-        thresholds = [round(t * 0.05, 2) for t in range(2, 18)]  # 0.10 to 0.85
+        thresholds = [round(t * 0.05, 2) for t in range(1, 20)]  # 0.05..0.95
 
-    best_f1 = 0.0
-    best_thr = 0.5
+    f1_at_thr: Dict[float, float] = {}
     for thr in thresholds:
-        f1 = _compute_f1_macro(all_preds, all_labels, threshold=thr)
-        if f1 > best_f1:
-            best_f1 = f1
-            best_thr = thr
+        f1_at_thr[thr] = _compute_f1_macro(all_preds, all_labels, threshold=thr)
 
-    # Select minimum threshold where F1 >= 95% of max (maximize recall)
-    floor_f1 = best_f1 * 0.95
-    for thr in thresholds:
-        f1 = _compute_f1_macro(all_preds, all_labels, threshold=thr)
-        if f1 >= floor_f1:
-            return thr, best_f1
+    best_thr = max(f1_at_thr, key=f1_at_thr.get)
 
-    return best_thr, best_f1
+    # Refinement: ±0.04 around the best at 0.01 step
+    refine_candidates = [round(best_thr + d * 0.01, 2) for d in range(-4, 5)]
+    refine = [t for t in refine_candidates
+              if 0.01 <= t <= 0.99 and t not in f1_at_thr]
+    for thr in refine:
+        f1_at_thr[thr] = _compute_f1_macro(all_preds, all_labels, threshold=thr)
+
+    best_thr = max(f1_at_thr, key=f1_at_thr.get)
+    return best_thr, f1_at_thr[best_thr]
 
 
 # ------------------------------------------------------------------

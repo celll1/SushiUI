@@ -31,6 +31,9 @@ function applySmoothing(points: Point[], factor: number): Point[] {
   return out;
 }
 
+// Chart padding (used everywhere; constant)
+const PAD = { top: 6, right: 8, bottom: 18, left: 44 };
+
 // Robust Y-range: 5–95th percentiles + 5% padding
 function robustYRange(values: number[], yMinFloor: number): { min: number; max: number } {
   const valid = values.filter((v) => Number.isFinite(v));
@@ -72,8 +75,8 @@ export default function TaggerMetricChart({
   const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
   // smoothing
   const [smoothing, setSmoothing] = useState(smoothable ? defaultSmoothing : 0);
-  // brush (drag) state in CHART pixel coords
-  const [brush, setBrush] = useState<{ startX: number; curX: number } | null>(null);
+  // brush (drag) state in STEP coords so it survives xRange auto-extension
+  const [brush, setBrush] = useState<{ startStep: number; endStep: number } | null>(null);
   // hover tooltip (in chart coords)
   const [tooltip, setTooltip] = useState<{
     px: number;
@@ -82,6 +85,9 @@ export default function TaggerMetricChart({
     value: number;
     smoothValue: number | null;
   } | null>(null);
+
+  // Pointer x (in chart pixel coords) — read by the auto-extend rAF loop
+  const pointerXRef = useRef<number | null>(null);
 
   // Container width (responsive).
   // Use a callback ref so the ResizeObserver re-attaches when the element
@@ -118,6 +124,63 @@ export default function TaggerMetricChart({
     return () => window.removeEventListener("keydown", onKey);
   }, [xRange]);
 
+  // Refs for values read inside the auto-extend rAF loop (avoid restarting it)
+  const chartWRef = useRef(0);
+  const xRangeRef = useRef(xRange);
+  const minStepAllRef = useRef(minStepAll);
+  const maxStepAllRef = useRef(maxStepAll);
+  useEffect(() => { xRangeRef.current = xRange; }, [xRange]);
+  useEffect(() => { minStepAllRef.current = minStepAll; }, [minStepAll]);
+  useEffect(() => { maxStepAllRef.current = maxStepAll; }, [maxStepAll]);
+  // chartW is a derived value (depends on width); sync after render
+  useEffect(() => {
+    chartWRef.current = Math.max(50, width - PAD.left - PAD.right);
+  }, [width]);
+
+  // Auto-extend xRange when the pointer is past the chart edge during a brush.
+  // Only triggers when already zoomed (xRange !== null) — otherwise nothing to extend.
+  const isBrushing = brush !== null;
+  useEffect(() => {
+    if (!isBrushing) return;
+    let raf = 0;
+    let last = performance.now();
+
+    const tick = (now: number) => {
+      const dt = Math.min(0.1, (now - last) / 1000);
+      last = now;
+
+      const px = pointerXRef.current;
+      const cw = chartWRef.current;
+      const xr = xRangeRef.current;
+
+      if (xr && px !== null && cw > 0 && (px < 0 || px > cw)) {
+        const overflow = px < 0 ? px : px - cw;       // signed
+        // Speed: ~75% of current span per second when 200px past the edge
+        const fractionPerSec = Math.min(2, Math.abs(overflow) / 200);
+        const span = xr.max - xr.min;
+        const dStep = span * fractionPerSec * dt * Math.sign(overflow);
+
+        let newMin = xr.min;
+        let newMax = xr.max;
+        if (overflow < 0) {
+          newMin = Math.max(minStepAllRef.current, xr.min + dStep); // dStep < 0
+        } else {
+          newMax = Math.min(maxStepAllRef.current, xr.max + dStep);
+        }
+
+        if (newMin !== xr.min || newMax !== xr.max) {
+          setXRange({ min: newMin, max: newMax });
+          setBrush((b) => (b ? { ...b, endStep: overflow < 0 ? newMin : newMax } : b));
+        }
+      }
+
+      raf = requestAnimationFrame(tick);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [isBrushing]);
+
   // Visible points after x-range filter
   const visiblePoints = useMemo(() => {
     if (!xRange) return points;
@@ -132,16 +195,15 @@ export default function TaggerMetricChart({
   }, [smoothedAll, xRange]);
 
   // Layout
-  const padding = { top: 6, right: 8, bottom: 18, left: 44 };
-  const chartW = Math.max(50, width - padding.left - padding.right);
-  const chartH = Math.max(20, height - padding.top - padding.bottom);
+  const chartW = Math.max(50, width - PAD.left - PAD.right);
+  const chartH = Math.max(20, height - PAD.top - PAD.bottom);
   const hasEnoughData = points.length >= 2 && width > 0;
 
   // X scale
   const xMin = xRange ? xRange.min : minStepAll;
   const xMax = xRange ? xRange.max : maxStepAll;
   const xSpan = xMax - xMin || 1;
-  const toX = (step: number) => padding.left + ((step - xMin) / xSpan) * chartW;
+  const toX = (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW;
 
   // Y scale: from visible points (use smoothed values for range when smoothing > 0)
   const sourceForRange =
@@ -150,7 +212,7 @@ export default function TaggerMetricChart({
       : visiblePoints.map((p) => p.value);
   const { min: yMin, max: yMax } = robustYRange(sourceForRange, yMinFloor);
   const ySpan = yMax - yMin || 1;
-  const toY = (v: number) => padding.top + ((yMax - v) / ySpan) * chartH;
+  const toY = (v: number) => PAD.top + ((yMax - v) / ySpan) * chartH;
 
   // Path builders
   const buildPath = (pts: Point[]) =>
@@ -169,6 +231,14 @@ export default function TaggerMetricChart({
     if (v === 0) return "0";
     return v.toExponential(1);
   };
+
+  // Tooltip value formatting (2 decimal places; scientific with 2-place
+  // mantissa for tiny values so loss like 1.54e-4 stays informative)
+  const formatTooltip = (v: number) => {
+    if (v === 0) return "0.00";
+    if (Math.abs(v) >= 0.01) return v.toFixed(2);
+    return v.toExponential(2);
+  };
   const yTickValues = [yMax, yMin + ySpan * 0.5, yMin];
 
   // X-axis tick formatting
@@ -184,29 +254,35 @@ export default function TaggerMetricChart({
   const pxToStep = (pxInChart: number) => xMin + (pxInChart / chartW) * xSpan;
 
   // Pointer Events with setPointerCapture so the brush survives mouseup
-  // outside the SVG and the user can drag to either edge to select up to
-  // the start/end of the data.
+  // outside the SVG.  When the cursor leaves the chart while brushing, an
+  // auto-extend rAF loop (see useEffect below) gradually expands xRange in
+  // that direction.
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left - padding.left;
+    const x = e.clientX - rect.left - PAD.left;
     if (x < 0 || x > chartW) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    setBrush({ startX: x, curX: x });
+    pointerXRef.current = x;
+    const step = pxToStep(x);
+    setBrush({ startStep: step, endStep: step });
     setTooltip(null);
   };
 
   const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left - padding.left;
-    const y = e.clientY - rect.top - padding.top;
+    const x = e.clientX - rect.left - PAD.left;
+    const y = e.clientY - rect.top - PAD.top;
 
     if (brush) {
-      // Clamp to chart bounds so dragging past the edge selects up to the edge
-      const clamped = Math.max(0, Math.min(chartW, x));
-      setBrush({ ...brush, curX: clamped });
+      pointerXRef.current = x;
+      // While inside chart, set endStep from cursor.  When outside, the
+      // rAF loop drives xRange and endStep.
+      if (x >= 0 && x <= chartW) {
+        setBrush({ ...brush, endStep: pxToStep(x) });
+      }
       return;
     }
-    if (x < 0 || x > chartW || y < -padding.top || y > chartH + padding.bottom) {
+    if (x < 0 || x > chartW || y < -PAD.top || y > chartH + PAD.bottom) {
       setTooltip(null);
       return;
     }
@@ -237,13 +313,15 @@ export default function TaggerMetricChart({
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
-    const a = Math.min(brush.startX, brush.curX);
-    const b = Math.max(brush.startX, brush.curX);
-    const dragPx = b - a;
+    pointerXRef.current = null;
+    const a = Math.min(brush.startStep, brush.endStep);
+    const b = Math.max(brush.startStep, brush.endStep);
     setBrush(null);
-    if (dragPx < 4) return; // treated as click — no zoom
-    const newMin = Math.round(pxToStep(a));
-    const newMax = Math.round(pxToStep(b));
+    // Treat as click if span is < 4 px equivalent in the current view
+    const minSpan = (4 / Math.max(1, chartW)) * xSpan;
+    if (b - a < minSpan) return;
+    const newMin = Math.round(a);
+    const newMax = Math.round(b);
     if (newMax > newMin) setXRange({ min: newMin, max: newMax });
   };
 
@@ -255,12 +333,17 @@ export default function TaggerMetricChart({
 
   const onDoubleClick = () => setXRange(null);
 
-  // Brush rect coords
+  // Brush rect coords (translate step coords → pixels via current xRange)
   const brushRect = brush
     ? (() => {
-        const a = Math.min(brush.startX, brush.curX);
-        const b = Math.max(brush.startX, brush.curX);
-        return { x: padding.left + a, w: b - a };
+        const aStep = Math.min(brush.startStep, brush.endStep);
+        const bStep = Math.max(brush.startStep, brush.endStep);
+        // Clamp to current visible range so the rect doesn't overflow the chart
+        const aClamped = Math.max(xMin, Math.min(xMax, aStep));
+        const bClamped = Math.max(xMin, Math.min(xMax, bStep));
+        const x = toX(aClamped);
+        const w = toX(bClamped) - x;
+        return { x, w };
       })()
     : null;
 
@@ -326,8 +409,8 @@ export default function TaggerMetricChart({
           {yTickValues.map((v, i) => (
             <g key={`y-${i}`}>
               <line
-                x1={padding.left}
-                x2={padding.left + chartW}
+                x1={PAD.left}
+                x2={PAD.left + chartW}
                 y1={toY(v)}
                 y2={toY(v)}
                 stroke="#374151"
@@ -335,7 +418,7 @@ export default function TaggerMetricChart({
                 strokeDasharray={i === 1 ? "2 2" : undefined}
               />
               <text
-                x={padding.left - 4}
+                x={PAD.left - 4}
                 y={toY(v)}
                 textAnchor="end"
                 dominantBaseline="middle"
@@ -380,7 +463,7 @@ export default function TaggerMetricChart({
           {brushRect && brushRect.w > 0 && (
             <rect
               x={brushRect.x}
-              y={padding.top}
+              y={PAD.top}
               width={brushRect.w}
               height={chartH}
               fill={color}
@@ -397,8 +480,8 @@ export default function TaggerMetricChart({
               <line
                 x1={tooltip.px}
                 x2={tooltip.px}
-                y1={padding.top}
-                y2={padding.top + chartH}
+                y1={PAD.top}
+                y2={PAD.top + chartH}
                 stroke="#9ca3af"
                 strokeWidth={0.5}
                 strokeDasharray="2 2"
@@ -422,12 +505,12 @@ export default function TaggerMetricChart({
             <div className="text-gray-400">step {tooltip.step.toLocaleString()}</div>
             <div>
               <span className="text-gray-500">{valueKey}: </span>
-              {formatY(tooltip.value)}
+              {formatTooltip(tooltip.value)}
             </div>
             {tooltip.smoothValue !== null && smoothing > 0 && (
               <div>
                 <span className="text-gray-500">smooth: </span>
-                {formatY(tooltip.smoothValue)}
+                {formatTooltip(tooltip.smoothValue)}
               </div>
             )}
           </div>

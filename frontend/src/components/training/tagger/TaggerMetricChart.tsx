@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { TaggerTrainingMetric } from "@/utils/api";
 
 interface TaggerMetricChartProps {
@@ -83,18 +83,30 @@ export default function TaggerMetricChart({
     smoothValue: number | null;
   } | null>(null);
 
-  // Container width (responsive)
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(400);
-  useEffect(() => {
-    if (!containerRef.current) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width ?? 400;
-      if (w > 0) setWidth(w);
-    });
-    ro.observe(containerRef.current);
-    return () => ro.disconnect();
+  // Container width (responsive).
+  // Use a callback ref so the ResizeObserver re-attaches when the element
+  // appears (e.g. after the empty-state early return is replaced by the
+  // full chart on data arrival).
+  const [width, setWidth] = useState(0);
+  const roRef = useRef<ResizeObserver | null>(null);
+  const containerRef = useCallback((el: HTMLDivElement | null) => {
+    if (roRef.current) {
+      roRef.current.disconnect();
+      roRef.current = null;
+    }
+    if (el) {
+      const ro = new ResizeObserver((entries) => {
+        const w = entries[0]?.contentRect.width ?? 0;
+        if (w > 0) setWidth(w);
+      });
+      ro.observe(el);
+      roRef.current = ro;
+      // Capture immediate width synchronously so first paint is correct
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0) setWidth(rect.width);
+    }
   }, []);
+  useEffect(() => () => { roRef.current?.disconnect(); }, []);
 
   // ESC key resets zoom
   useEffect(() => {
@@ -123,21 +135,7 @@ export default function TaggerMetricChart({
   const padding = { top: 6, right: 8, bottom: 18, left: 44 };
   const chartW = Math.max(50, width - padding.left - padding.right);
   const chartH = Math.max(20, height - padding.top - padding.bottom);
-
-  // Empty state
-  if (points.length < 2) {
-    return (
-      <div className="bg-gray-800 rounded p-2 border border-gray-700">
-        <div className="text-sm font-medium text-gray-300 mb-1">{title}</div>
-        <div
-          className="flex items-center justify-center text-gray-500 text-xs"
-          style={{ height }}
-        >
-          Not enough data
-        </div>
-      </div>
-    );
-  }
+  const hasEnoughData = points.length >= 2 && width > 0;
 
   // X scale
   const xMin = xRange ? xRange.min : minStepAll;
@@ -294,7 +292,16 @@ export default function TaggerMetricChart({
         </div>
       </div>
 
-      <div ref={containerRef} className="w-full select-none" style={{ position: "relative" }}>
+      <div ref={containerRef} className="w-full select-none" style={{ position: "relative", minHeight: height }}>
+        {!hasEnoughData && (
+          <div
+            className="flex items-center justify-center text-gray-500 text-xs"
+            style={{ height }}
+          >
+            {points.length < 2 ? "Not enough data" : ""}
+          </div>
+        )}
+        {hasEnoughData && (
         <svg
           width={width}
           height={height}
@@ -390,9 +397,10 @@ export default function TaggerMetricChart({
             </>
           )}
         </svg>
+        )}
 
         {/* Tooltip box (HTML overlay) */}
-        {tooltip && !brush && (
+        {hasEnoughData && tooltip && !brush && (
           <div
             className="pointer-events-none absolute bg-gray-900 border border-gray-600 rounded px-2 py-1 text-[10px] font-mono text-gray-200 shadow-lg whitespace-nowrap"
             style={{

@@ -183,20 +183,25 @@ export default function TaggerMetricChart({
 
   const pxToStep = (pxInChart: number) => xMin + (pxInChart / chartW) * xSpan;
 
-  const onMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+  // Pointer Events with setPointerCapture so the brush survives mouseup
+  // outside the SVG and the user can drag to either edge to select up to
+  // the start/end of the data.
+  const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left - padding.left;
     if (x < 0 || x > chartW) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
     setBrush({ startX: x, curX: x });
     setTooltip(null);
   };
 
-  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+  const onPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left - padding.left;
     const y = e.clientY - rect.top - padding.top;
 
     if (brush) {
+      // Clamp to chart bounds so dragging past the edge selects up to the edge
       const clamped = Math.max(0, Math.min(chartW, x));
       setBrush({ ...brush, curX: clamped });
       return;
@@ -227,8 +232,11 @@ export default function TaggerMetricChart({
     });
   };
 
-  const onMouseUp = () => {
+  const onPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!brush) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
     const a = Math.min(brush.startX, brush.curX);
     const b = Math.max(brush.startX, brush.curX);
     const dragPx = b - a;
@@ -239,9 +247,10 @@ export default function TaggerMetricChart({
     if (newMax > newMin) setXRange({ min: newMin, max: newMax });
   };
 
-  const onMouseLeave = () => {
-    setTooltip(null);
-    if (brush) setBrush(null);
+  const onPointerLeave = () => {
+    // Hide tooltip when the pointer leaves the SVG, but DO NOT cancel the
+    // brush — pointer capture keeps move/up events flowing here.
+    if (!brush) setTooltip(null);
   };
 
   const onDoubleClick = () => setXRange(null);
@@ -306,10 +315,11 @@ export default function TaggerMetricChart({
           width={width}
           height={height}
           className="block cursor-crosshair"
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseLeave}
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onPointerLeave={onPointerLeave}
           onDoubleClick={onDoubleClick}
         >
           {/* Y grid lines + labels */}

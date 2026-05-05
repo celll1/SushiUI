@@ -28,7 +28,7 @@ const MiniChart = memo(function MiniChart({
   height = 80,
 }: {
   data: TaggerTrainingMetric[];
-  valueKey: "loss" | "f1";
+  valueKey: "loss" | "f1" | "threshold";
   color: string;
   height?: number;
 }) {
@@ -246,6 +246,8 @@ export default function TaggerTrainingMonitor({
 
   const lossData = metrics.filter((m) => m.loss !== null);
   const f1Data = metrics.filter((m) => m.f1 !== null);
+  const thrData = metrics.filter((m) => m.threshold !== null);
+  const latestThr = [...metrics].reverse().find((m) => m.threshold !== null)?.threshold ?? null;
 
   const statusColor =
     run.status === "running" ? "text-blue-400" :
@@ -298,7 +300,7 @@ export default function TaggerTrainingMonitor({
         )}
 
         {/* Stats */}
-        <section className="grid grid-cols-3 gap-3">
+        <section className="grid grid-cols-4 gap-3">
           <div className="bg-gray-800 rounded p-3">
             <div className="text-xs text-gray-400 mb-1">Best F1</div>
             <div className="text-lg font-mono text-green-400">
@@ -309,6 +311,12 @@ export default function TaggerTrainingMonitor({
             <div className="text-xs text-gray-400 mb-1">Best Threshold</div>
             <div className="text-lg font-mono text-blue-400">
               {run.best_threshold !== null ? run.best_threshold.toFixed(3) : "—"}
+            </div>
+          </div>
+          <div className="bg-gray-800 rounded p-3">
+            <div className="text-xs text-gray-400 mb-1">Latest Threshold</div>
+            <div className="text-lg font-mono text-cyan-400">
+              {latestThr !== null ? latestThr.toFixed(3) : "—"}
             </div>
           </div>
           <div className="bg-gray-800 rounded p-3">
@@ -335,6 +343,16 @@ export default function TaggerTrainingMonitor({
             <div className="text-sm font-medium text-gray-300 mb-2">Validation F1</div>
             <div className="bg-gray-800 rounded p-2 border border-gray-700">
               <MiniChart data={f1Data} valueKey="f1" color="#22c55e" height={80} />
+            </div>
+          </section>
+        )}
+
+        {/* Optimal threshold chart */}
+        {thrData.length >= 2 && (
+          <section>
+            <div className="text-sm font-medium text-gray-300 mb-2">Optimal Threshold</div>
+            <div className="bg-gray-800 rounded p-2 border border-gray-700">
+              <MiniChart data={thrData} valueKey="threshold" color="#06b6d4" height={60} />
             </div>
           </section>
         )}

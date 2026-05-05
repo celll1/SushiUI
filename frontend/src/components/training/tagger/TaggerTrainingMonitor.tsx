@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   getTaggerTrainingRun,
   getTaggerTrainingMetrics,
@@ -12,6 +12,7 @@ import {
 } from "@/utils/api";
 import { wsClient, TaggerMetrics } from "@/utils/websocket";
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
+import TaggerMetricChart from "./TaggerMetricChart";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -20,64 +21,6 @@ interface TaggerTrainingMonitorProps {
   onDelete: () => void;
   onEditConfig?: () => void;
 }
-
-const MiniChart = memo(function MiniChart({
-  data,
-  valueKey,
-  color,
-  height = 80,
-}: {
-  data: TaggerTrainingMetric[];
-  valueKey: "loss" | "f1" | "threshold";
-  color: string;
-  height?: number;
-}) {
-  const points = data
-    .map((d) => ({ step: d.step, value: d[valueKey] }))
-    .filter((d): d is { step: number; value: number } => d.value !== null);
-
-  if (points.length < 2) {
-    return (
-      <div
-        className="flex items-center justify-center text-gray-500 text-xs"
-        style={{ height }}
-      >
-        Not enough data
-      </div>
-    );
-  }
-
-  const minV = Math.min(...points.map((p) => p.value));
-  const maxV = Math.max(...points.map((p) => p.value));
-  const range = maxV - minV || 1;
-  const minStep = points[0].step;
-  const maxStep = points[points.length - 1].step;
-  const stepRange = maxStep - minStep || 1;
-
-  const w = 400;
-  const h = height;
-  const pad = 4;
-
-  const toX = (step: number) =>
-    pad + ((step - minStep) / stepRange) * (w - 2 * pad);
-  const toY = (v: number) =>
-    pad + ((maxV - v) / range) * (h - 2 * pad);
-
-  const pathD = points
-    .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toY(p.value).toFixed(1)}`)
-    .join(" ");
-
-  return (
-    <svg
-      viewBox={`0 0 ${w} ${h}`}
-      className="w-full"
-      style={{ height }}
-      preserveAspectRatio="none"
-    >
-      <path d={pathD} fill="none" stroke={color} strokeWidth="1.5" />
-    </svg>
-  );
-});
 
 export default function TaggerTrainingMonitor({
   run: initialRun,
@@ -244,9 +187,6 @@ export default function TaggerTrainingMonitor({
   const canStart = !isActive && run.status !== "completed";
   const canStop = isActive;
 
-  const lossData = metrics.filter((m) => m.loss !== null);
-  const f1Data = metrics.filter((m) => m.f1 !== null);
-  const thrData = metrics.filter((m) => m.threshold !== null);
   const latestThr = [...metrics].reverse().find((m) => m.threshold !== null)?.threshold ?? null;
 
   const statusColor =
@@ -327,196 +267,202 @@ export default function TaggerTrainingMonitor({
           </div>
         </section>
 
-        {/* Loss chart */}
-        {lossData.length >= 2 && (
-          <section>
-            <div className="text-sm font-medium text-gray-300 mb-2">Training Loss</div>
-            <div className="bg-gray-800 rounded p-2 border border-gray-700">
-              <MiniChart data={lossData} valueKey="loss" color="#f97316" height={80} />
-            </div>
-          </section>
-        )}
+        {/* Charts (col-span-2) + Side panel (col-span-1) */}
+        <section className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {/* Charts column */}
+          <div className="lg:col-span-2 space-y-3">
+            <TaggerMetricChart
+              data={metrics}
+              valueKey="loss"
+              color="#f97316"
+              title="Training Loss"
+              height={200}
+              smoothable={true}
+              defaultSmoothing={0.9}
+              yMinFloor={0}
+            />
+            <TaggerMetricChart
+              data={metrics}
+              valueKey="f1"
+              color="#22c55e"
+              title="Validation F1"
+              height={140}
+              yMinFloor={0}
+            />
+            <TaggerMetricChart
+              data={metrics}
+              valueKey="threshold"
+              color="#06b6d4"
+              title="Optimal Threshold"
+              height={100}
+              yMinFloor={0}
+            />
 
-        {/* F1 chart */}
-        {f1Data.length >= 2 && (
-          <section>
-            <div className="text-sm font-medium text-gray-300 mb-2">Validation F1</div>
-            <div className="bg-gray-800 rounded p-2 border border-gray-700">
-              <MiniChart data={f1Data} valueKey="f1" color="#22c55e" height={80} />
-            </div>
-          </section>
-        )}
-
-        {/* Optimal threshold chart */}
-        {thrData.length >= 2 && (
-          <section>
-            <div className="text-sm font-medium text-gray-300 mb-2">Optimal Threshold</div>
-            <div className="bg-gray-800 rounded p-2 border border-gray-700">
-              <MiniChart data={thrData} valueKey="threshold" color="#06b6d4" height={60} />
-            </div>
-          </section>
-        )}
-
-        {/* Error message */}
-        {run.error_message && (
-          <section>
-            <div className="text-sm font-medium text-red-400 mb-1">Error</div>
-            <div className="bg-red-900/20 border border-red-700 rounded p-3 text-xs text-red-300 font-mono whitespace-pre-wrap">
-              {run.error_message}
-            </div>
-          </section>
-        )}
-
-        {/* Checkpoint paths */}
-        {(run.head_checkpoint_path || run.lora_checkpoint_path) && (
-          <section>
-            <div className="text-sm font-medium text-gray-300 mb-2">Checkpoints</div>
-            <div className="space-y-1">
-              {run.head_checkpoint_path && (
-                <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate">
-                  Head: {run.head_checkpoint_path}
+            {/* Error message */}
+            {run.error_message && (
+              <div>
+                <div className="text-sm font-medium text-red-400 mb-1">Error</div>
+                <div className="bg-red-900/20 border border-red-700 rounded p-3 text-xs text-red-300 font-mono whitespace-pre-wrap">
+                  {run.error_message}
                 </div>
-              )}
-              {run.lora_checkpoint_path && (
-                <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate">
-                  LoRA: {run.lora_checkpoint_path}
-                </div>
-              )}
-            </div>
-          </section>
-        )}
+              </div>
+            )}
+          </div>
 
-        {/* Threshold F1 Curve */}
-        {run.threshold_f1_curve && Object.keys(run.threshold_f1_curve).length > 0 && (() => {
-          const curve = run.threshold_f1_curve!;
-          const bestThr = Object.keys(curve).reduce((a, b) => curve[a] >= curve[b] ? a : b);
-          return (
-            <section>
-              <div className="text-sm font-medium text-gray-300 mb-2">Threshold Grid Search</div>
-              <div className="bg-gray-800 rounded p-2 border border-gray-700 overflow-x-auto">
-                <table className="text-xs w-full">
-                  <thead>
-                    <tr className="text-gray-400 border-b border-gray-700">
-                      <th className="text-left pb-1 pr-4">Threshold</th>
-                      <th className="text-left pb-1 pr-4">F1</th>
-                      <th className="text-left pb-1">Bar</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {Object.entries(curve).map(([thr, f1]) => {
-                      const isBest = thr === bestThr;
+          {/* Side column */}
+          <div className="space-y-4 min-w-0">
+            {/* Configuration */}
+            <div>
+              <div className="text-sm font-medium text-gray-300 mb-2">Configuration</div>
+              <div className="text-xs text-gray-400 bg-gray-800 rounded p-3 space-y-1">
+                <div className="flex gap-1 min-w-0">
+                  <span className="text-gray-500 shrink-0">Vision encoder:</span>
+                  <span className="text-gray-300 font-mono truncate" title={run.vision_encoder_path}>{run.vision_encoder_path}</span>
+                </div>
+                <div><span className="text-gray-500">Datasets:</span> <span className="text-gray-300">{run.dataset_configs.length}</span></div>
+              </div>
+              {run.config && typeof run.config === "object" && (() => {
+                const CONFIG_LABELS: Record<string, string> = {
+                  learning_rate: "LR",
+                  head_lr_multiplier: "Head LR ×",
+                  epochs: "Epochs",
+                  batch_size: "Batch size",
+                  optimizer: "Optimizer",
+                  mixed_precision: "Precision",
+                  loss_function: "Loss fn",
+                  lora_rank: "LoRA rank",
+                  lora_alpha: "LoRA alpha",
+                  warmup_steps: "Warmup steps",
+                  save_every_n_steps: "Save / N steps",
+                  save_every_n_epochs: "Save / N epochs",
+                  keep_last_n_checkpoints: "Keep last N",
+                  checkpoint_save_mode: "Save mode",
+                  loss_gamma_neg: "γ- (ASL)",
+                  loss_gamma_pos: "γ+ (ASL)",
+                  loss_gamma0: "γ₀",
+                  loss_m0: "m₀",
+                  loss_rho: "ρ",
+                  loss_beta: "β",
+                  loss_label_weight: "Label weight",
+                  gradient_checkpointing: "Grad ckpt",
+                  validate_every: "Validate / epochs",
+                  vocab_min_count: "Min tag count",
+                  val_split_mode: "Val split mode",
+                  val_split: "Val split (%)",
+                  val_fixed_size: "Val size (fixed)",
+                  excluded_categories: "Excl. cats",
+                  use_tag_aliases: "Tag aliases",
+                  ban_tags: "Ban tags",
+                  init_head_from: "Init head from",
+                  cls_dim: "CLS dim",
+                  hidden_proj_dim: "Hidden proj dim",
+                  num_workers: "Workers",
+                  num_workers_override: "Workers (override)",
+                  weight_decay: "Weight decay",
+                  loss_clip: "Loss clip",
+                };
+                const cfg = run.config as Record<string, unknown>;
+                const lossFn = String(cfg.loss_function ?? "asl");
+                const isLora = run.training_method === "lora";
+                const LORA_ONLY_KEYS = new Set(["lora_rank", "lora_alpha"]);
+                const ASL_ONLY_KEYS  = new Set(["loss_gamma_neg", "loss_gamma_pos"]);
+                const CS_ASL_KEYS    = new Set(["loss_gamma0", "loss_m0", "loss_beta", "loss_rho"]);
+                const H_CS_ASL_KEYS  = new Set(["loss_label_weight"]);
+                const entries = Object.entries(CONFIG_LABELS)
+                  .map(([key, label]) => ({
+                    key,
+                    label,
+                    value: key === "loss_function" ? (cfg[key] ?? "asl") : cfg[key],
+                  }))
+                  .filter(({ key, value }) => {
+                    if (value === undefined || value === null || value === "") return false;
+                    if (LORA_ONLY_KEYS.has(key) && !isLora) return false;
+                    if (ASL_ONLY_KEYS.has(key) && lossFn !== "asl") return false;
+                    if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
+                    if (H_CS_ASL_KEYS.has(key) && lossFn !== "h_cs_asl") return false;
+                    return true;
+                  });
+                return (
+                  <div className="mt-2 bg-gray-800 rounded p-3 space-y-1 text-xs">
+                    {entries.map(({ key, label, value }) => {
+                      const display = Array.isArray(value)
+                        ? value.join(", ") || "—"
+                        : String(value);
                       return (
-                        <tr key={thr} className={isBest ? "text-green-400 font-bold" : "text-gray-300"}>
-                          <td className="pr-4 py-0.5">{thr}</td>
-                          <td className="pr-4 py-0.5 font-mono">{(f1 as number).toFixed(4)}</td>
-                          <td className="py-0.5 w-32">
-                            <div className="bg-gray-700 rounded-full h-1.5 w-full">
-                              <div
-                                className={`h-1.5 rounded-full ${isBest ? "bg-green-400" : "bg-blue-500"}`}
-                                style={{ width: `${Math.min((f1 as number) * 100, 100)}%` }}
-                              />
-                            </div>
-                          </td>
-                        </tr>
+                        <div key={key} className="flex gap-1 min-w-0">
+                          <span className="text-gray-500 shrink-0">{label}:</span>
+                          <span className="text-gray-300 truncate" title={display}>{display}</span>
+                        </div>
                       );
                     })}
-                  </tbody>
-                </table>
-              </div>
-              <div className="text-xs text-green-400 mt-1">
-                Optimal threshold: {bestThr} (F1={curve[bestThr].toFixed(4)})
-              </div>
-            </section>
-          );
-        })()}
-
-        {/* Config info */}
-        <section>
-          <div className="text-sm font-medium text-gray-300 mb-2">Configuration</div>
-          <div className="text-xs text-gray-400 bg-gray-800 rounded p-3 space-y-1">
-            <div className="flex gap-1">
-              <span className="shrink-0">Vision encoder:</span>
-              <span className="text-gray-300 font-mono truncate" title={run.vision_encoder_path}>{run.vision_encoder_path}</span>
+                  </div>
+                );
+              })()}
             </div>
-            <div>Datasets: <span className="text-gray-300">{run.dataset_configs.length}</span></div>
-          </div>
-          {run.config && typeof run.config === "object" && (() => {
-            const CONFIG_LABELS: Record<string, string> = {
-              learning_rate: "LR",
-              head_lr_multiplier: "Head LR ×",
-              epochs: "Epochs",
-              batch_size: "Batch size",
-              optimizer: "Optimizer",
-              mixed_precision: "Precision",
-              loss_function: "Loss fn",
-              lora_rank: "LoRA rank",
-              lora_alpha: "LoRA alpha",
-              warmup_steps: "Warmup steps",
-              save_every_n_steps: "Save / N steps",
-              save_every_n_epochs: "Save / N epochs",
-              keep_last_n_checkpoints: "Keep last N",
-              checkpoint_save_mode: "Save mode",
-              loss_gamma_neg: "γ- (ASL)",
-              loss_gamma_pos: "γ+ (ASL)",
-              loss_gamma0: "γ₀",
-              loss_m0: "m₀",
-              loss_rho: "ρ",
-              loss_beta: "β",
-              loss_label_weight: "Label weight",
-              gradient_checkpointing: "Grad ckpt",
-              validate_every: "Validate / epochs",
-              vocab_min_count: "Min tag count",
-              val_split_mode: "Val split mode",
-              val_split: "Val split (%)",
-              val_fixed_size: "Val size (fixed)",
-              excluded_categories: "Excl. cats",
-              use_tag_aliases: "Tag aliases",
-              ban_tags: "Ban tags",
-              init_head_from: "Init head from",
-              cls_dim: "CLS dim",
-              hidden_proj_dim: "Hidden proj dim",
-              num_workers: "Workers",
-              num_workers_override: "Workers (override)",
-              weight_decay: "Weight decay",
-              loss_clip: "Loss clip",
-            };
-            const cfg = run.config as Record<string, unknown>;
-            const lossFn = String(cfg.loss_function ?? "asl");
-            const isLora = run.training_method === "lora";
-            const LORA_ONLY_KEYS = new Set(["lora_rank", "lora_alpha"]);
-            const ASL_ONLY_KEYS  = new Set(["loss_gamma_neg", "loss_gamma_pos"]);
-            const CS_ASL_KEYS    = new Set(["loss_gamma0", "loss_m0", "loss_beta", "loss_rho"]);
-            const H_CS_ASL_KEYS  = new Set(["loss_label_weight"]);
-            const entries = Object.entries(CONFIG_LABELS)
-              .map(([key, label]) => ({
-                key,
-                label,
-                value: key === "loss_function" ? (cfg[key] ?? "asl") : cfg[key],
-              }))
-              .filter(({ key, value }) => {
-                if (value === undefined || value === null || value === "") return false;
-                if (LORA_ONLY_KEYS.has(key) && !isLora) return false;
-                if (ASL_ONLY_KEYS.has(key) && lossFn !== "asl") return false;
-                if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
-                if (H_CS_ASL_KEYS.has(key) && lossFn !== "h_cs_asl") return false;
-                return true;
-              });
-            return (
-              <div className="mt-2 bg-gray-800 rounded p-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
-                {entries.map(({ key, label, value }) => {
-                  const display = Array.isArray(value)
-                    ? value.join(", ") || "—"
-                    : String(value);
-                  return (
-                    <div key={key} className="flex gap-1 min-w-0">
-                      <span className="text-gray-500 shrink-0">{label}:</span>
-                      <span className="text-gray-300 truncate" title={display}>{display}</span>
+
+            {/* Threshold F1 Curve */}
+            {run.threshold_f1_curve && Object.keys(run.threshold_f1_curve).length > 0 && (() => {
+              const curve = run.threshold_f1_curve!;
+              const bestThr = Object.keys(curve).reduce((a, b) => curve[a] >= curve[b] ? a : b);
+              return (
+                <div>
+                  <div className="text-sm font-medium text-gray-300 mb-2">Threshold Grid Search</div>
+                  <div className="bg-gray-800 rounded p-2 border border-gray-700 overflow-x-auto">
+                    <table className="text-xs w-full">
+                      <thead>
+                        <tr className="text-gray-400 border-b border-gray-700">
+                          <th className="text-left pb-1 pr-2">Thr</th>
+                          <th className="text-left pb-1 pr-2">F1</th>
+                          <th className="text-left pb-1">Bar</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {Object.entries(curve).map(([thr, f1]) => {
+                          const isBest = thr === bestThr;
+                          return (
+                            <tr key={thr} className={isBest ? "text-green-400 font-bold" : "text-gray-300"}>
+                              <td className="pr-2 py-0.5">{thr}</td>
+                              <td className="pr-2 py-0.5 font-mono">{(f1 as number).toFixed(4)}</td>
+                              <td className="py-0.5">
+                                <div className="bg-gray-700 rounded-full h-1.5 w-full">
+                                  <div
+                                    className={`h-1.5 rounded-full ${isBest ? "bg-green-400" : "bg-blue-500"}`}
+                                    style={{ width: `${Math.min((f1 as number) * 100, 100)}%` }}
+                                  />
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="text-xs text-green-400 mt-1">
+                    Optimal: {bestThr} (F1={curve[bestThr].toFixed(4)})
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Checkpoint paths */}
+            {(run.head_checkpoint_path || run.lora_checkpoint_path) && (
+              <div>
+                <div className="text-sm font-medium text-gray-300 mb-2">Checkpoints</div>
+                <div className="space-y-1">
+                  {run.head_checkpoint_path && (
+                    <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate" title={run.head_checkpoint_path}>
+                      Head: {run.head_checkpoint_path}
                     </div>
-                  );
-                })}
+                  )}
+                  {run.lora_checkpoint_path && (
+                    <div className="text-xs text-gray-400 bg-gray-800 rounded p-2 font-mono truncate" title={run.lora_checkpoint_path}>
+                      LoRA: {run.lora_checkpoint_path}
+                    </div>
+                  )}
+                </div>
               </div>
-            );
-          })()}
+            )}
+          </div>
         </section>
 
         {/* Vocabulary browser */}

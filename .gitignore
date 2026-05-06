@@ -66,9 +66,15 @@ next-env.d.ts
 *.sqlite
 *.sqlite3
 
-# 一時スクリプト・出力
+# 一時スクリプト・出力（実験・検証用）
 infer_test.py
 infer_out.txt
+infer_compare.py
+compare_out.txt
+bias_shift_test.py
+bias_shift_apply.py
+bias_out.txt
+fix_taglists.py
 
 # 旧データベース（移行前）
 webui.db

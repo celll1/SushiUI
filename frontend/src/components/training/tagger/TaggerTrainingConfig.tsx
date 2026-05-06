@@ -61,6 +61,12 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   save_base_model: false,
   cls_dim: undefined as number | undefined,
   hidden_proj_dim: undefined as number | undefined,
+  // LR matrix (conditional inference) — built once at training start when enabled.
+  build_lr_matrix_on_start: false,
+  lr_top_anchors: 10000,
+  lr_top_targets: 1000,
+  lr_threshold: 1.0,
+  lr_min_anchor_count: 10,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -115,6 +121,11 @@ export default function TaggerTrainingConfig({
         save_base_model: (editRun.config?.save_base_model as boolean) ?? DEFAULT_CONFIG.save_base_model,
         cls_dim: (editRun.config?.cls_dim as number | undefined) ?? DEFAULT_CONFIG.cls_dim,
         hidden_proj_dim: (editRun.config?.hidden_proj_dim as number | undefined) ?? DEFAULT_CONFIG.hidden_proj_dim,
+        build_lr_matrix_on_start: (editRun.config?.build_lr_matrix_on_start as boolean) ?? DEFAULT_CONFIG.build_lr_matrix_on_start,
+        lr_top_anchors: (editRun.config?.lr_top_anchors as number) ?? DEFAULT_CONFIG.lr_top_anchors,
+        lr_top_targets: (editRun.config?.lr_top_targets as number) ?? DEFAULT_CONFIG.lr_top_targets,
+        lr_threshold: (editRun.config?.lr_threshold as number) ?? DEFAULT_CONFIG.lr_threshold,
+        lr_min_anchor_count: (editRun.config?.lr_min_anchor_count as number) ?? DEFAULT_CONFIG.lr_min_anchor_count,
       }
     : DEFAULT_CONFIG;
 
@@ -394,6 +405,67 @@ export default function TaggerTrainingConfig({
               <span className="text-sm text-gray-300">Save base model</span>
               <span className="text-xs text-gray-500">(copies base weights into training directory for self-contained checkpoints)</span>
             </label>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={config.build_lr_matrix_on_start ?? false}
+                onChange={(e) => setField("build_lr_matrix_on_start", e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+              />
+              <span className="text-sm text-gray-300">Build LR matrix at start</span>
+              <span className="text-xs text-gray-500">
+                (precomputes co-occurrence statistics for conditional inference; adds ~5-30 min once at training start)
+              </span>
+            </label>
+            {config.build_lr_matrix_on_start && (
+              <div className="mt-2 ml-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Top anchors</label>
+                  <input
+                    type="number"
+                    min={100}
+                    max={97000}
+                    value={config.lr_top_anchors ?? 10000}
+                    onChange={(e) => setField("lr_top_anchors", parseInt(e.target.value) || 10000)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Top targets / anchor</label>
+                  <input
+                    type="number"
+                    min={10}
+                    max={10000}
+                    value={config.lr_top_targets ?? 1000}
+                    onChange={(e) => setField("lr_top_targets", parseInt(e.target.value) || 1000)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">|LR| threshold</label>
+                  <input
+                    type="number"
+                    step={0.1}
+                    min={0}
+                    value={config.lr_threshold ?? 1.0}
+                    onChange={(e) => setField("lr_threshold", parseFloat(e.target.value) || 1.0)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Min anchor count</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={config.lr_min_anchor_count ?? 10}
+                    onChange={(e) => setField("lr_min_anchor_count", parseInt(e.target.value) || 10)}
+                    className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </section>
 

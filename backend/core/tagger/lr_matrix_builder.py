@@ -168,9 +168,13 @@ def _build_label_matrix(
 # ---------------------------------------------------------------------------
 
 def build_lr_matrix(
-    dataset_ids: List[int],
-    vocab_path: str,
     output_path: str,
+    *,
+    samples: Optional[List[List[str]]] = None,
+    tag_to_idx: Optional[Dict[str, int]] = None,
+    n_tags: Optional[int] = None,
+    dataset_ids: Optional[List[int]] = None,
+    vocab_path: Optional[str] = None,
     top_anchors: int = 10000,
     top_targets: int = 1000,
     lr_threshold: float = 1.0,
@@ -180,30 +184,28 @@ def build_lr_matrix(
 ) -> Dict[str, Any]:
     """Build the sparse LR matrix from training labels and save as ``.npz``.
 
+    Two invocation modes are supported:
+
+    1. **CLI mode** -- pass ``dataset_ids`` and ``vocab_path``; samples are
+       loaded from the datasets DB and the vocabulary is read from JSON.
+    2. **In-process mode** -- pass ``samples``, ``tag_to_idx`` and ``n_tags``
+       directly (e.g. from :class:`tagger_trainer.TaggerTrainer` which already
+       has them in memory).  This skips the DB scan entirely.
+
     Parameters
     ----------
-    dataset_ids
-        List of ``Dataset.id`` values to scan in the datasets DB.
-    vocab_path
-        Path to ``vocabulary.json`` from the trained model (defines the
-        ``tag -> index`` mapping used by the inference manager).
     output_path
         Destination ``.npz`` path.  Convention: place alongside the
         vocabulary so that :func:`SigLIP2InferenceManager.load_model`
         picks it up automatically.
-    top_anchors
-        Number of most-frequent tags to use as anchors (rare tags are
-        excluded because their statistics are unreliable).
-    top_targets
-        Maximum number of target entries kept per anchor.
-    lr_threshold
-        Drop entries whose ``|LR|`` is below this value.
-    eps
-        Laplace smoothing constant.
-    min_anchor_count
-        Skip anchors that appear in fewer than this many samples.
-    caption_types
-        Optional caption-type filter (e.g. ``["tags", "booru"]``).
+    samples, tag_to_idx, n_tags
+        In-process mode inputs.  ``samples`` is a list of per-image tag-name
+        lists (already normalized).  When provided, ``dataset_ids`` and
+        ``vocab_path`` are ignored.
+    dataset_ids, vocab_path, caption_types
+        CLI mode inputs.  Required when ``samples`` is None.
+    top_anchors, top_targets, lr_threshold, eps, min_anchor_count
+        Sparsification hyper-parameters; see :func:`_parse_args` for help.
 
     Returns
     -------
@@ -211,19 +213,27 @@ def build_lr_matrix(
         Summary statistics: ``n_samples``, ``n_anchors``, ``n_entries``,
         ``output_size_bytes``.
     """
-    print(f"[LRBuild] Vocabulary:    {vocab_path}")
     print(f"[LRBuild] Output:        {output_path}")
     print(f"[LRBuild] Anchors top-K: {top_anchors}, targets per anchor: {top_targets}")
     print(f"[LRBuild] |LR| threshold: {lr_threshold}, eps={eps}, min anchor count: {min_anchor_count}")
 
-    tag_to_idx, idx_to_tag = _load_vocab(vocab_path)
-    n_tags = len(idx_to_tag)
+    # Resolve vocabulary
+    if tag_to_idx is None or n_tags is None:
+        if vocab_path is None:
+            raise ValueError("Either (samples + tag_to_idx + n_tags) or vocab_path must be provided.")
+        print(f"[LRBuild] Vocabulary:    {vocab_path}")
+        tag_to_idx, idx_to_tag = _load_vocab(vocab_path)
+        n_tags = len(idx_to_tag)
     print(f"[LRBuild] {n_tags} tags in vocabulary")
 
-    samples = _collect_samples(dataset_ids, caption_types)
+    # Resolve samples
+    if samples is None:
+        if dataset_ids is None:
+            raise ValueError("Either samples or dataset_ids must be provided.")
+        samples = _collect_samples(dataset_ids, caption_types)
     n_samples = len(samples)
     if n_samples == 0:
-        raise RuntimeError("No samples found for the specified dataset_ids.")
+        raise RuntimeError("No samples available (samples list is empty).")
     print(f"[LRBuild] {n_samples} samples loaded")
 
     print("[LRBuild] Building sparse label matrix (CSR)...")
@@ -355,9 +365,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     caption_types = [x.strip() for x in args.caption_types.split(",")] if args.caption_types else None
     try:
         build_lr_matrix(
+            output_path=args.output,
             dataset_ids=dataset_ids,
             vocab_path=args.vocab_path,
-            output_path=args.output,
             top_anchors=args.top_anchors,
             top_targets=args.top_targets,
             lr_threshold=args.lr_threshold,

@@ -6897,6 +6897,12 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     cls_dim: Optional[int] = None
     hidden_proj_dim: Optional[int] = None
     init_head_from: Optional[str] = None
+    # LR matrix (conditional inference) — built once at training start when enabled.
+    build_lr_matrix_on_start: bool = False
+    lr_top_anchors:            int   = 10000
+    lr_top_targets:            int   = 1000
+    lr_threshold:              float = 1.0
+    lr_min_anchor_count:       int   = 10
 
 
 # Active tagger training threads

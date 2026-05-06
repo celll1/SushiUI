@@ -270,4 +270,11 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "cls_dim": None,
     "hidden_proj_dim": None,
     "init_head_from": None,
+    # LR matrix (conditional inference) — built once at training start
+    # when enabled.  See backend/core/tagger/lr_matrix_builder.py.
+    "build_lr_matrix_on_start": False,
+    "lr_top_anchors":            10000,
+    "lr_top_targets":            1000,
+    "lr_threshold":              1.0,
+    "lr_min_anchor_count":       10,
 }

@@ -360,6 +360,11 @@ export default function TaggerTrainingMonitor({
                   num_workers_override: "Workers (override)",
                   weight_decay: "Weight decay",
                   loss_clip: "Loss clip",
+                  build_lr_matrix_on_start: "Build LR matrix",
+                  lr_top_anchors: "LR top anchors",
+                  lr_top_targets: "LR top targets",
+                  lr_threshold: "LR threshold",
+                  lr_min_anchor_count: "LR min anchor count",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -368,6 +373,11 @@ export default function TaggerTrainingMonitor({
                 const ASL_ONLY_KEYS  = new Set(["loss_gamma_neg", "loss_gamma_pos"]);
                 const CS_ASL_KEYS    = new Set(["loss_gamma0", "loss_m0", "loss_beta", "loss_rho"]);
                 const H_CS_ASL_KEYS  = new Set(["loss_label_weight"]);
+                // LR sub-parameters only meaningful when build_lr_matrix_on_start is true
+                const LR_SUB_KEYS    = new Set([
+                  "lr_top_anchors", "lr_top_targets", "lr_threshold", "lr_min_anchor_count",
+                ]);
+                const buildLR = Boolean(cfg.build_lr_matrix_on_start);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
                     key,
@@ -380,6 +390,7 @@ export default function TaggerTrainingMonitor({
                     if (ASL_ONLY_KEYS.has(key) && lossFn !== "asl") return false;
                     if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
                     if (H_CS_ASL_KEYS.has(key) && lossFn !== "h_cs_asl") return false;
+                    if (LR_SUB_KEYS.has(key) && !buildLR) return false;
                     return true;
                   });
                 return (

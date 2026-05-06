@@ -984,6 +984,16 @@ export interface SigLIP2StatusResponse {
   vocab_path: string;
   model_type: string;
   num_tags: number;
+  lr_matrix_loaded?: boolean;
+}
+
+export type SigLIP2ContextMethod = "none" | "head_sim" | "lr_matrix";
+
+export interface SigLIP2PredictOptions {
+  known_tags_pos?: string[];
+  known_tags_neg?: string[];
+  context_method?: SigLIP2ContextMethod;
+  context_lambda?: number;
 }
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
@@ -994,8 +1004,22 @@ export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
 export const predictSigLIP2Tags = async (
   image_base64: string,
   threshold: number = 0.5,
+  options?: SigLIP2PredictOptions,
 ): Promise<SigLIP2PredictResponse> => {
-  const response = await api.post("/tagger/siglip2/predict", { image_base64, threshold });
+  const body: Record<string, unknown> = { image_base64, threshold };
+  if (options?.known_tags_pos && options.known_tags_pos.length > 0) {
+    body.known_tags_pos = options.known_tags_pos;
+  }
+  if (options?.known_tags_neg && options.known_tags_neg.length > 0) {
+    body.known_tags_neg = options.known_tags_neg;
+  }
+  if (options?.context_method) {
+    body.context_method = options.context_method;
+  }
+  if (typeof options?.context_lambda === "number") {
+    body.context_lambda = options.context_lambda;
+  }
+  const response = await api.post("/tagger/siglip2/predict", body);
   return response.data;
 };
 

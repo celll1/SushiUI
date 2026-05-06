@@ -2,8 +2,14 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { predictSigLIP2Tags, SigLIP2PredictResponse, SigLIP2TagResult } from "@/utils/api";
+import {
+  predictSigLIP2Tags,
+  SigLIP2PredictResponse,
+  SigLIP2TagResult,
+  SigLIP2ContextMethod,
+} from "@/utils/api";
 import { sendBase64ImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
+import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import TagResultsChart from "./TagResultsChart";
 
 interface InferencePanelProps {
@@ -40,6 +46,15 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [error,        setError]        = useState<string | null>(null);
   const [result,       setResult]       = useState<SigLIP2PredictResponse | null>(null);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
+
+  // Conditional inference state (Phase 0: head_sim)
+  const [contextMethod,  setContextMethod]  = useState<SigLIP2ContextMethod>("none");
+  const [contextLambda,  setContextLambda]  = useState(0.5);
+  const [knownTagsPos,   setKnownTagsPos]   = useState<string[]>([]);
+  const [knownTagsNeg,   setKnownTagsNeg]   = useState<string[]>([]);
+  const [posTagInput,    setPosTagInput]    = useState("");
+  const [negTagInput,    setNegTagInput]    = useState("");
+  const [showNegInput,   setShowNegInput]   = useState(false);
 
   // ── Image loading ─────────────────────────────────────────────────────────
 
@@ -94,9 +109,15 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
     try {
       const b64 = imageBase64.replace(/^data:[^;]+;base64,/, "");
       // Use global threshold as baseline; client-side per-category filter applied to result
-      const res  = await predictSigLIP2Tags(b64, Math.min(...Object.values(
+      const baselineThr = Math.min(...Object.values(
         thresholdMode === "per-category" ? categoryThresholds : { g: globalThreshold }
-      )));
+      ));
+      const res = await predictSigLIP2Tags(b64, baselineThr, {
+        known_tags_pos: knownTagsPos,
+        known_tags_neg: knownTagsNeg,
+        context_method: contextMethod,
+        context_lambda: contextLambda,
+      });
       setResult(res);
       const allTags = new Set<string>([
         ...res.tags.map((t) => t.tag),
@@ -108,6 +129,29 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
       setError(e?.response?.data?.detail ?? e?.message ?? "Prediction failed");
     } finally {
       setRunning(false);
+    }
+  };
+
+  // ── Known tag handlers ────────────────────────────────────────────────────
+
+  const addKnownTag = (which: "pos" | "neg") => (tag: string) => {
+    const t = tag.trim();
+    if (!t) return;
+    if (which === "pos") {
+      setKnownTagsPos((cur) => (cur.includes(t) ? cur : [...cur, t]));
+      // Auto-enable correction when first context tag is added
+      if (contextMethod === "none") setContextMethod("head_sim");
+    } else {
+      setKnownTagsNeg((cur) => (cur.includes(t) ? cur : [...cur, t]));
+      if (contextMethod === "none") setContextMethod("head_sim");
+    }
+  };
+
+  const removeKnownTag = (which: "pos" | "neg", tag: string) => {
+    if (which === "pos") {
+      setKnownTagsPos((cur) => cur.filter((t) => t !== tag));
+    } else {
+      setKnownTagsNeg((cur) => cur.filter((t) => t !== tag));
     }
   };
 
@@ -262,6 +306,129 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                   </div>
                 ))}
               </div>
+            )}
+          </div>
+
+          {/* Conditional inference (Phase 0: head similarity) */}
+          <div className="border border-gray-700 rounded p-2 space-y-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-400">Conditional</span>
+              <div className="flex rounded overflow-hidden border border-gray-600 text-xs ml-auto">
+                <button
+                  onClick={() => setContextMethod("none")}
+                  className={`px-2 py-0.5 ${contextMethod === "none" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                  title="No context correction"
+                >
+                  Off
+                </button>
+                <button
+                  onClick={() => setContextMethod("head_sim")}
+                  className={`px-2 py-0.5 ${contextMethod === "head_sim" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                  title="Use head weight cosine similarity"
+                >
+                  Head sim
+                </button>
+                <button
+                  onClick={() => setContextMethod("lr_matrix")}
+                  className={`px-2 py-0.5 ${contextMethod === "lr_matrix" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                  title="Use precomputed Likelihood-Ratio matrix (falls back to head_sim if not loaded)"
+                >
+                  LR matrix
+                </button>
+              </div>
+            </div>
+
+            {contextMethod !== "none" && (
+              <>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-400 w-8 shrink-0">λ</label>
+                  <input
+                    type="range" min={0.0} max={2.0} step={0.05}
+                    value={contextLambda}
+                    onChange={(e) => setContextLambda(parseFloat(e.target.value))}
+                    className="flex-1"
+                  />
+                  <span className="text-xs text-gray-400 font-mono w-9 text-right shrink-0">
+                    {contextLambda.toFixed(2)}
+                  </span>
+                </div>
+
+                {/* Known positive tags */}
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs text-green-400">Known +</span>
+                    <span className="text-[11px] text-gray-500">tags asserted to be present</span>
+                  </div>
+                  {knownTagsPos.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1">
+                      {knownTagsPos.map((t) => (
+                        <span
+                          key={t}
+                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-900/40 border border-green-700 text-[11px] text-green-200"
+                        >
+                          {t}
+                          <button
+                            onClick={() => removeKnownTag("pos", t)}
+                            className="text-green-400 hover:text-red-400 leading-none"
+                            title="Remove"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <InputWithTagSuggestions
+                    value={posTagInput}
+                    onChange={setPosTagInput}
+                    onTagAdd={(tag) => { addKnownTag("pos")(tag); setPosTagInput(""); }}
+                    placeholder="add tag (Enter to add)…"
+                    className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                    showSuggestionsAbove={true}
+                  />
+                </div>
+
+                {/* Known negative tags (collapsible) */}
+                <div>
+                  <button
+                    onClick={() => setShowNegInput((v) => !v)}
+                    className="text-[11px] text-gray-500 hover:text-gray-300 transition-colors"
+                  >
+                    {showNegInput ? "▾" : "▸"} Known − ({knownTagsNeg.length})
+                  </button>
+                  {showNegInput && (
+                    <div className="mt-1">
+                      {knownTagsNeg.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mb-1">
+                          {knownTagsNeg.map((t) => (
+                            <span
+                              key={t}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-900/40 border border-red-700 text-[11px] text-red-200"
+                            >
+                              {t}
+                              <button
+                                onClick={() => removeKnownTag("neg", t)}
+                                className="text-red-400 hover:text-red-200 leading-none"
+                                title="Remove"
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      <InputWithTagSuggestions
+                        value={negTagInput}
+                        onChange={setNegTagInput}
+                        onTagAdd={(tag) => { addKnownTag("neg")(tag); setNegTagInput(""); }}
+                        placeholder="add tag asserted absent…"
+                        className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-xs focus:outline-none focus:border-blue-500"
+                        showSuggestionsAbove={true}
+                      />
+                    </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
 

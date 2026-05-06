@@ -75,6 +75,8 @@ bias_shift_test.py
 bias_shift_apply.py
 bias_out.txt
 fix_taglists.py
+iter_inference_test.py
+iter_out.txt
 
 # 旧データベース（移行前）
 webui.db

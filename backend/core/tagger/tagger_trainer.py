@@ -293,12 +293,67 @@ def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
     torch.save(optimizer.state_dict(), path)
 
 
-def _load_optimizer_state(optimizer: Any, output_dir: str, name: str) -> bool:
-    """Load optimizer state dict from <name>_optimizer.pt. Returns True if loaded."""
+def _load_optimizer_state(
+    optimizer: Any,
+    output_dir: str,
+    name: str,
+    *,
+    model: Optional[Any] = None,
+    old_tag_to_idx: Optional[Dict[str, int]] = None,
+    new_tag_to_idx: Optional[Dict[str, int]] = None,
+) -> bool:
+    """Load optimizer state dict from ``<name>_optimizer.pt``.
+
+    When all three of ``model``, ``old_tag_to_idx``, ``new_tag_to_idx``
+    are supplied AND the vocabulary size differs, the head's per-parameter
+    state tensors (``exp_avg``, ``exp_avg_sq``, ``state1``, ``state2``)
+    are tag-name aligned to the new shape before loading.  Block-wise
+    quantisation metadata (``absmax*``, ``new_max*``) is reset and
+    recomputed by bnb on the next ``step()``.
+
+    Returns True if loaded.
+    """
     path = os.path.join(output_dir, f"{name}_optimizer.pt")
     if not os.path.isfile(path):
         return False
     state = torch.load(path, map_location="cpu", weights_only=True)
+
+    # Migrate head's per-parameter state when vocabulary changed.
+    # Failures here are non-fatal — fall through to the raw load (which
+    # may produce a temporary loss spike but not break training).  The
+    # head WEIGHTS themselves are already migrated upstream by
+    # ``_inherit_head``; this only concerns the optimizer momentum.
+    if (
+        model is not None
+        and old_tag_to_idx is not None
+        and new_tag_to_idx is not None
+        and len(old_tag_to_idx) != len(new_tag_to_idx)
+        and getattr(model, "head", None) is not None
+    ):
+        try:
+            from .optimizer_state_migrate import migrate_head_optimizer_state
+            head_bias = getattr(model.head, "bias", None)
+            summary = migrate_head_optimizer_state(
+                saved_state=state,
+                optimizer=optimizer,
+                head_weight=model.head.weight,
+                head_bias=head_bias,
+                old_tag_to_idx=old_tag_to_idx,
+                new_tag_to_idx=new_tag_to_idx,
+            )
+            print(
+                f"[TaggerTrainer] Optimizer head state migrated: "
+                f"old shape {summary['head_weight_shape_old']} -> "
+                f"new shape {summary['head_weight_shape_new']}, "
+                f"weight stats={summary['weight']}, bias stats={summary['bias']}"
+            )
+        except Exception as e:   # noqa: BLE001
+            print(
+                f"[TaggerTrainer] WARNING: head optimizer state migration failed: {e}; "
+                f"loading raw state (may produce loss spike). "
+                f"Head weights themselves are still re-aligned via _inherit_head."
+            )
+
     optimizer.load_state_dict(state)
     return True
 
@@ -689,9 +744,22 @@ class TaggerTrainer:
             best_threshold   = resume_state.get("best_threshold", 0.5)
             epoch_start_rng_for_resume = resume_state.get("epoch_start_rng")
 
-            # Restore optimizer state
+            # Restore optimizer state.  Pass the old/new vocab maps so that
+            # the head's per-parameter state can be tag-name aligned when the
+            # vocabulary size changed between the saved checkpoint and the
+            # current run (see _load_optimizer_state docstring).
             if resume_ckpt_name:
-                loaded = _load_optimizer_state(optimizer, self.output_dir, resume_ckpt_name)
+                loaded = _load_optimizer_state(
+                    optimizer,
+                    self.output_dir,
+                    resume_ckpt_name,
+                    model=model,
+                    old_tag_to_idx=(
+                        self.old_vocabulary.tag_to_idx
+                        if self.old_vocabulary is not None else None
+                    ),
+                    new_tag_to_idx=self.vocabulary.tag_to_idx,
+                )
                 if loaded:
                     print(f"[TaggerTrainer] Optimizer state restored from {resume_ckpt_name}")
 

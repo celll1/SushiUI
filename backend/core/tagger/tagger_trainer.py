@@ -573,6 +573,39 @@ class TaggerTrainer:
         scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler],
                                   milestones=[warmup_steps])
 
+        # ----------------------------------------------------------------
+        # Optional: build LR matrix for conditional inference
+        # ----------------------------------------------------------------
+        # This precomputes co-occurrence statistics so that the inference
+        # manager can apply context corrections.  We share the dataset's
+        # already-loaded sample list (no DB rescan).  Resume runs always
+        # regenerate so the matrix matches the current dataset configuration.
+        if bool(cfg.get("build_lr_matrix_on_start", False)):
+            try:
+                from core.tagger.lr_matrix_builder import build_lr_matrix
+                # Unwrap Subset wrappers (matches _compute_label_stats logic)
+                _ds = train_loader.dataset
+                while not hasattr(_ds, "_samples") and hasattr(_ds, "dataset"):
+                    _ds = _ds.dataset
+                _samples = [tags for _path, tags in _ds._samples]
+                lr_path = os.path.join(self.output_dir, "lr_matrix.npz")
+                print(f"[TaggerTrainer] === Phase: LR matrix ===")
+                self._emit("phase", {"phase": "lr_matrix", "message": "Building LR matrix..."})
+                build_lr_matrix(
+                    output_path=lr_path,
+                    samples=_samples,
+                    tag_to_idx=self.vocabulary.tag_to_idx,
+                    n_tags=self.vocabulary.num_tags,
+                    top_anchors=int(cfg.get("lr_top_anchors", 10000)),
+                    top_targets=int(cfg.get("lr_top_targets", 1000)),
+                    lr_threshold=float(cfg.get("lr_threshold", 1.0)),
+                    min_anchor_count=int(cfg.get("lr_min_anchor_count", 10)),
+                )
+                print(f"[TaggerTrainer] LR matrix saved -> {lr_path}")
+            except Exception as e:
+                # Don't fail training if LR matrix build fails; just log.
+                print(f"[TaggerTrainer] WARNING: LR matrix build failed: {e}")
+
         # Loss function
         loss_fn_name = cfg.get("loss_function", "asl")
         if loss_fn_name == "asl":

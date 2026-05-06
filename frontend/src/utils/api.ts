@@ -2195,6 +2195,12 @@ export interface TaggerTrainingRunCreateRequest {
   cls_dim?: number;
   hidden_proj_dim?: number;
   init_head_from?: string;
+  // LR matrix (conditional inference) — built once at training start when enabled.
+  build_lr_matrix_on_start?: boolean;
+  lr_top_anchors?: number;
+  lr_top_targets?: number;
+  lr_threshold?: number;
+  lr_min_anchor_count?: number;
 }
 
 export interface TaggerTrainingMetric {

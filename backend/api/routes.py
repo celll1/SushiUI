@@ -2574,6 +2574,11 @@ class SigLIP2LoadRequest(BaseModel):
 class SigLIP2PredictRequest(BaseModel):
     image_base64: str
     threshold: float = 0.5
+    # Conditional inference parameters
+    known_tags_pos: Optional[List[str]] = None
+    known_tags_neg: Optional[List[str]] = None
+    context_method: str = "none"      # "none" | "head_sim" | "lr_matrix"
+    context_lambda: float = 0.5
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str
@@ -2615,7 +2620,14 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
         import base64
         mgr = get_siglip2_inference_manager()
         image_bytes = base64.b64decode(request.image_base64)
-        result = mgr.predict(image_bytes=image_bytes, threshold=request.threshold)
+        result = mgr.predict(
+            image_bytes=image_bytes,
+            threshold=request.threshold,
+            known_tags_pos=request.known_tags_pos,
+            known_tags_neg=request.known_tags_neg,
+            context_method=request.context_method,
+            context_lambda=request.context_lambda,
+        )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

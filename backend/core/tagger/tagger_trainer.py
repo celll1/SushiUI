@@ -293,6 +293,47 @@ def _save_optimizer_state(optimizer: Any, output_dir: str, name: str) -> None:
     torch.save(optimizer.state_dict(), path)
 
 
+def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> None:
+    """Save a per-checkpoint vocabulary snapshot to ``<name>_vocabulary.json``.
+
+    This pinpoints the exact tag→idx mapping that was active when this
+    checkpoint was saved, so that resume / inference can re-align the head
+    (and optimizer state) without depending on the singleton ``vocabulary.json``
+    in *output_dir* — which is overwritten on every new run start.
+    """
+    try:
+        path = os.path.join(output_dir, f"{name}_vocabulary.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(vocabulary.to_dict(), f, ensure_ascii=False, indent=2)
+    except Exception as e:   # noqa: BLE001
+        print(f"[TaggerTrainer] WARNING: could not save vocabulary snapshot for {name}: {e}")
+
+
+def _resolve_checkpoint_vocab_path(output_dir: str, ckpt_name: str) -> Optional[str]:
+    """Resolve the vocabulary file for a specific checkpoint.
+
+    Priority:
+      1. Per-checkpoint snapshot ``<name>_vocabulary.json`` (preferred — frozen
+         at save time, immune to later overwrites).
+      2. Common ``vocabulary.json`` in ``output_dir`` (fallback — may have been
+         overwritten by a subsequent run; emits a WARNING).
+
+    Returns the resolved absolute path or ``None`` if neither file exists.
+    """
+    per_ckpt = os.path.join(output_dir, f"{ckpt_name}_vocabulary.json")
+    if os.path.isfile(per_ckpt):
+        return per_ckpt
+    common = os.path.join(output_dir, "vocabulary.json")
+    if os.path.isfile(common):
+        print(f"[TaggerTrainer] WARNING: per-checkpoint vocabulary "
+              f"{ckpt_name}_vocabulary.json not found; falling back to "
+              f"vocabulary.json. The fallback file may have been overwritten "
+              f"by a later run — tag→idx alignment for {ckpt_name} cannot be "
+              f"verified.")
+        return common
+    return None
+
+
 def _load_optimizer_state(
     optimizer: Any,
     output_dir: str,
@@ -305,11 +346,18 @@ def _load_optimizer_state(
     """Load optimizer state dict from ``<name>_optimizer.pt``.
 
     When all three of ``model``, ``old_tag_to_idx``, ``new_tag_to_idx``
-    are supplied AND the vocabulary size differs, the head's per-parameter
-    state tensors (``exp_avg``, ``exp_avg_sq``, ``state1``, ``state2``)
-    are tag-name aligned to the new shape before loading.  Block-wise
-    quantisation metadata (``absmax*``, ``new_max*``) is reset and
-    recomputed by bnb on the next ``step()``.
+    are supplied AND the vocabulary mapping differs (size OR content),
+    the head's per-parameter state tensors (``exp_avg``, ``exp_avg_sq``,
+    ``state1``, ``state2``) are tag-name aligned to the new shape before
+    loading.  Block-wise quantisation metadata (``absmax*``, ``new_max*``)
+    is reset and recomputed by bnb on the next ``step()``.
+
+    Note: a content mismatch with identical size occurs when alias edits
+    cause tag merges to be balanced by additions, or whenever vocabulary
+    construction is non-deterministic between runs.  Without migration,
+    PyTorch's ``load_state_dict`` would byte-copy old momentum into the
+    new param, scrambling per-tag history across unrelated tags — so the
+    check must be by content, not just shape.
 
     Returns True if loaded.
     """
@@ -323,11 +371,14 @@ def _load_optimizer_state(
     # may produce a temporary loss spike but not break training).  The
     # head WEIGHTS themselves are already migrated upstream by
     # ``_inherit_head``; this only concerns the optimizer momentum.
+    _vocab_changed = (
+        old_tag_to_idx is not None
+        and new_tag_to_idx is not None
+        and old_tag_to_idx != new_tag_to_idx   # dict equality: keys + values
+    )
     if (
         model is not None
-        and old_tag_to_idx is not None
-        and new_tag_to_idx is not None
-        and len(old_tag_to_idx) != len(new_tag_to_idx)
+        and _vocab_changed
         and getattr(model, "head", None) is not None
     ):
         try:
@@ -381,7 +432,7 @@ def _prune_step_checkpoints(output_dir: str, keep_last_n: int) -> None:
     to_delete = step_names[:-keep_last_n] if len(step_names) > keep_last_n else []
 
     for _, name in to_delete:
-        for suffix in (".safetensors", "_state.json", "_optimizer.pt"):
+        for suffix in (".safetensors", "_state.json", "_optimizer.pt", "_vocabulary.json"):
             path = os.path.join(output_dir, f"{name}{suffix}")
             if os.path.isfile(path):
                 os.remove(path)
@@ -543,20 +594,38 @@ class TaggerTrainer:
             if os.path.isfile(ckpt_path):
                 _saved = _load_safetensors_file(ckpt_path)
                 _ckpt_num_tags = _saved["head.weight"].shape[0] if "head.weight" in _saved else None
-                _vocab_mismatch = _ckpt_num_tags is not None and _ckpt_num_tags != self.vocabulary.num_tags
+                _new_tag_to_idx = self.vocabulary.tag_to_idx
+                _old_tag_to_idx = self.old_vocabulary.tag_to_idx if self.old_vocabulary else None
+
+                # Detect mismatch: size differs OR same size but tag→idx mapping differs.
+                # The latter happens when alias additions caused some tags to merge while
+                # others were added (net zero count change), or whenever the deterministic
+                # ordering of vocabulary construction shifted between runs.  A pure
+                # positional copy in that case scrambles head rows across unrelated tags,
+                # which is far worse than a clean reset.
+                _size_mismatch    = _ckpt_num_tags is not None and _ckpt_num_tags != self.vocabulary.num_tags
+                _mapping_mismatch = (
+                    _old_tag_to_idx is not None
+                    and _old_tag_to_idx != _new_tag_to_idx
+                )
+                _vocab_mismatch = _size_mismatch or _mapping_mismatch
 
                 if _vocab_mismatch:
-                    print(f"[TaggerTrainer] Vocabulary mismatch: checkpoint={_ckpt_num_tags}, "
-                          f"current={self.vocabulary.num_tags}. Aligning by tag name...")
-                    old_tag_to_idx = self.old_vocabulary.tag_to_idx if self.old_vocabulary else None
-                    if old_tag_to_idx is None:
-                        print("[TaggerTrainer] WARNING: old_vocabulary unavailable, falling back to positional copy")
+                    if _size_mismatch:
+                        print(f"[TaggerTrainer] Vocabulary size mismatch: checkpoint={_ckpt_num_tags}, "
+                              f"current={self.vocabulary.num_tags}. Aligning by tag name...")
+                    else:
+                        print(f"[TaggerTrainer] Vocabulary mapping mismatch (same size {self.vocabulary.num_tags} "
+                              f"but tag→idx differs). Aligning by tag name...")
+                    if _old_tag_to_idx is None:
+                        print("[TaggerTrainer] WARNING: old_vocabulary unavailable, "
+                              "_inherit_head will fall back to vocabulary.json next to checkpoint")
                     _inherit_head(
                         model=model,
                         checkpoint_path=ckpt_path,
                         new_num_tags=self.vocabulary.num_tags,
-                        new_vocab=self.vocabulary.tag_to_idx,
-                        old_tag_to_idx=old_tag_to_idx,
+                        new_vocab=_new_tag_to_idx,
+                        old_tag_to_idx=_old_tag_to_idx,
                     )
                     # LoRA weights are vocab-independent — copy them separately
                     if isinstance(model, SigLIP2TaggerLoRAModel):
@@ -567,6 +636,20 @@ class TaggerTrainer:
                             if f"{prefix}.lora_B" in _saved:
                                 lora_module.lora_B.data.copy_(_saved[f"{prefix}.lora_B"])
                         print(f"[TaggerTrainer] LoRA weights restored from {resume_ckpt_name}")
+                    # Non-head, non-LoRA weights (vision encoder, pooler, etc.) are vocab-
+                    # independent — copy them by name from the saved state.
+                    _vocab_independent: Dict[str, torch.Tensor] = {
+                        k: v for k, v in _saved.items()
+                        if not (k.startswith("head.") or k.startswith("lora."))
+                    }
+                    if _vocab_independent:
+                        _missing, _unexpected = model.load_state_dict(_vocab_independent, strict=False)
+                        # Remove head/LoRA from missing (they are loaded separately)
+                        _missing = [m for m in _missing if not (m.startswith("head.") or m.startswith("lora."))]
+                        if _missing:
+                            print(f"[TaggerTrainer] WARNING: missing keys during vocab-independent load: {_missing[:5]}{'...' if len(_missing) > 5 else ''}")
+                        if _unexpected:
+                            print(f"[TaggerTrainer] WARNING: unexpected keys during vocab-independent load: {_unexpected[:5]}{'...' if len(_unexpected) > 5 else ''}")
                 else:
                     model.load_weights_inplace(ckpt_path)
                     print(f"[TaggerTrainer] Loaded checkpoint weights from {resume_ckpt_name}")
@@ -927,7 +1010,7 @@ class TaggerTrainer:
                         "progress": global_step / total_steps,
                     })
 
-                # Step-based checkpoint (model + state + optimizer)
+                # Step-based checkpoint (model + state + optimizer + vocab)
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
                     ckpt_name = f"step_{global_step:06d}"
                     metadata  = self._make_metadata(epoch, global_step, best_f1, best_threshold)
@@ -939,6 +1022,7 @@ class TaggerTrainer:
                         epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+                    _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
                     if keep_last_n_checkpoints > 0:
                         _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
@@ -971,6 +1055,7 @@ class TaggerTrainer:
                     epoch_start_rng=epoch_start_rng,
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
+                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -980,6 +1065,7 @@ class TaggerTrainer:
                     epoch_start_rng=epoch_start_rng,
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
+                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1007,6 +1093,7 @@ class TaggerTrainer:
                     best_threshold = epoch_thr
                     metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
                     _save_model_checkpoint(model, self.output_dir, "best_f1", metadata, checkpoint_save_mode)
+                    _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "best_f1")
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
@@ -1016,11 +1103,13 @@ class TaggerTrainer:
             # at that time), so we omit it to keep the file compact.
             metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
             _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
+            _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
 
             # Epoch-based checkpoint (model only; training state = same as latest)
             if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
                 ckpt_name = f"epoch_{epoch:04d}"
                 _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
+                _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
                 self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
             _save_training_state(
                 self.output_dir, "latest",
@@ -1470,17 +1559,29 @@ def run_tagger_training(
                 except Exception as _e:
                     print(f"[TaggerTraining] WARNING: could not extract base model from HF repo: {_e}")
 
-        # Read the old vocabulary.json BEFORE TaggerTrainer overwrites it
+        # Resolve the OLD vocabulary belonging to *resume_ckpt_name*.
+        # Priority: per-checkpoint snapshot ``<name>_vocabulary.json`` > common
+        # ``vocabulary.json`` (latter is overwritten on every run start, so it
+        # may not match the checkpoint's tag→idx mapping).
         old_vocabulary: Optional[TagVocabulary] = None
         if resume_ckpt_name is not None:
-            old_vocab_path = os.path.join(output_dir, "vocabulary.json")
-            if os.path.isfile(old_vocab_path):
+            old_vocab_path = _resolve_checkpoint_vocab_path(output_dir, resume_ckpt_name)
+            if old_vocab_path is not None:
                 try:
                     with open(old_vocab_path, "r", encoding="utf-8") as _f:
                         old_vocabulary = TagVocabulary.from_dict(json.load(_f))
-                    print(f"[TaggerTraining] Loaded old vocabulary ({old_vocabulary.num_tags} tags) for head alignment")
+                    _src = (
+                        "per-checkpoint snapshot"
+                        if old_vocab_path.endswith(f"{resume_ckpt_name}_vocabulary.json")
+                        else "common vocabulary.json (FALLBACK)"
+                    )
+                    print(f"[TaggerTraining] Loaded old vocabulary ({old_vocabulary.num_tags} tags) "
+                          f"from {_src} for head alignment")
                 except Exception as _e:
                     print(f"[TaggerTraining] WARNING: could not load old vocabulary: {_e}")
+            else:
+                print(f"[TaggerTraining] WARNING: no vocabulary file found for {resume_ckpt_name}; "
+                      f"head alignment will be unable to detect mapping shifts (positional copy only)")
 
         # Run trainer
         trainer = TaggerTrainer(

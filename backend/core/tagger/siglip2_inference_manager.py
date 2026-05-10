@@ -104,6 +104,29 @@ class SigLIP2InferenceManager:
         vocab_path = vocab_path.strip().strip('"').strip("'")
         vision_encoder_path = vision_encoder_path.strip().strip('"').strip("'")
 
+        # Resolve vocabulary path with per-checkpoint priority.
+        # The per-checkpoint snapshot ``<ckpt_basename>_vocabulary.json`` is
+        # frozen at save time and is the authoritative source for tag→idx
+        # mapping.  The common ``vocabulary.json`` in the run directory is
+        # overwritten on every new run start, so it may not match the
+        # checkpoint we are loading — fall back only with a warning.
+        if not checkpoint_path.endswith(".onnx"):
+            _ckpt_dir  = os.path.dirname(os.path.abspath(checkpoint_path))
+            _ckpt_base = os.path.splitext(os.path.basename(checkpoint_path))[0]
+            _per_ckpt_vocab = os.path.join(_ckpt_dir, f"{_ckpt_base}_vocabulary.json")
+            if os.path.isfile(_per_ckpt_vocab):
+                if vocab_path and os.path.normpath(vocab_path) != os.path.normpath(_per_ckpt_vocab):
+                    print(f"[SigLIP2InferenceManager] Using per-checkpoint vocabulary "
+                          f"'{os.path.basename(_per_ckpt_vocab)}' (caller passed "
+                          f"'{os.path.basename(vocab_path)}')")
+                vocab_path = _per_ckpt_vocab
+            elif vocab_path and os.path.isfile(vocab_path):
+                print(f"[SigLIP2InferenceManager] WARNING: per-checkpoint vocabulary "
+                      f"'{_ckpt_base}_vocabulary.json' not found; falling back to "
+                      f"'{os.path.basename(vocab_path)}'. Tag→idx alignment with "
+                      f"the checkpoint head cannot be verified — predictions may "
+                      f"be wrong if vocabulary changed since the checkpoint was saved.")
+
         # 1. Load vocabulary (needed for all model types)
         with open(vocab_path, "r", encoding="utf-8") as fh:
             vocab = json.load(fh)

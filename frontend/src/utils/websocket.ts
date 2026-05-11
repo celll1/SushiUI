@@ -42,6 +42,7 @@ export interface TaggerMetrics {
   run_id: string;
   event: "step" | "epoch";
   step: number;
+  resume_seq?: number;
   epoch?: number;
   loss?: number;
   lr?: number;
@@ -122,6 +123,7 @@ class ProgressClient {
             run_id: data.run_id,
             event: data.event,
             step: data.step,
+            resume_seq: data.resume_seq,
             epoch: data.epoch,
             loss: data.loss,
             lr: data.lr,

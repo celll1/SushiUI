@@ -6,6 +6,8 @@ import type { TaggerTrainingMetric } from "@/utils/api";
 interface TaggerMetricChartProps {
   data: TaggerTrainingMetric[];
   valueKey: "loss" | "f1" | "threshold";
+  /** Color used when only one resume_seq is present (initial/legacy single-curve render).
+   *  Multi-series rendering cycles through the built-in palette below. */
   color: string;
   title: string;
   height?: number;
@@ -18,6 +20,23 @@ interface Point {
   step: number;
   value: number;
 }
+
+// Dark-background-friendly palette for per-resume curves.  Cycles when
+// resume_seq exceeds the palette length.
+const RESUME_PALETTE = [
+  "#60a5fa", // blue-400  — initial run
+  "#f97316", // orange-500
+  "#34d399", // emerald-400
+  "#f472b6", // pink-400
+  "#a78bfa", // violet-400
+  "#facc15", // yellow-400
+  "#22d3ee", // cyan-400
+];
+const colorForResume = (seq: number, fallback: string): string => {
+  if (seq === 0) return fallback;          // honour caller's color for the initial curve
+  return RESUME_PALETTE[seq % RESUME_PALETTE.length];
+};
+const labelForResume = (seq: number): string => (seq === 0 ? "Initial" : `Resume #${seq}`);
 
 // EMA smoothing
 function applySmoothing(points: Point[], factor: number): Point[] {
@@ -61,15 +80,39 @@ export default function TaggerMetricChart({
   defaultSmoothing = 0.9,
   yMinFloor = 0,
 }: TaggerMetricChartProps) {
-  // Extract valid (step, value) points
-  const points = useMemo<Point[]>(() => {
-    return data
-      .map((d) => ({ step: d.step, value: d[valueKey] as number | null }))
-      .filter((p): p is Point => p.value !== null && Number.isFinite(p.value));
+  // Group points by resume_seq so each resume becomes its own curve.
+  const groups = useMemo<Map<number, Point[]>>(() => {
+    const m = new Map<number, Point[]>();
+    for (const d of data) {
+      const v = d[valueKey] as number | null;
+      if (v === null || !Number.isFinite(v)) continue;
+      const seq = d.resume_seq ?? 0;
+      if (!m.has(seq)) m.set(seq, []);
+      m.get(seq)!.push({ step: d.step, value: v });
+    }
+    // Sort each group by step (data may arrive out of order across resumes)
+    for (const arr of m.values()) arr.sort((a, b) => a.step - b.step);
+    return m;
   }, [data, valueKey]);
 
-  const minStepAll = points.length > 0 ? points[0].step : 0;
-  const maxStepAll = points.length > 0 ? points[points.length - 1].step : 0;
+  // Resume seqs in render order (ascending so newer overlays older)
+  const groupKeys = useMemo(() => [...groups.keys()].sort((a, b) => a - b), [groups]);
+
+  // Latest resume (highest seq) — used as the source for tooltip nearest-point search
+  const latestSeq = groupKeys.length > 0 ? groupKeys[groupKeys.length - 1] : 0;
+
+  // Pooled range across all groups for x-axis bounds
+  const allPoints = useMemo(
+    () => groupKeys.flatMap((seq) => groups.get(seq) ?? []),
+    [groups, groupKeys]
+  );
+  const minStepAll = allPoints.length > 0
+    ? Math.min(...allPoints.map((p) => p.step))
+    : 0;
+  const maxStepAll = allPoints.length > 0
+    ? Math.max(...allPoints.map((p) => p.step))
+    : 0;
+  const totalPoints = allPoints.length;
 
   // x range (null = full)
   const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
@@ -181,23 +224,49 @@ export default function TaggerMetricChart({
     return () => cancelAnimationFrame(raf);
   }, [isBrushing]);
 
-  // Visible points after x-range filter
-  const visiblePoints = useMemo(() => {
-    if (!xRange) return points;
-    return points.filter((p) => p.step >= xRange.min && p.step <= xRange.max);
-  }, [points, xRange]);
+  // Per-group visible points after x-range filter
+  const visibleGroups = useMemo<Map<number, Point[]>>(() => {
+    const out = new Map<number, Point[]>();
+    for (const [seq, pts] of groups) {
+      const filtered = xRange
+        ? pts.filter((p) => p.step >= xRange.min && p.step <= xRange.max)
+        : pts;
+      out.set(seq, filtered);
+    }
+    return out;
+  }, [groups, xRange]);
 
-  // Smoothed series (full and visible)
-  const smoothedAll = useMemo(() => applySmoothing(points, smoothing), [points, smoothing]);
-  const smoothedVisible = useMemo(() => {
-    if (!xRange) return smoothedAll;
-    return smoothedAll.filter((p) => p.step >= xRange.min && p.step <= xRange.max);
-  }, [smoothedAll, xRange]);
+  // Per-group smoothed series (smoothing must be applied within each
+  // group; mixing across resumes would create jumps at the boundary).
+  const smoothedAllGroups = useMemo<Map<number, Point[]>>(() => {
+    const out = new Map<number, Point[]>();
+    for (const [seq, pts] of groups) out.set(seq, applySmoothing(pts, smoothing));
+    return out;
+  }, [groups, smoothing]);
+
+  const smoothedVisibleGroups = useMemo<Map<number, Point[]>>(() => {
+    if (!xRange) return smoothedAllGroups;
+    const out = new Map<number, Point[]>();
+    for (const [seq, pts] of smoothedAllGroups) {
+      out.set(seq, pts.filter((p) => p.step >= xRange.min && p.step <= xRange.max));
+    }
+    return out;
+  }, [smoothedAllGroups, xRange]);
+
+  // For Y-range pooling and tooltip search, flatten the visible points
+  const visiblePoints = useMemo(
+    () => [...visibleGroups.values()].flat(),
+    [visibleGroups]
+  );
+  const smoothedVisibleAllPoints = useMemo(
+    () => [...smoothedVisibleGroups.values()].flat(),
+    [smoothedVisibleGroups]
+  );
 
   // Layout
   const chartW = Math.max(50, width - PAD.left - PAD.right);
   const chartH = Math.max(20, height - PAD.top - PAD.bottom);
-  const hasEnoughData = points.length >= 2 && width > 0;
+  const hasEnoughData = totalPoints >= 2 && width > 0;
 
   // X scale
   const xMin = xRange ? xRange.min : minStepAll;
@@ -205,23 +274,21 @@ export default function TaggerMetricChart({
   const xSpan = xMax - xMin || 1;
   const toX = (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW;
 
-  // Y scale: from visible points (use smoothed values for range when smoothing > 0)
+  // Y scale: from visible points (use smoothed values for range when smoothing > 0).
+  // Pool across all groups so all curves share the same scale.
   const sourceForRange =
-    smoothing > 0 && smoothedVisible.length > 0
-      ? smoothedVisible.map((p) => p.value)
+    smoothing > 0 && smoothedVisibleAllPoints.length > 0
+      ? smoothedVisibleAllPoints.map((p) => p.value)
       : visiblePoints.map((p) => p.value);
   const { min: yMin, max: yMax } = robustYRange(sourceForRange, yMinFloor);
   const ySpan = yMax - yMin || 1;
   const toY = (v: number) => PAD.top + ((yMax - v) / ySpan) * chartH;
 
-  // Path builders
+  // Path builder
   const buildPath = (pts: Point[]) =>
     pts
       .map((p, i) => `${i === 0 ? "M" : "L"} ${toX(p.step).toFixed(1)} ${toY(p.value).toFixed(1)}`)
       .join(" ");
-
-  const rawPath = buildPath(visiblePoints);
-  const smoothPath = smoothing > 0 ? buildPath(smoothedVisible) : "";
 
   // Y-axis tick formatting
   const formatY = (v: number) => {
@@ -286,19 +353,27 @@ export default function TaggerMetricChart({
       setTooltip(null);
       return;
     }
-    // Nearest-point search (linear; visible point counts are small after API decimation)
+    // Nearest-point search confined to the latest resume's curve.
+    // Overlapping resumes share the X axis; the user almost always wants
+    // to read the current run's value, so we don't bounce between curves.
     const targetStep = pxToStep(x);
-    let best = visiblePoints[0];
-    let bestSmooth = smoothedVisible[0] ?? null;
-    let bestDist = Math.abs(best.step - targetStep);
-    for (let i = 1; i < visiblePoints.length; i++) {
-      const d = Math.abs(visiblePoints[i].step - targetStep);
+    const latestPts   = visibleGroups.get(latestSeq) ?? [];
+    const latestSmPts = smoothedVisibleGroups.get(latestSeq) ?? [];
+    if (latestPts.length === 0) {
+      setTooltip(null);
+      return;
+    }
+    let bestIdx = 0;
+    let bestDist = Math.abs(latestPts[0].step - targetStep);
+    for (let i = 1; i < latestPts.length; i++) {
+      const d = Math.abs(latestPts[i].step - targetStep);
       if (d < bestDist) {
         bestDist = d;
-        best = visiblePoints[i];
-        bestSmooth = smoothedVisible[i] ?? null;
+        bestIdx = i;
       }
     }
+    const best = latestPts[bestIdx];
+    const bestSmooth = latestSmPts[bestIdx] ?? null;
     setTooltip({
       px: toX(best.step),
       py: toY((bestSmooth ?? best).value),
@@ -390,7 +465,21 @@ export default function TaggerMetricChart({
             className="flex items-center justify-center text-gray-500 text-xs"
             style={{ height }}
           >
-            {points.length < 2 ? "Not enough data" : ""}
+            {totalPoints < 2 ? "Not enough data" : ""}
+          </div>
+        )}
+        {/* Per-resume legend (only when multiple curves are present) */}
+        {hasEnoughData && groups.size > 1 && (
+          <div className="absolute top-1 right-1 flex flex-wrap gap-1.5 text-[10px] bg-gray-900/80 px-1.5 py-0.5 rounded border border-gray-700 z-20 pointer-events-none">
+            {groupKeys.map((seq) => (
+              <div key={`lg-${seq}`} className="flex items-center gap-1">
+                <span
+                  className="inline-block w-2 h-2 rounded-sm"
+                  style={{ background: colorForResume(seq, color) }}
+                />
+                <span className="text-gray-300">{labelForResume(seq)}</span>
+              </div>
+            ))}
           </div>
         )}
         {hasEnoughData && (
@@ -444,37 +533,47 @@ export default function TaggerMetricChart({
             </text>
           ))}
 
-          {/* Raw line (faded if smoothing on) */}
-          {rawPath && (
-            <path
-              d={rawPath}
-              fill="none"
-              stroke={color}
-              strokeWidth={1.2}
-              opacity={smoothing > 0 ? 0.3 : 1}
-            />
-          )}
-          {/* Smoothed line */}
-          {smoothPath && (
-            <path d={smoothPath} fill="none" stroke={color} strokeWidth={1.6} />
-          )}
+          {/* Per-resume raw + smoothed lines (older first, newer on top) */}
+          {groupKeys.map((seq) => {
+            const seqColor = colorForResume(seq, color);
+            const visPts   = visibleGroups.get(seq) ?? [];
+            const visSm    = smoothedVisibleGroups.get(seq) ?? [];
+            const dRaw     = visPts.length > 0 ? buildPath(visPts) : "";
+            const dSm      = smoothing > 0 && visSm.length > 0 ? buildPath(visSm) : "";
+            return (
+              <g key={`series-${seq}`}>
+                {dRaw && (
+                  <path
+                    d={dRaw}
+                    fill="none"
+                    stroke={seqColor}
+                    strokeWidth={1.2}
+                    opacity={smoothing > 0 ? 0.3 : 1}
+                  />
+                )}
+                {dSm && (
+                  <path d={dSm} fill="none" stroke={seqColor} strokeWidth={1.6} />
+                )}
+              </g>
+            );
+          })}
 
-          {/* Brush preview */}
+          {/* Brush preview (uses latest-resume color for consistency) */}
           {brushRect && brushRect.w > 0 && (
             <rect
               x={brushRect.x}
               y={PAD.top}
               width={brushRect.w}
               height={chartH}
-              fill={color}
+              fill={colorForResume(latestSeq, color)}
               fillOpacity={0.15}
-              stroke={color}
+              stroke={colorForResume(latestSeq, color)}
               strokeWidth={0.8}
               strokeDasharray="3 2"
             />
           )}
 
-          {/* Tooltip marker */}
+          {/* Tooltip marker — pinned to the latest resume's curve */}
           {tooltip && !brush && (
             <>
               <line
@@ -486,7 +585,7 @@ export default function TaggerMetricChart({
                 strokeWidth={0.5}
                 strokeDasharray="2 2"
               />
-              <circle cx={tooltip.px} cy={tooltip.py} r={3} fill={color} />
+              <circle cx={tooltip.px} cy={tooltip.py} r={3} fill={colorForResume(latestSeq, color)} />
             </>
           )}
         </svg>
@@ -502,7 +601,14 @@ export default function TaggerMetricChart({
               zIndex: 10,
             }}
           >
-            <div className="text-gray-400">step {tooltip.step.toLocaleString()}</div>
+            <div className="text-gray-400">
+              step {tooltip.step.toLocaleString()}
+              {groups.size > 1 && (
+                <span className="ml-1" style={{ color: colorForResume(latestSeq, color) }}>
+                  · {labelForResume(latestSeq)}
+                </span>
+              )}
+            </div>
             <div>
               <span className="text-gray-500">{valueKey}: </span>
               {formatTooltip(tooltip.value)}

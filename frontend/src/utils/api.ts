@@ -2205,6 +2205,10 @@ export interface TaggerTrainingRunCreateRequest {
 
 export interface TaggerTrainingMetric {
   step: number;
+  // 0 = initial run, 1+ = nth resume of the same run.  Used by the loss
+  // chart to render each resume as its own colored curve.  Optional for
+  // backward compatibility with old payloads (treat as 0 when missing).
+  resume_seq?: number;
   epoch: number | null;
   loss: number | null;
   f1: number | null;

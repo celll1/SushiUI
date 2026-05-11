@@ -6910,7 +6910,31 @@ _tagger_training_threads: Dict[str, Any] = {}
 
 
 def _make_tagger_progress_callback(run_id: str, training_db_factory):
-    """Returns a callback that writes progress to DB."""
+    """Returns a callback that writes progress to DB.
+
+    Computes ``resume_seq`` once at factory-creation time: ``max(resume_seq)
+    + 1`` if any prior metrics exist for this ``run_id`` (= this is a
+    resume), else 0 (fresh run).  The value is captured in the closure
+    and stamped on every metric row + WS payload, so each resume
+    contributes a distinct curve in the loss chart.
+    """
+    from sqlalchemy import func as _sa_func
+    _db = training_db_factory()
+    try:
+        _max_seq = _db.query(
+            _sa_func.coalesce(_sa_func.max(TaggerTrainingMetrics.resume_seq), -1)
+        ).filter(TaggerTrainingMetrics.run_id == run_id).scalar()
+        resume_seq = int(_max_seq) + 1   # 0 for fresh; existing_max + 1 on resume
+    except Exception as e:
+        print(f"[TaggerCallback] Could not determine resume_seq for {run_id}: {e}; defaulting to 0")
+        resume_seq = 0
+    finally:
+        _db.close()
+    if resume_seq > 0:
+        print(f"[TaggerCallback] run_id={run_id}: resume_seq={resume_seq} (subsequent resume)")
+    else:
+        print(f"[TaggerCallback] run_id={run_id}: resume_seq=0 (initial run)")
+
     def callback(rid: str, event_type: str, data: dict):
         db = training_db_factory()
         try:
@@ -6920,6 +6944,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             def _upsert_metric(step: int, **kwargs):
                 existing = db.query(TaggerTrainingMetrics).filter(
                     TaggerTrainingMetrics.run_id == rid,
+                    TaggerTrainingMetrics.resume_seq == resume_seq,
                     TaggerTrainingMetrics.step == step,
                 ).first()
                 if existing:
@@ -6927,7 +6952,9 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                         if v is not None:
                             setattr(existing, k, v)
                 else:
-                    db.add(TaggerTrainingMetrics(run_id=rid, step=step, **kwargs))
+                    db.add(TaggerTrainingMetrics(
+                        run_id=rid, resume_seq=resume_seq, step=step, **kwargs
+                    ))
 
             if event_type == "step":
                 run.current_step  = data.get("step", run.current_step)
@@ -6950,6 +6977,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     loss=data.get("loss"),
                     lr=data.get("lr"),
                     progress=data.get("progress"),
+                    resume_seq=resume_seq,
                 )
             elif event_type == "epoch":
                 run.current_epoch = data.get("epoch", run.current_epoch)
@@ -6970,6 +6998,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     loss=data.get("loss"),
                     f1=data.get("f1"),
                     threshold=data.get("threshold"),
+                    resume_seq=resume_seq,
                 )
             elif event_type == "checkpoint":
                 if data.get("name") == "best_f1":
@@ -7255,17 +7284,32 @@ def get_tagger_training_metrics(
             TaggerTrainingMetrics.run_id == run_id,
             TaggerTrainingMetrics.step >= since_step,
         )
-        .order_by(TaggerTrainingMetrics.step)
+        .order_by(TaggerTrainingMetrics.resume_seq, TaggerTrainingMetrics.step)
         .all()
     )
-    data = [m.to_dict() for m in rows]
-    if max_points > 0 and len(data) > max_points:
-        step_size = max(1, len(data) // max_points)
-        indices = list(range(0, len(data), step_size))
-        # Always include the very last point so the chart reflects current state
-        if indices[-1] != len(data) - 1:
-            indices.append(len(data) - 1)
-        data = [data[i] for i in indices]
+    # Group by resume_seq so each curve gets its own decimation budget.
+    # Without this, sparse early resumes can get fully decimated away when a
+    # later resume has many more points.
+    from collections import defaultdict as _defaultdict
+    groups: Dict[int, List] = _defaultdict(list)
+    for m in rows:
+        groups[m.resume_seq].append(m)
+
+    data: List[dict] = []
+    if max_points > 0 and len(rows) > max_points:
+        per_group_max = max(50, max_points // max(1, len(groups)))
+        for seq in sorted(groups):
+            g = groups[seq]
+            if len(g) > per_group_max:
+                step_size = max(1, len(g) // per_group_max)
+                indices = list(range(0, len(g), step_size))
+                if indices[-1] != len(g) - 1:
+                    indices.append(len(g) - 1)
+                g = [g[i] for i in indices]
+            data.extend(m.to_dict() for m in g)
+    else:
+        for seq in sorted(groups):
+            data.extend(m.to_dict() for m in groups[seq])
     return data
 
 

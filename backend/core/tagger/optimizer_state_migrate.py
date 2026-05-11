@@ -12,17 +12,32 @@ weight and bias in the saved state dict so they line up with the new
 shape via tag-name alignment (mirroring ``_inherit_head``).
 
 Supported optimizers:
-  - AdamW (FP32)        — exp_avg, exp_avg_sq
-  - AdamW8bit (bnb)     — state1, state2, absmax1, absmax2, qmap1, qmap2, ...
-  - Lion (FP32)         — exp_avg
-  - Lion8bit (bnb)      — state1, absmax1, qmap1, ...
+  - AdamW (FP32)        — exp_avg, exp_avg_sq           : tag-name aligned
+  - Lion (FP32)         — exp_avg                       : tag-name aligned
+  - AdamW8bit (bnb)     — state1/2, absmax1/2, qmap1/2  : RESET (see below)
+  - Lion8bit (bnb)      — state1, absmax1, qmap1        : RESET (see below)
 
+8-bit optimizer handling
+------------------------
 8-bit ``state1``/``state2`` are uint8-quantised values whose dequantised
 form is ``qmap[state[i]] * absmax[block_idx]``.  When we re-arrange rows
 by tag name, the per-block ``absmax`` is no longer aligned with the new
-block boundaries, so we delete it and let bnb recompute on the next
-``step()``.  This produces a brief, small magnitude perturbation but
-preserves the directional information stored in ``state1``/``state2``.
+block boundaries — and bitsandbytes' ``init_state`` (which would compute
+fresh ``absmax``) is only invoked when ``"step"`` is absent from the
+state.  Mixing migrated ``state1`` with stale or missing ``absmax``
+causes ``KeyError: 'absmax1'`` in ``update_step`` (or, if we kept the
+old ``absmax``, silently corrupts the head momentum).
+
+We therefore **clear the entire param state for 8-bit head params** so
+bnb re-initialises everything from scratch on the next ``step()``.  This
+loses the head's accumulated momentum (a 1-step perturbation, comparable
+in size to the original vocab-mismatch spike we are trying to prevent),
+but keeps training stable and bit-correct.
+
+Properly re-quantising the migrated ``state1`` (dequantise via old
+``absmax``, reorder by tag name, re-quantise with new block-wise
+``absmax``) is feasible but adds significant complexity and depends on
+qmap monotonicity; left as a future enhancement.
 """
 
 from __future__ import annotations
@@ -65,6 +80,11 @@ def _find_param_index(
     return None
 
 
+def _is_8bit_state(state: Dict[str, Any]) -> bool:
+    """Detect bitsandbytes 8-bit optimizer state by characteristic keys."""
+    return any(k in state for k in ("state1", "state2", "absmax1", "absmax2"))
+
+
 def _migrate_one_param_state(
     state: Dict[str, Any],
     new_shape: Tuple[int, ...],
@@ -76,13 +96,40 @@ def _migrate_one_param_state(
     Returns
     -------
     dict
-        ``{"copied": int, "reset": int, "preserved": int}`` summary.
+        ``{"copied": int, "reset": int, "preserved": int, "mode": str}``
+        ``mode`` is ``"tag_aligned"`` for FP32 optimisers and
+        ``"reset_8bit"`` when the param's state was cleared to let bnb
+        re-initialise (see module docstring).
     """
-    stats: Dict[str, int] = {"copied": 0, "reset": 0, "preserved": 0}
+    stats: Dict[str, int] = {"copied": 0, "reset": 0, "preserved": 0,
+                             "mode": "tag_aligned"}
     if not new_shape:
         return stats
     new_num_tags = int(new_shape[0])
 
+    # 8-bit optimisers: clear the entire param state so that bnb's
+    # ``init_state`` fires on the next ``step()``.  Required because:
+    #   • migrating ``state1`` (uint8) by tag name shifts block boundaries,
+    #     so the stale ``absmax`` no longer dequantises correctly;
+    #   • bnb's init_state only fires when ``"step"`` is absent — keeping
+    #     ``state1`` + dropping ``absmax`` results in ``KeyError`` instead
+    #     of a re-initialisation.
+    # Same vocab size with identical tag→idx mapping won't reach this
+    # function (the caller guards on dict equality), but if state1 already
+    # matches the new shape we still skip the reset to avoid needless
+    # momentum loss on edge-case calls.
+    if _is_8bit_state(state):
+        s1 = state.get("state1")
+        if torch.is_tensor(s1) and tuple(s1.shape) == tuple(new_shape):
+            stats["mode"] = "no_op_8bit"
+            return stats
+        n_keys = sum(1 for k, v in state.items() if torch.is_tensor(v))
+        state.clear()
+        stats["reset"] = n_keys
+        stats["mode"] = "reset_8bit"
+        return stats
+
+    # FP32 optimisers (AdamW, Lion): tag-name aligned migration.
     for key in list(state.keys()):
         val = state[key]
 
@@ -94,7 +141,7 @@ def _migrate_one_param_state(
             continue
 
         if key in _BLOCK_WISE_KEYS:
-            # Block boundaries change with param numel; let bnb recompute.
+            # FP32 path: should never see block-wise keys, but defensive.
             del state[key]
             stats["reset"] += 1
             continue

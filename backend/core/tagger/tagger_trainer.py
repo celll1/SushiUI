@@ -392,12 +392,22 @@ def _load_optimizer_state(
                 old_tag_to_idx=old_tag_to_idx,
                 new_tag_to_idx=new_tag_to_idx,
             )
-            print(
-                f"[TaggerTrainer] Optimizer head state migrated: "
-                f"old shape {summary['head_weight_shape_old']} -> "
-                f"new shape {summary['head_weight_shape_new']}, "
-                f"weight stats={summary['weight']}, bias stats={summary['bias']}"
-            )
+            _mode = summary.get("weight", {}).get("mode", "?")
+            if _mode == "reset_8bit":
+                print(
+                    f"[TaggerTrainer] Optimizer head state RESET for 8-bit "
+                    f"({summary['head_weight_shape_old']} -> {summary['head_weight_shape_new']}). "
+                    f"bnb will re-initialise head momentum on the next step "
+                    f"(expect a small 1-step loss perturbation). "
+                    f"Vision encoder / LoRA / bias states are unaffected."
+                )
+            else:
+                print(
+                    f"[TaggerTrainer] Optimizer head state migrated: "
+                    f"old shape {summary['head_weight_shape_old']} -> "
+                    f"new shape {summary['head_weight_shape_new']}, "
+                    f"weight stats={summary['weight']}, bias stats={summary['bias']}"
+                )
         except Exception as e:   # noqa: BLE001
             print(
                 f"[TaggerTrainer] WARNING: head optimizer state migration failed: {e}; "

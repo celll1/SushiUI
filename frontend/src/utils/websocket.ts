@@ -130,6 +130,8 @@ class ProgressClient {
             progress: data.progress,
           };
           this.taggerMetricsCallbacks.forEach((cb) => cb(metrics));
+        } else if (data.type === "ping") {
+          // Heartbeat from server — keep NAT/VPN tunnel alive, no action needed
         } else if (data.type === "error") {
           console.error("[SSE] Error from server:", data.message);
         } else if (data.type === "closed") {

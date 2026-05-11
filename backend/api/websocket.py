@@ -131,13 +131,21 @@ class ConnectionManager:
         self._notify_sender()
 
     async def start_sender(self):
-        """Background task to drain the message queue — event-driven, no polling."""
+        """Background task to drain the message queue — event-driven, no polling.
+        Sends a heartbeat every 30 seconds when idle to keep NAT/VPN tunnels alive."""
         self._send_event = asyncio.Event()
         self._loop = asyncio.get_event_loop()
+        HEARTBEAT_INTERVAL = 30
         while True:
             try:
-                await self._send_event.wait()
-                self._send_event.clear()
+                try:
+                    await asyncio.wait_for(self._send_event.wait(), timeout=HEARTBEAT_INTERVAL)
+                    self._send_event.clear()
+                except asyncio.TimeoutError:
+                    # No messages for 30s — send heartbeat to keep NAT/VPN alive
+                    if self.active_connections:
+                        await self.broadcast(json.dumps({"type": "ping"}))
+                    continue
                 while not self.message_queue.empty():
                     try:
                         data = self.message_queue.get_nowait()

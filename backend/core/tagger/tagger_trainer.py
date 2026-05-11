@@ -1397,6 +1397,35 @@ def run_tagger_training(
             print(f"[TaggerTraining] Banned tags: {len(ban_tags)} entries")
         progress_callback and progress_callback(run_id, "vocab", {"num_tags": vocabulary.num_tags})
 
+        from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO
+
+        # Resume fallback: if we're trying to resume but the original local
+        # vision_encoder_path is gone (file moved / deleted across runs), use
+        # the self-contained ``base_model.safetensors`` snapshot in
+        # ``output_dir``.  Only triggers when:
+        #   - resume is requested
+        #   - output_dir/base_model.safetensors exists
+        #   - the configured vision_encoder_path is a local file that is
+        #     currently missing (HF repos are not handled here — they have
+        #     their own HF cache fallback)
+        if resume_from_checkpoint and output_dir:
+            _local_base = os.path.join(output_dir, "base_model.safetensors")
+            _orig_ve   = config.get("vision_encoder_path", "")
+            _orig_ve_s = _orig_ve.strip().strip('"').strip("'") if _orig_ve else ""
+            _orig_is_hf, _ = _is_hf_repo_or_url(_orig_ve_s)
+            if (
+                not _orig_is_hf
+                and os.path.isfile(_local_base)
+                and (not _orig_ve_s or not os.path.isfile(_orig_ve_s))
+            ):
+                print(
+                    f"[TaggerTraining] WARNING: original vision_encoder_path "
+                    f"'{_orig_ve_s or '<empty>'}' not accessible; falling back "
+                    f"to local '{_local_base}' for self-contained resume"
+                )
+                config = dict(config)
+                config["vision_encoder_path"] = _local_base
+
         # Resolve vision_encoder_repo FIRST — processor must match the vision encoder.
         # Priority (highest to lowest):
         #   1. Explicit HF repo ID / URL in vision_encoder_path
@@ -1404,7 +1433,6 @@ def run_tagger_training(
         #   3. _metadata.json alongside a local safetensors vision_encoder_path
         #   4. Default (patch16-naflex)
         _ve_path = config.get("vision_encoder_path", "")
-        from core.tagger.siglip2_tagger_model import _is_hf_repo_or_url, SIGLIP2_DEFAULT_REPO_ID as _DEFAULT_REPO
         _is_hf_ve, _resolved_ve = _is_hf_repo_or_url(_ve_path)
         if _is_hf_ve or "vision_encoder_repo" not in config:
             config = dict(config)  # shallow copy — do not mutate caller's dict

@@ -155,7 +155,7 @@ def _cs_asl_precompute(
 
 def _cs_asl_core(
     x: torch.Tensor,            # [B, N] logits
-    y: torch.Tensor,            # [B, N] targets {0, 1}
+    y: torch.Tensor,            # [B, N] targets {0, 1} — HARD LABELS ONLY
     a_pos: torch.Tensor,        # [N]    (1-π)^ρ
     a_neg: torch.Tensor,        # [N]    π^ρ
     gamma_pos: torch.Tensor,    # [N]    γ₀·φ^β
@@ -168,6 +168,12 @@ def _cs_asl_core(
 ) -> torch.Tensor:
     """Compute CS-ASL loss elements [B, N] (no reduction, no masking).
 
+    Uses the ASL-style masking trick to fuse the positive and negative
+    paths into a single ``pow()`` and a single ``log()`` — halving the
+    backward cost of these two ops vs the naive separate-then-combine
+    implementation.  This is bit-exact equivalent under hard labels
+    (y ∈ {0, 1}); it is NOT mathematically equivalent for soft y.
+
     All per-tag tensors are passed in pre-computed — see
     ``_cs_asl_precompute``.
 
@@ -177,31 +183,36 @@ def _cs_asl_core(
         0.0 = disabled.
     """
     p = torch.sigmoid(x)
+    anti_y = 1.0 - y
 
-    # Shifted probabilities (both sides clamped to prevent log(0) → -inf under AMP/fp16)
-    p_pos = (p + m_pos).clamp(min=eps, max=1.0 - eps)   # [B, N]
-    p_neg = (p - m_neg).clamp(min=eps, max=1.0 - eps)   # [B, N]
+    # Same clamp semantics as the original separated implementation:
+    #   pos focal base: (1-p).clamp(min=eps)              — no max bound
+    #   neg focal base: (p - m_neg).clamp(min=eps, max=1-eps)
+    one_minus_p = (1.0 - p).clamp(min=eps)
+    p_neg       = (p - m_neg).clamp(min=eps, max=1.0 - eps)
 
-    # Focal weights (optionally stop gradient)
-    # Clamp (1-p) from below: when gamma_pos ∈ (0,1) and bf16 rounds 1-p to 0,
-    # the gradient gamma_pos*(1-p)^(gamma_pos-1) = 0^(negative) = inf → NaN.
-    one_minus_p = (1.0 - p).clamp(min=eps)   # [B, N]
+    # Masked sum: at y=1 positions selects one_minus_p, at y=0 selects p_neg.
+    # Both inputs are [B, N]; gamma_pos / gamma_neg broadcast from [N].
+    focal_base = y * one_minus_p + anti_y * p_neg
+    focal_exp  = y * gamma_pos + anti_y * gamma_neg
+
     if disable_grad_focal:
         with torch.no_grad():
-            w_pos = one_minus_p.pow(gamma_pos)   # [B, N]
-            w_neg = p_neg.pow(gamma_neg)          # [B, N]
+            focal_w = focal_base.pow(focal_exp)   # single pow (vs 2 in unfused)
     else:
-        w_pos = one_minus_p.pow(gamma_pos)
-        w_neg = p_neg.pow(gamma_neg)
+        focal_w = focal_base.pow(focal_exp)
 
-    loss_pos = a_pos * w_pos * p_pos.log()   # [B, N]
-
-    # Negative loss: shift (1-p_neg) up by clip to cap max loss at -log(clip),
-    # preventing high-confidence wrong negatives from dominating (same as ASL).
+    # Log argument:
+    #   y=1: log(p + m_pos)         = log(p_pos)
+    #   y=0: log(1 - p_neg + clip)  = log(neg_prob)
+    p_pos    = (p + m_pos).clamp(min=eps, max=1.0 - eps)
     neg_prob = (1.0 - p_neg + clip).clamp(min=eps, max=1.0)
-    loss_neg = a_neg * w_neg * neg_prob.log()              # [B, N]
+    log_arg  = y * p_pos + anti_y * neg_prob
 
-    return -(y * loss_pos + (1.0 - y) * loss_neg)           # [B, N]
+    # Effective class weight
+    a_eff = y * a_pos + anti_y * a_neg
+
+    return -(a_eff * focal_w * log_arg.log())              # [B, N]
 
 
 # ---------------------------------------------------------------------------

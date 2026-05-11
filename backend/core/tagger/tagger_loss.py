@@ -123,19 +123,53 @@ class AsymmetricLossOptimized(nn.Module):
 # Shared helper: CS-ASL per-element core
 # ---------------------------------------------------------------------------
 
-def _cs_asl_core(
-    x: torch.Tensor,        # [B, N] logits
-    y: torch.Tensor,        # [B, N] targets {0,1}
-    pi: torch.Tensor,       # [N]   positive rate (buffer, detached)
+def _cs_asl_precompute(
+    pi: torch.Tensor,
     gamma0: float,
     m0: float,
     rho: float,
     beta: float,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+           torch.Tensor, torch.Tensor]:
+    """Precompute the per-tag tensors used by ``_cs_asl_core``.
+
+    All outputs are functions of ``pi`` and static hyperparameters only,
+    so they can be cached once at ``__init__`` and re-used on every
+    forward — saving ~9 [N]-sized ops per step on top of the autograd
+    bookkeeping for those redundant nodes.
+
+    Returns
+    -------
+    (a_pos, a_neg, gamma_pos, gamma_neg, m_pos, m_neg) — each shape [N].
+    """
+    a_pos = (1.0 - pi).pow(rho)              # [N]   (1-π)^ρ
+    a_neg = pi.pow(rho)                      # [N]    π^ρ
+    phi = (2.0 * pi - 1.0).clamp(min=0.0)    # [N]  > 0 when π > 0.5
+    psi = (1.0 - 2.0 * pi).clamp(min=0.0)    # [N]  > 0 when π < 0.5
+    gamma_pos = gamma0 * phi.pow(beta)       # [N]   γ₀·φ^β
+    gamma_neg = gamma0 * psi.pow(beta)       # [N]   γ₀·ψ^β
+    m_pos = m0 * phi                         # [N]    m₀·φ
+    m_neg = m0 * psi                         # [N]    m₀·ψ
+    return a_pos, a_neg, gamma_pos, gamma_neg, m_pos, m_neg
+
+
+def _cs_asl_core(
+    x: torch.Tensor,            # [B, N] logits
+    y: torch.Tensor,            # [B, N] targets {0, 1}
+    a_pos: torch.Tensor,        # [N]    (1-π)^ρ
+    a_neg: torch.Tensor,        # [N]    π^ρ
+    gamma_pos: torch.Tensor,    # [N]    γ₀·φ^β
+    gamma_neg: torch.Tensor,    # [N]    γ₀·ψ^β
+    m_pos: torch.Tensor,        # [N]    m₀·φ
+    m_neg: torch.Tensor,        # [N]    m₀·ψ
     eps: float,
     disable_grad_focal: bool,
     clip: float = 0.0,
 ) -> torch.Tensor:
     """Compute CS-ASL loss elements [B, N] (no reduction, no masking).
+
+    All per-tag tensors are passed in pre-computed — see
+    ``_cs_asl_precompute``.
 
     clip : float
         Same semantics as ASL's clip parameter: shift (1 - p_neg) up by `clip`
@@ -143,19 +177,6 @@ def _cs_asl_core(
         0.0 = disabled.
     """
     p = torch.sigmoid(x)
-
-    # Class weights: α+ = (1-π)^ρ,  α- = π^ρ
-    a_pos = (1.0 - pi).pow(rho)   # [N]
-    a_neg = pi.pow(rho)            # [N]
-
-    # Asymmetry indicators
-    phi = (2.0 * pi - 1.0).clamp(min=0.0)   # > 0 when π > 0.5
-    psi = (1.0 - 2.0 * pi).clamp(min=0.0)   # > 0 when π < 0.5
-
-    gamma_pos = gamma0 * phi.pow(beta)   # [N]
-    gamma_neg = gamma0 * psi.pow(beta)   # [N]
-    m_pos = m0 * phi                     # [N]
-    m_neg = m0 * psi                     # [N]
 
     # Shifted probabilities (both sides clamped to prevent log(0) → -inf under AMP/fp16)
     p_pos = (p + m_pos).clamp(min=eps, max=1.0 - eps)   # [B, N]
@@ -226,7 +247,18 @@ class CSASL(nn.Module):
         reduction: str = "mean",
     ) -> None:
         super().__init__()
-        self.register_buffer("pi", pi.detach().clamp(eps, 1.0 - eps))
+        _pi = pi.detach().clamp(eps, 1.0 - eps)
+        self.register_buffer("pi", _pi)
+        # Precompute per-tag tensors (depend only on pi and static hparams).
+        a_pos, a_neg, g_pos, g_neg, mp, mn = _cs_asl_precompute(
+            _pi, gamma0, m0, rho, beta,
+        )
+        self.register_buffer("a_pos",     a_pos)
+        self.register_buffer("a_neg",     a_neg)
+        self.register_buffer("gamma_pos", g_pos)
+        self.register_buffer("gamma_neg", g_neg)
+        self.register_buffer("m_pos",     mp)
+        self.register_buffer("m_neg",     mn)
         self.gamma0 = gamma0
         self.m0 = m0
         self.rho = rho
@@ -243,9 +275,10 @@ class CSASL(nn.Module):
         loss_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         loss = _cs_asl_core(
-            x, y, self.pi,
-            self.gamma0, self.m0, self.rho, self.beta, self.eps,
-            self.disable_torch_grad_focal_loss, self.clip,
+            x, y,
+            self.a_pos, self.a_neg, self.gamma_pos, self.gamma_neg,
+            self.m_pos, self.m_neg,
+            self.eps, self.disable_torch_grad_focal_loss, self.clip,
         )   # [B, N]
 
         if loss_mask is not None:
@@ -332,6 +365,16 @@ class HCSASL(nn.Module):
             "u",
             _compute_label_weights(_pi, N_pos.detach(), N_neg.detach(), label_weight, eps),
         )
+        # Precompute per-tag tensors (depend only on pi and static hparams).
+        a_pos, a_neg, g_pos, g_neg, mp, mn = _cs_asl_precompute(
+            _pi, gamma0, m0, rho, beta,
+        )
+        self.register_buffer("a_pos",     a_pos)
+        self.register_buffer("a_neg",     a_neg)
+        self.register_buffer("gamma_pos", g_pos)
+        self.register_buffer("gamma_neg", g_neg)
+        self.register_buffer("m_pos",     mp)
+        self.register_buffer("m_neg",     mn)
         self.gamma0 = gamma0
         self.m0 = m0
         self.rho = rho
@@ -348,9 +391,10 @@ class HCSASL(nn.Module):
         loss_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         loss = _cs_asl_core(
-            x, y, self.pi,
-            self.gamma0, self.m0, self.rho, self.beta, self.eps,
-            self.disable_torch_grad_focal_loss, self.clip,
+            x, y,
+            self.a_pos, self.a_neg, self.gamma_pos, self.gamma_neg,
+            self.m_pos, self.m_neg,
+            self.eps, self.disable_torch_grad_focal_loss, self.clip,
         )   # [B, N]
 
         if loss_mask is not None:
@@ -404,6 +448,17 @@ class LASASL(nn.Module):
         tau = (_pi / (1.0 - _pi)).log()   # logit prior [N]
         self.register_buffer("pi", _pi)
         self.register_buffer("tau", tau)
+        # rho=0 → α_± = 1 (no class weighting; adjustment absorbed into logit).
+        # Precompute per-tag tensors (a_pos / a_neg are all-ones for rho=0).
+        a_pos, a_neg, g_pos, g_neg, mp, mn = _cs_asl_precompute(
+            _pi, gamma0, m0, rho=0.0, beta=beta,
+        )
+        self.register_buffer("a_pos",     a_pos)
+        self.register_buffer("a_neg",     a_neg)
+        self.register_buffer("gamma_pos", g_pos)
+        self.register_buffer("gamma_neg", g_neg)
+        self.register_buffer("m_pos",     mp)
+        self.register_buffer("m_neg",     mn)
         self.gamma0 = gamma0
         self.m0 = m0
         self.beta = beta
@@ -421,11 +476,11 @@ class LASASL(nn.Module):
         # Logit adjustment: shift logits by prior before sigmoid
         x_adj = x - self.tau   # [B, N]
 
-        # rho=0 → α_± = 1 (no class weighting; adjustment absorbed into logit)
         loss = _cs_asl_core(
-            x_adj, y, self.pi,
-            self.gamma0, self.m0, rho=0.0, beta=self.beta, eps=self.eps,
-            disable_grad_focal=self.disable_torch_grad_focal_loss, clip=self.clip,
+            x_adj, y,
+            self.a_pos, self.a_neg, self.gamma_pos, self.gamma_neg,
+            self.m_pos, self.m_neg,
+            self.eps, self.disable_torch_grad_focal_loss, self.clip,
         )   # [B, N]
 
         if loss_mask is not None:

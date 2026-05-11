@@ -848,11 +848,18 @@ class TaggerTrainingRun(TrainingBase):
 
 
 class TaggerTrainingMetrics(TrainingBase):
-    """Per-step metrics for tagger training runs."""
+    """Per-step metrics for tagger training runs.
+
+    ``resume_seq`` distinguishes successive resumes of the same run: 0 for
+    the initial run, 1 for the first resume, etc.  Together with ``step``
+    it forms the uniqueness key, so overlapping step ranges across resumes
+    are preserved as separate rows (and rendered as separate curves).
+    """
     __tablename__ = "tagger_training_metrics"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String, nullable=False, index=True)
+    resume_seq = Column(Integer, nullable=False, default=0, server_default="0")
     step = Column(Integer, nullable=False)
     epoch = Column(Integer, nullable=True)
     loss = Column(Float, nullable=True)
@@ -862,13 +869,14 @@ class TaggerTrainingMetrics(TrainingBase):
     timestamp = Column(DateTime, default=get_local_now)
 
     __table_args__ = (
-        UniqueConstraint("run_id", "step", name="uq_tagger_run_step"),
-        Index("idx_tagger_run_step", "run_id", "step"),
+        UniqueConstraint("run_id", "resume_seq", "step", name="uq_tagger_run_resume_step"),
+        Index("idx_tagger_run_resume_step", "run_id", "resume_seq", "step"),
     )
 
     def to_dict(self):
         return {
             "step": self.step,
+            "resume_seq": self.resume_seq,
             "epoch": self.epoch,
             "loss": self.loss,
             "f1": self.f1,

@@ -100,6 +100,11 @@ def auto_migrate(engine, base, db_name="database"):
                     except OperationalError as e:
                         print(f"[AutoMigrate] {db_name}: failed to add {table_name}.{col_name}: {e}")
 
+                # Per-table index reconciliation.  auto_migrate only adds
+                # columns; constraint / index changes need explicit DROP +
+                # CREATE.  Each statement is idempotent so reruns are no-ops.
+                _reconcile_indices(conn, db_name, table_name, applied)
+
         return applied
 
     except Exception as e:
@@ -107,6 +112,63 @@ def auto_migrate(engine, base, db_name="database"):
         import traceback
         traceback.print_exc()
         return []
+
+
+def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> None:
+    """Drop legacy indices and create the new ones for tables that changed
+    their UNIQUE / Index definitions in the model.
+
+    SQLite stores ``UniqueConstraint(..., name="X")`` as an index of that
+    name (visible in ``sqlite_master`` with ``sql LIKE 'CREATE UNIQUE INDEX%'``),
+    so we can swap them out via DROP / CREATE INDEX without rebuilding the
+    table.  All statements are idempotent.
+    """
+    # Map of table → (legacy_index_names_to_drop, new_index_sql_to_create)
+    plan = {
+        "tagger_training_metrics": (
+            ("uq_tagger_run_step", "idx_tagger_run_step"),
+            (
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_tagger_run_resume_step "
+                "ON tagger_training_metrics(run_id, resume_seq, step)",
+                "CREATE INDEX IF NOT EXISTS idx_tagger_run_resume_step "
+                "ON tagger_training_metrics(run_id, resume_seq, step)",
+            ),
+        ),
+    }
+    if table_name not in plan:
+        return
+    legacy_names, create_sqls = plan[table_name]
+
+    rows = conn.execute(text(
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=:t"
+    ), {"t": table_name}).fetchall()
+    existing = {r[0] for r in rows}
+
+    changed = False
+    for old in legacy_names:
+        if old in existing:
+            try:
+                conn.execute(text(f"DROP INDEX {old}"))
+                changed = True
+            except OperationalError:
+                pass
+
+    for sql in create_sqls:
+        # Extract index name from "CREATE [UNIQUE] INDEX IF NOT EXISTS <name> ..."
+        idx_name = sql.split("IF NOT EXISTS")[1].split("ON")[0].strip()
+        if idx_name in existing and not changed:
+            # Already present from a prior run; skip silently.
+            continue
+        try:
+            conn.execute(text(sql))
+            changed = True
+        except OperationalError as e:
+            print(f"[AutoMigrate] {db_name}: failed to create index for {table_name}: {e}")
+
+    if changed:
+        conn.commit()
+        print(f"[AutoMigrate] {db_name}: rebuilt {table_name} indices")
+        applied.append(f"{table_name}.indices")
 
 
 def auto_migrate_all_databases():

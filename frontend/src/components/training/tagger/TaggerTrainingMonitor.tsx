@@ -69,6 +69,7 @@ export default function TaggerTrainingMonitor({
 
       const item: TaggerTrainingMetric = {
         step: m.step,
+        resume_seq: m.resume_seq ?? 0,
         epoch: m.epoch ?? null,
         loss: m.loss ?? null,
         f1: m.f1 ?? null,
@@ -86,19 +87,44 @@ export default function TaggerTrainingMonitor({
           if (incoming.length === 0) return;
           setMetrics(prev => {
             const MAX_POINTS = 2000;
-            const map = new Map(prev.map(r => [r.step, r]));
+            // Compound key (resume_seq:step) so different resumes coexist
+            const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
+            const map = new Map<string, TaggerTrainingMetric>(prev.map(r => [keyOf(r), r]));
             for (const r of incoming) {
-              const existing = map.get(r.step);
+              const k = keyOf(r);
+              const existing = map.get(k);
               // merge: epoch events carry f1/threshold, step events carry loss/lr
-              map.set(r.step, existing ? { ...existing, ...Object.fromEntries(
+              map.set(k, existing ? { ...existing, ...Object.fromEntries(
                 Object.entries(r).filter(([, v]) => v !== null && v !== undefined)
               ) } : r);
             }
-            let sorted = Array.from(map.values()).sort((a, b) => a.step - b.step);
-            // Uniform decimation to keep memory bounded
+            let sorted = Array.from(map.values()).sort(
+              (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step
+            );
+            // Per-group decimation so sparse early resumes survive
             if (sorted.length > MAX_POINTS) {
-              const step = Math.ceil(sorted.length / MAX_POINTS);
-              sorted = sorted.filter((_, i) => i % step === 0 || i === sorted.length - 1);
+              const groups = new Map<number, TaggerTrainingMetric[]>();
+              for (const r of sorted) {
+                const seq = r.resume_seq ?? 0;
+                if (!groups.has(seq)) groups.set(seq, []);
+                groups.get(seq)!.push(r);
+              }
+              const perGroup = Math.max(50, Math.floor(MAX_POINTS / groups.size));
+              const out: TaggerTrainingMetric[] = [];
+              for (const seq of [...groups.keys()].sort((a, b) => a - b)) {
+                const g = groups.get(seq)!;
+                if (g.length > perGroup) {
+                  const stride = Math.ceil(g.length / perGroup);
+                  const decimated = g.filter((_, i) => i % stride === 0);
+                  if (decimated[decimated.length - 1] !== g[g.length - 1]) {
+                    decimated.push(g[g.length - 1]);
+                  }
+                  out.push(...decimated);
+                } else {
+                  out.push(...g);
+                }
+              }
+              sorted = out;
             }
             return sorted;
           });

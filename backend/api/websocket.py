@@ -108,13 +108,24 @@ class ConnectionManager:
         f1: float = None,
         threshold: float = None,
         progress: float = None,
+        resume_seq: int = 0,
     ):
         """Send tagger training metrics to all connected clients.
 
         Called from tagger progress callback after each step/epoch.
         Thread-safe: uses message queue.
+
+        ``resume_seq`` identifies which resume of the run this metric
+        belongs to (0 = initial, 1+ = subsequent resumes), so the chart
+        can render each resume as its own colored curve.
         """
-        data = {"type": "tagger_metrics", "run_id": run_id, "event": event_type, "step": step}
+        data = {
+            "type": "tagger_metrics",
+            "run_id": run_id,
+            "event": event_type,
+            "step": step,
+            "resume_seq": resume_seq,
+        }
         if epoch is not None:
             data["epoch"] = epoch
         if loss is not None:

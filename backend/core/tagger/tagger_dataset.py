@@ -92,15 +92,30 @@ class TaggerDataset(Dataset):
             )
             print(f"[TaggerDataset]   {len(items)} items loaded")
 
-            # Collect item ids that have a valid image path
+            # Collect item ids that have a valid image path.
+            # Record a small sample of skipped paths (capped to keep the log readable).
             item_path_map: Dict[int, str] = {}
+            _MAX_SHOW = 5
+            skipped_examples: List[str] = []
+            skipped_no_path = 0
             for item in tqdm(items, desc=f"  Checking files (dataset {dataset_id})", unit="item", leave=False):
                 if item.image_path and os.path.isfile(item.image_path):
                     item_path_map[item.id] = item.image_path
+                else:
+                    if not item.image_path:
+                        skipped_no_path += 1
+                        if len(skipped_examples) < _MAX_SHOW:
+                            skipped_examples.append(f"<item_id={item.id} (no image_path)>")
+                    elif len(skipped_examples) < _MAX_SHOW:
+                        skipped_examples.append(item.image_path)
             valid_item_ids = list(item_path_map.keys())
             skipped = len(items) - len(valid_item_ids)
             if skipped:
                 print(f"[TaggerDataset]   {skipped} items skipped (missing image files)")
+                for ex in skipped_examples:
+                    print(f"[TaggerDataset]     - {ex}")
+                if skipped > _MAX_SHOW:
+                    print(f"[TaggerDataset]     ... and {skipped - _MAX_SHOW} more")
 
             if not valid_item_ids:
                 continue

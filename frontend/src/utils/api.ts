@@ -2128,6 +2128,7 @@ export interface TaggerTrainingRun {
   progress: number;
   current_epoch: number;
   current_step: number;
+  total_steps?: number | null;
   training_method: "full" | "lora";
   vision_encoder_path: string;
   dataset_configs: string[];
@@ -2144,6 +2145,9 @@ export interface TaggerTrainingRun {
   status_message: string | null;
   created_at: string;
   updated_at: string;
+  started_at?: string | null;        // when the very first run started
+  last_resumed_at?: string | null;   // when this session resumed (null if no resume)
+  completed_at?: string | null;
 }
 
 export interface TaggerDatasetConfig {

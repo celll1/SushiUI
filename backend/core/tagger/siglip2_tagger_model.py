@@ -767,6 +767,29 @@ class SigLIP2TaggerLoRAModel(nn.Module):
 # Factory
 # ------------------------------------------------------------------
 
+def _block_copy(dst: torch.Tensor, src: torch.Tensor) -> str:
+    """Copy ``src`` into ``dst``'s top-left corner, axis-by-axis.
+
+    For each dimension copies ``min(dst.shape[d], src.shape[d])`` elements,
+    leaving the rest of ``dst`` untouched (preserves any fresh-init values).
+
+    Returns one of:
+      - ``"exact"``                : shapes matched, full copy done
+      - ``"partial <src>→<dst>"``  : block-copy applied to the overlapping region
+      - ``"skipped <reason>"``     : ndim mismatch — nothing copied
+    """
+    if src.shape == dst.shape:
+        with torch.no_grad():
+            dst.copy_(src)
+        return "exact"
+    if src.ndim != dst.ndim:
+        return f"skipped (ndim {src.ndim}→{dst.ndim})"
+    slices = tuple(slice(0, min(d, s)) for d, s in zip(dst.shape, src.shape))
+    with torch.no_grad():
+        dst[slices] = src[slices]
+    return f"partial {tuple(src.shape)}→{tuple(dst.shape)}"
+
+
 def _inherit_head(
     model: nn.Module,
     checkpoint_path: str,
@@ -788,6 +811,18 @@ def _inherit_head(
     Tags present in the new vocabulary but absent from the old one are
     zero-initialized (new tags to learn from scratch).
 
+    Hidden dim change (cls_dim)
+    ---------------------------
+    The new head is constructed with the *model's* current ``head.in_features``
+    (i.e. the new cls_dim from this run's config), not the checkpoint's.  Row
+    copies are block-copied with ``[:min(hidden_old, hidden_new)]``:
+
+      - hidden_new > hidden_old : extra columns stay zero (combined with the
+        block-copied custom_pooler, the extra pool dims contribute nothing to
+        logits at step 0 — initial predictions ≈ old model).
+      - hidden_new < hidden_old : the trailing hidden_old−hidden_new columns
+        of every row are dropped (truncation, per user spec).
+
     If no vocabulary.json is found next to the checkpoint, falls back to
     positional copy (old row i → new row i, up to min(old, new) rows) with a
     warning.  This handles the exact-same-vocabulary case safely.
@@ -799,12 +834,18 @@ def _inherit_head(
         print(f"[TaggerModel] _inherit_head: no head.weight in {checkpoint_path}, skipping")
         return
 
-    src_w = saved["head.weight"].float()  # [old_num_tags, hidden]
+    src_w = saved["head.weight"].float()  # [old_num_tags, hidden_old]
     src_b = saved["head.bias"].float()    # [old_num_tags]
-    hidden = src_w.shape[1]
+    hidden_old = src_w.shape[1]
 
-    # Build new head (zero-initialized) on CPU
-    new_head = nn.Linear(hidden, new_num_tags)
+    # Hidden dim of the destination must come from the model that was just
+    # built (model.head is sized for the new cls_dim from this run's config),
+    # not from the checkpoint — otherwise a cls_dim change would silently
+    # produce a head whose in_features mismatches custom_pooler's output.
+    hidden_new = model.head.weight.shape[1]
+    min_hidden = min(hidden_old, hidden_new)
+
+    new_head = nn.Linear(hidden_new, new_num_tags)
     nn.init.zeros_(new_head.weight)
     nn.init.zeros_(new_head.bias)
 
@@ -834,8 +875,8 @@ def _inherit_head(
             if old_idx >= src_w.shape[0]:
                 skipped += 1
                 continue  # shouldn't happen, but guard anyway
-            new_head.weight.data[new_idx] = src_w[old_idx]
-            new_head.bias.data[new_idx]   = src_b[old_idx]
+            new_head.weight.data[new_idx, :min_hidden] = src_w[old_idx, :min_hidden]
+            new_head.bias.data[new_idx]                = src_b[old_idx]
             copied += 1
         old_size = len(_old_tag_to_idx)
         print(f"[TaggerModel] Head inherited via tag-name alignment: "
@@ -847,15 +888,86 @@ def _inherit_head(
             print(f"[TaggerModel] Warning: vocabulary.json not found in {ckpt_dir}, "
                   f"falling back to positional head copy (assumes identical tag order)")
         copy_rows = min(src_w.shape[0], new_num_tags)
-        new_head.weight.data[:copy_rows] = src_w[:copy_rows]
-        new_head.bias.data[:copy_rows]   = src_b[:copy_rows]
+        new_head.weight.data[:copy_rows, :min_hidden] = src_w[:copy_rows, :min_hidden]
+        new_head.bias.data[:copy_rows]                = src_b[:copy_rows]
         copied = copy_rows
         print(f"[TaggerModel] Head inherited (positional): {copy_rows} rows copied, "
               f"{new_num_tags - copy_rows} new rows zero-initialized")
 
+    if hidden_old != hidden_new:
+        if hidden_new > hidden_old:
+            note = f"extra {hidden_new - hidden_old} cols zero-initialized"
+        else:
+            note = f"trailing {hidden_old - hidden_new} cols truncated"
+        print(f"[TaggerModel] Head hidden dim changed: {hidden_old} → {hidden_new} ({note})")
+
     # Move to same device as existing head
     device = next(model.head.parameters()).device
     model.head = new_head.to(device)
+
+
+def _inherit_custom_pooler(
+    model: nn.Module,
+    checkpoint_path: str,
+) -> None:
+    """Inherit ``custom_pooler.*`` weights from *checkpoint_path* with block-copy fallback.
+
+    Supports cls_dim / hidden_proj_dim changes by block-copying the top-left
+    corner of each parameter tensor (axis-wise ``min(dst, src)``).  Combined
+    with ``_inherit_head``'s zero-padding of the head's extra hidden columns,
+    this lets the new model reproduce the old model's predictions on step 0
+    even when cls_dim grew, while leaving room for the freshly-initialized
+    extra pool dims to be learned.
+
+    Silently skipped when:
+      - the new model has no custom_pooler (default pooling) → nothing to inherit
+      - the checkpoint has no ``custom_pooler.*`` keys (base used default pooling)
+
+    Per-tensor mismatches (ndim differs, unknown extra keys, missing expected
+    keys) are reported but do not raise.
+    """
+    # LoRA models don't have custom_pooler at all (cls_dim is ignored in LoRA mode)
+    custom_pooler = getattr(model, "custom_pooler", None)
+    if custom_pooler is None:
+        return
+
+    saved = load_file(checkpoint_path)
+    pooler_src = {
+        k[len("custom_pooler."):]: v
+        for k, v in saved.items()
+        if k.startswith("custom_pooler.")
+    }
+    if not pooler_src:
+        print(f"[TaggerModel] No custom_pooler.* in {os.path.basename(checkpoint_path)} — "
+              f"pooler stays fresh-initialized")
+        return
+
+    own: Dict[str, torch.Tensor] = dict(custom_pooler.named_parameters())
+    own.update(dict(custom_pooler.named_buffers()))
+
+    exact = partial = skipped = extra = 0
+    for name, src in pooler_src.items():
+        if name not in own:
+            extra += 1
+            print(f"  [extra in ckpt, ignored] custom_pooler.{name} {tuple(src.shape)}")
+            continue
+        dst = own[name]
+        result = _block_copy(dst, src.to(dst.dtype))
+        if result == "exact":
+            exact += 1
+        elif result.startswith("partial"):
+            partial += 1
+            print(f"  [partial] custom_pooler.{name}: {result}")
+        else:
+            skipped += 1
+            print(f"  [skipped] custom_pooler.{name}: {result}")
+
+    missing = sum(1 for n in own if n not in pooler_src)
+
+    print(f"[TaggerModel] Custom pooler inheritance from "
+          f"{os.path.basename(checkpoint_path)}: "
+          f"{exact} exact, {partial} partial, {missing} fresh, "
+          f"{skipped} skipped, {extra} extra")
 
 
 def build_tagger_model(
@@ -937,5 +1049,6 @@ def build_tagger_model(
 
     if _effective_head_src:
         _inherit_head(model, _effective_head_src, num_tags, new_vocab=new_vocab)
+        _inherit_custom_pooler(model, _effective_head_src)
 
     return model

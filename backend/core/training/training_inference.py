@@ -223,41 +223,18 @@ class TrainingPreviewGenerator:
             self._added_adapter_names = []
 
     # ------------------------------------------------------------------
-    # txt2img path — delegate to generate_sample() (Phase 1, unchanged)
+    # Mode dispatchers — each path decodes its mode-specific images
+    # then routes through the unified ``_run_sampling`` below
     # ------------------------------------------------------------------
 
     def _generate_txt2img(self, params: Dict[str, Any]):
-        prompt = params.get("prompt") or ""
-        if not prompt:
-            raise ValueError("Preview request missing 'prompt'")
-        seed = int(params.get("seed", -1))
-        image = self.trainer.generate_sample(
-            prompt=prompt,
-            height=int(params.get("height", 1024)),
-            width=int(params.get("width", 1024)),
-            num_inference_steps=int(params.get("steps", 28)),
-            guidance_scale=float(params.get("cfg_scale", 3.5)),
-            seed=seed,
-            current_step=int(params.get("current_step", 0)),
-            schedule_type=str(params.get("schedule_type", "uniform")),
-        )
-        return image, seed
-
-    # ------------------------------------------------------------------
-    # img2img path
-    # ------------------------------------------------------------------
+        return self._run_sampling(params, init_image=None, mask_image=None)
 
     def _generate_img2img(self, params: Dict[str, Any]):
         init_image = _decode_b64_image(params.get("init_image_base64"))
         if init_image is None:
             raise ValueError("img2img preview missing 'init_image_base64'")
-        return self._run_img2img_or_inpaint(
-            params, init_image=init_image, mask_image=None,
-        )
-
-    # ------------------------------------------------------------------
-    # inpaint path
-    # ------------------------------------------------------------------
+        return self._run_sampling(params, init_image=init_image, mask_image=None)
 
     def _generate_inpaint(self, params: Dict[str, Any]):
         init_image = _decode_b64_image(params.get("init_image_base64"))
@@ -266,26 +243,29 @@ class TrainingPreviewGenerator:
             raise ValueError("inpaint preview missing 'init_image_base64'")
         if mask_image is None:
             raise ValueError("inpaint preview missing 'mask_image_base64'")
-        return self._run_img2img_or_inpaint(
-            params, init_image=init_image, mask_image=mask_image,
-        )
+        return self._run_sampling(params, init_image=init_image, mask_image=mask_image)
 
     # ------------------------------------------------------------------
-    # Shared img2img + inpaint inner — text-encode, build pipeline, run loop
+    # Unified sampling — used by txt2img / img2img / inpaint.  Dispatches
+    # to the appropriate ``custom_*_sampling_loop`` based on which
+    # images are present.  Shares text-encoding, scheduler build,
+    # ControlNet pipeline construction, and advanced CFG/NAG passthrough.
     # ------------------------------------------------------------------
 
-    def _run_img2img_or_inpaint(
+    def _run_sampling(
         self,
         params: Dict[str, Any],
         *,
-        init_image: "Image.Image",
+        init_image: Optional["Image.Image"],
         mask_image: Optional["Image.Image"],
     ):
         import random
         from PIL import Image as _Image
         from core.inference.schedulers import get_scheduler
         from core.inference.custom_sampling import (
-            custom_img2img_sampling_loop, custom_inpaint_sampling_loop,
+            custom_sampling_loop,
+            custom_img2img_sampling_loop,
+            custom_inpaint_sampling_loop,
         )
         from .temp_pipeline import build_temp_pipeline_for_trainer
 
@@ -301,8 +281,9 @@ class TrainingPreviewGenerator:
         if width <= 0 or height <= 0:
             raise ValueError(f"invalid size after snap-to-8: {width}x{height}")
 
-        # ----- resize init / mask -----
-        init_image = init_image.resize((width, height), _Image.LANCZOS)
+        # ----- resize init / mask (if present) -----
+        if init_image is not None:
+            init_image = init_image.resize((width, height), _Image.LANCZOS)
         if mask_image is not None:
             mask_image = mask_image.resize((width, height), _Image.LANCZOS)
 
@@ -367,25 +348,22 @@ class TrainingPreviewGenerator:
         is_v_prediction = scheduler.config.get("prediction_type") == "v_prediction"
         guidance_rescale = 0.7 if is_v_prediction else 0.0
 
-        denoising_strength = float(params.get("denoising_strength", 0.75))
         num_inference_steps = int(params.get("steps", 28))
         guidance_scale = float(params.get("cfg_scale", 7.0))
 
+        # ----- params shared by all 3 sampling loops -----
         common_kwargs: Dict[str, Any] = dict(
             pipeline=runtime_pipeline,
-            init_image=init_image,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
             pooled_prompt_embeds=pooled_prompt_embeds,
             negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
             num_inference_steps=num_inference_steps,
-            strength=denoising_strength,
             guidance_scale=guidance_scale,
             guidance_rescale=guidance_rescale,
             generator=generator,
             width=width,
             height=height,
-            # Pass-through of advanced CFG / NAG (Phase 5 friendly):
             cfg_schedule_type=params.get("cfg_schedule_type", "constant"),
             cfg_schedule_min=float(params.get("cfg_schedule_min", 1.0)),
             cfg_schedule_max=params.get("cfg_schedule_max"),
@@ -401,7 +379,7 @@ class TrainingPreviewGenerator:
             attention_type=params.get("attention_type", "normal"),
         )
 
-        # ControlNet image args (when in CN mode)
+        # ControlNet image args (when in CN mode) — shared across all 3 modes
         if cn_pipeline is not None:
             cn_configs = params.get("controlnets") or []
             cn_images = []
@@ -418,13 +396,25 @@ class TrainingPreviewGenerator:
                 cn_scales if len(cn_scales) > 1 else (cn_scales[0] if cn_scales else 1.0)
             )
 
+        # ----- dispatch to the right sampling loop -----
         try:
             with torch.autocast(device_type=t.device.type, dtype=t.training_dtype):
-                if mask_image is None:
-                    image = custom_img2img_sampling_loop(**common_kwargs)
+                if init_image is None:
+                    # txt2img — no init / strength
+                    image = custom_sampling_loop(**common_kwargs)
+                elif mask_image is None:
+                    # img2img — init_image + strength
+                    image = custom_img2img_sampling_loop(
+                        init_image=init_image,
+                        strength=float(params.get("denoising_strength", 0.75)),
+                        **common_kwargs,
+                    )
                 else:
+                    # inpaint — init + mask + fill controls
                     image = custom_inpaint_sampling_loop(
+                        init_image=init_image,
                         mask_image=mask_image,
+                        strength=float(params.get("denoising_strength", 0.75)),
                         inpaint_fill_mode=params.get("inpaint_fill_mode", "original"),
                         inpaint_fill_strength=float(params.get("inpaint_fill_strength", 1.0)),
                         inpaint_blur_strength=float(params.get("inpaint_blur_strength", 1.0)),

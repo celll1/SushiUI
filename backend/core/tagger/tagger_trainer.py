@@ -247,6 +247,58 @@ def _restore_rng(rng_snapshot: Dict[str, Any]) -> None:
         torch.set_rng_state(torch.frombuffer(bytearray(rng_bytes), dtype=torch.uint8))
 
 
+def _compute_dataset_fingerprint(dataset: Any) -> Dict[str, Any]:
+    """Fingerprint of the dataset structure for change detection on resume.
+
+    Mirrors ``BaseTrainer._compute_dataset_fingerprint`` (LoRA/Full-FT)
+    but works on the flat ``TaggerDataset`` shape (a single sequence of
+    items rather than multiple ``Dataset`` objects).
+
+    Only image-identifying info is hashed — caption changes do NOT
+    invalidate the resume shuffle state (captions don't affect batch
+    order, just labels).  When in-place caption edits trigger a
+    pre-flight rescan that adds/removes items, ``items_in_db`` changes
+    and the fingerprint mismatches → trainer restarts the epoch.
+    """
+    import hashlib
+
+    paths: List[str] = []
+    if hasattr(dataset, "items"):
+        for it in dataset.items:
+            try:
+                p = it.get("image_path") if isinstance(it, dict) else getattr(it, "image_path", "")
+            except Exception:
+                p = ""
+            paths.append(p or "")
+
+    sorted_paths = sorted(paths)
+    paths_hash = hashlib.md5("\n".join(sorted_paths).encode("utf-8")).hexdigest()
+
+    return {
+        "total_item_count": len(paths),
+        "image_paths_hash": paths_hash,
+    }
+
+
+def _dataset_fingerprint_changed(
+    saved: Optional[Dict[str, Any]],
+    current: Dict[str, Any],
+) -> bool:
+    """Return True iff the dataset shape changed between save and now.
+
+    A missing ``saved`` (old state without a fingerprint) is treated as
+    "unchanged" for backwards compatibility — the user gets the old
+    behavior on legacy checkpoints rather than a forced epoch restart.
+    """
+    if not saved:
+        return False
+    if saved.get("total_item_count") != current.get("total_item_count"):
+        return True
+    if saved.get("image_paths_hash") != current.get("image_paths_hash"):
+        return True
+    return False
+
+
 def _save_training_state(
     output_dir: str,
     name: str,
@@ -256,6 +308,7 @@ def _save_training_state(
     best_f1: float,
     best_threshold: float,
     epoch_start_rng: Optional[Dict[str, Any]] = None,
+    dataset_fingerprint: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Save training state JSON for resume.
 
@@ -263,6 +316,11 @@ def _save_training_state(
     DataLoader for `epoch`.  On resume, restoring this snapshot and re-iterating
     the DataLoader from batch 0 (while skipping ≤ batch_idx) reproduces the
     exact same shuffle permutation and therefore the exact same batch sequence.
+
+    dataset_fingerprint (optional) records the dataset shape at save time
+    so resume can detect mid-run dataset changes (added/removed items) and
+    restart the current epoch from scratch rather than skipping arbitrary
+    samples from a re-shuffled new order.
     """
     state: Dict[str, Any] = {
         "epoch": epoch,
@@ -273,6 +331,8 @@ def _save_training_state(
     }
     if epoch_start_rng is not None:
         state["epoch_start_rng"] = epoch_start_rng
+    if dataset_fingerprint is not None:
+        state["dataset_fingerprint"] = dataset_fingerprint
     path = os.path.join(output_dir, f"{name}_state.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(state, f)
@@ -850,6 +910,16 @@ class TaggerTrainer:
         # the exact shuffle permutation and therefore the exact batch order.
         epoch_start_rng_for_resume: Optional[Dict[str, Any]] = None
 
+        # Compute the *current* dataset fingerprint up-front so we can both
+        # (a) compare it to the saved one to detect mid-run dataset changes
+        #     (e.g. caused by a pre-flight rescan adding/removing items), and
+        # (b) include it in every state file we save below.
+        current_fingerprint = _compute_dataset_fingerprint(train_loader.dataset)
+        print(
+            f"[TaggerTrainer] Dataset fingerprint: {current_fingerprint['total_item_count']} items, "
+            f"hash={current_fingerprint['image_paths_hash'][:8]}..."
+        )
+
         if resume_state is not None:
             resume_epoch     = resume_state["epoch"]         # next epoch to train
             resume_batch_idx = resume_state["batch_idx"]     # last completed batch (-1 = full epoch done)
@@ -857,6 +927,24 @@ class TaggerTrainer:
             best_f1          = resume_state.get("best_f1", 0.0)
             best_threshold   = resume_state.get("best_threshold", 0.5)
             epoch_start_rng_for_resume = resume_state.get("epoch_start_rng")
+
+            # Dataset-change detection: if the on-disk dataset differs from
+            # the one this checkpoint was saved against, the saved RNG +
+            # batch_idx no longer point at the same samples.  Restart the
+            # current epoch from scratch with a fresh shuffle — global_step
+            # and optimizer state are preserved.
+            saved_fingerprint = resume_state.get("dataset_fingerprint")
+            if _dataset_fingerprint_changed(saved_fingerprint, current_fingerprint):
+                print(
+                    f"[TaggerTrainer] WARNING: dataset changed since checkpoint "
+                    f"(saved={saved_fingerprint}, current={current_fingerprint})"
+                )
+                print(
+                    f"[TaggerTrainer] Restarting epoch {resume_epoch} from batch 0 "
+                    f"(global_step={global_step} preserved)"
+                )
+                resume_batch_idx           = -1
+                epoch_start_rng_for_resume = None
 
             # Restore optimizer state.  Pass the old/new vocab maps so that
             # the head's per-parameter state can be tag-name aligned when the
@@ -1077,6 +1165,7 @@ class TaggerTrainer:
                         epoch, global_step, batch_idx,
                         best_f1, best_threshold,
                         epoch_start_rng=epoch_start_rng,  # epoch-start RNG for exact replay
+                        dataset_fingerprint=current_fingerprint,
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                     _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
@@ -1110,6 +1199,7 @@ class TaggerTrainer:
                     epoch, global_step, batch_idx,
                     best_f1, best_threshold,
                     epoch_start_rng=epoch_start_rng,
+                    dataset_fingerprint=current_fingerprint,
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                 _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
@@ -1120,6 +1210,7 @@ class TaggerTrainer:
                     epoch, global_step, batch_idx,
                     best_f1, best_threshold,
                     epoch_start_rng=epoch_start_rng,
+                    dataset_fingerprint=current_fingerprint,
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
                 _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
@@ -1172,6 +1263,7 @@ class TaggerTrainer:
                 self.output_dir, "latest",
                 epoch + 1, global_step, -1,
                 best_f1, best_threshold,
+                dataset_fingerprint=current_fingerprint,
             )
             _save_optimizer_state(optimizer, self.output_dir, "latest")
 

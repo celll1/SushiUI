@@ -187,6 +187,33 @@ async def get_tagger_training_defaults():
     """Return default parameter values for tagger training."""
     return TAGGER_TRAINING_DEFAULTS
 
+
+# ---------------------------------------------------------------------------
+# GPU coordinator helpers (shared by all /generate/* endpoints)
+# ---------------------------------------------------------------------------
+
+# Conservative per-pixel peak VRAM table.  Used to estimate how much
+# headroom we need before starting generation so the GPU coordinator
+# can decide whether to offload running tagger training.  Values are
+# intentionally on the high side — false positives cost ~5-10s of
+# offload time; false negatives cost OOM.
+_PEAK_VRAM_GB_BY_KIND = {
+    "sd15":   4.0,
+    "sdxl":  12.0,
+    "zimage": 14.0,
+    "flux":  18.0,
+    "flux2": 24.0,
+    "unknown": 14.0,   # safe default
+}
+
+
+def _estimate_gen_peak_gb(width: int, height: int, batch_size: int, pipeline_kind: str) -> float:
+    """Estimate peak VRAM for an incoming generation request."""
+    base = _PEAK_VRAM_GB_BY_KIND.get(pipeline_kind, _PEAK_VRAM_GB_BY_KIND["unknown"])
+    pixel_factor = max(1.0, (width * height) / (1024 * 1024))
+    return base * pixel_factor * max(1, batch_size)
+
+
 # Routes
 @router.post("/generate/txt2img")
 async def generate_txt2img(
@@ -442,12 +469,19 @@ async def generate_txt2img(
                 params.get("steps", 20)
             )
 
-        # Run generation in thread pool to avoid blocking event loop
+        # Run generation in thread pool to avoid blocking event loop.
+        # Wrap in gpu_coordinator slot so any active tagger training is
+        # paused (and optionally offloaded) at the next batch boundary
+        # before we start pushing UNet onto the GPU.
+        from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
-        image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-            executor,
-            lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
-        )
+        _peak_gb = _estimate_gen_peak_gb(width, height, batch_size,
+                                         pipeline_manager.current_pipeline_kind)
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_txt2img(params, progress_callback=progress_callback, step_callback=step_callback)
+            )
 
         # Update params with actual seeds
         params["seed"] = actual_seed
@@ -763,12 +797,17 @@ async def generate_img2img(
                 actual_steps
             )
 
-        # Run generation in thread pool to avoid blocking event loop
+        # Run generation in thread pool to avoid blocking event loop.
+        # gpu_coordinator slot pauses any active tagger training first.
+        from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
-        result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-            executor,
-            lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
-        )
+        _peak_gb = _estimate_gen_peak_gb(width, height, 1,
+                                         pipeline_manager.current_pipeline_kind)
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_img2img(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
+            )
 
         # Update params with actual seeds
         params["seed"] = actual_seed
@@ -1108,12 +1147,17 @@ async def generate_inpaint(
                 actual_steps
             )
 
-        # Run generation in thread pool to avoid blocking event loop
+        # Run generation in thread pool to avoid blocking event loop.
+        # gpu_coordinator slot pauses any active tagger training first.
+        from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
-        result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
-            executor,
-            lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
-        )
+        _peak_gb = _estimate_gen_peak_gb(width, height, 1,
+                                         pipeline_manager.current_pipeline_kind)
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_inpaint(params, init_image, mask_image, progress_callback=progress_callback, step_callback=step_callback)
+            )
 
         # Update params with actual seeds
         params["seed"] = actual_seed

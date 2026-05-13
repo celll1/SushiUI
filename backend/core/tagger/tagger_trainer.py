@@ -548,6 +548,20 @@ class TaggerTrainer:
         self.old_vocabulary = old_vocabulary
         self._stop_requested = False
         self._stop_event = threading.Event()
+        # GPU coordinator pause / resume signalling.  Created here so the
+        # handle exists before train() runs and the trainer thread doesn't
+        # have to allocate Events while holding the model.
+        self._pause_event    = threading.Event()
+        self._resumed_event  = threading.Event()
+        self._restored_event = threading.Event()
+        from core.tagger.tagger_offload import TaggerTrainerHandle
+        self._coordinator_handle = TaggerTrainerHandle(
+            run_id=run_id,
+            output_dir=output_dir,
+            pause_event=self._pause_event,
+            resumed_event=self._resumed_event,
+            restored_event=self._restored_event,
+        )
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -804,6 +818,13 @@ class TaggerTrainer:
         else:
             raise ValueError(f"Unknown loss_function: {loss_fn_name!r}")
 
+        # Register with the GPU coordinator so image-generation requests can
+        # pause us at the next batch boundary.  Cleanup happens at the end of
+        # train() and defensively in run_tagger_training()'s finally.
+        from core.gpu_coordinator import gpu_coordinator
+        self._coordinator_handle.attach(model, optimizer, criterion)
+        gpu_coordinator.register_trainer(self._coordinator_handle)
+
         # Step-based checkpoint interval (0 = disabled)
         save_every_n_steps    = int(cfg.get("save_every_n_steps", 500))
         # Epoch-based checkpoint interval (0 = disabled)
@@ -1009,6 +1030,32 @@ class TaggerTrainer:
                 epoch_loss       += loss_val
                 batches_processed += 1
 
+                # ----- GPU-coordinator pause check (batch boundary) ----------
+                # Generation requests set ``pause_event`` and stash an offload
+                # ``OffloadDecision`` in ``pending_decision``.  We perform the
+                # state movement here (in the trainer thread) so cross-thread
+                # ``.to()`` calls never happen.  Stop wins over pause.
+                if self._pause_event.is_set():
+                    decision = self._coordinator_handle.pending_decision
+                    if decision is not None:
+                        self._coordinator_handle.offload(decision)
+                    self._resumed_event.set()
+                    # Block until either coordinator clears pause_event or a
+                    # stop is requested.  Re-check at 0.5s cadence so a fast
+                    # stop is responsive.
+                    while self._pause_event.is_set() and not self._stop_requested:
+                        self._stop_event.wait(timeout=0.5)
+                    # Restore state regardless of why we exited the wait —
+                    # either we'll continue training (need GPU state) or we'll
+                    # hit the stop checkpoint below (need state to save it).
+                    if decision is not None:
+                        self._coordinator_handle.restore()
+                    self._restored_event.set()
+                    # Reset events for the next pause cycle
+                    self._resumed_event.clear()
+                    self._restored_event.clear()
+                    self._coordinator_handle.pending_decision = None
+
                 # Progress callback every 10 steps
                 if global_step % 10 == 0:
                     current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, "get_last_lr") else base_lr
@@ -1170,6 +1217,15 @@ class TaggerTrainer:
             completed_data["optimal_threshold"]  = final_search["optimal_threshold"]
 
         self._emit("completed", completed_data)
+
+        # Unregister from GPU coordinator and release handle references.
+        # (Defensive duplicate cleanup also runs in run_tagger_training().)
+        try:
+            from core.gpu_coordinator import gpu_coordinator
+            gpu_coordinator.unregister_trainer(self._coordinator_handle)
+            self._coordinator_handle.detach()
+        except Exception as _e:
+            print(f"[TaggerTrainer] coordinator cleanup at end of train(): {_e}")
 
         return {
             "best_f1": best_f1,
@@ -1643,11 +1699,23 @@ def run_tagger_training(
                 "resume_ckpt_name": resume_ckpt_name,
             })
 
-        return trainer.train(
-            train_loader, val_loader, processor,
-            resume_state=resume_state,
-            resume_ckpt_name=resume_ckpt_name,
-        )
+        try:
+            return trainer.train(
+                train_loader, val_loader, processor,
+                resume_state=resume_state,
+                resume_ckpt_name=resume_ckpt_name,
+            )
+        finally:
+            # Defensive: ensure the trainer is unregistered from the GPU
+            # coordinator even if train() raised mid-loop.  Calls are
+            # idempotent — duplicate with the cleanup inside train()
+            # is harmless.
+            try:
+                from core.gpu_coordinator import gpu_coordinator
+                gpu_coordinator.unregister_trainer(trainer._coordinator_handle)
+                trainer._coordinator_handle.detach()
+            except Exception as _e:
+                print(f"[TaggerTraining] coordinator cleanup: {_e}")
 
     finally:
         import gc as _gc

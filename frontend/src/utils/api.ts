@@ -392,12 +392,17 @@ export interface TrainingPreviewParams extends GenerationParams {
   /** Optional explicit run to target.  Backend picks the (sole) active
    *  run if omitted; returns 409 when multiple are active. */
   run_id?: number;
+  /** When true, the backend writes the result PNG into outputs/ and
+   *  inserts a GeneratedImage row so it appears in the gallery.  The
+   *  DB row is tagged with model_name = "training-preview:<run>@step<N>".
+   *  Default false (preview blob is transient). */
+  save_to_gallery?: boolean;
 }
 
 /** Returns { blob, seed, runId } for the rendered image. */
 export const generateTxt2ImgTrainingPreview = async (
   params: TrainingPreviewParams,
-): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string }> => {
+): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
   // Attention type honours the local toggle, same as regular generate
   const attentionType = typeof window !== 'undefined'
     ? localStorage.getItem('attention_type') : null;
@@ -417,9 +422,13 @@ export const generateTxt2ImgTrainingPreview = async (
   });
   return {
     blob: response.data as Blob,
-    seed:      response.headers["x-preview-seed"]    as string | undefined,
-    runId:     response.headers["x-preview-run-id"]  as string | undefined,
-    requestId: response.headers["x-preview-request"] as string | undefined,
+    seed:      response.headers["x-preview-seed"]      as string | undefined,
+    runId:     response.headers["x-preview-run-id"]    as string | undefined,
+    requestId: response.headers["x-preview-request"]   as string | undefined,
+    // Present when save_to_gallery=true and the gallery save succeeded.
+    // The URL ``/outputs/<filename>`` is then a stable reference that
+    // survives page reload.
+    filename:  response.headers["x-preview-filename"]  as string | undefined,
   };
 };
 
@@ -469,7 +478,7 @@ export const toBase64 = async (src: File | Blob | string): Promise<string> => {
 
 export const generateImg2ImgTrainingPreview = async (
   params: Img2ImgTrainingPreviewParams,
-): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string }> => {
+): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
   const attentionType = typeof window !== 'undefined'
     ? localStorage.getItem('attention_type') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
@@ -486,15 +495,19 @@ export const generateImg2ImgTrainingPreview = async (
   });
   return {
     blob: response.data as Blob,
-    seed:      response.headers["x-preview-seed"]    as string | undefined,
-    runId:     response.headers["x-preview-run-id"]  as string | undefined,
-    requestId: response.headers["x-preview-request"] as string | undefined,
+    seed:      response.headers["x-preview-seed"]      as string | undefined,
+    runId:     response.headers["x-preview-run-id"]    as string | undefined,
+    requestId: response.headers["x-preview-request"]   as string | undefined,
+    // Present when save_to_gallery=true and the gallery save succeeded.
+    // The URL ``/outputs/<filename>`` is then a stable reference that
+    // survives page reload.
+    filename:  response.headers["x-preview-filename"]  as string | undefined,
   };
 };
 
 export const generateInpaintTrainingPreview = async (
   params: InpaintTrainingPreviewParams,
-): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string }> => {
+): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
   const attentionType = typeof window !== 'undefined'
     ? localStorage.getItem('attention_type') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
@@ -511,9 +524,13 @@ export const generateInpaintTrainingPreview = async (
   });
   return {
     blob: response.data as Blob,
-    seed:      response.headers["x-preview-seed"]    as string | undefined,
-    runId:     response.headers["x-preview-run-id"]  as string | undefined,
-    requestId: response.headers["x-preview-request"] as string | undefined,
+    seed:      response.headers["x-preview-seed"]      as string | undefined,
+    runId:     response.headers["x-preview-run-id"]    as string | undefined,
+    requestId: response.headers["x-preview-request"]   as string | undefined,
+    // Present when save_to_gallery=true and the gallery save succeeded.
+    // The URL ``/outputs/<filename>`` is then a stable reference that
+    // survives page reload.
+    filename:  response.headers["x-preview-filename"]  as string | undefined,
   };
 };
 

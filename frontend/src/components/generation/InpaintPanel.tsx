@@ -168,6 +168,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   // ── Training-preview integration (mirrors Txt2Img / Img2Img panels) ──
   const [useTrainingModel, setUseTrainingModel] = useState(false);
+  const [savePreviewToGallery, setSavePreviewToGallery] = useState(false);
   const activeTraining = useActiveTraining();
   const previewBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1678,17 +1679,23 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           mask_image_base64: maskImageBase64,
           denoising_strength: apiParams.denoising_strength ?? 0.75,
           run_id: activeTraining.run_id,
+          save_to_gallery: savePreviewToGallery,
         });
-        if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
-        const objectUrl = URL.createObjectURL(preview.blob);
-        previewBlobUrlRef.current = objectUrl;
-        imageUrl = objectUrl;
+        if (preview.filename) {
+          imageUrl = `/outputs/${preview.filename}`;
+        } else {
+          if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+          const objectUrl = URL.createObjectURL(preview.blob);
+          previewBlobUrlRef.current = objectUrl;
+          imageUrl = objectUrl;
+        }
         result = {
           success: true,
           actual_seed: preview.seed ? Number(preview.seed) : -1,
           image: {
-            filename: `preview_${preview.requestId ?? "training"}.png`,
-            filepath: objectUrl,
+            filename: preview.filename
+              ?? `preview_${preview.requestId ?? "training"}.png`,
+            filepath: imageUrl,
             seed: preview.seed ? Number(preview.seed) : -1,
             ancestral_seed: -1,
             prompt: apiParams.prompt,
@@ -3165,6 +3172,22 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   )}
                 </label>
               </div>
+
+              {useTrainingModel && (
+                <div className="flex items-center gap-2 ml-6"
+                     title="Save preview PNG to outputs/ and the gallery (tagged as training-preview)">
+                  <input
+                    type="checkbox"
+                    id="save_preview_to_gallery_inpaint"
+                    checked={savePreviewToGallery}
+                    onChange={(e) => setSavePreviewToGallery(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="save_preview_to_gallery_inpaint" className="text-sm text-gray-300">
+                    Save preview to gallery
+                  </label>
+                </div>
+              )}
 
               {isGenerating && (
                 <div className="space-y-1">

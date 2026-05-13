@@ -671,28 +671,35 @@ async def get_active_training(training_db: Session = Depends(get_training_db)):
     }
 
 
-@router.post("/generate/txt2img/training-preview")
-async def generate_txt2img_training_preview(request: TrainingPreviewRequest):
-    """Generate an image using the CURRENT state of an active LoRA / Full-FT
-    training (Base + LoRA-in-progress).
+class Img2ImgTrainingPreviewRequest(TrainingPreviewRequest):
+    """img2img preview adds an init image (base64-encoded PNG/JPEG)
+    and a denoising strength.  Init image is JSON-embedded to keep the
+    endpoint shape consistent with the txt2img preview."""
+    init_image_base64: str
+    denoising_strength: float = 0.75
+    inpaint_fill_mode: str = "original"        # forwarded for inpaint variants
+    inpaint_fill_strength: float = 1.0
+    inpaint_blur_strength: float = 1.0
 
-    Phase 1 of the in-training preview feature: txt2img only.  Phase 2 +
-    will add img2img / inpaint endpoints; Phase 3 + 4 will widen the
-    trainer side to honour LoRA stack and ControlNet parameters from
-    the request (all params are already forwarded in the request file,
-    so newer trainers automatically pick them up without API changes).
-    """
+
+class InpaintTrainingPreviewRequest(Img2ImgTrainingPreviewRequest):
+    """inpaint preview adds a mask image (base64-encoded; alpha or
+    grayscale OK — the trainer normalises it)."""
+    mask_image_base64: str
+
+
+async def _run_training_preview(
+    request: TrainingPreviewRequest, mode: str, extra_params: Dict[str, Any],
+) -> Response:
+    """Shared core for the 3 preview endpoints.  Resolves the active
+    training, queues the request file, awaits the result, returns a
+    PNG response with metadata headers."""
     from core.training.training_preview_rpc import (
         make_request_id, write_request,
     )
-
     run_id, output_dir = _get_active_training_for_preview(request.run_id)
-
-    # Forward the entire param set to the trainer.  Trainer-side support
-    # is currently Phase-1 (basic params); later phases will consume the
-    # additional fields.
-    params: Dict[str, Any] = request.dict(exclude={"run_id"})
-    params["mode"] = "txt2img"
+    params: Dict[str, Any] = {**request.dict(exclude={"run_id"}), **extra_params}
+    params["mode"] = mode
 
     request_id = make_request_id()
     try:
@@ -711,12 +718,40 @@ async def generate_txt2img_training_preview(request: TrainingPreviewRequest):
         )
     if image_bytes is None:
         raise HTTPException(status_code=500, detail="Preview returned no image")
-
     return Response(content=image_bytes, media_type="image/png", headers={
         "X-Preview-Run-Id":   str(run_id),
         "X-Preview-Seed":     str(meta.get("seed", "")),
         "X-Preview-Request":  request_id,
+        "X-Preview-Mode":     mode,
     })
+
+
+@router.post("/generate/img2img/training-preview")
+async def generate_img2img_training_preview(request: Img2ImgTrainingPreviewRequest):
+    """img2img preview using the in-training model.  Body is JSON with
+    ``init_image_base64`` (raw or data-URL) and the usual generation
+    params (``denoising_strength``, prompt, steps, cfg, seed, w/h,
+    sampler, schedule_type, optional ``loras``/``controlnets``)."""
+    return await _run_training_preview(request, mode="img2img", extra_params={})
+
+
+@router.post("/generate/inpaint/training-preview")
+async def generate_inpaint_training_preview(request: InpaintTrainingPreviewRequest):
+    """inpaint preview using the in-training model.  Body adds
+    ``mask_image_base64`` plus the img2img fields."""
+    return await _run_training_preview(request, mode="inpaint", extra_params={})
+
+
+@router.post("/generate/txt2img/training-preview")
+async def generate_txt2img_training_preview(request: TrainingPreviewRequest):
+    """Generate an image using the CURRENT state of an active LoRA / Full-FT
+    training (Base + LoRA-in-progress).
+
+    The trainer supports stacking additional LoRAs and ControlNets on
+    top of the in-training adapter via the request params (peft-based,
+    best-effort).  See ``TrainingPreviewGenerator`` for details.
+    """
+    return await _run_training_preview(request, mode="txt2img", extra_params={})
 
 
 @router.post("/generate/img2img")

@@ -141,6 +141,42 @@ class ConnectionManager:
         self.message_queue.put(data)
         self._notify_sender()
 
+    def send_dataset_scan_progress(
+        self,
+        *,
+        scope: str,        # "tagger" | "training"
+        run_id,            # str for tagger, int for LoRA/Full-FT
+        dataset_id: int,
+        phase: str,        # "drift_walk" | "drift_done" | "rescan" | "cleanup"
+        files_walked: int = 0,
+        items_in_db: int = 0,
+        items_missing: int = 0,
+        items_new: int = 0,
+        message: str = "",
+    ):
+        """Broadcast a dataset-scan / drift-check progress event.
+
+        Emitted at intervals during the pre-flight directory walk so the
+        UI can show progress without waiting for the whole walk to
+        finish (which can take minutes for multi-million-item datasets).
+        Thread-safe (uses the message queue).
+        """
+        data = {
+            "type": "dataset_scan_progress",
+            "scope": scope,
+            "run_id": run_id,
+            "dataset_id": dataset_id,
+            "phase": phase,
+            "files_walked": files_walked,
+            "items_in_db": items_in_db,
+            "items_missing": items_missing,
+            "items_new": items_new,
+        }
+        if message:
+            data["message"] = message
+        self.message_queue.put(data)
+        self._notify_sender()
+
     async def start_sender(self):
         """Background task to drain the message queue — event-driven, no polling.
         Sends a heartbeat every 30 seconds when idle to keep NAT/VPN tunnels alive."""

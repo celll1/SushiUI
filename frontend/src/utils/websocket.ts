@@ -51,14 +51,32 @@ export interface TaggerMetrics {
   progress?: number;
 }
 
+export interface DatasetScanProgress {
+  scope: "tagger" | "training";
+  run_id: string | number;
+  dataset_id: number;
+  /** "drift_walk" – walking the directory tree;
+   *  "drift_done" – walk finished, report counts;
+   *  "rescan" – running full /datasets/scan;
+   *  "cleanup" – cleaning orphan latent cache (LoRA only). */
+  phase: "drift_walk" | "drift_done" | "rescan" | "cleanup";
+  files_walked?: number;
+  items_in_db?: number;
+  items_missing?: number;
+  items_new?: number;
+  message?: string;
+}
+
 type TrainingMetricsCallback = (metrics: TrainingMetrics) => void;
 type TaggerMetricsCallback = (metrics: TaggerMetrics) => void;
+type DatasetScanProgressCallback = (progress: DatasetScanProgress) => void;
 
 class ProgressClient {
   private eventSource: EventSource | null = null;
   private callbacks: Set<ProgressCallback> = new Set();
   private trainingMetricsCallbacks: Set<TrainingMetricsCallback> = new Set();
   private taggerMetricsCallbacks: Set<TaggerMetricsCallback> = new Set();
+  private datasetScanProgressCallbacks: Set<DatasetScanProgressCallback> = new Set();
   private reconnectTimer: NodeJS.Timeout | null = null;
 
   connect() {
@@ -132,6 +150,19 @@ class ProgressClient {
             progress: data.progress,
           };
           this.taggerMetricsCallbacks.forEach((cb) => cb(metrics));
+        } else if (data.type === "dataset_scan_progress") {
+          const ev: DatasetScanProgress = {
+            scope: data.scope,
+            run_id: data.run_id,
+            dataset_id: data.dataset_id,
+            phase: data.phase,
+            files_walked: data.files_walked,
+            items_in_db: data.items_in_db,
+            items_missing: data.items_missing,
+            items_new: data.items_new,
+            message: data.message,
+          };
+          this.datasetScanProgressCallbacks.forEach((cb) => cb(ev));
         } else if (data.type === "ping") {
           // Heartbeat from server — keep NAT/VPN tunnel alive, no action needed
         } else if (data.type === "error") {
@@ -200,6 +231,14 @@ class ProgressClient {
 
   unsubscribeFromTaggerMetrics(callback: TaggerMetricsCallback) {
     this.taggerMetricsCallbacks.delete(callback);
+  }
+
+  subscribeToDatasetScanProgress(callback: DatasetScanProgressCallback) {
+    this.datasetScanProgressCallbacks.add(callback);
+  }
+
+  unsubscribeFromDatasetScanProgress(callback: DatasetScanProgressCallback) {
+    this.datasetScanProgressCallbacks.delete(callback);
   }
 }
 

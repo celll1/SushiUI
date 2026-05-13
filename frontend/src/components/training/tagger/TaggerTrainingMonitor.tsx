@@ -38,6 +38,16 @@ export default function TaggerTrainingMonitor({
   // Buffer incoming WS step events; flush to state at most once per second
   const wsBufferRef = useRef<TaggerTrainingMetric[]>([]);
   const wsFlushRef = useRef<NodeJS.Timeout | null>(null);
+  // Latest run-status fields from WS (progress / current_step / ...).
+  // Overwritten on every incoming message so the 1s flush applies only the
+  // most recent values without burning re-renders per step.  No DB load —
+  // the trainer's send_tagger_metrics already carries these.
+  const wsRunUpdateRef = useRef<{
+    progress?: number;
+    step?: number;
+    epoch?: number;
+    loss?: number;
+  } | null>(null);
 
   const updateRun = useCallback((updated: TaggerTrainingRun) => {
     setRun(updated);
@@ -67,6 +77,16 @@ export default function TaggerTrainingMonitor({
     const handler = (m: TaggerMetrics) => {
       if (m.run_id !== run.run_id) return;
 
+      // Capture latest run-status fields for the 1s flush.  Each new WS
+      // message overwrites previous (we only want the most recent values
+      // — older progress / step / loss are stale by then).
+      wsRunUpdateRef.current = {
+        progress: m.progress,
+        step:     m.step,
+        epoch:    m.epoch,
+        loss:     m.loss,
+      };
+
       const item: TaggerTrainingMetric = {
         step: m.step,
         resume_seq: m.resume_seq ?? 0,
@@ -83,6 +103,22 @@ export default function TaggerTrainingMonitor({
       if (!wsFlushRef.current) {
         wsFlushRef.current = setTimeout(() => {
           wsFlushRef.current = null;
+
+          // Apply the latest run-status fields to local run state.
+          // Bypasses onStatusChange (parent stays on 10s poll cadence to
+          // avoid re-rendering the full run list every second).
+          const upd = wsRunUpdateRef.current;
+          if (upd) {
+            wsRunUpdateRef.current = null;
+            setRun(prev => ({
+              ...prev,
+              progress:      upd.progress ?? prev.progress,
+              current_step:  upd.step ?? prev.current_step,
+              current_epoch: upd.epoch ?? prev.current_epoch,
+              latest_loss:   upd.loss ?? prev.latest_loss,
+            }));
+          }
+
           const incoming = wsBufferRef.current.splice(0);
           if (incoming.length === 0) return;
           setMetrics(prev => {
@@ -142,8 +178,21 @@ export default function TaggerTrainingMonitor({
     };
   }, [run.run_id]);
 
-  // Poll status only (not metrics — metrics come via WebSocket)
-  // Interval is relaxed to 10s; still needed for completion/error detection
+  // Poll status only (not metrics — metrics come via WebSocket).
+  //
+  // Streaming fields (progress / current_step / current_epoch / latest_loss)
+  // are now driven by WebSocket, so polling only needs to catch terminal
+  // status transitions (completed / failed / stopped) and fields not in
+  // the WS payload (best_f1, error_message, ...).  Relaxed to 15s.
+  //
+  // ``fetchStatus`` is stashed in a ref so the effect's deps only include
+  // run.status — otherwise a re-created fetchStatus (cascading through
+  // updateRun → onStatusChange identity changes) would clear and re-arm
+  // the interval on every parent render, which can starve the timer if
+  // the parent renders faster than the polling period.
+  const fetchStatusRef = useRef(fetchStatus);
+  useEffect(() => { fetchStatusRef.current = fetchStatus; }, [fetchStatus]);
+
   useEffect(() => {
     const isActive = run.status === "running" || run.status === "starting";
 
@@ -154,7 +203,7 @@ export default function TaggerTrainingMonitor({
 
     if (!isActive) return;
 
-    pollingRef.current = setInterval(fetchStatus, 10000);
+    pollingRef.current = setInterval(() => fetchStatusRef.current(), 15000);
 
     return () => {
       if (pollingRef.current) {
@@ -162,7 +211,7 @@ export default function TaggerTrainingMonitor({
         pollingRef.current = null;
       }
     };
-  }, [run.status, fetchStatus]);
+  }, [run.status]);
 
   // Load full metrics history on mount (for resumed/completed runs)
   useEffect(() => {

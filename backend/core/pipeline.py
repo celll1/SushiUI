@@ -70,6 +70,30 @@ class DiffusionPipelineManager:
 
         # Note: Auto-load is now triggered by startup event in main.py
 
+    @property
+    def current_pipeline_kind(self) -> str:
+        """Coarse identifier for the currently loaded pipeline.
+
+        Used by the GPU coordinator to estimate peak VRAM for an incoming
+        generation request.  Returns one of:
+          "flux2", "zimage", "sdxl", "sd15", or "unknown".
+        """
+        if self.is_flux2_model:
+            return "flux2"
+        if self.is_zimage_model:
+            return "zimage"
+        # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
+        pipe = self.txt2img_pipeline
+        if pipe is not None:
+            try:
+                from diffusers import StableDiffusionXLPipeline
+                if isinstance(pipe, StableDiffusionXLPipeline):
+                    return "sdxl"
+                return "sd15"
+            except ImportError:
+                pass
+        return "unknown"
+
     def load_model(
         self,
         source_type: ModelSource,

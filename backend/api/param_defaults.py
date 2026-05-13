@@ -221,11 +221,14 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "lllite_rank": 64,
     "condition_preprocessors": None,
     "condition_cache_mode": "on_the_fly",
-    # Pre-flight: detect dataset drift (files moved/added/deleted) and
-    # auto-rescan before launching the training subprocess.  Also
-    # cleans up orphan latent cache files so we don't waste training
-    # time on stale entries.  See core/training/dataset_drift.py.
-    "rescan_before_training": False,
+    # Pre-flight dataset drift check + optional rescan.  4 modes:
+    #   "off"   — skip entirely (default)
+    #   "path"  — only detect added/missing files
+    #   "smart" — path drift + caption sidecar mtime check
+    #   "force" — always rescan, no drift detection
+    # Also cleans up orphan latent cache files when a rescan happens.
+    # See core/training/dataset_drift.py.
+    "rescan_before_training": "off",
 }
 
 # ---------------------------------------------------------------------------
@@ -282,8 +285,12 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "lr_top_targets":            1000,
     "lr_threshold":              1.0,
     "lr_min_anchor_count":       10,
-    # Pre-flight: detect dataset drift (files moved/added/deleted) and
-    # auto-rescan if any.  Adds ~5 min for 3M-item dataset on NVMe;
-    # disabled by default.  See core/training/dataset_drift.py.
-    "rescan_before_training": False,
+    # Pre-flight dataset drift check + optional rescan.  4 modes:
+    #   "off"   — skip entirely (default)
+    #   "path"  — only detect added/missing files (~5 min for 3M items)
+    #   "smart" — path drift + caption sidecar mtime check (catches
+    #             in-place caption edits — adds a stat per sidecar)
+    #   "force" — always rescan, no drift detection (most expensive)
+    # See core/training/dataset_drift.py.
+    "rescan_before_training": "off",
 }

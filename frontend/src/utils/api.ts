@@ -1819,9 +1819,15 @@ export interface TrainingRunCreateRequest {
   lllite_rank?: number;
   condition_preprocessors?: string[] | null;
   condition_cache_mode?: string;
-  // Pre-flight: detect dataset drift + auto-rescan + cleanup orphan
-  // latent cache before launching the training subprocess.
-  rescan_before_training?: boolean;
+  // Pre-flight dataset drift check + optional rescan + orphan latent
+  // cache cleanup.  Modes:
+  //   "off"   — skip
+  //   "path"  — detect added/missing files only
+  //   "smart" — path drift + caption sidecar mtime
+  //   "force" — always rescan
+  // Legacy boolean also accepted (true→"path", false→"off") for backwards
+  // compatibility with older clients.
+  rescan_before_training?: "off" | "path" | "smart" | "force" | boolean;
   // Optimizer hyperparameters
   optimizer_is_paged?: boolean;
   optimizer_cautious?: boolean;
@@ -2372,8 +2378,9 @@ export interface TaggerTrainingRunCreateRequest {
   lr_top_targets?: number;
   lr_threshold?: number;
   lr_min_anchor_count?: number;
-  // Pre-flight: detect dataset drift + auto-rescan before training.
-  rescan_before_training?: boolean;
+  // Pre-flight dataset drift check + optional rescan.  Modes:
+  // "off" | "path" | "smart" | "force".  Legacy bool accepted.
+  rescan_before_training?: "off" | "path" | "smart" | "force" | boolean;
 }
 
 export interface TaggerTrainingMetric {

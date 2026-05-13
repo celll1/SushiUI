@@ -7325,8 +7325,15 @@ class BaseTrainer(ABC):
                     if dataset_changed:
                         print(f"{self.log_prefix} WARNING: Dataset has changed since checkpoint was saved!")
                         print(f"{self.log_prefix} Saved shuffle state is invalid - using fresh random state")
-                        print(f"{self.log_prefix} Training will continue from step {global_step}, but batch order will differ")
-                        # Do NOT restore random state - let it use current random state
+                        print(f"{self.log_prefix} Restarting current epoch from batch 0 (global_step={global_step} preserved)")
+                        # Do NOT restore random state - let it use current random state.
+                        # Also clear resume_training_state so the batch-truncation at
+                        # ``batches = batches[resume_batch_idx:]`` below does NOT run —
+                        # otherwise we'd skip the first resume_batch_idx batches of an
+                        # entirely different sample order, which means arbitrary
+                        # samples get skipped rather than the ones already trained on.
+                        resume_training_state = None
+                        resume_batch_idx     = 0
                     else:
                         print(f"{self.log_prefix} Dataset unchanged - restoring random state for mid-epoch resume...")
                         random.setstate(resume_training_state['random_state'])

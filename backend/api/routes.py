@@ -5291,6 +5291,9 @@ class TrainingRunCreateRequest(BaseModel):
     condition_preprocessors: Optional[List[str]] = None  # controlnet-aux preprocessor types (e.g., ["canny", "hed"])
     condition_cache_mode: str = "on_the_fly"  # "pre_generate" or "on_the_fly"
     # sample_condition_image_path is now per-prompt in sample_prompts[].condition_image_path
+    # Pre-flight: detect dataset drift + auto-rescan + cleanup orphan
+    # latent cache.  See backend/core/training/dataset_drift.py.
+    rescan_before_training: bool = False
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
@@ -5883,6 +5886,61 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
         db.commit()
         print(f"[API] Status updated and committed")
+
+        # ----- Pre-flight: dataset drift detection / optional rescan -----
+        # Opt-in via run.config["rescan_before_training"] (stored when
+        # the run was created).  Walks each dataset's root and compares
+        # against datasets.db; if drift is found, runs a full rescan
+        # via the existing /datasets/{id}/scan handler so the trainer
+        # subprocess sees the freshest state.  Also clears orphan
+        # latent-cache files so we don't waste training time on stale
+        # cache entries that point at missing images.
+        try:
+            run_cfg = run.config or {}
+        except Exception:
+            run_cfg = {}
+        if run_cfg.get("rescan_before_training", False):
+            try:
+                from core.training.dataset_drift import (
+                    detect_drift, rescan_dataset_inline,
+                    cleanup_orphan_latent_cache,
+                )
+                from database import DatasetsSessionLocal
+                from database.models import Dataset as _Dataset
+
+                ds_cfgs = run.dataset_configs or []
+                ds_ids = [int(c["dataset_id"]) for c in ds_cfgs if c.get("dataset_id")]
+                if not ds_ids and run.dataset_id:
+                    ds_ids = [int(run.dataset_id)]
+
+                ddb = DatasetsSessionLocal()
+                try:
+                    for ds_id in ds_ids:
+                        report = detect_drift(ds_id, ddb)
+                        print(f"[Training {run_id}] Dataset drift {ds_id}: {report.to_dict()}")
+                        if report.has_drift:
+                            print(f"[Training {run_id}] Drift in {ds_id} → full rescan")
+                            try:
+                                await rescan_dataset_inline(ds_id, ddb)
+                            except Exception as _re:
+                                print(f"[Training {run_id}] Rescan failed: {_re}")
+                            # Cleanup orphan latent cache for this dataset
+                            try:
+                                _ds = ddb.query(_Dataset).filter(_Dataset.id == ds_id).first()
+                                if _ds is not None and getattr(_ds, "unique_id", None):
+                                    removed = cleanup_orphan_latent_cache(
+                                        dataset_unique_id=_ds.unique_id,
+                                        datasets_db=ddb,
+                                        dataset_id=ds_id,
+                                    )
+                                    if removed:
+                                        print(f"[Training {run_id}] Cleaned {removed} orphan latent cache files")
+                            except Exception as _ce:
+                                print(f"[Training {run_id}] Latent cache cleanup failed: {_ce}")
+                finally:
+                    ddb.close()
+            except Exception as _de:
+                print(f"[Training {run_id}] Drift check failed (proceeding anyway): {_de}")
 
         # Create training process
         print(f"[API] Creating training process")
@@ -7289,6 +7347,10 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     lr_top_targets:            int   = 1000
     lr_threshold:              float = 1.0
     lr_min_anchor_count:       int   = 10
+    # Pre-flight dataset drift check + optional rescan.  See
+    # backend/core/training/dataset_drift.py.  Off by default — adds
+    # ~5 min for 3M-item dataset on NVMe to walk the dataset root.
+    rescan_before_training:    bool  = False
 
 
 # Active tagger training threads
@@ -7541,10 +7603,15 @@ def get_tagger_training_vocabulary(run_id: str, training_db: Session = Depends(g
 
 
 @router.post("/tagger-training/runs/{run_id}/start")
-def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
-    """Start or resume a tagger training run in a background thread."""
+async def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Start or resume a tagger training run in a background thread.
+
+    When ``config.rescan_before_training`` is True, runs a pre-flight
+    drift check against the dataset(s) and, if drift is detected,
+    invokes a full rescan before launching the trainer thread.
+    """
     import threading
-    from database import TrainingSessionLocal
+    from database import TrainingSessionLocal, DatasetsSessionLocal
 
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
@@ -7561,6 +7628,36 @@ def start_tagger_training_run(run_id: str, training_db: Session = Depends(get_tr
     dataset_configs = run.dataset_configs or []
     dataset_ids     = [dc["dataset_id"] for dc in dataset_configs]
     output_dir      = run.output_dir
+
+    # ----- Pre-flight: dataset drift detection / optional rescan -----
+    if config.get("rescan_before_training", False) and dataset_ids:
+        from core.training.dataset_drift import (
+            detect_drift, rescan_dataset_inline,
+        )
+        callback_pre = _make_tagger_progress_callback(run_id, TrainingSessionLocal)
+        ddb = DatasetsSessionLocal()
+        try:
+            for ds_id in dataset_ids:
+                callback_pre(run_id, "phase", {
+                    "phase": "dataset_drift",
+                    "message": f"Drift check: dataset {ds_id}...",
+                })
+                report = detect_drift(int(ds_id), ddb)
+                print(f"[TaggerTraining] Drift {ds_id}: {report.to_dict()}")
+                callback_pre(run_id, "dataset_drift", report.to_dict())
+                if report.has_drift:
+                    callback_pre(run_id, "phase", {
+                        "phase": "dataset_rescan",
+                        "message": f"Rescanning dataset {ds_id} "
+                                   f"({report.items_missing} missing, "
+                                   f"{report.items_new} new)...",
+                    })
+                    try:
+                        await rescan_dataset_inline(int(ds_id), ddb)
+                    except Exception as _rs_e:
+                        print(f"[TaggerTraining] Rescan of {ds_id} failed: {_rs_e}")
+        finally:
+            ddb.close()
 
     # Pass output_dir so the trainer auto-detects any resumable checkpoint
     # (latest_state.json or step_XXXXXX_state.json).  When no checkpoint exists,

@@ -190,6 +190,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lllite_rank: 64,
   condition_preprocessors: null,
   condition_cache_mode: "on_the_fly",
+  rescan_before_training: false,
 };
 
 export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRunUpdated }: TrainingConfigProps) {
@@ -644,6 +645,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lllite_rank: trainingMethod === "controlnet" && params.controlnet_type === "lllite" ? params.lllite_rank : undefined,
       condition_preprocessors: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_preprocessors : undefined,
       condition_cache_mode: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_cache_mode : undefined,
+      rescan_before_training: params.rescan_before_training ?? false,
       priority_training: priorityEnabled && priorityText.trim() ? {
         entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
         multiplier: priorityMultiplier,
@@ -3857,6 +3859,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         {/* Debug Options */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Debug Options</h3>
+
+          {/* Rescan datasets before training */}
+          <div className="flex items-start space-x-3">
+            <input
+              type="checkbox"
+              id="rescan-before-training"
+              checked={params.rescan_before_training ?? false}
+              onChange={(e) => updateParam("rescan_before_training", e.target.checked)}
+              className="mt-0.5 w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="rescan-before-training" className="text-sm text-gray-400">
+              Rescan datasets before training
+              <span className="block text-xs text-gray-500 mt-0.5">
+                Detects added / missing files and auto-rescans if drift is found.
+                Also cleans up orphan latent cache.  Adds the time of one
+                directory walk per dataset (typically &lt;1 min for normal LoRA datasets).
+              </span>
+            </label>
+          </div>
 
           {/* Debug Latents Toggle */}
           <div className="flex items-center space-x-3">

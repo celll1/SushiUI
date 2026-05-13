@@ -67,6 +67,9 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   lr_top_targets: 1000,
   lr_threshold: 1.0,
   lr_min_anchor_count: 10,
+  // Pre-flight: detect dataset drift + auto-rescan.  Adds the time of
+  // one directory walk per dataset (~5 min for 3M items on NVMe).
+  rescan_before_training: false,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -126,6 +129,7 @@ export default function TaggerTrainingConfig({
         lr_top_targets: (editRun.config?.lr_top_targets as number) ?? DEFAULT_CONFIG.lr_top_targets,
         lr_threshold: (editRun.config?.lr_threshold as number) ?? DEFAULT_CONFIG.lr_threshold,
         lr_min_anchor_count: (editRun.config?.lr_min_anchor_count as number) ?? DEFAULT_CONFIG.lr_min_anchor_count,
+        rescan_before_training: (editRun.config?.rescan_before_training as boolean) ?? DEFAULT_CONFIG.rescan_before_training,
       }
     : DEFAULT_CONFIG;
 
@@ -404,6 +408,20 @@ export default function TaggerTrainingConfig({
               />
               <span className="text-sm text-gray-300">Save base model</span>
               <span className="text-xs text-gray-500">(copies base weights into training directory for self-contained checkpoints)</span>
+            </label>
+          </div>
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={config.rescan_before_training ?? false}
+                onChange={(e) => setField("rescan_before_training", e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+              />
+              <span className="text-sm text-gray-300">Rescan datasets before training</span>
+              <span className="text-xs text-gray-500">
+                (detects added / missing files, auto-rescans if drift found; adds ~5 min walk per 3M items on NVMe)
+              </span>
             </label>
           </div>
           <div>

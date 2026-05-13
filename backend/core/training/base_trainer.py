@@ -7619,6 +7619,40 @@ class BaseTrainer(ABC):
                         stop_flag_file.unlink()  # Clean up flag file
                         raise KeyboardInterrupt("Training stopped by user")
 
+                    # Check for on-demand preview requests from the API
+                    # (file-based RPC, see core/training/training_preview_rpc.py).
+                    # Each request is processed in-place using the current
+                    # in-training model state.  Failures are isolated per
+                    # request and reported via the result file — training
+                    # never crashes because of a bad request.
+                    try:
+                        from core.training.training_preview_rpc import (
+                            list_pending_requests, read_request, cleanup_stale,
+                        )
+                        _pending = list_pending_requests(self.output_dir)
+                        if _pending:
+                            from core.training.training_inference import TrainingPreviewGenerator
+                            if not hasattr(self, "_preview_gen"):
+                                self._preview_gen = TrainingPreviewGenerator(self)
+                            for _req_path in _pending:
+                                _req = read_request(_req_path)
+                                # Always delete the request file first so a
+                                # malformed / re-emitted request isn't picked
+                                # up twice.
+                                try: _req_path.unlink()
+                                except OSError: pass
+                                if _req is None:
+                                    continue
+                                _rid = _req.get("request_id", "?")
+                                _params = _req.get("params", {})
+                                print(f"\n{self.log_prefix} Preview request {_rid} — processing...")
+                                self._preview_gen.process_request(_rid, _params)
+                                print(f"{self.log_prefix} Preview request {_rid} — done")
+                            cleanup_stale(str(self.output_dir))
+                    except Exception as _pe:   # noqa: BLE001
+                        # Never let preview handling kill training
+                        print(f"{self.log_prefix} WARNING: preview poll failed: {_pe}")
+
                     # Check if we need to refill swap buffer
                     if swap_buffer is not None and batch_idx >= next_swap_at_step:
                         # Calculate next batch range

@@ -20,7 +20,8 @@ import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { getSamplers, getScheduleTypes, generateInpaint, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -165,6 +166,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  // ── Training-preview integration (mirrors Txt2Img / Img2Img panels) ──
+  const [useTrainingModel, setUseTrainingModel] = useState(false);
+  const activeTraining = useActiveTraining();
+  const previewBlobUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeTraining && useTrainingModel) setUseTrainingModel(false);
+  }, [activeTraining, useTrainingModel]);
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrlRef.current) {
+        URL.revokeObjectURL(previewBlobUrlRef.current);
+        previewBlobUrlRef.current = null;
+      }
+    };
+  }, []);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
   const [tipoSettings, setTipoSettings] = useState<TIPOSettings>({
     model_name: "KBlueLeaf/TIPO-500M",
@@ -1649,10 +1665,44 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         unet_quantization: apiParams.unet_quantization,
       });
 
-      const result = await generateInpaint(apiParams, nextItem.inputImage!, nextItem.maskImage!);
+      let result: any;
+      let imageUrl: string;
+      if (useTrainingModel && activeTraining) {
+        // Training-preview branch: encode init+mask, route to
+        // /generate/inpaint/training-preview; result is a blob URL.
+        const initImageBase64 = await toBase64(nextItem.inputImage!);
+        const maskImageBase64 = await toBase64(nextItem.maskImage!);
+        const preview = await generateInpaintTrainingPreview({
+          ...(apiParams as any),
+          init_image_base64: initImageBase64,
+          mask_image_base64: maskImageBase64,
+          denoising_strength: apiParams.denoising_strength ?? 0.75,
+          run_id: activeTraining.run_id,
+        });
+        if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+        const objectUrl = URL.createObjectURL(preview.blob);
+        previewBlobUrlRef.current = objectUrl;
+        imageUrl = objectUrl;
+        result = {
+          success: true,
+          actual_seed: preview.seed ? Number(preview.seed) : -1,
+          image: {
+            filename: `preview_${preview.requestId ?? "training"}.png`,
+            filepath: objectUrl,
+            seed: preview.seed ? Number(preview.seed) : -1,
+            ancestral_seed: -1,
+            prompt: apiParams.prompt,
+            negative_prompt: apiParams.negative_prompt,
+            width: apiParams.width,
+            height: apiParams.height,
+          },
+        };
+      } else {
+        result = await generateInpaint(apiParams, nextItem.inputImage!, nextItem.maskImage!);
+        imageUrl = result.success ? `/outputs/${result.image.filename}` : "";
+      }
 
       if (result.success) {
-        const imageUrl = `/outputs/${result.image.filename}`;
         setGeneratedImage(imageUrl);
         setGeneratedImageSeed(result.actual_seed);
         setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
@@ -3089,6 +3139,30 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 />
                 <label htmlFor="preview_predicted_x0_inpaint" className="text-sm text-gray-300">
                   Preview Predicted x0
+                </label>
+              </div>
+
+              {/* Use training model toggle (mirrors Txt2Img / Img2Img panels) */}
+              <div className="flex items-center gap-2"
+                   title={activeTraining
+                     ? `Active: ${activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step ${activeTraining.current_step ?? "?"})`
+                     : "No active LoRA/Full-FT training"}>
+                <input
+                  type="checkbox"
+                  id="use_training_model_inpaint"
+                  checked={useTrainingModel}
+                  disabled={!activeTraining}
+                  onChange={(e) => setUseTrainingModel(e.target.checked)}
+                  className="rounded disabled:opacity-50"
+                />
+                <label htmlFor="use_training_model_inpaint"
+                       className={`text-sm ${activeTraining ? "text-gray-300" : "text-gray-500"}`}>
+                  Use training model
+                  {useTrainingModel && activeTraining && (
+                    <span className="ml-1 text-xs text-emerald-400">
+                      · {activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step {activeTraining.current_step ?? "?"})
+                    </span>
+                  )}
                 </label>
               </div>
 

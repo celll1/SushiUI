@@ -22,6 +22,46 @@ interface TaggerTrainingMonitorProps {
   onEditConfig?: () => void;
 }
 
+/** Format a duration in seconds as a compact human-readable string.
+ *  Examples: 23 → "23s", 90 → "1m 30s", 5400 → "1h 30m", 100000 → "1d 3h" */
+function formatDuration(sec: number | null): string {
+  if (sec === null || !Number.isFinite(sec) || sec < 0) return "—";
+  if (sec < 60) return `${Math.round(sec)}s`;
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return s === 0 ? `${m}m` : `${m}m ${s}s`;
+  }
+  if (sec < 86400) {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    return m === 0 ? `${h}h` : `${h}h ${m}m`;
+  }
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  return h === 0 ? `${d}d` : `${d}d ${h}h`;
+}
+
+/** Format an ETA's wall-clock arrival time.  "today HH:MM", "tomorrow
+ *  HH:MM", or "M/D HH:MM" for ≥ 2 days out. */
+function formatArrivalTime(etaSec: number | null, nowMs: number): string {
+  if (etaSec === null || !Number.isFinite(etaSec) || etaSec < 0) return "";
+  const arrival = new Date(nowMs + etaSec * 1000);
+  const now = new Date(nowMs);
+  const hhmm = `${String(arrival.getHours()).padStart(2, "0")}:${String(arrival.getMinutes()).padStart(2, "0")}`;
+  const sameDay = arrival.getFullYear() === now.getFullYear()
+    && arrival.getMonth() === now.getMonth()
+    && arrival.getDate() === now.getDate();
+  if (sameDay) return `today ${hhmm}`;
+  const tomorrow = new Date(now);
+  tomorrow.setDate(now.getDate() + 1);
+  const isTomorrow = arrival.getFullYear() === tomorrow.getFullYear()
+    && arrival.getMonth() === tomorrow.getMonth()
+    && arrival.getDate() === tomorrow.getDate();
+  if (isTomorrow) return `tomorrow ${hhmm}`;
+  return `${arrival.getMonth() + 1}/${arrival.getDate()} ${hhmm}`;
+}
+
 export default function TaggerTrainingMonitor({
   run: initialRun,
   onClose,
@@ -34,7 +74,18 @@ export default function TaggerTrainingMonitor({
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Short-window rate (last ~20 samples, ~30s of WS step events).  Used
+  // as the primary iter/s display and the basis for the ETA estimate.
   const [iterPerSec, setIterPerSec] = useState<number | null>(null);
+  // Long-window rate (whole sample buffer, up to ~5 min of step events).
+  // Used as a consistency reference for ETA — large divergence vs. the
+  // short-window rate flags a recent slowdown / speedup the user should
+  // be aware of (e.g. GPU contention, dataloader stall, batch-size
+  // change).  null when not enough samples accumulated yet.
+  const [iterPerSecLong, setIterPerSecLong] = useState<number | null>(null);
+  // 1Hz wall-clock tick to recompute elapsed time without re-rendering
+  // on every WS event.  Stored as ms-since-epoch.
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   // Buffer incoming WS step events; flush to state at most once per second
   const wsBufferRef = useRef<TaggerTrainingMetric[]>([]);
@@ -106,8 +157,10 @@ export default function TaggerTrainingMonitor({
           iterRateSamplesRef.current = [];
         }
         iterRateSamplesRef.current.push({ step: m.step, t: performance.now(), seq });
-        // Keep at most 20 samples; oldest evicted FIFO.
-        if (iterRateSamplesRef.current.length > 20) {
+        // Keep at most 200 samples (~3-5 min of step events at typical
+        // training rates).  The short window slices the tail; the long
+        // window uses the whole buffer.  Older evicted FIFO.
+        if (iterRateSamplesRef.current.length > 200) {
           iterRateSamplesRef.current.shift();
         }
       }
@@ -144,16 +197,27 @@ export default function TaggerTrainingMonitor({
             }));
           }
 
-          // Compute iter/s from the rolling window (oldest → newest).
-          // Need ≥ 2 samples spanning > 0.2s to produce a stable value.
+          // Compute iter/s from two windows:
+          //   short: last 20 samples  (≈ 20–30 s of step events)
+          //   long:  whole buffer     (≈ up to 3–5 min)
+          // Both Δstep > 0 and Δt above a minimum to avoid noise.
           const samples = iterRateSamplesRef.current;
           if (samples.length >= 2) {
-            const first = samples[0];
-            const last  = samples[samples.length - 1];
-            const dStep = last.step - first.step;
-            const dT    = (last.t - first.t) / 1000;
-            if (dStep > 0 && dT >= 0.2) {
-              setIterPerSec(dStep / dT);
+            const rateOf = (slice: typeof samples, minDt: number): number | null => {
+              if (slice.length < 2) return null;
+              const f = slice[0];
+              const l = slice[slice.length - 1];
+              const dStep = l.step - f.step;
+              const dT    = (l.t - f.t) / 1000;
+              if (dStep <= 0 || dT < minDt) return null;
+              return dStep / dT;
+            };
+            const shortSlice = samples.slice(-20);
+            setIterPerSec(rateOf(shortSlice, 0.2));
+            // Long window: require ≥ 30 samples AND ≥ 5 s span before
+            // displaying so it's actually a "long-term" reference.
+            if (samples.length >= 30) {
+              setIterPerSecLong(rateOf(samples, 5));
             }
           }
 
@@ -242,6 +306,7 @@ export default function TaggerTrainingMonitor({
     if (!isActive) {
       // Run stopped — drop the rate display so it doesn't look frozen.
       setIterPerSec(null);
+      setIterPerSecLong(null);
       iterRateSamplesRef.current = [];
       return;
     }
@@ -266,16 +331,74 @@ export default function TaggerTrainingMonitor({
       const last = samples[samples.length - 1];
       if (performance.now() - last.t > 10_000) {
         setIterPerSec(null);
+        setIterPerSecLong(null);
         iterRateSamplesRef.current = [];
       }
     }, 2000);
     return () => clearInterval(timer);
   }, [run.status]);
 
+  // 1Hz wall-clock tick for elapsed-time display.  Cheap (single
+  // setState per second) and isolated from the WS-driven flush.
+  useEffect(() => {
+    const isActive = run.status === "running" || run.status === "starting";
+    if (!isActive) return;
+    const tick = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(tick);
+  }, [run.status]);
+
   // Load full metrics history on mount (for resumed/completed runs)
   useEffect(() => {
     fetchMetrics();
   }, [fetchMetrics]);
+
+  // ────────────────────────────────────────────────────────────────────
+  // Derived values for the progress header (elapsed / ETA / consistency)
+  // ────────────────────────────────────────────────────────────────────
+
+  // Session start: prefer last_resumed_at (resume case) over started_at
+  // (initial run case).  If neither is set, we can't show elapsed time.
+  const sessionStartMs = run.last_resumed_at
+    ? new Date(run.last_resumed_at).getTime()
+    : (run.started_at ? new Date(run.started_at).getTime() : null);
+  const elapsedSec = sessionStartMs !== null
+    ? Math.max(0, (nowMs - sessionStartMs) / 1000)
+    : null;
+
+  // Total steps: prefer the backend's reported value; fall back to
+  // deriving from progress (current_step / progress) once progress > 0.
+  const totalStepsEst: number | null = (() => {
+    if (typeof run.total_steps === "number" && run.total_steps > 0) {
+      return run.total_steps;
+    }
+    if (run.progress > 0 && run.current_step > 0) {
+      return Math.round(run.current_step / run.progress);
+    }
+    return null;
+  })();
+  const remainingSteps = totalStepsEst !== null
+    ? Math.max(0, totalStepsEst - run.current_step)
+    : null;
+
+  // ETA: short-window primary, long-window for consistency check.
+  const etaShortSec = remainingSteps !== null && iterPerSec && iterPerSec > 0
+    ? remainingSteps / iterPerSec
+    : null;
+  const etaLongSec = remainingSteps !== null && iterPerSecLong && iterPerSecLong > 0
+    ? remainingSteps / iterPerSecLong
+    : null;
+
+  // Divergence: |short - long| / long.  null when either window is
+  // unavailable.
+  const etaDivergence = etaShortSec !== null && etaLongSec !== null && etaLongSec > 0
+    ? Math.abs(etaShortSec - etaLongSec) / etaLongSec
+    : null;
+  const consistencyLevel: "stable" | "variable" | "unstable" | null =
+    etaDivergence === null
+      ? null
+      : etaDivergence < 0.15 ? "stable"
+      : etaDivergence < 0.40 ? "variable"
+      : "unstable";
 
   const handleStart = async () => {
     setActionLoading(true);
@@ -377,6 +500,56 @@ export default function TaggerTrainingMonitor({
                 style={{ width: `${run.progress * 100}%` }}
               />
             </div>
+            {/* Elapsed (session) / ETA / consistency indicator */}
+            {(elapsedSec !== null || etaShortSec !== null) && (
+              <div className="flex items-center justify-between text-xs mt-1.5 font-mono">
+                {elapsedSec !== null ? (
+                  <span className="text-gray-500" title={
+                    run.last_resumed_at
+                      ? `Session resumed at ${new Date(run.last_resumed_at).toLocaleString()}`
+                      : run.started_at
+                        ? `Started at ${new Date(run.started_at).toLocaleString()}`
+                        : ""
+                  }>
+                    elapsed {formatDuration(elapsedSec)}
+                    {run.last_resumed_at && (
+                      <span className="text-gray-600 ml-1">(this session)</span>
+                    )}
+                  </span>
+                ) : <span />}
+                {etaShortSec !== null && (
+                  <span className="text-gray-400">
+                    {consistencyLevel === "unstable" && etaLongSec !== null ? (
+                      // Show range when divergence > 40%
+                      <span title={`Recent rate (${iterPerSec?.toFixed(2)} it/s) differs >40% from session average (${iterPerSecLong?.toFixed(2)} it/s). Range shown.`}>
+                        ETA{" "}
+                        {formatDuration(Math.min(etaShortSec, etaLongSec))}
+                        {"–"}
+                        {formatDuration(Math.max(etaShortSec, etaLongSec))}
+                        <span className="ml-1 text-red-400" aria-label="unstable">●</span>
+                      </span>
+                    ) : (
+                      <span title={
+                        etaLongSec !== null
+                          ? `Recent rate ${iterPerSec?.toFixed(2)} it/s; session avg ${iterPerSecLong?.toFixed(2)} it/s`
+                          : ""
+                      }>
+                        ETA {formatDuration(etaShortSec)}
+                        <span className="text-gray-600 ml-1">
+                          ({formatArrivalTime(etaShortSec, nowMs)})
+                        </span>
+                        {consistencyLevel === "variable" && (
+                          <span className="ml-1 text-yellow-400" aria-label="variable">●</span>
+                        )}
+                        {consistencyLevel === "stable" && (
+                          <span className="ml-1 text-green-500/60" aria-label="stable">●</span>
+                        )}
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+            )}
           </section>
         )}
 

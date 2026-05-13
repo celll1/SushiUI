@@ -34,6 +34,7 @@ export default function TaggerTrainingMonitor({
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [iterPerSec, setIterPerSec] = useState<number | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   // Buffer incoming WS step events; flush to state at most once per second
   const wsBufferRef = useRef<TaggerTrainingMetric[]>([]);
@@ -48,6 +49,11 @@ export default function TaggerTrainingMonitor({
     epoch?: number;
     loss?: number;
   } | null>(null);
+  // Rolling (step, client_recv_time) samples for iter/s calculation.
+  // We use client recv time rather than server timestamp because the WS
+  // payload does not carry one and clock skew would just shift the rate
+  // by a constant.  Reset when resume_seq changes (step counter restarts).
+  const iterRateSamplesRef = useRef<Array<{ step: number; t: number; seq: number }>>([]);
 
   const updateRun = useCallback((updated: TaggerTrainingRun) => {
     setRun(updated);
@@ -87,6 +93,25 @@ export default function TaggerTrainingMonitor({
         loss:     m.loss,
       };
 
+      // Record sample for iter/s.  Only "step" events advance the step
+      // counter; "epoch" events fire on the same step and would inflate
+      // the rate if counted.
+      if (m.event === "step") {
+        const seq = m.resume_seq ?? 0;
+        const samples = iterRateSamplesRef.current;
+        // Drop the window when we cross a resume boundary (step
+        // counter is monotonic within a resume but can jump backwards
+        // across resumes).
+        if (samples.length > 0 && samples[samples.length - 1].seq !== seq) {
+          iterRateSamplesRef.current = [];
+        }
+        iterRateSamplesRef.current.push({ step: m.step, t: performance.now(), seq });
+        // Keep at most 20 samples; oldest evicted FIFO.
+        if (iterRateSamplesRef.current.length > 20) {
+          iterRateSamplesRef.current.shift();
+        }
+      }
+
       const item: TaggerTrainingMetric = {
         step: m.step,
         resume_seq: m.resume_seq ?? 0,
@@ -117,6 +142,19 @@ export default function TaggerTrainingMonitor({
               current_epoch: upd.epoch ?? prev.current_epoch,
               latest_loss:   upd.loss ?? prev.latest_loss,
             }));
+          }
+
+          // Compute iter/s from the rolling window (oldest → newest).
+          // Need ≥ 2 samples spanning > 0.2s to produce a stable value.
+          const samples = iterRateSamplesRef.current;
+          if (samples.length >= 2) {
+            const first = samples[0];
+            const last  = samples[samples.length - 1];
+            const dStep = last.step - first.step;
+            const dT    = (last.t - first.t) / 1000;
+            if (dStep > 0 && dT >= 0.2) {
+              setIterPerSec(dStep / dT);
+            }
           }
 
           const incoming = wsBufferRef.current.splice(0);
@@ -201,7 +239,12 @@ export default function TaggerTrainingMonitor({
       pollingRef.current = null;
     }
 
-    if (!isActive) return;
+    if (!isActive) {
+      // Run stopped — drop the rate display so it doesn't look frozen.
+      setIterPerSec(null);
+      iterRateSamplesRef.current = [];
+      return;
+    }
 
     pollingRef.current = setInterval(() => fetchStatusRef.current(), 15000);
 
@@ -211,6 +254,22 @@ export default function TaggerTrainingMonitor({
         pollingRef.current = null;
       }
     };
+  }, [run.status]);
+
+  // Decay the rate display when no new step events arrive (e.g. while a
+  // validation pass runs between epochs).  After 10s of silence, clear.
+  useEffect(() => {
+    if (run.status !== "running") return;
+    const timer = setInterval(() => {
+      const samples = iterRateSamplesRef.current;
+      if (samples.length === 0) return;
+      const last = samples[samples.length - 1];
+      if (performance.now() - last.t > 10_000) {
+        setIterPerSec(null);
+        iterRateSamplesRef.current = [];
+      }
+    }, 2000);
+    return () => clearInterval(timer);
   }, [run.status]);
 
   // Load full metrics history on mount (for resumed/completed runs)
@@ -302,6 +361,13 @@ export default function TaggerTrainingMonitor({
                 {run.status_message
                   ? run.status_message
                   : `Epoch ${run.current_epoch} · Step ${run.current_step}`}
+                {iterPerSec !== null && (
+                  <span className="ml-2 text-gray-500 font-mono">
+                    · {iterPerSec >= 1
+                        ? `${iterPerSec.toFixed(2)} it/s`
+                        : `${(1 / iterPerSec).toFixed(2)} s/it`}
+                  </span>
+                )}
               </span>
               <span className="text-gray-300">{(run.progress * 100).toFixed(1)}%</span>
             </div>

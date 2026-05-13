@@ -5916,15 +5916,56 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                 ddb = DatasetsSessionLocal()
                 try:
                     for ds_id in ds_ids:
-                        report = detect_drift(ds_id, ddb)
+                        # Live walk-progress → WebSocket
+                        def _drift_progress(files_walked: int, _ds_id=ds_id):
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="training", run_id=run_id,
+                                    dataset_id=int(_ds_id), phase="drift_walk",
+                                    files_walked=files_walked,
+                                )
+                            except Exception:
+                                pass
+                        report = detect_drift(ds_id, ddb,
+                                              progress_callback=_drift_progress)
                         print(f"[Training {run_id}] Dataset drift {ds_id}: {report.to_dict()}")
+                        try:
+                            manager.send_dataset_scan_progress(
+                                scope="training", run_id=run_id,
+                                dataset_id=int(ds_id), phase="drift_done",
+                                files_walked=report.files_walked,
+                                items_in_db=report.items_in_db,
+                                items_missing=report.items_missing,
+                                items_new=report.items_new,
+                            )
+                        except Exception:
+                            pass
                         if report.has_drift:
                             print(f"[Training {run_id}] Drift in {ds_id} → full rescan")
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="training", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="rescan",
+                                    files_walked=report.files_walked,
+                                    items_missing=report.items_missing,
+                                    items_new=report.items_new,
+                                    message="Rescanning...",
+                                )
+                            except Exception:
+                                pass
                             try:
                                 await rescan_dataset_inline(ds_id, ddb)
                             except Exception as _re:
                                 print(f"[Training {run_id}] Rescan failed: {_re}")
                             # Cleanup orphan latent cache for this dataset
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="training", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="cleanup",
+                                    message="Cleaning orphan latent cache...",
+                                )
+                            except Exception:
+                                pass
                             try:
                                 _ds = ddb.query(_Dataset).filter(_Dataset.id == ds_id).first()
                                 if _ds is not None and getattr(_ds, "unique_id", None):
@@ -7638,13 +7679,37 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
         ddb = DatasetsSessionLocal()
         try:
             for ds_id in dataset_ids:
+                # Live progress callback: forwards walk count to UI via WS
+                def _drift_progress(files_walked: int, _ds_id=ds_id):
+                    try:
+                        manager.send_dataset_scan_progress(
+                            scope="tagger", run_id=run_id,
+                            dataset_id=int(_ds_id), phase="drift_walk",
+                            files_walked=files_walked,
+                        )
+                    except Exception:
+                        pass
                 callback_pre(run_id, "phase", {
                     "phase": "dataset_drift",
                     "message": f"Drift check: dataset {ds_id}...",
                 })
-                report = detect_drift(int(ds_id), ddb)
+                report = detect_drift(int(ds_id), ddb,
+                                      progress_callback=_drift_progress)
                 print(f"[TaggerTraining] Drift {ds_id}: {report.to_dict()}")
                 callback_pre(run_id, "dataset_drift", report.to_dict())
+                # Final "drift_done" event with the full report so the UI
+                # can flip from "scanning..." to "<N> missing, <M> new"
+                try:
+                    manager.send_dataset_scan_progress(
+                        scope="tagger", run_id=run_id,
+                        dataset_id=int(ds_id), phase="drift_done",
+                        files_walked=report.files_walked,
+                        items_in_db=report.items_in_db,
+                        items_missing=report.items_missing,
+                        items_new=report.items_new,
+                    )
+                except Exception:
+                    pass
                 if report.has_drift:
                     callback_pre(run_id, "phase", {
                         "phase": "dataset_rescan",
@@ -7652,6 +7717,17 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                                    f"({report.items_missing} missing, "
                                    f"{report.items_new} new)...",
                     })
+                    try:
+                        manager.send_dataset_scan_progress(
+                            scope="tagger", run_id=run_id,
+                            dataset_id=int(ds_id), phase="rescan",
+                            files_walked=report.files_walked,
+                            items_missing=report.items_missing,
+                            items_new=report.items_new,
+                            message="Rescanning...",
+                        )
+                    except Exception:
+                        pass
                     try:
                         await rescan_dataset_inline(int(ds_id), ddb)
                     except Exception as _rs_e:

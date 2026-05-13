@@ -10,7 +10,7 @@ import {
   TaggerTrainingRun,
   TaggerTrainingMetric,
 } from "@/utils/api";
-import { wsClient, TaggerMetrics } from "@/utils/websocket";
+import { wsClient, TaggerMetrics, DatasetScanProgress } from "@/utils/websocket";
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 import TaggerMetricChart from "./TaggerMetricChart";
 
@@ -271,8 +271,36 @@ export default function TaggerTrainingMonitor({
     };
 
     wsClient.subscribeToTaggerMetrics(handler);
+
+    // Pre-flight dataset drift/rescan progress — fold into status_message
+    // so the existing progress-section UI shows real-time scan progress
+    // (e.g. "Drift check: dataset 25 — walked 850,000 files (142s)").
+    const scanHandler = (ev: DatasetScanProgress) => {
+      if (ev.scope !== "tagger") return;
+      if (String(ev.run_id) !== String(run.run_id)) return;
+      let msg = "";
+      if (ev.phase === "drift_walk") {
+        msg = `Drift check: dataset ${ev.dataset_id} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;
+      } else if (ev.phase === "drift_done") {
+        if ((ev.items_missing ?? 0) === 0 && (ev.items_new ?? 0) === 0) {
+          msg = `Drift check: dataset ${ev.dataset_id} — no drift (${(ev.files_walked ?? 0).toLocaleString()} files)`;
+        } else {
+          msg = `Drift check: dataset ${ev.dataset_id} — ${ev.items_missing ?? 0} missing, ${ev.items_new ?? 0} new`;
+        }
+      } else if (ev.phase === "rescan") {
+        msg = ev.message ?? `Rescanning dataset ${ev.dataset_id}...`;
+      } else if (ev.phase === "cleanup") {
+        msg = ev.message ?? `Cleaning orphan cache for dataset ${ev.dataset_id}...`;
+      }
+      if (msg) {
+        setRun(prev => ({ ...prev, status_message: msg }));
+      }
+    };
+    wsClient.subscribeToDatasetScanProgress(scanHandler);
+
     return () => {
       wsClient.unsubscribeFromTaggerMetrics(handler);
+      wsClient.unsubscribeFromDatasetScanProgress(scanHandler);
       if (wsFlushRef.current) {
         clearTimeout(wsFlushRef.current);
         wsFlushRef.current = null;

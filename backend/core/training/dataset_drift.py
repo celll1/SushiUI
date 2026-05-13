@@ -83,17 +83,28 @@ def _walk_dataset_dir(
     recursive: bool,
     max_depth: Optional[int],
     extensions: Set[str],
+    progress_callback: Optional[Callable[[int], None]] = None,
+    progress_every_files: int = 5000,
+    progress_every_sec: float = 1.0,
 ) -> Set[str]:
     """Walk ``root`` and return absolute file paths matching extensions.
 
     Uses ``os.scandir`` which on Windows is several times faster than
     ``os.walk``.  Honours ``recursive`` + ``max_depth`` (mirrors the
     rescan endpoint's logic).
+
+    ``progress_callback`` (if given) is invoked with the cumulative file
+    count every ``progress_every_files`` matched files OR every
+    ``progress_every_sec`` seconds, whichever comes first.  Exceptions
+    raised by the callback are caught and silenced so a bad reporter
+    can never break the walk.
     """
     out: Set[str] = set()
     root = os.path.abspath(root)
     # Stack of (path, depth_remaining) where None = unlimited
     stack: List[tuple] = [(root, max_depth)]
+    last_report = time.monotonic()
+    last_count = 0
     while stack:
         cur, remaining = stack.pop()
         try:
@@ -111,17 +122,44 @@ def _walk_dataset_dir(
                         ext = os.path.splitext(entry.name)[1].lower()
                         if ext in extensions:
                             out.add(os.path.abspath(entry.path))
+                            # Emit progress on count OR time threshold
+                            if progress_callback is not None:
+                                cnt = len(out)
+                                now = time.monotonic()
+                                if (cnt - last_count >= progress_every_files
+                                        or now - last_report >= progress_every_sec):
+                                    try:
+                                        progress_callback(cnt)
+                                    except Exception:
+                                        pass
+                                    last_count = cnt
+                                    last_report = now
                 except OSError:
                     pass
+    # Final report so the consumer sees the actual total
+    if progress_callback is not None and len(out) != last_count:
+        try:
+            progress_callback(len(out))
+        except Exception:
+            pass
     return out
 
 
-def detect_drift(dataset_id: int, datasets_db) -> DriftReport:
+def detect_drift(
+    dataset_id: int,
+    datasets_db,
+    *,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> DriftReport:
     """Compare on-disk files against DB rows for *dataset_id*.
 
     Read-only: never writes to ``datasets_db``.  Returns a populated
     ``DriftReport`` even when the dataset's root is missing (in which
     case all DB items are reported as ``items_missing``).
+
+    ``progress_callback`` (optional) receives the cumulative file count
+    as the directory walk progresses — used by the route handler to
+    push WebSocket progress events to the training monitor UI.
     """
     from database.models import Dataset, DatasetItem
 
@@ -149,6 +187,7 @@ def detect_drift(dataset_id: int, datasets_db) -> DriftReport:
             recursive=bool(getattr(ds, "recursive", True)),
             max_depth=getattr(ds, "max_depth", None) or None,
             extensions=exts,
+            progress_callback=progress_callback,
         )
 
     # 2) Files according to the DB.  Normalise to absolute paths so the

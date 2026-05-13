@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
 import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
+import { wsClient, DatasetScanProgress } from "@/utils/websocket";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
 import ParamChangeChart from "./ParamChangeChart";
@@ -38,6 +39,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   const [debugVisualization, setDebugVisualization] = useState<DebugLatentVisualization | null>(null);
   const [comparisonSlider, setComparisonSlider] = useState<number>(50); // 0-100
   const [, setTimeTick] = useState(0); // Force re-render for time update
+
+  // Dataset scan progress (drift detection / rescan) — shown until training proper starts
+  const [scanMessage, setScanMessage] = useState<string | null>(null);
 
   // Poll training status
   useEffect(() => {
@@ -102,6 +106,38 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       console.error("Failed to load sample images:", err);
     }
   };
+
+  // Subscribe to dataset scan progress (drift check / rescan / cleanup) over WS
+  useEffect(() => {
+    const handler = (ev: DatasetScanProgress) => {
+      if (ev.scope !== "training") return;
+      if (String(ev.run_id) !== String(currentRun.id)) return;
+      let msg = "";
+      if (ev.phase === "drift_walk") {
+        msg = `Drift check: dataset ${ev.dataset_id} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;
+      } else if (ev.phase === "drift_done") {
+        if ((ev.items_missing ?? 0) === 0 && (ev.items_new ?? 0) === 0) {
+          msg = `Drift check: dataset ${ev.dataset_id} — no drift (${(ev.files_walked ?? 0).toLocaleString()} files)`;
+        } else {
+          msg = `Drift check: dataset ${ev.dataset_id} — ${ev.items_missing ?? 0} missing, ${ev.items_new ?? 0} new`;
+        }
+      } else if (ev.phase === "rescan") {
+        msg = ev.message ?? `Rescanning dataset ${ev.dataset_id}...`;
+      } else if (ev.phase === "cleanup") {
+        msg = ev.message ?? `Cleaning orphan latent cache for dataset ${ev.dataset_id}...`;
+      }
+      if (msg) setScanMessage(msg);
+    };
+    wsClient.subscribeToDatasetScanProgress(handler);
+    return () => wsClient.unsubscribeFromDatasetScanProgress(handler);
+  }, [currentRun.id]);
+
+  // Clear scan message once training proper starts
+  useEffect(() => {
+    if (currentRun.phase === "training" || currentRun.phase === "latent_cache" || currentRun.phase === "text_encoder_cache") {
+      setScanMessage(null);
+    }
+  }, [currentRun.phase]);
 
   // Load debug latents
   useEffect(() => {
@@ -295,12 +331,16 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 </span>
               </div>
 
-              {/* Detail message */}
-              {currentRun.phase_detail && currentRun.phase !== "training" && (
+              {/* Detail message — scan progress takes priority over phase_detail */}
+              {scanMessage ? (
+                <div className="text-xs text-blue-300 mb-1">
+                  {scanMessage}
+                </div>
+              ) : currentRun.phase_detail && currentRun.phase !== "training" ? (
                 <div className="text-xs text-gray-500 mb-1">
                   {currentRun.phase_detail}
                 </div>
-              )}
+              ) : null}
 
               <div className="w-full bg-gray-700 rounded-full h-2">
                 <div

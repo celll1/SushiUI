@@ -554,6 +554,171 @@ async def generate_txt2img(
         if lora_configs and pipeline_manager.txt2img_pipeline:
             pipeline_manager.txt2img_pipeline = lora_manager.unload_loras(pipeline_manager.txt2img_pipeline)
 
+
+# ---------------------------------------------------------------------------
+# Training-preview generation (LoRA / Full-FT subprocess)
+# ---------------------------------------------------------------------------
+#
+# When a LoRA / Full-FT training is active, the user can request a preview
+# rendered with the in-training model.  The training process runs in a
+# subprocess so we can't reach its UNet from here directly — instead we
+# use file-based RPC (``core/training/training_preview_rpc``): write a
+# request JSON in the run's ``output_dir``; the trainer picks it up at
+# the next batch boundary, generates, and writes back PNG + meta JSON.
+
+class TrainingPreviewRequest(GenerationParams):
+    """Same as GenerationParams plus an optional run_id to target a
+    specific training run when multiple are active."""
+    run_id: Optional[int] = None
+
+
+def _get_active_training_for_preview(run_id_hint: Optional[int]) -> tuple[int, str]:
+    """Find which training run to send a preview request to.
+
+    If ``run_id_hint`` is given, use it.  Otherwise pick the single
+    active running process; raise 409 if zero or multiple match.
+    """
+    from core.training.training_process import training_process_manager
+    procs = training_process_manager.processes
+    if run_id_hint is not None:
+        proc = procs.get(int(run_id_hint))
+        if proc is None or not proc.is_running:
+            raise HTTPException(status_code=404,
+                                detail=f"Training run {run_id_hint} is not active")
+        return int(run_id_hint), proc.output_dir
+
+    active = [(rid, p) for rid, p in procs.items() if p.is_running]
+    if not active:
+        raise HTTPException(status_code=409,
+                            detail="No active training run to preview against")
+    if len(active) > 1:
+        ids = ", ".join(str(rid) for rid, _ in active)
+        raise HTTPException(status_code=409,
+                            detail=f"Multiple active runs ({ids}); pass run_id to disambiguate")
+    rid, proc = active[0]
+    return int(rid), proc.output_dir
+
+
+async def _await_preview_result(
+    output_dir: str, request_id: str, timeout: float = 180.0,
+) -> tuple[Optional[bytes], dict]:
+    """Poll for a preview result.  Returns (png_bytes, meta).
+
+    The trainer writes the meta file LAST and atomically, so detecting
+    the meta file is sufficient to know the PNG is fully written.
+    """
+    from core.training.training_preview_rpc import (
+        result_image_path, result_meta_path,
+    )
+    import json as _json
+    deadline = asyncio.get_event_loop().time() + timeout
+    meta_path = result_meta_path(output_dir, request_id)
+    img_path  = result_image_path(output_dir, request_id)
+    while asyncio.get_event_loop().time() < deadline:
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = _json.load(f)
+            except Exception:
+                meta = {"ok": False, "error": "could not parse meta file"}
+            image_bytes: Optional[bytes] = None
+            if img_path.exists():
+                try:
+                    image_bytes = img_path.read_bytes()
+                except OSError:
+                    image_bytes = None
+            for p in (meta_path, img_path):
+                try: p.unlink()
+                except OSError: pass
+            return image_bytes, meta
+        await asyncio.sleep(0.5)
+    raise HTTPException(
+        status_code=504,
+        detail=f"Preview request timed out after {timeout:.0f}s "
+               f"(training busy or stopped)",
+    )
+
+
+@router.get("/training/active")
+async def get_active_training(training_db: Session = Depends(get_training_db)):
+    """Return summary info on the currently-active LoRA / Full-FT training,
+    or 404 if none.  Used by the generate panel to enable / disable the
+    "Use training model" toggle and to display the target run."""
+    from core.training.training_process import training_process_manager
+    active = [(rid, p) for rid, p in training_process_manager.processes.items()
+              if p.is_running]
+    if not active:
+        raise HTTPException(status_code=404, detail="No active training run")
+    # If multiple, return the one with the highest run_id (typically the
+    # most recently started).  Frontend can disambiguate by passing run_id
+    # explicitly to the preview endpoint.
+    rid, proc = max(active, key=lambda x: x[0])
+    run_name: Optional[str] = None
+    training_method: Optional[str] = None
+    try:
+        _row = training_db.query(TrainingRun).filter(TrainingRun.id == int(rid)).first()
+        if _row is not None:
+            run_name = getattr(_row, "name", None) or getattr(_row, "run_name", None)
+            training_method = getattr(_row, "training_method", None)
+    except Exception:
+        pass
+    return {
+        "run_id": int(rid),
+        "run_name": run_name,
+        "training_method": training_method,
+        "current_step": getattr(proc, "current_step", 0),
+        "is_running": True,
+    }
+
+
+@router.post("/generate/txt2img/training-preview")
+async def generate_txt2img_training_preview(request: TrainingPreviewRequest):
+    """Generate an image using the CURRENT state of an active LoRA / Full-FT
+    training (Base + LoRA-in-progress).
+
+    Phase 1 of the in-training preview feature: txt2img only.  Phase 2 +
+    will add img2img / inpaint endpoints; Phase 3 + 4 will widen the
+    trainer side to honour LoRA stack and ControlNet parameters from
+    the request (all params are already forwarded in the request file,
+    so newer trainers automatically pick them up without API changes).
+    """
+    from core.training.training_preview_rpc import (
+        make_request_id, write_request,
+    )
+
+    run_id, output_dir = _get_active_training_for_preview(request.run_id)
+
+    # Forward the entire param set to the trainer.  Trainer-side support
+    # is currently Phase-1 (basic params); later phases will consume the
+    # additional fields.
+    params: Dict[str, Any] = request.dict(exclude={"run_id"})
+    params["mode"] = "txt2img"
+
+    request_id = make_request_id()
+    try:
+        write_request(output_dir, request_id, params)
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"Could not queue preview request: {e}")
+
+    image_bytes, meta = await _await_preview_result(
+        output_dir, request_id, timeout=180.0,
+    )
+    if not meta.get("ok"):
+        raise HTTPException(
+            status_code=500,
+            detail=f"Preview generation failed: {meta.get('error', 'unknown error')}",
+        )
+    if image_bytes is None:
+        raise HTTPException(status_code=500, detail="Preview returned no image")
+
+    return Response(content=image_bytes, media_type="image/png", headers={
+        "X-Preview-Run-Id":   str(run_id),
+        "X-Preview-Seed":     str(meta.get("seed", "")),
+        "X-Preview-Request":  request_id,
+    })
+
+
 @router.post("/generate/img2img")
 async def generate_img2img(
     prompt: str = Form(...),

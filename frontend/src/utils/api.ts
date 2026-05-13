@@ -371,6 +371,72 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   return response.data;
 };
 
+
+// ---------------------------------------------------------------------------
+// Training-preview generation (in-training LoRA / Full-FT model)
+// ---------------------------------------------------------------------------
+// Sends a JSON body to the new /generate/txt2img/training-preview endpoint;
+// the backend writes a request file in the active training run's output_dir
+// and the trainer subprocess picks it up at the next batch boundary.  The
+// response is a PNG blob plus a few X-Preview-* headers.
+
+export interface ActiveTrainingInfo {
+  run_id: number;
+  run_name?: string;
+  training_method?: "lora" | "full" | string;
+  current_step?: number;
+  is_running: boolean;
+}
+
+export interface TrainingPreviewParams extends GenerationParams {
+  /** Optional explicit run to target.  Backend picks the (sole) active
+   *  run if omitted; returns 409 when multiple are active. */
+  run_id?: number;
+}
+
+/** Returns { blob, seed, runId } for the rendered image. */
+export const generateTxt2ImgTrainingPreview = async (
+  params: TrainingPreviewParams,
+): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string }> => {
+  // Attention type honours the local toggle, same as regular generate
+  const attentionType = typeof window !== 'undefined'
+    ? localStorage.getItem('attention_type') : null;
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed")
+    : params.controlnets;
+
+  const body = {
+    ...params,
+    attention_type: attentionType || 'normal',
+    controlnets: controlnets || [],
+    loras: params.loras || [],
+  };
+
+  const response = await api.post("/generate/txt2img/training-preview", body, {
+    responseType: "blob",
+  });
+  return {
+    blob: response.data as Blob,
+    seed:      response.headers["x-preview-seed"]    as string | undefined,
+    runId:     response.headers["x-preview-run-id"]  as string | undefined,
+    requestId: response.headers["x-preview-request"] as string | undefined,
+  };
+};
+
+/** Lightweight active-training probe.  Returns null when nothing is running.
+ *  Used by the generate panel to enable / disable the "Use training model"
+ *  toggle. */
+export const getActiveTraining = async (): Promise<ActiveTrainingInfo | null> => {
+  try {
+    const res = await api.get("/training/active");
+    return res.data as ActiveTrainingInfo;
+  } catch (e: unknown) {
+    // 404 / no active run → return null silently
+    return null;
+  }
+};
+
+
 export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;

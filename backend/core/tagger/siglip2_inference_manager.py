@@ -567,6 +567,28 @@ class SigLIP2InferenceManager:
             meta["vision_encoder_repo"] = SIGLIP2_DEFAULT_REPO_ID
 
         saved = self.model.save_merged_checkpoint(output_dir, output_name, meta)
+
+        # Copy the vocabulary alongside the merged checkpoint so future runs
+        # that load this file as their base model can do tag-name alignment
+        # in _inherit_head.  Two filenames are written:
+        #   - {output_name}_vocabulary.json (per-checkpoint snapshot — preferred
+        #     by inference manager and _inherit_head)
+        #   - vocabulary.json (legacy/general — also recognized)
+        if self.vocab_path and os.path.isfile(self.vocab_path):
+            try:
+                import shutil as _shutil
+                per_ckpt = os.path.join(output_dir, f"{output_name}_vocabulary.json")
+                general  = os.path.join(output_dir, "vocabulary.json")
+                _shutil.copyfile(self.vocab_path, per_ckpt)
+                if not os.path.exists(general):
+                    _shutil.copyfile(self.vocab_path, general)
+                print(f"[SigLIP2Manager] Vocabulary copied: {os.path.basename(per_ckpt)} (+ vocabulary.json)")
+            except Exception as e:
+                print(f"[SigLIP2Manager] WARNING: failed to copy vocabulary alongside merged checkpoint: {e}")
+        else:
+            print(f"[SigLIP2Manager] WARNING: no vocab_path on inference manager — merged checkpoint "
+                  f"has no vocabulary.json; downstream tag-name alignment will fall back to positional copy.")
+
         print(f"[SigLIP2Manager] Merged LoRA checkpoint saved → {saved}")
         return saved
 

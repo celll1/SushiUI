@@ -849,9 +849,16 @@ def _inherit_head(
     nn.init.zeros_(new_head.weight)
     nn.init.zeros_(new_head.bias)
 
-    # Try to load old vocabulary for tag-name-based alignment
-    ckpt_dir   = os.path.dirname(os.path.abspath(checkpoint_path))
-    vocab_path = os.path.join(ckpt_dir, "vocabulary.json")
+    # Try to load old vocabulary for tag-name-based alignment.  Try the
+    # per-checkpoint snapshot first (frozen at save time — authoritative for
+    # this exact ckpt), then fall back to the run-level vocabulary.json
+    # (overwritten on every run start).  This matches the priority order used
+    # by SigLIP2InferenceManager when loading for inference.
+    ckpt_dir  = os.path.dirname(os.path.abspath(checkpoint_path))
+    ckpt_base = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    per_ckpt_vocab_path = os.path.join(ckpt_dir, f"{ckpt_base}_vocabulary.json")
+    general_vocab_path  = os.path.join(ckpt_dir, "vocabulary.json")
+    vocab_path = per_ckpt_vocab_path if os.path.isfile(per_ckpt_vocab_path) else general_vocab_path
 
     copied = skipped = 0
 
@@ -864,6 +871,7 @@ def _inherit_head(
         _old_tag_to_idx = {
             k: int(v) for k, v in old_vocab_data["tag_to_idx"].items()
         }
+        print(f"[TaggerModel] Using vocabulary from {os.path.basename(vocab_path)} for head alignment")
 
     if _old_tag_to_idx is not None and new_vocab is not None:
         # For each tag in the new vocabulary, copy the row from the old head if it existed
@@ -885,7 +893,8 @@ def _inherit_head(
     else:
         # Fallback: positional copy — safe only when vocab order is unchanged
         if not os.path.isfile(vocab_path) and old_tag_to_idx is None:
-            print(f"[TaggerModel] Warning: vocabulary.json not found in {ckpt_dir}, "
+            print(f"[TaggerModel] Warning: neither {os.path.basename(per_ckpt_vocab_path)} "
+                  f"nor vocabulary.json found in {ckpt_dir}, "
                   f"falling back to positional head copy (assumes identical tag order)")
         copy_rows = min(src_w.shape[0], new_num_tags)
         new_head.weight.data[:copy_rows, :min_hidden] = src_w[:copy_rows, :min_hidden]

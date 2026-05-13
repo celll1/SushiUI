@@ -437,6 +437,87 @@ export const getActiveTraining = async (): Promise<ActiveTrainingInfo | null> =>
 };
 
 
+// img2img and inpaint variants — same JSON-body pattern as txt2img
+// but with base64-encoded init / mask images.
+
+export interface Img2ImgTrainingPreviewParams extends TrainingPreviewParams {
+  init_image_base64: string;       // raw base64 or data-URL form, both OK
+  denoising_strength?: number;
+}
+
+export interface InpaintTrainingPreviewParams extends Img2ImgTrainingPreviewParams {
+  mask_image_base64: string;
+}
+
+/** Helper: turn a File / Blob / data-URL into a raw base64 string for
+ *  the training-preview JSON body. */
+export const toBase64 = async (src: File | Blob | string): Promise<string> => {
+  if (typeof src === "string") {
+    // Already a string — strip data-URL prefix if present, else assume raw base64
+    return src.startsWith("data:") ? src.split(",", 2)[1] || "" : src;
+  }
+  return await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = () => {
+      const result = String(reader.result);
+      resolve(result.startsWith("data:") ? result.split(",", 2)[1] || "" : result);
+    };
+    reader.readAsDataURL(src);
+  });
+};
+
+export const generateImg2ImgTrainingPreview = async (
+  params: Img2ImgTrainingPreviewParams,
+): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string }> => {
+  const attentionType = typeof window !== 'undefined'
+    ? localStorage.getItem('attention_type') : null;
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed")
+    : params.controlnets;
+  const body = {
+    ...params,
+    attention_type: attentionType || 'normal',
+    controlnets: controlnets || [],
+    loras: params.loras || [],
+  };
+  const response = await api.post("/generate/img2img/training-preview", body, {
+    responseType: "blob",
+  });
+  return {
+    blob: response.data as Blob,
+    seed:      response.headers["x-preview-seed"]    as string | undefined,
+    runId:     response.headers["x-preview-run-id"]  as string | undefined,
+    requestId: response.headers["x-preview-request"] as string | undefined,
+  };
+};
+
+export const generateInpaintTrainingPreview = async (
+  params: InpaintTrainingPreviewParams,
+): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string }> => {
+  const attentionType = typeof window !== 'undefined'
+    ? localStorage.getItem('attention_type') : null;
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed")
+    : params.controlnets;
+  const body = {
+    ...params,
+    attention_type: attentionType || 'normal',
+    controlnets: controlnets || [],
+    loras: params.loras || [],
+  };
+  const response = await api.post("/generate/inpaint/training-preview", body, {
+    responseType: "blob",
+  });
+  return {
+    blob: response.data as Blob,
+    seed:      response.headers["x-preview-seed"]    as string | undefined,
+    runId:     response.headers["x-preview-run-id"]  as string | undefined,
+    requestId: response.headers["x-preview-request"] as string | undefined,
+  };
+};
+
+
 export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;

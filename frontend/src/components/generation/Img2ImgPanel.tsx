@@ -153,6 +153,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   // ── Training-preview integration (mirrors Txt2ImgPanel) ──────────────
   const [useTrainingModel, setUseTrainingModel] = useState(false);
+  const [savePreviewToGallery, setSavePreviewToGallery] = useState(false);
   const activeTraining = useActiveTraining();
   const previewBlobUrlRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1523,15 +1524,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           init_image_base64: initImageBase64,
           denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
           run_id: activeTraining.run_id,
+          save_to_gallery: savePreviewToGallery,
         });
-        if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
-        const objectUrl = URL.createObjectURL(preview.blob);
-        previewBlobUrlRef.current = objectUrl;
-        imageUrl = objectUrl;
+        if (preview.filename) {
+          imageUrl = `/outputs/${preview.filename}`;
+        } else {
+          if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+          const objectUrl = URL.createObjectURL(preview.blob);
+          previewBlobUrlRef.current = objectUrl;
+          imageUrl = objectUrl;
+        }
         result = {
           image: {
-            filename: `preview_${preview.requestId ?? "training"}.png`,
-            filepath: objectUrl,
+            filename: preview.filename
+              ?? `preview_${preview.requestId ?? "training"}.png`,
+            filepath: imageUrl,
             seed: preview.seed ? Number(preview.seed) : -1,
             ancestral_seed: -1,
             prompt: paramsWithDevMode.prompt,
@@ -2883,6 +2890,22 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   )}
                 </label>
               </div>
+
+              {useTrainingModel && (
+                <div className="flex items-center gap-2 ml-6"
+                     title="Save preview PNG to outputs/ and the gallery (tagged as training-preview)">
+                  <input
+                    type="checkbox"
+                    id="save_preview_to_gallery_img2img"
+                    checked={savePreviewToGallery}
+                    onChange={(e) => setSavePreviewToGallery(e.target.checked)}
+                    className="rounded"
+                  />
+                  <label htmlFor="save_preview_to_gallery_img2img" className="text-sm text-gray-300">
+                    Save preview to gallery
+                  </label>
+                </div>
+              )}
 
               {isGenerating && (
                 <div className="space-y-1">

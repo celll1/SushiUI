@@ -103,6 +103,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // (no /outputs/ file, no gallery sync — preview only).  Disabled
   // automatically when no LoRA/Full-FT training is active.
   const [useTrainingModel, setUseTrainingModel] = useState(false);
+  // Sub-option: when true, the backend additionally persists the
+  // preview to ``outputs/`` and inserts a GeneratedImage row so it
+  // appears in the gallery (tagged as ``training-preview:...``).
+  const [savePreviewToGallery, setSavePreviewToGallery] = useState(false);
   const activeTraining = useActiveTraining();
   const previewBlobUrlRef = useRef<string | null>(null);
   // Auto-untoggle when no training is active (otherwise the next
@@ -1358,17 +1362,25 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           const preview = await generateTxt2ImgTrainingPreview({
             ...(paramsWithDevMode as GenerationParams),
             run_id: activeTraining.run_id,
+            save_to_gallery: savePreviewToGallery,
           });
-          if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
-          const objectUrl = URL.createObjectURL(preview.blob);
-          previewBlobUrlRef.current = objectUrl;
-          imageUrl = objectUrl;
+          // Prefer the stable /outputs/<filename> URL when the backend
+          // persisted it; fall back to a transient blob URL otherwise.
+          if (preview.filename) {
+            imageUrl = `/outputs/${preview.filename}`;
+          } else {
+            if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+            const objectUrl = URL.createObjectURL(preview.blob);
+            previewBlobUrlRef.current = objectUrl;
+            imageUrl = objectUrl;
+          }
           // Synthesise a minimal result shape so downstream code that
-          // reads result.* doesn't crash; gallery save is skipped below.
+          // reads result.* doesn't crash.
           result = {
             image: {
-              filename: `preview_${preview.requestId ?? "training"}.png`,
-              filepath: objectUrl,
+              filename: preview.filename
+                ?? `preview_${preview.requestId ?? "training"}.png`,
+              filepath: imageUrl,
               prompt: paramsWithDevMode.prompt,
               negative_prompt: paramsWithDevMode.negative_prompt,
               metadata: {},
@@ -2684,6 +2696,25 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 )}
               </label>
             </div>
+
+            {/* Sub-toggle: persist preview to gallery (only meaningful
+                when Use training model is on).  Indented to visually
+                indicate the dependency. */}
+            {useTrainingModel && (
+              <div className="flex items-center gap-2 ml-6"
+                   title="Save preview PNG to outputs/ and the gallery (tagged as training-preview)">
+                <input
+                  type="checkbox"
+                  id="save_preview_to_gallery"
+                  checked={savePreviewToGallery}
+                  onChange={(e) => setSavePreviewToGallery(e.target.checked)}
+                  className="rounded"
+                />
+                <label htmlFor="save_preview_to_gallery" className="text-sm text-gray-300">
+                  Save preview to gallery
+                </label>
+              </div>
+            )}
 
             {isGenerating && (
               <div className="space-y-1">

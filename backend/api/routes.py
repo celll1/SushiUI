@@ -568,8 +568,16 @@ async def generate_txt2img(
 
 class TrainingPreviewRequest(GenerationParams):
     """Same as GenerationParams plus an optional run_id to target a
-    specific training run when multiple are active."""
+    specific training run when multiple are active, and an opt-in
+    flag to persist the result to the regular gallery."""
     run_id: Optional[int] = None
+    # When True, save the preview PNG into outputs/ + GeneratedImage row
+    # so it shows up in the gallery like a normal generation.  The DB
+    # row is tagged with ``model_name = "training-preview:<run>@step<N>"``
+    # so it's distinguishable from real-model generations.  Default OFF
+    # — the preview blob is transient unless the user explicitly asks
+    # for it to be persisted.
+    save_to_gallery: bool = False
 
 
 def _get_active_training_for_preview(run_id_hint: Optional[int]) -> tuple[int, str]:
@@ -693,7 +701,14 @@ async def _run_training_preview(
 ) -> Response:
     """Shared core for the 3 preview endpoints.  Resolves the active
     training, queues the request file, awaits the result, returns a
-    PNG response with metadata headers."""
+    PNG response with metadata headers.
+
+    When ``request.save_to_gallery`` is True, the PNG is additionally
+    persisted under ``outputs/`` and inserted into the ``GeneratedImage``
+    table so it appears in the gallery alongside normal generations.
+    The DB row is tagged with ``model_name = "training-preview:<run>@step<N>"``
+    so callers can filter previews out if desired.
+    """
     from core.training.training_preview_rpc import (
         make_request_id, write_request,
     )
@@ -718,12 +733,139 @@ async def _run_training_preview(
         )
     if image_bytes is None:
         raise HTTPException(status_code=500, detail="Preview returned no image")
-    return Response(content=image_bytes, media_type="image/png", headers={
+
+    headers: Dict[str, str] = {
         "X-Preview-Run-Id":   str(run_id),
         "X-Preview-Seed":     str(meta.get("seed", "")),
         "X-Preview-Request":  request_id,
         "X-Preview-Mode":     mode,
-    })
+    }
+
+    # Optional: persist to the regular gallery (outputs/ + GeneratedImage row)
+    if request.save_to_gallery:
+        try:
+            saved_filename = _save_preview_to_gallery(
+                image_bytes=image_bytes,
+                params=params,
+                mode=mode,
+                run_id=run_id,
+                meta=meta,
+            )
+            headers["X-Preview-Filename"] = saved_filename
+        except Exception as e:   # noqa: BLE001
+            # Don't fail the whole request just because gallery save
+            # failed; the user still gets the preview blob.
+            import traceback
+            print(f"[Preview] gallery save failed: {e}\n{traceback.format_exc()}")
+            headers["X-Preview-Save-Error"] = str(e)[:200]
+
+    return Response(content=image_bytes, media_type="image/png", headers=headers)
+
+
+def _save_preview_to_gallery(
+    *,
+    image_bytes: bytes,
+    params: Dict[str, Any],
+    mode: str,
+    run_id: int,
+    meta: Dict[str, Any],
+) -> str:
+    """Persist a training-preview image to the regular gallery.
+
+    Wraps the existing ``save_image_with_metadata`` + ``create_thumbnail``
+    + ``create_db_image_record`` flow used by /generate/txt2img.  The
+    model identity is faked as ``training-preview:<run_name|run>@step<N>``
+    so it's obviously distinguishable from real-model generations.
+    Reproducibility is not preserved — the in-training weights at step N
+    are not recoverable from this metadata.  The PNG / DB row is a
+    record of "what was used", not "how to reproduce".
+    """
+    import io as _io
+    from PIL import Image as _Image
+    from utils import save_image_with_metadata, create_thumbnail, calculate_image_hash
+    from api.generation_utils import (
+        prepare_params_for_db, create_db_image_record,
+    )
+    from database import GallerySessionLocal
+    from database.models import GeneratedImage
+
+    # Decode PNG bytes back to PIL Image (for metadata embedding +
+    # thumbnail generation).
+    image = _Image.open(_io.BytesIO(image_bytes)).convert("RGB")
+
+    # Resolve the training context for honest model_name / hash:
+    #  - run_name from DB (if available)
+    #  - current_step from the process manager
+    from core.training.training_process import training_process_manager
+    proc = training_process_manager.processes.get(int(run_id))
+    current_step = getattr(proc, "current_step", 0) if proc else 0
+    run_name: Optional[str] = None
+    try:
+        with GallerySessionLocal() as _g:  # type: ignore[attr-defined]
+            pass
+    except Exception:
+        pass
+    try:
+        from database import TrainingSessionLocal
+        from database.models import TrainingRun
+        with TrainingSessionLocal() as _db:
+            _row = _db.query(TrainingRun).filter(TrainingRun.id == int(run_id)).first()
+            if _row is not None:
+                run_name = getattr(_row, "name", None) or getattr(_row, "run_name", None)
+    except Exception:
+        pass
+
+    label = run_name or f"run{run_id}"
+    fake_model_name = f"training-preview:{label}@step{current_step}"
+    fake_model_hash = f"training-preview-step{current_step}"
+
+    # Apply honest seed back into params so PNG / DB carry the real value
+    actual_seed = int(meta.get("seed") or params.get("seed") or -1)
+    params_for_save: Dict[str, Any] = {**params, "seed": actual_seed}
+    # Stash training context inside parameters JSON for future filtering
+    params_for_save["training_preview"] = {
+        "run_id": int(run_id),
+        "run_name": run_name,
+        "current_step": current_step,
+        "mode": mode,
+    }
+
+    model_info = {"source": fake_model_name, "model_hash": fake_model_hash}
+
+    # 1) File save + PNG metadata
+    filename = save_image_with_metadata(
+        image, params_for_save, generation_type=mode, model_info=model_info,
+    )
+    image_path = os.path.join(settings.outputs_dir, filename)
+    # 2) Thumbnail
+    try:
+        create_thumbnail(image_path)
+    except Exception as _e:
+        print(f"[Preview] thumbnail generation failed: {_e}")
+    # 3) DB row
+    try:
+        image_hash = calculate_image_hash(image)
+        params_for_db = prepare_params_for_db(params_for_save, calculate_image_hash)
+        with GallerySessionLocal() as gdb:  # type: ignore[attr-defined]
+            db_image = create_db_image_record(
+                db_image_class=GeneratedImage,
+                filename=filename,
+                params=params_for_db,
+                actual_seed=actual_seed,
+                generation_type=mode,
+                image_hash=image_hash,
+                lora_names=None,
+                model_name=fake_model_name,
+                model_hash=fake_model_hash,
+                result_image=image,
+            )
+            gdb.add(db_image)
+            gdb.commit()
+    except Exception as _e:
+        print(f"[Preview] gallery DB insert failed: {_e}")
+        # File is on disk regardless; the gallery will still pick it up
+        # on next manual rescan even if this insert failed.
+    return filename
 
 
 @router.post("/generate/img2img/training-preview")

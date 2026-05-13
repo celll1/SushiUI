@@ -19,7 +19,8 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { generateTxt2Img, generateImg2Img, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
@@ -96,6 +97,28 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  // ── Training-preview integration ────────────────────────────────────
+  // When toggle ON, generation requests are routed to the in-training
+  // model via /generate/txt2img/training-preview.  Result is a blob
+  // (no /outputs/ file, no gallery sync — preview only).  Disabled
+  // automatically when no LoRA/Full-FT training is active.
+  const [useTrainingModel, setUseTrainingModel] = useState(false);
+  const activeTraining = useActiveTraining();
+  const previewBlobUrlRef = useRef<string | null>(null);
+  // Auto-untoggle when no training is active (otherwise the next
+  // generate would fail with a confusing 409).
+  useEffect(() => {
+    if (!activeTraining && useTrainingModel) setUseTrainingModel(false);
+  }, [activeTraining, useTrainingModel]);
+  // Release previous blob URL when generating a new preview (or on unmount)
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrlRef.current) {
+        URL.revokeObjectURL(previewBlobUrlRef.current);
+        previewBlobUrlRef.current = null;
+      }
+    };
+  }, []);
   const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
   const [promptTokenCount, setPromptTokenCount] = useState<number>(0);
   const [negativePromptTokenCount, setNegativePromptTokenCount] = useState<number>(0);
@@ -1327,8 +1350,37 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             ref_images: refImages,
           };
         }
-        result = await generateTxt2Img(paramsWithDevMode as GenerationParams);
-        imageUrl = `/outputs/${result.image.filename}`;
+        // Training-preview branch: route to in-training model when the
+        // toggle is on and a LoRA/Full-FT run is active.  Returns a blob;
+        // we wrap it in an object-URL and reuse the same display path.
+        // Skips gallery save (preview only).
+        if (useTrainingModel && activeTraining) {
+          const preview = await generateTxt2ImgTrainingPreview({
+            ...(paramsWithDevMode as GenerationParams),
+            run_id: activeTraining.run_id,
+          });
+          if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+          const objectUrl = URL.createObjectURL(preview.blob);
+          previewBlobUrlRef.current = objectUrl;
+          imageUrl = objectUrl;
+          // Synthesise a minimal result shape so downstream code that
+          // reads result.* doesn't crash; gallery save is skipped below.
+          result = {
+            image: {
+              filename: `preview_${preview.requestId ?? "training"}.png`,
+              filepath: objectUrl,
+              prompt: paramsWithDevMode.prompt,
+              negative_prompt: paramsWithDevMode.negative_prompt,
+              metadata: {},
+              size_bytes: preview.blob.size,
+            },
+            actual_seed: preview.seed ? Number(preview.seed) : -1,
+            actual_ancestral_seed: -1,
+          } as any;
+        } else {
+          result = await generateTxt2Img(paramsWithDevMode as GenerationParams);
+          imageUrl = `/outputs/${result.image.filename}`;
+        }
       } else if (nextItem.type === "img2img") {
         console.log(`[Txt2Img] Starting img2img generation with prompt:`, nextItem.params.prompt?.substring(0, 100));
 
@@ -2603,6 +2655,33 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
               <label htmlFor="preview_predicted_x0" className="text-sm text-gray-300">
                 Preview Predicted x0
+              </label>
+            </div>
+
+            {/* Use training model toggle (only enabled when an LoRA/Full-FT
+                training is active).  When ON, generate calls the
+                /generate/txt2img/training-preview endpoint and renders
+                a transient preview using the in-training model state. */}
+            <div className="flex items-center gap-2"
+                 title={activeTraining
+                   ? `Active: ${activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step ${activeTraining.current_step ?? "?"})`
+                   : "No active LoRA/Full-FT training"}>
+              <input
+                type="checkbox"
+                id="use_training_model"
+                checked={useTrainingModel}
+                disabled={!activeTraining}
+                onChange={(e) => setUseTrainingModel(e.target.checked)}
+                className="rounded disabled:opacity-50"
+              />
+              <label htmlFor="use_training_model"
+                     className={`text-sm ${activeTraining ? "text-gray-300" : "text-gray-500"}`}>
+                Use training model
+                {useTrainingModel && activeTraining && (
+                  <span className="ml-1 text-xs text-emerald-400">
+                    · {activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step {activeTraining.current_step ?? "?"})
+                  </span>
+                )}
               </label>
             </div>
 

@@ -21,7 +21,8 @@ import ImageViewer from "../common/ImageViewer";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { getSamplers, getScheduleTypes, generateImg2Img, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -150,6 +151,21 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
   const [previewImage, setPreviewImage] = useState<string | null>(null);
+  // ── Training-preview integration (mirrors Txt2ImgPanel) ──────────────
+  const [useTrainingModel, setUseTrainingModel] = useState(false);
+  const activeTraining = useActiveTraining();
+  const previewBlobUrlRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeTraining && useTrainingModel) setUseTrainingModel(false);
+  }, [activeTraining, useTrainingModel]);
+  useEffect(() => {
+    return () => {
+      if (previewBlobUrlRef.current) {
+        URL.revokeObjectURL(previewBlobUrlRef.current);
+        previewBlobUrlRef.current = null;
+      }
+    };
+  }, []);
   const [isTIPODialogOpen, setIsTIPODialogOpen] = useState(false);
   const [tipoSettings, setTipoSettings] = useState<TIPOSettings>({
     model_name: "KBlueLeaf/TIPO-500M",
@@ -1495,8 +1511,39 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       // Debug log for quantization
       console.log('[Img2Img] Generating with params.unet_quantization:', paramsWithDevMode.unet_quantization);
 
-      const result = await generateImg2Img(paramsWithDevMode, inputImageToUse);
-      const imageUrl = `/outputs/${result.image.filename}`;
+      let imageUrl: string;
+      let result: any;
+      if (useTrainingModel && activeTraining) {
+        // Training-preview branch: encode init image as base64 and route
+        // to /generate/img2img/training-preview.  Result is a blob;
+        // we wrap it in an object-URL for display (no gallery save).
+        const initImageBase64 = await toBase64(inputImageToUse);
+        const preview = await generateImg2ImgTrainingPreview({
+          ...(paramsWithDevMode as any),
+          init_image_base64: initImageBase64,
+          denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
+          run_id: activeTraining.run_id,
+        });
+        if (previewBlobUrlRef.current) URL.revokeObjectURL(previewBlobUrlRef.current);
+        const objectUrl = URL.createObjectURL(preview.blob);
+        previewBlobUrlRef.current = objectUrl;
+        imageUrl = objectUrl;
+        result = {
+          image: {
+            filename: `preview_${preview.requestId ?? "training"}.png`,
+            filepath: objectUrl,
+            seed: preview.seed ? Number(preview.seed) : -1,
+            ancestral_seed: -1,
+            prompt: paramsWithDevMode.prompt,
+            negative_prompt: paramsWithDevMode.negative_prompt,
+            width: paramsWithDevMode.width,
+            height: paramsWithDevMode.height,
+          },
+        };
+      } else {
+        result = await generateImg2Img(paramsWithDevMode, inputImageToUse);
+        imageUrl = `/outputs/${result.image.filename}`;
+      }
       setGeneratedImage(imageUrl);
       setGeneratedImageSeed(result.image.seed);
       setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
@@ -2810,6 +2857,30 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 />
                 <label htmlFor="preview_predicted_x0_img2img" className="text-sm text-gray-300">
                   Preview Predicted x0
+                </label>
+              </div>
+
+              {/* Use training model toggle (mirrors Txt2ImgPanel) */}
+              <div className="flex items-center gap-2"
+                   title={activeTraining
+                     ? `Active: ${activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step ${activeTraining.current_step ?? "?"})`
+                     : "No active LoRA/Full-FT training"}>
+                <input
+                  type="checkbox"
+                  id="use_training_model_img2img"
+                  checked={useTrainingModel}
+                  disabled={!activeTraining}
+                  onChange={(e) => setUseTrainingModel(e.target.checked)}
+                  className="rounded disabled:opacity-50"
+                />
+                <label htmlFor="use_training_model_img2img"
+                       className={`text-sm ${activeTraining ? "text-gray-300" : "text-gray-500"}`}>
+                  Use training model
+                  {useTrainingModel && activeTraining && (
+                    <span className="ml-1 text-xs text-emerald-400">
+                      · {activeTraining.run_name ?? `run #${activeTraining.run_id}`} (step {activeTraining.current_step ?? "?"})
+                    </span>
+                  )}
                 </label>
               </div>
 

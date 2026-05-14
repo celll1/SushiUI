@@ -125,8 +125,8 @@ export default function TaggerMetricChart({
     px: number;
     py: number;
     step: number;
-    value: number;
-    smoothValue: number | null;
+    // Per-resume values at the hovered step (keyed by resume_seq)
+    seriesValues: Map<number, { value: number; smoothValue: number | null }>;
   } | null>(null);
 
   // Pointer x (in chart pixel coords) — read by the auto-extend rAF loop
@@ -353,12 +353,11 @@ export default function TaggerMetricChart({
       setTooltip(null);
       return;
     }
-    // Nearest-point search confined to the latest resume's curve.
-    // Overlapping resumes share the X axis; the user almost always wants
-    // to read the current run's value, so we don't bounce between curves.
+    // Use the latest resume's nearest point as the anchor step, then
+    // collect values from every resume at that step so the tooltip shows
+    // all curves at once.
     const targetStep = pxToStep(x);
-    const latestPts   = visibleGroups.get(latestSeq) ?? [];
-    const latestSmPts = smoothedVisibleGroups.get(latestSeq) ?? [];
+    const latestPts = visibleGroups.get(latestSeq) ?? [];
     if (latestPts.length === 0) {
       setTooltip(null);
       return;
@@ -367,19 +366,35 @@ export default function TaggerMetricChart({
     let bestDist = Math.abs(latestPts[0].step - targetStep);
     for (let i = 1; i < latestPts.length; i++) {
       const d = Math.abs(latestPts[i].step - targetStep);
-      if (d < bestDist) {
-        bestDist = d;
-        bestIdx = i;
-      }
+      if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
-    const best = latestPts[bestIdx];
-    const bestSmooth = latestSmPts[bestIdx] ?? null;
+    const anchorStep = latestPts[bestIdx].step;
+
+    // Collect per-resume nearest values at anchorStep
+    const seriesValues = new Map<number, { value: number; smoothValue: number | null }>();
+    for (const seq of groupKeys) {
+      const pts   = visibleGroups.get(seq) ?? [];
+      const smPts = smoothedVisibleGroups.get(seq) ?? [];
+      if (pts.length === 0) continue;
+      let idx = 0;
+      let dist = Math.abs(pts[0].step - anchorStep);
+      for (let i = 1; i < pts.length; i++) {
+        const d = Math.abs(pts[i].step - anchorStep);
+        if (d < dist) { dist = d; idx = i; }
+      }
+      seriesValues.set(seq, {
+        value: pts[idx].value,
+        smoothValue: smPts[idx]?.value ?? null,
+      });
+    }
+
+    const latestEntry = seriesValues.get(latestSeq)!;
+    const latestSmooth = latestEntry.smoothValue;
     setTooltip({
-      px: toX(best.step),
-      py: toY((bestSmooth ?? best).value),
-      step: best.step,
-      value: best.value,
-      smoothValue: bestSmooth ? bestSmooth.value : null,
+      px: toX(anchorStep),
+      py: toY((latestSmooth ?? latestEntry.value)),
+      step: anchorStep,
+      seriesValues,
     });
   };
 
@@ -573,7 +588,7 @@ export default function TaggerMetricChart({
             />
           )}
 
-          {/* Tooltip marker — pinned to the latest resume's curve */}
+          {/* Tooltip markers — one circle per resume at their respective y */}
           {tooltip && !brush && (
             <>
               <line
@@ -585,7 +600,20 @@ export default function TaggerMetricChart({
                 strokeWidth={0.5}
                 strokeDasharray="2 2"
               />
-              <circle cx={tooltip.px} cy={tooltip.py} r={3} fill={colorForResume(latestSeq, color)} />
+              {groupKeys.map((seq) => {
+                const entry = tooltip.seriesValues.get(seq);
+                if (!entry) return null;
+                const displayV = (smoothing > 0 && entry.smoothValue !== null) ? entry.smoothValue : entry.value;
+                return (
+                  <circle
+                    key={`dot-${seq}`}
+                    cx={tooltip.px}
+                    cy={toY(displayV)}
+                    r={3}
+                    fill={colorForResume(seq, color)}
+                  />
+                );
+              })}
             </>
           )}
         </svg>
@@ -596,29 +624,28 @@ export default function TaggerMetricChart({
           <div
             className="pointer-events-none absolute bg-gray-900 border border-gray-600 rounded px-2 py-1 text-[10px] font-mono text-gray-200 shadow-lg whitespace-nowrap"
             style={{
-              left: Math.min(width - 140, tooltip.px + 8),
+              left: Math.min(width - 160, tooltip.px + 8),
               top: Math.max(0, tooltip.py - 8),
               zIndex: 10,
             }}
           >
-            <div className="text-gray-400">
-              step {tooltip.step.toLocaleString()}
-              {groups.size > 1 && (
-                <span className="ml-1" style={{ color: colorForResume(latestSeq, color) }}>
-                  · {labelForResume(latestSeq)}
-                </span>
-              )}
-            </div>
-            <div>
-              <span className="text-gray-500">{valueKey}: </span>
-              {formatTooltip(tooltip.value)}
-            </div>
-            {tooltip.smoothValue !== null && smoothing > 0 && (
-              <div>
-                <span className="text-gray-500">smooth: </span>
-                {formatTooltip(tooltip.smoothValue)}
-              </div>
-            )}
+            <div className="text-gray-400 mb-0.5">step {tooltip.step.toLocaleString()}</div>
+            {groupKeys.map((seq) => {
+              const entry = tooltip.seriesValues.get(seq);
+              if (!entry) return null;
+              const seqColor = colorForResume(seq, color);
+              const displayV = smoothing > 0 && entry.smoothValue !== null ? entry.smoothValue : entry.value;
+              return (
+                <div key={`tv-${seq}`} className="flex items-center gap-1">
+                  <span className="inline-block w-1.5 h-1.5 rounded-sm flex-shrink-0" style={{ background: seqColor }} />
+                  <span style={{ color: seqColor }}>{labelForResume(seq)}:</span>
+                  <span>{formatTooltip(displayV)}</span>
+                  {smoothing > 0 && entry.smoothValue !== null && (
+                    <span className="text-gray-500">(raw {formatTooltip(entry.value)})</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

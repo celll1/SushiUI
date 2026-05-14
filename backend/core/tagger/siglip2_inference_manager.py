@@ -612,9 +612,9 @@ class SigLIP2InferenceManager:
             raise ValueError("Cannot export an ONNX model to ONNX. Load a safetensors checkpoint instead.")
 
         from core.tagger.siglip2_tagger_model import (
+            LoRALinear,
             SigLIP2TaggerLoRAModel,
             SigLIP2TaggerModel,
-            _load_vision_encoder,
         )
 
         # If empty, fall back to an "onnx" subdirectory alongside the checkpoint.
@@ -627,42 +627,43 @@ class SigLIP2InferenceManager:
             print(f"[SigLIP2Manager] output_path not specified; saving ONNX to {output_path}")
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
-        # If LoRA: merge into a temporary full model for export
+        # If LoRA: build an export model from the already-loaded base + LoRA.
+        # No filesystem re-read, no HuggingFace round-trip: deep-copy the live
+        # model, merge each LoRA delta into its base Linear's weight, then
+        # replace the LoRALinear wrappers with their inner Linear so the
+        # module hierarchy matches a non-LoRA SigLIP2TaggerModel.  This
+        # preserves whatever architecture / fine-tuned base the inference
+        # manager actually loaded (e.g. a patch14-384 base, or a chain of
+        # previously-merged tagger runs), without depending on the
+        # vision_encoder_repo metadata being accurate.
         if isinstance(self.model, SigLIP2TaggerLoRAModel):
-            tmp_dir  = tempfile.mkdtemp(prefix="siglip2_onnx_")
-            tmp_name = "merged_for_export"
-            try:
-                merged_path = self.model.save_merged_checkpoint(tmp_dir, tmp_name)
-                # The default repo in _load_vision_encoder is the NaFlex patch16
-                # variant; passing it explicitly via repo_id is REQUIRED for a
-                # non-NaFlex run (e.g. patch14-384), otherwise the loaded encoder
-                # has Linear patch_embedding [1152, 768] / 256 positions while
-                # the merged checkpoint has Conv2d [1152, 3, 14, 14] / 729
-                # positions → load_state_dict shape mismatch.  Mirrors the
-                # repo resolution used by InferenceManager.load_model.
-                from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
-                _meta = _read_metadata(self.checkpoint_path)
-                _repo_id   = _meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
-                _cls_dim   = _meta.get("cls_dim")            # LoRA ignores it; pass for safety
-                _hidden_pd = _meta.get("hidden_proj_dim")
-                print(f"[SigLIP2Manager] ONNX export: rebuilding vision encoder from repo_id={_repo_id} "
-                      f"(is_naflex={self.is_naflex})")
-                vision_enc = _load_vision_encoder(self.vision_encoder_path, repo_id=_repo_id)
-                num_tags   = self.model.head.out_features
-                # is_naflex must mirror the actual architecture so the model's
-                # forward path passes the right inputs to the encoder during
-                # ONNX trace.
-                export_model = SigLIP2TaggerModel(
-                    num_tags=num_tags,
-                    vision_encoder=vision_enc,
-                    cls_dim=_cls_dim,
-                    hidden_proj_dim=_hidden_pd,
-                    is_naflex=self.is_naflex,
-                )
-                from safetensors.torch import load_file as _load_file
-                export_model.load_state_dict(_load_file(merged_path), strict=False)
-            finally:
-                shutil.rmtree(tmp_dir, ignore_errors=True)
+            import copy as _copy
+            print(f"[SigLIP2Manager] ONNX export: merging LoRA into the live base "
+                  f"(no re-load; is_naflex={self.is_naflex})")
+            export_lora = _copy.deepcopy(self.model)
+            for _lm in export_lora._lora_modules.values():
+                _lm.merge_into_base()
+
+            def _strip_lora_inplace(mod: nn.Module) -> None:
+                """Replace every LoRALinear in *mod* (recursively) with its inner .base."""
+                for _name, _child in list(mod.named_children()):
+                    if isinstance(_child, LoRALinear):
+                        setattr(mod, _name, _child.base)
+                    else:
+                        _strip_lora_inplace(_child)
+
+            _strip_lora_inplace(export_lora.vision_encoder)
+
+            num_tags = export_lora.head.out_features
+            # LoRA mode ignores cls_dim/hidden_proj_dim by design, so the
+            # wrapper has no custom_pooler — build a default-pooled
+            # SigLIP2TaggerModel and copy across the trained head.
+            export_model = SigLIP2TaggerModel(
+                num_tags=num_tags,
+                vision_encoder=export_lora.vision_encoder,
+                is_naflex=self.is_naflex,
+            )
+            export_model.head.load_state_dict(export_lora.head.state_dict())
         else:
             export_model = self.model
             num_tags     = self.model.head.out_features

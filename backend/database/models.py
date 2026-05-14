@@ -224,8 +224,18 @@ class Dataset(DatasetBase):
     items = relationship("DatasetItem", back_populates="dataset", cascade="all, delete-orphan")
     # Note: TrainingRun is in a separate database (training.db)
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_tag_statistics: bool = True):
+        """Serialise to plain dict.
+
+        ``include_tag_statistics=False`` omits the ``tag_statistics`` field —
+        a potentially-megabyte JSON blob (per-tag counts across the full
+        vocabulary).  Used by the dataset *list* endpoint which doesn't
+        render per-tag stats; the detail endpoint keeps it on by default.
+        Callers passing False should typically also ``defer(Dataset.
+        tag_statistics)`` on the underlying query so the column isn't even
+        read from disk.
+        """
+        out = {
             "id": self.id,
             "unique_id": self.unique_id,
             "name": self.name,
@@ -247,11 +257,13 @@ class Dataset(DatasetBase):
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
             "has_tags_captions": (self.total_tags or 0) > 0,
-            "tag_statistics": self.tag_statistics or {},
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_scanned_at": self.last_scanned_at.isoformat() if self.last_scanned_at else None,
         }
+        if include_tag_statistics:
+            out["tag_statistics"] = self.tag_statistics or {}
+        return out
 
 
 class DatasetItem(DatasetBase):

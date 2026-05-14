@@ -4364,11 +4364,14 @@ async def scan_dataset(
                         c.caption_type = majority_type_name
 
     # Update dataset statistics (count all items in DB, not just newly added)
+    item_ids_subq = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
     dataset.total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
     dataset.total_captions = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(
-            db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
-        )
+        DatasetCaption.item_id.in_(item_ids_subq)
+    ).count()
+    dataset.total_tags = db.query(DatasetCaption).filter(
+        DatasetCaption.item_id.in_(item_ids_subq),
+        DatasetCaption.is_tags_format == True
     ).count()
     dataset.tag_statistics = tag_statistics
     dataset.last_scanned_at = datetime.utcnow()

@@ -1644,6 +1644,7 @@ def run_tagger_training(
             datasets_db=datasets_db,
             processor=processor,
             alias_resolver=alias_resolver,
+            quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
         )
         total_samples = len(full_ds)
         print(f"[TaggerTraining] Dataset: {total_samples} samples total")

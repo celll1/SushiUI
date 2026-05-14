@@ -7408,6 +7408,9 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     ban_tags: Optional[str] = None
     use_tag_aliases: bool = False
     save_base_model: bool = False
+    # Quality-tag loss masking strategy: "intra_group" or "cross_group".
+    # See core/tagger/tagger_dataset.py / param_defaults.py for semantics.
+    quality_masking_mode: str = "intra_group"
     cls_dim: Optional[int] = None
     hidden_proj_dim: Optional[int] = None
     init_head_from: Optional[str] = None

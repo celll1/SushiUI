@@ -398,6 +398,7 @@ function TrainingPageContent() {
               <div className={`${isMobile && !showMobileDetail ? 'hidden' : 'flex-1'} overflow-y-auto`}>
                 {showTaggerConfig ? (
                   <TaggerTrainingConfig
+                    key={editingTaggerRun?.run_id ?? "new"}
                     onClose={() => {
                       setShowTaggerConfig(false);
                       setEditingTaggerRun(null);

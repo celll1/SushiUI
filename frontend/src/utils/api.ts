@@ -2366,6 +2366,10 @@ export interface TaggerTrainingRunCreateRequest {
   ban_tags?: string;
   use_tag_aliases?: boolean;
   save_base_model?: boolean;
+  // Loss masking strategy for Quality tags when a sample has at least one
+  // quality tag. "intra_group" (default) masks group siblings; "cross_group"
+  // trains all non-positive quality tags as negatives (legacy).
+  quality_masking_mode?: "intra_group" | "cross_group";
   weight_decay?: number;
   loss_clip?: number;
   vocab_min_count?: number;

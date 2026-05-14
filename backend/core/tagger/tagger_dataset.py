@@ -44,6 +44,7 @@ class TaggerDataset(Dataset):
         processor: AutoProcessor,
         caption_types: Optional[List[str]] = None,
         alias_resolver=None,
+        quality_masking_mode: str = "intra_group",
     ) -> None:
         """
         Parameters
@@ -55,11 +56,31 @@ class TaggerDataset(Dataset):
         caption_types  : restrict to these caption_type values (None = all tags-format)
         alias_resolver : optional TagAliasResolver; when provided, deprecated
                          tags are resolved to canonical form during label construction
+        quality_masking_mode : how to build loss_mask for Quality tags when at
+                         least one Quality tag is present on a sample.
+                         - "intra_group" (default, tagutl-style): the labelled
+                           tag's group siblings are masked (treated as ignore);
+                           tags in the *other* quality group remain unmasked
+                           and train as negatives.  Safer when intra-group
+                           label noise / prevalence imbalance is significant
+                           (e.g. "best_quality" and "normal_quality" assigned
+                           somewhat arbitrarily — training "best=0" on every
+                           "normal_quality" sample creates noisy gradient).
+                         - "cross_group" (previous SushiUI default): all non-
+                           positive Quality tags train as negatives.  Correct
+                           only when intra-group labels are truly mutually
+                           exclusive and prevalences are balanced.
         """
         self.vocabulary = vocabulary
         self.processor = processor
         self.num_tags = vocabulary.num_tags
         self._alias_resolver = alias_resolver
+        if quality_masking_mode not in ("intra_group", "cross_group"):
+            print(f"[TaggerDataset] Unknown quality_masking_mode={quality_masking_mode!r}, "
+                  f"falling back to 'intra_group'")
+            quality_masking_mode = "intra_group"
+        self.quality_masking_mode = quality_masking_mode
+        print(f"[TaggerDataset] Quality masking mode: {quality_masking_mode}")
 
         # Detect NaFlex vs standard by probing the processor output
         _probe = processor(images=[Image.new("RGB", (64, 64))], return_tensors="pt")
@@ -222,21 +243,33 @@ class TaggerDataset(Dataset):
             for idx in voc.rating_indices:
                 loss_mask[idx] = 0.0
 
-        # Quality tags: mask ALL quality groups only when NO quality tag is present.
-        # When any quality tag IS present, leave all quality groups unmasked so that
-        # cross-group negative labels are trained (e.g. "best quality" sample must also
-        # teach the model that "bad quality"=0).  Quality groups are mutually exclusive
-        # by definition, so this negative signal is always correct.
-        all_quality_norms = {
-            normalize_tag(t)
-            for gtags in QUALITY_TAG_GROUPS.values()
-            for t in gtags
-        }
-        has_any_quality = any(t in tag_set for t in all_quality_norms)
-        if not has_any_quality:
+        # Quality tags: behavior depends on quality_masking_mode.
+        #
+        # Detect which quality groups have at least one tag present on this sample.
+        present_groups: set = set()
+        for group_name, gtags in QUALITY_TAG_GROUPS.items():
+            if any(normalize_tag(t) in tag_set for t in gtags):
+                present_groups.add(group_name)
+
+        if not present_groups:
+            # No quality tag → mask ALL quality indices (both modes agree).
             for group_indices in voc.quality_indices.values():
                 for idx in group_indices:
                     loss_mask[idx] = 0.0
+        elif self.quality_masking_mode == "intra_group":
+            # tagutl-style: within each present group, mask non-positive siblings.
+            # Sibling masking avoids penalising "best=0" on a sample that an
+            # annotator chose to label "high" instead — within-group distinctions
+            # are often noisy / prevalence-imbalanced (e.g. normal_quality
+            # dominates → ASL's high γ_neg would over-suppress best_quality).
+            # Tags in the *other* group stay unmasked → trained as negatives
+            # (high vs low is a meaningful, clean distinction).
+            for group_name in present_groups:
+                for idx in voc.quality_indices[group_name]:
+                    if label[idx] == 0.0:
+                        loss_mask[idx] = 0.0
+        # else "cross_group": leave loss_mask[*]=1 — all non-positive quality
+        # tags train as negatives (legacy behavior, assumes clean labels).
 
         return label, loss_mask
 

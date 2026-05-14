@@ -275,6 +275,17 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "ban_tags": "",
     "use_tag_aliases": False,
     "save_base_model": False,               # Fix: frontend had True
+    # Quality-tag loss masking when a quality tag is present on a sample:
+    #   "intra_group" (default) — mask sibling tags within the same group
+    #                              (best/high/normal/medium share gradients;
+    #                              low/bad/worst share gradients).  Trains
+    #                              the cross-group good-vs-bad distinction.
+    #                              Safer when intra-group prevalence imbalance
+    #                              or annotation noise is significant.
+    #   "cross_group"           — all non-positive quality tags train as
+    #                              negatives.  Correct only when intra-group
+    #                              labels are truly mutually exclusive.
+    "quality_masking_mode": "intra_group",
     "cls_dim": None,
     "hidden_proj_dim": None,
     "init_head_from": None,

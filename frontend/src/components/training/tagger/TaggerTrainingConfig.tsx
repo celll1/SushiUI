@@ -59,6 +59,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   ban_tags: "",
   use_tag_aliases: false,
   save_base_model: false,
+  quality_masking_mode: "intra_group" as const,
   cls_dim: undefined as number | undefined,
   hidden_proj_dim: undefined as number | undefined,
   // LR matrix (conditional inference) — built once at training start when enabled.
@@ -122,6 +123,7 @@ export default function TaggerTrainingConfig({
         ban_tags: (editRun.config?.ban_tags as string) ?? DEFAULT_CONFIG.ban_tags,
         use_tag_aliases: (editRun.config?.use_tag_aliases as boolean) ?? DEFAULT_CONFIG.use_tag_aliases,
         save_base_model: (editRun.config?.save_base_model as boolean) ?? DEFAULT_CONFIG.save_base_model,
+        quality_masking_mode: (editRun.config?.quality_masking_mode as ("intra_group" | "cross_group" | undefined)) ?? DEFAULT_CONFIG.quality_masking_mode,
         cls_dim: (editRun.config?.cls_dim as number | undefined) ?? DEFAULT_CONFIG.cls_dim,
         hidden_proj_dim: (editRun.config?.hidden_proj_dim as number | undefined) ?? DEFAULT_CONFIG.hidden_proj_dim,
         build_lr_matrix_on_start: (editRun.config?.build_lr_matrix_on_start as boolean) ?? DEFAULT_CONFIG.build_lr_matrix_on_start,
@@ -409,6 +411,22 @@ export default function TaggerTrainingConfig({
               <span className="text-sm text-gray-300">Save base model</span>
               <span className="text-xs text-gray-500">(copies base weights into training directory for self-contained checkpoints)</span>
             </label>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-300 mb-1">Quality tag masking</label>
+            <select
+              value={config.quality_masking_mode ?? "intra_group"}
+              onChange={(e) => setField("quality_masking_mode", e.target.value as "intra_group" | "cross_group")}
+              className="w-full px-2 py-1 bg-gray-800 border border-gray-600 rounded text-sm text-gray-200 focus:ring-0"
+            >
+              <option value="intra_group">Intra-group (recommended) — mask siblings within the labelled group</option>
+              <option value="cross_group">Cross-group (legacy) — train all non-positive quality tags as negatives</option>
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              When a quality tag is present on a sample:
+              {" "}<b>intra-group</b> masks siblings (best/high/normal/medium share gradients, low/bad/worst share gradients) so cross-group good-vs-bad is the only signal.
+              {" "}<b>cross-group</b> trains every non-positive quality tag as a negative — only correct when intra-group labels are truly mutually exclusive and prevalence-balanced.
+            </p>
           </div>
           <div>
             <label className="block text-sm text-gray-300 mb-1">Rescan datasets before training</label>

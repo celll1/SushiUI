@@ -633,11 +633,31 @@ class SigLIP2InferenceManager:
             tmp_name = "merged_for_export"
             try:
                 merged_path = self.model.save_merged_checkpoint(tmp_dir, tmp_name)
-                vision_enc  = _load_vision_encoder(self.vision_encoder_path)
-                num_tags    = self.model.head.out_features
+                # The default repo in _load_vision_encoder is the NaFlex patch16
+                # variant; passing it explicitly via repo_id is REQUIRED for a
+                # non-NaFlex run (e.g. patch14-384), otherwise the loaded encoder
+                # has Linear patch_embedding [1152, 768] / 256 positions while
+                # the merged checkpoint has Conv2d [1152, 3, 14, 14] / 729
+                # positions → load_state_dict shape mismatch.  Mirrors the
+                # repo resolution used by InferenceManager.load_model.
+                from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
+                _meta = _read_metadata(self.checkpoint_path)
+                _repo_id   = _meta.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
+                _cls_dim   = _meta.get("cls_dim")            # LoRA ignores it; pass for safety
+                _hidden_pd = _meta.get("hidden_proj_dim")
+                print(f"[SigLIP2Manager] ONNX export: rebuilding vision encoder from repo_id={_repo_id} "
+                      f"(is_naflex={self.is_naflex})")
+                vision_enc = _load_vision_encoder(self.vision_encoder_path, repo_id=_repo_id)
+                num_tags   = self.model.head.out_features
+                # is_naflex must mirror the actual architecture so the model's
+                # forward path passes the right inputs to the encoder during
+                # ONNX trace.
                 export_model = SigLIP2TaggerModel(
                     num_tags=num_tags,
                     vision_encoder=vision_enc,
+                    cls_dim=_cls_dim,
+                    hidden_proj_dim=_hidden_pd,
+                    is_naflex=self.is_naflex,
                 )
                 from safetensors.torch import load_file as _load_file
                 export_model.load_state_dict(_load_file(merged_path), strict=False)

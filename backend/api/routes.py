@@ -3322,15 +3322,37 @@ def update_dataset_statistics(dataset: Dataset, db: Session):
 
 @router.get("/datasets")
 async def list_datasets(db: Session = Depends(get_datasets_db)):
-    """List all datasets"""
+    """List all datasets.
+
+    Two-fold speed-up over the previous implementation:
+
+    1. **Skip the per-dataset COUNT recompute.**  Returns the cached
+       ``total_items`` / ``total_captions`` / ``total_tags`` columns
+       directly.  The write paths that mutate items/captions
+       (scan_dataset etc.) keep these in sync, and re-doing three
+       COUNT-with-IN-subquery queries per dataset cost ~6 s for a 3M-item
+       corpus.  The list endpoint is hit on every Dataset Manager open
+       and shouldn't carry that overhead.  ``POST /datasets/{id}/scan``
+       (or the pre-flight rescan modes on training start) refreshes the
+       counts if drift is suspected.
+    2. **Defer the ``tag_statistics`` column.**  This column can be tens
+       of MB per dataset (per-tag count across the full vocabulary) and
+       totalled ~68 MB across all 16 datasets in the user's workspace.
+       The list UI doesn't render it; the detail endpoint
+       (``GET /datasets/{id}``) returns the full payload including stats.
+    """
+    from sqlalchemy.orm import defer
     try:
-        datasets = db.query(Dataset).order_by(Dataset.created_at.desc()).all()
-
-        # Update statistics for each dataset before returning
-        for dataset in datasets:
-            update_dataset_statistics(dataset, db)
-
-        return {"datasets": [d.to_dict() for d in datasets], "total": len(datasets)}
+        datasets = (
+            db.query(Dataset)
+            .options(defer(Dataset.tag_statistics))
+            .order_by(Dataset.created_at.desc())
+            .all()
+        )
+        return {
+            "datasets": [d.to_dict(include_tag_statistics=False) for d in datasets],
+            "total": len(datasets),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

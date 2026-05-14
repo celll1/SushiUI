@@ -7909,18 +7909,32 @@ def get_tagger_training_metrics(
     for m in rows:
         groups[m.resume_seq].append(m)
 
+    # Validation rows (f1 / threshold non-null) are sparse — typically one per
+    # epoch — and easily fall through the cracks of a fixed-step decimation
+    # grid.  Split them out, decimate only the dense training-loss rows, and
+    # always include the full validation set.  Without this the Validation F1
+    # and Optimal Threshold charts render empty for any run with > max_points
+    # total metrics.
+    def _is_validation_row(m) -> bool:
+        return getattr(m, "f1", None) is not None or getattr(m, "threshold", None) is not None
+
     data: List[dict] = []
     if max_points > 0 and len(rows) > max_points:
         per_group_max = max(50, max_points // max(1, len(groups)))
         for seq in sorted(groups):
-            g = groups[seq]
-            if len(g) > per_group_max:
-                step_size = max(1, len(g) // per_group_max)
-                indices = list(range(0, len(g), step_size))
-                if indices[-1] != len(g) - 1:
-                    indices.append(len(g) - 1)
-                g = [g[i] for i in indices]
-            data.extend(m.to_dict() for m in g)
+            g_all   = groups[seq]
+            g_train = [m for m in g_all if not _is_validation_row(m)]
+            g_val   = [m for m in g_all if _is_validation_row(m)]
+            # Decimate training-loss rows only
+            if len(g_train) > per_group_max:
+                step_size = max(1, len(g_train) // per_group_max)
+                indices = list(range(0, len(g_train), step_size))
+                if indices[-1] != len(g_train) - 1:
+                    indices.append(len(g_train) - 1)
+                g_train = [g_train[i] for i in indices]
+            # Re-merge by step so the consumer sees a monotonic series
+            merged = sorted(g_train + g_val, key=lambda m: m.step)
+            data.extend(m.to_dict() for m in merged)
     else:
         for seq in sorted(groups):
             data.extend(m.to_dict() for m in groups[seq])

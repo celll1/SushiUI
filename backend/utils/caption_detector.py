@@ -139,8 +139,21 @@ def detect_caption_format(content: str, taglist: set) -> Tuple[bool, float]:
         return (False, 0.0)
 
     # Heuristic 4: Sentence-ending punctuation (periods, semicolons, em-dashes)
-    # Tags almost never contain these; natural language frequently does
-    sentence_punct_count = content.count('.') + content.count(';') + content.count('\u2014')
+    # Tags almost never contain these; natural language frequently does.
+    # Count only tokens that END with a period (not tokens like "..." or ";d" which
+    # are valid Danbooru tags).  Also skip tokens that are entirely punctuation.
+    sentence_period_count = sum(
+        1 for t in tokens
+        if t.endswith('.') and not all(ch in '.\u2026' for ch in t)
+    )
+    # Semicolons inside tokens (e.g. ";d", ";t") are emote tags \u2014 count only
+    # tokens whose entire content is punctuation-heavy natural-language fragments.
+    sentence_semi_count = sum(
+        1 for t in tokens
+        if ';' in t and len(t.split()) > 1  # multi-word token containing ";"
+    )
+    em_dash_count = content.count('\u2014')
+    sentence_punct_count = sentence_period_count + sentence_semi_count + em_dash_count
     if sentence_punct_count >= 2:
         return (False, 0.0)
 
@@ -224,9 +237,17 @@ def has_sentence_pattern(text: str) -> bool:
     if re.search(r'\.\s+[A-Z]', text):
         return True
 
-    # Check for semicolon usage (common in descriptive captions, rare in tags)
+    # Check for semicolon usage (common in descriptive captions, rare in tags).
+    # Exception: Danbooru emote tags like ";d", ";t", ";p", ";q" are single
+    # comma-separated tokens containing only punctuation + one letter.
     if ';' in text:
-        return True
+        tokens_local = [t.strip() for t in text.split(',')]
+        non_emote_semis = [
+            t for t in tokens_local
+            if ';' in t and not re.match(r'^[;:><oO0\-\^\+\*~\.!?x\|pPdDqQtTvVwW]+$', t)
+        ]
+        if non_emote_semis:
+            return True
 
     return False
 

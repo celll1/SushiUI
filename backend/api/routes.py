@@ -5518,10 +5518,31 @@ async def create_training_run(
 
 @router.get("/training/runs")
 async def list_training_runs(db: Session = Depends(get_training_db)):
-    """List all training runs"""
+    """List all training runs.
+
+    Returns the summary projection: skips ``config_yaml`` (multi-KB
+    Text column), the YAML-parsed ``unet_lr`` / ``text_encoder_*_lr``
+    fields, the ``checkpoints`` relationship (avoids an N+1 once that
+    table has rows), and ``dataset_configs``.  The list UI doesn't
+    render any of those; the detail endpoint
+    ``GET /training/runs/{id}`` returns the full payload.
+    """
+    from sqlalchemy.orm import defer, raiseload
     try:
-        runs = db.query(TrainingRun).order_by(TrainingRun.created_at.desc()).all()
-        return {"runs": [run.to_dict() for run in runs], "total": len(runs)}
+        runs = (
+            db.query(TrainingRun)
+            .options(
+                defer(TrainingRun.config_yaml),
+                defer(TrainingRun.dataset_configs),
+                raiseload(TrainingRun.checkpoints),
+            )
+            .order_by(TrainingRun.created_at.desc())
+            .all()
+        )
+        return {
+            "runs":  [run.to_dict(summary=True) for run in runs],
+            "total": len(runs),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

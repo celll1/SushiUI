@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Boolean, 
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
+from typing import Any, Dict
 import uuid
 
 # Helper function to get local time
@@ -536,16 +537,61 @@ class TrainingRun(TrainingBase):
     checkpoints = relationship("TrainingCheckpoint", back_populates="run", cascade="all, delete-orphan")
     samples = relationship("TrainingSample", back_populates="run", cascade="all, delete-orphan")
     
-    def to_dict(self):
-        # Get checkpoints from DB (sorted by step descending = newest first)
-        checkpoint_paths = [ckpt.file_path for ckpt in sorted(self.checkpoints, key=lambda x: x.step, reverse=True)]
+    def to_dict(self, summary: bool = False):
+        """Serialise to dict.
+
+        ``summary=True`` skips the fields that the run-list UI never reads:
+
+        * ``config_yaml``      — full YAML text, several KB per run.
+        * ``unet_lr`` / ``text_encoder_*_lr`` — derived by parsing the YAML;
+          skipping config_yaml also lets us skip the per-row yaml.safe_load.
+        * ``checkpoint_paths`` — requires a separate query through the
+          ``checkpoints`` relationship (N+1 once that table has rows).
+        * ``dataset_configs`` — JSON of which datasets / captions the run
+          uses; only needed when editing or showing the detail view.
+
+        ``GET /training/runs/{id}`` keeps the full payload by default so
+        the detail view and edit flow still get everything in one call.
+        """
+        out: Dict[str, Any] = {
+            "id": self.id,
+            "dataset_id": self.dataset_id,
+            "run_id": self.run_id,
+            "run_name": self.run_name,
+            "training_method": self.training_method,
+            "base_model_path": self.base_model_path,
+            "status": self.status,
+            "progress": self.progress,
+            "current_step": self.current_step,
+            "total_steps": self.total_steps,
+            "phase": self.phase,
+            "phase_progress": self.phase_progress,
+            "phase_detail": self.phase_detail,
+            "loss": self.loss,
+            "learning_rate": self.learning_rate,
+            "output_dir": self.output_dir,
+            "log_file": self.log_file,
+            "error_message": self.error_message,
+            "created_at": self.created_at.isoformat() + 'Z' if self.created_at else None,
+            "started_at": self.started_at.isoformat() + 'Z' if self.started_at else None,
+            "last_resumed_at": self.last_resumed_at.isoformat() + 'Z' if self.last_resumed_at else None,
+            "resumed_from_step": self.resumed_from_step,
+            "completed_at": self.completed_at.isoformat() + 'Z' if self.completed_at else None,
+            "updated_at": self.updated_at.isoformat() + 'Z' if self.updated_at else None,
+        }
+
+        if summary:
+            return out
+
+        # Detail-only fields below.
+        out["dataset_configs"] = self.dataset_configs
+        out["config_yaml"]     = self.config_yaml
 
         # Extract component-specific LRs from YAML config
         unet_lr = None
         text_encoder_lr = None
         text_encoder_1_lr = None
         text_encoder_2_lr = None
-
         if self.config_yaml:
             try:
                 import yaml
@@ -557,40 +603,17 @@ class TrainingRun(TrainingBase):
                 text_encoder_2_lr = train_config.get('text_encoder_2_lr')
             except Exception:
                 pass  # Silently fail if YAML parsing fails
+        out["unet_lr"]            = unet_lr
+        out["text_encoder_lr"]    = text_encoder_lr
+        out["text_encoder_1_lr"]  = text_encoder_1_lr
+        out["text_encoder_2_lr"]  = text_encoder_2_lr
 
-        return {
-            "id": self.id,
-            "dataset_id": self.dataset_id,
-            "dataset_configs": self.dataset_configs,
-            "run_id": self.run_id,
-            "run_name": self.run_name,
-            "training_method": self.training_method,
-            "base_model_path": self.base_model_path,
-            "config_yaml": self.config_yaml,
-            "status": self.status,
-            "progress": self.progress,
-            "current_step": self.current_step,
-            "total_steps": self.total_steps,
-            "phase": self.phase,
-            "phase_progress": self.phase_progress,
-            "phase_detail": self.phase_detail,
-            "loss": self.loss,
-            "learning_rate": self.learning_rate,
-            "unet_lr": unet_lr,
-            "text_encoder_lr": text_encoder_lr,
-            "text_encoder_1_lr": text_encoder_1_lr,
-            "text_encoder_2_lr": text_encoder_2_lr,
-            "output_dir": self.output_dir,
-            "checkpoint_paths": checkpoint_paths,  # From DB, sorted newest first
-            "log_file": self.log_file,
-            "error_message": self.error_message,
-            "created_at": self.created_at.isoformat() + 'Z' if self.created_at else None,
-            "started_at": self.started_at.isoformat() + 'Z' if self.started_at else None,
-            "last_resumed_at": self.last_resumed_at.isoformat() + 'Z' if self.last_resumed_at else None,
-            "resumed_from_step": self.resumed_from_step,
-            "completed_at": self.completed_at.isoformat() + 'Z' if self.completed_at else None,
-            "updated_at": self.updated_at.isoformat() + 'Z' if self.updated_at else None,
-        }
+        # Get checkpoints from DB (sorted by step descending = newest first)
+        out["checkpoint_paths"] = [
+            ckpt.file_path
+            for ckpt in sorted(self.checkpoints, key=lambda x: x.step, reverse=True)
+        ]
+        return out
 
 
 class TrainingPreset(TrainingBase):

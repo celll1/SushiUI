@@ -365,7 +365,7 @@ async def rescan_dataset_inline(
         except Exception: pass
     # Lazy import to avoid circular dependency at module load time.
     from api.routes import scan_dataset
-    result = await scan_dataset(dataset_id=dataset_id, db=datasets_db)
+    result = await scan_dataset(dataset_id=dataset_id, db=datasets_db, incremental=True)
     return result
 
 

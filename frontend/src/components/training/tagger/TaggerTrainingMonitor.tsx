@@ -239,20 +239,30 @@ export default function TaggerTrainingMonitor({
             let sorted = Array.from(map.values()).sort(
               (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step
             );
-            // Per-group decimation so sparse early resumes survive
-            if (sorted.length > MAX_POINTS) {
+            // Per-group decimation proportional to each group's step range,
+            // so all resumes have the same visual point density.
+            // Always runs (not just when > MAX_POINTS) so a short resume
+            // in progress doesn't appear denser than completed ones.
+            {
               const groups = new Map<number, TaggerTrainingMetric[]>();
               for (const r of sorted) {
                 const seq = r.resume_seq ?? 0;
                 if (!groups.has(seq)) groups.set(seq, []);
                 groups.get(seq)!.push(r);
               }
-              const perGroup = Math.max(50, Math.floor(MAX_POINTS / groups.size));
-              const out: TaggerTrainingMetric[] = [];
-              for (const seq of [...groups.keys()].sort((a, b) => a - b)) {
+              const seqs = [...groups.keys()].sort((a, b) => a - b);
+              // Total step range across all groups
+              const totalSteps = seqs.reduce((sum, seq) => {
                 const g = groups.get(seq)!;
-                if (g.length > perGroup) {
-                  const stride = Math.ceil(g.length / perGroup);
+                return sum + Math.max(1, g[g.length - 1].step - g[0].step);
+              }, 0);
+              const out: TaggerTrainingMetric[] = [];
+              for (const seq of seqs) {
+                const g = groups.get(seq)!;
+                const groupSteps = Math.max(1, g[g.length - 1].step - g[0].step);
+                const quota = Math.max(50, Math.round(MAX_POINTS * groupSteps / totalSteps));
+                if (g.length > quota) {
+                  const stride = Math.ceil(g.length / quota);
                   const decimated = g.filter((_, i) => i % stride === 0);
                   if (decimated[decimated.length - 1] !== g[g.length - 1]) {
                     decimated.push(g[g.length - 1]);

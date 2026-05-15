@@ -355,25 +355,28 @@ export default function TaggerMetricChart({
     }
     // Crosshair follows the cursor in step-space.  Each resume independently
     // finds its nearest point to targetStep and shows its own value.
-    // A resume is only included if its nearest point is within half the
-    // visible x-span (prevents showing a resume's last value forever when
-    // the cursor has moved far past its end).
+    // A resume is only included when the cursor falls within its actual
+    // step range (±16px tolerance at the endpoints).
     const targetStep = pxToStep(x);
-    const halfSpan = xSpan / 2;
+
+    // Tolerance: 16px in step-space — allows targeting the endpoint of a resume
+    const stepTolerance = (16 / Math.max(1, chartW)) * xSpan;
 
     const seriesValues = new Map<number, { value: number; smoothValue: number | null }>();
     for (const seq of groupKeys) {
       const pts   = visibleGroups.get(seq) ?? [];
       const smPts = smoothedVisibleGroups.get(seq) ?? [];
       if (pts.length === 0) continue;
+      // Only include this resume when the cursor is within its actual step range
+      const resumeMin = pts[0].step;
+      const resumeMax = pts[pts.length - 1].step;
+      if (targetStep < resumeMin - stepTolerance || targetStep > resumeMax + stepTolerance) continue;
       let idx = 0;
       let dist = Math.abs(pts[0].step - targetStep);
       for (let i = 1; i < pts.length; i++) {
         const d = Math.abs(pts[i].step - targetStep);
         if (d < dist) { dist = d; idx = i; }
       }
-      // Skip resumes whose nearest point is too far from the cursor
-      if (dist > halfSpan) continue;
       seriesValues.set(seq, {
         value: pts[idx].value,
         smoothValue: smPts[idx]?.value ?? null,

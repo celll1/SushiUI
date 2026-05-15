@@ -353,47 +353,51 @@ export default function TaggerMetricChart({
       setTooltip(null);
       return;
     }
-    // Use the latest resume's nearest point as the anchor step, then
-    // collect values from every resume at that step so the tooltip shows
-    // all curves at once.
+    // Crosshair follows the cursor in step-space.  Each resume independently
+    // finds its nearest point to targetStep and shows its own value.
+    // A resume is only included if its nearest point is within half the
+    // visible x-span (prevents showing a resume's last value forever when
+    // the cursor has moved far past its end).
     const targetStep = pxToStep(x);
-    const latestPts = visibleGroups.get(latestSeq) ?? [];
-    if (latestPts.length === 0) {
-      setTooltip(null);
-      return;
-    }
-    let bestIdx = 0;
-    let bestDist = Math.abs(latestPts[0].step - targetStep);
-    for (let i = 1; i < latestPts.length; i++) {
-      const d = Math.abs(latestPts[i].step - targetStep);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
-    }
-    const anchorStep = latestPts[bestIdx].step;
+    const halfSpan = xSpan / 2;
 
-    // Collect per-resume nearest values at anchorStep
     const seriesValues = new Map<number, { value: number; smoothValue: number | null }>();
     for (const seq of groupKeys) {
       const pts   = visibleGroups.get(seq) ?? [];
       const smPts = smoothedVisibleGroups.get(seq) ?? [];
       if (pts.length === 0) continue;
       let idx = 0;
-      let dist = Math.abs(pts[0].step - anchorStep);
+      let dist = Math.abs(pts[0].step - targetStep);
       for (let i = 1; i < pts.length; i++) {
-        const d = Math.abs(pts[i].step - anchorStep);
+        const d = Math.abs(pts[i].step - targetStep);
         if (d < dist) { dist = d; idx = i; }
       }
+      // Skip resumes whose nearest point is too far from the cursor
+      if (dist > halfSpan) continue;
       seriesValues.set(seq, {
         value: pts[idx].value,
         smoothValue: smPts[idx]?.value ?? null,
       });
     }
 
-    const latestEntry = seriesValues.get(latestSeq)!;
-    const latestSmooth = latestEntry.smoothValue;
+    if (seriesValues.size === 0) {
+      setTooltip(null);
+      return;
+    }
+
+    // Pin the crosshair dot on the latest visible resume (or the highest
+    // seq that has a value), but keep the vertical line at targetStep.
+    const presentSeqs = [...seriesValues.keys()].sort((a, b) => a - b);
+    const anchorSeq = presentSeqs[presentSeqs.length - 1];
+    const anchorEntry = seriesValues.get(anchorSeq)!;
+    const anchorY = anchorEntry.smoothValue !== null && smoothing > 0
+      ? anchorEntry.smoothValue
+      : anchorEntry.value;
+
     setTooltip({
-      px: toX(anchorStep),
-      py: toY((latestSmooth ?? latestEntry.value)),
-      step: anchorStep,
+      px: toX(targetStep),
+      py: toY(anchorY),
+      step: Math.round(targetStep),
       seriesValues,
     });
   };

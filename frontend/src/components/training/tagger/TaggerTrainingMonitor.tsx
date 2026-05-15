@@ -87,6 +87,10 @@ export default function TaggerTrainingMonitor({
   // on every WS event.  Stored as ms-since-epoch.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  // Full raw metrics accumulator — never decimated, keyed by "resume_seq:step".
+  // The decimated display array (metrics state) is always recomputed from this
+  // ref on every WS flush, so historical points are never progressively lost.
+  const rawMetricsRef = useRef<Map<string, TaggerTrainingMetric>>(new Map());
   // Buffer incoming WS step events; flush to state at most once per second
   const wsBufferRef = useRef<TaggerTrainingMetric[]>([]);
   const wsFlushRef = useRef<NodeJS.Timeout | null>(null);
@@ -123,7 +127,14 @@ export default function TaggerTrainingMonitor({
   const fetchMetrics = useCallback(async () => {
     try {
       const data = await getTaggerTrainingMetrics(run.run_id);
-      if (data.length > 0) setMetrics(data);
+      if (data.length > 0) {
+        // Seed the raw accumulator with the full history from the API.
+        const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
+        const rawMap = new Map<string, TaggerTrainingMetric>();
+        for (const r of data) rawMap.set(keyOf(r), r);
+        rawMetricsRef.current = rawMap;
+        setMetrics(data);
+      }
     } catch (err) {
       console.error("[TaggerMonitor] Failed to fetch metrics:", err);
     }
@@ -223,59 +234,57 @@ export default function TaggerTrainingMonitor({
 
           const incoming = wsBufferRef.current.splice(0);
           if (incoming.length === 0) return;
-          setMetrics(prev => {
-            const MAX_POINTS = 2000;
-            // Compound key (resume_seq:step) so different resumes coexist
-            const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
-            const map = new Map<string, TaggerTrainingMetric>(prev.map(r => [keyOf(r), r]));
-            for (const r of incoming) {
-              const k = keyOf(r);
-              const existing = map.get(k);
-              // merge: epoch events carry f1/threshold, step events carry loss/lr
-              map.set(k, existing ? { ...existing, ...Object.fromEntries(
-                Object.entries(r).filter(([, v]) => v !== null && v !== undefined)
-              ) } : r);
+
+          // 1. Merge incoming WS events into the raw accumulator (never decimated).
+          //    epoch events carry f1/threshold; step events carry loss/lr — merge both.
+          const keyOf = (r: TaggerTrainingMetric) => `${r.resume_seq ?? 0}:${r.step}`;
+          const rawMap = rawMetricsRef.current;
+          for (const r of incoming) {
+            const k = keyOf(r);
+            const existing = rawMap.get(k);
+            rawMap.set(k, existing ? { ...existing, ...Object.fromEntries(
+              Object.entries(r).filter(([, v]) => v !== null && v !== undefined)
+            ) } : r);
+          }
+
+          // 2. Recompute the decimated display array from the *full* raw map
+          //    every flush.  Because we start from rawMap each time, historical
+          //    points are never progressively lost across flushes.
+          const MAX_POINTS = 2000;
+          let sorted = Array.from(rawMap.values()).sort(
+            (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step
+          );
+          {
+            const groups = new Map<number, TaggerTrainingMetric[]>();
+            for (const r of sorted) {
+              const seq = r.resume_seq ?? 0;
+              if (!groups.has(seq)) groups.set(seq, []);
+              groups.get(seq)!.push(r);
             }
-            let sorted = Array.from(map.values()).sort(
-              (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step
-            );
-            // Per-group decimation proportional to each group's step range,
-            // so all resumes have the same visual point density.
-            // Always runs (not just when > MAX_POINTS) so a short resume
-            // in progress doesn't appear denser than completed ones.
-            {
-              const groups = new Map<number, TaggerTrainingMetric[]>();
-              for (const r of sorted) {
-                const seq = r.resume_seq ?? 0;
-                if (!groups.has(seq)) groups.set(seq, []);
-                groups.get(seq)!.push(r);
-              }
-              const seqs = [...groups.keys()].sort((a, b) => a - b);
-              // Total step range across all groups
-              const totalSteps = seqs.reduce((sum, seq) => {
-                const g = groups.get(seq)!;
-                return sum + Math.max(1, g[g.length - 1].step - g[0].step);
-              }, 0);
-              const out: TaggerTrainingMetric[] = [];
-              for (const seq of seqs) {
-                const g = groups.get(seq)!;
-                const groupSteps = Math.max(1, g[g.length - 1].step - g[0].step);
-                const quota = Math.max(50, Math.round(MAX_POINTS * groupSteps / totalSteps));
-                if (g.length > quota) {
-                  const stride = Math.ceil(g.length / quota);
-                  const decimated = g.filter((_, i) => i % stride === 0);
-                  if (decimated[decimated.length - 1] !== g[g.length - 1]) {
-                    decimated.push(g[g.length - 1]);
-                  }
-                  out.push(...decimated);
-                } else {
-                  out.push(...g);
+            const seqs = [...groups.keys()].sort((a, b) => a - b);
+            const totalSteps = seqs.reduce((sum, seq) => {
+              const g = groups.get(seq)!;
+              return sum + Math.max(1, g[g.length - 1].step - g[0].step);
+            }, 0);
+            const out: TaggerTrainingMetric[] = [];
+            for (const seq of seqs) {
+              const g = groups.get(seq)!;
+              const groupSteps = Math.max(1, g[g.length - 1].step - g[0].step);
+              const quota = Math.max(50, Math.round(MAX_POINTS * groupSteps / totalSteps));
+              if (g.length > quota) {
+                const stride = Math.ceil(g.length / quota);
+                const decimated = g.filter((_, i) => i % stride === 0);
+                if (decimated[decimated.length - 1] !== g[g.length - 1]) {
+                  decimated.push(g[g.length - 1]);
                 }
+                out.push(...decimated);
+              } else {
+                out.push(...g);
               }
-              sorted = out;
             }
-            return sorted;
-          });
+            sorted = out;
+          }
+          setMetrics(sorted);
         }, 1000);
       }
     };

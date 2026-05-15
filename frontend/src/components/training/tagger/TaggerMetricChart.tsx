@@ -39,10 +39,10 @@ const colorForResume = (seq: number, fallback: string): string => {
 const labelForResume = (seq: number): string => (seq === 0 ? "Initial" : `Resume #${seq}`);
 
 // EMA smoothing
-function applySmoothing(points: Point[], factor: number): Point[] {
+function applySmoothing(points: Point[], factor: number, initialState?: number): Point[] {
   if (factor <= 0 || points.length === 0) return points;
   const out: Point[] = [];
-  let s = points[0].value;
+  let s = initialState !== undefined ? initialState : points[0].value;
   for (const p of points) {
     s = s * factor + p.value * (1 - factor);
     out.push({ step: p.step, value: s });
@@ -240,9 +240,18 @@ export default function TaggerMetricChart({
   // group; mixing across resumes would create jumps at the boundary).
   const smoothedAllGroups = useMemo<Map<number, Point[]>>(() => {
     const out = new Map<number, Point[]>();
-    for (const [seq, pts] of groups) out.set(seq, applySmoothing(pts, smoothing));
+    // Process groups in ascending resume_seq order so the EMA state
+    // at the end of seq N can seed the start of seq N+1, preventing
+    // a cold-start discontinuity at resume boundaries.
+    let carryState: number | undefined;
+    for (const seq of groupKeys) {
+      const pts = groups.get(seq) ?? [];
+      const smoothed = applySmoothing(pts, smoothing, carryState);
+      out.set(seq, smoothed);
+      if (smoothed.length > 0) carryState = smoothed[smoothed.length - 1].value;
+    }
     return out;
-  }, [groups, smoothing]);
+  }, [groups, groupKeys, smoothing]);
 
   const smoothedVisibleGroups = useMemo<Map<number, Point[]>>(() => {
     if (!xRange) return smoothedAllGroups;

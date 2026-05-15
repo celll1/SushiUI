@@ -97,15 +97,30 @@ class GPUCoordinator:
     freed VRAM, and trainer resumes only after the LAST generation
     releases its slot).
 
+    Grace-period optimisation
+    -------------------------
+    After the last generation slot is released, the trainer is NOT
+    resumed immediately.  Instead a short timer (``resume_grace_sec``)
+    is started.  If another generation arrives before the timer fires,
+    the trainer is already paused — the offload/restore round-trip is
+    skipped entirely, saving several seconds of state movement for
+    back-to-back generations.  Only when the timer fires with no pending
+    generation is the trainer actually restored and resumed.
+
     The coordinator is thread-safe but its `generation_slot()` context
     manager is async — it offloads the blocking trainer-pause wait to
     a default executor so the FastAPI event loop stays responsive.
     """
 
-    def __init__(self):
+    def __init__(self, resume_grace_sec: float = 5.0):
         self._lock = threading.RLock()
         self._handles: List[TrainerHandle] = []
         self._active_generations = 0
+        self._resume_grace_sec = resume_grace_sec
+        # Trainers currently in the paused state (offloaded or just paused).
+        # Non-empty either while actively generating OR during grace period.
+        self._currently_paused: List[TrainerHandle] = []
+        self._resume_timer: Optional[threading.Timer] = None
 
     # -- registration ----------------------------------------------------
 
@@ -119,7 +134,14 @@ class GPUCoordinator:
         with self._lock:
             if h in self._handles:
                 self._handles.remove(h)
-                print(f"[GPUCoordinator] Unregistered trainer: {h.trainer_label()}")
+            # If this trainer was paused (grace period), remove it and cancel
+            # the timer when the list becomes empty to avoid a spurious resume.
+            if h in self._currently_paused:
+                self._currently_paused.remove(h)
+                if not self._currently_paused and self._resume_timer is not None:
+                    self._resume_timer.cancel()
+                    self._resume_timer = None
+            print(f"[GPUCoordinator] Unregistered trainer: {h.trainer_label()}")
 
     def is_paused(self) -> bool:
         with self._lock:
@@ -221,11 +243,47 @@ class GPUCoordinator:
                 print(f"[GPUCoordinator] WARNING: {h.trainer_label()} did not "
                       f"restore within {timeout:.1f}s — continuing anyway")
 
+    # -- grace-period timer ---------------------------------------------
+
+    def _start_grace_timer(self) -> None:
+        """Start (or restart) the post-generation grace timer.
+
+        Must be called with self._lock held.
+        When the timer fires, it resumes all currently-paused trainers
+        provided no new generation has arrived in the interim.
+        """
+        if self._resume_timer is not None:
+            self._resume_timer.cancel()
+
+        def _fire() -> None:
+            with self._lock:
+                if self._active_generations > 0:
+                    # A new generation started and should have cancelled us;
+                    # this is a harmless race — just bail out.
+                    return
+                self._resume_timer = None
+                to_resume = list(self._currently_paused)
+                self._currently_paused.clear()
+            if to_resume:
+                labels = [h.trainer_label() for h in to_resume]
+                print(f"[GPUCoordinator] Grace period expired — resuming {labels}")
+                self._end_pause_cycle(to_resume, timeout=30.0)
+
+        t = threading.Timer(self._resume_grace_sec, _fire)
+        t.daemon = True
+        t.start()
+        self._resume_timer = t
+        print(f"[GPUCoordinator] Grace period started ({self._resume_grace_sec}s)")
+
     # -- public async context manager -----------------------------------
 
     @asynccontextmanager
     async def generation_slot(self, estimated_peak_gb: float, timeout: float = 60.0):
         """Acquire the GPU for image generation.  Refcounted.
+
+        On entry, if a previous grace period is still running (trainers
+        already paused) the timer is cancelled and the existing paused
+        state is reused — no offload/restore round-trip.
 
         Args:
             estimated_peak_gb: Conservative estimate of peak VRAM the
@@ -234,26 +292,38 @@ class GPUCoordinator:
                 before proceeding anyway (with a log warning).
         """
         loop = asyncio.get_event_loop()
-        first = False
+        need_pause = False
+
         with self._lock:
             self._active_generations += 1
-            first = self._active_generations == 1
+            if self._active_generations == 1:
+                if self._currently_paused:
+                    # Grace period active — reuse existing paused state.
+                    if self._resume_timer is not None:
+                        self._resume_timer.cancel()
+                        self._resume_timer = None
+                    labels = [h.trainer_label() for h in self._currently_paused]
+                    print(f"[GPUCoordinator] Grace-period reuse: {labels} "
+                          f"already paused, skipping offload/restore")
+                else:
+                    need_pause = True
 
-        paused: List[TrainerHandle] = []
         try:
-            if first:
-                paused = await loop.run_in_executor(
+            if need_pause:
+                new_paused = await loop.run_in_executor(
                     None, self._begin_pause_cycle, estimated_peak_gb, timeout
                 )
+                with self._lock:
+                    self._currently_paused = new_paused
             yield
         finally:
-            should_resume = False
+            start_grace = False
             with self._lock:
                 self._active_generations -= 1
-                if self._active_generations == 0:
-                    should_resume = True
-            if should_resume and paused:
-                await loop.run_in_executor(None, self._end_pause_cycle, paused, 30.0)
+                if self._active_generations == 0 and self._currently_paused:
+                    start_grace = True
+                    self._start_grace_timer()
+            # _start_grace_timer was called under the lock above; nothing else needed.
 
 
 # Module-level singleton.

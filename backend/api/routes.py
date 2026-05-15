@@ -3778,9 +3778,19 @@ async def scan_dataset_preview(dataset_id: int, db: Session = Depends(get_datase
 @router.post("/datasets/{dataset_id}/scan")
 async def scan_dataset(
     dataset_id: int,
-    db: Session = Depends(get_datasets_db)
+    db: Session = Depends(get_datasets_db),
+    *,
+    incremental: bool = False,
 ):
-    """Scan dataset directory and register images/captions"""
+    """Scan dataset directory and register images/captions.
+
+    When *incremental* is True (training pre-flight rescan):
+      - If nothing structurally changed (items_found==0, items_purged==0),
+        the existing tag_statistics is kept as-is (Case 1).
+      - Otherwise, tag_statistics is updated by adding/subtracting only
+        the counts for new/purged items (Case 2).
+    Both modes avoid the O(total_captions) full recomputation.
+    """
     import os
     from PIL import Image
     import warnings
@@ -3898,6 +3908,8 @@ async def scan_dataset(
     seen_existing_paths: set[str] = set()
     # mtime threshold: captions updated after this are re-processed
     last_scanned_ts = dataset.last_scanned_at.timestamp() if dataset.last_scanned_at else 0.0
+    # Track new item IDs for incremental tag_statistics update
+    new_item_ids: list[int] = []
     print(f"[Dataset Scan] Loaded {len(existing_paths)} existing items from DB (path-based dedup)")
 
     # Scan directory
@@ -4134,6 +4146,7 @@ async def scan_dataset(
                     item_id_for_captions = item.id
                     items_found += 1
                     files_processed += 1
+                    new_item_ids.append(item.id)
 
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(
@@ -4301,8 +4314,29 @@ async def scan_dataset(
     # --- Purge: remove DB records whose files no longer exist on disk ---
     stale_paths = set(existing_paths.keys()) - seen_existing_paths
     items_purged = 0
+    # For incremental mode: read purged captions BEFORE deletion so we can
+    # subtract their tag counts from the existing tag_statistics.
+    purged_tag_counts: dict[str, int] = {}   # tag -> count to subtract
     if stale_paths:
         stale_item_ids = [existing_paths[p] for p in stale_paths]
+        if incremental and dataset.tag_statistics:
+            import json as _json_purge
+            purged_caps = db.query(DatasetCaption).filter(
+                DatasetCaption.item_id.in_(stale_item_ids),
+                DatasetCaption.caption_type == "tags",
+            ).all()
+            for cap in purged_caps:
+                tags: list[str] = []
+                if cap.tag_data:
+                    try:
+                        tags = [t.get("tag", "").strip() for t in _json_purge.loads(cap.tag_data)]
+                    except Exception:
+                        pass
+                if not tags and cap.content:
+                    tags = [t.strip() for t in cap.content.split(",")]
+                for tag in tags:
+                    if tag:
+                        purged_tag_counts[tag] = purged_tag_counts.get(tag, 0) + 1
         # Delete captions first (foreign key), then items
         db.query(DatasetCaption).filter(
             DatasetCaption.item_id.in_(stale_item_ids)
@@ -4320,9 +4354,68 @@ async def scan_dataset(
         f"File scan complete: {files_processed} processed, {items_purged} purged | Starting tag statistics..."
     )
 
-    # Compute tag statistics with progress updates (remaining 10%)
-    print(f"[Dataset Scan] Computing tag statistics...")
-    tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_steps=total_steps, current_step=total_images)
+    # Compute tag statistics -----------------------------------------------
+    # incremental=True (training rescan):
+    #   Case 1: no structural change → keep existing stats as-is
+    #   Case 2: structural change → differential update (add new, subtract purged)
+    # incremental=False (regular UI scan): always full recompute
+    if incremental:
+        existing_stats: dict = dataset.tag_statistics or {}
+        if items_found == 0 and items_purged == 0:
+            # Case 1: nothing changed structurally — reuse cached stats
+            print(f"[Dataset Scan] No structural change — reusing cached tag statistics ({len(existing_stats)} tags)")
+            tag_statistics = existing_stats
+        else:
+            # Case 2: differential update
+            print(f"[Dataset Scan] Incremental tag statistics update: -{items_purged} / +{items_found} items")
+            import json as _json_incr
+            stats: dict = {tag: dict(v) for tag, v in existing_stats.items()}
+
+            # Subtract counts for purged items (collected before deletion)
+            for tag, cnt in purged_tag_counts.items():
+                if tag in stats:
+                    stats[tag]["count"] -= cnt
+                    if stats[tag]["count"] <= 0:
+                        del stats[tag]
+
+            # Add counts for new items (their captions are now in DB)
+            if new_item_ids:
+                new_caps = db.query(DatasetCaption).filter(
+                    DatasetCaption.item_id.in_(new_item_ids),
+                    DatasetCaption.caption_type == "tags",
+                ).all()
+                for cap in new_caps:
+                    tag_cat_pairs: list[tuple[str, str]] = []
+                    if cap.tag_data:
+                        try:
+                            tag_cat_pairs = [
+                                (t.get("tag", "").strip(), t.get("category", "Unknown"))
+                                for t in _json_incr.loads(cap.tag_data)
+                            ]
+                        except Exception:
+                            pass
+                    if not tag_cat_pairs and cap.content:
+                        tag_cat_pairs = [(t.strip(), "Unknown") for t in cap.content.split(",")]
+                    for tag, category in tag_cat_pairs:
+                        if not tag:
+                            continue
+                        if tag in stats:
+                            stats[tag]["count"] += 1
+                            # Upgrade category if currently Unknown
+                            if stats[tag]["category"] == "Unknown" and category != "Unknown":
+                                stats[tag]["category"] = category
+                        else:
+                            # Resolve Unknown categories via taglist_cache
+                            if category == "Unknown":
+                                resolved = taglist_cache.get_categories_batch([tag])
+                                category = resolved.get(tag, "Unknown")
+                            stats[tag] = {"count": 1, "category": category}
+
+            tag_statistics = stats
+            print(f"[Dataset Scan] Incremental update complete: {len(tag_statistics)} unique tags")
+    else:
+        print(f"[Dataset Scan] Computing tag statistics...")
+        tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_steps=total_steps, current_step=total_images)
 
     # Send final completion progress
     manager.send_progress_sync(

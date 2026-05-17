@@ -133,7 +133,28 @@ export default function TaggerTrainingMonitor({
         const rawMap = new Map<string, TaggerTrainingMetric>();
         for (const r of data) rawMap.set(keyOf(r), r);
         rawMetricsRef.current = rawMap;
-        setMetrics(data);
+
+        // Apply the same global-stride decimation as the WS flush path so the
+        // initial render is consistent with live updates.
+        const MAX_POINTS = 2000;
+        let display = data;
+        if (data.length > MAX_POINTS) {
+          const groups = new Map<number, TaggerTrainingMetric[]>();
+          for (const r of data) {
+            const seq = r.resume_seq ?? 0;
+            if (!groups.has(seq)) groups.set(seq, []);
+            groups.get(seq)!.push(r);
+          }
+          const globalStride = Math.ceil(data.length / MAX_POINTS);
+          const out: TaggerTrainingMetric[] = [];
+          for (const [, g] of [...groups.entries()].sort(([a], [b]) => a - b)) {
+            const dec = g.filter((_, i) => i % globalStride === 0);
+            if (dec.length === 0 || dec[dec.length - 1] !== g[g.length - 1]) dec.push(g[g.length - 1]);
+            out.push(...dec);
+          }
+          display = out;
+        }
+        setMetrics(display);
       }
     } catch (err) {
       console.error("[TaggerMonitor] Failed to fetch metrics:", err);
@@ -250,11 +271,15 @@ export default function TaggerTrainingMonitor({
           // 2. Recompute the decimated display array from the *full* raw map
           //    every flush.  Because we start from rawMap each time, historical
           //    points are never progressively lost across flushes.
+          //
+          //    Use a single global stride across ALL groups so that all resumes
+          //    appear at the same visual density.  Per-group strides caused sudden
+          //    density jumps when one group's length crossed its individual quota.
           const MAX_POINTS = 2000;
           let sorted = Array.from(rawMap.values()).sort(
             (a, b) => (a.resume_seq ?? 0) - (b.resume_seq ?? 0) || a.step - b.step
           );
-          {
+          if (sorted.length > MAX_POINTS) {
             const groups = new Map<number, TaggerTrainingMetric[]>();
             for (const r of sorted) {
               const seq = r.resume_seq ?? 0;
@@ -262,25 +287,18 @@ export default function TaggerTrainingMonitor({
               groups.get(seq)!.push(r);
             }
             const seqs = [...groups.keys()].sort((a, b) => a - b);
-            const totalSteps = seqs.reduce((sum, seq) => {
-              const g = groups.get(seq)!;
-              return sum + Math.max(1, g[g.length - 1].step - g[0].step);
-            }, 0);
+            const totalRaw = sorted.length;
+            // Single stride applied uniformly to every group.
+            const globalStride = Math.ceil(totalRaw / MAX_POINTS);
             const out: TaggerTrainingMetric[] = [];
             for (const seq of seqs) {
               const g = groups.get(seq)!;
-              const groupSteps = Math.max(1, g[g.length - 1].step - g[0].step);
-              const quota = Math.max(50, Math.round(MAX_POINTS * groupSteps / totalSteps));
-              if (g.length > quota) {
-                const stride = Math.ceil(g.length / quota);
-                const decimated = g.filter((_, i) => i % stride === 0);
-                if (decimated[decimated.length - 1] !== g[g.length - 1]) {
-                  decimated.push(g[g.length - 1]);
-                }
-                out.push(...decimated);
-              } else {
-                out.push(...g);
+              const decimated = g.filter((_, i) => i % globalStride === 0);
+              // Always keep the last point of each group so lines reach the edge.
+              if (decimated.length === 0 || decimated[decimated.length - 1] !== g[g.length - 1]) {
+                decimated.push(g[g.length - 1]);
               }
+              out.push(...decimated);
             }
             sorted = out;
           }

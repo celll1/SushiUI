@@ -163,18 +163,139 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
 class AnimaFullParameterAdapter(BaseFullParameterAdapter):
     """Full-parameter training adapter for Anima DiT models.
 
-    Phase C.1 focuses on LoRA; this class is a placeholder that fails fast
-    so the dispatch path is wired but Full FT is gated until Phase C.2.
+    Trainable surface:
+      - DiT blocks (`blocks.<N>.*`) when train_unet=True
+      - LLM Adapter (`llm_adapter.*`) when train_llm_adapter=True
+      - Everything else (Qwen3 text encoder, Qwen-Image VAE) is frozen
+
+    Optimizer parameter groups (per sd-scripts convention, simplified):
+      1. base       — all DiT params that aren't in groups 2/3
+      2. attn_mlp   — self_attn / cross_attn / mlp Linears
+                      (LR = unet_lr * anima_attn_mlp_lr_factor)
+      3. modulation — adaln_modulation_* Linears
+                      (LR = unet_lr * anima_mod_lr_factor)
+      4. llm_adapter — full LLM Adapter when train_llm_adapter=True
+                       (LR = unet_lr * anima_llm_adapter_lr_factor)
+
+    Save format:
+      Single safetensors file with the DiT state dict prefixed with
+      `net.` — matches the sd-scripts native layout that our Phase A
+      inference loader (load_anima_dit) auto-strips. metadata carries
+      model_type / modelspec.architecture so the file is self-describing.
     """
 
     def prepare_models_for_training(self):
-        raise NotImplementedError(
-            "Anima full-parameter training is not implemented yet (Phase C.2). "
-            "Use training_method='lora' for now."
+        trainer = self.trainer
+        train_dit = bool(getattr(trainer, "train_unet", True))
+        train_adapter_only = bool(
+            getattr(trainer, "train_llm_adapter",
+                    trainer.config.get("train_llm_adapter", True))
         )
 
+        # DiT
+        if train_dit and trainer.transformer is not None:
+            trainer.transformer.requires_grad_(True)
+            trainer.transformer.train()
+            # If the user opted out of LLM Adapter training, freeze just that
+            # submodule even though the rest of the DiT is trainable.
+            if not train_adapter_only and hasattr(trainer.transformer, "llm_adapter"):
+                trainer.transformer.llm_adapter.requires_grad_(False)
+                trainer.transformer.llm_adapter.eval()
+                print("[AnimaFullParameterAdapter] LLM Adapter frozen (train_llm_adapter=False)")
+            print("[AnimaFullParameterAdapter] Anima DiT set to train mode")
+
+        # Text encoder (Qwen3): always frozen.
+        if trainer.text_encoder is not None:
+            trainer.text_encoder.requires_grad_(False)
+            trainer.text_encoder.eval()
+            print("[AnimaFullParameterAdapter] Qwen3 text encoder is frozen")
+
+        # VAE: always frozen.
+        if trainer.vae is not None:
+            trainer.vae.requires_grad_(False)
+            trainer.vae.eval()
+
+        print(f"[AnimaFullParameterAdapter] Models prepared for training "
+              f"(DiT trainable={train_dit}, LLM Adapter trainable={train_adapter_only})")
+
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError("Anima full-parameter training is not implemented yet (Phase C.2).")
+        trainer = self.trainer
+        if trainer.transformer is None:
+            return []
+
+        base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+        attn_mlp_factor = float(trainer.config.get("anima_attn_mlp_lr_factor", 1.0))
+        mod_factor = float(trainer.config.get("anima_mod_lr_factor", 1.0))
+        adapter_factor = float(trainer.config.get("anima_llm_adapter_lr_factor", 1.0))
+
+        # Bucket parameters by named-path prefix.
+        base_params: List[nn.Parameter] = []
+        attn_mlp_params: List[nn.Parameter] = []
+        mod_params: List[nn.Parameter] = []
+        adapter_params: List[nn.Parameter] = []
+        for name, p in trainer.transformer.named_parameters():
+            if not p.requires_grad:
+                continue
+            if name.startswith("llm_adapter"):
+                adapter_params.append(p)
+            elif ".adaln_modulation_" in name or name.startswith("adaln_modulation_"):
+                mod_params.append(p)
+            elif (".self_attn." in name or ".cross_attn." in name
+                  or ".mlp." in name):
+                attn_mlp_params.append(p)
+            else:
+                base_params.append(p)
+
+        groups: List[Dict[str, Any]] = []
+        if base_params:
+            groups.append({"params": base_params, "lr": base_lr})
+        if attn_mlp_params:
+            groups.append({"params": attn_mlp_params, "lr": base_lr * attn_mlp_factor})
+        if mod_params:
+            groups.append({"params": mod_params, "lr": base_lr * mod_factor})
+        if adapter_params:
+            groups.append({"params": adapter_params, "lr": base_lr * adapter_factor})
+
+        total = sum(sum(p.numel() for p in g["params"]) for g in groups)
+        print(f"[AnimaFullParameterAdapter] {len(groups)} param group(s), "
+              f"{total:,} trainable params total "
+              f"(base={len(base_params)} | attn_mlp={len(attn_mlp_params)} | "
+              f"mod={len(mod_params)} | adapter={len(adapter_params)})")
+        return groups
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
-        raise NotImplementedError("Anima full-parameter training is not implemented yet (Phase C.2).")
+        from safetensors.torch import save_file
+
+        trainer = self.trainer
+        if trainer.transformer is None:
+            print("[AnimaFullParameterAdapter] WARNING: no transformer to save")
+            return
+
+        # Normalise output path to a .safetensors file.
+        if output_path.is_dir():
+            output_path = output_path / f"anima_step_{step}.safetensors"
+        elif not str(output_path).endswith(".safetensors"):
+            output_path = Path(str(output_path) + ".safetensors")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Save the DiT state dict with the `net.` prefix — the sd-scripts
+        # native convention also accepted by our Phase A inference loader,
+        # which auto-strips the prefix on load.
+        dit_state = trainer.transformer.state_dict()
+        combined: Dict[str, torch.Tensor] = {}
+        for k, v in dit_state.items():
+            combined[f"net.{k}"] = v.detach().to("cpu").contiguous()
+
+        metadata = {
+            "step": str(step),
+            "epoch": str(epoch),
+            "model_type": "anima",
+            "modelspec.architecture": "anima",
+            "format": "pt",
+        }
+
+        print(f"[AnimaFullParameterAdapter] Saving to {output_path}...")
+        save_file(combined, str(output_path), metadata=metadata)
+        total_params = sum(t.numel() for t in combined.values())
+        print(f"[AnimaFullParameterAdapter] Saved {len(combined)} tensors "
+              f"({total_params:,} params) -> {output_path}")

@@ -32,6 +32,7 @@ from .adapters import (
     ZImageFullParameterAdapter,
     # DEUSFullParameterAdapter,  # DEUS support removed
     FLUX2FullParameterAdapter,
+    AnimaFullParameterAdapter,
 )
 
 
@@ -92,6 +93,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_flux2:
             self.adapter = FLUX2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using FLUX2FullParameterAdapter")
+        elif self.is_anima:
+            self.adapter = AnimaFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using AnimaFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

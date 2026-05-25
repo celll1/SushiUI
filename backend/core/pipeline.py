@@ -49,6 +49,10 @@ class DiffusionPipelineManager:
         self.flux2_components: Optional[Dict[str, Any]] = None
         self.is_flux2_model: bool = False
 
+        # Anima components (Cosmos-Predict2 DiT + Qwen3 + Qwen-Image VAE, Rectified Flow)
+        self.anima_components: Optional[Dict[str, Any]] = None
+        self.is_anima_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -82,6 +86,8 @@ class DiffusionPipelineManager:
             return "flux2"
         if self.is_zimage_model:
             return "zimage"
+        if self.is_anima_model:
+            return "anima"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -179,6 +185,19 @@ class DiffusionPipelineManager:
                 self.flux2_components = None
                 self.is_flux2_model = False
 
+            # Clean up Anima components
+            if self.anima_components is not None:
+                print("[Pipeline] Cleaning up Anima components...")
+                for comp_name, comp in self.anima_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        try:
+                            comp.to('cpu')
+                        except Exception:
+                            pass
+                    del comp
+                self.anima_components = None
+                self.is_anima_model = False
+
             # Force garbage collection
             gc.collect()
 
@@ -249,6 +268,48 @@ class DiffusionPipelineManager:
                 print("[Pipeline] FLUX.2 model loaded successfully")
                 return
 
+            # Check if Anima (must come before Z-Image since both have "transformer")
+            if isinstance(model_result, dict) and model_result.get("type") == "anima":
+                print("[Pipeline] Anima model detected (component-based dict returned)")
+                self.anima_components = model_result
+                self.is_anima_model = True
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                # All components start on CPU; pipeline.py moves per stage.
+                for comp_name in ("text_encoder", "transformer", "vae"):
+                    comp = self.anima_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] All Anima components moved to CPU. Will load to GPU as needed.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                        print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "anima",
+                    "is_v_prediction": False,  # flow matching
+                    "model_hash": model_hash,
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] Anima model loaded successfully")
+                return
+
             # Check if Z-Image
             if isinstance(model_result, dict) and "transformer" in model_result:
                 # Z-Image component-based model
@@ -256,6 +317,7 @@ class DiffusionPipelineManager:
                 self.zimage_components = model_result
                 self.is_zimage_model = True
                 self.is_flux2_model = False
+                self.is_anima_model = False
                 self.current_model = model_id
                 self.current_attention_type = "normal"  # Reset on model load
 
@@ -355,6 +417,7 @@ class DiffusionPipelineManager:
             base_pipeline = model_result
             self.is_zimage_model = False
             self.is_flux2_model = False
+            self.is_anima_model = False
 
             # Determine if SDXL
             is_sdxl = isinstance(base_pipeline, StableDiffusionXLPipeline)
@@ -4730,6 +4793,10 @@ class DiffusionPipelineManager:
         if self.is_flux2_model:
             return self._generate_txt2img_flux2(params, progress_callback, step_callback)
 
+        # Anima handling (Cosmos-Predict2 DiT + Qwen3 + Qwen-Image VAE)
+        if self.is_anima_model:
+            return self._generate_txt2img_anima(params, progress_callback, step_callback)
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -5213,6 +5280,10 @@ class DiffusionPipelineManager:
         # FLUX.2 Klein handling
         if self.is_flux2_model:
             return self._generate_img2img_flux2(params, init_image, progress_callback, step_callback)
+
+        # Anima handling
+        if self.is_anima_model:
+            return self._generate_img2img_anima(params, init_image, progress_callback, step_callback)
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
@@ -5754,6 +5825,10 @@ class DiffusionPipelineManager:
         if self.is_flux2_model:
             return self._generate_inpaint_flux2(params, init_image, mask_image, progress_callback, step_callback)
 
+        # Anima inpaint support
+        if self.is_anima_model:
+            return self._generate_inpaint_anima(params, init_image, mask_image, progress_callback, step_callback)
+
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:
             if not self.txt2img_pipeline:
@@ -6121,6 +6196,313 @@ class DiffusionPipelineManager:
                 image = ext.process_after_generation(image, params)
 
         return image, seed, actual_ancestral_seed
+
+    # =============================================================
+    # Anima generation methods
+    # =============================================================
+
+    def _anima_resolve_dtype(self, dtype_str: Optional[str] = None) -> torch.dtype:
+        if dtype_str == "fp16":
+            return torch.float16
+        if dtype_str == "fp32":
+            return torch.float32
+        return torch.bfloat16
+
+    def _anima_move(self, component_name: str, target_device: str):
+        """Move a named Anima component to the given device."""
+        comp = self.anima_components.get(component_name)
+        if comp is None or not hasattr(comp, "to"):
+            return comp
+        try:
+            comp.to(target_device)
+        except Exception as e:
+            print(f"[Anima] Warning: could not move {component_name} to {target_device}: {e}")
+        return comp
+
+    def _generate_txt2img_anima(self, params: Dict[str, Any],
+                                 progress_callback=None, step_callback=None
+                                 ) -> tuple[Image.Image, int, int]:
+        if not self.anima_components:
+            raise RuntimeError("Anima components not loaded. Please load an Anima model first.")
+
+        print("[Anima] Starting txt2img generation")
+        from core.models.anima.anima_pipeline_ops import (
+            encode_prompt, sample_txt2img, vae_decode_latents,
+        )
+
+        device = self.device
+        compute_dtype = torch.bfloat16
+
+        transformer = self.anima_components["transformer"]
+        text_encoder = self.anima_components["text_encoder"]
+        qwen3_tokenizer = self.anima_components["tokenizer"]
+        t5_tokenizer = self.anima_components["t5_tokenizer"]
+        vae = self.anima_components["vae"]
+        scheduler = self.anima_components["scheduler"]
+
+        # Seed
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+        ancestral_seed = params.get("ancestral_seed", -1)
+        if ancestral_seed == -1:
+            ancestral_seed = random.randint(0, 2147483647)
+
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        height = int(params.get("height", 512))
+        width = int(params.get("width", 512))
+        num_inference_steps = int(params.get("steps", 28))
+        guidance_scale = float(params.get("cfg_scale", 4.0))
+
+        # Snap to patch_spatial * vae_scale_factor
+        snap = transformer.patch_spatial * 8
+        height = (height // snap) * snap
+        width = (width // snap) * snap
+
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+        try:
+            # Stage 1: text encoding
+            self._anima_move("text_encoder", device)
+            cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                                  prompt, device=device, dtype=compute_dtype)
+            uncond = None
+            if guidance_scale > 1.0:
+                uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                                       negative_prompt, device=device, dtype=compute_dtype)
+            self._anima_move("text_encoder", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 2: denoising
+            self._anima_move("transformer", device)
+            latents = sample_txt2img(
+                transformer=transformer, scheduler=scheduler,
+                cond_embeds=cond, uncond_embeds=uncond,
+                height=height, width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator, device=device, dtype=compute_dtype,
+                step_callback=step_callback,
+            )
+            self._anima_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 3: VAE decode
+            self._anima_move("vae", device)
+            images = vae_decode_latents(vae, latents)
+            self._anima_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("[Anima] txt2img completed")
+            return images[0], seed, ancestral_seed
+        except Exception as e:
+            print(f"[Anima] Generation error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+
+    def _generate_img2img_anima(self, params: Dict[str, Any], init_image: Image.Image,
+                                 progress_callback=None, step_callback=None
+                                 ) -> tuple[Image.Image, int]:
+        if not self.anima_components:
+            raise RuntimeError("Anima components not loaded.")
+
+        print("[Anima] Starting img2img generation")
+        from core.models.anima.anima_pipeline_ops import (
+            encode_prompt, sample_img2img, vae_encode_image, vae_decode_latents,
+        )
+
+        device = self.device
+        compute_dtype = torch.bfloat16
+
+        transformer = self.anima_components["transformer"]
+        text_encoder = self.anima_components["text_encoder"]
+        qwen3_tokenizer = self.anima_components["tokenizer"]
+        t5_tokenizer = self.anima_components["t5_tokenizer"]
+        vae = self.anima_components["vae"]
+        scheduler = self.anima_components["scheduler"]
+
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        num_inference_steps = int(params.get("steps", 28))
+        guidance_scale = float(params.get("cfg_scale", 4.0))
+        denoising_strength = float(params.get("denoising_strength", 0.7))
+
+        # Resize init image to match desired width/height (snapped)
+        width = int(params.get("width", init_image.width))
+        height = int(params.get("height", init_image.height))
+        snap = transformer.patch_spatial * 8
+        width = (width // snap) * snap
+        height = (height // snap) * snap
+        if (init_image.width, init_image.height) != (width, height):
+            init_image = init_image.resize((width, height), Image.LANCZOS)
+
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+        try:
+            # Encode init image
+            self._anima_move("vae", device)
+            init_latents = vae_encode_image(vae, init_image, device, compute_dtype)
+            self._anima_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Text encoding
+            self._anima_move("text_encoder", device)
+            cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                                  prompt, device=device, dtype=compute_dtype)
+            uncond = None
+            if guidance_scale > 1.0:
+                uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                                       negative_prompt, device=device, dtype=compute_dtype)
+            self._anima_move("text_encoder", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Denoise
+            self._anima_move("transformer", device)
+            latents = sample_img2img(
+                transformer=transformer, scheduler=scheduler,
+                init_latents=init_latents,
+                cond_embeds=cond, uncond_embeds=uncond,
+                num_inference_steps=num_inference_steps,
+                denoising_strength=denoising_strength,
+                guidance_scale=guidance_scale,
+                generator=generator, device=device, dtype=compute_dtype,
+                step_callback=step_callback,
+            )
+            self._anima_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Decode
+            self._anima_move("vae", device)
+            images = vae_decode_latents(vae, latents)
+            self._anima_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("[Anima] img2img completed")
+            return images[0], seed
+        except Exception as e:
+            print(f"[Anima] Generation error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+
+    def _generate_inpaint_anima(self, params: Dict[str, Any],
+                                 init_image: Image.Image, mask_image: Image.Image,
+                                 progress_callback=None, step_callback=None
+                                 ) -> tuple[Image.Image, int]:
+        if not self.anima_components:
+            raise RuntimeError("Anima components not loaded.")
+
+        print("[Anima] Starting inpaint generation")
+        from core.models.anima.anima_pipeline_ops import (
+            encode_prompt, sample_inpaint, vae_encode_image, vae_decode_latents,
+            make_mask_latents,
+        )
+
+        device = self.device
+        compute_dtype = torch.bfloat16
+
+        transformer = self.anima_components["transformer"]
+        text_encoder = self.anima_components["text_encoder"]
+        qwen3_tokenizer = self.anima_components["tokenizer"]
+        t5_tokenizer = self.anima_components["t5_tokenizer"]
+        vae = self.anima_components["vae"]
+        scheduler = self.anima_components["scheduler"]
+
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        num_inference_steps = int(params.get("steps", 28))
+        guidance_scale = float(params.get("cfg_scale", 4.0))
+        denoising_strength = float(params.get("denoising_strength", 0.8))
+        mask_blur = int(params.get("mask_blur", 4))
+
+        width = int(params.get("width", init_image.width))
+        height = int(params.get("height", init_image.height))
+        snap = transformer.patch_spatial * 8
+        width = (width // snap) * snap
+        height = (height // snap) * snap
+        if (init_image.width, init_image.height) != (width, height):
+            init_image = init_image.resize((width, height), Image.LANCZOS)
+        if (mask_image.width, mask_image.height) != (width, height):
+            mask_image = mask_image.resize((width, height), Image.NEAREST)
+
+        if mask_blur > 0:
+            from PIL import ImageFilter
+            mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
+
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+        try:
+            # Encode init image
+            self._anima_move("vae", device)
+            init_latents = vae_encode_image(vae, init_image, device, compute_dtype)
+            self._anima_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            mask_latents = make_mask_latents(
+                mask_image, init_latents.shape[-2], init_latents.shape[-1],
+                device, compute_dtype,
+            )
+
+            # Text encoding
+            self._anima_move("text_encoder", device)
+            cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                                  prompt, device=device, dtype=compute_dtype)
+            uncond = None
+            if guidance_scale > 1.0:
+                uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                                       negative_prompt, device=device, dtype=compute_dtype)
+            self._anima_move("text_encoder", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Denoise
+            self._anima_move("transformer", device)
+            latents = sample_inpaint(
+                transformer=transformer, scheduler=scheduler,
+                init_latents=init_latents, mask_latents=mask_latents,
+                cond_embeds=cond, uncond_embeds=uncond,
+                num_inference_steps=num_inference_steps,
+                denoising_strength=denoising_strength,
+                guidance_scale=guidance_scale,
+                generator=generator, device=device, dtype=compute_dtype,
+                step_callback=step_callback,
+            )
+            self._anima_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Decode
+            self._anima_move("vae", device)
+            images = vae_decode_latents(vae, latents)
+            self._anima_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("[Anima] inpaint completed")
+            return images[0], seed
+        except Exception as e:
+            print(f"[Anima] Generation error: {e}")
+            import traceback; traceback.print_exc()
+            raise
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

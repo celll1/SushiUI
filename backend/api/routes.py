@@ -1714,8 +1714,9 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
             architecture = ModelLoader.detect_model_type(item_path)
 
             if os.path.isdir(item_path):
-                # Only include directories that are valid diffusers model directories
-                if not ModelLoader.is_valid_diffusers_directory(item_path):
+                # Allow Anima split-files layouts even when there's no model_index.json
+                is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
+                if not is_valid and architecture != "anima":
                     continue
                 models.append({
                     "name": item,
@@ -1858,7 +1859,8 @@ async def get_samplers():
         # Note: DEUS uses SDXL-like architecture with standard diffusion, NOT Flow Matching
         is_flow_matching = (
             pipeline_manager.is_zimage_model or
-            pipeline_manager.is_flux2_model
+            pipeline_manager.is_flux2_model or
+            pipeline_manager.is_anima_model
         )
 
         if is_flow_matching:

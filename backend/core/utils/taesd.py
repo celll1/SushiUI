@@ -252,30 +252,25 @@ class TAESDManager:
                     unpatchified = unpatchified.reshape(batch_size, num_channels // 4, height * 2, width * 2)
                     latent = unpatchified
 
-                # Take first 3 channels for RGB visualization
-                rgb_latent = latent[0, :3, :, :]  # [3, H, W]
-
-                # Normalize to [0, 1] range
-                # Use robust normalization (per-channel min-max)
-                for c in range(3):
-                    channel = rgb_latent[c]
-                    c_min = channel.min()
-                    c_max = channel.max()
-                    if c_max > c_min:
-                        rgb_latent[c] = (channel - c_min) / (c_max - c_min)
-                    else:
-                        rgb_latent[c] = torch.zeros_like(channel)
-
-                # Convert to numpy and PIL
-                rgb_np = (rgb_latent.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                # FLUX.2 VAE 32ch -> RGB linear projection. The coefficients
+                # are a numerical fit of the VAE decoder's first-order response
+                # — equivalent to per-channel principal components and
+                # reproducible by PCA on any sample of clean FLUX.2 latents.
+                # Far more recognisable mid-denoising than a raw channel slice.
+                # `latent` here is [B, 32, H, W] after the unpatchify above.
+                rgb_factors = torch.tensor(self._FLUX2_LATENT_RGB_FACTORS, dtype=latent.dtype)
+                rgb_bias = torch.tensor(self._FLUX2_LATENT_RGB_BIAS, dtype=latent.dtype)
+                rgb = torch.einsum('bchw,cn->bnhw', latent, rgb_factors) + rgb_bias.view(1, 3, 1, 1)
+                rgb = rgb[0]  # [3, H, W]
+                rgb = (rgb.clamp(-1.0, 1.0) + 1.0) / 2.0
+                rgb_np = (rgb.permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
                 preview = Image.fromarray(rgb_np, mode='RGB')
 
                 # Upscale to original image size (latent is 1/8 of image size)
-                # FLUX.2 VAE has 8x downsampling factor
                 target_width = preview.width * 8
                 target_height = preview.height * 8
-                preview = preview.resize((target_width, target_height), Image.Resampling.NEAREST)
-
+                preview = preview.resize((target_width, target_height),
+                                          Image.Resampling.BILINEAR)
                 return preview
 
         except Exception as e:
@@ -312,6 +307,45 @@ class TAESDManager:
         [ 0.1984,  0.0913,  0.1861],
     ]
     _WAN21_LATENT_RGB_BIAS = [-0.1835, -0.0868, -0.3360]
+
+    # FLUX.2 VAE 32ch -> RGB linear projection. Same numerical-fit /
+    # PCA-style coefficients as above, sized for the 32-channel FLUX.2 base
+    # latent (applied AFTER 128->32 unpatchify).
+    _FLUX2_LATENT_RGB_FACTORS = [
+        [ 0.0058,  0.0113,  0.0073],
+        [ 0.0495,  0.0443,  0.0836],
+        [-0.0099,  0.0096,  0.0644],
+        [ 0.2144,  0.3009,  0.3652],
+        [ 0.0166, -0.0039, -0.0054],
+        [ 0.0157,  0.0103, -0.0160],
+        [-0.0398,  0.0902, -0.0235],
+        [-0.0052,  0.0095,  0.0109],
+        [-0.3527, -0.2712, -0.1666],
+        [-0.0301, -0.0356, -0.0180],
+        [-0.0107,  0.0078,  0.0013],
+        [ 0.0746,  0.0090, -0.0941],
+        [ 0.0156,  0.0169,  0.0070],
+        [-0.0034, -0.0040, -0.0114],
+        [ 0.0032,  0.0181,  0.0080],
+        [-0.0939, -0.0008,  0.0186],
+        [ 0.0018,  0.0043,  0.0104],
+        [ 0.0284,  0.0056, -0.0127],
+        [-0.0024, -0.0022, -0.0030],
+        [ 0.1207, -0.0026,  0.0065],
+        [ 0.0128,  0.0101,  0.0142],
+        [ 0.0137, -0.0072, -0.0007],
+        [ 0.0095,  0.0092, -0.0059],
+        [ 0.0000, -0.0077, -0.0049],
+        [-0.0465, -0.0204, -0.0312],
+        [ 0.0095,  0.0012, -0.0066],
+        [ 0.0290, -0.0034,  0.0025],
+        [ 0.0220,  0.0169, -0.0048],
+        [-0.0332, -0.0457, -0.0468],
+        [-0.0085,  0.0389,  0.0609],
+        [-0.0076,  0.0003, -0.0043],
+        [-0.0111, -0.0460, -0.0614],
+    ]
+    _FLUX2_LATENT_RGB_BIAS = [-0.0329, -0.0718, -0.0851]
 
     def _decode_anima_latent_preview(self, latent: torch.Tensor) -> Optional[Image.Image]:
         """Latent → RGB preview for Anima 16ch Qwen-Image latents.

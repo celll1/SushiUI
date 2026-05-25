@@ -6208,13 +6208,48 @@ class DiffusionPipelineManager:
             return torch.float32
         return torch.bfloat16
 
-    def _anima_move(self, component_name: str, target_device: str):
-        """Move a named Anima component to the given device."""
+    def _anima_move(self, component_name: str, target_device: str,
+                     quantization: Optional[str] = None):
+        """Move a named Anima component to the given device.
+
+        For GPU moves the specialized helpers in core.vram_optimization apply
+        optional FP8 quantization to text_encoder / transformer; CPU moves use
+        the plain .to('cpu') path. The (possibly quantized) component is
+        written back into self.anima_components so subsequent calls see the
+        quantized copy.
+        """
+        from core.vram_optimization import (
+            move_anima_text_encoder_to_gpu, move_anima_text_encoder_to_cpu,
+            move_anima_transformer_to_gpu, move_anima_transformer_to_cpu,
+            move_anima_vae_to_gpu, move_anima_vae_to_cpu,
+        )
+
         comp = self.anima_components.get(component_name)
-        if comp is None or not hasattr(comp, "to"):
+        if comp is None:
             return comp
+
         try:
-            comp.to(target_device)
+            if component_name == "text_encoder":
+                if target_device == "cpu":
+                    move_anima_text_encoder_to_cpu(comp)
+                else:
+                    comp = move_anima_text_encoder_to_gpu(comp, quantization)
+                    self.anima_components["text_encoder"] = comp
+            elif component_name == "transformer":
+                if target_device == "cpu":
+                    move_anima_transformer_to_cpu(comp)
+                else:
+                    comp = move_anima_transformer_to_gpu(comp, quantization)
+                    self.anima_components["transformer"] = comp
+            elif component_name == "vae":
+                if target_device == "cpu":
+                    move_anima_vae_to_cpu(comp)
+                else:
+                    move_anima_vae_to_gpu(comp)
+            else:
+                # Fallback for unknown components
+                if hasattr(comp, "to"):
+                    comp.to(target_device)
         except Exception as e:
             print(f"[Anima] Warning: could not move {component_name} to {target_device}: {e}")
         return comp
@@ -6255,6 +6290,10 @@ class DiffusionPipelineManager:
         num_inference_steps = int(params.get("steps", 28))
         guidance_scale = float(params.get("cfg_scale", 4.0))
 
+        # Optional FP8 quantization (matches FLUX.2 / Z-Image pattern)
+        transformer_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+
         # Snap to patch_spatial * vae_scale_factor
         snap = transformer.patch_spatial * 8
         height = (height // snap) * snap
@@ -6265,7 +6304,7 @@ class DiffusionPipelineManager:
 
         try:
             # Stage 1: text encoding
-            self._anima_move("text_encoder", device)
+            text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
                                   prompt, device=device, dtype=compute_dtype)
             uncond = None
@@ -6277,7 +6316,7 @@ class DiffusionPipelineManager:
                 torch.cuda.empty_cache()
 
             # Stage 2: denoising
-            self._anima_move("transformer", device)
+            transformer = self._anima_move("transformer", device, transformer_quantization)
             latents = sample_txt2img(
                 transformer=transformer, scheduler=scheduler,
                 cond_embeds=cond, uncond_embeds=uncond,
@@ -6285,7 +6324,7 @@ class DiffusionPipelineManager:
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
                 generator=generator, device=device, dtype=compute_dtype,
-                step_callback=step_callback,
+                step_callback=(progress_callback or step_callback),
             )
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
@@ -6335,6 +6374,8 @@ class DiffusionPipelineManager:
         num_inference_steps = int(params.get("steps", 28))
         guidance_scale = float(params.get("cfg_scale", 4.0))
         denoising_strength = float(params.get("denoising_strength", 0.7))
+        transformer_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
 
         # Resize init image to match desired width/height (snapped)
         width = int(params.get("width", init_image.width))
@@ -6357,7 +6398,7 @@ class DiffusionPipelineManager:
                 torch.cuda.empty_cache()
 
             # Text encoding
-            self._anima_move("text_encoder", device)
+            text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
                                   prompt, device=device, dtype=compute_dtype)
             uncond = None
@@ -6369,7 +6410,7 @@ class DiffusionPipelineManager:
                 torch.cuda.empty_cache()
 
             # Denoise
-            self._anima_move("transformer", device)
+            transformer = self._anima_move("transformer", device, transformer_quantization)
             latents = sample_img2img(
                 transformer=transformer, scheduler=scheduler,
                 init_latents=init_latents,
@@ -6378,7 +6419,7 @@ class DiffusionPipelineManager:
                 denoising_strength=denoising_strength,
                 guidance_scale=guidance_scale,
                 generator=generator, device=device, dtype=compute_dtype,
-                step_callback=step_callback,
+                step_callback=(progress_callback or step_callback),
             )
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
@@ -6431,6 +6472,8 @@ class DiffusionPipelineManager:
         guidance_scale = float(params.get("cfg_scale", 4.0))
         denoising_strength = float(params.get("denoising_strength", 0.8))
         mask_blur = int(params.get("mask_blur", 4))
+        transformer_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
 
         width = int(params.get("width", init_image.width))
         height = int(params.get("height", init_image.height))
@@ -6463,7 +6506,7 @@ class DiffusionPipelineManager:
             )
 
             # Text encoding
-            self._anima_move("text_encoder", device)
+            text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
                                   prompt, device=device, dtype=compute_dtype)
             uncond = None
@@ -6475,7 +6518,7 @@ class DiffusionPipelineManager:
                 torch.cuda.empty_cache()
 
             # Denoise
-            self._anima_move("transformer", device)
+            transformer = self._anima_move("transformer", device, transformer_quantization)
             latents = sample_inpaint(
                 transformer=transformer, scheduler=scheduler,
                 init_latents=init_latents, mask_latents=mask_latents,
@@ -6484,7 +6527,7 @@ class DiffusionPipelineManager:
                 denoising_strength=denoising_strength,
                 guidance_scale=guidance_scale,
                 generator=generator, device=device, dtype=compute_dtype,
-                step_callback=step_callback,
+                step_callback=(progress_callback or step_callback),
             )
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():

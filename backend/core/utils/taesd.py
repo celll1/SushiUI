@@ -26,7 +26,7 @@ class TAESDManager:
         if moved:
             torch.cuda.empty_cache()
 
-    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False):
+    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False):
         """Load appropriate TAESD model
 
         Args:
@@ -35,7 +35,13 @@ class TAESDManager:
             is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
             is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch, uses TAESD-XL)
             is_flux2: True for FLUX.2 models (32ch latent, no TAESD available yet)
+            is_anima: True for Anima models (16ch Qwen-Image VAE; no compatible TAE,
+                      uses latent-direct preview via _decode_anima_latent_preview)
         """
+        # Anima uses Qwen-Image VAE (16ch but distinct latent space from FLUX);
+        # no compatible TAE available, falls back to latent-direct preview.
+        if is_anima:
+            return None
         # FLUX.2 uses 32-channel latents, no compatible TAESD available
         if is_flux2:
             print("[TAESD] FLUX.2 models use 32-channel latents - no compatible preview decoder available")
@@ -92,7 +98,7 @@ class TAESDManager:
                 self.taesd.to(self.device)
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -102,11 +108,16 @@ class TAESDManager:
             is_deus: True for DEUS models (uses TAESD-XL, same as SDXL)
             is_zimage_sdxl_vae: True for Z-Image models using SDXL VAE (4ch)
             is_flux2: True for FLUX.2 models (32ch latent, uses first 3 channels as RGB)
+            is_anima: True for Anima models (16ch Qwen-Image latent, uses first 3 channels as RGB)
             image_width: Target image width (for FLUX.2 preview aspect ratio calculation)
             image_height: Target image height (for FLUX.2 preview aspect ratio calculation)
         """
         import time
         decode_start_time = time.time()
+
+        # Anima: 16ch Qwen-Image latent, no compatible TAE; use latent-direct preview
+        if is_anima:
+            return self._decode_anima_latent_preview(latent)
 
         # FLUX.2: Use first 3 channels of 32ch latent as RGB preview (no TAESD available)
         if is_flux2:
@@ -269,6 +280,52 @@ class TAESDManager:
 
         except Exception as e:
             print(f"[TAESD] Failed to decode FLUX.2 latent preview: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+
+
+    def _decode_anima_latent_preview(self, latent: torch.Tensor) -> Optional[Image.Image]:
+        """Latent-direct preview for Anima 16ch Qwen-Image latents.
+
+        Anima latents arrive as [B, 16, 1, H/8, W/8] (Cosmos-Predict2 keeps a
+        singleton temporal dim). No compatible TAE exists for this latent space
+        (Qwen-Image VAE != FLUX VAE), so we visualise the first 3 channels with
+        per-channel min/max normalisation and upsample 8x to the original
+        resolution.
+        """
+        try:
+            with torch.no_grad():
+                t = latent.detach().cpu().to(torch.float32)
+                # Squeeze the temporal dim if present so we get [B, C, H, W]
+                if t.ndim == 5 and t.shape[2] == 1:
+                    t = t.squeeze(2)
+                if t.ndim != 4 or t.shape[1] < 3:
+                    print(f"[TAESD] Anima preview: unexpected latent shape {tuple(t.shape)}")
+                    return None
+
+                rgb_latent = t[0, :3, :, :].clone()  # [3, H, W]
+
+                for c in range(3):
+                    chan = rgb_latent[c]
+                    c_min = chan.min()
+                    c_max = chan.max()
+                    if c_max > c_min:
+                        rgb_latent[c] = (chan - c_min) / (c_max - c_min)
+                    else:
+                        rgb_latent[c] = torch.zeros_like(chan)
+
+                rgb_np = (rgb_latent.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+                preview = Image.fromarray(rgb_np, mode='RGB')
+
+                # Qwen-Image VAE has 8x spatial downscale, same as SDXL/FLUX
+                preview = preview.resize(
+                    (preview.width * 8, preview.height * 8),
+                    Image.Resampling.NEAREST,
+                )
+                return preview
+        except Exception as e:
+            print(f"[TAESD] Failed to decode Anima latent preview: {e}")
             import traceback
             traceback.print_exc()
             return None

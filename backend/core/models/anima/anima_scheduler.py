@@ -44,8 +44,9 @@ class AnimaFlowMatchScheduler:
         # Append a final 0.0 so we can compute dt = sigmas[i] - sigmas[i+1]
         sigmas = torch.cat([sigmas, torch.zeros(1, device=device, dtype=torch.float32)])
         self.sigmas = sigmas
-        # Timestep value passed to the model: sigma * num_train_timesteps
-        self.timesteps = sigmas[:-1] * self.num_train_timesteps
+        # Anima expects the timestep to be the sigma value directly (range [0, 1]),
+        # NOT sigma * num_train_timesteps — see sd-scripts anima_train_utils.sample().
+        self.timesteps = sigmas[:-1].clone()
         self.num_inference_steps = num_inference_steps
 
     def scale_noise(self, sample: torch.Tensor, step_index: int, noise: torch.Tensor) -> torch.Tensor:

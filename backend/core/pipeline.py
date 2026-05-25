@@ -6208,6 +6208,25 @@ class DiffusionPipelineManager:
             return torch.float32
         return torch.bfloat16
 
+    @staticmethod
+    def _anima_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
+        """Collect Advanced-CFG knobs from a generation params dict.
+
+        Returns a dict consumed by anima_pipeline_ops._apply_advanced_cfg.
+        Missing keys fall back to no-op defaults (constant CFG, no rescale,
+        no threshold).
+        """
+        return {
+            "cfg_schedule_type": params.get("cfg_schedule_type", "constant"),
+            "cfg_schedule_min": params.get("cfg_schedule_min", 1.0),
+            "cfg_schedule_max": params.get("cfg_schedule_max"),
+            "cfg_schedule_power": params.get("cfg_schedule_power", 2.0),
+            "cfg_rescale_snr_alpha": params.get("cfg_rescale_snr_alpha", 0.0),
+            "dynamic_threshold_percentile": params.get("dynamic_threshold_percentile", 0.0),
+            "dynamic_threshold_mimic_scale": params.get("dynamic_threshold_mimic_scale", 1.0),
+            "developer_mode": params.get("developer_mode", False),
+        }
+
     def _anima_move(self, component_name: str, target_device: str,
                      quantization: Optional[str] = None):
         """Move a named Anima component to the given device.
@@ -6325,6 +6344,7 @@ class DiffusionPipelineManager:
                 guidance_scale=guidance_scale,
                 generator=generator, device=device, dtype=compute_dtype,
                 step_callback=(progress_callback or step_callback),
+                advanced_cfg=self._anima_advanced_cfg(params),
             )
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
@@ -6420,6 +6440,7 @@ class DiffusionPipelineManager:
                 guidance_scale=guidance_scale,
                 generator=generator, device=device, dtype=compute_dtype,
                 step_callback=(progress_callback or step_callback),
+                advanced_cfg=self._anima_advanced_cfg(params),
             )
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
@@ -6528,6 +6549,7 @@ class DiffusionPipelineManager:
                 guidance_scale=guidance_scale,
                 generator=generator, device=device, dtype=compute_dtype,
                 step_callback=(progress_callback or step_callback),
+                advanced_cfg=self._anima_advanced_cfg(params),
             )
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():

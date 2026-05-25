@@ -1096,39 +1096,61 @@ class BaseTrainer(ABC):
                   f"only supported for training_method='lora' "
                   f"(current: {training_method!r}); ignoring.")
 
-        # Block swap (CPU<->GPU layer offload). Anima.blocks is a 28-element
-        # nn.ModuleList, directly compatible with LayerOffloadConductor (which
-        # also drives Z-Image's swap). Mirror that path here.
+        # Plain GPU move. Block-swap init is deferred to setup_anima_block_swap(),
+        # which is called by the trainer subclass AFTER any structural changes
+        # (LoRA wrap / full-FT requires_grad toggling). The reason: the
+        # LayerOffloadConductor snapshots each layer's state_dict at hook-
+        # registration time, and a later LoRA wrap inserts new submodule keys
+        # (.original_module.weight) that aren't in the snapshot, breaking the
+        # CPU<->GPU swap with a KeyError. Setting up after the adapter avoids
+        # that. The conductor handle is initialised to None here so callers
+        # can rely on attribute presence.
         self.layer_offload_conductor = None
         if self.blocks_to_swap > 0:
-            if not hasattr(self.transformer, "blocks"):
-                raise ValueError(
-                    "Anima DiT must expose `.blocks` (nn.ModuleList) for block swap"
-                )
-            print(f"{self.log_prefix} Block Swap enabled: {self.blocks_to_swap} blocks "
-                  f"(pinned_memory={self.use_pinned_memory})")
-            from core.memory_management import LayerOffloadConductor
-            self.layer_offload_conductor = LayerOffloadConductor(
-                layers=self.transformer.blocks,
-                blocks_to_swap=self.blocks_to_swap,
-                device=self.device,
-                use_pinned_memory=self.use_pinned_memory,
-                cpu_buffer_size_mb=8192,
-                activation_buffer_size_mb=4096,
-                enable_prefetch=True,
-                enable_activation_offload=False,
-            )
-            self.transformer._layer_offload_conductor = self.layer_offload_conductor
-            self.layer_offload_conductor.register_hooks()
-            print(f"{self.log_prefix} LayerOffloadConductor hooks registered for Anima")
-        else:
-            print(f"{self.log_prefix} Block Swap disabled (blocks_to_swap=0); "
-                  f"moving full Anima DiT to {self.device}")
-            self.transformer.to(self.device)
+            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
+                  f"deferred until adapter setup completes")
+        print(f"{self.log_prefix} Moving Anima DiT to {self.device} "
+              f"(block swap, if any, will redistribute after adapter setup)")
+        self.transformer.to(self.device)
 
         print(f"{self.log_prefix} Anima model loaded successfully")
         print(f"{self.log_prefix} Scheduler: {self.scheduler.__class__.__name__}, "
               f"latent_channels=16")
+
+    def setup_anima_block_swap(self):
+        """Initialise the LayerOffloadConductor for the Anima DiT, AFTER any
+        structural model changes (LoRA wrapping / full-FT param toggling).
+
+        Idempotent: no-op when the trainer isn't on Anima, blocks_to_swap is
+        0, or a conductor is already attached. The conductor snapshots each
+        layer's state_dict at register_hooks() time, which is why this has to
+        run after LoRALinearLayer wrappers (if any) have been inserted.
+        """
+        if not self.is_anima:
+            return
+        if self.blocks_to_swap <= 0:
+            return
+        if getattr(self, "layer_offload_conductor", None) is not None:
+            return
+        if not hasattr(self.transformer, "blocks"):
+            raise ValueError("Anima DiT must expose `.blocks` (nn.ModuleList) for block swap")
+
+        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
+              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
+        from core.memory_management import LayerOffloadConductor
+        self.layer_offload_conductor = LayerOffloadConductor(
+            layers=self.transformer.blocks,
+            blocks_to_swap=self.blocks_to_swap,
+            device=self.device,
+            use_pinned_memory=self.use_pinned_memory,
+            cpu_buffer_size_mb=8192,
+            activation_buffer_size_mb=4096,
+            enable_prefetch=True,
+            enable_activation_offload=False,
+        )
+        self.transformer._layer_offload_conductor = self.layer_offload_conductor
+        self.layer_offload_conductor.register_hooks()
+        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Anima")
 
     # DEUS support removed - architecture no longer maintained
     # def _load_deus_components(self):

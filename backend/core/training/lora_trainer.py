@@ -93,6 +93,13 @@ class LoRATrainer(BaseTrainer):
         # Apply LoRA using adapter
         self._apply_lora()
 
+        # Anima block swap is deferred until after LoRA wraps Linear modules
+        # — the LayerOffloadConductor snapshots layer state_dicts at
+        # registration time and post-wrap key changes would break the swap.
+        # No-op for other architectures and when blocks_to_swap == 0.
+        if hasattr(self, "setup_anima_block_swap"):
+            self.setup_anima_block_swap()
+
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
         print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}, Vision Encoder: {ve_status}")

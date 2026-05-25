@@ -77,6 +77,13 @@ class FullParameterTrainer(BaseTrainer):
         # Prepare models for training using adapter
         self._prepare_models()
 
+        # Anima block swap is deferred until after adapter sets requires_grad
+        # / freezes-the-right-things. For Full FT this isn't strictly required
+        # (no LoRA wrap to break the snapshot) but the post-adapter ordering
+        # keeps the contract uniform with LoRATrainer. No-op for other archs.
+        if hasattr(self, "setup_anima_block_swap"):
+            self.setup_anima_block_swap()
+
         print(f"{self.log_prefix} Initialized")
         # Note: Vision Encoder training status is determined in train() after VE is loaded
         print(f"{self.log_prefix} Training U-Net: {self.train_unet}, Text Encoder: {self.train_text_encoder}, Image Encoder: {self.train_image_encoder}")

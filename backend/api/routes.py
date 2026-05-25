@@ -443,6 +443,8 @@ async def generate_txt2img(
         # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
+        is_anima = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "anima"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -453,6 +455,7 @@ async def generate_txt2img(
             is_deus,
             is_zimage_sdxl_vae,
             is_flux2,
+            is_anima,
             image_width=params.get("width"),
             image_height=params.get("height"),
             preview_predicted_x0=preview_predicted_x0,
@@ -1109,6 +1112,8 @@ async def generate_img2img(
         # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
+        is_anima = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "anima"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1119,6 +1124,7 @@ async def generate_img2img(
             is_deus,
             is_zimage_sdxl_vae,
             is_flux2,
+            is_anima,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
@@ -1459,6 +1465,8 @@ async def generate_inpaint(
         # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
+        is_anima = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "anima"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1469,6 +1477,7 @@ async def generate_inpaint(
             is_deus,
             is_zimage_sdxl_vae,
             is_flux2,
+            is_anima,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,

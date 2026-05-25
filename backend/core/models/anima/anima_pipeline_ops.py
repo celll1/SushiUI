@@ -46,6 +46,51 @@ def tokenize_for_anima(qwen3_tokenizer, t5_tokenizer, prompt: str,
     }
 
 
+def _build_emphasis(prompt: str, qwen3_tokenizer, max_length: int):
+    """Strip A1111-style emphasis syntax from `prompt` and return
+    (clean_prompt, per_qwen3_token_weights).
+
+    The token-weight list aligns with the tokens produced by Qwen3 when fed
+    the *clean* prompt with `add_special_tokens=False`. The caller embeds
+    these into the full padded input by skipping any leading special tokens
+    and stopping at the attention-mask boundary.
+
+    Returns (clean_prompt, weights) — weights is a flat python list.
+    If no emphasis syntax is present, returns the original prompt and an
+    empty list (caller should skip weighting).
+    """
+    from core.prompts.prompt_parser import parse_prompt_attention
+
+    if not prompt or ("(" not in prompt and "[" not in prompt and "\\" not in prompt):
+        return prompt or "", []
+
+    parsed = parse_prompt_attention(prompt)
+    # Skip BREAK markers (Anima doesn't support hard chunk breaks meaningfully).
+    parsed = [(t, w) for (t, w) in parsed if t != "BREAK"]
+    has_emphasis = any(abs(w - 1.0) > 1e-4 for (_t, w) in parsed)
+    if not has_emphasis:
+        # Reconstruct clean text (parser may have stripped escapes)
+        return "".join(t for (t, _w) in parsed), []
+
+    clean_parts = []
+    weights = []
+    for text, weight in parsed:
+        if not text:
+            continue
+        try:
+            ids = qwen3_tokenizer.encode(text, add_special_tokens=False)
+        except Exception:
+            ids = []
+        clean_parts.append(text)
+        weights.extend([float(weight)] * len(ids))
+
+    clean_text = "".join(clean_parts)
+    # Truncate weight list to the same cap as the encoder input
+    if len(weights) > max_length:
+        weights = weights[:max_length]
+    return clean_text, weights
+
+
 @torch.no_grad()
 def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
                   device: str = "cuda",
@@ -54,13 +99,18 @@ def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
                   t5_max_length: int = 512) -> Dict[str, torch.Tensor]:
     """Run the Qwen3 text encoder and prepare the inputs the Anima DiT expects.
 
+    Supports A1111-style emphasis syntax (`(word:1.5)`, `((word))`, `[word]`):
+    per-token weights are applied multiplicatively to the Qwen3 hidden states.
+
     Returns a dict with:
       - prompt_embeds:  Qwen3 hidden states [1, L_qwen, 1024], zero-masked
       - source_mask:    Qwen3 attention mask [1, L_qwen]
       - t5_input_ids:   T5 token ids [1, L_t5]
       - t5_attn_mask:   T5 attention mask [1, L_t5]
     """
-    toks = tokenize_for_anima(qwen3_tokenizer, t5_tokenizer, prompt or "",
+    clean_prompt, token_weights = _build_emphasis(prompt or "", qwen3_tokenizer, qwen3_max_length)
+
+    toks = tokenize_for_anima(qwen3_tokenizer, t5_tokenizer, clean_prompt,
                               qwen3_max_length, t5_max_length)
     qwen3_input_ids = toks["qwen3_input_ids"].to(device)
     qwen3_attn_mask = toks["qwen3_attn_mask"].to(device)
@@ -71,6 +121,36 @@ def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
     prompt_embeds = outputs.last_hidden_state
     prompt_embeds = prompt_embeds.to(dtype)
     prompt_embeds[~qwen3_attn_mask.bool()] = 0
+
+    # Apply emphasis weights, if any.
+    # Token-weight list aligns with tokens from `encode(..., add_special_tokens=False)`.
+    # We assume the full-input ids begin with the same content tokens; if there's a
+    # leading BOS / system token we offset accordingly.
+    if token_weights:
+        try:
+            seq_len = prompt_embeds.shape[1]
+            full_weights = torch.ones(seq_len, device=prompt_embeds.device, dtype=dtype)
+
+            # Detect leading offset: find the first content-token position.
+            # qwen3_input_ids[0] vs tokenizer.encode(clean_prompt, add_special_tokens=False)[0]
+            content_ids = qwen3_tokenizer.encode(clean_prompt, add_special_tokens=False)
+            offset = 0
+            if content_ids:
+                first_content = content_ids[0]
+                input_ids_row = qwen3_input_ids[0].tolist()
+                for pos, tok in enumerate(input_ids_row):
+                    if tok == first_content:
+                        offset = pos
+                        break
+            n = min(len(token_weights), seq_len - offset)
+            if n > 0:
+                w = torch.tensor(token_weights[:n], device=prompt_embeds.device, dtype=dtype)
+                full_weights[offset:offset + n] = w
+
+            # Multiplicative emphasis matches CLIP-emphasis convention.
+            prompt_embeds = prompt_embeds * full_weights.unsqueeze(0).unsqueeze(-1)
+        except Exception as e:
+            print(f"[Anima] emphasis application failed (ignored): {e}")
 
     return {
         "prompt_embeds": prompt_embeds,
@@ -214,9 +294,10 @@ def sample_txt2img(
 
         if step_callback is not None:
             try:
-                step_callback(i + 1, num_inference_steps, latents)
-            except Exception:
-                pass
+                # 0-indexed step matches the progress_callback factory convention.
+                step_callback(i, num_inference_steps, latents)
+            except Exception as e:
+                print(f"[Anima] step_callback raised: {e}")
 
     return latents
 
@@ -283,9 +364,9 @@ def sample_img2img(
 
         if step_callback is not None:
             try:
-                step_callback(i + 1 - start_step, num_inference_steps - start_step, latents)
-            except Exception:
-                pass
+                step_callback(i - start_step, num_inference_steps - start_step, latents)
+            except Exception as e:
+                print(f"[Anima] step_callback raised: {e}")
 
     return latents
 
@@ -371,9 +452,9 @@ def sample_inpaint(
 
         if step_callback is not None:
             try:
-                step_callback(i + 1 - start_step, num_inference_steps - start_step, latents)
-            except Exception:
-                pass
+                step_callback(i - start_step, num_inference_steps - start_step, latents)
+            except Exception as e:
+                print(f"[Anima] step_callback raised: {e}")
 
     return latents
 

@@ -782,6 +782,161 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
         return transformer
 
 
+# ============================================================
+# Anima-Specific VRAM Optimization (Cosmos-Predict2 DiT + Qwen3 + Qwen-Image VAE)
+# ============================================================
+
+def _anima_patch_linear_fp8(linear, fp8_dtype):
+    """Patch one nn.Linear: cast weight to FP8 in-place + replace forward with
+    on-the-fly dequantization so the matmul runs in the input's dtype.
+
+    Why: PyTorch's F.linear cannot multiply FP8 weight by BF16 input directly.
+    The cheapest fix that still saves persistent VRAM is to keep the weight in
+    FP8 and dequant just-in-time for each forward pass — the temporary BF16
+    weight tensor is freed immediately after the matmul.
+    """
+    import torch.nn.functional as F
+
+    linear.weight.data = linear.weight.data.to(fp8_dtype)
+    weight_param = linear.weight
+    bias_param = linear.bias
+
+    def patched_forward(x):
+        w = weight_param.data.to(x.dtype)
+        b = bias_param.data.to(x.dtype) if bias_param is not None else None
+        return F.linear(x, w, b)
+
+    linear.forward = patched_forward
+
+
+def _anima_quantize_fp8(model, quantization: str, label: str):
+    """Apply FP8 weight-only quantization with on-the-fly dequant to all
+    nn.Linear modules in `model`. Embeddings are left untouched (they're
+    looked up, not matmul'd, so we can't safely dequant on lookup).
+
+    Returns the model with Linear forward methods replaced.
+    """
+    if quantization == 'fp8_e4m3fn':
+        fp8_dtype = torch.float8_e4m3fn
+        dtype_name = "FP8 E4M3FN"
+    elif quantization == 'fp8_e5m2':
+        fp8_dtype = torch.float8_e5m2
+        dtype_name = "FP8 E5M2"
+    else:
+        print(f"[Quantization] Unsupported {quantization} for Anima; only fp8_e4m3fn/fp8_e5m2 supported")
+        return model
+
+    if not hasattr(torch, 'float8_e4m3fn'):
+        print(f"[Quantization] PyTorch {torch.__version__} does not support FP8. Skipping.")
+        return model
+
+    print(f"[Quantization] Applying {dtype_name} to Anima {label} (on-the-fly dequant)...")
+    quantized = copy.deepcopy(model)
+    converted = 0
+    for name, module in quantized.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            _anima_patch_linear_fp8(module, fp8_dtype)
+            converted += 1
+    print(f"[Quantization] Patched {converted} Linear layers in Anima {label} ({dtype_name})")
+    print(f"[Quantization] VRAM reduction ~50%, compute remains BF16 via on-the-fly cast")
+    return quantized
+
+
+def move_anima_text_encoder_to_gpu(text_encoder, quantization: Optional[str] = None):
+    """Move Anima text encoder (Qwen3-0.6B) to GPU for encoding (optional quantization).
+
+    Args:
+        text_encoder: Qwen3 model
+        quantization: None | 'none' | 'fp8_e4m3fn' | 'fp8_e5m2'
+
+    Returns:
+        text_encoder (potentially quantized copy if quantization is enabled)
+    """
+    if text_encoder is None:
+        return None
+
+    if not quantization or quantization == "none":
+        print("[VRAM] Moving Anima Text Encoder (Qwen3) to GPU for encoding...")
+        text_encoder.to('cuda:0', non_blocking=False)
+        return text_encoder
+
+    print(f"[VRAM] Moving Anima Text Encoder (Qwen3) to GPU with {quantization} quantization...")
+    if next(text_encoder.parameters()).device.type != 'cpu':
+        text_encoder.to('cpu')
+
+    quantized = _anima_quantize_fp8(text_encoder, quantization, "Text Encoder")
+    quantized.to('cuda:0', non_blocking=False)
+    return quantized
+
+
+def move_anima_text_encoder_to_cpu(text_encoder):
+    """Move Anima text encoder back to CPU."""
+    if text_encoder is None:
+        return
+    text_encoder.to('cpu', non_blocking=False)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def move_anima_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+    """Move Anima DiT to GPU for inference (optional FP8 quantization).
+
+    Args:
+        transformer: Anima DiT (Cosmos-Predict2-based)
+        quantization: None | 'none' | 'fp8_e4m3fn' | 'fp8_e5m2'
+
+    Returns:
+        transformer (potentially quantized copy)
+    """
+    if quantization in [None, "", "none"]:
+        quantization = None
+
+    if transformer is None:
+        return transformer
+
+    if not quantization:
+        print("[VRAM] Moving Anima Transformer (DiT) to GPU for inference...")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+    print(f"[VRAM] Moving Anima Transformer (DiT) to GPU with {quantization} quantization...")
+    if next(transformer.parameters()).device.type != 'cpu':
+        transformer.to('cpu')
+
+    try:
+        quantized = _anima_quantize_fp8(transformer, quantization, "Transformer")
+        quantized.to('cuda:0', non_blocking=False)
+        return quantized
+    except Exception as e:
+        print(f"[VRAM] Warning: Anima quantization failed: {e}")
+        import traceback; traceback.print_exc()
+        print(f"[VRAM] Falling back to non-quantized transformer")
+        transformer.to('cuda:0', non_blocking=False)
+        return transformer
+
+
+def move_anima_transformer_to_cpu(transformer):
+    if transformer is None:
+        return
+    transformer.to('cpu', non_blocking=False)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def move_anima_vae_to_gpu(vae):
+    if vae is None:
+        return
+    vae.to('cuda:0')
+
+
+def move_anima_vae_to_cpu(vae):
+    if vae is None:
+        return
+    vae.to('cpu')
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 # ── Vision Encoder VRAM helpers ────────────────────────────────────────────────
 
 def move_vision_encoder_to_gpu(vision_encoder, device: str = "cuda:0"):

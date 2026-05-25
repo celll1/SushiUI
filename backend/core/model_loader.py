@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -265,6 +265,27 @@ class ModelLoader:
         - SD1.5/SDXL diffusers and safetensors
         Note: DEUS support has been removed (architecture no longer maintained)
         """
+        # Anima detection (split-files layout or single DiT safetensors)
+        try:
+            from core.models.anima.anima_loader import (
+                detect_anima_split_layout, is_anima_safetensors,
+            )
+            if os.path.isdir(model_path):
+                if detect_anima_split_layout(model_path):
+                    print(f"[ModelLoader] Detected Anima model (split-files layout): {model_path}")
+                    return "anima"
+            elif model_path.endswith(".safetensors"):
+                # If the file is inside a split_files/diffusion_models/ tree, treat as Anima.
+                if detect_anima_split_layout(model_path):
+                    print(f"[ModelLoader] Detected Anima model (split-files DiT): {model_path}")
+                    return "anima"
+                # Otherwise inspect keys.
+                if is_anima_safetensors(model_path):
+                    print(f"[ModelLoader] Detected Anima model (single-file DiT): {model_path}")
+                    return "anima"
+        except Exception as e:
+            print(f"[ModelLoader] Anima detection skipped: {e}")
+
         # Z-Image detection (diffusers format)
         if os.path.isdir(model_path):
             # Z-Image has transformer/ directory with unique config
@@ -1135,6 +1156,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as FLUX.2 Klein (Flux2Transformer2DModel)")
             return ModelLoader.load_flux2_from_safetensors(file_path, device, torch.bfloat16)
 
+        # Anima (DiT + Qwen3 + Qwen-Image VAE)
+        if model_type == "anima":
+            print(f"[ModelLoader] Loading as Anima (Cosmos-Predict2 DiT)")
+            return ModelLoader.load_anima_from_files(file_path, device, torch.bfloat16)
+
         # DEUS support removed - architecture no longer maintained
         # if model_type == "deus":
         #     print(f"[ModelLoader] Loading as DEUS (SigLIP-2 text encoder)")
@@ -1336,6 +1362,11 @@ class ModelLoader:
         if model_type == "zimage":
             return ModelLoader.load_zimage_from_diffusers(model_path, device, torch.bfloat16)
 
+        # Anima split-files directory layout
+        if model_type == "anima":
+            print(f"[ModelLoader] Loading as Anima (split-files layout)")
+            return ModelLoader.load_anima_from_files(model_path, device, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -1485,3 +1516,64 @@ class ModelLoader:
             )
         else:
             raise ValueError(f"Unknown source type: {source_type}")
+
+    @staticmethod
+    def load_anima_from_files(
+        path: str,
+        device: str = "cuda",
+        torch_dtype: torch.dtype = torch.bfloat16,
+        text_encoder_path: Optional[str] = None,
+        vae_path: Optional[str] = None,
+        models_root: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Load Anima (DiT + Qwen3 + Qwen-Image VAE) from either a single DiT
+        safetensors file or a split-files directory layout.
+
+        Returns a component dict consumed by PipelineManager.load_model().
+        """
+        from core.models.anima.anima_loader import (
+            load_anima_components, detect_anima_split_layout, discover_anima_components,
+        )
+
+        # If the user pointed at a directory (split layout), pick the DiT file
+        dit_path = path
+        if os.path.isdir(path):
+            split = detect_anima_split_layout(path)
+            if not split or not split.get("dit"):
+                raise FileNotFoundError(
+                    f"Anima split layout expected at {path} but no DiT safetensors found."
+                )
+            dit_path = split["dit"]
+            if text_encoder_path is None:
+                text_encoder_path = split.get("text_encoder")
+            if vae_path is None:
+                vae_path = split.get("vae")
+
+        # Resolve models_root: the parent of the dit_path's "models" ancestor, or settings.
+        if models_root is None:
+            try:
+                from config.settings import settings
+                models_root = getattr(settings, "models_dir", None)
+            except Exception:
+                models_root = None
+            if models_root is None:
+                # Walk up to find a `models` directory ancestor
+                p = os.path.abspath(dit_path)
+                for _ in range(6):
+                    p = os.path.dirname(p)
+                    if not p:
+                        break
+                    if os.path.basename(p).lower() == "models":
+                        models_root = p
+                        break
+
+        return load_anima_components(
+            dit_path=dit_path,
+            text_encoder_path=text_encoder_path,
+            vae_path=vae_path,
+            models_root=models_root,
+            device="cpu",  # Loaded to CPU; pipeline.py moves to GPU per stage
+            dit_dtype=torch_dtype,
+            te_dtype=torch_dtype,
+            vae_dtype=torch_dtype,
+        )

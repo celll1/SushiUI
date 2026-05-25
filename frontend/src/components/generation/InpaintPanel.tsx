@@ -1995,7 +1995,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
           // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
           const modelType = modelInfo?.model_info?.type;
-          if (modelType === "zimage" || modelType === "flux2") {
+          if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
             // Flow Matching models: use Euler with flow schedule
             setParams(prev => ({
               ...prev,
@@ -2802,7 +2802,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             </div>
 
             {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
-            {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2") ? (
+            {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
               <>
                 {/* Z-Image/FLUX.2: 2-column layout */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">

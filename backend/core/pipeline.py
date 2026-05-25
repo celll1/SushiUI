@@ -1746,6 +1746,21 @@ class DiffusionPipelineManager:
                         seq_len = latents.shape[1]
                         noise_pred = noise_pred[:, :seq_len, :]
 
+                # Predicted clean latent for preview, computed from the
+                # pre-step latents + noise_pred. x_t = (1-σ)·x_0 + σ·noise,
+                # v = noise - x_0, σ = t / 1000 -> pred_x0 = x_t - σ·v.
+                # The progress callback receives this as the 5th positional
+                # arg (pred_original_sample) and the factory uses it when
+                # preview_predicted_x0=True (defaulted on for FLUX.2 below).
+                try:
+                    sigma = (
+                        t.float() / 1000.0 if isinstance(t, torch.Tensor)
+                        else float(t) / 1000.0
+                    )
+                    preview_pred_x0 = (latents.float() - sigma * noise_pred.float()).to(latents.dtype)
+                except Exception:
+                    preview_pred_x0 = None
+
                 # Scheduler step
                 latents_dtype = latents.dtype
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
@@ -1755,7 +1770,7 @@ class DiffusionPipelineManager:
                 # Progress callback (step is 0-indexed, generation_utils will add +1 for display)
                 if progress_callback:
                     try:
-                        progress_callback(i, len(timesteps), latents)
+                        progress_callback(i, len(timesteps), latents, None, preview_pred_x0)
                     except Exception as e:
                         print(f"[FLUX.2] Progress callback error: {e}")
 
@@ -3930,9 +3945,10 @@ class DiffusionPipelineManager:
             # For Heun: len(timesteps)=39, num_inference_steps=20 → normalize i to 0-19 range
             normalized_step = int((i / len(timesteps)) * num_inference_steps)
 
-            # Call progress callbacks (pass 0-indexed step for consistency with SD/SDXL)
-            if progress_callback:
-                progress_callback(normalized_step, num_inference_steps, latents)
+            # step_callback fires before the model forward so step-range LoRA
+            # hooks see the next step index correctly. progress_callback (which
+            # carries the preview payload) is deferred until after the forward
+            # so we can hand it pred_x0 in addition to the raw latents.
             if step_callback:
                 step_callback(normalized_step, num_inference_steps)
 
@@ -4014,6 +4030,24 @@ class DiffusionPipelineManager:
 
             # Scheduler step (flow matching with stochastic_sampling if enabled)
             noise_pred = -noise_pred.squeeze(2)
+
+            # Predicted clean latent for preview: x_t = (1-σ)·x_0 + σ·noise,
+            # v = noise - x_0, so x_0 = x_t - σ·v. σ is t_norm (the timestep
+            # already normalised to [0, 1] above). Note that the sign flip on
+            # noise_pred above gives us the standard-direction velocity, so the
+            # straight subtraction is the right formula here.
+            try:
+                preview_pred_x0 = (latents.float() - t_norm * noise_pred.float()).to(latents.dtype)
+            except Exception:
+                preview_pred_x0 = None
+
+            if progress_callback:
+                try:
+                    progress_callback(normalized_step, num_inference_steps, latents,
+                                       None, preview_pred_x0)
+                except Exception as e:
+                    print(f"[Z-Image] Progress callback error: {e}")
+
             latents = scheduler.step(
                 noise_pred.to(torch.float32), t, latents,
                 return_dict=False

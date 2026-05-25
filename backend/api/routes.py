@@ -458,10 +458,12 @@ async def generate_txt2img(
             is_anima,
             image_width=params.get("width"),
             image_height=params.get("height"),
-            # For Anima (and any flow-matching DiT), default to pred_x0 preview:
-            # x_t is mostly noise mid-denoising, while pred_x0 = x_t - σ·v shows
-            # the model's current clean-image estimate from the very first steps.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima),
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2), default to
+            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
+            # pred_x0 = x_t - σ·v shows the model's current clean-image
+            # estimate from the very first steps. Any explicit user override
+            # via the API still wins.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1132,10 +1134,12 @@ async def generate_img2img(
             steps=steps,
             image_width=width,
             image_height=height,
-            # For Anima (and any flow-matching DiT), default to pred_x0 preview:
-            # x_t is mostly noise mid-denoising, while pred_x0 = x_t - σ·v shows
-            # the model's current clean-image estimate from the very first steps.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima),
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2), default to
+            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
+            # pred_x0 = x_t - σ·v shows the model's current clean-image
+            # estimate from the very first steps. Any explicit user override
+            # via the API still wins.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1488,10 +1492,12 @@ async def generate_inpaint(
             steps=steps,
             image_width=width,
             image_height=height,
-            # For Anima (and any flow-matching DiT), default to pred_x0 preview:
-            # x_t is mostly noise mid-denoising, while pred_x0 = x_t - σ·v shows
-            # the model's current clean-image estimate from the very first steps.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima),
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2), default to
+            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
+            # pred_x0 = x_t - σ·v shows the model's current clean-image
+            # estimate from the very first steps. Any explicit user override
+            # via the API still wins.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )

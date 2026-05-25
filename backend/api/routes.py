@@ -5349,6 +5349,10 @@ class TrainingRunCreateRequest(BaseModel):
     # Single Source of Truth: backend/api/param_defaults.py TRAINING_DEFAULTS.
     anima_lora_scope: str = TRAINING_DEFAULTS["anima_lora_scope"]
     train_llm_adapter: bool = TRAINING_DEFAULTS["train_llm_adapter"]
+    # Anima full-parameter LR multipliers (each applied on top of unet_lr).
+    anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
+    anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]
+    anima_llm_adapter_lr_factor: float = TRAINING_DEFAULTS["anima_llm_adapter_lr_factor"]
 
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2

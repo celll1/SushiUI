@@ -240,6 +240,14 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # csv above. Defaults to True so the LLM Adapter is fine-tuned along
     # with the DiT blocks (Phase C user request).
     "train_llm_adapter": True,
+
+    # ---- Anima full-parameter training: per-group LR multipliers ----
+    # Applied on top of unet_lr in AnimaFullParameterAdapter. Defaults of
+    # 1.0 collapse to a single effective LR; users wanting sd-scripts-style
+    # finer control (lower modulation LR etc.) can dial these.
+    "anima_attn_mlp_lr_factor": 1.0,
+    "anima_mod_lr_factor": 1.0,
+    "anima_llm_adapter_lr_factor": 1.0,
 }
 
 # ---------------------------------------------------------------------------

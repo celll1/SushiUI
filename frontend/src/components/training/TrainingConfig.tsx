@@ -247,6 +247,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [showZImage, setShowZImage] = useState(true);
   // DEUS support removed: const [showDEUS, setShowDEUS] = useState(true);
   const [showFlux2, setShowFlux2] = useState(true);
+  const [showAnima, setShowAnima] = useState(true);
 
   // Flag to track if dtype settings have been explicitly set (from YAML or user)
   // When true, baseModelPath changes will NOT override dtype settings
@@ -490,6 +491,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "flux2";
   };
 
+  const isAnimaModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "anima";
+  };
+
   const getModelArchitecture = (modelPath: string): string | undefined => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture;
@@ -507,6 +513,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (model.architecture === "zimage" && !showZImage) return false;
     // DEUS support removed: if (model.architecture === "deus" && !showDEUS) return false;
     if (model.architecture === "flux2" && !showFlux2) return false;
+    if (model.architecture === "anima" && !showAnima) return false;
     return true;
   });
 
@@ -1832,6 +1839,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className="text-gray-300">FLUX.2</span>
             </label>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showAnima}
+                onChange={(e) => setShowAnima(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-gray-300">Anima</span>
+            </label>
           </div>
 
           <select
@@ -2884,11 +2900,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={isZImageModel(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
                   Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
+                  {isAnimaModel(baseModelPath) && '(Not supported for Anima)'}
                 </label>
               </div>
 

@@ -229,6 +229,17 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Also cleans up orphan latent cache files when a rescan happens.
     # See core/training/dataset_drift.py.
     "rescan_before_training": "off",
+
+    # ---- Anima (Cosmos-Predict2 DiT) training ----
+    # LoRA targets enumerated by core/models/anima/anima_lora.py.
+    # Comma-separated subset of {attention, mlp, mod, llm_adapter}; the
+    # AnimaLoRAAdapter dispatch normalises and applies the corresponding
+    # scope flags (see core/training/lora_trainer.py:_create_adapter).
+    "anima_lora_scope": "attention,mlp,llm_adapter",
+    # If False, llm_adapter is dropped from the scope regardless of the
+    # csv above. Defaults to True so the LLM Adapter is fine-tuned along
+    # with the DiT blocks (Phase C user request).
+    "train_llm_adapter": True,
 }
 
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ from .adapters import (
     ZImageLoRAAdapter,
     # DEUSLoRAAdapter,  # DEUS support removed
     FLUX2LoRAAdapter,
+    AnimaLoRAAdapter,
 )
 
 
@@ -108,6 +109,29 @@ class LoRATrainer(BaseTrainer):
         elif self.is_flux2:
             self.adapter = FLUX2LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using FLUX2LoRAAdapter")
+        elif self.is_anima:
+            # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
+            # (attention + mlp + llm_adapter, no AdaLN modulation).
+            scope_csv = (getattr(self, "anima_lora_scope", "")
+                          or self.config.get("anima_lora_scope", "")
+                          or "attention,mlp,llm_adapter")
+            wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
+            # Allow train_llm_adapter to override the llm_adapter scope flag.
+            if hasattr(self, "train_llm_adapter") or "train_llm_adapter" in self.config:
+                wanted["llm_adapter"] = bool(
+                    getattr(self, "train_llm_adapter",
+                            self.config.get("train_llm_adapter", True))
+                )
+            scope = {
+                "attention": wanted.get("attention", True),
+                "mlp": wanted.get("mlp", True),
+                "mod": wanted.get("mod", False),
+                "llm_adapter": wanted.get("llm_adapter", True),
+            }
+            self.adapter = AnimaLoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using AnimaLoRAAdapter (scope={scope})")
         elif self.is_sdxl:
             self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SDXLLoRAAdapter")

@@ -5345,6 +5345,11 @@ class TrainingRunCreateRequest(BaseModel):
     text_encoder_2_lr: Optional[float] = None  # SDXL TE2 LR (defaults to text_encoder_lr if None)
     image_encoder_lr: Optional[float] = None  # Reserved for future image encoder LR
 
+    # Anima-specific LoRA training knobs (ignored for other architectures).
+    # Single Source of Truth: backend/api/param_defaults.py TRAINING_DEFAULTS.
+    anima_lora_scope: str = TRAINING_DEFAULTS["anima_lora_scope"]
+    train_llm_adapter: bool = TRAINING_DEFAULTS["train_llm_adapter"]
+
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2
     training_dtype: str = "fp16"  # fp16, bf16, fp8_e4m3fn, fp8_e5m2 (activation dtype during training)

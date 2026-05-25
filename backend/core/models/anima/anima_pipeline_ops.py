@@ -226,6 +226,70 @@ def _prepare_padding_mask(batch: int, height: int, width: int,
     return torch.zeros(batch, 1, height, width, device=device, dtype=dtype)
 
 
+def _apply_advanced_cfg(
+    v_cond: torch.Tensor,
+    v_uncond: Optional[torch.Tensor],
+    guidance_scale: float,
+    sigma_now: float,
+    sigma_max: float,
+    advanced_cfg: Optional[Dict[str, Any]],
+):
+    """Apply CFG + optional advanced features (schedule / SNR-rescale /
+    dynamic-threshold) and return (v_after, cfg_now, cfg_metrics).
+
+    Generic across SDXL / Z-Image / FLUX.2 / Anima: the underlying helpers
+    in core.inference.custom_sampling operate on raw tensors regardless of
+    whether the model predicts epsilon or velocity.
+
+    `advanced_cfg` keys (all optional, sensible defaults):
+        cfg_schedule_type, cfg_schedule_min, cfg_schedule_max,
+        cfg_schedule_power, cfg_rescale_snr_alpha,
+        dynamic_threshold_percentile, dynamic_threshold_mimic_scale,
+        developer_mode
+    """
+    from core.inference.custom_sampling import (
+        calculate_dynamic_cfg, dynamic_thresholding, calculate_cfg_metrics,
+    )
+
+    cfg = advanced_cfg or {}
+    schedule_type = cfg.get("cfg_schedule_type", "constant") or "constant"
+    schedule_min = float(cfg.get("cfg_schedule_min", 1.0) or 1.0)
+    schedule_max = cfg.get("cfg_schedule_max")  # may be None
+    schedule_power = float(cfg.get("cfg_schedule_power", 2.0) or 2.0)
+    snr_alpha = float(cfg.get("cfg_rescale_snr_alpha", 0.0) or 0.0)
+    dyn_percentile = float(cfg.get("dynamic_threshold_percentile", 0.0) or 0.0)
+    dyn_mimic = float(cfg.get("dynamic_threshold_mimic_scale", 1.0) or 1.0)
+    developer_mode = bool(cfg.get("developer_mode", False))
+
+    if v_uncond is None:
+        return v_cond, guidance_scale, None
+
+    current_snr = None
+    if snr_alpha > 0.0 or developer_mode:
+        uncond_norm = torch.norm(v_uncond).item()
+        if uncond_norm > 1e-8:
+            current_snr = (torch.norm(v_cond - v_uncond).item() ** 2) / (uncond_norm ** 2)
+
+    cfg_now = calculate_dynamic_cfg(
+        sigma=sigma_now, sigma_max=sigma_max, cfg_base=guidance_scale,
+        cfg_schedule_type=schedule_type,
+        cfg_schedule_min=schedule_min,
+        cfg_schedule_max=schedule_max,
+        cfg_schedule_power=schedule_power,
+        snr=current_snr,
+        cfg_rescale_snr_alpha=snr_alpha,
+    )
+
+    v = v_uncond + cfg_now * (v_cond - v_uncond)
+
+    if dyn_percentile > 0.0:
+        v = dynamic_thresholding(v, percentile=dyn_percentile, clamp_value=dyn_mimic)
+
+    cfg_metrics = calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) \
+        if developer_mode else None
+    return v, cfg_now, cfg_metrics
+
+
 @torch.no_grad()
 def sample_txt2img(
     transformer,
@@ -240,6 +304,7 @@ def sample_txt2img(
     device: str,
     dtype: torch.dtype,
     step_callback: Optional[Callable] = None,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Run the Rectified-Flow Euler denoising loop and return latents
     of shape [1, 16, 1, H/8, W/8].
@@ -286,9 +351,14 @@ def sample_txt2img(
                 target_attention_mask=uncond_embeds["t5_attn_mask"],
                 source_attention_mask=uncond_embeds["source_mask"],
             )
-            v = v_uncond + guidance_scale * (v_cond - v_uncond)
         else:
-            v = v_cond
+            v_uncond = None
+
+        sigma_now_f = float(scheduler.sigmas[i].item())
+        sigma_max_f = float(scheduler.sigmas[0].item())
+        v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
+            v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+        )
 
         # Predicted clean latent for preview: x_0 = x_t - sigma * v
         sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
@@ -300,7 +370,7 @@ def sample_txt2img(
             try:
                 # 0-indexed step. 4th/5th args are cfg_metrics / pred_original_sample,
                 # which the progress_callback factory uses when preview_predicted_x0=True.
-                step_callback(i, num_inference_steps, latents, None, pred_x0)
+                step_callback(i, num_inference_steps, latents, cfg_metrics, pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
@@ -321,6 +391,7 @@ def sample_img2img(
     device: str,
     dtype: torch.dtype,
     step_callback: Optional[Callable] = None,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """img2img: start from `init_latents` partially noised. Returns final latents."""
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
@@ -361,9 +432,14 @@ def sample_img2img(
                 target_attention_mask=uncond_embeds["t5_attn_mask"],
                 source_attention_mask=uncond_embeds["source_mask"],
             )
-            v = v_uncond + guidance_scale * (v_cond - v_uncond)
         else:
-            v = v_cond
+            v_uncond = None
+
+        sigma_now_f = float(scheduler.sigmas[i].item())
+        sigma_max_f = float(scheduler.sigmas[0].item())
+        v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
+            v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+        )
 
         sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
         pred_x0 = latents - sigma_now * v
@@ -373,7 +449,7 @@ def sample_img2img(
         if step_callback is not None:
             try:
                 step_callback(i - start_step, num_inference_steps - start_step,
-                               latents, None, pred_x0)
+                               latents, cfg_metrics, pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
@@ -395,6 +471,7 @@ def sample_inpaint(
     device: str,
     dtype: torch.dtype,
     step_callback: Optional[Callable] = None,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Latent-space inpainting via per-step blending.
 
@@ -445,9 +522,14 @@ def sample_inpaint(
                 target_attention_mask=uncond_embeds["t5_attn_mask"],
                 source_attention_mask=uncond_embeds["source_mask"],
             )
-            v = v_uncond + guidance_scale * (v_cond - v_uncond)
         else:
-            v = v_cond
+            v_uncond = None
+
+        sigma_now_f = float(scheduler.sigmas[i].item())
+        sigma_max_f = float(scheduler.sigmas[0].item())
+        v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
+            v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+        )
 
         sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
         pred_x0 = latents - sigma_now * v
@@ -469,7 +551,7 @@ def sample_inpaint(
         if step_callback is not None:
             try:
                 step_callback(i - start_step, num_inference_steps - start_step,
-                               latents, None, preview_pred_x0)
+                               latents, cfg_metrics, preview_pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 

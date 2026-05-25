@@ -1039,11 +1039,26 @@ class BaseTrainer(ABC):
         # Cast VAE to the desired dtype.
         self.vae = self.vae.to(dtype=self.vae_dtype)
 
-        # Enable gradient checkpointing on the DiT blocks (added in Phase C.1)
-        # and on the Qwen3 text encoder (transformers built-in).
+        # Gradient checkpointing mode for the DiT blocks. Three options:
+        #   standard         (default) — activations stay on GPU
+        #   cpu_offload      — blocking CPU offload (saves VRAM, slower)
+        #   async_cpu_offload — non-blocking CPU offload (saves VRAM, fast)
+        # When both flags are True, async wins and we warn.
+        cpu_offload_ckpt = bool(self.config.get("cpu_offload_checkpointing", False))
+        async_offload_ckpt = bool(self.config.get("async_cpu_offload_checkpointing", False))
+        if cpu_offload_ckpt and async_offload_ckpt:
+            print(f"{self.log_prefix} WARNING: both cpu_offload_checkpointing and "
+                  f"async_cpu_offload_checkpointing are True; using async (faster).")
+            cpu_offload_ckpt = False
         if hasattr(self.transformer, "enable_gradient_checkpointing"):
-            self.transformer.enable_gradient_checkpointing()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for Anima DiT")
+            self.transformer.enable_gradient_checkpointing(
+                cpu_offload=cpu_offload_ckpt,
+                async_offload=async_offload_ckpt,
+            )
+            ckpt_mode = ("async_cpu_offload" if async_offload_ckpt
+                          else "cpu_offload" if cpu_offload_ckpt else "standard")
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Anima DiT "
+                  f"(mode={ckpt_mode})")
         if hasattr(self.text_encoder, "gradient_checkpointing_enable"):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 text encoder")
@@ -1054,10 +1069,62 @@ class BaseTrainer(ABC):
         self.text_encoder.requires_grad_(False)
         self.transformer.requires_grad_(False)
 
-        # Move DiT to GPU (Anima is small enough that block-swap is optional;
-        # mirror Z-Image's plain-move path for now).
-        print(f"{self.log_prefix} Moving Anima DiT to {self.device}...")
-        self.transformer.to(self.device)
+        # Optional: FP8 the base DiT before LoRA wraps anything (LoRA-only).
+        # Only safe when the base is frozen — which is true for the LoRA path
+        # (Phase C.1 freezes everything before adapter injection). Full FT
+        # needs trainable base weights, so silently ignore the flag with a
+        # warning. We piggy-back on the Phase B.1-d inference quantiser which
+        # patches each Linear's forward to dequantise on-the-fly.
+        fp8_base_dtype = self.config.get("fp8_base_dtype") or None
+        training_method = self.config.get("training_method", "lora")
+        if fp8_base_dtype and training_method == "lora":
+            print(f"{self.log_prefix} Quantising frozen Anima DiT base to "
+                  f"{fp8_base_dtype} (LoRA-on-FP8-base, ~50% VRAM reduction)")
+            from core.vram_optimization import _anima_quantize_fp8
+            # deepcopy + patch — replaces self.transformer with the quantised
+            # copy so subsequent block-swap and adapter wrap target the new
+            # module references.
+            self.transformer = _anima_quantize_fp8(
+                self.transformer, fp8_base_dtype, "DiT (training base)",
+            )
+            # transformer_original keeps pointing at the quantised model too,
+            # so downstream move_main_model_to_* keeps working.
+            self.transformer_original = self.transformer
+            self.transformer.requires_grad_(False)
+        elif fp8_base_dtype:
+            print(f"{self.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} is "
+                  f"only supported for training_method='lora' "
+                  f"(current: {training_method!r}); ignoring.")
+
+        # Block swap (CPU<->GPU layer offload). Anima.blocks is a 28-element
+        # nn.ModuleList, directly compatible with LayerOffloadConductor (which
+        # also drives Z-Image's swap). Mirror that path here.
+        self.layer_offload_conductor = None
+        if self.blocks_to_swap > 0:
+            if not hasattr(self.transformer, "blocks"):
+                raise ValueError(
+                    "Anima DiT must expose `.blocks` (nn.ModuleList) for block swap"
+                )
+            print(f"{self.log_prefix} Block Swap enabled: {self.blocks_to_swap} blocks "
+                  f"(pinned_memory={self.use_pinned_memory})")
+            from core.memory_management import LayerOffloadConductor
+            self.layer_offload_conductor = LayerOffloadConductor(
+                layers=self.transformer.blocks,
+                blocks_to_swap=self.blocks_to_swap,
+                device=self.device,
+                use_pinned_memory=self.use_pinned_memory,
+                cpu_buffer_size_mb=8192,
+                activation_buffer_size_mb=4096,
+                enable_prefetch=True,
+                enable_activation_offload=False,
+            )
+            self.transformer._layer_offload_conductor = self.layer_offload_conductor
+            self.layer_offload_conductor.register_hooks()
+            print(f"{self.log_prefix} LayerOffloadConductor hooks registered for Anima")
+        else:
+            print(f"{self.log_prefix} Block Swap disabled (blocks_to_swap=0); "
+                  f"moving full Anima DiT to {self.device}")
+            self.transformer.to(self.device)
 
         print(f"{self.log_prefix} Anima model loaded successfully")
         print(f"{self.log_prefix} Scheduler: {self.scheduler.__class__.__name__}, "

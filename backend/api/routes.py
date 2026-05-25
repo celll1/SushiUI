@@ -5353,6 +5353,10 @@ class TrainingRunCreateRequest(BaseModel):
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
     anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]
     anima_llm_adapter_lr_factor: float = TRAINING_DEFAULTS["anima_llm_adapter_lr_factor"]
+    # Anima Phase D memory optimisations.
+    cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["cpu_offload_checkpointing"]
+    async_cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["async_cpu_offload_checkpointing"]
+    fp8_base_dtype: Optional[str] = TRAINING_DEFAULTS["fp8_base_dtype"]
 
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2

@@ -6208,6 +6208,67 @@ class DiffusionPipelineManager:
             return torch.float32
         return torch.bfloat16
 
+    def _load_lora_anima(self, lora_configs: List[Dict]) -> int:
+        """Wrap target Linear modules of the Anima DiT with LoRA adapters.
+
+        Supports stacking multiple LoRAs on the same module (each subsequent
+        wrap takes the existing wrapper's true original as its base, so
+        unload always returns to the un-LoRA'd model).
+        """
+        from core.models.anima.anima_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        )
+        from core.extensions.lora_manager import lora_manager
+
+        if not lora_configs:
+            return 0
+        if not self.anima_components:
+            print("[Anima LoRA] WARNING: components not loaded")
+            return 0
+
+        transformer = self.anima_components["transformer"]
+        if not hasattr(self, "_anima_lora_original_modules"):
+            self._anima_lora_original_modules: Dict[str, torch.nn.Linear] = {}
+            self._anima_lora_wrapped_keys: set = set()
+
+        total_applied = 0
+        for i, cfg in enumerate(lora_configs):
+            lora_path = cfg.get("path", "")
+            strength = float(cfg.get("strength", 1.0))
+            resolved = lora_manager._resolve_lora_path(lora_path)
+            if resolved is None:
+                print(f"[Anima LoRA] WARNING: file not found: {lora_path}")
+                continue
+            try:
+                raw, fmt = load_lora_safetensors(str(resolved))
+                grouped = normalise_lora_state_dict(raw)
+                print(f"[Anima LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
+                      f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} strength={strength}")
+                applied = apply_lora_group(
+                    transformer, grouped, strength,
+                    self._anima_lora_original_modules, self._anima_lora_wrapped_keys,
+                )
+                print(f"[Anima LoRA]   wrapped {applied} module(s)")
+                total_applied += applied
+            except Exception as e:
+                print(f"[Anima LoRA] ERROR loading {lora_path}: {e}")
+                import traceback; traceback.print_exc()
+        return total_applied
+
+    def _unload_lora_anima(self) -> int:
+        """Restore every Anima DiT Linear to its pre-LoRA original."""
+        from core.models.anima.anima_lora import restore_originals
+        if not getattr(self, "_anima_lora_wrapped_keys", None):
+            return 0
+        if not self.anima_components:
+            return 0
+        transformer = self.anima_components["transformer"]
+        restored = restore_originals(
+            transformer, self._anima_lora_original_modules, self._anima_lora_wrapped_keys,
+        )
+        print(f"[Anima LoRA] Unloaded {restored} LoRA wrappers")
+        return restored
+
     @staticmethod
     def _anima_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
         """Collect Advanced-CFG knobs from a generation params dict.
@@ -6336,6 +6397,14 @@ class DiffusionPipelineManager:
 
             # Stage 2: denoising
             transformer = self._anima_move("transformer", device, transformer_quantization)
+
+            # Apply user-supplied LoRAs after the transformer is on GPU (and
+            # after any optional quantization). LoRA wrappers point at the
+            # current Linear modules; they survive .to() but not deepcopy,
+            # so the order must be: quantize -> wrap LoRA -> sample -> unwrap.
+            lora_configs = params.get("loras") or []
+            applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
+            transformer = self.anima_components["transformer"]
             latents = sample_txt2img(
                 transformer=transformer, scheduler=scheduler,
                 cond_embeds=cond, uncond_embeds=uncond,
@@ -6346,6 +6415,8 @@ class DiffusionPipelineManager:
                 step_callback=(progress_callback or step_callback),
                 advanced_cfg=self._anima_advanced_cfg(params),
             )
+            if applied_lora_count:
+                self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6431,6 +6502,14 @@ class DiffusionPipelineManager:
 
             # Denoise
             transformer = self._anima_move("transformer", device, transformer_quantization)
+
+            # Apply user-supplied LoRAs after the transformer is on GPU (and
+            # after any optional quantization). LoRA wrappers point at the
+            # current Linear modules; they survive .to() but not deepcopy,
+            # so the order must be: quantize -> wrap LoRA -> sample -> unwrap.
+            lora_configs = params.get("loras") or []
+            applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
+            transformer = self.anima_components["transformer"]
             latents = sample_img2img(
                 transformer=transformer, scheduler=scheduler,
                 init_latents=init_latents,
@@ -6442,6 +6521,8 @@ class DiffusionPipelineManager:
                 step_callback=(progress_callback or step_callback),
                 advanced_cfg=self._anima_advanced_cfg(params),
             )
+            if applied_lora_count:
+                self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6540,6 +6621,14 @@ class DiffusionPipelineManager:
 
             # Denoise
             transformer = self._anima_move("transformer", device, transformer_quantization)
+
+            # Apply user-supplied LoRAs after the transformer is on GPU (and
+            # after any optional quantization). LoRA wrappers point at the
+            # current Linear modules; they survive .to() but not deepcopy,
+            # so the order must be: quantize -> wrap LoRA -> sample -> unwrap.
+            lora_configs = params.get("loras") or []
+            applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
+            transformer = self.anima_components["transformer"]
             latents = sample_inpaint(
                 transformer=transformer, scheduler=scheduler,
                 init_latents=init_latents, mask_latents=mask_latents,
@@ -6551,6 +6640,8 @@ class DiffusionPipelineManager:
                 step_callback=(progress_callback or step_callback),
                 advanced_cfg=self._anima_advanced_cfg(params),
             )
+            if applied_lora_count:
+                self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

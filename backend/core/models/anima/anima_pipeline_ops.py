@@ -290,12 +290,17 @@ def sample_txt2img(
         else:
             v = v_cond
 
+        # Predicted clean latent for preview: x_0 = x_t - sigma * v
+        sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
+        pred_x0 = latents - sigma_now * v
+
         latents = scheduler.step(v, i, latents)
 
         if step_callback is not None:
             try:
-                # 0-indexed step matches the progress_callback factory convention.
-                step_callback(i, num_inference_steps, latents)
+                # 0-indexed step. 4th/5th args are cfg_metrics / pred_original_sample,
+                # which the progress_callback factory uses when preview_predicted_x0=True.
+                step_callback(i, num_inference_steps, latents, None, pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
@@ -360,11 +365,15 @@ def sample_img2img(
         else:
             v = v_cond
 
+        sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
+        pred_x0 = latents - sigma_now * v
+
         latents = scheduler.step(v, i, latents)
 
         if step_callback is not None:
             try:
-                step_callback(i - start_step, num_inference_steps - start_step, latents)
+                step_callback(i - start_step, num_inference_steps - start_step,
+                               latents, None, pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
@@ -440,6 +449,9 @@ def sample_inpaint(
         else:
             v = v_cond
 
+        sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
+        pred_x0 = latents - sigma_now * v
+
         latents = scheduler.step(v, i, latents)
 
         # Re-blend unmasked region with a noised version of the original
@@ -450,9 +462,14 @@ def sample_inpaint(
         else:
             latents = mask_latents * latents + (1 - mask_latents) * init_latents
 
+        # For inpaint preview, also blend pred_x0 with the known regions so the
+        # preview reflects the inpainted area against the original image.
+        preview_pred_x0 = mask_latents * pred_x0 + (1 - mask_latents) * init_latents
+
         if step_callback is not None:
             try:
-                step_callback(i - start_step, num_inference_steps - start_step, latents)
+                step_callback(i - start_step, num_inference_steps - start_step,
+                               latents, None, preview_pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 

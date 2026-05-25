@@ -458,7 +458,10 @@ async def generate_txt2img(
             is_anima,
             image_width=params.get("width"),
             image_height=params.get("height"),
-            preview_predicted_x0=preview_predicted_x0,
+            # For Anima (and any flow-matching DiT), default to pred_x0 preview:
+            # x_t is mostly noise mid-denoising, while pred_x0 = x_t - σ·v shows
+            # the model's current clean-image estimate from the very first steps.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1129,7 +1132,10 @@ async def generate_img2img(
             steps=steps,
             image_width=width,
             image_height=height,
-            preview_predicted_x0=preview_predicted_x0,
+            # For Anima (and any flow-matching DiT), default to pred_x0 preview:
+            # x_t is mostly noise mid-denoising, while pred_x0 = x_t - σ·v shows
+            # the model's current clean-image estimate from the very first steps.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1482,7 +1488,10 @@ async def generate_inpaint(
             steps=steps,
             image_width=width,
             image_height=height,
-            preview_predicted_x0=preview_predicted_x0,
+            # For Anima (and any flow-matching DiT), default to pred_x0 preview:
+            # x_t is mostly noise mid-denoising, while pred_x0 = x_t - σ·v shows
+            # the model's current clean-image estimate from the very first steps.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )

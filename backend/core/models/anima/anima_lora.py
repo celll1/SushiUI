@@ -57,6 +57,7 @@ _SDSCRIPTS_REVERSE_TOKENS = (
     ("o.proj", "o_proj"),
     ("output.proj", "output_proj"),
     ("out.proj", "out_proj"),
+    ("in.proj", "in_proj"),  # LLM Adapter input projection (when not Identity)
 )
 
 
@@ -69,6 +70,25 @@ def _restore_sdscripts_dots(flat: str) -> str:
     for compound_dot, original in _SDSCRIPTS_REVERSE_TOKENS:
         dotted = dotted.replace(compound_dot, original)
     return dotted
+
+
+def _flatten_to_sdscripts(module_path: str) -> str:
+    """Inverse of _restore_sdscripts_dots.
+
+    Maps canonical Anima module paths back to the underscore-flattened form
+    used by sd-scripts native LoRA file keys. The trick is to insert dots
+    inside the known multi-token names (q_proj -> q.proj, self_attn ->
+    self.attn, llm_adapter -> llm.adapter, ...) BEFORE flattening, so that
+    the final underscores-to-dots pass on the consumer side reproduces the
+    same canonical path.
+    """
+    intermediate = module_path
+    # Apply the reverse mapping in REVERSE-priority order so that longer
+    # compound names (which include shorter ones as substrings) are matched
+    # before their constituents are touched.
+    for compound_dot, original in reversed(_SDSCRIPTS_REVERSE_TOKENS):
+        intermediate = intermediate.replace(original, compound_dot)
+    return intermediate.replace(".", "_")
 
 
 def _parse_key(key: str) -> Optional[Tuple[str, str]]:
@@ -144,38 +164,153 @@ def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
 
 # --------- Target enumeration ---------
 
-_ANIMA_ATTENTION_CLASS_NAME = "Attention"  # from core.models.anima.anima_models.Attention
-_LINEAR_ATTRS = ("q_proj", "k_proj", "v_proj", "output_proj")
+_ANIMA_ATTENTION_CLASS_NAME = "Attention"            # DiT Block attention class
+_LLM_ADAPTER_ATTN_CLASS_NAME = "LLMAdapterAttention"  # inside the 6-layer LLM Adapter
+_BLOCK_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "output_proj")
+_LLM_ADAPTER_ATTN_ATTRS = ("q_proj", "k_proj", "v_proj", "o_proj")  # note: o_proj
+
+
+# Default scope for training. Inference-side wrap (Phase B.3) only needs
+# `attention`; training-side defaults add MLP and the LLM Adapter.
+DEFAULT_TRAINING_SCOPE = {
+    "attention": True,
+    "mlp": True,
+    "mod": False,
+    "llm_adapter": True,
+}
+
+
+def iter_anima_lora_targets(
+    transformer: nn.Module,
+    scope: Optional[Dict[str, bool]] = None,
+):
+    """Yield (module_path, parent_module, attr_name_or_int, current_module) for
+    each LoRA-targetable Linear in the Anima DiT under the requested scope.
+
+    `current_module` is whatever currently sits at `getattr(parent, attr)`
+    (or `parent[attr]` for ModuleList children) — typically an nn.Linear on
+    the un-LoRA'd model, or a LoRALinearLayer once wrapped. Including wrapped
+    modules here lets restore_originals() and LoRA stacking find the slots
+    after a previous load.
+
+    Scope flags (all default False if not present in the dict; see
+    DEFAULT_TRAINING_SCOPE for the typical training preset):
+
+      "attention":   blocks.<N>.{self_attn,cross_attn}.{q,k,v,output}_proj
+      "mlp":         blocks.<N>.mlp.{layer1, layer2}
+      "mod":         blocks.<N>.adaln_modulation_{self_attn,cross_attn,mlp}.{1,2}
+                     (AdaLN-LoRA dim 256 -> hidden, the two Linears inside the
+                      Sequential)
+      "llm_adapter": llm_adapter.blocks.<N>.{self_attn,cross_attn}.{q,k,v,o}_proj
+                     + llm_adapter.blocks.<N>.mlp.{0,2}
+                     + llm_adapter.in_proj (if Linear) + llm_adapter.out_proj
+    """
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+    scope = scope or {}
+    want_attn = bool(scope.get("attention", False))
+    want_mlp = bool(scope.get("mlp", False))
+    want_mod = bool(scope.get("mod", False))
+    want_adapter = bool(scope.get("llm_adapter", False))
+
+    is_linear_or_wrap = lambda m: isinstance(m, (nn.Linear, LoRALinearLayer))
+
+    for name, module in transformer.named_modules():
+        cls_name = module.__class__.__name__
+
+        # 1. DiT Block attention modules
+        if want_attn and cls_name == _ANIMA_ATTENTION_CLASS_NAME:
+            # Inside Block (top-level self_attn / cross_attn), NOT inside the
+            # LLM Adapter (its inner attention is LLMAdapterAttention).
+            if not name.startswith("llm_adapter") and (
+                ".self_attn" in name or ".cross_attn" in name
+            ):
+                for attr in _BLOCK_ATTN_ATTRS:
+                    current = getattr(module, attr, None)
+                    if is_linear_or_wrap(current):
+                        yield f"{name}.{attr}", module, attr, current
+            continue  # don't double-visit the children below
+
+        # 2. LLM Adapter inner attention (under llm_adapter.blocks.<N>)
+        if want_adapter and cls_name == _LLM_ADAPTER_ATTN_CLASS_NAME:
+            for attr in _LLM_ADAPTER_ATTN_ATTRS:
+                current = getattr(module, attr, None)
+                if is_linear_or_wrap(current):
+                    yield f"{name}.{attr}", module, attr, current
+            continue
+
+    # The remaining scopes (mlp, mod, adapter mlp/projections) are easier to
+    # enumerate via parameter-path inspection rather than class detection.
+    for name, module in transformer.named_modules():
+        if not is_linear_or_wrap(module):
+            continue
+
+        # 3. Block MLP: blocks.<N>.mlp.{layer1, layer2}
+        if want_mlp and ".mlp." in name and name.split(".")[-1] in ("layer1", "layer2"):
+            # Skip if this is actually inside the LLM Adapter
+            if not name.startswith("llm_adapter"):
+                parent, attr = _resolve_parent(transformer, name)
+                if parent is not None:
+                    yield name, parent, attr, module
+
+        # 4. AdaLN modulation Linears
+        # adaln_modulation_self_attn / cross_attn / mlp are nn.Sequential with
+        # [SiLU, Linear(x_dim -> adaln_lora_dim), Linear(adaln_lora_dim -> 3*x_dim)]
+        if want_mod and ".adaln_modulation_" in name and name.split(".")[-1] in ("1", "2"):
+            if not name.startswith("llm_adapter"):
+                parent, attr = _resolve_parent(transformer, name)
+                if parent is not None:
+                    yield name, parent, attr, module
+
+        # 5. LLM Adapter MLP + outer projections
+        if want_adapter and name.startswith("llm_adapter"):
+            tail = name.split(".")[-1]
+            # llm_adapter.blocks.<N>.mlp.{0, 2}  (nn.Sequential Linear, GELU, Linear)
+            if ".mlp." in name and tail in ("0", "2"):
+                parent, attr = _resolve_parent(transformer, name)
+                if parent is not None:
+                    yield name, parent, attr, module
+            # llm_adapter.in_proj (only when Linear, not Identity)
+            elif name == "llm_adapter.in_proj":
+                parent, attr = _resolve_parent(transformer, name)
+                if parent is not None:
+                    yield name, parent, attr, module
+            # llm_adapter.out_proj
+            elif name == "llm_adapter.out_proj":
+                parent, attr = _resolve_parent(transformer, name)
+                if parent is not None:
+                    yield name, parent, attr, module
+
+
+def _resolve_parent(root: nn.Module, dotted_name: str):
+    """Walk to the parent of `root.<dotted_name>`. Returns (parent, last_attr).
+
+    last_attr is a str (attribute name) for nn.Module attrs, or an int for
+    nn.Sequential / nn.ModuleList children — chosen so that setattr(parent, ...)
+    or parent[int] works in apply/restore code.
+    """
+    parts = dotted_name.split(".")
+    parent = root
+    for p in parts[:-1]:
+        if p.isdigit() and hasattr(parent, "__getitem__"):
+            parent = parent[int(p)]
+        else:
+            parent = getattr(parent, p, None)
+            if parent is None:
+                return None, None
+    last = parts[-1]
+    if last.isdigit() and hasattr(parent, "__getitem__"):
+        return parent, int(last)
+    return parent, last
 
 
 def _iter_anima_attention_targets(transformer: nn.Module):
-    """Yield (module_path, parent_attention_module, attr_name, current_module)
-    for each LoRA-targetable Linear in the Anima DiT.
-
-    `current_module` is whatever currently sits at parent.attr — typically an
-    nn.Linear on the un-LoRA'd model, or a LoRALinearLayer once wrapped.
-    Callers that need the true original should unwrap explicitly. Including
-    wrapped modules here is essential so that restore_originals() and LoRA
-    stacking can find the slots after a previous load.
-
-    We restrict to top-level Block attention (self_attn / cross_attn). The
-    LLM Adapter's internal attention is intentionally skipped here: LoRA
-    training on it is uncommon and its naming differs (o_proj vs output_proj).
+    """Backward-compatible alias: yields the inference-side default scope
+    (DiT Block self_attn + cross_attn only). Used by Phase B.3 inference LoRA
+    loading; kept stable so the apply_lora_group / restore_originals contract
+    is unchanged.
     """
-    # Import lazily so anima_lora can be inspected without dragging in the
-    # training adapters at module import time.
-    from core.training.adapters.sd15_adapter import LoRALinearLayer
-
-    for name, module in transformer.named_modules():
-        if module.__class__.__name__ != _ANIMA_ATTENTION_CLASS_NAME:
-            continue
-        if not (".self_attn" in name or ".cross_attn" in name):
-            continue
-        for attr in _LINEAR_ATTRS:
-            current = getattr(module, attr, None)
-            if isinstance(current, (nn.Linear, LoRALinearLayer)):
-                module_path = f"{name}.{attr}"
-                yield module_path, module, attr, current
+    yield from iter_anima_lora_targets(transformer, {"attention": True})
 
 
 # --------- Apply / restore ---------

@@ -879,6 +879,7 @@ class BaseTrainer(ABC):
         # DEUS support removed - architecture no longer maintained
         self.is_deus = False  # (model_type == "deus")
         self.is_flux2 = (model_type == "flux2")
+        self.is_anima = (model_type == "anima")
         self.is_sdxl = False
 
         if self.is_zimage:
@@ -888,6 +889,8 @@ class BaseTrainer(ABC):
         #     self._load_deus_components()
         elif self.is_flux2:
             self._load_flux2_components()
+        elif self.is_anima:
+            self._load_anima_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -995,6 +998,70 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Z-Image model loaded successfully")
         print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
         print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
+
+    # ============================================================
+    # Anima (Cosmos-Predict2 DiT) component loading and training
+    # ============================================================
+
+    def _load_anima_components(self):
+        """Load Anima model components for training.
+
+        Anima ships as either a split-files HuggingFace layout or a single DiT
+        safetensors plus separately-discovered Qwen3 / Qwen-Image VAE files.
+        ModelLoader.load_anima_from_files handles both and returns a component
+        dict identical to the one used by the inference path.
+        """
+        print(f"{self.log_prefix} Detected Anima model")
+        print(f"{self.log_prefix} Loading Anima components from {self.model_path}")
+
+        from core.model_loader import ModelLoader
+        components = ModelLoader.load_anima_from_files(
+            path=self.model_path,
+            device="cpu",
+            torch_dtype=self.weight_dtype,
+        )
+
+        # Store components on the trainer in the standard slots.
+        self.transformer = components["transformer"]
+        self.transformer_original = self.transformer  # No wrapper for Anima.
+        self.vae = components["vae"]
+        self.text_encoder = components["text_encoder"]
+        self.tokenizer = components["tokenizer"]
+        self.t5_tokenizer = components["t5_tokenizer"]
+        self.scheduler = components["scheduler"]
+
+        # Anima specific: no dual TE / no U-Net.
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.unet = None
+        self.noise_scheduler = self.scheduler
+
+        # Cast VAE to the desired dtype.
+        self.vae = self.vae.to(dtype=self.vae_dtype)
+
+        # Enable gradient checkpointing on the DiT blocks (added in Phase C.1)
+        # and on the Qwen3 text encoder (transformers built-in).
+        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+            self.transformer.enable_gradient_checkpointing()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Anima DiT")
+        if hasattr(self.text_encoder, "gradient_checkpointing_enable"):
+            self.text_encoder.gradient_checkpointing_enable()
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 text encoder")
+
+        # Freeze all base weights. Trainable LoRA modules are added later by the
+        # adapter via apply_lora_to_unet.
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+        # Move DiT to GPU (Anima is small enough that block-swap is optional;
+        # mirror Z-Image's plain-move path for now).
+        print(f"{self.log_prefix} Moving Anima DiT to {self.device}...")
+        self.transformer.to(self.device)
+
+        print(f"{self.log_prefix} Anima model loaded successfully")
+        print(f"{self.log_prefix} Scheduler: {self.scheduler.__class__.__name__}, "
+              f"latent_channels=16")
 
     # DEUS support removed - architecture no longer maintained
     # def _load_deus_components(self):
@@ -1254,6 +1321,7 @@ class BaseTrainer(ABC):
         # DEUS support removed - architecture no longer maintained
         self.is_deus = False  # (model_type == "deus")
         self.is_flux2 = (model_type == "flux2")
+        self.is_anima = (model_type == "anima")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -3019,6 +3087,40 @@ class BaseTrainer(ABC):
 
         return result_embeds, result_mask
 
+    def encode_prompt_anima(self, prompt: str, qwen3_max_length: int = 512,
+                             t5_max_length: int = 512):
+        """Encode prompt for Anima using the Phase A/B inference pipeline.
+
+        Returns the same dict-style auxiliary payload that the Anima DiT
+        forward expects: prompt_embeds (Qwen3 hidden states), source_mask
+        (Qwen3 attention mask), t5_input_ids, t5_attn_mask. Caching is
+        handled upstream — this method always re-encodes.
+        """
+        from core.models.anima.anima_pipeline_ops import encode_prompt as _encode
+
+        # Reuse the inference encode_prompt — it already handles Qwen3 hidden-state
+        # extraction, T5 tokenisation for the LLM Adapter, and zero-masking.
+        # Phase B.1-e added A1111-style emphasis support there which is
+        # intentionally NOT applied during training (captions go through raw).
+        encoded = _encode(
+            text_encoder=self.text_encoder,
+            qwen3_tokenizer=self.tokenizer,
+            t5_tokenizer=self.t5_tokenizer,
+            prompt=prompt,
+            device=str(self.device),
+            dtype=self.training_dtype,
+            qwen3_max_length=qwen3_max_length,
+            t5_max_length=t5_max_length,
+        )
+        # encode_prompt returns batched tensors of shape [1, L, ...]; drop the
+        # batch dim so caches accumulate per-sample. Detach for storage.
+        return {
+            "prompt_embeds": encoded["prompt_embeds"][0].detach(),
+            "source_mask": encoded["source_mask"][0].detach(),
+            "t5_input_ids": encoded["t5_input_ids"][0].detach(),
+            "t5_attn_mask": encoded["t5_attn_mask"][0].detach(),
+        }
+
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
         Unified caption encoding for all architectures.
@@ -3029,9 +3131,21 @@ class BaseTrainer(ABC):
             - SD1.5: (text_embeddings, None)
             - SDXL: (text_embeddings, pooled_embeddings)
             - FLUX.2: (prompt_embeds, None) - text_ids computed in train_step
+            - Anima: (prompt_embeds, anima_aux_dict) where aux dict has
+              {source_mask, t5_input_ids, t5_attn_mask}
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
+        elif self.is_anima:
+            payload = self.encode_prompt_anima(caption)
+            # Return the Qwen3 hidden states as the primary embedding plus the
+            # rest as a dict so callers can hand them to train_step_anima as
+            # a single bundle.
+            return payload["prompt_embeds"], {
+                "source_mask": payload["source_mask"],
+                "t5_input_ids": payload["t5_input_ids"],
+                "t5_attn_mask": payload["t5_attn_mask"],
+            }
         elif self.is_flux2:
             # FLUX.2: Use Qwen3 text encoder with hidden state extraction
             # Note: text_ids are generated dynamically in train_step_flux2, not cached
@@ -3072,7 +3186,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage:
+        if self.is_zimage or self.is_anima:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -3081,7 +3195,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage:
+        if self.is_zimage or self.is_anima:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -3245,6 +3359,20 @@ class BaseTrainer(ABC):
                 latents = self.vae.config.scaling_factor * (latents - shift_factor)
                 # Clean up intermediate tensors
                 del h, mean, logvar
+            elif self.is_anima:
+                # Anima uses the Qwen-Image VAE (Wan VAE 2.1 latent space, 16ch).
+                # Encode -> sample posterior -> apply latents_mean / latents_std
+                # normalisation (same as anima_pipeline_ops.vae_encode_image).
+                # AutoencoderKLQwenImage expects [B, C, T, H, W] (T=1 for images).
+                image_tensor_5d = image_tensor.unsqueeze(2)
+                latent_dist = self.vae.encode(image_tensor_5d).latent_dist
+                latents_5d = latent_dist.sample()  # [B, 16, 1, H/8, W/8]
+                from core.models.anima.anima_pipeline_ops import _get_qwen_vae_normalization
+                mean_t, std_t = _get_qwen_vae_normalization(self.vae, latents_5d.device, latents_5d.dtype)
+                latents_5d = (latents_5d - mean_t) / std_t
+                # Drop the temporal dim for storage; train_step_anima re-adds it.
+                latents = latents_5d.squeeze(2)
+                del image_tensor_5d, latent_dist, latents_5d
             else:
                 # SD/SDXL VAE - 統一された処理フロー
                 from core.models.sdxl_vae_wrapper import SDXLVAEWrapper
@@ -3569,6 +3697,22 @@ class BaseTrainer(ABC):
                 latents=mnt_latents,
                 prompt_embeds=mnt_text_embeddings,
                 attention_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+        elif self.is_anima:
+            # Anima carries the LLM-Adapter side payload (source_mask, t5 ids)
+            # in mnt_attention_mask, which here holds a dict produced by
+            # encode_caption() rather than a single tensor.
+            anima_aux = mnt_attention_mask if isinstance(mnt_attention_mask, dict) else {}
+            loss, pred_loss, recon_loss = self.train_step_anima(
+                latents=mnt_latents,
+                prompt_embeds=mnt_text_embeddings,
+                anima_aux=anima_aux,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -4556,6 +4700,125 @@ class BaseTrainer(ABC):
         del noise, noisy_latents, noisy_latents_4d, model_pred, target
         del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
+        return loss, pred_loss_value, recon_loss_value
+
+    def train_step_anima(
+        self,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        anima_aux: Dict[str, torch.Tensor],
+        timesteps: Optional[torch.Tensor] = None,
+        debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
+        debug_reference_image_paths: Optional[List[str]] = None,
+        profile_vram: bool = False,
+        alphas_cumprod_cached: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """Single Anima training step (rectified flow / velocity prediction).
+
+        Args:
+            latents:   Normalised Qwen-Image latents [B, 16, H/8, W/8] (the
+                       Anima DiT requires a singleton temporal dim, added below).
+            prompt_embeds: Qwen3 hidden states [B, L_qwen, 1024], zero-masked.
+            anima_aux: dict with {source_mask, t5_input_ids, t5_attn_mask}
+                       as produced by encode_prompt_anima.
+            timesteps: Optional pre-sampled sigma values in [0, 1]; otherwise
+                       sampled via self.timestep_sampler or uniform random.
+
+        Returns:
+            (loss tensor, prediction loss value, reconstruction loss value)
+        """
+        if profile_vram:
+            print_vram_usage("[train_step_anima] Start")
+
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        prompt_embeds = prompt_embeds.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        source_mask = anima_aux["source_mask"].to(device=self.device, non_blocking=True)
+        t5_input_ids = anima_aux["t5_input_ids"].to(device=self.device, non_blocking=True)
+        t5_attn_mask = anima_aux["t5_attn_mask"].to(device=self.device, non_blocking=True)
+
+        batch_size = latents.shape[0]
+        if timesteps is None:
+            if self.timestep_sampler is not None:
+                timesteps = self.timestep_sampler.sample(batch_size, self.device)
+            else:
+                timesteps = torch.rand(batch_size, device=self.device)
+        timesteps = timesteps.to(self.training_dtype)
+
+        noise = torch.randn_like(latents)
+
+        # Flow-matching forward: x_t = (1 - sigma) * x_0 + sigma * noise
+        sigma_view = timesteps.view(-1, *([1] * (latents.dim() - 1))).to(latents.dtype)
+        noisy_latents = (1.0 - sigma_view) * latents + sigma_view * noise
+
+        # Anima DiT requires a singleton temporal dim: [B, C, H, W] -> [B, C, 1, H, W].
+        noisy_latents_5d = noisy_latents.unsqueeze(2)
+
+        # Padding mask matches latent spatial resolution; all-valid (zeros).
+        latent_h = noisy_latents.shape[-2]
+        latent_w = noisy_latents.shape[-1]
+        padding_mask = torch.zeros(
+            (batch_size, 1, latent_h, latent_w),
+            device=self.device, dtype=self.training_dtype,
+        )
+
+        if profile_vram:
+            print_vram_usage("[train_step_anima] Before DiT forward")
+
+        # The DiT forward returns velocity in 5D ([B, 16, 1, H, W]).
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                model_pred = self.transformer(
+                    x=noisy_latents_5d,
+                    timesteps=timesteps,
+                    context=prompt_embeds,
+                    padding_mask=padding_mask,
+                    target_input_ids=t5_input_ids,
+                    target_attention_mask=t5_attn_mask,
+                    source_attention_mask=source_mask,
+                )
+        else:
+            model_pred = self.transformer(
+                x=noisy_latents_5d,
+                timesteps=timesteps,
+                context=prompt_embeds,
+                padding_mask=padding_mask,
+                target_input_ids=t5_input_ids,
+                target_attention_mask=t5_attn_mask,
+                source_attention_mask=source_mask,
+            )
+
+        # Drop the temporal dim back: [B, 16, 1, H, W] -> [B, 16, H, W].
+        if model_pred.dim() == 5:
+            model_pred = model_pred.squeeze(2)
+
+        if profile_vram:
+            print_vram_usage("[train_step_anima] After DiT forward")
+
+        # Rectified flow target: v = noise - x_0  (sd-scripts anima convention,
+        # matches our inference scheduler which integrates `latents + dt * v`
+        # with dt = sigma_next - sigma < 0).
+        target = noise - latents
+
+        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        loss_per_sample = loss_per_element.mean([1, 2, 3])
+        mse_loss = loss_per_sample.mean()
+
+        loss = mse_loss
+
+        # Reconstruction loss (predicted x0 vs ground-truth x0) — optional.
+        recon_loss_value = 0.0
+        if self.reconstruction_loss_weight > 0:
+            with torch.no_grad():
+                pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
+                recon_loss = F.mse_loss(pred_x0.float(), latents.float())
+                recon_loss_value = recon_loss.item()
+            loss = loss + self.reconstruction_loss_weight * recon_loss
+
+        pred_loss_value = mse_loss.item()
+
+        del noise, noisy_latents, noisy_latents_5d, model_pred, target
+        del loss_per_element, loss_per_sample
         return loss, pred_loss_value, recon_loss_value
 
     def train_step_flux2(

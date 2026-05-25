@@ -504,6 +504,12 @@ class Block(nn.Module):
             self.adaln_modulation_cross_attn = nn.Sequential(nn.SiLU(), nn.Linear(x_dim, 3 * x_dim, bias=False))
             self.adaln_modulation_mlp = nn.Sequential(nn.SiLU(), nn.Linear(x_dim, 3 * x_dim, bias=False))
 
+        # Gradient checkpointing toggle (set by Anima.enable_gradient_checkpointing).
+        # When True, training-mode forward() wraps the inner computation in
+        # torch.utils.checkpoint.checkpoint with use_reentrant=False so
+        # activations are recomputed on backward instead of stored.
+        self.gradient_checkpointing = False
+
     def reset_parameters(self) -> None:
         self.layer_norm_self_attn.reset_parameters()
         self.layer_norm_cross_attn.reset_parameters()
@@ -530,6 +536,34 @@ class Block(nn.Module):
     def forward(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
                 use_fp32=False, rope_emb_L_1_1_D=None, adaln_lora_B_T_3D=None,
                 extra_per_block_pos_emb=None):
+        # Optional gradient checkpointing for training-time VRAM reduction.
+        if self.training and self.gradient_checkpointing:
+            from torch.utils.checkpoint import checkpoint
+
+            def _custom(x_in, emb_in, ctx_in, rope_in, adaln_in, extra_in):
+                return self._forward_impl(
+                    x_in, emb_in, ctx_in, attn_params,
+                    use_fp32=use_fp32,
+                    rope_emb_L_1_1_D=rope_in,
+                    adaln_lora_B_T_3D=adaln_in,
+                    extra_per_block_pos_emb=extra_in,
+                )
+            return checkpoint(
+                _custom, x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
+                rope_emb_L_1_1_D, adaln_lora_B_T_3D, extra_per_block_pos_emb,
+                use_reentrant=False,
+            )
+        return self._forward_impl(
+            x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
+            use_fp32=use_fp32,
+            rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+            adaln_lora_B_T_3D=adaln_lora_B_T_3D,
+            extra_per_block_pos_emb=extra_per_block_pos_emb,
+        )
+
+    def _forward_impl(self, x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
+                       use_fp32=False, rope_emb_L_1_1_D=None, adaln_lora_B_T_3D=None,
+                       extra_per_block_pos_emb=None):
         if use_fp32:
             x_B_T_H_W_D = x_B_T_H_W_D.float()
         if extra_per_block_pos_emb is not None:
@@ -881,6 +915,17 @@ class Anima(nn.Module):
     @property
     def dtype(self):
         return next(self.parameters()).dtype
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Flip the per-Block gradient_checkpointing flag on. Recomputes
+        activations during backward instead of storing them, trading compute
+        for a large drop in training-time VRAM."""
+        for block in self.blocks:
+            block.gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self) -> None:
+        for block in self.blocks:
+            block.gradient_checkpointing = False
 
     def build_patch_embed(self) -> None:
         in_channels = self.in_channels + 1 if self.concat_padding_mask else self.in_channels

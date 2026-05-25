@@ -909,10 +909,18 @@ def main():
             del pipeline_manager.zimage_components
             pipeline_manager.zimage_components = None
 
+        # Unload Anima components if present
+        if getattr(pipeline_manager, "anima_components", None) is not None:
+            print(f"[TrainRunner] Unloading Anima components...")
+            del pipeline_manager.anima_components
+            pipeline_manager.anima_components = None
+
         # Reset current model tracking
         pipeline_manager.current_model = None
         pipeline_manager.current_model_info = None
         pipeline_manager.is_zimage_model = False
+        if hasattr(pipeline_manager, "is_anima_model"):
+            pipeline_manager.is_anima_model = False
 
         # Force garbage collection
         gc.collect()
@@ -1181,6 +1189,12 @@ def main():
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
                 print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+            # Anima (Cosmos-Predict2 DiT) is also trained in bf16 — force it
+            # whenever the model path or arch metadata says so.
+            if 'anima' in run.base_model_path.lower():
+                print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 
@@ -1575,6 +1589,12 @@ def main():
                 print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+            # Anima (Cosmos-Predict2 DiT) is also trained in bf16 — force it
+            # whenever the model path or arch metadata says so.
+            if 'anima' in run.base_model_path.lower():
+                print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)
@@ -1936,6 +1956,12 @@ def main():
             # Z-Image requires BFloat16 for numerical stability (trained with bf16)
             if 'z-image' in run.base_model_path.lower() or 'zimage' in run.base_model_path.lower():
                 print("[TrainRunner] Z-Image model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+            # Anima (Cosmos-Predict2 DiT) is also trained in bf16 — force it
+            # whenever the model path or arch metadata says so.
+            if 'anima' in run.base_model_path.lower():
+                print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 

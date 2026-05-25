@@ -504,11 +504,26 @@ class Block(nn.Module):
             self.adaln_modulation_cross_attn = nn.Sequential(nn.SiLU(), nn.Linear(x_dim, 3 * x_dim, bias=False))
             self.adaln_modulation_mlp = nn.Sequential(nn.SiLU(), nn.Linear(x_dim, 3 * x_dim, bias=False))
 
-        # Gradient checkpointing toggle (set by Anima.enable_gradient_checkpointing).
-        # When True, training-mode forward() wraps the inner computation in
-        # torch.utils.checkpoint.checkpoint with use_reentrant=False so
-        # activations are recomputed on backward instead of stored.
-        self.gradient_checkpointing = False
+        # Gradient checkpointing mode (set by Anima.enable_gradient_checkpointing).
+        # One of:
+        #   "none"             — no checkpointing (default)
+        #   "standard"         — torch.utils.checkpoint (activations on GPU)
+        #   "cpu_offload"      — torch.utils.checkpoint + blocking CPU offload
+        #   "async_cpu_offload"— custom autograd.Function with non_blocking
+        #                        CPU offload (see core.training.async_checkpoint)
+        self.gradient_checkpoint_mode: str = "none"
+
+    # Backwards-compat shim: code that flips a boolean continues to work.
+    @property
+    def gradient_checkpointing(self) -> bool:
+        return self.gradient_checkpoint_mode != "none"
+
+    @gradient_checkpointing.setter
+    def gradient_checkpointing(self, value):
+        if isinstance(value, str):
+            self.gradient_checkpoint_mode = value
+        else:
+            self.gradient_checkpoint_mode = "standard" if value else "none"
 
     def reset_parameters(self) -> None:
         self.layer_norm_self_attn.reset_parameters()
@@ -537,22 +552,108 @@ class Block(nn.Module):
                 use_fp32=False, rope_emb_L_1_1_D=None, adaln_lora_B_T_3D=None,
                 extra_per_block_pos_emb=None):
         # Optional gradient checkpointing for training-time VRAM reduction.
-        if self.training and self.gradient_checkpointing:
-            from torch.utils.checkpoint import checkpoint
+        mode = self.gradient_checkpoint_mode if self.training else "none"
 
-            def _custom(x_in, emb_in, ctx_in, rope_in, adaln_in, extra_in):
-                return self._forward_impl(
-                    x_in, emb_in, ctx_in, attn_params,
-                    use_fp32=use_fp32,
-                    rope_emb_L_1_1_D=rope_in,
-                    adaln_lora_B_T_3D=adaln_in,
-                    extra_per_block_pos_emb=extra_in,
-                )
+        if mode == "none":
+            return self._forward_impl(
+                x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
+                use_fp32=use_fp32,
+                rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                adaln_lora_B_T_3D=adaln_lora_B_T_3D,
+                extra_per_block_pos_emb=extra_per_block_pos_emb,
+            )
+
+        def _custom(x_in, emb_in, ctx_in, rope_in, adaln_in, extra_in):
+            return self._forward_impl(
+                x_in, emb_in, ctx_in, attn_params,
+                use_fp32=use_fp32,
+                rope_emb_L_1_1_D=rope_in,
+                adaln_lora_B_T_3D=adaln_in,
+                extra_per_block_pos_emb=extra_in,
+            )
+
+        if mode == "standard":
+            from torch.utils.checkpoint import checkpoint
             return checkpoint(
                 _custom, x_B_T_H_W_D, emb_B_T_D, crossattn_emb,
                 rope_emb_L_1_1_D, adaln_lora_B_T_3D, extra_per_block_pos_emb,
                 use_reentrant=False,
             )
+
+        if mode == "cpu_offload":
+            # Blocking CPU offload of the saved activations. torch.utils.checkpoint
+            # only stores the function INPUTS in its ctx (with use_reentrant=False),
+            # so we pre-stage the inputs as CPU tensors before handing them to
+            # checkpoint(). The wrapper then moves them back to the block's
+            # compute device for the actual forward / backward recompute. The
+            # block's output stays on GPU so the next block / the final layer
+            # see a normal CUDA tensor.
+            from torch.utils.checkpoint import checkpoint
+            compute_device = next(self.parameters()).device
+
+            def _wrap_offload(*inputs):
+                dev_inputs = tuple(
+                    t.to(compute_device) if isinstance(t, torch.Tensor) else t
+                    for t in inputs
+                )
+                return _custom(*dev_inputs)
+
+            def _to_cpu_if_tensor(t):
+                return t.cpu() if isinstance(t, torch.Tensor) else t
+
+            cpu_args = (
+                _to_cpu_if_tensor(x_B_T_H_W_D),
+                _to_cpu_if_tensor(emb_B_T_D),
+                _to_cpu_if_tensor(crossattn_emb),
+                _to_cpu_if_tensor(rope_emb_L_1_1_D),
+                _to_cpu_if_tensor(adaln_lora_B_T_3D),
+                _to_cpu_if_tensor(extra_per_block_pos_emb),
+            )
+            return checkpoint(_wrap_offload, *cpu_args, use_reentrant=False)
+
+        if mode == "async_cpu_offload":
+            # Non-blocking CPU offload variant: same structure as cpu_offload
+            # but the input-staging transfers use non_blocking=True so the
+            # copies can overlap with compute. We reuse torch.utils.checkpoint
+            # rather than a custom autograd.Function so the requires_grad-
+            # propagation edge cases (e.g. tests with non-grad inputs and
+            # gradient coming from parameters inside the wrap) keep working.
+            from torch.utils.checkpoint import checkpoint
+            compute_device = next(self.parameters()).device
+
+            def _wrap_async(*inputs):
+                dev_inputs = tuple(
+                    t.to(compute_device, non_blocking=True) if isinstance(t, torch.Tensor) else t
+                    for t in inputs
+                )
+                return _custom(*dev_inputs)
+
+            def _to_cpu_async(t):
+                # pin_memory enables true non-blocking H2D copy on recompute.
+                if not isinstance(t, torch.Tensor):
+                    return t
+                if t.is_cuda:
+                    cpu_copy = torch.empty(t.shape, dtype=t.dtype, device="cpu",
+                                            pin_memory=torch.cuda.is_available())
+                    cpu_copy.copy_(t, non_blocking=True)
+                    return cpu_copy
+                return t
+
+            cpu_args = (
+                _to_cpu_async(x_B_T_H_W_D),
+                _to_cpu_async(emb_B_T_D),
+                _to_cpu_async(crossattn_emb),
+                _to_cpu_async(rope_emb_L_1_1_D),
+                _to_cpu_async(adaln_lora_B_T_3D),
+                _to_cpu_async(extra_per_block_pos_emb),
+            )
+            return checkpoint(_wrap_async, *cpu_args, use_reentrant=False)
+
+        # Unknown mode — fall back to a no-checkpoint forward and warn once.
+        if not getattr(self, "_warned_unknown_mode", False):
+            print(f"[Anima Block] WARNING: unknown gradient_checkpoint_mode "
+                  f"'{mode}', running without checkpointing")
+            self._warned_unknown_mode = True
         return self._forward_impl(
             x_B_T_H_W_D, emb_B_T_D, crossattn_emb, attn_params,
             use_fp32=use_fp32,
@@ -916,16 +1017,31 @@ class Anima(nn.Module):
     def dtype(self):
         return next(self.parameters()).dtype
 
-    def enable_gradient_checkpointing(self) -> None:
-        """Flip the per-Block gradient_checkpointing flag on. Recomputes
-        activations during backward instead of storing them, trading compute
-        for a large drop in training-time VRAM."""
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False,
+                                       async_offload: bool = False) -> None:
+        """Enable activation checkpointing on every Block.
+
+        Modes (precedence, highest first):
+          async_offload=True  -> non-blocking CPU offload of activations
+                                 (custom autograd.Function; overlaps copy
+                                 with compute)
+          cpu_offload=True    -> blocking CPU offload of activations via
+                                 torch.utils.checkpoint
+          both False          -> standard torch.utils.checkpoint (activations
+                                 stay on GPU)
+        """
+        if async_offload:
+            mode = "async_cpu_offload"
+        elif cpu_offload:
+            mode = "cpu_offload"
+        else:
+            mode = "standard"
         for block in self.blocks:
-            block.gradient_checkpointing = True
+            block.gradient_checkpoint_mode = mode
 
     def disable_gradient_checkpointing(self) -> None:
         for block in self.blocks:
-            block.gradient_checkpointing = False
+            block.gradient_checkpoint_mode = "none"
 
     def build_patch_embed(self) -> None:
         in_channels = self.in_channels + 1 if self.concat_padding_mask else self.in_channels

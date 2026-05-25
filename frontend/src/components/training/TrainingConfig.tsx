@@ -3228,6 +3228,58 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
+            {/* Anima-only Phase D memory-optimisation toggles */}
+            {isAnimaModel(baseModelPath) && (
+              <>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="cpu-offload-checkpointing"
+                    checked={!!params.cpu_offload_checkpointing}
+                    onChange={(e) => updateParam("cpu_offload_checkpointing", e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="cpu-offload-checkpointing" className="text-xs text-gray-300 cursor-pointer">
+                    CPU-offload checkpointing (blocking)
+                  </label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="async-cpu-offload-checkpointing"
+                    checked={!!params.async_cpu_offload_checkpointing}
+                    onChange={(e) => updateParam("async_cpu_offload_checkpointing", e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="async-cpu-offload-checkpointing" className="text-xs text-gray-300 cursor-pointer">
+                    Async CPU-offload checkpointing (non-blocking, faster)
+                  </label>
+                </div>
+                {params.training_method === "lora" && (
+                  <div>
+                    <label htmlFor="fp8-base-dtype" className="block text-xs text-gray-300 mb-1">
+                      FP8 base weights (LoRA only)
+                    </label>
+                    <select
+                      id="fp8-base-dtype"
+                      value={params.fp8_base_dtype ?? ""}
+                      onChange={(e) =>
+                        updateParam("fp8_base_dtype", e.target.value === "" ? null : e.target.value)
+                      }
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                    >
+                      <option value="">None (BF16 base)</option>
+                      <option value="fp8_e4m3fn">FP8 E4M3 (recommended)</option>
+                      <option value="fp8_e5m2">FP8 E5M2</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Quantise the frozen Anima DiT base to FP8 before LoRA wrap (~50% VRAM saving).
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
             {/* Fused Optimizer Groups */}
             {blocksToSwap > 0 && (
               <div>

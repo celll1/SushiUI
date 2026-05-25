@@ -248,6 +248,18 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "anima_attn_mlp_lr_factor": 1.0,
     "anima_mod_lr_factor": 1.0,
     "anima_llm_adapter_lr_factor": 1.0,
+
+    # ---- Anima Phase D: memory optimisations ----
+    # Gradient-checkpoint mode for the DiT blocks. Both default to False
+    # (i.e. standard GPU-resident checkpointing). When both are True the
+    # async variant wins (faster CPU<->GPU overlap).
+    "cpu_offload_checkpointing": False,
+    "async_cpu_offload_checkpointing": False,
+    # Quantise the *frozen* base DiT to FP8 before LoRA wrap. ~50% VRAM
+    # reduction on the base. Only meaningful for training_method='lora'
+    # (Full FT needs trainable base weights — flag is silently ignored).
+    # None | "fp8_e4m3fn" | "fp8_e5m2".
+    "fp8_base_dtype": None,
 }
 
 # ---------------------------------------------------------------------------

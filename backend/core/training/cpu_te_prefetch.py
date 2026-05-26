@@ -114,14 +114,26 @@ class CpuTextEncoderPrefetcher:
 
     def __init__(
         self,
-        encode_fn,
+        encode_batch_fn,
         batches: List[List[Tuple[Any, Any]]],
         prefetch_depth: int = 4,
         log_prefix: str = "[CpuPrefetch]",
     ):
+        """
+        Args:
+            encode_batch_fn: Callable[[List[str]], List[Tuple[emb, aux]]].
+                Receives all captions of one batch and returns one
+                (embedding, auxiliary) tuple per caption in order.
+                Architectures with a true batched TE forward (e.g. Anima)
+                amortise per-call overhead through this API; others fall
+                back to a loop internally.
+            batches: epoch's pre-built list of [(item, dataset), ...] groups
+            prefetch_depth: queue size — number of batches the worker may
+                run ahead of the main thread before back-pressure kicks in
+        """
         if prefetch_depth < 1:
             raise ValueError("prefetch_depth must be >= 1")
-        self._encode_fn = encode_fn
+        self._encode_batch_fn = encode_batch_fn
         self._batches = batches
         self._depth = int(prefetch_depth)
         self._log_prefix = log_prefix
@@ -138,30 +150,40 @@ class CpuTextEncoderPrefetcher:
                 if self._stop_event.is_set():
                     break
 
-                t0 = time.time()
-                payload: dict = {}
+                # Collect this batch's (image_path, caption) pairs first, then
+                # encode them in ONE call so trainers with a true batched
+                # forward (e.g. Anima Qwen3) get the amortisation win.
+                paths: List[Any] = []
+                captions: List[str] = []
                 for entry in batch:
                     if self._stop_event.is_set():
                         break
-                    # `batch` items are (item_dict, dataset) tuples (see
-                    # base_trainer training loop). Tolerate plain dicts too.
                     item, _dataset = entry if isinstance(entry, tuple) else (entry, None)
-                    caption = item.get("caption", "") if isinstance(item, dict) else ""
-                    image_path = item.get("image_path") if isinstance(item, dict) else None
-                    if image_path is None:
+                    if not isinstance(item, dict):
                         continue
+                    ip = item.get("image_path")
+                    if ip is None:
+                        continue
+                    paths.append(ip)
+                    captions.append(item.get("caption", "") or "")
+
+                t0 = time.time()
+                payload: dict = {}
+                if captions:
                     try:
-                        emb, aux = self._encode_fn(caption)
+                        results = self._encode_batch_fn(captions)
                     except Exception as e:
                         self.stats.worker_errors.append(
-                            f"batch {batch_idx} caption={caption[:40]!r}: {e}"
+                            f"batch {batch_idx} ({len(captions)} captions): {e}"
                         )
-                        continue
-                    payload[image_path] = (
-                        emb.detach().to("cpu", copy=False) if isinstance(emb, torch.Tensor) else emb,
-                        _detach_to_cpu(aux),
-                        caption,
-                    )
+                        results = []
+                    for ip, cap, res in zip(paths, captions, results):
+                        emb, aux = res
+                        payload[ip] = (
+                            emb.detach().to("cpu", copy=False) if isinstance(emb, torch.Tensor) else emb,
+                            _detach_to_cpu(aux),
+                            cap,
+                        )
                 self.stats.record_encode(time.time() - t0, len(payload))
 
                 # put() blocks if the main thread is depth batches behind —

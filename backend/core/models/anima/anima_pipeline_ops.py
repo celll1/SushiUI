@@ -160,6 +160,87 @@ def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
     }
 
 
+@torch.no_grad()
+def encode_prompts_batched(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                           prompts: List[str],
+                           device: str = "cuda",
+                           dtype: torch.dtype = torch.bfloat16,
+                           qwen3_max_length: int = 512,
+                           t5_max_length: int = 512) -> List[Dict[str, torch.Tensor]]:
+    """Batched variant of `encode_prompt` — tokenises all prompts together
+    and runs ONE Qwen3 forward over the whole batch.
+
+    Returns a list (len == len(prompts)) of the same per-prompt dicts that
+    `encode_prompt` produces, so callers can drop it in transparently.
+
+    Used by the CPU prefetch worker (Phase F) to amortise per-call overhead
+    when the text encoder runs on CPU.
+    """
+    if not prompts:
+        return []
+
+    # Strip emphasis up-front; we apply per-sample weights after the forward.
+    cleaned = []
+    weights_per_sample: List[List[float]] = []
+    for p in prompts:
+        c, w = _build_emphasis(p or "", qwen3_tokenizer, qwen3_max_length)
+        cleaned.append(c)
+        weights_per_sample.append(w)
+
+    qwen3_enc = qwen3_tokenizer(
+        cleaned, return_tensors="pt", truncation=True,
+        padding="max_length", max_length=qwen3_max_length,
+    )
+    t5_enc = t5_tokenizer(
+        cleaned, return_tensors="pt", truncation=True,
+        padding="max_length", max_length=t5_max_length,
+    )
+    qwen3_input_ids = qwen3_enc["input_ids"].to(device)
+    qwen3_attn_mask = qwen3_enc["attention_mask"].to(device)
+    t5_input_ids = t5_enc["input_ids"].to(device)
+    t5_attn_mask = t5_enc["attention_mask"].to(device)
+
+    # Single forward over the whole batch — this is where the speedup lives.
+    outputs = text_encoder(input_ids=qwen3_input_ids, attention_mask=qwen3_attn_mask)
+    prompt_embeds = outputs.last_hidden_state.to(dtype)
+    prompt_embeds[~qwen3_attn_mask.bool()] = 0
+
+    # Apply per-sample emphasis weights (slow path; rare in practice).
+    if any(weights_per_sample):
+        seq_len = prompt_embeds.shape[1]
+        for i, weights in enumerate(weights_per_sample):
+            if not weights:
+                continue
+            try:
+                full_w = torch.ones(seq_len, device=prompt_embeds.device, dtype=dtype)
+                content_ids = qwen3_tokenizer.encode(cleaned[i], add_special_tokens=False)
+                offset = 0
+                if content_ids:
+                    first_content = content_ids[0]
+                    row = qwen3_input_ids[i].tolist()
+                    for pos, tok in enumerate(row):
+                        if tok == first_content:
+                            offset = pos
+                            break
+                n = min(len(weights), seq_len - offset)
+                if n > 0:
+                    w_t = torch.tensor(weights[:n], device=prompt_embeds.device, dtype=dtype)
+                    full_w[offset:offset + n] = w_t
+                prompt_embeds[i] = prompt_embeds[i] * full_w.unsqueeze(-1)
+            except Exception as e:
+                print(f"[Anima] emphasis application failed for sample {i} (ignored): {e}")
+
+    out: List[Dict[str, torch.Tensor]] = []
+    for i in range(len(prompts)):
+        out.append({
+            "prompt_embeds": prompt_embeds[i],
+            "source_mask": qwen3_attn_mask[i],
+            "t5_input_ids": t5_input_ids[i],
+            "t5_attn_mask": t5_attn_mask[i],
+        })
+    return out
+
+
 # --------- VAE helpers ---------
 
 def _get_qwen_vae_normalization(vae, device, dtype):

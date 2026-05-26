@@ -3247,6 +3247,48 @@ class BaseTrainer(ABC):
             text_emb = self.encode_prompt(caption, requires_grad=requires_grad)
             return text_emb, None
 
+    def encode_captions_batched(self, captions, requires_grad: bool = False):
+        """Encode a list of captions in one forward pass when possible.
+
+        Returns a list of (embedding, auxiliary_data) tuples in the same
+        order as the input — drop-in compatible with calling encode_caption
+        per sample. The CPU prefetch worker (Phase F) uses this to amortise
+        per-call overhead so the frozen TE on CPU keeps up with GPU iters.
+
+        Anima has a true batched path (single Qwen3 forward); the other
+        architectures currently fall back to per-sample encode_caption.
+        Override in subclasses that can add a real batched implementation.
+        """
+        if not captions:
+            return []
+
+        if self.is_anima:
+            from core.models.anima.anima_pipeline_ops import encode_prompts_batched
+            results = encode_prompts_batched(
+                text_encoder=self.text_encoder,
+                qwen3_tokenizer=self.tokenizer,
+                t5_tokenizer=self.t5_tokenizer,
+                prompts=list(captions),
+                device=str(self.text_encoder.device) if hasattr(self.text_encoder, "device") else "cpu",
+                dtype=self.training_dtype,
+                qwen3_max_length=512,
+                t5_max_length=512,
+            )
+            out = []
+            for r in results:
+                out.append((
+                    r["prompt_embeds"].detach(),
+                    {
+                        "source_mask": r["source_mask"].detach(),
+                        "t5_input_ids": r["t5_input_ids"].detach(),
+                        "t5_attn_mask": r["t5_attn_mask"].detach(),
+                    },
+                ))
+            return out
+
+        # Fallback: per-sample. No speedup but correct for any arch.
+        return [self.encode_caption(c, requires_grad=requires_grad) for c in captions]
+
     # ============================================================
     # VRAM Management (swap mode for all architectures)
     # ============================================================
@@ -7856,7 +7898,7 @@ class BaseTrainer(ABC):
                     if self.text_encoder is not None:
                         self.text_encoder.to("cpu").eval().requires_grad_(False)
                     te_prefetcher = CpuTextEncoderPrefetcher(
-                        encode_fn=lambda caption: self.encode_caption(caption, requires_grad=False),
+                        encode_batch_fn=lambda caps: self.encode_captions_batched(caps, requires_grad=False),
                         batches=list(batches),
                         prefetch_depth=int(text_encoding_prefetch_depth or 4),
                         log_prefix=f"{self.log_prefix} [cpu_prefetch]",

@@ -5374,8 +5374,9 @@ class TrainingRunCreateRequest(BaseModel):
     min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
     # Text encoding settings
-    text_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"
-    text_encoding_swap_interval: int = 256  # Swap interval for swap_onthefly mode
+    text_encoding_mode: str = TRAINING_DEFAULTS["text_encoding_mode"]  # swap_onthefly|pre_encoded_cache|onthefly_gpu|cpu_prefetch
+    text_encoding_swap_interval: int = TRAINING_DEFAULTS["text_encoding_swap_interval"]
+    text_encoding_prefetch_depth: int = TRAINING_DEFAULTS["text_encoding_prefetch_depth"]
 
     # Latent encoding settings
     latent_encoding_mode: str = "swap_onthefly"  # "swap_onthefly", "pre_encoded_cache", "onthefly_gpu"

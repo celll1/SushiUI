@@ -1491,6 +1491,7 @@ def main():
             # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+            text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
 
             # Get latent encoding mode
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
@@ -1550,6 +1551,7 @@ def main():
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
+                text_encoding_prefetch_depth=text_encoding_prefetch_depth,
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
                 multi_noise_timesteps=multi_noise_timesteps,
@@ -1864,6 +1866,7 @@ def main():
             # Text/Latent encoding modes
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+            text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
             latent_encoding_swap_interval = train_config.get('latent_encoding_swap_interval', 256)
 
@@ -1914,6 +1917,7 @@ def main():
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
+                text_encoding_prefetch_depth=text_encoding_prefetch_depth,
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
                 multi_noise_timesteps=multi_noise_timesteps,
@@ -2232,6 +2236,7 @@ def main():
             # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+            text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
 
             # Get latent encoding mode
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
@@ -2291,6 +2296,7 @@ def main():
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
+                text_encoding_prefetch_depth=text_encoding_prefetch_depth,
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
                 multi_noise_timesteps=multi_noise_timesteps,
@@ -2528,6 +2534,7 @@ def main():
             # Get text encoding mode
             text_encoding_mode = train_config.get('text_encoding_mode', 'swap_onthefly')
             text_encoding_swap_interval = train_config.get('text_encoding_swap_interval', 256)
+            text_encoding_prefetch_depth = train_config.get('text_encoding_prefetch_depth', 4)
 
             # Get latent encoding mode
             latent_encoding_mode = train_config.get('latent_encoding_mode', 'swap_onthefly')
@@ -2571,6 +2578,7 @@ def main():
                 max_step_saves_to_keep=max_step_saves_to_keep,
                 text_encoding_mode=text_encoding_mode,
                 text_encoding_swap_interval=text_encoding_swap_interval,
+                text_encoding_prefetch_depth=text_encoding_prefetch_depth,
                 latent_encoding_mode=latent_encoding_mode,
                 latent_encoding_swap_interval=latent_encoding_swap_interval,
                 multi_noise_timesteps=multi_noise_timesteps,

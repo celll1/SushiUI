@@ -178,8 +178,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "use_flash_attention": False,
     "min_snr_gamma": 5.0,
     # Text / latent encoding
+    # text_encoding_mode: "swap_onthefly" | "pre_encoded_cache" | "onthefly_gpu"
+    #                   | "cpu_prefetch"
+    # cpu_prefetch pins the frozen TE on CPU and runs caption encoding for
+    # upcoming batches on a daemon thread, in parallel with GPU train steps.
+    # Stalls (queue empty when the trainer pulls the next batch) are logged
+    # at epoch end so the user can see whether CPU encode keeps up.
     "text_encoding_mode": "swap_onthefly",
     "text_encoding_swap_interval": 256,
+    "text_encoding_prefetch_depth": 4,
     "latent_encoding_mode": "swap_onthefly",
     "latent_encoding_swap_interval": 256,
     # Block swap

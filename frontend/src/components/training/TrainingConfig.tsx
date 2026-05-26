@@ -3326,8 +3326,31 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               <option value="swap_onthefly">Swap On-the-Fly (Recommended)</option>
               <option value="pre_encoded_cache">Pre-Encoded Cache (Disk)</option>
               <option value="onthefly_gpu">On-the-Fly GPU Encoding</option>
+              <option value="cpu_prefetch">CPU Prefetch (background thread; TE pinned to CPU)</option>
             </select>
           </div>
+
+          {textEncodingMode === "cpu_prefetch" && (
+            <div>
+              <label htmlFor="text-encoding-prefetch-depth" className="block text-xs text-gray-400 mb-1">
+                Prefetch Depth (batches ahead)
+              </label>
+              <input
+                type="number"
+                id="text-encoding-prefetch-depth"
+                value={params.text_encoding_prefetch_depth ?? 4}
+                onChange={(e) => updateParam("text_encoding_prefetch_depth", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("text_encoding_prefetch_depth", 4); }}
+                min={1}
+                max={32}
+                step={1}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                How many batches ahead the worker encodes. Stall ratio is logged at epoch end.
+              </p>
+            </div>
+          )}
 
           {textEncodingMode === "swap_onthefly" && (
             <div>

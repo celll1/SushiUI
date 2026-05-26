@@ -7001,6 +7001,7 @@ class BaseTrainer(ABC):
         max_step_saves_to_keep: int = 3,
         text_encoding_mode: str = "swap_onthefly",
         text_encoding_swap_interval: int = 256,
+        text_encoding_prefetch_depth: int = 4,
         latent_encoding_mode: str = "swap_onthefly",
         latent_encoding_swap_interval: int = 256,
         use_reference_images: bool = False,
@@ -7128,14 +7129,30 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix}   Vision Encoder:    tensors={ve_trainable_tensors}, params={format_param_count(ve_trainable_scalars)}")
 
         # If Text Encoder is trainable, embeddings must be recomputed each step
-        if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache']:
+        if text_encoder_trainable and text_encoding_mode in ['swap_onthefly', 'pre_encoded_cache', 'cpu_prefetch']:
             print(f"{self.log_prefix} WARNING: Text Encoder is trainable but text_encoding_mode='{text_encoding_mode}'")
             print(f"{self.log_prefix} Text embeddings would be cached and NOT updated during training!")
             print(f"{self.log_prefix} Overriding to 'onthefly_gpu' - embeddings must be recomputed each step")
             text_encoding_mode = 'onthefly_gpu'
 
+        # cpu_prefetch mode pins the (frozen) TE to CPU and lets a worker
+        # thread encode upcoming batches in parallel with GPU train steps.
+        # Reject the mode when the architecture's TE can't safely run on
+        # CPU (currently only FP8-quantised TEs; standard transformers can).
+        if text_encoding_mode == 'cpu_prefetch':
+            try:
+                if hasattr(self, '_has_fp8_text_encoder') and self._has_fp8_text_encoder():
+                    print(f"{self.log_prefix} WARNING: cpu_prefetch is incompatible with "
+                          f"FP8-quantised text encoders (CPU lacks _scaled_mm support). "
+                          f"Falling back to swap_onthefly.")
+                    text_encoding_mode = 'swap_onthefly'
+            except Exception:
+                pass
+
         # Log final text encoding mode
         print(f"{self.log_prefix} Text encoding mode: {text_encoding_mode}")
+        if text_encoding_mode == 'cpu_prefetch':
+            print(f"{self.log_prefix}   prefetch_depth: {text_encoding_prefetch_depth}")
 
         # Setup debug directory
         debug_dir = None
@@ -7327,6 +7344,13 @@ class BaseTrainer(ABC):
         elif text_encoding_mode == "onthefly_gpu":
             print(f"{self.log_prefix} Using on-the-fly GPU encoding (no cache)")
             # No cache setup needed
+        elif text_encoding_mode == "cpu_prefetch":
+            print(f"{self.log_prefix} Using CPU-parallel prefetch encoding "
+                  f"(TE pinned to CPU, worker prefetches up to "
+                  f"{text_encoding_prefetch_depth} batches ahead)")
+            # No cache setup; the worker is created per-epoch alongside the
+            # main loop (uses the pre-built `batches` list as its work
+            # queue). Treated as a peer of swap_onthefly downstream.
         else:
             raise ValueError(f"Invalid text_encoding_mode: {text_encoding_mode}")
 
@@ -7817,11 +7841,33 @@ class BaseTrainer(ABC):
 
                 # Initialize swap mode buffer if needed (all architectures)
                 # Use dict keyed by image_path for robust lookup (immune to index misalignment)
-                swap_buffer = {} if text_encoding_mode == "swap_onthefly" else None
+                use_swap_buffer = text_encoding_mode in ("swap_onthefly", "cpu_prefetch")
+                swap_buffer = {} if use_swap_buffer else None
                 next_swap_at_step = 0 if swap_buffer is not None else -1
 
-                # Pre-fill swap buffer for first interval
-                if swap_buffer is not None:
+                # cpu_prefetch sets up its own background worker for the
+                # frozen TE; the per-batch refill in this loop is replaced
+                # by a queue.get() against that worker. The pre-fill below
+                # only runs for swap_onthefly.
+                te_prefetcher = None
+                if text_encoding_mode == "cpu_prefetch":
+                    from core.training.cpu_te_prefetch import CpuTextEncoderPrefetcher
+                    # Make sure the TE lives on CPU before the worker reads it.
+                    if self.text_encoder is not None:
+                        self.text_encoder.to("cpu").eval().requires_grad_(False)
+                    te_prefetcher = CpuTextEncoderPrefetcher(
+                        encode_fn=lambda caption: self.encode_caption(caption, requires_grad=False),
+                        batches=list(batches),
+                        prefetch_depth=int(text_encoding_prefetch_depth or 4),
+                        log_prefix=f"{self.log_prefix} [cpu_prefetch]",
+                    )
+                    te_prefetcher.start()
+                    print(f"{self.log_prefix} cpu_prefetch worker engaged "
+                          f"(TE pinned on CPU; main model on GPU)")
+
+                # Pre-fill swap buffer for first interval (swap_onthefly only —
+                # cpu_prefetch's worker drains lazily via the queue).
+                if swap_buffer is not None and text_encoding_mode == "swap_onthefly":
                     print(f"{self.log_prefix} Pre-filling swap buffer for first {text_encoding_swap_interval} steps...")
                     if progress_callback:
                         progress_callback(
@@ -8012,8 +8058,31 @@ class BaseTrainer(ABC):
                         # Never let preview handling kill training
                         print(f"{self.log_prefix} WARNING: preview poll failed: {_pe}")
 
-                    # Check if we need to refill swap buffer
-                    if swap_buffer is not None and batch_idx >= next_swap_at_step:
+                    # cpu_prefetch path: drain the background worker for this
+                    # batch (and let it run ahead while we train). We pull
+                    # exactly one batch's worth of embeddings per outer
+                    # iteration so the dict size stays bounded.
+                    if te_prefetcher is not None and swap_buffer is not None:
+                        # Only top up when the entries for the *current* batch
+                        # aren't already in the buffer (the worker writes
+                        # ahead in batch order). We pull until we've covered
+                        # this batch_idx; usually one pull suffices.
+                        while batch_idx >= next_swap_at_step:
+                            try:
+                                pulled_idx, payload = te_prefetcher.next(timeout=120.0)
+                            except Exception as pe:
+                                print(f"{self.log_prefix} cpu_prefetch worker timeout / error: {pe}")
+                                break
+                            if pulled_idx < 0:
+                                # Sentinel — worker is done; nothing more to drain.
+                                break
+                            # Merge into swap_buffer keyed by image_path
+                            swap_buffer.update(payload)
+                            next_swap_at_step = pulled_idx + 1
+
+                    # Check if we need to refill swap buffer (swap_onthefly path)
+                    if swap_buffer is not None and text_encoding_mode == "swap_onthefly" \
+                            and batch_idx >= next_swap_at_step:
                         # Calculate next batch range
                         start_idx = next_swap_at_step
                         end_idx = min(start_idx + text_encoding_swap_interval, len(batches))
@@ -9060,7 +9129,21 @@ class BaseTrainer(ABC):
                     # Note: With Sequential MNT, optimizer.step() and loss deletion
                     # are handled inside the MNT loop. No else clause needed here.
 
+                # End of per-batch loop. Stop the cpu_prefetch worker (if any)
+                # so the daemon thread doesn't hold onto the TE / batch list
+                # past the epoch boundary. The next epoch creates a fresh
+                # prefetcher because the `batches` list is rebuilt.
+                if te_prefetcher is not None:
+                    te_prefetcher.stop()
+                    te_prefetcher = None
+
         except KeyboardInterrupt:
+            # Stop cpu_prefetch worker if it was running (no-op otherwise)
+            try:
+                if 'te_prefetcher' in locals() and te_prefetcher is not None:
+                    te_prefetcher.stop()
+            except Exception:
+                pass
             print(f"\n{self.log_prefix} Training interrupted by user")
             print(f"{self.log_prefix} Saving checkpoint at step {global_step}, epoch {epoch}...")
 
@@ -9118,6 +9201,12 @@ class BaseTrainer(ABC):
             raise
 
         except Exception as e:
+            # Stop cpu_prefetch worker on failure too
+            try:
+                if 'te_prefetcher' in locals() and te_prefetcher is not None:
+                    te_prefetcher.stop()
+            except Exception:
+                pass
             # Emergency checkpoint save on any unhandled exception (CUDA errors, etc.)
             print(f"\n{self.log_prefix} [EMERGENCY] Training failed with error: {type(e).__name__}: {str(e)[:200]}")
             print(f"{self.log_prefix} [EMERGENCY] Attempting to save emergency checkpoint at step {global_step}, epoch {epoch}...")

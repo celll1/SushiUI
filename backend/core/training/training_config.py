@@ -154,6 +154,21 @@ def _build_train_section(
     # Text/Latent encoding
     train["text_encoding_mode"] = p.get("text_encoding_mode", "swap_onthefly")
     train["text_encoding_swap_interval"] = p.get("text_encoding_swap_interval", 256)
+    # cpu_prefetch mode: how many batches ahead the CPU worker may pre-encode
+    train["text_encoding_prefetch_depth"] = p.get("text_encoding_prefetch_depth", 4)
+
+    # ---- Anima (Cosmos-Predict2 DiT) training knobs ----
+    # Read unconditionally; non-Anima trainers ignore them via config.get().
+    # SSoT: api/param_defaults.TRAINING_DEFAULTS.
+    train["anima_lora_scope"] = p.get("anima_lora_scope", "attention,mlp,llm_adapter")
+    train["train_llm_adapter"] = p.get("train_llm_adapter", True)
+    train["anima_attn_mlp_lr_factor"] = p.get("anima_attn_mlp_lr_factor", 1.0)
+    train["anima_mod_lr_factor"] = p.get("anima_mod_lr_factor", 1.0)
+    train["anima_llm_adapter_lr_factor"] = p.get("anima_llm_adapter_lr_factor", 1.0)
+    # Phase D memory optimisations (Anima only — other archs ignore).
+    train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
+    train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
+    train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)
 
     # Reference images / Vision encoder
     if include_reference_images:

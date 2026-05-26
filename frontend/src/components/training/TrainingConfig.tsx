@@ -3277,6 +3277,122 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </p>
                   </div>
                 )}
+
+                {/* LoRA scope — which DiT module families get LoRA wraps. */}
+                {params.training_method === "lora" && (() => {
+                  const scopeCsv: string = (params.anima_lora_scope ?? "attention,mlp,llm_adapter");
+                  const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
+                  const toggle = (tok: string) => {
+                    const next = new Set(scopeSet);
+                    if (next.has(tok)) next.delete(tok); else next.add(tok);
+                    // Keep a deterministic order so YAML diffs stay stable.
+                    const ordered = ["attention", "mlp", "mod", "llm_adapter"].filter((t) => next.has(t));
+                    updateParam("anima_lora_scope", ordered.join(","));
+                    // Mirror the llm_adapter scope into train_llm_adapter so
+                    // the two stay coherent (the trainer prefers the explicit
+                    // flag when present).
+                    if (tok === "llm_adapter") {
+                      updateParam("train_llm_adapter", next.has("llm_adapter"));
+                    }
+                  };
+                  return (
+                    <div>
+                      <label className="block text-xs text-gray-300 mb-1">
+                        LoRA Scope (which module families get wrapped)
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                          ["attention", "Attention (Q/K/V/Out)"],
+                          ["mlp", "MLP / FFN"],
+                          ["mod", "AdaLN modulation"],
+                          ["llm_adapter", "LLM Adapter"],
+                        ].map(([tok, label]) => (
+                          <label key={tok} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={scopeSet.has(tok)}
+                              onChange={() => toggle(tok)}
+                              className="w-3.5 h-3.5"
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Default: attention + mlp + llm_adapter. AdaLN modulation is off
+                        by default (typically small and easy to overfit).
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {/* Train LLM Adapter — for Full FT only (LoRA covers this
+                    via the scope multi-select above). */}
+                {params.training_method !== "lora" && (
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="train-llm-adapter"
+                      checked={params.train_llm_adapter ?? true}
+                      onChange={(e) => updateParam("train_llm_adapter", e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="train-llm-adapter" className="text-xs text-gray-300 cursor-pointer">
+                      Train LLM Adapter (Qwen3→T5 projection)
+                    </label>
+                  </div>
+                )}
+
+                {/* Per-group LR multipliers — Full FT only. */}
+                {params.training_method !== "lora" && (
+                  <div className="grid grid-cols-3 gap-2">
+                    <div>
+                      <label htmlFor="anima-attn-mlp-lr-factor" className="block text-xs text-gray-300 mb-1">
+                        Attn+MLP LR ×
+                      </label>
+                      <input
+                        type="number"
+                        id="anima-attn-mlp-lr-factor"
+                        value={params.anima_attn_mlp_lr_factor ?? 1.0}
+                        onChange={(e) => updateParam("anima_attn_mlp_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_attn_mlp_lr_factor", 1.0); }}
+                        min={0}
+                        step={0.1}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="anima-mod-lr-factor" className="block text-xs text-gray-300 mb-1">
+                        AdaLN-mod LR ×
+                      </label>
+                      <input
+                        type="number"
+                        id="anima-mod-lr-factor"
+                        value={params.anima_mod_lr_factor ?? 1.0}
+                        onChange={(e) => updateParam("anima_mod_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_mod_lr_factor", 1.0); }}
+                        min={0}
+                        step={0.1}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="anima-llm-adapter-lr-factor" className="block text-xs text-gray-300 mb-1">
+                        LLM-Adapter LR ×
+                      </label>
+                      <input
+                        type="number"
+                        id="anima-llm-adapter-lr-factor"
+                        value={params.anima_llm_adapter_lr_factor ?? 1.0}
+                        onChange={(e) => updateParam("anima_llm_adapter_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("anima_llm_adapter_lr_factor", 1.0); }}
+                        min={0}
+                        step={0.1}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                      />
+                    </div>
+                  </div>
+                )}
               </>
             )}
 

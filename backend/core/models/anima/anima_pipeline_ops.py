@@ -187,13 +187,17 @@ def encode_prompts_batched(text_encoder, qwen3_tokenizer, t5_tokenizer,
         cleaned.append(c)
         weights_per_sample.append(w)
 
+    # Dynamic padding (longest-in-batch). The benchmark showed padding to a
+    # fixed 512 wastes 25x work on typical 20-token captions — Qwen3 forward
+    # on [B, 20] is 10-31x faster than on [B, 512]. The DiT consumer reads
+    # source_mask, so padding length is functionally irrelevant.
     qwen3_enc = qwen3_tokenizer(
         cleaned, return_tensors="pt", truncation=True,
-        padding="max_length", max_length=qwen3_max_length,
+        padding="longest", max_length=qwen3_max_length,
     )
     t5_enc = t5_tokenizer(
         cleaned, return_tensors="pt", truncation=True,
-        padding="max_length", max_length=t5_max_length,
+        padding="longest", max_length=t5_max_length,
     )
     qwen3_input_ids = qwen3_enc["input_ids"].to(device)
     qwen3_attn_mask = qwen3_enc["attention_mask"].to(device)

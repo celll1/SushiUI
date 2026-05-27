@@ -8105,6 +8105,18 @@ class BaseTrainer(ABC):
                     # exactly one batch's worth of embeddings per outer
                     # iteration so the dict size stays bounded.
                     if te_prefetcher is not None and swap_buffer is not None:
+                        # Evict the previous batch's entries — they were fully
+                        # consumed by the train step we just finished. Without
+                        # this, swap_buffer grows monotonically across the epoch
+                        # and pins ~1 MB of CPU RAM per image (Anima Qwen3
+                        # embeddings) for the entire run.
+                        if batch_idx > 0:
+                            for prev_entry in batches[batch_idx - 1]:
+                                prev_item, _ = prev_entry if isinstance(prev_entry, tuple) else (prev_entry, None)
+                                if isinstance(prev_item, dict):
+                                    ip = prev_item.get("image_path")
+                                    if ip is not None:
+                                        swap_buffer.pop(ip, None)
                         # Only top up when the entries for the *current* batch
                         # aren't already in the buffer (the worker writes
                         # ahead in batch order). We pull until we've covered
@@ -8364,9 +8376,12 @@ class BaseTrainer(ABC):
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
 
-                        if text_encoding_mode == "swap_onthefly":
-                            # Get from swap buffer using image_path as key (dict lookup)
-                            # This eliminates index-based alignment issues
+                        if text_encoding_mode in ("swap_onthefly", "cpu_prefetch"):
+                            # Get from swap buffer using image_path as key (dict lookup).
+                            # Both swap_onthefly and cpu_prefetch share this consumer:
+                            # cpu_prefetch's daemon worker fills swap_buffer ahead of
+                            # time via te_prefetcher.next(); swap_onthefly refills it
+                            # synchronously in a separate branch above.
                             if image_path in swap_buffer:
                                 embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[image_path]
                                 # Transfer to GPU

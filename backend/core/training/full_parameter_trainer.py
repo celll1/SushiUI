@@ -103,13 +103,11 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_anima:
             self.adapter = AnimaFullParameterAdapter(self)
             print(f"{self.log_prefix} Using AnimaFullParameterAdapter")
-            # FP8 base + Full FT is incompatible (base needs gradients). Drop
-            # the flag with a warning so _load_anima_components skips the
-            # quantisation pass.
-            if self.config.get("fp8_base_dtype"):
-                print(f"{self.log_prefix} WARNING: fp8_base_dtype is set but "
-                      f"Full FT requires trainable base weights; ignoring.")
-                self.config["fp8_base_dtype"] = None
+            # FP8 base + Full FT is incompatible (base needs gradients).
+            # _load_anima_components already runs (before _create_adapter)
+            # and base_trainer's fp8_base_dtype branch only triggers for
+            # training_method='lora', so a Full FT request with the flag
+            # set produces a warning there and is skipped. Nothing to do.
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

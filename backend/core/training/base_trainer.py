@@ -595,6 +595,12 @@ class BaseTrainer(ABC):
         optimizer_use_radam: bool = False,
         # Resume training
         resume_from_checkpoint: Optional[str] = None,
+        # The full train_config dict from the YAML. Stored as self.config so
+        # arch-specific setup (Anima FP8 base, cpu_offload checkpointing,
+        # LoRA scope, LR factors, ...) can read its own keys via
+        # self.config.get(...). Without this, _load_*_components and
+        # _apply_lora run with an empty dict and silently ignore user input.
+        train_config: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize base trainer.
@@ -733,7 +739,10 @@ class BaseTrainer(ABC):
         # Regularization losses (to prevent overbaking)
         self.snr_regularization_loss = None
         self.energy_regularization_loss = None
-        self.config = {}  # Will be set by subclass for factory function access
+        # train_config must be assigned BEFORE _load_*_components / _apply_lora
+        # because Anima reads cpu_offload_checkpointing / fp8_base_dtype /
+        # anima_lora_scope / etc. during those calls.
+        self.config = dict(train_config) if train_config else {}
 
         # Legacy dtype for compatibility
         self.dtype = self.weight_dtype

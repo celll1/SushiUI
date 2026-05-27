@@ -143,10 +143,27 @@ def normalise_lora_state_dict(raw_state_dict: Dict[str, torch.Tensor]) -> Dict[s
 
 
 def detect_lora_format(raw_state_dict: Dict[str, torch.Tensor]) -> str:
-    """Return a label describing the dominant LoRA key format."""
+    """Return a label describing the dominant LoRA key format.
+
+    Warns when both sd-scripts ("lora_unet_*") and interchange
+    (INTERCHANGE_DIT_PREFIX*) keys are present — that almost certainly
+    indicates a malformed checkpoint and the minority keys will be
+    silently dropped by the per-format parser.
+    """
     n_sd = sum(1 for k in raw_state_dict if k.startswith("lora_unet_"))
     n_ix = sum(1 for k in raw_state_dict if k.startswith(INTERCHANGE_DIT_PREFIX))
-    if n_sd > n_ix:
+    if n_sd > 0 and n_ix > 0:
+        # Mixed-format LoRA: pick the dominant one but warn the user so
+        # they can re-export the file in a single consistent format.
+        dominant = "sd-scripts" if n_sd >= n_ix else "interchange"
+        minority = "interchange" if dominant == "sd-scripts" else "sd-scripts"
+        minority_count = n_ix if dominant == "sd-scripts" else n_sd
+        print(f"[AnimaLoRA] WARNING: mixed-format LoRA detected "
+              f"(sd-scripts keys={n_sd}, interchange keys={n_ix}). "
+              f"Loading as {dominant!r}; the {minority_count} {minority!r} "
+              f"keys will be ignored.")
+        return dominant
+    if n_sd > 0:
         return "sd-scripts"
     if n_ix > 0:
         return "interchange"

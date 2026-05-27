@@ -316,10 +316,23 @@ def load_t5_tokenizer(config_dir: Optional[str] = None):
 
     spiece_path = os.path.join(config_dir, "spiece.model")
     tokenizer_path = os.path.join(config_dir, "tokenizer.json")
-    return T5TokenizerFast(
+    tokenizer = T5TokenizerFast(
         vocab_file=spiece_path if os.path.isfile(spiece_path) else None,
         tokenizer_file=tokenizer_path if os.path.isfile(tokenizer_path) else None,
     )
+    # Sanity: the constructor can succeed on a corrupted spiece.model file
+    # and then explode much later from encode_prompt's tokenize_for_anima.
+    # Run a trivial encode round-trip so the error surfaces here, where
+    # the message points at the actual file rather than the generation path.
+    try:
+        _ = tokenizer.encode("validation", add_special_tokens=False)
+    except Exception as e:
+        raise RuntimeError(
+            f"T5 tokenizer at {config_dir} loaded but encode() failed: {e}. "
+            "Check spiece.model and tokenizer.json against the "
+            "google/t5-v1_1-xxl repository."
+        ) from e
+    return tokenizer
 
 
 def load_qwen_image_vae(vae_path: str, device: str = "cpu",

@@ -2,7 +2,7 @@
 Tiny AutoEncoder for Stable Diffusion (TAESD)
 Provides fast latent preview decoding during generation
 """
-from typing import Optional
+from typing import Dict, Optional
 import torch
 from diffusers import AutoencoderTiny
 from PIL import Image
@@ -14,6 +14,29 @@ class TAESDManager:
         self.taesd_xl = None
         self.taef1 = None  # For Z-Image (FLUX-based)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Decode-error rate limiter: full traceback once per `tag`, then
+        # collapse repeats to a counted one-liner so a broken preview path
+        # doesn't spam the log nor look like the run has frozen.
+        self._decode_error_counts: Dict[str, int] = {}
+
+    def _log_decode_error(self, tag: str, exc: BaseException) -> None:
+        n = self._decode_error_counts.get(tag, 0) + 1
+        self._decode_error_counts[tag] = n
+        if n == 1:
+            print(f"[TAESD] Failed to decode {tag} preview: {exc}")
+            import traceback
+            traceback.print_exc()
+            print(f"[TAESD] (suppressing further {tag} preview-decode errors; "
+                  f"count will be reported at the end of generation)")
+        elif n in (10, 100, 1000):
+            print(f"[TAESD] {tag} preview-decode error count: {n}")
+
+    def reset_decode_error_counts(self) -> Dict[str, int]:
+        """Return and clear the accumulated decode-error counts.
+        Call at the end of a generation to emit a final summary line."""
+        counts = dict(self._decode_error_counts)
+        self._decode_error_counts.clear()
+        return counts
 
     def offload_to_cpu(self):
         """Move all loaded TAESD models to CPU to free VRAM."""
@@ -192,7 +215,7 @@ class TAESDManager:
                 return Image.fromarray(image)
 
         except Exception as e:
-            print(f"Failed to decode latent: {e}")
+            self._log_decode_error("TAESD", e)
             return None
 
     def _decode_flux2_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
@@ -274,9 +297,7 @@ class TAESDManager:
                 return preview
 
         except Exception as e:
-            print(f"[TAESD] Failed to decode FLUX.2 latent preview: {e}")
-            import traceback
-            traceback.print_exc()
+            self._log_decode_error("FLUX.2", e)
             return None
 
 
@@ -393,9 +414,7 @@ class TAESDManager:
                 )
                 return preview
         except Exception as e:
-            print(f"[TAESD] Failed to decode Anima latent preview: {e}")
-            import traceback
-            traceback.print_exc()
+            self._log_decode_error("Anima", e)
             return None
 
 

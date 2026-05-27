@@ -1274,6 +1274,11 @@ def main():
                 max_prompt_chunks=max_prompt_chunks,
                 # Training scope control
                 train_text_encoder=train_text_encoder,
+                # Full YAML train_config — must reach BaseTrainer.__init__
+                # BEFORE _load_*_components runs, so arch-specific setup
+                # (Anima FP8 base / checkpointing / LoRA scope / LR factors)
+                # can read its own keys via self.config.get(...).
+                train_config=train_config,
             )
 
             # Note: setup_optimizer() is now called inside train() method
@@ -1694,6 +1699,8 @@ def main():
                 restart_warmup_steps=restart_warmup_steps,
                 optimizer_reset_strategy=optimizer_reset_strategy,
                 optimizer_pruning_ratio=optimizer_pruning_ratio,
+                # See LoRATrainer construction above for why this is needed.
+                train_config=train_config,
             )
 
             # Get optimizer settings
@@ -2023,6 +2030,8 @@ def main():
                 max_prompt_chunks=max_prompt_chunks,
                 # Resume training
                 resume_from_checkpoint=resume_from_checkpoint,
+                # See LoRATrainer construction above for why this is needed.
+                train_config=train_config,
             )
 
             # Note: setup_optimizer() is now called inside train() method
@@ -2410,6 +2419,8 @@ def main():
                 # Prompt chunking settings
                 prompt_chunking_mode=prompt_chunking_mode,
                 max_prompt_chunks=max_prompt_chunks,
+                # See LoRATrainer construction above for why this is needed.
+                train_config=train_config,
             )
 
             # Get optimizer settings

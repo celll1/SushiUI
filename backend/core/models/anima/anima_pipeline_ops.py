@@ -46,6 +46,46 @@ def tokenize_for_anima(qwen3_tokenizer, t5_tokenizer, prompt: str,
     }
 
 
+def _apply_emphasis_weights(
+    prompt_embeds_row: torch.Tensor,
+    qwen3_input_ids_row: torch.Tensor,
+    clean_prompt: str,
+    token_weights: List[float],
+    qwen3_tokenizer,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    """Apply per-token emphasis weights to one row of `prompt_embeds`.
+
+    Detects the leading offset (BOS / system tokens) by matching the first
+    content-token id, multiplies the corresponding hidden-state slice by
+    the weight vector, and returns the modified row. Helper shared by
+    `encode_prompt` (single-prompt) and `encode_prompts_batched` (batched)
+    so the offset-detection logic only lives in one place.
+
+    Shapes:
+        prompt_embeds_row:    [L, hidden]
+        qwen3_input_ids_row:  [L]
+    """
+    seq_len = prompt_embeds_row.shape[0]
+    full_w = torch.ones(seq_len, device=prompt_embeds_row.device, dtype=dtype)
+
+    content_ids = qwen3_tokenizer.encode(clean_prompt, add_special_tokens=False)
+    offset = 0
+    if content_ids:
+        first_content = content_ids[0]
+        for pos, tok in enumerate(qwen3_input_ids_row.tolist()):
+            if tok == first_content:
+                offset = pos
+                break
+
+    n = min(len(token_weights), seq_len - offset)
+    if n > 0:
+        w_t = torch.tensor(token_weights[:n], device=prompt_embeds_row.device, dtype=dtype)
+        full_w[offset:offset + n] = w_t
+
+    return prompt_embeds_row * full_w.unsqueeze(-1)
+
+
 def _build_emphasis(prompt: str, qwen3_tokenizer, max_length: int):
     """Strip A1111-style emphasis syntax from `prompt` and return
     (clean_prompt, per_qwen3_token_weights).
@@ -122,33 +162,15 @@ def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
     prompt_embeds = prompt_embeds.to(dtype)
     prompt_embeds[~qwen3_attn_mask.bool()] = 0
 
-    # Apply emphasis weights, if any.
-    # Token-weight list aligns with tokens from `encode(..., add_special_tokens=False)`.
-    # We assume the full-input ids begin with the same content tokens; if there's a
-    # leading BOS / system token we offset accordingly.
+    # Apply emphasis weights, if any. See `_apply_emphasis_weights` for the
+    # offset-detection logic (shared with the batched encoder).
     if token_weights:
         try:
-            seq_len = prompt_embeds.shape[1]
-            full_weights = torch.ones(seq_len, device=prompt_embeds.device, dtype=dtype)
-
-            # Detect leading offset: find the first content-token position.
-            # qwen3_input_ids[0] vs tokenizer.encode(clean_prompt, add_special_tokens=False)[0]
-            content_ids = qwen3_tokenizer.encode(clean_prompt, add_special_tokens=False)
-            offset = 0
-            if content_ids:
-                first_content = content_ids[0]
-                input_ids_row = qwen3_input_ids[0].tolist()
-                for pos, tok in enumerate(input_ids_row):
-                    if tok == first_content:
-                        offset = pos
-                        break
-            n = min(len(token_weights), seq_len - offset)
-            if n > 0:
-                w = torch.tensor(token_weights[:n], device=prompt_embeds.device, dtype=dtype)
-                full_weights[offset:offset + n] = w
-
-            # Multiplicative emphasis matches CLIP-emphasis convention.
-            prompt_embeds = prompt_embeds * full_weights.unsqueeze(0).unsqueeze(-1)
+            new_row = _apply_emphasis_weights(
+                prompt_embeds[0], qwen3_input_ids[0], clean_prompt,
+                token_weights, qwen3_tokenizer, dtype,
+            )
+            prompt_embeds = new_row.unsqueeze(0)
         except Exception as e:
             print(f"[Anima] emphasis application failed (ignored): {e}")
 
@@ -211,26 +233,14 @@ def encode_prompts_batched(text_encoder, qwen3_tokenizer, t5_tokenizer,
 
     # Apply per-sample emphasis weights (slow path; rare in practice).
     if any(weights_per_sample):
-        seq_len = prompt_embeds.shape[1]
         for i, weights in enumerate(weights_per_sample):
             if not weights:
                 continue
             try:
-                full_w = torch.ones(seq_len, device=prompt_embeds.device, dtype=dtype)
-                content_ids = qwen3_tokenizer.encode(cleaned[i], add_special_tokens=False)
-                offset = 0
-                if content_ids:
-                    first_content = content_ids[0]
-                    row = qwen3_input_ids[i].tolist()
-                    for pos, tok in enumerate(row):
-                        if tok == first_content:
-                            offset = pos
-                            break
-                n = min(len(weights), seq_len - offset)
-                if n > 0:
-                    w_t = torch.tensor(weights[:n], device=prompt_embeds.device, dtype=dtype)
-                    full_w[offset:offset + n] = w_t
-                prompt_embeds[i] = prompt_embeds[i] * full_w.unsqueeze(-1)
+                prompt_embeds[i] = _apply_emphasis_weights(
+                    prompt_embeds[i], qwen3_input_ids[i], cleaned[i],
+                    weights, qwen3_tokenizer, dtype,
+                )
             except Exception as e:
                 print(f"[Anima] emphasis application failed for sample {i} (ignored): {e}")
 

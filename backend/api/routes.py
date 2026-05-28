@@ -7892,10 +7892,10 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
     if not run:
         raise HTTPException(status_code=404, detail="Tagger training run not found")
-    if run.status == "running":
+    if run.status in ("running", "starting"):
         raise HTTPException(status_code=400, detail="Run is already running")
 
-    run.status        = "running"
+    run.status        = "starting"
     run.started_at    = datetime.now()
     run.error_message = None
     training_db.commit()
@@ -7904,93 +7904,6 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     dataset_configs = run.dataset_configs or []
     dataset_ids     = [dc["dataset_id"] for dc in dataset_configs]
     output_dir      = run.output_dir
-
-    # ----- Pre-flight: dataset drift detection / optional rescan -----
-    from core.training.dataset_drift import normalize_rescan_mode
-    _rescan_mode = normalize_rescan_mode(config.get("rescan_before_training"))
-    if _rescan_mode != "off" and dataset_ids:
-        from core.training.dataset_drift import (
-            detect_drift, rescan_dataset_inline,
-        )
-        callback_pre = _make_tagger_progress_callback(run_id, TrainingSessionLocal)
-        ddb = DatasetsSessionLocal()
-        try:
-            for ds_id in dataset_ids:
-                should_rescan: bool
-                report = None
-
-                if _rescan_mode == "force":
-                    # Skip drift detection entirely — always rescan.
-                    should_rescan = True
-                    callback_pre(run_id, "phase", {
-                        "phase": "dataset_rescan",
-                        "message": f"Force rescan: dataset {ds_id}...",
-                    })
-                else:
-                    # "path" or "smart" — walk and compare.
-                    def _drift_progress(files_walked: int, _ds_id=ds_id):
-                        try:
-                            manager.send_dataset_scan_progress(
-                                scope="tagger", run_id=run_id,
-                                dataset_id=int(_ds_id), phase="drift_walk",
-                                files_walked=files_walked,
-                            )
-                        except Exception:
-                            pass
-                    callback_pre(run_id, "phase", {
-                        "phase": "dataset_drift",
-                        "message": f"Drift check ({_rescan_mode}): dataset {ds_id}...",
-                    })
-                    report = detect_drift(
-                        int(ds_id), ddb,
-                        check_caption_mtime=(_rescan_mode == "smart"),
-                        progress_callback=_drift_progress,
-                    )
-                    print(f"[TaggerTraining] Drift {ds_id} ({_rescan_mode}): {report.to_dict()}")
-                    callback_pre(run_id, "dataset_drift", report.to_dict())
-                    try:
-                        manager.send_dataset_scan_progress(
-                            scope="tagger", run_id=run_id,
-                            dataset_id=int(ds_id), phase="drift_done",
-                            files_walked=report.files_walked,
-                            items_in_db=report.items_in_db,
-                            items_missing=report.items_missing,
-                            items_new=report.items_new,
-                        )
-                    except Exception:
-                        pass
-                    should_rescan = report.has_drift
-
-                if should_rescan:
-                    if _rescan_mode == "force":
-                        reason = "force mode"
-                    else:
-                        parts = []
-                        if report.items_missing:  parts.append(f"{report.items_missing} missing")
-                        if report.items_new:      parts.append(f"{report.items_new} new")
-                        if report.captions_stale: parts.append(f"{report.captions_stale} stale captions")
-                        reason = ", ".join(parts) or "drift detected"
-                    callback_pre(run_id, "phase", {
-                        "phase": "dataset_rescan",
-                        "message": f"Rescanning dataset {ds_id} ({reason})...",
-                    })
-                    try:
-                        manager.send_dataset_scan_progress(
-                            scope="tagger", run_id=run_id,
-                            dataset_id=int(ds_id), phase="rescan",
-                            files_walked=(report.files_walked if report else 0),
-                            items_missing=(report.items_missing if report else 0),
-                            items_new=(report.items_new if report else 0),
-                            message=f"Rescanning... ({reason})",
-                        )
-                    except Exception:
-                        pass
-                    try:
-                        await rescan_dataset_inline(int(ds_id), ddb)
-                    except Exception as _rs_e:
-                        print(f"[TaggerTraining] Rescan of {ds_id} failed: {_rs_e}")
-        finally:
-            ddb.close()
 
     # Pass output_dir so the trainer auto-detects any resumable checkpoint
     # (latest_state.json or step_XXXXXX_state.json).  When no checkpoint exists,
@@ -8002,9 +7915,105 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
     trainer_holder: list = []
 
     def _run():
+        import asyncio
         from core.tagger.tagger_trainer import run_tagger_training
+        from database import DatasetsSessionLocal
+        from core.training.dataset_drift import normalize_rescan_mode
+
         db = TrainingSessionLocal()
         try:
+            # ----- Pre-flight: dataset drift detection / optional rescan -----
+            # Runs inside the background thread so the HTTP /start response
+            # returns immediately (pre-flight can take hours on large datasets).
+            _rescan_mode = normalize_rescan_mode(config.get("rescan_before_training"))
+            if _rescan_mode != "off" and dataset_ids:
+                from core.training.dataset_drift import (
+                    detect_drift, rescan_dataset_inline,
+                )
+                ddb = DatasetsSessionLocal()
+                try:
+                    for ds_id in dataset_ids:
+                        should_rescan: bool
+                        report = None
+
+                        if _rescan_mode == "force":
+                            should_rescan = True
+                            callback(run_id, "phase", {
+                                "phase": "dataset_rescan",
+                                "message": f"Force rescan: dataset {ds_id}...",
+                            })
+                        else:
+                            # "path" or "smart" — walk and compare.
+                            def _drift_progress(files_walked: int, _ds_id=ds_id):
+                                try:
+                                    manager.send_dataset_scan_progress(
+                                        scope="tagger", run_id=run_id,
+                                        dataset_id=int(_ds_id), phase="drift_walk",
+                                        files_walked=files_walked,
+                                    )
+                                except Exception:
+                                    pass
+                            callback(run_id, "phase", {
+                                "phase": "dataset_drift",
+                                "message": f"Drift check ({_rescan_mode}): dataset {ds_id}...",
+                            })
+                            report = detect_drift(
+                                int(ds_id), ddb,
+                                check_caption_mtime=(_rescan_mode == "smart"),
+                                progress_callback=_drift_progress,
+                            )
+                            print(f"[TaggerTraining] Drift {ds_id} ({_rescan_mode}): {report.to_dict()}")
+                            callback(run_id, "dataset_drift", report.to_dict())
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="tagger", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="drift_done",
+                                    files_walked=report.files_walked,
+                                    items_in_db=report.items_in_db,
+                                    items_missing=report.items_missing,
+                                    items_new=report.items_new,
+                                )
+                            except Exception:
+                                pass
+                            should_rescan = report.has_drift
+
+                        if should_rescan:
+                            if _rescan_mode == "force":
+                                reason = "force mode"
+                            else:
+                                parts = []
+                                if report.items_missing:  parts.append(f"{report.items_missing} missing")
+                                if report.items_new:      parts.append(f"{report.items_new} new")
+                                if report.captions_stale: parts.append(f"{report.captions_stale} stale captions")
+                                reason = ", ".join(parts) or "drift detected"
+                            callback(run_id, "phase", {
+                                "phase": "dataset_rescan",
+                                "message": f"Rescanning dataset {ds_id} ({reason})...",
+                            })
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="tagger", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="rescan",
+                                    files_walked=(report.files_walked if report else 0),
+                                    items_missing=(report.items_missing if report else 0),
+                                    items_new=(report.items_new if report else 0),
+                                    message=f"Rescanning... ({reason})",
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                asyncio.run(rescan_dataset_inline(int(ds_id), ddb))
+                            except Exception as _rs_e:
+                                print(f"[TaggerTraining] Rescan of {ds_id} failed: {_rs_e}")
+                finally:
+                    ddb.close()
+
+            # Update status to "running" now that pre-flight is complete
+            row = db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+            if row and row.status == "starting":
+                row.status = "running"
+                db.commit()
+
             result = run_tagger_training(
                 run_id=run_id,
                 config=config,

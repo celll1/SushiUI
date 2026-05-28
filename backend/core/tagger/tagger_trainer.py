@@ -1202,9 +1202,10 @@ class TaggerTrainer:
                     _buf_l = torch.cat([b[1] for b in _train_f1_buffer]).float()
                     _threshold_updated = False
                     if _n1_search > 0 and global_step % _n1_search == 0:
-                        _f1_threshold, _ = _find_best_threshold(_buf_p, _buf_l)
+                        _f1_threshold, _train_f1_val = _find_best_threshold(_buf_p, _buf_l)
                         _threshold_updated = True
-                    _train_f1_val = _compute_f1_macro(_buf_p, _buf_l, threshold=_f1_threshold)
+                    else:
+                        _train_f1_val = _compute_f1_macro(_buf_p, _buf_l, threshold=_f1_threshold)
                     self._emit("train_f1", {
                         "step": global_step,
                         "train_f1": _train_f1_val,

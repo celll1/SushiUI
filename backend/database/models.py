@@ -899,6 +899,7 @@ class TaggerTrainingMetrics(TrainingBase):
     epoch = Column(Integer, nullable=True)
     loss = Column(Float, nullable=True)
     f1 = Column(Float, nullable=True)
+    train_f1 = Column(Float, nullable=True)
     threshold = Column(Float, nullable=True)
     learning_rate = Column(Float, nullable=True)
     timestamp = Column(DateTime, default=get_local_now)
@@ -915,6 +916,7 @@ class TaggerTrainingMetrics(TrainingBase):
             "epoch": self.epoch,
             "loss": self.loss,
             "f1": self.f1,
+            "train_f1": self.train_f1,
             "threshold": self.threshold,
             "learning_rate": self.learning_rate,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,

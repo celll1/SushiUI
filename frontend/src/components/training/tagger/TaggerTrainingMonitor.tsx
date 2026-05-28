@@ -203,6 +203,7 @@ export default function TaggerTrainingMonitor({
         epoch: m.epoch ?? null,
         loss: m.loss ?? null,
         f1: m.f1 ?? null,
+        train_f1: m.train_f1 ?? null,
         threshold: m.threshold ?? null,
         learning_rate: m.lr ?? null,
         timestamp: new Date().toISOString(),
@@ -662,10 +663,15 @@ export default function TaggerTrainingMonitor({
             />
             <TaggerMetricChart
               data={metrics}
-              valueKey="f1"
-              color="#22c55e"
-              title="Validation F1"
-              height={140}
+              valueKey="train_f1"
+              secondaryValueKey="f1"
+              secondaryColor="#22c55e"
+              secondaryLabel="Val F1"
+              color="#f97316"
+              title="F1 Score"
+              height={160}
+              smoothable={true}
+              defaultSmoothing={0.7}
               yMinFloor={0}
             />
             <TaggerMetricChart

@@ -564,13 +564,36 @@ export default function TaggerMetricChart({
             </text>
           ))}
 
-          {/* Per-resume raw + smoothed lines (older first, newer on top) */}
-          {groupKeys.map((seq) => {
+          {/* Per-resume raw + smoothed lines (older first, newer on top).
+              Prepend the previous resume's last point so each segment connects
+              to the prior one — without this, a resume with only 1 point
+              (e.g. sparse F1 logged once per epoch) renders an invisible
+              single moveto and the legend entry has nothing to point at. */}
+          {groupKeys.map((seq, gi) => {
             const seqColor = colorForResume(seq, color);
             const visPts   = visibleGroups.get(seq) ?? [];
             const visSm    = smoothedVisibleGroups.get(seq) ?? [];
-            const dRaw     = visPts.length > 0 ? buildPath(visPts) : "";
-            const dSm      = smoothing > 0 && visSm.length > 0 ? buildPath(visSm) : "";
+
+            // Carry-in from the chronologically previous resume (use the
+            // full unfiltered group so the connector survives zooming —
+            // SVG clips off-canvas coordinates naturally).
+            const prevSeq = gi > 0 ? groupKeys[gi - 1] : null;
+            const prevRawAll = prevSeq !== null ? (groups.get(prevSeq) ?? []) : [];
+            const prevSmAll  = prevSeq !== null ? (smoothedAllGroups.get(prevSeq) ?? []) : [];
+            const carryRaw = prevRawAll.length > 0 ? [prevRawAll[prevRawAll.length - 1]] : [];
+            const carrySm  = prevSmAll.length  > 0 ? [prevSmAll[prevSmAll.length  - 1]] : [];
+
+            const rawPath = [...carryRaw, ...visPts];
+            const smPath  = [...carrySm,  ...visSm];
+
+            const dRaw = rawPath.length >= 2 ? buildPath(rawPath) : "";
+            const dSm  = smoothing > 0 && smPath.length >= 2 ? buildPath(smPath) : "";
+
+            // For series with no carry-in AND only 1 point (i.e. seq 0
+            // with a single validation row), still mark the point so it's
+            // visible — a tiny dot is better than nothing.
+            const lonePoint = (!dRaw && visPts.length === 1) ? visPts[0] : null;
+
             return (
               <g key={`series-${seq}`}>
                 {dRaw && (
@@ -584,6 +607,14 @@ export default function TaggerMetricChart({
                 )}
                 {dSm && (
                   <path d={dSm} fill="none" stroke={seqColor} strokeWidth={1.6} />
+                )}
+                {lonePoint && (
+                  <circle
+                    cx={toX(lonePoint.step)}
+                    cy={toY(lonePoint.value)}
+                    r={2.5}
+                    fill={seqColor}
+                  />
                 )}
               </g>
             );

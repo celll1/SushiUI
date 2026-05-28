@@ -7607,6 +7607,12 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     #   "force" — always rescan, no drift detection
     # Legacy bool accepted (True→"path", False→"off").
     rescan_before_training:    Any   = "off"
+    # Training F1: rolling buffer + periodic threshold search.
+    # N2 (eval_every) < N1 (search_every).  0 disables the feature.
+    train_f1_eval_every_n_steps:             int   = 100
+    train_f1_threshold_search_every_n_steps: int   = 500
+    train_f1_initial_threshold:              float = 0.35
+    train_f1_buffer_batches:                 int   = 16
 
 
 # Active tagger training threads
@@ -7717,6 +7723,20 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     if ckpt_path not in paths:
                         paths.append(ckpt_path)
                     run.checkpoint_paths = paths
+            elif event_type == "train_f1":
+                _upsert_metric(
+                    step=data.get("step", 0),
+                    train_f1=data.get("train_f1"),
+                    threshold=data.get("threshold") if data.get("threshold_updated") else None,
+                )
+                manager.send_tagger_metrics(
+                    run_id=rid,
+                    event_type="train_f1",
+                    step=data.get("step", 0),
+                    train_f1=data.get("train_f1"),
+                    threshold=data.get("threshold") if data.get("threshold_updated") else None,
+                    resume_seq=resume_seq,
+                )
             elif event_type == "vocab":
                 run.num_tags = data.get("num_tags")
             elif event_type == "resume":

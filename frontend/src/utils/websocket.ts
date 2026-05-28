@@ -40,13 +40,14 @@ interface TrainingMetrics {
 
 export interface TaggerMetrics {
   run_id: string;
-  event: "step" | "epoch";
+  event: "step" | "epoch" | "train_f1";
   step: number;
   resume_seq?: number;
   epoch?: number;
   loss?: number;
   lr?: number;
   f1?: number;
+  train_f1?: number;
   threshold?: number;
   progress?: number;
 }
@@ -146,6 +147,7 @@ class ProgressClient {
             loss: data.loss,
             lr: data.lr,
             f1: data.f1,
+            train_f1: data.train_f1,
             threshold: data.threshold,
             progress: data.progress,
           };

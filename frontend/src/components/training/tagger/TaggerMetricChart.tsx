@@ -5,7 +5,7 @@ import type { TaggerTrainingMetric } from "@/utils/api";
 
 interface TaggerMetricChartProps {
   data: TaggerTrainingMetric[];
-  valueKey: "loss" | "f1" | "threshold";
+  valueKey: "loss" | "f1" | "threshold" | "train_f1";
   /** Color used when only one resume_seq is present (initial/legacy single-curve render).
    *  Multi-series rendering cycles through the built-in palette below. */
   color: string;
@@ -14,6 +14,11 @@ interface TaggerMetricChartProps {
   smoothable?: boolean;
   defaultSmoothing?: number;
   yMinFloor?: number;
+  /** Optional secondary series (e.g. val F1 overlaid on train F1).
+   *  All resume_seq values are merged into a single dashed line. */
+  secondaryValueKey?: "loss" | "f1" | "threshold" | "train_f1";
+  secondaryColor?: string;
+  secondaryLabel?: string;
 }
 
 interface Point {
@@ -79,13 +84,16 @@ export default function TaggerMetricChart({
   smoothable = false,
   defaultSmoothing = 0.9,
   yMinFloor = 0,
+  secondaryValueKey,
+  secondaryColor = "#22c55e",
+  secondaryLabel,
 }: TaggerMetricChartProps) {
-  // Group points by resume_seq so each resume becomes its own curve.
+  // Group primary points by resume_seq so each resume becomes its own curve.
   const groups = useMemo<Map<number, Point[]>>(() => {
     const m = new Map<number, Point[]>();
     for (const d of data) {
-      const v = d[valueKey] as number | null;
-      if (v === null || !Number.isFinite(v)) continue;
+      const v = d[valueKey] as number | null | undefined;
+      if (v === null || v === undefined || !Number.isFinite(v)) continue;
       const seq = d.resume_seq ?? 0;
       if (!m.has(seq)) m.set(seq, []);
       m.get(seq)!.push({ step: d.step, value: v });
@@ -95,24 +103,45 @@ export default function TaggerMetricChart({
     return m;
   }, [data, valueKey]);
 
+  // Secondary series: merge ALL resume_seq into one sorted list of points.
+  const secondaryPoints = useMemo<Point[]>(() => {
+    if (!secondaryValueKey) return [];
+    const pts: Point[] = [];
+    for (const d of data) {
+      const v = d[secondaryValueKey] as number | null | undefined;
+      if (v === null || v === undefined || !Number.isFinite(v)) continue;
+      pts.push({ step: d.step, value: v });
+    }
+    pts.sort((a, b) => a.step - b.step);
+    return pts;
+  }, [data, secondaryValueKey]);
+
   // Resume seqs in render order (ascending so newer overlays older)
   const groupKeys = useMemo(() => [...groups.keys()].sort((a, b) => a - b), [groups]);
 
   // Latest resume (highest seq) — used as the source for tooltip nearest-point search
   const latestSeq = groupKeys.length > 0 ? groupKeys[groupKeys.length - 1] : 0;
 
-  // Pooled range across all groups for x-axis bounds
+  // Pooled range across all primary groups for x-axis bounds
   const allPoints = useMemo(
     () => groupKeys.flatMap((seq) => groups.get(seq) ?? []),
     [groups, groupKeys]
   );
-  const minStepAll = allPoints.length > 0
-    ? Math.min(...allPoints.map((p) => p.step))
-    : 0;
-  const maxStepAll = allPoints.length > 0
-    ? Math.max(...allPoints.map((p) => p.step))
-    : 0;
-  const totalPoints = allPoints.length;
+  const minStepAll = useMemo(() => {
+    const candidates = [
+      ...(allPoints.length > 0 ? [Math.min(...allPoints.map((p) => p.step))] : []),
+      ...(secondaryPoints.length > 0 ? [Math.min(...secondaryPoints.map((p) => p.step))] : []),
+    ];
+    return candidates.length > 0 ? Math.min(...candidates) : 0;
+  }, [allPoints, secondaryPoints]);
+  const maxStepAll = useMemo(() => {
+    const candidates = [
+      ...(allPoints.length > 0 ? [Math.max(...allPoints.map((p) => p.step))] : []),
+      ...(secondaryPoints.length > 0 ? [Math.max(...secondaryPoints.map((p) => p.step))] : []),
+    ];
+    return candidates.length > 0 ? Math.max(...candidates) : 0;
+  }, [allPoints, secondaryPoints]);
+  const totalPoints = allPoints.length + secondaryPoints.length;
 
   // x range (null = full)
   const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
@@ -127,6 +156,8 @@ export default function TaggerMetricChart({
     step: number;
     // Per-resume values at the hovered step (keyed by resume_seq)
     seriesValues: Map<number, { value: number; smoothValue: number | null }>;
+    // Secondary series value at the hovered step
+    secondaryValue?: { value: number; smoothValue: number | null };
   } | null>(null);
 
   // Pointer x (in chart pixel coords) — read by the auto-extend rAF loop
@@ -236,6 +267,14 @@ export default function TaggerMetricChart({
     return out;
   }, [groups, xRange]);
 
+  // Visible secondary points
+  const visibleSecondary = useMemo<Point[]>(
+    () => xRange
+      ? secondaryPoints.filter((p) => p.step >= xRange.min && p.step <= xRange.max)
+      : secondaryPoints,
+    [secondaryPoints, xRange]
+  );
+
   // Per-group smoothed series (smoothing must be applied within each
   // group; mixing across resumes would create jumps at the boundary).
   const smoothedAllGroups = useMemo<Map<number, Point[]>>(() => {
@@ -253,6 +292,12 @@ export default function TaggerMetricChart({
     return out;
   }, [groups, groupKeys, smoothing]);
 
+  // Smoothed secondary (treat as a single group — no resume-boundary carry needed)
+  const smoothedSecondaryAll = useMemo<Point[]>(
+    () => applySmoothing(secondaryPoints, smoothing),
+    [secondaryPoints, smoothing]
+  );
+
   const smoothedVisibleGroups = useMemo<Map<number, Point[]>>(() => {
     if (!xRange) return smoothedAllGroups;
     const out = new Map<number, Point[]>();
@@ -261,6 +306,13 @@ export default function TaggerMetricChart({
     }
     return out;
   }, [smoothedAllGroups, xRange]);
+
+  const smoothedVisibleSecondary = useMemo<Point[]>(
+    () => xRange
+      ? smoothedSecondaryAll.filter((p) => p.step >= xRange.min && p.step <= xRange.max)
+      : smoothedSecondaryAll,
+    [smoothedSecondaryAll, xRange]
+  );
 
   // For Y-range pooling and tooltip search, flatten the visible points
   const visiblePoints = useMemo(
@@ -283,12 +335,21 @@ export default function TaggerMetricChart({
   const xSpan = xMax - xMin || 1;
   const toX = (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW;
 
-  // Y scale: from visible points (use smoothed values for range when smoothing > 0).
-  // Pool across all groups so all curves share the same scale.
-  const sourceForRange =
-    smoothing > 0 && smoothedVisibleAllPoints.length > 0
+  // Y scale: pool primary + secondary for a shared scale.
+  const sourceForRange = useMemo(() => {
+    const primaryVals = smoothing > 0 && smoothedVisibleAllPoints.length > 0
       ? smoothedVisibleAllPoints.map((p) => p.value)
       : visiblePoints.map((p) => p.value);
+    const secondaryVals = secondaryValueKey
+      ? smoothing > 0 && smoothedVisibleSecondary.length > 0
+        ? smoothedVisibleSecondary.map((p) => p.value)
+        : visibleSecondary.map((p) => p.value)
+      : [];
+    return [...primaryVals, ...secondaryVals];
+  }, [
+    smoothing, smoothedVisibleAllPoints, visiblePoints,
+    secondaryValueKey, smoothedVisibleSecondary, visibleSecondary,
+  ]);
   const { min: yMin, max: yMax } = robustYRange(sourceForRange, yMinFloor);
   const ySpan = yMax - yMin || 1;
   const toY = (v: number) => PAD.top + ((yMax - v) / ySpan) * chartH;
@@ -392,25 +453,52 @@ export default function TaggerMetricChart({
       });
     }
 
-    if (seriesValues.size === 0) {
+    // Secondary series nearest point
+    let secondaryValue: { value: number; smoothValue: number | null } | undefined;
+    if (visibleSecondary.length > 0) {
+      const secMin = visibleSecondary[0].step;
+      const secMax = visibleSecondary[visibleSecondary.length - 1].step;
+      if (targetStep >= secMin - stepTolerance && targetStep <= secMax + stepTolerance) {
+        let idx = 0;
+        let dist = Math.abs(visibleSecondary[0].step - targetStep);
+        for (let i = 1; i < visibleSecondary.length; i++) {
+          const d = Math.abs(visibleSecondary[i].step - targetStep);
+          if (d < dist) { dist = d; idx = i; }
+        }
+        secondaryValue = {
+          value: visibleSecondary[idx].value,
+          smoothValue: smoothedVisibleSecondary[idx]?.value ?? null,
+        };
+      }
+    }
+
+    if (seriesValues.size === 0 && !secondaryValue) {
       setTooltip(null);
       return;
     }
 
-    // Pin the crosshair dot on the latest visible resume (or the highest
-    // seq that has a value), but keep the vertical line at targetStep.
+    // Pin the crosshair dot on the latest visible primary resume (or secondary).
     const presentSeqs = [...seriesValues.keys()].sort((a, b) => a - b);
-    const anchorSeq = presentSeqs[presentSeqs.length - 1];
-    const anchorEntry = seriesValues.get(anchorSeq)!;
-    const anchorY = anchorEntry.smoothValue !== null && smoothing > 0
-      ? anchorEntry.smoothValue
-      : anchorEntry.value;
+    let anchorY: number;
+    if (presentSeqs.length > 0) {
+      const anchorSeq = presentSeqs[presentSeqs.length - 1];
+      const anchorEntry = seriesValues.get(anchorSeq)!;
+      anchorY = anchorEntry.smoothValue !== null && smoothing > 0
+        ? anchorEntry.smoothValue
+        : anchorEntry.value;
+    } else {
+      // Only secondary present
+      anchorY = secondaryValue!.smoothValue !== null && smoothing > 0
+        ? secondaryValue!.smoothValue!
+        : secondaryValue!.value;
+    }
 
     setTooltip({
       px: toX(targetStep),
       py: toY(anchorY),
       step: Math.round(targetStep),
       seriesValues,
+      secondaryValue,
     });
   };
 
@@ -452,6 +540,11 @@ export default function TaggerMetricChart({
         return { x, w };
       })()
     : null;
+
+  // Whether the legend needs to be shown (multi-resume OR secondary present)
+  const showLegend = hasEnoughData && (groups.size > 1 || (secondaryValueKey && secondaryPoints.length > 0));
+  // Whether to show resume labels in legend
+  const showResumeLabels = groups.size > 1;
 
   // ── Render ──────────────────────────────────────────────────────────
 
@@ -499,10 +592,10 @@ export default function TaggerMetricChart({
             {totalPoints < 2 ? "Not enough data" : ""}
           </div>
         )}
-        {/* Per-resume legend (only when multiple curves are present) */}
-        {hasEnoughData && groups.size > 1 && (
+        {/* Legend (multi-resume OR secondary series present) */}
+        {showLegend && (
           <div className="absolute top-1 right-1 flex flex-wrap gap-1.5 text-[10px] bg-gray-900/80 px-1.5 py-0.5 rounded border border-gray-700 z-20 pointer-events-none">
-            {groupKeys.map((seq) => (
+            {showResumeLabels && groupKeys.map((seq) => (
               <div key={`lg-${seq}`} className="flex items-center gap-1">
                 <span
                   className="inline-block w-2 h-2 rounded-sm"
@@ -511,6 +604,15 @@ export default function TaggerMetricChart({
                 <span className="text-gray-300">{labelForResume(seq)}</span>
               </div>
             ))}
+            {secondaryValueKey && secondaryPoints.length > 0 && (
+              <div className="flex items-center gap-1">
+                {/* Dashed line swatch for secondary */}
+                <svg width="16" height="8" className="inline-block">
+                  <line x1="0" y1="4" x2="16" y2="4" stroke={secondaryColor} strokeWidth="1.5" strokeDasharray="4 2" />
+                </svg>
+                <span style={{ color: secondaryColor }}>{secondaryLabel ?? secondaryValueKey}</span>
+              </div>
+            )}
           </div>
         )}
         {hasEnoughData && (
@@ -563,6 +665,46 @@ export default function TaggerMetricChart({
               {formatX(s)}
             </text>
           ))}
+
+          {/* Secondary series (dashed, below primary so primary renders on top) */}
+          {secondaryValueKey && (() => {
+            const rawPts = visibleSecondary;
+            const smPts  = smoothedVisibleSecondary;
+            const dRaw = rawPts.length >= 2 ? buildPath(rawPts) : "";
+            const dSm  = smoothing > 0 && smPts.length >= 2 ? buildPath(smPts) : "";
+            const lonePt = (!dRaw && rawPts.length === 1) ? rawPts[0] : null;
+            return (
+              <g key="secondary-series">
+                {dRaw && (
+                  <path
+                    d={dRaw}
+                    fill="none"
+                    stroke={secondaryColor}
+                    strokeWidth={1.2}
+                    strokeDasharray="4 3"
+                    opacity={smoothing > 0 ? 0.3 : 1}
+                  />
+                )}
+                {dSm && (
+                  <path
+                    d={dSm}
+                    fill="none"
+                    stroke={secondaryColor}
+                    strokeWidth={1.6}
+                    strokeDasharray="4 3"
+                  />
+                )}
+                {lonePt && (
+                  <circle
+                    cx={toX(lonePt.step)}
+                    cy={toY(lonePt.value)}
+                    r={2.5}
+                    fill={secondaryColor}
+                  />
+                )}
+              </g>
+            );
+          })()}
 
           {/* Per-resume raw + smoothed lines (older first, newer on top).
               Prepend the previous resume's last point so each segment connects
@@ -661,6 +803,20 @@ export default function TaggerMetricChart({
                   />
                 );
               })}
+              {tooltip.secondaryValue && (
+                <circle
+                  cx={tooltip.px}
+                  cy={toY(
+                    smoothing > 0 && tooltip.secondaryValue.smoothValue !== null
+                      ? tooltip.secondaryValue.smoothValue
+                      : tooltip.secondaryValue.value
+                  )}
+                  r={3}
+                  fill={secondaryColor}
+                  stroke={secondaryColor}
+                  strokeDasharray="2 1"
+                />
+              )}
             </>
           )}
         </svg>
@@ -685,7 +841,7 @@ export default function TaggerMetricChart({
               return (
                 <div key={`tv-${seq}`} className="flex items-center gap-1">
                   <span className="inline-block w-1.5 h-1.5 rounded-sm flex-shrink-0" style={{ background: seqColor }} />
-                  <span style={{ color: seqColor }}>{labelForResume(seq)}:</span>
+                  <span style={{ color: seqColor }}>{showResumeLabels ? labelForResume(seq) : (title)}:</span>
                   <span>{formatTooltip(displayV)}</span>
                   {smoothing > 0 && entry.smoothValue !== null && (
                     <span className="text-gray-500">(raw {formatTooltip(entry.value)})</span>
@@ -693,6 +849,22 @@ export default function TaggerMetricChart({
                 </div>
               );
             })}
+            {tooltip.secondaryValue && (
+              <div className="flex items-center gap-1">
+                <svg width="10" height="8" className="flex-shrink-0">
+                  <line x1="0" y1="4" x2="10" y2="4" stroke={secondaryColor} strokeWidth="1.5" strokeDasharray="3 2" />
+                </svg>
+                <span style={{ color: secondaryColor }}>{secondaryLabel ?? secondaryValueKey}:</span>
+                <span>{formatTooltip(
+                  smoothing > 0 && tooltip.secondaryValue.smoothValue !== null
+                    ? tooltip.secondaryValue.smoothValue
+                    : tooltip.secondaryValue.value
+                )}</span>
+                {smoothing > 0 && tooltip.secondaryValue.smoothValue !== null && (
+                  <span className="text-gray-500">(raw {formatTooltip(tooltip.secondaryValue.value)})</span>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>

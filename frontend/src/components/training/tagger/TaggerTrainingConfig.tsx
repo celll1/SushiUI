@@ -71,6 +71,11 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   // Pre-flight: detect dataset drift + auto-rescan.  Adds the time of
   // one directory walk per dataset (~5 min for 3M items on NVMe).
   rescan_before_training: "off",
+  // Training-time F1 metrics
+  train_f1_eval_every_n_steps: 100,
+  train_f1_threshold_search_every_n_steps: 500,
+  train_f1_initial_threshold: 0.35,
+  train_f1_buffer_batches: 16,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -132,6 +137,10 @@ export default function TaggerTrainingConfig({
         lr_threshold: (editRun.config?.lr_threshold as number) ?? DEFAULT_CONFIG.lr_threshold,
         lr_min_anchor_count: (editRun.config?.lr_min_anchor_count as number) ?? DEFAULT_CONFIG.lr_min_anchor_count,
         rescan_before_training: (editRun.config?.rescan_before_training as ("off" | "path" | "smart" | "force" | boolean | undefined)) ?? DEFAULT_CONFIG.rescan_before_training,
+        train_f1_eval_every_n_steps: (editRun.config?.train_f1_eval_every_n_steps as number) ?? DEFAULT_CONFIG.train_f1_eval_every_n_steps,
+        train_f1_threshold_search_every_n_steps: (editRun.config?.train_f1_threshold_search_every_n_steps as number) ?? DEFAULT_CONFIG.train_f1_threshold_search_every_n_steps,
+        train_f1_initial_threshold: (editRun.config?.train_f1_initial_threshold as number) ?? DEFAULT_CONFIG.train_f1_initial_threshold,
+        train_f1_buffer_batches: (editRun.config?.train_f1_buffer_batches as number) ?? DEFAULT_CONFIG.train_f1_buffer_batches,
       }
     : DEFAULT_CONFIG;
 
@@ -787,6 +796,52 @@ export default function TaggerTrainingConfig({
                   {config.val_split_mode === "fixed" ? "samples" : "%"}
                 </span>
               </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Training F1 Eval Interval (steps)</label>
+              <input
+                type="number"
+                min={0}
+                step={10}
+                value={config.train_f1_eval_every_n_steps ?? 100}
+                onChange={(e) => setField("train_f1_eval_every_n_steps", parseInt(e.target.value) || 0)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Threshold Search Interval (steps)</label>
+              <input
+                type="number"
+                min={0}
+                step={100}
+                value={config.train_f1_threshold_search_every_n_steps ?? 500}
+                onChange={(e) => setField("train_f1_threshold_search_every_n_steps", parseInt(e.target.value) || 0)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Initial Threshold</label>
+              <input
+                type="number"
+                min={0}
+                max={1}
+                step={0.01}
+                value={config.train_f1_initial_threshold ?? 0.35}
+                onChange={(e) => setField("train_f1_initial_threshold", parseFloat(e.target.value) || 0.35)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Training F1 Buffer (batches)</label>
+              <input
+                type="number"
+                min={1}
+                max={256}
+                step={1}
+                value={config.train_f1_buffer_batches ?? 16}
+                onChange={(e) => setField("train_f1_buffer_batches", parseInt(e.target.value) || 16)}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+              />
             </div>
           </div>
         </section>

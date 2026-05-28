@@ -2385,6 +2385,11 @@ export interface TaggerTrainingRunCreateRequest {
   // Pre-flight dataset drift check + optional rescan.  Modes:
   // "off" | "path" | "smart" | "force".  Legacy bool accepted.
   rescan_before_training?: "off" | "path" | "smart" | "force" | boolean;
+  // Training-time F1 metrics
+  train_f1_eval_every_n_steps?: number;
+  train_f1_threshold_search_every_n_steps?: number;
+  train_f1_initial_threshold?: number;
+  train_f1_buffer_batches?: number;
 }
 
 export interface TaggerTrainingMetric {
@@ -2396,6 +2401,7 @@ export interface TaggerTrainingMetric {
   epoch: number | null;
   loss: number | null;
   f1: number | null;
+  train_f1?: number | null;
   threshold: number | null;
   learning_rate: number | null;
   timestamp?: string;

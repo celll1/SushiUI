@@ -21,6 +21,7 @@ import random
 import re as _re
 import threading
 import time
+from collections import deque
 from queue import Queue as _Queue
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -894,6 +895,13 @@ class TaggerTrainer:
         # "lora" = save LoRA+head only (compact); "merged" = merge LoRA into encoder and save full model
         checkpoint_save_mode = cfg.get("checkpoint_save_mode", "lora")
 
+        # Training F1 rolling buffer
+        _n2_eval      = int(cfg.get("train_f1_eval_every_n_steps", 100))
+        _n1_search    = int(cfg.get("train_f1_threshold_search_every_n_steps", 500))
+        _buf_size     = max(int(cfg.get("train_f1_buffer_batches", 16)), 1)
+        _f1_threshold = float(cfg.get("train_f1_initial_threshold", 0.35))
+        _train_f1_buffer: deque = deque(maxlen=_buf_size)
+
         # Training state
         best_f1         = 0.0
         best_threshold  = 0.5
@@ -1088,6 +1096,11 @@ class TaggerTrainer:
                         scaler.update()
                     continue
 
+                # Capture sigmoid probs for training F1 rolling buffer (fp16, CPU)
+                if _n2_eval > 0:
+                    _step_probs  = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
+                    _step_labels = labels.detach().bool().cpu()
+
                 if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
@@ -1117,6 +1130,10 @@ class TaggerTrainer:
                 global_step      += 1
                 epoch_loss       += loss_val
                 batches_processed += 1
+
+                # Append to training F1 rolling buffer
+                if _n2_eval > 0:
+                    _train_f1_buffer.append((_step_probs, _step_labels))
 
                 # ----- GPU-coordinator pause check (batch boundary) ----------
                 # Generation requests set ``pause_event`` and stash an offload
@@ -1177,6 +1194,24 @@ class TaggerTrainer:
                         "epoch": epoch,
                         "path": ckpt_path,
                     })
+
+                # Training F1 periodic evaluation (N2 steps) and threshold search (N1 steps)
+                if _n2_eval > 0 and global_step > 0 and global_step % _n2_eval == 0 \
+                        and len(_train_f1_buffer) > 0:
+                    _buf_p = torch.cat([b[0] for b in _train_f1_buffer]).float()
+                    _buf_l = torch.cat([b[1] for b in _train_f1_buffer]).float()
+                    _threshold_updated = False
+                    if _n1_search > 0 and global_step % _n1_search == 0:
+                        _f1_threshold, _ = _find_best_threshold(_buf_p, _buf_l)
+                        _threshold_updated = True
+                    _train_f1_val = _compute_f1_macro(_buf_p, _buf_l, threshold=_f1_threshold)
+                    self._emit("train_f1", {
+                        "step": global_step,
+                        "train_f1": _train_f1_val,
+                        "threshold": _f1_threshold,
+                        "threshold_updated": _threshold_updated,
+                    })
+                    del _buf_p, _buf_l
 
             # --- Stop checkpoint (mid-epoch or epoch-boundary) ---
             if self._stop_requested:

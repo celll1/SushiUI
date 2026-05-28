@@ -342,4 +342,14 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     #   "force" — always rescan, no drift detection (most expensive)
     # See core/training/dataset_drift.py.
     "rescan_before_training": "off",
+    # Training-time F1 metrics.
+    # N2 (eval_every_n_steps) < N1 (threshold_search_every_n_steps).
+    # N1 runs _find_best_threshold() on the rolling buffer (27 calls).
+    # N2 runs _compute_f1_macro() once with the current threshold (1 call).
+    "train_f1_eval_every_n_steps": 100,
+    "train_f1_threshold_search_every_n_steps": 500,
+    "train_f1_initial_threshold": 0.35,
+    # Number of recent training batches kept in the rolling buffer.
+    # Memory ≈ buffer_batches × batch_size × num_tags × 3 bytes (fp16 probs + bool labels).
+    "train_f1_buffer_batches": 16,
 }

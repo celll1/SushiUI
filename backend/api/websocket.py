@@ -106,6 +106,7 @@ class ConnectionManager:
         loss: float = None,
         lr: float = None,
         f1: float = None,
+        train_f1: float = None,
         threshold: float = None,
         progress: float = None,
         resume_seq: int = 0,
@@ -134,6 +135,8 @@ class ConnectionManager:
             data["lr"] = lr
         if f1 is not None:
             data["f1"] = f1
+        if train_f1 is not None:
+            data["train_f1"] = train_f1
         if threshold is not None:
             data["threshold"] = threshold
         if progress is not None:

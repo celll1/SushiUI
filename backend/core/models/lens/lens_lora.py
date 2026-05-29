@@ -1,0 +1,317 @@
+"""LoRA support for the Microsoft Lens DiT.
+
+Loads LoRA safetensors and wraps target Linear layers with LoRALinearLayer
+(forward-time addition, not weight merge — fully reversible).
+
+Two key conventions are accepted:
+
+  1. sd-scripts native ("lora_unet_" prefix, dots/underscores flattened):
+       lora_unet_transformer_blocks_0_attn_img_qkv.lora_down.weight
+       lora_unet_transformer_blocks_0_attn_img_qkv.lora_up.weight
+       lora_unet_transformer_blocks_0_attn_img_qkv.alpha
+
+  2. Interchange format (dot-path under "diffusion_model." prefix):
+       diffusion_model.transformer_blocks.0.attn.img_qkv.lora_A.weight
+       diffusion_model.transformer_blocks.0.attn.img_qkv.lora_B.weight
+
+Lens target modules (per block N):
+  transformer_blocks.{N}.attn.img_qkv         combined Q+K+V for image stream
+  transformer_blocks.{N}.attn.txt_qkv         combined Q+K+V for text stream
+  transformer_blocks.{N}.attn.to_out[0]       image output projection
+  transformer_blocks.{N}.attn.to_add_out      text output projection
+  transformer_blocks.{N}.img_mlp.{w1,w2,w3}  image GateMLP
+  transformer_blocks.{N}.txt_mlp.{w1,w2,w3}  text GateMLP
+  transformer_blocks.{N}.img_mod[1]           image AdaLN modulation Linear (opt)
+  transformer_blocks.{N}.txt_mod[1]           text  AdaLN modulation Linear (opt)
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Generator, Optional, Set, Tuple
+
+import torch
+from torch import nn
+from safetensors import safe_open
+
+
+# ---------------------------------------------------------------------------
+# sd-scripts key format reverse token table
+# ---------------------------------------------------------------------------
+
+# Each entry: (dotted_form_after_naive_replace, original_identifier).
+# Listed longest-first to prevent shorter entries matching inside longer ones.
+_SDSCRIPTS_REVERSE_TOKENS = (
+    ("transformer.blocks", "transformer_blocks"),
+    ("to.add.out",         "to_add_out"),
+    ("img.qkv",            "img_qkv"),
+    ("txt.qkv",            "txt_qkv"),
+    ("to.out",             "to_out"),
+    ("img.mlp",            "img_mlp"),
+    ("txt.mlp",            "txt_mlp"),
+    ("img.mod",            "img_mod"),
+    ("txt.mod",            "txt_mod"),
+)
+
+INTERCHANGE_DIT_PREFIX = "diffusion_model."
+
+
+def _restore_sdscripts_dots(flat: str) -> str:
+    """Convert underscore-flattened sd-scripts module key back to dotted path."""
+    dotted = flat.replace("_", ".")
+    for compound_dot, original in _SDSCRIPTS_REVERSE_TOKENS:
+        dotted = dotted.replace(compound_dot, original)
+    return dotted
+
+
+def _parse_key(key: str) -> Optional[Tuple[str, str]]:
+    """Return (module_path, suffix) for a recognised LoRA key, or None.
+
+    suffix is one of: "down", "up", "alpha".
+    """
+    if key.startswith(INTERCHANGE_DIT_PREFIX):
+        rest = key[len(INTERCHANGE_DIT_PREFIX):]
+        if rest.endswith(".lora_A.weight"):
+            return rest[: -len(".lora_A.weight")], "down"
+        if rest.endswith(".lora_B.weight"):
+            return rest[: -len(".lora_B.weight")], "up"
+        if rest.endswith(".alpha"):
+            return rest[: -len(".alpha")], "alpha"
+        return None
+
+    if key.startswith("lora_unet_"):
+        rest = key[len("lora_unet_"):]
+        if "." not in rest:
+            return None
+        flat_module, weight_name = rest.split(".", 1)
+        module_path = _restore_sdscripts_dots(flat_module)
+        if weight_name == "lora_down.weight":
+            return module_path, "down"
+        if weight_name == "lora_up.weight":
+            return module_path, "up"
+        if weight_name == "alpha":
+            return module_path, "alpha"
+        return None
+
+    return None
+
+
+def normalise_lora_state_dict(
+    raw: Dict[str, torch.Tensor],
+) -> Dict[str, Dict[str, torch.Tensor]]:
+    """Group raw LoRA tensors by module path → {module_path: {down, up, alpha?}}.
+
+    Keys missing a down/up pair are dropped.
+    """
+    grouped: Dict[str, Dict[str, torch.Tensor]] = {}
+    for key, tensor in raw.items():
+        parsed = _parse_key(key)
+        if parsed is None:
+            continue
+        module_path, suffix = parsed
+        grouped.setdefault(module_path, {})[suffix] = tensor
+    return {m: v for m, v in grouped.items() if "down" in v and "up" in v}
+
+
+def load_lora_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], str]:
+    """Load a LoRA safetensors file and return (raw_state_dict, format_label)."""
+    raw: Dict[str, torch.Tensor] = {}
+    with safe_open(path, framework="pt", device="cpu") as f:
+        for k in f.keys():
+            raw[k] = f.get_tensor(k)
+    n_sd = sum(1 for k in raw if k.startswith("lora_unet_"))
+    n_ix = sum(1 for k in raw if k.startswith(INTERCHANGE_DIT_PREFIX))
+    fmt = "sd-scripts" if n_sd >= n_ix else "interchange"
+    if n_sd > 0 and n_ix > 0:
+        print(f"[LensLoRA] WARNING: mixed-format file (sd-scripts={n_sd}, "
+              f"interchange={n_ix}), loading dominant format {fmt!r}")
+    elif n_sd == 0 and n_ix == 0:
+        fmt = "unknown"
+    return raw, fmt
+
+
+# ---------------------------------------------------------------------------
+# Scope and target enumeration
+# ---------------------------------------------------------------------------
+
+DEFAULT_SCOPE: Dict[str, bool] = {
+    "img_attn": True,
+    "txt_attn": True,
+    "img_mlp":  True,
+    "txt_mlp":  True,
+    "mod":      False,
+}
+
+_FULL_SCOPE: Dict[str, bool] = {k: True for k in DEFAULT_SCOPE}
+
+
+def _set_module(parent: Any, attr: Any, module: nn.Module) -> None:
+    """Assign module to parent.attr (str) or parent[attr] (int ModuleList index)."""
+    if isinstance(attr, int):
+        parent[attr] = module
+    else:
+        setattr(parent, attr, module)
+
+
+def iter_lens_lora_targets(
+    transformer: nn.Module,
+    scope: Optional[Dict[str, bool]] = None,
+) -> Generator[Tuple[str, Any, Any, nn.Module], None, None]:
+    """Yield (module_path, parent, attr_or_idx, current_module) per LoRA target.
+
+    attr_or_idx is a str for normal attributes or an int for ModuleList children
+    (e.g. to_out[0] and img_mod[1]).  Use _set_module() for assignment.
+    """
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+    scope = scope if scope is not None else DEFAULT_SCOPE
+    want_img_attn = bool(scope.get("img_attn", False))
+    want_txt_attn = bool(scope.get("txt_attn", False))
+    want_img_mlp  = bool(scope.get("img_mlp",  False))
+    want_txt_mlp  = bool(scope.get("txt_mlp",  False))
+    want_mod      = bool(scope.get("mod",       False))
+
+    is_target = lambda m: isinstance(m, (nn.Linear, LoRALinearLayer))
+
+    blocks = getattr(transformer, "transformer_blocks", None)
+    if blocks is None:
+        return
+
+    for block_idx, block in enumerate(blocks):
+        prefix = f"transformer_blocks.{block_idx}"
+        attn = getattr(block, "attn", None)
+
+        if attn is not None:
+            if want_img_attn:
+                m = getattr(attn, "img_qkv", None)
+                if is_target(m):
+                    yield f"{prefix}.attn.img_qkv", attn, "img_qkv", m
+
+                to_out = getattr(attn, "to_out", None)
+                if isinstance(to_out, nn.ModuleList):
+                    m = to_out[0]
+                    if is_target(m):
+                        yield f"{prefix}.attn.to_out.0", to_out, 0, m
+
+            if want_txt_attn:
+                m = getattr(attn, "txt_qkv", None)
+                if is_target(m):
+                    yield f"{prefix}.attn.txt_qkv", attn, "txt_qkv", m
+
+                m = getattr(attn, "to_add_out", None)
+                if is_target(m):
+                    yield f"{prefix}.attn.to_add_out", attn, "to_add_out", m
+
+        if want_img_mlp:
+            img_mlp = getattr(block, "img_mlp", None)
+            if img_mlp is not None:
+                for wname in ("w1", "w2", "w3"):
+                    m = getattr(img_mlp, wname, None)
+                    if m is not None and is_target(m):
+                        yield f"{prefix}.img_mlp.{wname}", img_mlp, wname, m
+
+        if want_txt_mlp:
+            txt_mlp = getattr(block, "txt_mlp", None)
+            if txt_mlp is not None:
+                for wname in ("w1", "w2", "w3"):
+                    m = getattr(txt_mlp, wname, None)
+                    if m is not None and is_target(m):
+                        yield f"{prefix}.txt_mlp.{wname}", txt_mlp, wname, m
+
+        if want_mod:
+            for mod_name in ("img_mod", "txt_mod"):
+                mod_seq = getattr(block, mod_name, None)
+                if isinstance(mod_seq, nn.Sequential):
+                    m = mod_seq[1]
+                    if is_target(m):
+                        yield f"{prefix}.{mod_name}.1", mod_seq, 1, m
+
+
+# ---------------------------------------------------------------------------
+# Apply / restore
+# ---------------------------------------------------------------------------
+
+def apply_lora_group(
+    transformer: nn.Module,
+    grouped: Dict[str, Dict[str, torch.Tensor]],
+    strength: float,
+    lora_original_modules: Dict[str, nn.Linear],
+    wrapped_keys: Set[str],
+    scope: Optional[Dict[str, bool]] = None,
+) -> int:
+    """Wrap matching Linear modules with LoRALinearLayer.
+
+    Args:
+        transformer:           Lens transformer instance (on GPU).
+        grouped:               Output of normalise_lora_state_dict().
+        strength:              User-supplied scale multiplier.
+        lora_original_modules: Records true originals; first wrap per slot wins.
+        wrapped_keys:          Tracks which module_paths are currently wrapped.
+        scope:                 Which module groups to target (default: DEFAULT_SCOPE).
+
+    Returns:
+        Number of modules wrapped.
+    """
+    from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+    effective_scope = scope if scope is not None else DEFAULT_SCOPE
+    applied = 0
+
+    for module_path, parent, attr, linear in iter_lens_lora_targets(transformer, effective_scope):
+        weights = grouped.get(module_path)
+        if weights is None:
+            continue
+
+        down = weights["down"]
+        up   = weights["up"]
+        alpha_tensor = weights.get("alpha")
+
+        # Unwrap existing LoRA wrapper to reach the true original for stacking.
+        true_original = linear.original_module if isinstance(linear, LoRALinearLayer) else linear
+
+        # Record the genuine original before the first wrap so unload can restore it.
+        lora_original_modules.setdefault(module_path, true_original)
+
+        rank        = int(down.shape[0])
+        alpha_value = float(alpha_tensor.item()) if alpha_tensor is not None else float(rank)
+
+        wrapper = LoRALinearLayer(true_original, rank=rank, alpha=alpha_value,
+                                  lora_name=module_path)
+        device = true_original.weight.device
+
+        # Match the base model's compute dtype (handles FP8-quantised bases).
+        if true_original.bias is not None and true_original.bias.dtype.is_floating_point:
+            compute_dtype = true_original.bias.dtype
+        elif (true_original.weight.dtype.is_floating_point and
+              "float8" not in str(true_original.weight.dtype)):
+            compute_dtype = true_original.weight.dtype
+        else:
+            compute_dtype = torch.bfloat16
+
+        with torch.no_grad():
+            wrapper.lora_down.weight.data = down.to(device=device, dtype=compute_dtype)
+            wrapper.lora_up.weight.data   = up.to(device=device, dtype=compute_dtype)
+        wrapper.lora_down = wrapper.lora_down.to(dtype=compute_dtype)
+        wrapper.lora_up   = wrapper.lora_up.to(dtype=compute_dtype)
+        wrapper.scale     = (alpha_value / rank) * strength
+
+        _set_module(parent, attr, wrapper)
+        wrapped_keys.add(module_path)
+        applied += 1
+
+    return applied
+
+
+def restore_originals(
+    transformer: nn.Module,
+    lora_original_modules: Dict[str, nn.Linear],
+    wrapped_keys: Set[str],
+) -> int:
+    """Revert every wrapped Lens Linear to its pre-LoRA original."""
+    restored = 0
+    # Iterate over the full scope so we catch modules from any apply scope.
+    for module_path, parent, attr, _linear in iter_lens_lora_targets(transformer, _FULL_SCOPE):
+        if module_path in lora_original_modules:
+            _set_module(parent, attr, lora_original_modules[module_path])
+            restored += 1
+    wrapped_keys.clear()
+    return restored

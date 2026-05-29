@@ -128,27 +128,122 @@ class LensLoRAAdapter(BaseLoRAAdapter):
 
 
 # ---------------------------------------------------------------------------
-# Full-parameter adapter (placeholder — implemented in Phase C.2)
+# Full-parameter adapter
 # ---------------------------------------------------------------------------
 
 class LensFullParameterAdapter(BaseFullParameterAdapter):
     """Full-parameter training adapter for Lens DiT models.
 
-    Phase C.2: trainable surface, 3-group LR schedule (img_stream / txt_stream
-    / other), safetensors checkpoint.  Not yet implemented.
+    Trainable surface:
+      - Lens DiT transformer when train_unet=True
+      - GPT-OSS text encoder is always frozen (too large for practical FT)
+      - AutoencoderKLFlux2 VAE is always frozen
+
+    Optimizer parameter groups (3 groups, matching MMDiT double-stream):
+      1. img_stream — img_qkv, to_out.0, img_mlp.*
+                      (LR = unet_lr × lens_img_lr_factor)
+      2. txt_stream — txt_qkv, to_add_out, txt_mlp.*
+                      (LR = unet_lr × lens_txt_lr_factor)
+      3. other      — img_mod, txt_mod, txt_in, img_in, time_text_embed,
+                      norm_out, proj_out, pos_embed, etc.
+                      (LR = unet_lr)
+
+    Save format:
+      Single safetensors with state dict prefixed with `net.` — the same
+      convention as Anima full-FT checkpoints; our Phase A inference loader
+      auto-strips the prefix.
     """
 
     def prepare_models_for_training(self):
-        raise NotImplementedError(
-            "LensFullParameterAdapter.prepare_models_for_training is implemented in Phase C.2"
-        )
+        trainer = self.trainer
+        train_dit = bool(getattr(trainer, "train_unet", True))
+
+        if train_dit and trainer.transformer is not None:
+            trainer.transformer.requires_grad_(True)
+            trainer.transformer.train()
+            print("[LensFullParameterAdapter] Lens DiT set to train mode")
+
+        # GPT-OSS text encoder: always frozen.
+        if trainer.text_encoder is not None:
+            trainer.text_encoder.requires_grad_(False)
+            trainer.text_encoder.eval()
+            print("[LensFullParameterAdapter] GPT-OSS text encoder is frozen")
+
+        # VAE: always frozen.
+        if trainer.vae is not None:
+            trainer.vae.requires_grad_(False)
+            trainer.vae.eval()
+
+        print(f"[LensFullParameterAdapter] Models prepared (DiT trainable={train_dit})")
 
     def setup_trainable_parameters(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError(
-            "LensFullParameterAdapter.setup_trainable_parameters is implemented in Phase C.2"
-        )
+        trainer = self.trainer
+        if trainer.transformer is None:
+            return []
+
+        base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+        img_factor = float(trainer.config.get("lens_img_lr_factor", 1.0))
+        txt_factor = float(trainer.config.get("lens_txt_lr_factor", 1.0))
+
+        img_params: List[nn.Parameter] = []
+        txt_params: List[nn.Parameter] = []
+        other_params: List[nn.Parameter] = []
+
+        for name, p in trainer.transformer.named_parameters():
+            if not p.requires_grad:
+                continue
+            # img_stream: image attention QKV/out-proj and image GateMLP
+            if (".attn.img_qkv" in name or ".attn.to_out" in name or ".img_mlp." in name):
+                img_params.append(p)
+            # txt_stream: text attention QKV/out-proj and text GateMLP
+            elif (".attn.txt_qkv" in name or ".attn.to_add_out" in name or ".txt_mlp." in name):
+                txt_params.append(p)
+            else:
+                other_params.append(p)
+
+        groups: List[Dict[str, Any]] = []
+        if img_params:
+            groups.append({"params": img_params, "lr": base_lr * img_factor, "name": "img_stream"})
+        if txt_params:
+            groups.append({"params": txt_params, "lr": base_lr * txt_factor, "name": "txt_stream"})
+        if other_params:
+            groups.append({"params": other_params, "lr": base_lr, "name": "other"})
+
+        total = sum(sum(p.numel() for p in g["params"]) for g in groups)
+        print(f"[LensFullParameterAdapter] {len(groups)} param group(s), "
+              f"{total:,} trainable params total "
+              f"(img={len(img_params)} | txt={len(txt_params)} | other={len(other_params)})")
+        return groups
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
-        raise NotImplementedError(
-            "LensFullParameterAdapter.save_checkpoint is implemented in Phase C.2"
-        )
+        from safetensors.torch import save_file as _save
+
+        trainer = self.trainer
+        if trainer.transformer is None:
+            print("[LensFullParameterAdapter] WARNING: no transformer to save")
+            return
+
+        if output_path.is_dir():
+            output_path = output_path / f"lens_step_{step}.safetensors"
+        elif not str(output_path).endswith(".safetensors"):
+            output_path = Path(str(output_path) + ".safetensors")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        dit_state = trainer.transformer.state_dict()
+        combined: Dict[str, torch.Tensor] = {
+            f"net.{k}": v.detach().to("cpu").contiguous() for k, v in dit_state.items()
+        }
+
+        metadata = {
+            "step": str(step),
+            "epoch": str(epoch),
+            "model_type": "lens",
+            "modelspec.architecture": "lens",
+            "format": "pt",
+        }
+
+        print(f"[LensFullParameterAdapter] Saving to {output_path}...")
+        _save(combined, str(output_path), metadata=metadata)
+        total_params = sum(t.numel() for t in combined.values())
+        print(f"[LensFullParameterAdapter] Saved {len(combined)} tensors "
+              f"({total_params:,} params) -> {output_path}")

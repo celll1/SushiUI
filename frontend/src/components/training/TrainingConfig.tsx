@@ -3445,6 +3445,42 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                   );
                 })()}
+
+                {/* Per-stream LR multipliers — Full FT only. */}
+                {params.training_method !== "lora" && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label htmlFor="lens-img-lr-factor" className="block text-xs text-gray-300 mb-1">
+                        Image stream LR ×
+                      </label>
+                      <input
+                        type="number"
+                        id="lens-img-lr-factor"
+                        value={params.lens_img_lr_factor ?? 1.0}
+                        onChange={(e) => updateParam("lens_img_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("lens_img_lr_factor", 1.0); }}
+                        min={0}
+                        step={0.1}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="lens-txt-lr-factor" className="block text-xs text-gray-300 mb-1">
+                        Text stream LR ×
+                      </label>
+                      <input
+                        type="number"
+                        id="lens-txt-lr-factor"
+                        value={params.lens_txt_lr_factor ?? 1.0}
+                        onChange={(e) => updateParam("lens_txt_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("lens_txt_lr_factor", 1.0); }}
+                        min={0}
+                        step={0.1}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                      />
+                    </div>
+                  </div>
+                )}
               </>
             )}
 

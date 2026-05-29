@@ -33,6 +33,7 @@ from .adapters import (
     # DEUSFullParameterAdapter,  # DEUS support removed
     FLUX2FullParameterAdapter,
     AnimaFullParameterAdapter,
+    LensFullParameterAdapter,
 )
 
 
@@ -108,6 +109,9 @@ class FullParameterTrainer(BaseTrainer):
             # and base_trainer's fp8_base_dtype branch only triggers for
             # training_method='lora', so a Full FT request with the flag
             # set produces a warning there and is skipped. Nothing to do.
+        elif self.is_lens:
+            self.adapter = LensFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using LensFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

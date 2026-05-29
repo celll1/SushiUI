@@ -6395,6 +6395,67 @@ class DiffusionPipelineManager:
             "developer_mode": params.get("developer_mode", False),
         }
 
+    def _load_lora_lens(self, lora_configs: List[Dict]) -> int:
+        """Wrap target Linear modules of the Lens transformer with LoRA adapters.
+
+        Must be called after the transformer is on GPU (and optionally quantised).
+        Supports stacking multiple LoRAs on the same module.
+        """
+        from core.models.lens.lens_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        )
+        from core.extensions.lora_manager import lora_manager
+
+        if not lora_configs:
+            return 0
+        if not self.lens_components:
+            print("[Lens LoRA] WARNING: components not loaded")
+            return 0
+
+        transformer = self.lens_components["transformer"]
+        if not hasattr(self, "_lens_lora_original_modules"):
+            self._lens_lora_original_modules: Dict[str, torch.nn.Linear] = {}
+            self._lens_lora_wrapped_keys: set = set()
+
+        total_applied = 0
+        for i, cfg in enumerate(lora_configs):
+            lora_path = cfg.get("path", "")
+            strength  = float(cfg.get("strength", 1.0))
+            resolved  = lora_manager._resolve_lora_path(lora_path)
+            if resolved is None:
+                print(f"[Lens LoRA] WARNING: file not found: {lora_path}")
+                continue
+            try:
+                raw, fmt = load_lora_safetensors(str(resolved))
+                grouped  = normalise_lora_state_dict(raw)
+                print(f"[Lens LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
+                      f"format={fmt} keys={len(raw)} matched_modules={len(grouped)} "
+                      f"strength={strength}")
+                applied = apply_lora_group(
+                    transformer, grouped, strength,
+                    self._lens_lora_original_modules, self._lens_lora_wrapped_keys,
+                )
+                print(f"[Lens LoRA]   wrapped {applied} module(s)")
+                total_applied += applied
+            except Exception as e:
+                print(f"[Lens LoRA] ERROR loading {lora_path}: {e}")
+                import traceback; traceback.print_exc()
+        return total_applied
+
+    def _unload_lora_lens(self) -> int:
+        """Restore every Lens transformer Linear to its pre-LoRA original."""
+        from core.models.lens.lens_lora import restore_originals
+        if not getattr(self, "_lens_lora_wrapped_keys", None):
+            return 0
+        if not self.lens_components:
+            return 0
+        transformer = self.lens_components["transformer"]
+        restored = restore_originals(
+            transformer, self._lens_lora_original_modules, self._lens_lora_wrapped_keys,
+        )
+        print(f"[Lens LoRA] Unloaded {restored} LoRA wrappers")
+        return restored
+
     @staticmethod
     def _lens_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
         """Collect Advanced-CFG knobs for Lens generation.
@@ -6889,6 +6950,8 @@ class DiffusionPipelineManager:
             # Stage 3: Denoising
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_move("transformer", device, transformer_quantization)
+            lora_configs = params.get("loras") or []
+            applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
             latents = denoise_loop(
                 transformer=transformer, scheduler=scheduler,
@@ -6898,6 +6961,8 @@ class DiffusionPipelineManager:
                 progress_callback=progress_callback,
                 advanced_cfg=self._lens_advanced_cfg(params),
             )
+            if applied_lora_count:
+                self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6984,6 +7049,8 @@ class DiffusionPipelineManager:
             # Stage 3: Denoising (SDEdit)
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_move("transformer", device, transformer_quantization)
+            lora_configs = params.get("loras") or []
+            applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
             latents = denoise_loop_img2img(
                 transformer=transformer, scheduler=scheduler,
@@ -6994,6 +7061,8 @@ class DiffusionPipelineManager:
                 progress_callback=progress_callback,
                 advanced_cfg=self._lens_advanced_cfg(params),
             )
+            if applied_lora_count:
+                self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -7093,6 +7162,8 @@ class DiffusionPipelineManager:
             # Stage 3: Denoising with repaint
             print("[Lens] Stage 3: Denoising (repaint)...")
             transformer = self._lens_move("transformer", device, transformer_quantization)
+            lora_configs = params.get("loras") or []
+            applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
             latents = denoise_loop_inpaint(
                 transformer=transformer, scheduler=scheduler,
@@ -7104,6 +7175,8 @@ class DiffusionPipelineManager:
                 progress_callback=progress_callback,
                 advanced_cfg=self._lens_advanced_cfg(params),
             )
+            if applied_lora_count:
+                self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

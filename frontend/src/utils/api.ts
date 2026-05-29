@@ -1860,6 +1860,16 @@ export interface TrainingRunCreateRequest {
   noise_process?: string;
   prediction_target?: string;
   strict_validation?: boolean;
+  // Anima-specific
+  anima_lora_scope?: string;
+  train_llm_adapter?: boolean;
+  anima_attn_mlp_lr_factor?: number;
+  anima_mod_lr_factor?: number;
+  anima_llm_adapter_lr_factor?: number;
+  // Lens-specific
+  lens_lora_scope?: string;
+  lens_img_lr_factor?: number;
+  lens_txt_lr_factor?: number;
   // Priority training
   priority_training?: {
     entries: string[];

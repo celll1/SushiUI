@@ -13,7 +13,7 @@ import torch.nn.functional as F
 from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from PIL import Image
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +362,73 @@ def vae_decode(vae, latents: torch.Tensor, latent_h: int, latent_w: int) -> Imag
 
 
 # ---------------------------------------------------------------------------
+# Advanced CFG helper
+# ---------------------------------------------------------------------------
+
+def _apply_advanced_cfg_lens(
+    v_cond: torch.Tensor,
+    v_uncond: torch.Tensor,
+    guidance_scale: float,
+    sigma_now: float,
+    sigma_max: float = 1.0,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
+) -> Tuple[torch.Tensor, float, Any]:
+    """CFG + Lens-specific norm-scaling + optional schedule/SNR-rescale/threshold.
+
+    Returns (noise_pred, cfg_now, cfg_metrics).
+    Lens applies norm-scaled CFG: noise_pred = comb * (||v_cond|| / ||comb||).
+    """
+    from core.inference.custom_sampling import (
+        calculate_dynamic_cfg, dynamic_thresholding, calculate_cfg_metrics,
+    )
+
+    cfg = advanced_cfg or {}
+    schedule_type = cfg.get("cfg_schedule_type", "constant") or "constant"
+    schedule_min = float(cfg.get("cfg_schedule_min", 1.0) or 1.0)
+    schedule_max = cfg.get("cfg_schedule_max")
+    schedule_power = float(cfg.get("cfg_schedule_power", 2.0) or 2.0)
+    snr_alpha = float(cfg.get("cfg_rescale_snr_alpha", 0.0) or 0.0)
+    dyn_percentile = float(cfg.get("dynamic_threshold_percentile", 0.0) or 0.0)
+    dyn_mimic = float(cfg.get("dynamic_threshold_mimic_scale", 1.0) or 1.0)
+    developer_mode = bool(cfg.get("developer_mode", False))
+
+    current_snr = None
+    if snr_alpha > 0.0 or developer_mode:
+        uncond_norm = torch.norm(v_uncond).item()
+        if uncond_norm > 1e-8:
+            current_snr = (torch.norm(v_cond - v_uncond).item() ** 2) / (uncond_norm ** 2)
+
+    cfg_now = calculate_dynamic_cfg(
+        sigma=sigma_now, sigma_max=sigma_max, cfg_base=guidance_scale,
+        cfg_schedule_type=schedule_type,
+        cfg_schedule_min=schedule_min,
+        cfg_schedule_max=schedule_max,
+        cfg_schedule_power=schedule_power,
+        snr=current_snr,
+        cfg_rescale_snr_alpha=snr_alpha,
+    )
+
+    comb = v_uncond + cfg_now * (v_cond - v_uncond)
+
+    # Lens-specific norm-scaled CFG: re-scale combined vector to cond magnitude
+    cond_norm = torch.norm(v_cond, dim=-1, keepdim=True)
+    comb_norm = torch.norm(comb, dim=-1, keepdim=True)
+    scale = torch.where(
+        comb_norm > 0,
+        cond_norm / comb_norm.clamp_min(1e-12),
+        torch.ones_like(comb_norm),
+    )
+    noise_pred = comb * scale
+
+    if dyn_percentile > 0.0:
+        noise_pred = dynamic_thresholding(noise_pred, percentile=dyn_percentile, clamp_value=dyn_mimic)
+
+    cfg_metrics = calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) \
+        if developer_mode else None
+    return noise_pred, cfg_now, cfg_metrics
+
+
+# ---------------------------------------------------------------------------
 # Denoising loops
 # ---------------------------------------------------------------------------
 
@@ -372,6 +439,7 @@ def denoise_loop(
     guidance_scale: float, num_inference_steps: int,
     latent_h: int, latent_w: int,
     progress_callback=None,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img."""
     seq_len = latent_h * latent_w
@@ -394,24 +462,18 @@ def denoise_loop(
         )
 
         cond, uncond = noise_out.chunk(2)
-        comb = uncond + guidance_scale * (cond - uncond)
-        cond_norm = torch.norm(cond, dim=-1, keepdim=True)
-        comb_norm = torch.norm(comb, dim=-1, keepdim=True)
-        scale = torch.where(
-            comb_norm > 0,
-            cond_norm / comb_norm.clamp_min(1e-12),
-            torch.ones_like(comb_norm),
+        sigma_t = t.item() / 1000.0
+        noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+            cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
         )
-        noise_pred = comb * scale
 
         # pred_x0 = x_t - σ·v  (Flow Matching clean-image estimate)
-        sigma_t = t.item() / 1000.0
         pred_x0 = latents - sigma_t * noise_pred
 
         latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         if progress_callback is not None:
-            progress_callback(i, num_inference_steps, latents.detach(), None, pred_x0.detach())
+            progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
     return latents
 
@@ -426,6 +488,7 @@ def denoise_loop_img2img(
     latent_h: int, latent_w: int,
     seed: Optional[int] = None,
     progress_callback=None,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on flow-matching schedule."""
     seq_len = latent_h * latent_w
@@ -462,23 +525,17 @@ def denoise_loop_img2img(
         )
 
         cond, uncond = noise_out.chunk(2)
-        comb = uncond + guidance_scale * (cond - uncond)
-        cond_norm = torch.norm(cond, dim=-1, keepdim=True)
-        comb_norm = torch.norm(comb, dim=-1, keepdim=True)
-        scale = torch.where(
-            comb_norm > 0,
-            cond_norm / comb_norm.clamp_min(1e-12),
-            torch.ones_like(comb_norm),
-        )
-        noise_pred = comb * scale
-
         sigma_t = t.item() / 1000.0
+        noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+            cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+        )
+
         pred_x0 = latents - sigma_t * noise_pred
 
         latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         if progress_callback is not None:
-            progress_callback(i, total_steps, latents.detach(), None, pred_x0.detach())
+            progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
     return latents
 
@@ -494,6 +551,7 @@ def denoise_loop_inpaint(
     latent_h: int, latent_w: int,
     seed: Optional[int] = None,
     progress_callback=None,
+    advanced_cfg: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on flow-matching schedule.
 
@@ -537,17 +595,11 @@ def denoise_loop_inpaint(
         )
 
         cond, uncond = noise_out.chunk(2)
-        comb = uncond + guidance_scale * (cond - uncond)
-        cond_norm = torch.norm(cond, dim=-1, keepdim=True)
-        comb_norm = torch.norm(comb, dim=-1, keepdim=True)
-        scale = torch.where(
-            comb_norm > 0,
-            cond_norm / comb_norm.clamp_min(1e-12),
-            torch.ones_like(comb_norm),
-        )
-        noise_pred = comb * scale
-
         sigma_t = t.item() / 1000.0
+        noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+            cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+        )
+
         pred_x0 = latents - sigma_t * noise_pred
 
         latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
@@ -559,7 +611,7 @@ def denoise_loop_inpaint(
         if progress_callback is not None:
             # Blend pred_x0 with known region for a geometry-aware preview
             preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
-            progress_callback(i, total_steps, latents.detach(), None, preview_x0.detach())
+            progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
 
     return latents
 

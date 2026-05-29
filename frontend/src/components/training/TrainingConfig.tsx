@@ -3405,6 +3405,53 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             {/* Lens-only options */}
             {isLensModel(baseModelPath) && (
               <>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="lens-cpu-offload-checkpointing"
+                    checked={!!params.cpu_offload_checkpointing}
+                    onChange={(e) => updateParam("cpu_offload_checkpointing", e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="lens-cpu-offload-checkpointing" className="text-xs text-gray-300 cursor-pointer">
+                    CPU-offload checkpointing (blocking)
+                  </label>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="lens-async-cpu-offload-checkpointing"
+                    checked={!!params.async_cpu_offload_checkpointing}
+                    onChange={(e) => updateParam("async_cpu_offload_checkpointing", e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="lens-async-cpu-offload-checkpointing" className="text-xs text-gray-300 cursor-pointer">
+                    Async CPU-offload checkpointing (non-blocking, faster)
+                  </label>
+                </div>
+                {params.training_method === "lora" && (
+                  <div>
+                    <label htmlFor="lens-fp8-base-dtype" className="block text-xs text-gray-300 mb-1">
+                      FP8 base weights (LoRA only)
+                    </label>
+                    <select
+                      id="lens-fp8-base-dtype"
+                      value={params.fp8_base_dtype ?? ""}
+                      onChange={(e) =>
+                        updateParam("fp8_base_dtype", e.target.value === "" ? null : e.target.value)
+                      }
+                      className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                    >
+                      <option value="">None (BF16 base)</option>
+                      <option value="fp8_e4m3fn">FP8 E4M3 (recommended)</option>
+                      <option value="fp8_e5m2">FP8 E5M2</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Quantise the frozen Lens DiT base to FP8 before LoRA wrap (~50% VRAM saving).
+                    </p>
+                  </div>
+                )}
+
                 {/* LoRA scope — which Lens DiT module families get LoRA wraps. */}
                 {params.training_method === "lora" && (() => {
                   const scopeCsv: string = (params.lens_lora_scope ?? "img_attn,txt_attn,img_mlp,txt_mlp");

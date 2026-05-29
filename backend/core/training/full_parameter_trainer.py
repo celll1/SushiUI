@@ -84,6 +84,8 @@ class FullParameterTrainer(BaseTrainer):
         # keeps the contract uniform with LoRATrainer. No-op for other archs.
         if hasattr(self, "setup_anima_block_swap"):
             self.setup_anima_block_swap()
+        if hasattr(self, "setup_lens_block_swap"):
+            self.setup_lens_block_swap()
 
         print(f"{self.log_prefix} Initialized")
         # Note: Vision Encoder training status is determined in train() after VE is loaded

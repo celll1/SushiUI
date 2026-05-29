@@ -6395,6 +6395,23 @@ class DiffusionPipelineManager:
             "developer_mode": params.get("developer_mode", False),
         }
 
+    @staticmethod
+    def _lens_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
+        """Collect Advanced-CFG knobs for Lens generation.
+
+        Returns a dict consumed by lens_pipeline_ops._apply_advanced_cfg_lens.
+        """
+        return {
+            "cfg_schedule_type": params.get("cfg_schedule_type", "constant"),
+            "cfg_schedule_min": params.get("cfg_schedule_min", 1.0),
+            "cfg_schedule_max": params.get("cfg_schedule_max"),
+            "cfg_schedule_power": params.get("cfg_schedule_power", 2.0),
+            "cfg_rescale_snr_alpha": params.get("cfg_rescale_snr_alpha", 0.0),
+            "dynamic_threshold_percentile": params.get("dynamic_threshold_percentile", 0.0),
+            "dynamic_threshold_mimic_scale": params.get("dynamic_threshold_mimic_scale", 1.0),
+            "developer_mode": params.get("developer_mode", False),
+        }
+
     def _anima_move(self, component_name: str, target_device: str,
                      quantization: Optional[str] = None):
         """Move a named Anima component to the given device.
@@ -6879,6 +6896,7 @@ class DiffusionPipelineManager:
                 guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
                 latent_h=latent_h, latent_w=latent_w,
                 progress_callback=progress_callback,
+                advanced_cfg=self._lens_advanced_cfg(params),
             )
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
@@ -6974,6 +6992,7 @@ class DiffusionPipelineManager:
                 guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
                 latent_h=latent_h, latent_w=latent_w, seed=seed,
                 progress_callback=progress_callback,
+                advanced_cfg=self._lens_advanced_cfg(params),
             )
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
@@ -7083,6 +7102,7 @@ class DiffusionPipelineManager:
                 guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
                 latent_h=latent_h, latent_w=latent_w, seed=seed,
                 progress_callback=progress_callback,
+                advanced_cfg=self._lens_advanced_cfg(params),
             )
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():

@@ -5362,6 +5362,7 @@ class TrainingRunCreateRequest(BaseModel):
     # Anima-specific LoRA training knobs (ignored for other architectures).
     # Single Source of Truth: backend/api/param_defaults.py TRAINING_DEFAULTS.
     anima_lora_scope: str = TRAINING_DEFAULTS["anima_lora_scope"]
+    lens_lora_scope: str = TRAINING_DEFAULTS["lens_lora_scope"]
     train_llm_adapter: bool = TRAINING_DEFAULTS["train_llm_adapter"]
     # Anima full-parameter LR multipliers (each applied on top of unet_lr).
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]

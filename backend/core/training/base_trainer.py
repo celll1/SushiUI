@@ -889,6 +889,7 @@ class BaseTrainer(ABC):
         self.is_deus = False  # (model_type == "deus")
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
+        self.is_lens  = (model_type == "lens")
         self.is_sdxl = False
 
         if self.is_zimage:
@@ -900,6 +901,8 @@ class BaseTrainer(ABC):
             self._load_flux2_components()
         elif self.is_anima:
             self._load_anima_components()
+        elif self.is_lens:
+            self._load_lens_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -1161,6 +1164,114 @@ class BaseTrainer(ABC):
         self.layer_offload_conductor.register_hooks()
         print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Anima")
 
+    def _load_lens_components(self):
+        """Load Lens model components for training.
+
+        Lens ships as a standard diffusers directory layout. ModelLoader.load_lens_components
+        returns the same component dict used by the inference path.
+        """
+        print(f"{self.log_prefix} Detected Lens model")
+        print(f"{self.log_prefix} Loading Lens components from {self.model_path}")
+
+        from core.models.lens.lens_loader import load_lens_components
+        components = load_lens_components(
+            model_path=self.model_path,
+            torch_dtype=self.weight_dtype,
+        )
+
+        # Store components on the trainer using the standard slots.
+        self.transformer = components["transformer"]
+        self.transformer_original = self.transformer   # No wrapper for Lens.
+        self.vae = components["vae"]
+        self.text_encoder = components["text_encoder"]
+        self.tokenizer = components["tokenizer"]
+        self.scheduler = components["scheduler"]
+
+        # Lens specific: no dual TE / no U-Net.
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.t5_tokenizer = None
+        self.unet = None
+        self.noise_scheduler = self.scheduler
+
+        self.vae = self.vae.to(dtype=self.vae_dtype)
+
+        # Gradient checkpointing.
+        cpu_offload_ckpt  = bool(self.config.get("cpu_offload_checkpointing", False))
+        async_offload_ckpt = bool(self.config.get("async_cpu_offload_checkpointing", False))
+        if cpu_offload_ckpt and async_offload_ckpt:
+            print(f"{self.log_prefix} WARNING: both cpu_offload_checkpointing and "
+                  f"async_cpu_offload_checkpointing are True; using async (faster).")
+            cpu_offload_ckpt = False
+        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+            self.transformer.enable_gradient_checkpointing(
+                cpu_offload=cpu_offload_ckpt,
+                async_offload=async_offload_ckpt,
+            )
+            ckpt_mode = ("async_cpu_offload" if async_offload_ckpt
+                          else "cpu_offload" if cpu_offload_ckpt else "standard")
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Lens transformer "
+                  f"(mode={ckpt_mode})")
+
+        # Freeze everything; LoRA/full-FT will unfreeze what is needed.
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+        # Optional FP8 base quantisation (LoRA-only; same helper as Anima).
+        fp8_base_dtype  = self.config.get("fp8_base_dtype") or None
+        training_method = self.config.get("training_method", "lora")
+        if fp8_base_dtype and training_method == "lora":
+            print(f"{self.log_prefix} Quantising frozen Lens transformer base to "
+                  f"{fp8_base_dtype} (LoRA-on-FP8-base)")
+            from core.vram_optimization import _anima_quantize_fp8
+            self.transformer = _anima_quantize_fp8(
+                self.transformer, fp8_base_dtype, "Lens Transformer (training base)",
+            )
+            self.transformer_original = self.transformer
+            self.transformer.requires_grad_(False)
+        elif fp8_base_dtype:
+            print(f"{self.log_prefix} WARNING: fp8_base_dtype={fp8_base_dtype} only "
+                  f"supported for training_method='lora' ({training_method!r}); ignoring.")
+
+        # Block-swap deferred; conductor handle initialised to None.
+        self.layer_offload_conductor = None
+        if self.blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
+                  f"deferred until adapter setup completes")
+
+        print(f"{self.log_prefix} Moving Lens transformer to {self.device}")
+        self.transformer.to(self.device)
+        print(f"{self.log_prefix} Lens model loaded successfully")
+
+    def setup_lens_block_swap(self):
+        """Initialise LayerOffloadConductor for the Lens transformer, AFTER adapter setup."""
+        if not self.is_lens:
+            return
+        if self.blocks_to_swap <= 0:
+            return
+        if getattr(self, "layer_offload_conductor", None) is not None:
+            return
+        if not hasattr(self.transformer, "transformer_blocks"):
+            raise ValueError("Lens transformer must expose `.transformer_blocks` for block swap")
+
+        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
+              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
+        from core.memory_management import LayerOffloadConductor
+        self.layer_offload_conductor = LayerOffloadConductor(
+            layers=self.transformer.transformer_blocks,
+            blocks_to_swap=self.blocks_to_swap,
+            device=self.device,
+            use_pinned_memory=self.use_pinned_memory,
+            cpu_buffer_size_mb=8192,
+            activation_buffer_size_mb=4096,
+            enable_prefetch=True,
+            enable_activation_offload=False,
+        )
+        self.transformer._layer_offload_conductor = self.layer_offload_conductor
+        self.layer_offload_conductor.register_hooks()
+        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Lens")
+
     # DEUS support removed - architecture no longer maintained
     # def _load_deus_components(self):
     #     """Load DEUS model components.
@@ -1420,6 +1531,7 @@ class BaseTrainer(ABC):
         self.is_deus = False  # (model_type == "deus")
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
+        self.is_lens  = (model_type == "lens")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -3219,6 +3331,37 @@ class BaseTrainer(ABC):
             "t5_attn_mask": encoded["t5_attn_mask"][0].detach(),
         }
 
+    def encode_prompt_lens(self, prompt: str, max_length: int = 512):
+        """Encode prompt for Lens using the inference encode_prompt function.
+
+        Returns (stacked_features, encoder_mask) where stacked_features is a
+        tensor of shape [num_layers, L, enc_hidden_dim] and encoder_mask is
+        [L] bool. Each is detached and stored per-sample in the latent cache.
+        """
+        from core.models.lens.lens_pipeline_ops import encode_prompt as _encode
+        # encode_prompt returns (List[Tensor[1, L, D]], Tensor[1, L]) for a
+        # single prompt. We call it with empty string as neg prompt to get
+        # only the conditional side; the uncond side is discarded.
+        encoder_features, encoder_mask = _encode(
+            text_encoder=self.text_encoder,
+            tokenizer=self.tokenizer,
+            prompt=prompt,
+            negative_prompt="",
+            device=str(self.device),
+            dtype=self.training_dtype,
+            max_length=max_length,
+        )
+        # encoder_features: List[Tensor[2, L, D]] (batch of [cond, uncond]);
+        # slice out the conditional (index 0) for each layer.
+        cond_features = [f[0:1].squeeze(0).detach() for f in encoder_features]  # each [L, D]
+        # encoder_mask: [2, L] — take the conditional row.
+        cond_mask = encoder_mask[0].detach()  # [L]
+        # Stack per-layer and add batch dim: [1, num_layers, L, D].
+        # The batch dim allows torch.cat(dim=0) in the training loop to produce
+        # the correct [B, num_layers, L, D] batched tensor.
+        stacked = torch.stack(cond_features, dim=0).unsqueeze(0)  # [1, num_layers, L, D]
+        return stacked, cond_mask
+
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
         Unified caption encoding for all architectures.
@@ -3231,9 +3374,12 @@ class BaseTrainer(ABC):
             - FLUX.2: (prompt_embeds, None) - text_ids computed in train_step
             - Anima: (prompt_embeds, anima_aux_dict) where aux dict has
               {source_mask, t5_input_ids, t5_attn_mask}
+            - Lens: (stacked_features [num_layers, L, D], encoder_mask [L])
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
+        elif self.is_lens:
+            return self.encode_prompt_lens(caption)
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the
@@ -3326,7 +3472,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima:
+        if self.is_zimage or self.is_anima or self.is_lens:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -3335,7 +3481,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima:
+        if self.is_zimage or self.is_anima or self.is_lens:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -3513,6 +3659,14 @@ class BaseTrainer(ABC):
                 # Drop the temporal dim for storage; train_step_anima re-adds it.
                 latents = latents_5d.squeeze(2)
                 del image_tensor_5d, latent_dist, latents_5d
+            elif self.is_lens:
+                # Lens VAE (AutoencoderKLFlux2): vae_encode handles resize, patchify,
+                # BN normalise, and rearrange to flat-sequence (1, N, 128).
+                from core.models.lens.lens_pipeline_ops import vae_encode as _lens_vae_encode
+                latents = _lens_vae_encode(
+                    self.vae, image, height=height, width=width,
+                    device=vae_device, dtype=self.vae_dtype,
+                )
             else:
                 # SD/SDXL VAE - 統一された処理フロー
                 from core.models.sdxl_vae_wrapper import SDXLVAEWrapper
@@ -3859,6 +4013,16 @@ class BaseTrainer(ABC):
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+        elif self.is_lens:
+            # mnt_text_embeddings: [B, num_layers, L, D]
+            # mnt_attention_mask:  [B, L] encoder mask
+            loss, pred_loss, recon_loss = self.train_step_lens(
+                latents=mnt_latents,
+                encoder_features=mnt_text_embeddings,
+                encoder_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
             )
         elif self.is_flux2:
             # FLUX.2 training with position IDs
@@ -4959,6 +5123,98 @@ class BaseTrainer(ABC):
 
         del noise, noisy_latents, noisy_latents_5d, model_pred, target
         del loss_per_element, loss_per_sample
+        return loss, pred_loss_value, recon_loss_value
+
+    def train_step_lens(
+        self,
+        latents: torch.Tensor,
+        encoder_features: torch.Tensor,
+        encoder_mask: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
+        profile_vram: bool = False,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """Single Lens DiT training step (flow-matching, velocity prediction).
+
+        Args:
+            latents:          Flat-sequence latents [B, N, 128].
+            encoder_features: Stacked multi-layer text features [B, num_layers, L, D].
+            encoder_mask:     Bool mask for text tokens [B, L].
+            timesteps:        Optional pre-sampled sigma values in [0, 1].
+
+        Returns:
+            (loss tensor, prediction loss value, reconstruction loss value)
+        """
+        if profile_vram:
+            print_vram_usage("[train_step_lens] Start")
+
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        encoder_features = encoder_features.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        encoder_mask = encoder_mask.to(device=self.device, non_blocking=True)
+
+        batch_size = latents.shape[0]
+
+        if timesteps is None:
+            if self.timestep_sampler is not None:
+                timesteps = self.timestep_sampler.sample(batch_size, self.device)
+            else:
+                timesteps = torch.rand(batch_size, device=self.device)
+
+        noise = torch.randn_like(latents)
+
+        # Flow matching forward process: x_t = (1-σ)*x0 + σ*noise
+        sigma = timesteps.to(self.training_dtype)
+        sigma_view = sigma.view(-1, 1, 1)
+        noisy_latents = (1.0 - sigma_view) * latents + sigma_view * noise
+
+        # Velocity target: v = noise - x0
+        v_target = noise - latents
+
+        # Lens timestep convention: transformer receives sigma * 1000
+        timestep_input = (sigma * 1000.0).to(self.training_dtype)
+
+        # img_shapes for positional encoding: square latent layout assumed
+        seq_len = latents.shape[1]  # N = latent_h * latent_w
+        latent_hw = int(seq_len ** 0.5)
+        img_shapes = [(latent_hw, latent_hw)] * batch_size
+
+        # encoder_features [B, num_layers, L, D] → list of num_layers tensors each [B, L, D]
+        num_layers = encoder_features.shape[1]
+        encoder_hidden_states_list = [encoder_features[:, i, :, :] for i in range(num_layers)]
+
+        if profile_vram:
+            print_vram_usage("[train_step_lens] Before transformer forward")
+
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                v_pred = self.transformer(
+                    hidden_states=noisy_latents,
+                    encoder_hidden_states=encoder_hidden_states_list,
+                    encoder_hidden_states_mask=encoder_mask,
+                    timestep=timestep_input,
+                    img_shapes=img_shapes,
+                )
+        else:
+            v_pred = self.transformer(
+                hidden_states=noisy_latents,
+                encoder_hidden_states=encoder_hidden_states_list,
+                encoder_hidden_states_mask=encoder_mask,
+                timestep=timestep_input,
+                img_shapes=img_shapes,
+            )
+
+        if profile_vram:
+            print_vram_usage("[train_step_lens] After transformer forward")
+
+        # MSE loss on velocity
+        mse_loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float(), reduction="mean")
+        loss = mse_loss
+
+        pred_loss_value = mse_loss.item()
+        recon_loss_value = 0.0
+
+        loss.backward()
+
+        del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
         return loss, pred_loss_value, recon_loss_value
 
     def train_step_flux2(
@@ -8714,6 +8970,10 @@ class BaseTrainer(ABC):
 
                             # Prepare auxiliary data
                             if self.is_zimage:
+                                mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
+                                mnt_pooled_embeddings = None
+                            elif self.is_lens:
+                                # encoder_mask per sample: [L] → stacked to [B, L]
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
                             elif self.is_sdxl and any(aux is not None for aux in mnt_auxiliary_data_list):

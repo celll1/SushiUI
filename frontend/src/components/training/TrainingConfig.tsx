@@ -496,6 +496,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "anima";
   };
 
+  const isLensModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "lens";
+  };
+
   const getModelArchitecture = (modelPath: string): string | undefined => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture;
@@ -2900,12 +2905,13 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
                   Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                   {isAnimaModel(baseModelPath) && '(Not supported for Anima)'}
+                  {isLensModel(baseModelPath) && '(Not supported for Lens)'}
                 </label>
               </div>
 
@@ -3393,6 +3399,52 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                   </div>
                 )}
+              </>
+            )}
+
+            {/* Lens-only options */}
+            {isLensModel(baseModelPath) && (
+              <>
+                {/* LoRA scope — which Lens DiT module families get LoRA wraps. */}
+                {params.training_method === "lora" && (() => {
+                  const scopeCsv: string = (params.lens_lora_scope ?? "img_attn,txt_attn,img_mlp,txt_mlp");
+                  const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
+                  const toggle = (tok: string) => {
+                    const next = new Set(scopeSet);
+                    if (next.has(tok)) next.delete(tok); else next.add(tok);
+                    const ordered = ["img_attn", "txt_attn", "img_mlp", "txt_mlp", "mod"].filter((t) => next.has(t));
+                    updateParam("lens_lora_scope", ordered.join(","));
+                  };
+                  return (
+                    <div>
+                      <label className="block text-xs text-gray-300 mb-1">
+                        LoRA Scope (Lens DiT module families)
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                          ["img_attn", "Image Attention (QKV/Out)"],
+                          ["txt_attn", "Text Attention (QKV/Out)"],
+                          ["img_mlp", "Image MLP (GateMLP)"],
+                          ["txt_mlp", "Text MLP (GateMLP)"],
+                          ["mod", "AdaLN modulation"],
+                        ].map(([tok, label]) => (
+                          <label key={tok} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={scopeSet.has(tok)}
+                              onChange={() => toggle(tok)}
+                              className="w-3.5 h-3.5"
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Default: img_attn + txt_attn + img_mlp + txt_mlp. AdaLN modulation is off by default.
+                      </p>
+                    </div>
+                  );
+                })()}
               </>
             )}
 

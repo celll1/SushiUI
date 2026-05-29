@@ -13,6 +13,7 @@ from .zimage_adapter import ZImageLoRAAdapter, ZImageFullParameterAdapter
 # from .deus_adapter import DEUSLoRAAdapter, DEUSFullParameterAdapter
 from .flux2_adapter import FLUX2LoRAAdapter, FLUX2FullParameterAdapter
 from .anima_adapter import AnimaLoRAAdapter, AnimaFullParameterAdapter
+from .lens_adapter import LensLoRAAdapter, LensFullParameterAdapter
 from .base_controlnet_adapter import BaseControlNetAdapter
 from .controlnet_sd15_adapter import ControlNetSD15Adapter
 from .controlnet_sdxl_adapter import ControlNetSDXLAdapter
@@ -33,6 +34,8 @@ __all__ = [
     "FLUX2FullParameterAdapter",
     "AnimaLoRAAdapter",
     "AnimaFullParameterAdapter",
+    "LensLoRAAdapter",
+    "LensFullParameterAdapter",
     "BaseControlNetAdapter",
     "ControlNetSD15Adapter",
     "ControlNetSDXLAdapter",

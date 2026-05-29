@@ -444,7 +444,7 @@ async def generate_txt2img(
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
         is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
+                   pipeline_manager.current_model_info.get("type") in ("anima", "lens")
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1118,7 +1118,7 @@ async def generate_img2img(
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
         is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
+                   pipeline_manager.current_model_info.get("type") in ("anima", "lens")
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1476,7 +1476,7 @@ async def generate_inpaint(
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
         is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") == "anima"
+                   pipeline_manager.current_model_info.get("type") in ("anima", "lens")
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1740,7 +1740,7 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
             if os.path.isdir(item_path):
                 # Allow Anima split-files layouts even when there's no model_index.json
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
-                if not is_valid and architecture != "anima":
+                if not is_valid and architecture not in ("anima", "lens"):
                     continue
                 models.append({
                     "name": item,
@@ -1884,7 +1884,8 @@ async def get_samplers():
         is_flow_matching = (
             pipeline_manager.is_zimage_model or
             pipeline_manager.is_flux2_model or
-            pipeline_manager.is_anima_model
+            pipeline_manager.is_anima_model or
+            pipeline_manager.is_lens_model
         )
 
         if is_flow_matching:

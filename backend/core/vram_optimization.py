@@ -961,3 +961,71 @@ def move_vision_encoder_to_cpu(vision_encoder):
         print("[VRAM] Vision Encoder moved to CPU")
     except Exception as e:
         print(f"[VRAM] Warning: Could not move Vision Encoder to CPU: {e}")
+
+
+# ============================================================
+# Lens-Specific VRAM Optimization
+# ============================================================
+
+def move_lens_text_encoder_to_gpu(text_encoder, quantization: Optional[str] = None):
+    """Move Lens GPT-OSS text encoder to GPU (with optional FP8 quantization)."""
+    if text_encoder is None:
+        return text_encoder
+    if quantization in (None, "", "none"):
+        quantization = None
+    if quantization:
+        if next(text_encoder.parameters()).device.type != "cpu":
+            text_encoder.to("cpu")
+        try:
+            text_encoder = _anima_quantize_fp8(text_encoder, quantization, "Lens TextEncoder")
+        except Exception as e:
+            print(f"[VRAM] Lens text encoder quantization failed: {e}; using bf16")
+    text_encoder.to("cuda:0")
+    return text_encoder
+
+
+def move_lens_text_encoder_to_cpu(text_encoder):
+    if text_encoder is None:
+        return
+    text_encoder.to("cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def move_lens_transformer_to_gpu(transformer, quantization: Optional[str] = None):
+    """Move Lens MMDiT transformer to GPU (with optional FP8 quantization)."""
+    if transformer is None:
+        return transformer
+    if quantization in (None, "", "none"):
+        quantization = None
+    if quantization:
+        if next(transformer.parameters()).device.type != "cpu":
+            transformer.to("cpu")
+        try:
+            transformer = _anima_quantize_fp8(transformer, quantization, "Lens Transformer")
+        except Exception as e:
+            print(f"[VRAM] Lens transformer quantization failed: {e}; using bf16")
+    transformer.to("cuda:0")
+    return transformer
+
+
+def move_lens_transformer_to_cpu(transformer):
+    if transformer is None:
+        return
+    transformer.to("cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def move_lens_vae_to_gpu(vae):
+    if vae is None:
+        return
+    vae.to("cuda:0")
+
+
+def move_lens_vae_to_cpu(vae):
+    if vae is None:
+        return
+    vae.to("cpu")
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()

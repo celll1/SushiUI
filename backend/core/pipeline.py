@@ -53,6 +53,10 @@ class DiffusionPipelineManager:
         self.anima_components: Optional[Dict[str, Any]] = None
         self.is_anima_model: bool = False
 
+        # Lens components (Microsoft/Lens MMDiT + GPT-OSS + AutoencoderKLFlux2)
+        self.lens_components: Optional[Dict[str, Any]] = None
+        self.is_lens_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -88,6 +92,8 @@ class DiffusionPipelineManager:
             return "zimage"
         if self.is_anima_model:
             return "anima"
+        if self.is_lens_model:
+            return "lens"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -197,6 +203,19 @@ class DiffusionPipelineManager:
                     del comp
                 self.anima_components = None
                 self.is_anima_model = False
+
+            # Clean up Lens components
+            if self.lens_components is not None:
+                print("[Pipeline] Cleaning up Lens components...")
+                for comp_name, comp in self.lens_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        try:
+                            comp.to('cpu')
+                        except Exception:
+                            pass
+                    del comp
+                self.lens_components = None
+                self.is_lens_model = False
 
             # Force garbage collection
             gc.collect()
@@ -308,6 +327,48 @@ class DiffusionPipelineManager:
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Anima model loaded successfully")
+                return
+
+            # Check if Lens (microsoft/Lens MMDiT)
+            if isinstance(model_result, dict) and model_result.get("type") == "lens":
+                print("[Pipeline] Lens model detected (component-based dict returned)")
+                self.lens_components = model_result
+                self.is_lens_model = True
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                for comp_name in ("text_encoder", "transformer", "vae"):
+                    comp = self.lens_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] All Lens components moved to CPU. Will load to GPU as needed.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                        print(f"[Pipeline] Model hash: {model_hash[:16]}...")
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "lens",
+                    "is_v_prediction": False,
+                    "model_hash": model_hash,
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] Lens model loaded successfully")
                 return
 
             # Check if Z-Image
@@ -4831,6 +4892,10 @@ class DiffusionPipelineManager:
         if self.is_anima_model:
             return self._generate_txt2img_anima(params, progress_callback, step_callback)
 
+        # Lens handling (Microsoft/Lens MMDiT)
+        if self.is_lens_model:
+            return self._generate_txt2img_lens(params, progress_callback, step_callback)
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -5318,6 +5383,10 @@ class DiffusionPipelineManager:
         # Anima handling
         if self.is_anima_model:
             return self._generate_img2img_anima(params, init_image, progress_callback, step_callback)
+
+        # Lens handling
+        if self.is_lens_model:
+            return self._generate_img2img_lens(params, init_image, progress_callback, step_callback)
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
@@ -5862,6 +5931,10 @@ class DiffusionPipelineManager:
         # Anima inpaint support
         if self.is_anima_model:
             return self._generate_inpaint_anima(params, init_image, mask_image, progress_callback, step_callback)
+
+        # Lens inpaint (repaint approach)
+        if self.is_lens_model:
+            return self._generate_inpaint_lens(params, init_image, mask_image, progress_callback, step_callback)
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:
@@ -6691,6 +6764,344 @@ class DiffusionPipelineManager:
             return images[0], seed
         except Exception as e:
             print(f"[Anima] Generation error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+
+    # ================================================================
+    # Lens (Microsoft/Lens MMDiT) generation methods
+    # ================================================================
+
+    def _lens_move(self, component_name: str, target_device: str,
+                   quantization: Optional[str] = None):
+        """Move a Lens component to the target device.
+
+        GPU moves delegate to specialized helpers in core.vram_optimization
+        that apply optional FP8 quantization.  The (possibly quantized)
+        component is written back into self.lens_components.
+        """
+        from core.vram_optimization import (
+            move_lens_text_encoder_to_gpu, move_lens_text_encoder_to_cpu,
+            move_lens_transformer_to_gpu, move_lens_transformer_to_cpu,
+            move_lens_vae_to_gpu, move_lens_vae_to_cpu,
+        )
+
+        comp = self.lens_components.get(component_name)
+        if comp is None:
+            return comp
+
+        try:
+            if component_name == "text_encoder":
+                if target_device == "cpu":
+                    move_lens_text_encoder_to_cpu(comp)
+                else:
+                    comp = move_lens_text_encoder_to_gpu(comp, quantization)
+                    self.lens_components["text_encoder"] = comp
+            elif component_name == "transformer":
+                if target_device == "cpu":
+                    move_lens_transformer_to_cpu(comp)
+                else:
+                    comp = move_lens_transformer_to_gpu(comp, quantization)
+                    self.lens_components["transformer"] = comp
+            elif component_name == "vae":
+                if target_device == "cpu":
+                    move_lens_vae_to_cpu(comp)
+                else:
+                    move_lens_vae_to_gpu(comp)
+        except Exception as e:
+            print(f"[Lens] Warning: could not move {component_name} to {target_device}: {e}")
+        return comp
+
+    def _generate_txt2img_lens(self, params: Dict[str, Any],
+                                progress_callback=None, step_callback=None,
+                                ) -> tuple:
+        if not self.lens_components:
+            raise RuntimeError("Lens components not loaded. Please load a Lens model first.")
+
+        from core.models.lens.lens_pipeline_ops import (
+            encode_prompt, prepare_latents, denoise_loop, vae_decode,
+        )
+        from core.models.lens.lens_resolution import find_nearest_bucket
+
+        print("[Lens] Starting txt2img generation")
+
+        device = self.device
+        dtype = torch.bfloat16
+
+        transformer = self.lens_components["transformer"]
+        text_encoder = self.lens_components["text_encoder"]
+        tokenizer = self.lens_components["tokenizer"]
+        vae = self.lens_components["vae"]
+        scheduler = self.lens_components["scheduler"]
+
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        num_inference_steps = int(params.get("steps", 28))
+        guidance_scale = float(params.get("cfg_scale", 4.0))
+        transformer_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+        max_sequence_length = 512
+
+        req_width = int(params.get("width", 1024))
+        req_height = int(params.get("height", 1024))
+        width, height = find_nearest_bucket(req_width, req_height)
+        if (width, height) != (req_width, req_height):
+            print(f"[Lens] Resolution snapped: {req_width}×{req_height} → {width}×{height}")
+
+        latent_h = height // 16
+        latent_w = width // 16
+
+        try:
+            # Stage 1: Text encoding
+            print("[Lens] Stage 1: Text encoding...")
+            text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            encoder_features, encoder_mask = encode_prompt(
+                text_encoder, tokenizer, prompt, negative_prompt,
+                device=device, dtype=dtype, max_length=max_sequence_length,
+            )
+            self._lens_move("text_encoder", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 2: Prepare latents
+            latents = prepare_latents(height, width, dtype=dtype, device=device, seed=seed)
+
+            # Stage 3: Denoising
+            print("[Lens] Stage 3: Denoising...")
+            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self.lens_components["transformer"]
+            latents = denoise_loop(
+                transformer=transformer, scheduler=scheduler,
+                latents=latents, encoder_features=encoder_features, encoder_mask=encoder_mask,
+                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                latent_h=latent_h, latent_w=latent_w,
+                progress_callback=progress_callback,
+            )
+            self._lens_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 4: VAE decode
+            print("[Lens] Stage 4: VAE decode...")
+            self._lens_move("vae", device)
+            vae_gpu = self.lens_components["vae"]
+            image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            self._lens_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("[Lens] txt2img completed")
+            return image, seed, 0
+
+        except Exception as e:
+            print(f"[Lens] Generation error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+
+    def _generate_img2img_lens(self, params: Dict[str, Any], init_image: Image.Image,
+                                progress_callback=None, step_callback=None,
+                                ) -> tuple:
+        if not self.lens_components:
+            raise RuntimeError("Lens components not loaded.")
+
+        from core.models.lens.lens_pipeline_ops import (
+            encode_prompt, vae_encode, denoise_loop_img2img, vae_decode,
+        )
+        from core.models.lens.lens_resolution import find_nearest_bucket
+
+        print("[Lens] Starting img2img generation")
+
+        device = self.device
+        dtype = torch.bfloat16
+
+        transformer = self.lens_components["transformer"]
+        text_encoder = self.lens_components["text_encoder"]
+        tokenizer = self.lens_components["tokenizer"]
+        vae = self.lens_components["vae"]
+        scheduler = self.lens_components["scheduler"]
+
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        num_inference_steps = int(params.get("steps", 28))
+        guidance_scale = float(params.get("cfg_scale", 4.0))
+        denoising_strength = float(params.get("denoising_strength", 0.7))
+        transformer_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+        max_sequence_length = 512
+
+        req_width = int(params.get("width", init_image.width))
+        req_height = int(params.get("height", init_image.height))
+        width, height = find_nearest_bucket(req_width, req_height)
+        latent_h = height // 16
+        latent_w = width // 16
+
+        try:
+            # Stage 1: Text encoding
+            print("[Lens] Stage 1: Text encoding...")
+            text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            encoder_features, encoder_mask = encode_prompt(
+                text_encoder, tokenizer, prompt, negative_prompt,
+                device=device, dtype=dtype, max_length=max_sequence_length,
+            )
+            self._lens_move("text_encoder", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 2: Encode init image
+            print("[Lens] Stage 2: Encoding init image...")
+            self._lens_move("vae", device)
+            vae_gpu = self.lens_components["vae"]
+            init_latents = vae_encode(vae_gpu, init_image, height, width, device=device, dtype=dtype)
+            self._lens_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 3: Denoising (SDEdit)
+            print("[Lens] Stage 3: Denoising...")
+            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self.lens_components["transformer"]
+            latents = denoise_loop_img2img(
+                transformer=transformer, scheduler=scheduler,
+                init_latents=init_latents, denoising_strength=denoising_strength,
+                encoder_features=encoder_features, encoder_mask=encoder_mask,
+                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                latent_h=latent_h, latent_w=latent_w, seed=seed,
+                progress_callback=progress_callback,
+            )
+            self._lens_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 4: VAE decode
+            print("[Lens] Stage 4: VAE decode...")
+            self._lens_move("vae", device)
+            vae_gpu = self.lens_components["vae"]
+            image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            self._lens_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("[Lens] img2img completed")
+            return image, seed, 0
+
+        except Exception as e:
+            print(f"[Lens] img2img error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+
+    def _generate_inpaint_lens(self, params: Dict[str, Any],
+                                init_image: Image.Image, mask_image: Image.Image,
+                                progress_callback=None, step_callback=None,
+                                ) -> tuple:
+        if not self.lens_components:
+            raise RuntimeError("Lens components not loaded.")
+
+        from core.models.lens.lens_pipeline_ops import (
+            encode_prompt, vae_encode, denoise_loop_inpaint, vae_decode, prepare_mask_latent,
+        )
+        from core.models.lens.lens_resolution import find_nearest_bucket
+
+        print("[Lens] Starting inpaint generation (repaint)")
+
+        device = self.device
+        dtype = torch.bfloat16
+
+        transformer = self.lens_components["transformer"]
+        text_encoder = self.lens_components["text_encoder"]
+        tokenizer = self.lens_components["tokenizer"]
+        vae = self.lens_components["vae"]
+        scheduler = self.lens_components["scheduler"]
+
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+
+        prompt = params.get("prompt", "")
+        negative_prompt = params.get("negative_prompt", "")
+        num_inference_steps = int(params.get("steps", 28))
+        guidance_scale = float(params.get("cfg_scale", 4.0))
+        denoising_strength = float(params.get("denoising_strength", 0.8))
+        mask_blur = int(params.get("mask_blur", 4))
+        transformer_quantization = params.get("unet_quantization")
+        text_encoder_quantization = params.get("text_encoder_quantization")
+        max_sequence_length = 512
+
+        req_width = int(params.get("width", init_image.width))
+        req_height = int(params.get("height", init_image.height))
+        width, height = find_nearest_bucket(req_width, req_height)
+        latent_h = height // 16
+        latent_w = width // 16
+
+        if (init_image.width, init_image.height) != (width, height):
+            init_image = init_image.resize((width, height), Image.LANCZOS)
+        if (mask_image.width, mask_image.height) != (width, height):
+            mask_image = mask_image.resize((width, height), Image.NEAREST)
+
+        if mask_blur > 0:
+            from PIL import ImageFilter
+            mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
+
+        try:
+            # Stage 1: Text encoding
+            print("[Lens] Stage 1: Text encoding...")
+            text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            encoder_features, encoder_mask = encode_prompt(
+                text_encoder, tokenizer, prompt, negative_prompt,
+                device=device, dtype=dtype, max_length=max_sequence_length,
+            )
+            self._lens_move("text_encoder", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 2: Encode init image + prepare mask
+            print("[Lens] Stage 2: Encoding init image...")
+            self._lens_move("vae", device)
+            vae_gpu = self.lens_components["vae"]
+            init_latents = vae_encode(vae_gpu, init_image, height, width, device=device, dtype=dtype)
+            self._lens_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            mask_latent = prepare_mask_latent(mask_image, latent_h, latent_w, device=device, dtype=dtype)
+
+            # Stage 3: Denoising with repaint
+            print("[Lens] Stage 3: Denoising (repaint)...")
+            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self.lens_components["transformer"]
+            latents = denoise_loop_inpaint(
+                transformer=transformer, scheduler=scheduler,
+                init_latents=init_latents, mask_latent=mask_latent,
+                denoising_strength=denoising_strength,
+                encoder_features=encoder_features, encoder_mask=encoder_mask,
+                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                latent_h=latent_h, latent_w=latent_w, seed=seed,
+                progress_callback=progress_callback,
+            )
+            self._lens_move("transformer", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            # Stage 4: VAE decode
+            print("[Lens] Stage 4: VAE decode...")
+            self._lens_move("vae", device)
+            vae_gpu = self.lens_components["vae"]
+            image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            self._lens_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            print("[Lens] inpaint completed")
+            return image, seed, 0
+
+        except Exception as e:
+            print(f"[Lens] inpaint error: {e}")
             import traceback; traceback.print_exc()
             raise
 

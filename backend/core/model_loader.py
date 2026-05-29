@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -265,6 +265,30 @@ class ModelLoader:
         - SD1.5/SDXL diffusers and safetensors
         Note: DEUS support has been removed (architecture no longer maintained)
         """
+        # Lens detection (microsoft/Lens diffusers directory or HF repo)
+        if os.path.isdir(model_path):
+            model_index_path = os.path.join(model_path, "model_index.json")
+            if os.path.exists(model_index_path):
+                try:
+                    with open(model_index_path, "r") as f:
+                        idx = json.load(f)
+                    if idx.get("_class_name") == "LensPipeline":
+                        print(f"[ModelLoader] Detected Lens model (LensPipeline): {model_path}")
+                        return "lens"
+                except Exception:
+                    pass
+            # Fallback: transformer/config.json with LensTransformer2DModel architecture
+            transformer_config_path = os.path.join(model_path, "transformer", "config.json")
+            if os.path.exists(transformer_config_path):
+                try:
+                    with open(transformer_config_path, "r") as f:
+                        tcfg = json.load(f)
+                    if "LensTransformer2DModel" in tcfg.get("architectures", []):
+                        print(f"[ModelLoader] Detected Lens model (transformer config): {model_path}")
+                        return "lens"
+                except Exception:
+                    pass
+
         # Anima detection (split-files layout or single DiT safetensors)
         try:
             from core.models.anima.anima_loader import (
@@ -1367,6 +1391,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Anima (split-files layout)")
             return ModelLoader.load_anima_from_files(model_path, device, torch.bfloat16)
 
+        # Lens (microsoft/Lens) diffusers directory
+        if model_type == "lens":
+            print(f"[ModelLoader] Loading as Lens (diffusers directory)")
+            return ModelLoader.load_lens_from_path(model_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -1434,6 +1463,11 @@ class ModelLoader:
         revision: Optional[str] = None
     ) -> StableDiffusionPipeline:
         """Load model from HuggingFace repository"""
+        # Lens (microsoft/Lens): detect by repo_id prefix
+        if "microsoft/lens" in repo_id.lower() or repo_id.lower().endswith("/lens"):
+            print(f"[ModelLoader] Loading as Lens (HuggingFace Hub): {repo_id}")
+            return ModelLoader.load_lens_from_path(repo_id, torch.bfloat16)
+
         # Detect model type from repo_id or try loading
         if "xl" in repo_id.lower() or "sdxl" in repo_id.lower():
             pipeline = StableDiffusionXLPipeline.from_pretrained(
@@ -1577,3 +1611,15 @@ class ModelLoader:
             te_dtype=torch_dtype,
             vae_dtype=torch_dtype,
         )
+
+    @staticmethod
+    def load_lens_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load Microsoft/Lens from a local diffusers directory or HF Hub ID.
+
+        Returns a component dict consumed by PipelineManager.load_model().
+        """
+        from core.models.lens.lens_loader import load_lens_components
+        return load_lens_components(model_path=path, torch_dtype=torch_dtype)

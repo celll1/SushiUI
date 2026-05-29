@@ -95,6 +95,19 @@ def _parse_key(key: str) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _flatten_to_sdscripts(module_path: str) -> str:
+    """Convert canonical dotted Lens module path to sd-scripts underscore key.
+
+    Inverse of _restore_sdscripts_dots: re-inserts dots inside known compound
+    identifiers, then replaces remaining dots with underscores.
+    """
+    intermediate = module_path
+    # Apply in REVERSE order so longer/more-specific entries bind before sub-strings.
+    for compound_dot, original in reversed(_SDSCRIPTS_REVERSE_TOKENS):
+        intermediate = intermediate.replace(original, compound_dot)
+    return intermediate.replace(".", "_")
+
+
 def normalise_lora_state_dict(
     raw: Dict[str, torch.Tensor],
 ) -> Dict[str, Dict[str, torch.Tensor]]:

@@ -243,6 +243,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # AnimaLoRAAdapter dispatch normalises and applies the corresponding
     # scope flags (see core/training/lora_trainer.py:_create_adapter).
     "anima_lora_scope": "attention,mlp,llm_adapter",
+    "lens_lora_scope": "img_attn,txt_attn,img_mlp,txt_mlp",
     # If False, llm_adapter is dropped from the scope regardless of the
     # csv above. Defaults to True so the LLM Adapter is fine-tuned along
     # with the DiT blocks (Phase C user request).

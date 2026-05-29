@@ -33,6 +33,7 @@ from .adapters import (
     # DEUSLoRAAdapter,  # DEUS support removed
     FLUX2LoRAAdapter,
     AnimaLoRAAdapter,
+    LensLoRAAdapter,
 )
 
 
@@ -116,6 +117,20 @@ class LoRATrainer(BaseTrainer):
         elif self.is_flux2:
             self.adapter = FLUX2LoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using FLUX2LoRAAdapter")
+        elif self.is_lens:
+            from core.models.lens.lens_lora import DEFAULT_SCOPE as LENS_DEFAULT_SCOPE
+            scope_csv = (getattr(self, "lens_lora_scope", "")
+                          or self.config.get("lens_lora_scope", "")
+                          or "img_attn,txt_attn,img_mlp,txt_mlp")
+            scope = dict(LENS_DEFAULT_SCOPE)
+            for tok in scope_csv.split(","):
+                tok = tok.strip()
+                if tok in scope:
+                    scope[tok] = True
+            self.adapter = LensLoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using LensLoRAAdapter (scope={scope})")
         elif self.is_anima:
             # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
             # (attention + mlp + llm_adapter, no AdaLN modulation).

@@ -189,13 +189,27 @@ class LensTransformerBlock(nn.Module):
         self.txt_norm1 = norm_cls(dim)
         self.txt_norm2 = norm_cls(dim)
         self.txt_mlp = mlp_cls()
+        # Gradient checkpointing mode set by LensTransformer2DModel.enable_gradient_checkpointing.
+        # One of: "none" | "standard" | "cpu_offload" | "async_cpu_offload"
+        self.gradient_checkpoint_mode: str = "none"
+
+    @property
+    def gradient_checkpointing(self) -> bool:
+        return self.gradient_checkpoint_mode != "none"
+
+    @gradient_checkpointing.setter
+    def gradient_checkpointing(self, value):
+        if isinstance(value, str):
+            self.gradient_checkpoint_mode = value
+        else:
+            self.gradient_checkpoint_mode = "standard" if value else "none"
 
     @staticmethod
     def _modulate(x, mod_params):
         shift, scale, gate = mod_params.chunk(3, dim=-1)
         return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1), gate.unsqueeze(1)
 
-    def forward(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb, attention_mask=None):
+    def _forward_inner(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb, attention_mask=None):
         img_mod1, img_mod2 = self.img_mod(temb).chunk(2, dim=-1)
         txt_mod1, txt_mod2 = self.txt_mod(temb).chunk(2, dim=-1)
         img_modulated, img_gate1 = self._modulate(self.img_norm1(hidden_states), img_mod1)
@@ -208,6 +222,47 @@ class LensTransformerBlock(nn.Module):
         txt_modulated2, txt_gate2 = self._modulate(self.txt_norm2(encoder_hidden_states), txt_mod2)
         encoder_hidden_states = encoder_hidden_states + txt_gate2 * self.txt_mlp(txt_modulated2)
         return encoder_hidden_states, hidden_states
+
+    def forward(self, hidden_states, encoder_hidden_states, temb, image_rotary_emb, attention_mask=None):
+        mode = self.gradient_checkpoint_mode if self.training else "none"
+        if mode == "none":
+            return self._forward_inner(hidden_states, encoder_hidden_states, temb, image_rotary_emb, attention_mask)
+
+        # attention_mask has no gradient and is shared across steps — capture in closure.
+        def _custom(hs, ehs, t, rope):
+            return self._forward_inner(hs, ehs, t, rope, attention_mask)
+
+        if mode == "standard":
+            from torch.utils.checkpoint import checkpoint
+            return checkpoint(_custom, hidden_states, encoder_hidden_states, temb, image_rotary_emb,
+                              use_reentrant=False)
+
+        if mode in ("cpu_offload", "async_cpu_offload"):
+            from torch.utils.checkpoint import checkpoint
+            compute_device = next(self.parameters()).device
+            non_blocking = (mode == "async_cpu_offload")
+
+            def _wrap(*inputs):
+                return _custom(*[t.to(compute_device, non_blocking=non_blocking)
+                                 if isinstance(t, torch.Tensor) else t for t in inputs])
+
+            def _to_cpu(t):
+                if not isinstance(t, torch.Tensor) or not t.is_cuda:
+                    return t
+                if non_blocking:
+                    cpu_copy = torch.empty(t.shape, dtype=t.dtype, device="cpu",
+                                           pin_memory=torch.cuda.is_available())
+                    cpu_copy.copy_(t, non_blocking=True)
+                    return cpu_copy
+                return t.cpu()
+
+            return checkpoint(_wrap,
+                              _to_cpu(hidden_states), _to_cpu(encoder_hidden_states),
+                              _to_cpu(temb), _to_cpu(image_rotary_emb),
+                              use_reentrant=False)
+
+        # Unknown mode — fall back without checkpointing.
+        return self._forward_inner(hidden_states, encoder_hidden_states, temb, image_rotary_emb, attention_mask)
 
 class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOriginalModelMixin, CacheMixin):
     _supports_gradient_checkpointing = True
@@ -282,6 +337,25 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
                 temb=temb, image_rotary_emb=image_rotary_emb, attention_mask=attention_mask)
         hidden_states = self.norm_out(hidden_states, temb)
         return self.proj_out(hidden_states)
+
+    def enable_gradient_checkpointing(self, cpu_offload: bool = False,
+                                      async_offload: bool = False) -> None:
+        """Enable activation checkpointing on every transformer block.
+
+        Modes (highest precedence first):
+          async_offload=True  -> non-blocking CPU offload ("async_cpu_offload")
+          cpu_offload=True    -> blocking CPU offload ("cpu_offload")
+          both False          -> standard torch.utils.checkpoint ("standard")
+        """
+        mode = ("async_cpu_offload" if async_offload
+                else "cpu_offload" if cpu_offload
+                else "standard")
+        for block in self.transformer_blocks:
+            block.gradient_checkpoint_mode = mode
+
+    def disable_gradient_checkpointing(self) -> None:
+        for block in self.transformer_blocks:
+            block.gradient_checkpoint_mode = "none"
 
     @staticmethod
     def _build_joint_attention_mask(text_mask, img_len):

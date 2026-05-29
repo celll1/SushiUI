@@ -6953,16 +6953,18 @@ class DiffusionPipelineManager:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
-            latents = denoise_loop(
-                transformer=transformer, scheduler=scheduler,
-                latents=latents, encoder_features=encoder_features, encoder_mask=encoder_mask,
-                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-                latent_h=latent_h, latent_w=latent_w,
-                progress_callback=progress_callback,
-                advanced_cfg=self._lens_advanced_cfg(params),
-            )
-            if applied_lora_count:
-                self._unload_lora_lens()
+            try:
+                latents = denoise_loop(
+                    transformer=transformer, scheduler=scheduler,
+                    latents=latents, encoder_features=encoder_features, encoder_mask=encoder_mask,
+                    guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                    latent_h=latent_h, latent_w=latent_w,
+                    progress_callback=progress_callback,
+                    advanced_cfg=self._lens_advanced_cfg(params),
+                )
+            finally:
+                if applied_lora_count:
+                    self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -7052,17 +7054,19 @@ class DiffusionPipelineManager:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
-            latents = denoise_loop_img2img(
-                transformer=transformer, scheduler=scheduler,
-                init_latents=init_latents, denoising_strength=denoising_strength,
-                encoder_features=encoder_features, encoder_mask=encoder_mask,
-                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-                latent_h=latent_h, latent_w=latent_w, seed=seed,
-                progress_callback=progress_callback,
-                advanced_cfg=self._lens_advanced_cfg(params),
-            )
-            if applied_lora_count:
-                self._unload_lora_lens()
+            try:
+                latents = denoise_loop_img2img(
+                    transformer=transformer, scheduler=scheduler,
+                    init_latents=init_latents, denoising_strength=denoising_strength,
+                    encoder_features=encoder_features, encoder_mask=encoder_mask,
+                    guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                    latent_h=latent_h, latent_w=latent_w, seed=seed,
+                    progress_callback=progress_callback,
+                    advanced_cfg=self._lens_advanced_cfg(params),
+                )
+            finally:
+                if applied_lora_count:
+                    self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -7165,18 +7169,20 @@ class DiffusionPipelineManager:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
-            latents = denoise_loop_inpaint(
-                transformer=transformer, scheduler=scheduler,
-                init_latents=init_latents, mask_latent=mask_latent,
-                denoising_strength=denoising_strength,
-                encoder_features=encoder_features, encoder_mask=encoder_mask,
-                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
-                latent_h=latent_h, latent_w=latent_w, seed=seed,
-                progress_callback=progress_callback,
-                advanced_cfg=self._lens_advanced_cfg(params),
-            )
-            if applied_lora_count:
-                self._unload_lora_lens()
+            try:
+                latents = denoise_loop_inpaint(
+                    transformer=transformer, scheduler=scheduler,
+                    init_latents=init_latents, mask_latent=mask_latent,
+                    denoising_strength=denoising_strength,
+                    encoder_features=encoder_features, encoder_mask=encoder_mask,
+                    guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                    latent_h=latent_h, latent_w=latent_w, seed=seed,
+                    progress_callback=progress_callback,
+                    advanced_cfg=self._lens_advanced_cfg(params),
+                )
+            finally:
+                if applied_lora_count:
+                    self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

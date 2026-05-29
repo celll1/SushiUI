@@ -217,8 +217,8 @@ def encode_prompt(
                 )
                 for li, feat in enumerate(emphasised):
                     pos_features[li][bi:bi+1] = feat
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Lens] emphasis application failed (ignored): {e}")
 
     if all(not neg.strip() for neg in negatives):
         # Empty negative → zero tensors of same shape as positive

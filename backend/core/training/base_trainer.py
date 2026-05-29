@@ -5172,10 +5172,15 @@ class BaseTrainer(ABC):
         # Lens timestep convention: transformer receives sigma * 1000
         timestep_input = (sigma * 1000.0).to(self.training_dtype)
 
-        # img_shapes for positional encoding: square latent layout assumed
+        # img_shapes for positional encoding: single 3-tuple (frame=1, H, W) required by LensEmbedRope
         seq_len = latents.shape[1]  # N = latent_h * latent_w
         latent_hw = int(seq_len ** 0.5)
-        img_shapes = [(latent_hw, latent_hw)] * batch_size
+        if latent_hw * latent_hw != seq_len:
+            raise ValueError(
+                f"[train_step_lens] Non-square latent sequence (N={seq_len}) is not supported; "
+                f"use square resolution buckets for Lens training."
+            )
+        img_shapes = [(1, latent_hw, latent_hw)]
 
         # encoder_features [B, num_layers, L, D] → list of num_layers tensors each [B, L, D]
         num_layers = encoder_features.shape[1]

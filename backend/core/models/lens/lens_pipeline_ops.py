@@ -124,6 +124,65 @@ def _align_text_features(
     return pad_feats(pos_features, seq_pos), pad_mask(pos_m, seq_pos), pad_feats(neg_features, seq_neg), pad_mask(neg_m, seq_neg)
 
 
+def _build_emphasis_lens(prompt: str, tokenizer, max_length: int):
+    """Strip A1111-style emphasis syntax from *prompt* and return
+    (clean_prompt, per_token_weights).
+
+    Works exactly like Anima's _build_emphasis but uses the GPT-OSS tokenizer.
+    Returns (original_prompt, []) when no emphasis syntax is present.
+    """
+    from core.prompts.prompt_parser import parse_prompt_attention
+
+    if not prompt or ("(" not in prompt and "[" not in prompt):
+        return prompt or "", []
+
+    parsed = parse_prompt_attention(prompt)
+    parsed = [(t, w) for (t, w) in parsed if t != "BREAK"]
+    has_emphasis = any(abs(w - 1.0) > 1e-4 for (_, w) in parsed)
+    if not has_emphasis:
+        return "".join(t for (t, _) in parsed), []
+
+    clean_parts: List[str] = []
+    weights: List[float] = []
+    for text, weight in parsed:
+        if not text:
+            continue
+        try:
+            ids = tokenizer.encode(text, add_special_tokens=False)
+        except Exception:
+            ids = []
+        clean_parts.append(text)
+        weights.extend([float(weight)] * len(ids))
+
+    clean_text = "".join(clean_parts)
+    if len(weights) > max_length:
+        weights = weights[:max_length]
+    return clean_text, weights
+
+
+def _apply_emphasis_lens(
+    features: List[torch.Tensor],
+    token_weights: List[float],
+    dtype: torch.dtype,
+) -> List[torch.Tensor]:
+    """Apply per-token emphasis weights multiplicatively to each layer of features.
+
+    *features* is a list of [1, S_txt, hidden_dim] tensors already trimmed to
+    start at DEFAULT_TXT_OFFSET, so position 0 corresponds to the first user-
+    prompt token.  We apply weights to positions 0..len(token_weights)-1.
+    """
+    if not token_weights:
+        return features
+    seq_len = features[0].shape[1]
+    n = min(len(token_weights), seq_len)
+    if n <= 0:
+        return features
+    full_w = torch.ones(seq_len, device=features[0].device, dtype=dtype)
+    full_w[:n] = torch.tensor(token_weights[:n], device=features[0].device, dtype=dtype)
+    w = full_w.unsqueeze(0).unsqueeze(-1)  # [1, S_txt, 1]
+    return [feat * w for feat in features]
+
+
 @torch.no_grad()
 def encode_prompt(
     text_encoder, tokenizer, prompt, negative_prompt,
@@ -140,7 +199,26 @@ def encode_prompt(
     if len(negatives) == 1 and len(prompts) > 1:
         negatives = negatives * len(prompts)
 
-    pos_features, pos_mask = _get_text_embeddings(text_encoder, tokenizer, prompts, max_length, device)
+    # Parse emphasis syntax before tokenising so clean_prompt goes to encoder
+    clean_prompts, prompt_weights = [], []
+    for p in prompts:
+        clean, weights = _build_emphasis_lens(p or "", tokenizer, max_length)
+        clean_prompts.append(clean)
+        prompt_weights.append(weights)
+
+    pos_features, pos_mask = _get_text_embeddings(text_encoder, tokenizer, clean_prompts, max_length, device)
+
+    # Apply per-token emphasis to each sample in the batch
+    for bi, weights in enumerate(prompt_weights):
+        if weights:
+            try:
+                emphasised = _apply_emphasis_lens(
+                    [f[bi:bi+1] for f in pos_features], weights, dtype
+                )
+                for li, feat in enumerate(emphasised):
+                    pos_features[li][bi:bi+1] = feat
+            except Exception:
+                pass
 
     if all(not neg.strip() for neg in negatives):
         # Empty negative → zero tensors of same shape as positive
@@ -326,10 +404,14 @@ def denoise_loop(
         )
         noise_pred = comb * scale
 
+        # pred_x0 = x_t - σ·v  (Flow Matching clean-image estimate)
+        sigma_t = t.item() / 1000.0
+        pred_x0 = latents - sigma_t * noise_pred
+
         latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         if progress_callback is not None:
-            progress_callback(i + 1, num_inference_steps, t)
+            progress_callback(i, num_inference_steps, latents.detach(), None, pred_x0.detach())
 
     return latents
 
@@ -390,10 +472,13 @@ def denoise_loop_img2img(
         )
         noise_pred = comb * scale
 
+        sigma_t = t.item() / 1000.0
+        pred_x0 = latents - sigma_t * noise_pred
+
         latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         if progress_callback is not None:
-            progress_callback(i + 1, total_steps, t)
+            progress_callback(i, total_steps, latents.detach(), None, pred_x0.detach())
 
     return latents
 
@@ -462,15 +547,19 @@ def denoise_loop_inpaint(
         )
         noise_pred = comb * scale
 
+        sigma_t = t.item() / 1000.0
+        pred_x0 = latents - sigma_t * noise_pred
+
         latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
         # Repaint: replace non-masked region with noised init at current t level
-        t_value = t.item() / 1000.0
-        noised_init = (1.0 - t_value) * init_latents + t_value * init_noise
+        noised_init = (1.0 - sigma_t) * init_latents + sigma_t * init_noise
         latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
 
         if progress_callback is not None:
-            progress_callback(i + 1, total_steps, t)
+            # Blend pred_x0 with known region for a geometry-aware preview
+            preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
+            progress_callback(i, total_steps, latents.detach(), None, preview_x0.detach())
 
     return latents
 

@@ -60,6 +60,15 @@ def load_lens_components(
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
+    # Sanity encode: surface corrupted vocabulary files at load time rather than
+    # at the first generation step where the error message is less informative.
+    try:
+        tokenizer.encode("validation", add_special_tokens=False)
+    except Exception as e:
+        raise RuntimeError(
+            f"[LensLoader] Tokenizer sanity encode failed — vocabulary files may be corrupted "
+            f"({model_path}/tokenizer): {e}"
+        ) from e
 
     print("[LensLoader] Loading VAE (AutoencoderKLFlux2)...")
     vae = AutoencoderKLFlux2.from_pretrained(

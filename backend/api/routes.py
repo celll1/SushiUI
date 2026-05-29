@@ -444,7 +444,10 @@ async def generate_txt2img(
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
         is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") in ("anima", "lens")
+                   pipeline_manager.current_model_info.get("type") == "anima"
+        # Lens shares the same AutoencoderKLFlux2 / 32ch latent format as FLUX.2
+        is_lens = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "lens"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -454,16 +457,16 @@ async def generate_txt2img(
             is_zimage,
             is_deus,
             is_zimage_sdxl_vae,
-            is_flux2,
+            is_flux2 or is_lens,
             is_anima,
             image_width=params.get("width"),
             image_height=params.get("height"),
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2), default to
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
             # the pred_x0 preview: x_t is mostly noise mid-denoising, while
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1118,7 +1121,9 @@ async def generate_img2img(
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
         is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") in ("anima", "lens")
+                   pipeline_manager.current_model_info.get("type") == "anima"
+        is_lens = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "lens"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1128,18 +1133,18 @@ async def generate_img2img(
             is_zimage,
             is_deus,
             is_zimage_sdxl_vae,
-            is_flux2,
+            is_flux2 or is_lens,
             is_anima,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
             image_height=height,
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2), default to
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
             # the pred_x0 preview: x_t is mostly noise mid-denoising, while
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1476,7 +1481,9 @@ async def generate_inpaint(
         is_zimage_sdxl_vae = is_zimage and \
                              pipeline_manager.current_model_info.get("vae_type") == "sdxl"
         is_anima = pipeline_manager.current_model_info and \
-                   pipeline_manager.current_model_info.get("type") in ("anima", "lens")
+                   pipeline_manager.current_model_info.get("type") == "anima"
+        is_lens = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "lens"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1486,18 +1493,18 @@ async def generate_inpaint(
             is_zimage,
             is_deus,
             is_zimage_sdxl_vae,
-            is_flux2,
+            is_flux2 or is_lens,
             is_anima,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
             image_height=height,
-            # For flow-matching DiTs (Anima / Z-Image / FLUX.2), default to
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
             # the pred_x0 preview: x_t is mostly noise mid-denoising, while
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )

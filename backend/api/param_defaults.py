@@ -48,6 +48,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "attention_type": "normal",
     "unet_quantization": None,
     "text_encoder_quantization": None,
+    "cpu_text_encoding": False,
     "use_torch_compile": False,
     "use_tipo": False,
     "preview_predicted_x0": False,

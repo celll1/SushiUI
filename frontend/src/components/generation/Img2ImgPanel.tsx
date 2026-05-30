@@ -103,6 +103,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   nag_enable: false,
   unet_quantization: null,
   text_encoder_quantization: null,
+  cpu_text_encoding: false,
   nag_scale: 5.0,
   nag_tau: 3.5,
   nag_alpha: 0.25,
@@ -1359,6 +1360,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         resize_mode: step.resizeMode,
         resampling_method: step.resamplingMethod,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
+        cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
       };
@@ -1431,6 +1433,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
       stepParams.unet_quantization = mainParams.unet_quantization;
+      stepParams.cpu_text_encoding = mainParams.cpu_text_encoding;
       stepParams.vision_encoder_path = mainParams.vision_encoder_path;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
@@ -2606,6 +2609,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 )}
               </>
             )}
+
+            {/* CPU Text Encoding — applies to all model types */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={params.cpu_text_encoding ?? false}
+                onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-300">CPU Text Encoding</span>
+              <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
+            </label>
 
             {developerMode && (
               <>

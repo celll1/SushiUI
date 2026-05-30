@@ -150,6 +150,8 @@ class GenerationParams(BaseModel):
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
     # Text Encoder Quantization (Z-Image only)
     text_encoder_quantization: Optional[str] = None  # None, "fp8_e4m3fn", "fp8_e5m2", "uint8", "uint4"
+    # CPU text encoding: keep text encoder on CPU during prompt encode (saves VRAM, slower)
+    cpu_text_encoding: bool = GENERATION_DEFAULTS["cpu_text_encoding"]
     # torch.compile optimization
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
     # TIPO (prompt upsampling)
@@ -945,6 +947,7 @@ async def generate_img2img(
     attention_type: str = Form("normal"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
+    cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(False),
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(GENERATION_DEFAULTS["blocks_to_swap"]),
@@ -1086,6 +1089,7 @@ async def generate_img2img(
             "attention_type": attention_type,
             "unet_quantization": unet_quantization,
             "text_encoder_quantization": text_encoder_quantization,
+            "cpu_text_encoding": cpu_text_encoding,
             "use_torch_compile": use_torch_compile,
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
@@ -1287,6 +1291,7 @@ async def generate_inpaint(
     attention_type: str = Form("normal"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
+    cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(False),
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(GENERATION_DEFAULTS["blocks_to_swap"]),
@@ -1447,6 +1452,7 @@ async def generate_inpaint(
             "attention_type": attention_type,
             "unet_quantization": unet_quantization,
             "text_encoder_quantization": text_encoder_quantization,
+            "cpu_text_encoding": cpu_text_encoding,
             "use_torch_compile": use_torch_compile,
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,

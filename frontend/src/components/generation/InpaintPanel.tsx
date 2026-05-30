@@ -120,6 +120,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   nag_negative_prompt: "",
   unet_quantization: null,
   text_encoder_quantization: null,
+  cpu_text_encoding: false,
   use_torch_compile: false,
   preview_predicted_x0: false,
   feeling_lucky: false,
@@ -1487,6 +1488,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_fill_strength: mainParams.inpaint_fill_strength,
         inpaint_blur_strength: mainParams.inpaint_blur_strength,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
+        cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         attention_type: mainParams.attention_type, // Inherit attention backend from main
@@ -1560,6 +1562,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
       stepParams.unet_quantization = mainParams.unet_quantization;
+      stepParams.cpu_text_encoding = mainParams.cpu_text_encoding;
       stepParams.vision_encoder_path = mainParams.vision_encoder_path;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
@@ -2868,6 +2871,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 )}
               </>
             )}
+
+            {/* CPU Text Encoding — applies to all model types */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={params.cpu_text_encoding ?? false}
+                onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-300">CPU Text Encoding</span>
+              <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
+            </label>
 
             {developerMode && (
               <>

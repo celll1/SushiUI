@@ -6914,6 +6914,27 @@ class DiffusionPipelineManager:
     # Lens (Microsoft/Lens MMDiT) generation methods
     # ================================================================
 
+    def _reload_lens_text_encoder(self) -> None:
+        """Reload the Lens text encoder from disk (~4 s).
+
+        Called lazily at the start of each generation when the text encoder has
+        been freed after the previous encoding stage to reclaim ~9.7 GB of mxfp4
+        CUDA memory.
+        """
+        from core.models.lens.lens_loader import reload_lens_text_encoder
+        model_path = (self.current_model_info or {}).get("source", "")
+        transformer = self.lens_components.get("transformer")
+        selected_layers = (
+            tuple(transformer.config.selected_layer_index)
+            if transformer is not None else None
+        )
+        te = reload_lens_text_encoder(
+            model_path,
+            torch_dtype=torch.bfloat16,
+            selected_layers=selected_layers,
+        )
+        self.lens_components["text_encoder"] = te
+
     def _lens_move(self, component_name: str, target_device: str,
                    quantization: Optional[str] = None):
         """Move a Lens component to the target device.
@@ -6970,6 +6991,11 @@ class DiffusionPipelineManager:
         device = self.device
         dtype = torch.bfloat16
 
+        # Lazy reload: text encoder is freed after each generation to reclaim
+        # the ~9.7 GB of mxfp4 CUDA memory.  Reload it here before encoding.
+        if self.lens_components.get("text_encoder") is None:
+            self._reload_lens_text_encoder()
+
         transformer = self.lens_components["transformer"]
         text_encoder = self.lens_components["text_encoder"]
         tokenizer = self.lens_components["tokenizer"]
@@ -7000,16 +7026,11 @@ class DiffusionPipelineManager:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
-        def _vram_mb():
-            return torch.cuda.memory_allocated() / 1024 ** 2 if torch.cuda.is_available() else 0.0
-
         try:
             # Stage 1: Text encoding
-            print(f"[Lens][DIAG] VRAM at generation start: {_vram_mb():.0f} MB")
             print("[Lens] Stage 1: Text encoding...")
             if not cpu_text_encoding:
                 text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
-            print(f"[Lens][DIAG] VRAM after TE moved to GPU: {_vram_mb():.0f} MB")
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
@@ -7019,27 +7040,21 @@ class DiffusionPipelineManager:
             if cpu_text_encoding:
                 encoder_features = [f.to(device) for f in encoder_features]
                 encoder_mask = encoder_mask.to(device)
-            print(f"[Lens][DIAG] VRAM after TE encode + params to CPU: {_vram_mb():.0f} MB")
 
-            # --- VRAM release test: drop all references to text_encoder and measure ---
+            # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
+            # Will be reloaded lazily at the start of the next generation.
             import gc as _gc
             self.lens_components["text_encoder"] = None
             text_encoder = None
             _gc.collect()
             torch.cuda.empty_cache()
-            print(f"[Lens][DIAG] VRAM after del text_encoder + gc.collect(): {_vram_mb():.0f} MB")
-            # Note: text_encoder is now None; will be reloaded from self.lens_components later
-            # (lens_components["text_encoder"] is None until we restore it)
-            # -------------------------------------------------------------------------
 
             # Stage 2: Prepare latents
             latents = prepare_latents(height, width, dtype=dtype, device=device, seed=seed)
-            print(f"[Lens][DIAG] VRAM after prepare_latents: {_vram_mb():.0f} MB")
 
             # Stage 3: Denoising
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_move("transformer", device, transformer_quantization)
-            print(f"[Lens][DIAG] VRAM after transformer to GPU: {_vram_mb():.0f} MB")
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -7059,19 +7074,16 @@ class DiffusionPipelineManager:
             del encoder_features, encoder_mask
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            print(f"[Lens][DIAG] VRAM after transformer back to CPU: {_vram_mb():.0f} MB")
 
             # Stage 4: VAE decode
             print("[Lens] Stage 4: VAE decode...")
             self._lens_move("vae", device)
-            print(f"[Lens][DIAG] VRAM after VAE to GPU: {_vram_mb():.0f} MB")
             vae_gpu = self.lens_components["vae"]
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
             del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-            print(f"[Lens][DIAG] VRAM after VAE back to CPU: {_vram_mb():.0f} MB")
 
             print("[Lens] txt2img completed")
             return image, seed, 0
@@ -7081,29 +7093,19 @@ class DiffusionPipelineManager:
             import traceback; traceback.print_exc()
             raise
         finally:
-            for _comp in ("text_encoder", "transformer", "vae"):
+            # Always free text encoder CUDA buffers on exit (normal or exception).
+            # Next generation will reload it lazily before encoding.
+            if self.lens_components.get("text_encoder") is not None:
+                import gc as _gc
+                self.lens_components["text_encoder"] = None
+                _gc.collect()
+            for _comp in ("transformer", "vae"):
                 try:
                     self._lens_move(_comp, "cpu")
                 except Exception:
                     pass
-            # If text_encoder was deleted during the VRAM test, reload it so the
-            # next generation works.  We also time the reload to evaluate feasibility.
-            if self.lens_components.get("text_encoder") is None:
-                import time as _time
-                from core.models.lens.lens_loader import load_lens_components
-                model_path = (self.current_model_info or {}).get("source", "")
-                print(f"[Lens][DIAG] VRAM before TE reload: {_vram_mb():.0f} MB")
-                _t0 = _time.perf_counter()
-                try:
-                    _fresh = load_lens_components(model_path, torch_dtype=torch.bfloat16)
-                    self.lens_components["text_encoder"] = _fresh["text_encoder"]
-                    selected_layers = tuple(self.lens_components["transformer"].config.selected_layer_index)
-                    self.lens_components["text_encoder"].set_selected_layers(selected_layers)
-                    _elapsed = _time.perf_counter() - _t0
-                    print(f"[Lens][DIAG] VRAM after TE reload: {_vram_mb():.0f} MB")
-                    print(f"[Lens][DIAG] TE reload time: {_elapsed:.2f}s")
-                except Exception as _re:
-                    print(f"[Lens][DIAG] TE reload failed: {_re}")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _generate_img2img_lens(self, params: Dict[str, Any], init_image: Image.Image,
                                 progress_callback=None, step_callback=None,
@@ -7120,6 +7122,9 @@ class DiffusionPipelineManager:
 
         device = self.device
         dtype = torch.bfloat16
+
+        if self.lens_components.get("text_encoder") is None:
+            self._reload_lens_text_encoder()
 
         transformer = self.lens_components["transformer"]
         text_encoder = self.lens_components["text_encoder"]
@@ -7165,8 +7170,13 @@ class DiffusionPipelineManager:
             if cpu_text_encoding:
                 encoder_features = [f.to(device) for f in encoder_features]
                 encoder_mask = encoder_mask.to(device)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+
+            # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
+            import gc as _gc
+            self.lens_components["text_encoder"] = None
+            text_encoder = None
+            _gc.collect()
+            torch.cuda.empty_cache()
 
             # Stage 2: Encode init image
             print("[Lens] Stage 2: Encoding init image...")
@@ -7219,11 +7229,17 @@ class DiffusionPipelineManager:
             import traceback; traceback.print_exc()
             raise
         finally:
-            for _comp in ("text_encoder", "transformer", "vae"):
+            if self.lens_components.get("text_encoder") is not None:
+                import gc as _gc
+                self.lens_components["text_encoder"] = None
+                _gc.collect()
+            for _comp in ("transformer", "vae"):
                 try:
                     self._lens_move(_comp, "cpu")
                 except Exception:
                     pass
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _generate_inpaint_lens(self, params: Dict[str, Any],
                                 init_image: Image.Image, mask_image: Image.Image,
@@ -7241,6 +7257,9 @@ class DiffusionPipelineManager:
 
         device = self.device
         dtype = torch.bfloat16
+
+        if self.lens_components.get("text_encoder") is None:
+            self._reload_lens_text_encoder()
 
         transformer = self.lens_components["transformer"]
         text_encoder = self.lens_components["text_encoder"]
@@ -7296,8 +7315,13 @@ class DiffusionPipelineManager:
             if cpu_text_encoding:
                 encoder_features = [f.to(device) for f in encoder_features]
                 encoder_mask = encoder_mask.to(device)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+
+            # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
+            import gc as _gc
+            self.lens_components["text_encoder"] = None
+            text_encoder = None
+            _gc.collect()
+            torch.cuda.empty_cache()
 
             # Stage 2: Encode init image + prepare mask
             print("[Lens] Stage 2: Encoding init image...")
@@ -7353,11 +7377,17 @@ class DiffusionPipelineManager:
             import traceback; traceback.print_exc()
             raise
         finally:
-            for _comp in ("text_encoder", "transformer", "vae"):
+            if self.lens_components.get("text_encoder") is not None:
+                import gc as _gc
+                self.lens_components["text_encoder"] = None
+                _gc.collect()
+            for _comp in ("transformer", "vae"):
                 try:
                     self._lens_move(_comp, "cpu")
                 except Exception:
                     pass
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

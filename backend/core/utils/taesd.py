@@ -245,17 +245,17 @@ class TAESDManager:
                 if channels != 128:
                     return None
 
-                # Snap to nearest Lens bucket to get correct latent_h / latent_w.
-                # This handles the case where params.width/height haven't been snapped yet.
+                # Derive latent_h / latent_w from the (already grid-aligned)
+                # image dimensions passed by the pipeline.  Since the pipeline
+                # now uses align_to_grid (multiples of 16) instead of fixed
+                # buckets, a simple divide-by-16 is correct for any resolution.
                 if image_width is not None and image_height is not None:
-                    try:
-                        from core.models.lens.lens_resolution import find_nearest_bucket
-                        snapped_w, snapped_h = find_nearest_bucket(image_width, image_height)
-                        latent_h = snapped_h // 16
-                        latent_w = snapped_w // 16
-                    except Exception:
-                        latent_h, latent_w = self._find_best_factors(num_tokens)
+                    from core.models.lens.lens_resolution import align_to_grid
+                    aligned_w, aligned_h = align_to_grid(image_width, image_height)
+                    latent_h = aligned_h // 16
+                    latent_w = aligned_w // 16
                     if latent_h * latent_w != num_tokens:
+                        # Unexpected mismatch — fall back to aspect-preserving factoring
                         latent_h, latent_w = self._find_best_factors(num_tokens)
                 else:
                     latent_h, latent_w = self._find_best_factors(num_tokens)

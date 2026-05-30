@@ -6898,7 +6898,7 @@ class DiffusionPipelineManager:
         from core.models.lens.lens_pipeline_ops import (
             encode_prompt, prepare_latents, denoise_loop, vae_decode,
         )
-        from core.models.lens.lens_resolution import find_nearest_bucket
+        from core.models.lens.lens_resolution import align_to_grid
 
         print("[Lens] Starting txt2img generation")
 
@@ -6925,9 +6925,9 @@ class DiffusionPipelineManager:
 
         req_width = int(params.get("width", 1024))
         req_height = int(params.get("height", 1024))
-        width, height = find_nearest_bucket(req_width, req_height)
+        width, height = align_to_grid(req_width, req_height)
         if (width, height) != (req_width, req_height):
-            print(f"[Lens] Resolution snapped: {req_width}×{req_height} → {width}×{height}")
+            print(f"[Lens] Resolution aligned: {req_width}×{req_height} → {width}×{height}")
 
         latent_h = height // 16
         latent_w = width // 16
@@ -6995,7 +6995,7 @@ class DiffusionPipelineManager:
         from core.models.lens.lens_pipeline_ops import (
             encode_prompt, vae_encode, denoise_loop_img2img, vae_decode,
         )
-        from core.models.lens.lens_resolution import find_nearest_bucket
+        from core.models.lens.lens_resolution import align_to_grid
 
         print("[Lens] Starting img2img generation")
 
@@ -7023,7 +7023,9 @@ class DiffusionPipelineManager:
 
         req_width = int(params.get("width", init_image.width))
         req_height = int(params.get("height", init_image.height))
-        width, height = find_nearest_bucket(req_width, req_height)
+        width, height = align_to_grid(req_width, req_height)
+        if (width, height) != (req_width, req_height):
+            print(f"[Lens] Resolution aligned: {req_width}×{req_height} → {width}×{height}")
         latent_h = height // 16
         latent_w = width // 16
 
@@ -7098,7 +7100,7 @@ class DiffusionPipelineManager:
         from core.models.lens.lens_pipeline_ops import (
             encode_prompt, vae_encode, denoise_loop_inpaint, vae_decode, prepare_mask_latent,
         )
-        from core.models.lens.lens_resolution import find_nearest_bucket
+        from core.models.lens.lens_resolution import align_to_grid
 
         print("[Lens] Starting inpaint generation (repaint)")
 
@@ -7127,7 +7129,9 @@ class DiffusionPipelineManager:
 
         req_width = int(params.get("width", init_image.width))
         req_height = int(params.get("height", init_image.height))
-        width, height = find_nearest_bucket(req_width, req_height)
+        width, height = align_to_grid(req_width, req_height)
+        if (width, height) != (req_width, req_height):
+            print(f"[Lens] Resolution aligned: {req_width}×{req_height} → {width}×{height}")
         latent_h = height // 16
         latent_w = width // 16
 

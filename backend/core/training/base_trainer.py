@@ -3733,6 +3733,7 @@ class BaseTrainer(ABC):
         condition_images_batch: Optional[torch.Tensor],
         reference_latents_nested: Optional[list],
         min_split_batch_size: int = 1,
+        lens_latent_shape: Optional[Tuple[int, int]] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -3776,6 +3777,7 @@ class BaseTrainer(ABC):
                 use_condition_images=use_condition_images,
                 condition_images_batch=condition_images_batch,
                 reference_latents_nested=reference_latents_nested,
+                lens_latent_shape=lens_latent_shape,
             )
             return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
 
@@ -3899,6 +3901,7 @@ class BaseTrainer(ABC):
                     condition_images_batch=condition_images_batch[:split_size] if condition_images_batch is not None else None,
                     reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
                     min_split_batch_size=min_split_batch_size,
+                    lens_latent_shape=lens_latent_shape,
                 )
                 first_half_success = not skip1  # skip1=True means this half was skipped
             except Exception as split1_error:
@@ -3928,6 +3931,7 @@ class BaseTrainer(ABC):
                     condition_images_batch=condition_images_batch[split_size:] if condition_images_batch is not None else None,
                     reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
                     min_split_batch_size=min_split_batch_size,
+                    lens_latent_shape=lens_latent_shape,
                 )
                 second_half_success = not skip2  # skip2=True means this half was skipped
             except Exception as split2_error:
@@ -3978,6 +3982,7 @@ class BaseTrainer(ABC):
         use_condition_images: bool,
         condition_images_batch: Optional[torch.Tensor],
         reference_latents_nested: Optional[list],
+        lens_latent_shape: Optional[Tuple[int, int]] = None,
     ) -> Tuple[float, float, float]:
         """
         Execute forward pass (train_step_xxx) and backward pass for a batch.
@@ -4017,12 +4022,15 @@ class BaseTrainer(ABC):
         elif self.is_lens:
             # mnt_text_embeddings: [B, num_layers, L, D]
             # mnt_attention_mask:  [B, L] encoder mask
+            _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
             loss, pred_loss, recon_loss = self.train_step_lens(
                 latents=mnt_latents,
                 encoder_features=mnt_text_embeddings,
                 encoder_mask=mnt_attention_mask,
                 timesteps=timesteps,
                 profile_vram=self.debug_vram,
+                latent_h=_lh,
+                latent_w=_lw,
             )
         elif self.is_flux2:
             # FLUX.2 training with position IDs
@@ -5132,6 +5140,8 @@ class BaseTrainer(ABC):
         encoder_mask: torch.Tensor,
         timesteps: Optional[torch.Tensor] = None,
         profile_vram: bool = False,
+        latent_h: Optional[int] = None,
+        latent_w: Optional[int] = None,
     ) -> Tuple[torch.Tensor, float, float]:
         """Single Lens DiT training step (flow-matching, velocity prediction).
 
@@ -5140,6 +5150,10 @@ class BaseTrainer(ABC):
             encoder_features: Stacked multi-layer text features [B, num_layers, L, D].
             encoder_mask:     Bool mask for text tokens [B, L].
             timesteps:        Optional pre-sampled sigma values in [0, 1].
+            latent_h:         Spatial height of the latent grid (height // 16).
+                              Required for non-square latents; inferred from N for square.
+            latent_w:         Spatial width of the latent grid (width // 16).
+                              Required for non-square latents; inferred from N for square.
 
         Returns:
             (loss tensor, prediction loss value, reconstruction loss value)
@@ -5172,15 +5186,26 @@ class BaseTrainer(ABC):
         # Lens timestep convention: transformer receives sigma * 1000
         timestep_input = (sigma * 1000.0).to(self.training_dtype)
 
-        # img_shapes for positional encoding: single 3-tuple (frame=1, H, W) required by LensEmbedRope
+        # img_shapes for positional encoding: single 3-tuple (frame=1, H, W) required by
+        # LensEmbedRope.  Lens supports arbitrary (H, W) multiples of 16; latent_h/latent_w
+        # must be passed explicitly for non-square latents.
         seq_len = latents.shape[1]  # N = latent_h * latent_w
-        latent_hw = int(seq_len ** 0.5)
-        if latent_hw * latent_hw != seq_len:
-            raise ValueError(
-                f"[train_step_lens] Non-square latent sequence (N={seq_len}) is not supported; "
-                f"use square resolution buckets for Lens training."
-            )
-        img_shapes = [(1, latent_hw, latent_hw)]
+        if latent_h is not None and latent_w is not None:
+            if latent_h * latent_w != seq_len:
+                raise ValueError(
+                    f"[train_step_lens] latent_h={latent_h}, latent_w={latent_w} "
+                    f"inconsistent with seq_len={seq_len} (expected {latent_h * latent_w})"
+                )
+        else:
+            # Fall back to square assumption when dims weren't supplied.
+            latent_hw = int(seq_len ** 0.5)
+            if latent_hw * latent_hw != seq_len:
+                raise ValueError(
+                    f"[train_step_lens] Non-square latent (N={seq_len}): pass latent_h "
+                    f"and latent_w explicitly so img_shapes can be set correctly."
+                )
+            latent_h = latent_w = latent_hw
+        img_shapes = [(1, latent_h, latent_w)]
 
         # encoder_features [B, num_layers, L, D] → list of num_layers tensors each [B, L, D]
         num_layers = encoder_features.shape[1]
@@ -8611,15 +8636,25 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
                                 latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
 
-                            # Validate latent shape
-                            expected_latent_height = height // 8
-                            expected_latent_width = width // 8
-                            if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
-                                print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
-                                print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
-                                print(f"{self.log_prefix}   Got: {list(latent.shape)}")
-                                print(f"{self.log_prefix}   Regenerating latent...")
-                                latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            # Validate latent shape.
+                            # Lens latents are [1, N, 128] (3D flat sequence); skip the 4D check.
+                            if not self.is_lens:
+                                expected_latent_height = height // 8
+                                expected_latent_width = width // 8
+                                if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
+                                    print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
+                                    print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
+                                    print(f"{self.log_prefix}   Got: {list(latent.shape)}")
+                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            else:
+                                # Lens: [1, latent_h*latent_w, 128]
+                                expected_seq_len = (height // 16) * (width // 16)
+                                if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 128:
+                                    print(f"{self.log_prefix} WARNING: Lens latent shape mismatch for {item['image_path']}")
+                                    print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 128]  Got: {list(latent.shape)}")
+                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
 
                             latents_list.append(latent)
 
@@ -9063,6 +9098,13 @@ class BaseTrainer(ABC):
                         # If OOM occurs, the batch is automatically split and processed sequentially
                         # Wrap in try-except as final safety net - if all recovery fails, skip batch
                         cuda_error_skip = False  # Flag to skip optimizer step when CUDA is in bad state
+
+                        # Lens: pass latent spatial dims so train_step_lens can build img_shapes
+                        # correctly for non-square resolutions.  width/height from batch loop.
+                        batch_lens_latent_shape = None
+                        if self.is_lens and width and height:
+                            batch_lens_latent_shape = (height // 16, width // 16)
+
                         try:
                             mnt_loss_value, mnt_pred_loss_value, mnt_recon_loss_value, cuda_error_skip = self._forward_backward_with_oom_recovery(
                                 mnt_latents=mnt_latents,
@@ -9078,6 +9120,7 @@ class BaseTrainer(ABC):
                                 condition_images_batch=condition_images_batch,
                                 reference_latents_nested=reference_latents_nested,
                                 min_split_batch_size=1,
+                                lens_latent_shape=batch_lens_latent_shape,
                             )
                         except Exception as batch_error:
                             # Final safety net: if all OOM recovery attempts failed,

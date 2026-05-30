@@ -82,10 +82,12 @@ class LensGptOssEncoder(GptOssForCausalLM):
             inputs_embeds.shape[1], device=inputs_embeds.device
         ).unsqueeze(0).expand_as(input_ids)
 
+        cache_position = torch.arange(inputs_embeds.shape[1], device=inputs_embeds.device)
         mask_kwargs = {
             "config": model.config,
-            "inputs_embeds": inputs_embeds,
+            "input_embeds": inputs_embeds,
             "attention_mask": attention_mask,
+            "cache_position": cache_position,
             "past_key_values": None,
             "position_ids": position_ids,
         }

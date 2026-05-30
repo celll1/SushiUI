@@ -77,6 +77,7 @@ def create_progress_callback_factory(
     is_zimage_sdxl_vae: bool = False,
     is_flux2: bool = False,
     is_anima: bool = False,
+    is_lens: bool = False,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
@@ -134,7 +135,7 @@ def create_progress_callback_factory(
             try:
                 # Debug: Log model type being used for preview
                 if step == -1 or step == 0:
-                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
+                    print(f"[ProgressCallback] Using TAESD preview: is_sdxl={is_sdxl}, is_zimage={is_zimage}, is_deus={is_deus}, is_zimage_sdxl_vae={is_zimage_sdxl_vae}, is_flux2={is_flux2}, is_anima={is_anima}, is_lens={is_lens}, image_size={image_width}x{image_height}, preview_predicted_x0={preview_predicted_x0}, preview_interval={preview_interval}")
 
                 # Choose which latent to decode based on preview_predicted_x0 option
                 # If preview_predicted_x0 is True and pred_original_sample is available, use it
@@ -152,6 +153,7 @@ def create_progress_callback_factory(
                     is_zimage_sdxl_vae=is_zimage_sdxl_vae,
                     is_flux2=is_flux2,
                     is_anima=is_anima,
+                    is_lens=is_lens,
                     image_width=image_width,
                     image_height=image_height
                 )

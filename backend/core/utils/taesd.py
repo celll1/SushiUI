@@ -49,7 +49,7 @@ class TAESDManager:
         if moved:
             torch.cuda.empty_cache()
 
-    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False):
+    def load_taesd(self, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False):
         """Load appropriate TAESD model
 
         Args:
@@ -61,6 +61,9 @@ class TAESDManager:
             is_anima: True for Anima models (16ch Qwen-Image VAE; no compatible TAE,
                       uses latent-direct preview via _decode_anima_latent_preview)
         """
+        # Lens uses AutoencoderKLFlux2 (128-ch patchified flat sequence); no TAESD.
+        if is_lens:
+            return None
         # Anima uses Qwen-Image VAE (16ch but distinct latent space from FLUX);
         # no compatible TAE available, falls back to latent-direct preview.
         if is_anima:
@@ -121,7 +124,7 @@ class TAESDManager:
                 self.taesd.to(self.device)
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -137,6 +140,10 @@ class TAESDManager:
         """
         import time
         decode_start_time = time.time()
+
+        # Lens: 128-ch patchified flat-sequence latent (AutoencoderKLFlux2)
+        if is_lens:
+            return self._decode_lens_latent_preview(latent, image_width, image_height)
 
         # Anima: 16ch Qwen-Image latent, no compatible TAE; use latent-direct preview
         if is_anima:
@@ -216,6 +223,69 @@ class TAESDManager:
 
         except Exception as e:
             self._log_decode_error("TAESD", e)
+            return None
+
+    def _decode_lens_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+        """Decode Lens flat-sequence latent [B, N, 128] to preview image.
+
+        Lens uses AutoencoderKLFlux2 with 128-ch patchified flat sequences
+        (32ch VAE output → 2×2 patchify → 128ch per token at latent_h×latent_w).
+        Snaps image dimensions to the nearest Lens resolution bucket so the
+        preview is always correct even when the user requested an unregistered
+        resolution.
+        """
+        try:
+            with torch.no_grad():
+                latent = latent.cpu().to(torch.float32)
+
+                if latent.ndim != 3:
+                    return None
+
+                batch_size, num_tokens, channels = latent.shape
+                if channels != 128:
+                    return None
+
+                # Snap to nearest Lens bucket to get correct latent_h / latent_w.
+                # This handles the case where params.width/height haven't been snapped yet.
+                if image_width is not None and image_height is not None:
+                    try:
+                        from core.models.lens.lens_resolution import find_nearest_bucket
+                        snapped_w, snapped_h = find_nearest_bucket(image_width, image_height)
+                        latent_h = snapped_h // 16
+                        latent_w = snapped_w // 16
+                    except Exception:
+                        latent_h, latent_w = self._find_best_factors(num_tokens)
+                    if latent_h * latent_w != num_tokens:
+                        latent_h, latent_w = self._find_best_factors(num_tokens)
+                else:
+                    latent_h, latent_w = self._find_best_factors(num_tokens)
+
+                # [B, N, 128] → [B, 128, latent_h, latent_w]
+                latent = latent.permute(0, 2, 1).reshape(batch_size, 128, latent_h, latent_w)
+
+                # Unpatchify: [B, 128, H, W] → [B, 32, H*2, W*2]
+                # mirrors vae_decode rearrange "b (h w) (c p1 p2) -> b c (h p1) (w p2)"
+                unpatch = latent.reshape(batch_size, 32, 2, 2, latent_h, latent_w)
+                unpatch = unpatch.permute(0, 1, 4, 2, 5, 3)
+                unpatch = unpatch.reshape(batch_size, 32, latent_h * 2, latent_w * 2)
+
+                # RGB projection using FLUX.2 factors (shared AutoencoderKLFlux2 latent space)
+                rgb_factors = torch.tensor(self._FLUX2_LATENT_RGB_FACTORS, dtype=unpatch.dtype)
+                rgb_bias = torch.tensor(self._FLUX2_LATENT_RGB_BIAS, dtype=unpatch.dtype)
+                rgb = torch.einsum('bchw,cn->bnhw', unpatch, rgb_factors) + rgb_bias.view(1, 3, 1, 1)
+                rgb = rgb[0]  # [3, H, W]
+                rgb = (rgb.clamp(-1.0, 1.0) + 1.0) / 2.0
+                rgb_np = (rgb.permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
+
+                preview = Image.fromarray(rgb_np, mode='RGB')
+                # Lens VAE: 8x spatial downscale from image to latent_h*2 / latent_w*2
+                preview = preview.resize(
+                    (preview.width * 8, preview.height * 8),
+                    Image.Resampling.BILINEAR,
+                )
+                return preview
+        except Exception as e:
+            self._log_decode_error("Lens", e)
             return None
 
     def _decode_flux2_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:

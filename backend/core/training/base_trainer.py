@@ -7090,7 +7090,9 @@ class BaseTrainer(ABC):
         base_dir = Path(get_cache_base_dir())
         text_encoder_caches = {}
 
-        arch_name = "Z-Image" if self.is_zimage else ("SDXL" if self.is_sdxl else "SD1.5")
+        arch_name = ("Z-Image" if self.is_zimage else
+                     "Lens" if self.is_lens else
+                     ("SDXL" if self.is_sdxl else "SD1.5"))
         print(f"{self.log_prefix} Setting up text encoder cache directories ({arch_name})...")
         print(f"{self.log_prefix} Using global cache directory: {base_dir}")
 
@@ -7121,7 +7123,9 @@ class BaseTrainer(ABC):
         """
         import hashlib
 
-        arch_name = "Z-Image" if self.is_zimage else ("SDXL" if self.is_sdxl else "SD1.5")
+        arch_name = ("Z-Image" if self.is_zimage else
+                     "Lens" if self.is_lens else
+                     ("SDXL" if self.is_sdxl else "SD1.5"))
         epoch_info = f" (Epoch {epoch_num + 1})" if epoch_num is not None else ""
         print(f"{self.log_prefix} Validating and generating text encoder caches ({arch_name}){epoch_info}...")
 
@@ -7167,7 +7171,7 @@ class BaseTrainer(ABC):
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                     # Check auxiliary data file (architecture-specific)
-                    if self.is_zimage:
+                    if self.is_zimage or self.is_lens:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -7206,7 +7210,7 @@ class BaseTrainer(ABC):
                             torch.save(embeds_cpu, embeds_path)
 
                             # Save auxiliary data (architecture-specific)
-                            if self.is_zimage and auxiliary_cpu is not None:
+                            if (self.is_zimage or self.is_lens) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
@@ -7270,7 +7274,7 @@ class BaseTrainer(ABC):
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
         # Check architecture-specific auxiliary file
-        if self.is_zimage:
+        if self.is_zimage or self.is_lens:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"

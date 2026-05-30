@@ -340,16 +340,21 @@ class DiffusionPipelineManager:
                 self.current_model = model_id
                 self.current_attention_type = "normal"
 
-                for comp_name in ("text_encoder", "transformer", "vae"):
+                for comp_name in ("transformer", "vae"):
                     comp = self.lens_components.get(comp_name)
                     if comp is not None and hasattr(comp, "to"):
                         try:
                             comp.to("cpu")
                         except Exception:
                             pass
+                # Free text encoder mxfp4 CUDA buffers immediately after load.
+                # Reloaded lazily before each generation's encoding stage.
+                import gc as _gc
+                self.lens_components["text_encoder"] = None
+                _gc.collect()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                print("[VRAM] All Lens components moved to CPU. Will load to GPU as needed.")
+                print("[VRAM] Lens transformer/VAE on CPU; text encoder freed (reloaded per generation).")
 
                 model_hash = ""
                 if source_type in ["safetensors", "diffusers"] and os.path.exists(source):

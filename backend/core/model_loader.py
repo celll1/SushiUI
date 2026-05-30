@@ -273,7 +273,6 @@ class ModelLoader:
                     with open(model_index_path, "r") as f:
                         idx = json.load(f)
                     if idx.get("_class_name") == "LensPipeline":
-                        print(f"[ModelLoader] Detected Lens model (LensPipeline): {model_path}")
                         return "lens"
                 except Exception:
                     pass
@@ -284,7 +283,6 @@ class ModelLoader:
                     with open(transformer_config_path, "r") as f:
                         tcfg = json.load(f)
                     if "LensTransformer2DModel" in tcfg.get("architectures", []):
-                        print(f"[ModelLoader] Detected Lens model (transformer config): {model_path}")
                         return "lens"
                 except Exception:
                     pass
@@ -296,16 +294,13 @@ class ModelLoader:
             )
             if os.path.isdir(model_path):
                 if detect_anima_split_layout(model_path):
-                    print(f"[ModelLoader] Detected Anima model (split-files layout): {model_path}")
                     return "anima"
             elif model_path.endswith(".safetensors"):
                 # If the file is inside a split_files/diffusion_models/ tree, treat as Anima.
                 if detect_anima_split_layout(model_path):
-                    print(f"[ModelLoader] Detected Anima model (split-files DiT): {model_path}")
                     return "anima"
                 # Otherwise inspect keys.
                 if is_anima_safetensors(model_path):
-                    print(f"[ModelLoader] Detected Anima model (single-file DiT): {model_path}")
                     return "anima"
         except Exception as e:
             print(f"[ModelLoader] Anima detection skipped: {e}")
@@ -320,10 +315,9 @@ class ModelLoader:
                         config = json.load(f)
                         # Z-Image has unique structure with axes_dims, rope_theta
                         if "axes_dims" in config and "rope_theta" in config:
-                            print(f"[ModelLoader] Detected Z-Image model (diffusers format): {model_path}")
                             return "zimage"
                 except Exception as e:
-                    print(f"[ModelLoader] Warning: Could not read transformer config: {e}")
+                    pass
 
             # Check for SDXL indicators
             config_path = os.path.join(model_path, "model_index.json")
@@ -348,28 +342,15 @@ class ModelLoader:
 
                         # SigLIP2 Vision Encoder detection (training checkpoint format)
                         if model_type == "siglip2_vision_encoder":
-                            print(f"[ModelLoader] Detected SigLIP2 Vision Encoder from metadata: {model_path}")
                             return "vision_encoder"
 
-                        # FLUX.2 detection
                         if model_type in ["flux2", "flux.2", "flux2-klein", "flux.2-klein"]:
-                            print(f"[ModelLoader] Detected FLUX.2 from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "flux2"
-                        # DEUS support removed - architecture no longer maintained
-                        # elif model_type == "deus":
-                        #     print(f"[ModelLoader] Detected DEUS from metadata (model_type={metadata['model_type']}): {model_path}")
-                        #     return "deus"
-                        # SDXL detection (highest priority - most common)
                         elif model_type in ["sdxl", "sd-xl", "stable-diffusion-xl", "stable_diffusion_xl"]:
-                            print(f"[ModelLoader] Detected SDXL from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "sdxl"
-                        # SD1.5 detection
                         elif model_type in ["sd15", "sd-1.5", "sd_1.5", "stable-diffusion", "stable_diffusion", "sd"]:
-                            print(f"[ModelLoader] Detected SD1.5 from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "sd15"
-                        # Z-Image detection
                         elif model_type == "zimage":
-                            print(f"[ModelLoader] Detected Z-Image from metadata (model_type={metadata['model_type']}): {model_path}")
                             return "zimage"
 
                     # Priority 2: FLUX.2 detection by state_dict keys
@@ -384,7 +365,6 @@ class ModelLoader:
                     has_single_transformer_blocks = any(k.startswith('single_transformer_blocks.') for k in keys)
 
                     if has_time_guidance_embed and has_double_stream_modulation and has_single_stream_modulation:
-                        print(f"[ModelLoader] Detected FLUX.2 model (diffusers format): {model_path}")
                         return "flux2"
 
                     # BFL/Comfy format detection (double_blocks.*.img_attn, single_blocks.*)
@@ -394,7 +374,6 @@ class ModelLoader:
                     has_guidance_in = any(k.startswith('guidance_in.') for k in keys)
 
                     if has_double_blocks and has_single_blocks and has_img_attn:
-                        print(f"[ModelLoader] Detected FLUX.2 model (BFL/Comfy format): {model_path}")
                         return "flux2"
 
                     # DEUS support removed - architecture no longer maintained
@@ -437,7 +416,6 @@ class ModelLoader:
                     has_x_embedder = any(k.startswith('x_embedder') or k.startswith('all_x_embedder') for k in keys)
 
                     if has_required and has_x_embedder:
-                        print(f"[ModelLoader] Detected Z-Image model (Comfy safetensors format): {model_path}")
                         return "zimage"
 
                     # SigLIP2 Vision Encoder detection by key structure
@@ -449,7 +427,6 @@ class ModelLoader:
                     has_encoder_layers = any(('encoder.layers.' in k) for k in keys)
                     # VE files have no U-Net, flux, or zimage keys
                     if (has_ve_direct or has_ve_prefixed or has_header_token) and has_encoder_layers and not has_unet_keys:
-                        print(f"[ModelLoader] Detected SigLIP2 Vision Encoder by keys: {model_path}")
                         return "vision_encoder"
 
                     # Fallback: SDXL detection by file size

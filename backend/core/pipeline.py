@@ -4943,7 +4943,9 @@ class DiffusionPipelineManager:
         # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
 
-        move_text_encoders_to_gpu(self.txt2img_pipeline)
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        if not cpu_text_encoding:
+            move_text_encoders_to_gpu(self.txt2img_pipeline)
         log_device_status("Ready for text encoding", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Encode prompts with weights if emphasis syntax is present
@@ -5477,7 +5479,9 @@ class DiffusionPipelineManager:
         # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-        move_text_encoders_to_gpu(self.img2img_pipeline)
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        if not cpu_text_encoding:
+            move_text_encoders_to_gpu(self.img2img_pipeline)
         log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Handle ControlNet and Reference Guide
@@ -6019,7 +6023,9 @@ class DiffusionPipelineManager:
         # ===== STAGE 1: TEXT ENCODING =====
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
-        move_text_encoders_to_gpu(self.inpaint_pipeline)
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        if not cpu_text_encoding:
+            move_text_encoders_to_gpu(self.inpaint_pipeline)
         log_device_status("Ready for text encoding (inpaint)", self.inpaint_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Determine if SDXL
@@ -6567,16 +6573,28 @@ class DiffusionPipelineManager:
         generator = torch.Generator(device=device)
         generator.manual_seed(seed)
 
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        enc_device = "cpu" if cpu_text_encoding else device
+
         try:
             # Stage 1: text encoding
-            text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
+            if not cpu_text_encoding:
+                text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=device, dtype=compute_dtype)
+                                  prompt, device=enc_device, dtype=compute_dtype)
             uncond = None
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=device, dtype=compute_dtype)
-            self._anima_move("text_encoder", "cpu")
+                                       negative_prompt, device=enc_device, dtype=compute_dtype)
+            if not cpu_text_encoding:
+                self._anima_move("text_encoder", "cpu")
+            if cpu_text_encoding:
+                # Move CPU-encoded embeddings to GPU for denoising
+                def _embeds_to_gpu(d):
+                    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
+                cond = _embeds_to_gpu(cond)
+                if uncond is not None:
+                    uncond = _embeds_to_gpu(uncond)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -6603,12 +6621,14 @@ class DiffusionPipelineManager:
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
+            del cond, uncond
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Stage 3: VAE decode
             self._anima_move("vae", device)
             images = vae_decode_latents(vae, latents)
+            del latents
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6619,6 +6639,13 @@ class DiffusionPipelineManager:
             print(f"[Anima] Generation error: {e}")
             import traceback; traceback.print_exc()
             raise
+        finally:
+            # Ensure all components are back on CPU even if an error occurred
+            for _comp in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._anima_move(_comp, "cpu")
+                except Exception:
+                    pass
 
     def _generate_img2img_anima(self, params: Dict[str, Any], init_image: Image.Image,
                                  progress_callback=None, step_callback=None
@@ -6665,6 +6692,9 @@ class DiffusionPipelineManager:
         generator = torch.Generator(device=device)
         generator.manual_seed(seed)
 
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        enc_device = "cpu" if cpu_text_encoding else device
+
         try:
             # Encode init image
             self._anima_move("vae", device)
@@ -6674,14 +6704,22 @@ class DiffusionPipelineManager:
                 torch.cuda.empty_cache()
 
             # Text encoding
-            text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
+            if not cpu_text_encoding:
+                text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=device, dtype=compute_dtype)
+                                  prompt, device=enc_device, dtype=compute_dtype)
             uncond = None
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=device, dtype=compute_dtype)
-            self._anima_move("text_encoder", "cpu")
+                                       negative_prompt, device=enc_device, dtype=compute_dtype)
+            if not cpu_text_encoding:
+                self._anima_move("text_encoder", "cpu")
+            if cpu_text_encoding:
+                def _embeds_to_gpu(d):
+                    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
+                cond = _embeds_to_gpu(cond)
+                if uncond is not None:
+                    uncond = _embeds_to_gpu(uncond)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -6709,12 +6747,14 @@ class DiffusionPipelineManager:
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
+            del cond, uncond, init_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Decode
             self._anima_move("vae", device)
             images = vae_decode_latents(vae, latents)
+            del latents
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6725,6 +6765,12 @@ class DiffusionPipelineManager:
             print(f"[Anima] Generation error: {e}")
             import traceback; traceback.print_exc()
             raise
+        finally:
+            for _comp in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._anima_move(_comp, "cpu")
+                except Exception:
+                    pass
 
     def _generate_inpaint_anima(self, params: Dict[str, Any],
                                  init_image: Image.Image, mask_image: Image.Image,
@@ -6779,6 +6825,9 @@ class DiffusionPipelineManager:
         generator = torch.Generator(device=device)
         generator.manual_seed(seed)
 
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        enc_device = "cpu" if cpu_text_encoding else device
+
         try:
             # Encode init image
             self._anima_move("vae", device)
@@ -6793,14 +6842,22 @@ class DiffusionPipelineManager:
             )
 
             # Text encoding
-            text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
+            if not cpu_text_encoding:
+                text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=device, dtype=compute_dtype)
+                                  prompt, device=enc_device, dtype=compute_dtype)
             uncond = None
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=device, dtype=compute_dtype)
-            self._anima_move("text_encoder", "cpu")
+                                       negative_prompt, device=enc_device, dtype=compute_dtype)
+            if not cpu_text_encoding:
+                self._anima_move("text_encoder", "cpu")
+            if cpu_text_encoding:
+                def _embeds_to_gpu(d):
+                    return {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in d.items()}
+                cond = _embeds_to_gpu(cond)
+                if uncond is not None:
+                    uncond = _embeds_to_gpu(uncond)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -6828,12 +6885,14 @@ class DiffusionPipelineManager:
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
+            del cond, uncond, init_latents, mask_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Decode
             self._anima_move("vae", device)
             images = vae_decode_latents(vae, latents)
+            del latents
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6844,6 +6903,12 @@ class DiffusionPipelineManager:
             print(f"[Anima] Generation error: {e}")
             import traceback; traceback.print_exc()
             raise
+        finally:
+            for _comp in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._anima_move(_comp, "cpu")
+                except Exception:
+                    pass
 
     # ================================================================
     # Lens (Microsoft/Lens MMDiT) generation methods
@@ -6932,15 +6997,24 @@ class DiffusionPipelineManager:
         latent_h = height // 16
         latent_w = width // 16
 
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        enc_device = "cpu" if cpu_text_encoding else device
+
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
-            text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            if not cpu_text_encoding:
+                text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
-                device=device, dtype=dtype, max_length=max_sequence_length,
+                device=enc_device, dtype=dtype, max_length=max_sequence_length,
             )
-            self._lens_move("text_encoder", "cpu")
+            if not cpu_text_encoding:
+                self._lens_move("text_encoder", "cpu")
+            if cpu_text_encoding:
+                # Move CPU-encoded outputs to GPU for denoising
+                encoder_features = [f.to(device) for f in encoder_features]
+                encoder_mask = encoder_mask.to(device)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -6966,6 +7040,7 @@ class DiffusionPipelineManager:
                 if applied_lora_count:
                     self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
+            del encoder_features, encoder_mask
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -6974,6 +7049,7 @@ class DiffusionPipelineManager:
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -6985,6 +7061,12 @@ class DiffusionPipelineManager:
             print(f"[Lens] Generation error: {e}")
             import traceback; traceback.print_exc()
             raise
+        finally:
+            for _comp in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._lens_move(_comp, "cpu")
+                except Exception:
+                    pass
 
     def _generate_img2img_lens(self, params: Dict[str, Any], init_image: Image.Image,
                                 progress_callback=None, step_callback=None,
@@ -7029,15 +7111,23 @@ class DiffusionPipelineManager:
         latent_h = height // 16
         latent_w = width // 16
 
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        enc_device = "cpu" if cpu_text_encoding else device
+
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
-            text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            if not cpu_text_encoding:
+                text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
-                device=device, dtype=dtype, max_length=max_sequence_length,
+                device=enc_device, dtype=dtype, max_length=max_sequence_length,
             )
-            self._lens_move("text_encoder", "cpu")
+            if not cpu_text_encoding:
+                self._lens_move("text_encoder", "cpu")
+            if cpu_text_encoding:
+                encoder_features = [f.to(device) for f in encoder_features]
+                encoder_mask = encoder_mask.to(device)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -7070,6 +7160,7 @@ class DiffusionPipelineManager:
                 if applied_lora_count:
                     self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
+            del encoder_features, encoder_mask, init_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -7078,6 +7169,7 @@ class DiffusionPipelineManager:
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -7089,6 +7181,12 @@ class DiffusionPipelineManager:
             print(f"[Lens] img2img error: {e}")
             import traceback; traceback.print_exc()
             raise
+        finally:
+            for _comp in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._lens_move(_comp, "cpu")
+                except Exception:
+                    pass
 
     def _generate_inpaint_lens(self, params: Dict[str, Any],
                                 init_image: Image.Image, mask_image: Image.Image,
@@ -7144,15 +7242,23 @@ class DiffusionPipelineManager:
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
 
+        cpu_text_encoding = params.get("cpu_text_encoding", False)
+        enc_device = "cpu" if cpu_text_encoding else device
+
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
-            text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            if not cpu_text_encoding:
+                text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
-                device=device, dtype=dtype, max_length=max_sequence_length,
+                device=enc_device, dtype=dtype, max_length=max_sequence_length,
             )
-            self._lens_move("text_encoder", "cpu")
+            if not cpu_text_encoding:
+                self._lens_move("text_encoder", "cpu")
+            if cpu_text_encoding:
+                encoder_features = [f.to(device) for f in encoder_features]
+                encoder_mask = encoder_mask.to(device)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -7188,6 +7294,7 @@ class DiffusionPipelineManager:
                 if applied_lora_count:
                     self._unload_lora_lens()
             self._lens_move("transformer", "cpu")
+            del encoder_features, encoder_mask, init_latents, mask_latent
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -7196,6 +7303,7 @@ class DiffusionPipelineManager:
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -7207,6 +7315,12 @@ class DiffusionPipelineManager:
             print(f"[Lens] inpaint error: {e}")
             import traceback; traceback.print_exc()
             raise
+        finally:
+            for _comp in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._lens_move(_comp, "cpu")
+                except Exception:
+                    pass
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

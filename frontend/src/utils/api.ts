@@ -183,6 +183,8 @@ export interface GenerationParams {
   unet_quantization?: string | null;
   // Text Encoder Quantization (Z-Image only)
   text_encoder_quantization?: string | null;
+  // CPU Text Encoding: run text encoder on CPU to save VRAM (slower)
+  cpu_text_encoding?: boolean;
   // torch.compile optimization
   use_torch_compile?: boolean;
   // TIPO prompt upsampling
@@ -337,6 +339,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
     formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
   }
+  formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
@@ -605,6 +608,9 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
     console.log('[API] No quantization or "none" selected');
   }
 
+  // CPU text encoding
+  formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
+
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
 
@@ -716,6 +722,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   } else {
     console.log('[API] No quantization or "none" selected');
   }
+
+  // CPU text encoding
+  formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));

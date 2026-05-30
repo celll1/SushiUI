@@ -3450,6 +3450,29 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_gpu(self):
         """Move Text Encoder(s) to GPU for encoding."""
+        if self.is_lens:
+            # Lens mxfp4 TE: .to('cpu') cannot free the kernels CUDA buffers, so
+            # move_text_encoder_to_cpu() deletes the object entirely.  Reload here
+            # if it was previously freed.
+            if self.text_encoder is None:
+                from core.models.lens.lens_loader import reload_lens_text_encoder
+                transformer = getattr(self, "transformer", None) or getattr(self, "transformer_original", None)
+                selected_layers = (
+                    tuple(transformer.config.selected_layer_index)
+                    if transformer is not None and hasattr(transformer, "config")
+                    and hasattr(transformer.config, "selected_layer_index") else None
+                )
+                print(f"[Lens TE] Reloading text encoder for swap (mxfp4, ~4 s)...")
+                self.text_encoder = reload_lens_text_encoder(
+                    self.model_path,
+                    torch_dtype=getattr(self, "weight_dtype", torch.bfloat16),
+                    selected_layers=selected_layers,
+                )
+            # The mxfp4 kernels library allocates CUDA memory during from_pretrained;
+            # the non-quantised params live on CPU and are moved here for encoding.
+            self.text_encoder.to(self.device)
+            return
+
         if self.text_encoder is not None:
             # SD/SDXL: CLIPTextModel
             self.text_encoder.to(self.device)
@@ -3464,6 +3487,17 @@ class BaseTrainer(ABC):
 
     def move_text_encoder_to_cpu(self):
         """Move Text Encoder(s) to CPU to free VRAM."""
+        if self.is_lens:
+            # .to('cpu') only moves the non-quantised PyTorch params; the kernels
+            # library FP4 CUDA buffers (~9.7 GB) remain allocated.  The only way
+            # to release them is to delete the object and GC.
+            import gc as _gc
+            self.text_encoder = None
+            _gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return
+
         if self.text_encoder is not None:
             self.text_encoder.to("cpu")
         if self.is_sdxl and self.text_encoder_2 is not None:

@@ -107,3 +107,29 @@ def load_lens_components(
         "vae": vae,
         "scheduler": scheduler,
     }
+
+
+def reload_lens_text_encoder(
+    model_path: str,
+    torch_dtype: torch.dtype = torch.bfloat16,
+    selected_layers: tuple = None,
+):
+    """Reload only the Lens text encoder from disk (~4 s).
+
+    Called at the start of each generation when the text encoder has been freed
+    after the previous encoding stage to reclaim its ~9.7 GB of mxfp4 CUDA memory.
+    """
+    from core.models.lens.vendor import LensGptOssEncoder
+
+    print("[LensLoader] Reloading text encoder (mxfp4, ~4 s)...")
+    text_encoder = LensGptOssEncoder.from_pretrained(
+        model_path,
+        subfolder="text_encoder",
+        torch_dtype=torch_dtype,
+        low_cpu_mem_usage=True,
+    )
+    text_encoder.eval()
+    text_encoder.to("cpu")
+    if selected_layers is not None:
+        text_encoder.set_selected_layers(selected_layers)
+    return text_encoder

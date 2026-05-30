@@ -2,6 +2,13 @@
 
 Loads each sub-model to CPU; pipeline.py stages them to GPU per generation phase.
 Supports both HuggingFace Hub IDs (str) and local directory paths.
+
+NOTE — Lens text encoder VRAM:
+  The text encoder (LensGptOssEncoder) uses mxfp4 quantization via the `kernels`
+  library.  During from_pretrained the library allocates ~9.7 GB of CUDA memory
+  for packed FP4 weight buffers.  These buffers are NOT tracked by PyTorch's
+  named_parameters() / named_buffers(), so .to('cpu') cannot free them.
+  ~9.7 GB of VRAM is therefore permanently consumed while a Lens model is loaded.
 """
 
 import torch
@@ -41,7 +48,12 @@ def load_lens_components(
     transformer.eval()
     transformer.to("cpu")
 
-    print("[LensLoader] Loading text encoder (LensGptOssEncoder)...")
+    # The mxfp4 text encoder allocates ~9.7 GB of CUDA memory via the `kernels`
+    # library during from_pretrained.  This is unavoidable — .to('cpu') moves only
+    # the regular (non-quantized) PyTorch params; the FP4 weight buffers remain on
+    # GPU.  During generation the non-quantized params are moved to GPU by
+    # _lens_move(); they are returned to CPU afterwards to reclaim that small slice.
+    print("[LensLoader] Loading text encoder (LensGptOssEncoder, mxfp4 — allocates ~9.7 GB VRAM)...")
     text_encoder = LensGptOssEncoder.from_pretrained(
         model_path,
         subfolder="text_encoder",

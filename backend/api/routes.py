@@ -3015,6 +3015,7 @@ class SigLIP2MergeLoRARequest(BaseModel):
 class SigLIP2ExportONNXRequest(BaseModel):
     output_path: str
     max_num_patches: int = 256
+    strip_unknown_tags: bool = False
 
 
 class SigLIP2ExtractEncoderRequest(BaseModel):
@@ -3122,6 +3123,7 @@ async def siglip2_export_onnx(request: SigLIP2ExportONNXRequest):
         onnx_path, vocab_path = mgr.export_onnx(
             output_path=request.output_path,
             max_num_patches=request.max_num_patches,
+            strip_unknown_tags=request.strip_unknown_tags,
         )
         return {"saved_path": onnx_path, "vocab_path": vocab_path}
     except Exception as e:

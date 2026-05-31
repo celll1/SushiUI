@@ -17,6 +17,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
   const [mergeOutput,    setMergeOutput]    = useState("");
   const [onnxOutput,     setOnnxOutput]     = useState("");
   const [maxPatches,     setMaxPatches]     = useState(256);
+  const [stripUnknown,   setStripUnknown]   = useState(false);
   const [merging,        setMerging]        = useState(false);
   const [exporting,      setExporting]      = useState(false);
   const [mergeResult,    setMergeResult]    = useState<string | null>(null);
@@ -54,7 +55,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
     setOnnxError(null);
     setOnnxResult(null);
     try {
-      const result = await exportSigLIP2ONNX(onnxOutput, maxPatches);
+      const result = await exportSigLIP2ONNX(onnxOutput, maxPatches, stripUnknown);
       setOnnxResult({ onnx: result.saved_path, vocab: result.vocab_path });
     } catch (e: any) {
       setOnnxError(e?.response?.data?.detail ?? e?.message ?? "Export failed");
@@ -143,6 +144,16 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
             className={inputCls}
           />
         </div>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={stripUnknown}
+            onChange={(e) => setStripUnknown(e.target.checked)}
+            disabled={!modelLoaded}
+            className="w-3.5 h-3.5 accent-teal-500"
+          />
+          <span className="text-xs text-gray-300">Strip Unknown-category tags from head</span>
+        </label>
         {onnxError && (
           <p className="text-xs text-red-400 break-all">{onnxError}</p>
         )}

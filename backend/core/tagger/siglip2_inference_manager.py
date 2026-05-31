@@ -598,11 +598,15 @@ class SigLIP2InferenceManager:
         self,
         output_path: str,
         max_num_patches: int = 256,
+        strip_unknown_tags: bool = False,
     ) -> Tuple[str, str]:
         """Export the model to ONNX format.
 
         If the model is a LoRA model, merges weights first using a temporary
         SigLIP2TaggerModel.
+
+        strip_unknown_tags: if True, remove head rows for Unknown-category tags
+        before export and write a filtered vocabulary alongside the ONNX file.
 
         Returns (onnx_path, vocab_path).
         """
@@ -669,6 +673,45 @@ class SigLIP2InferenceManager:
             num_tags     = self.model.head.out_features
 
         export_model.eval().to("cpu")
+
+        # Optionally strip Unknown-category tag heads before export.
+        # Builds a new head with only non-Unknown rows and writes a filtered
+        # vocabulary alongside the ONNX file.
+        export_vocab_data: Optional[dict] = None  # None → use self.vocab_path as-is
+        if strip_unknown_tags and self.vocabulary is not None:
+            tag_to_idx: dict = self.vocabulary.get("tag_to_idx", {})
+            tag_to_cat: dict = self.vocabulary.get("tag_to_category", {})
+            keep_indices = sorted(
+                idx for tag, idx in tag_to_idx.items()
+                if tag_to_cat.get(tag, "General") != "Unknown"
+            )
+            removed = num_tags - len(keep_indices)
+            if removed > 0:
+                import torch as _torch
+                _keep = _torch.tensor(keep_indices, dtype=_torch.long)
+                new_head = nn.Linear(export_model.head.in_features, len(keep_indices), bias=True)
+                new_head.weight.data = export_model.head.weight.data[_keep]
+                new_head.bias.data   = export_model.head.bias.data[_keep]
+                export_model.head = new_head
+                num_tags = len(keep_indices)
+                print(f"[SigLIP2Manager] strip_unknown_tags: removed {removed} Unknown heads → {num_tags} tags remain")
+                # Build filtered vocabulary dict for output
+                old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(keep_indices)}
+                new_t2i = {tag: old_to_new[idx] for tag, idx in tag_to_idx.items() if idx in old_to_new}
+                new_i2t = {str(v): k for k, v in new_t2i.items()}
+                new_t2c = {tag: tag_to_cat.get(tag, "General") for tag in new_t2i}
+                new_cats: dict = {}
+                for tag, cat in new_t2c.items():
+                    new_cats.setdefault(cat, []).append(tag)
+                export_vocab_data = {
+                    "tag_to_idx": new_t2i,
+                    "idx_to_tag": new_i2t,
+                    "tag_to_category": new_t2c,
+                    "num_tags": num_tags,
+                    "categories": new_cats,
+                }
+            else:
+                print("[SigLIP2Manager] strip_unknown_tags: no Unknown tags found, skipping")
 
         # Build a dummy input using the processor on a tiny image
         dummy_img = Image.new("RGB", (64, 64), color=(128, 128, 128))
@@ -746,10 +789,14 @@ class SigLIP2InferenceManager:
 
         # Save vocabulary alongside the ONNX file
         vocab_out = os.path.splitext(output_path)[0] + "_vocabulary.json"
-        with open(self.vocab_path, "r", encoding="utf-8") as fh:
-            raw_vocab = fh.read()
-        with open(vocab_out, "w", encoding="utf-8") as fh:
-            fh.write(raw_vocab)
+        if export_vocab_data is not None:
+            with open(vocab_out, "w", encoding="utf-8") as fh:
+                json.dump(export_vocab_data, fh, ensure_ascii=False, indent=2)
+        else:
+            with open(self.vocab_path, "r", encoding="utf-8") as fh:
+                raw_vocab = fh.read()
+            with open(vocab_out, "w", encoding="utf-8") as fh:
+                fh.write(raw_vocab)
 
         # Write _metadata.json alongside the ONNX so inference (and spaces app) can
         # load the correct processor without hardcoding the repo ID.

@@ -3,9 +3,17 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import type { TaggerTrainingMetric } from "@/utils/api";
 
+export interface EpochBoundary {
+  epoch: number;
+  /** Global training step at which this epoch ended.  Only boundaries actually
+   *  recorded during training are included; epochs before recording started are
+   *  represented by the pre-tracking label ("Epoch 1-N"). */
+  step: number;
+}
+
 interface TaggerMetricChartProps {
   data: TaggerTrainingMetric[];
-  valueKey: "loss" | "f1" | "threshold" | "train_f1";
+  valueKey: "loss" | "f1" | "threshold" | "train_f1" | "precision" | "recall";
   /** Color used when only one resume_seq is present (initial/legacy single-curve render).
    *  Multi-series rendering cycles through the built-in palette below. */
   color: string;
@@ -16,9 +24,11 @@ interface TaggerMetricChartProps {
   yMinFloor?: number;
   /** Optional secondary series (e.g. val F1 overlaid on train F1).
    *  All resume_seq values are merged into a single dashed line. */
-  secondaryValueKey?: "loss" | "f1" | "threshold" | "train_f1";
+  secondaryValueKey?: "loss" | "f1" | "threshold" | "train_f1" | "precision" | "recall";
   secondaryColor?: string;
   secondaryLabel?: string;
+  /** Epoch boundary markers to render as vertical lines.  Missing or empty ⇒ no markers. */
+  epochBoundaries?: EpochBoundary[];
 }
 
 interface Point {
@@ -87,6 +97,7 @@ export default function TaggerMetricChart({
   secondaryValueKey,
   secondaryColor = "#22c55e",
   secondaryLabel,
+  epochBoundaries,
 }: TaggerMetricChartProps) {
   // Group primary points by resume_seq so each resume becomes its own curve.
   const groups = useMemo<Map<number, Point[]>>(() => {
@@ -571,6 +582,28 @@ export default function TaggerMetricChart({
               </span>
             </div>
           )}
+          {epochBoundaries && epochBoundaries.length >= 2 && (() => {
+            const steps = epochBoundaries.map((b) => b.step);
+            const eMin = Math.min(...steps);
+            const eMax = Math.max(...steps);
+            const isEpochView = xRange && xRange.min === eMin && xRange.max === eMax;
+            return (
+              <button
+                onClick={() => {
+                  if (isEpochView) setXRange(null);
+                  else setXRange({ min: eMin, max: eMax });
+                }}
+                className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${
+                  isEpochView
+                    ? "bg-blue-700 text-blue-100"
+                    : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+                }`}
+                title={isEpochView ? "Reset zoom" : "Zoom to epoch boundary range"}
+              >
+                Epochs
+              </button>
+            );
+          })()}
           {xRange && (
             <button
               onClick={() => setXRange(null)}
@@ -665,6 +698,61 @@ export default function TaggerMetricChart({
               {formatX(s)}
             </text>
           ))}
+
+          {/* Epoch boundary vertical lines and labels */}
+          {epochBoundaries && epochBoundaries.length > 0 && (() => {
+            const firstKnown = epochBoundaries[0];
+            const visibleBdrs = epochBoundaries.filter(
+              (b) => b.step >= xMin - (xSpan * 0.02) && b.step <= xMax + (xSpan * 0.02)
+            );
+            // Pre-tracking region: epochs 1...(firstKnown.epoch-1) happened before step tracking
+            const showPreLabel = firstKnown.epoch > 1 && xMin < firstKnown.step;
+            return (
+              <g>
+                {showPreLabel && (() => {
+                  const regionEnd = Math.min(firstKnown.step, xMax);
+                  const regionStart = xMin;
+                  if (regionEnd <= regionStart) return null;
+                  const midX = toX((regionStart + regionEnd) / 2);
+                  return (
+                    <text
+                      x={Math.max(PAD.left + 4, Math.min(PAD.left + chartW - 4, midX))}
+                      y={PAD.top + 10}
+                      textAnchor="middle"
+                      fontSize={8}
+                      fill="#6b7280"
+                    >
+                      Epoch 1-{firstKnown.epoch - 1}
+                    </text>
+                  );
+                })()}
+                {visibleBdrs.map((b) => {
+                  const bx = toX(b.step);
+                  const labelX = Math.max(PAD.left + 2, Math.min(PAD.left + chartW - 2, bx));
+                  return (
+                    <g key={`eb-${b.epoch}`}>
+                      <line
+                        x1={bx} x2={bx}
+                        y1={PAD.top} y2={PAD.top + chartH}
+                        stroke="#374151"
+                        strokeWidth={1}
+                        strokeDasharray="4 3"
+                      />
+                      <text
+                        x={labelX}
+                        y={PAD.top + 9}
+                        textAnchor="middle"
+                        fontSize={8}
+                        fill="#9ca3af"
+                      >
+                        Ep {b.epoch}
+                      </text>
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })()}
 
           {/* Secondary series (dashed, below primary so primary renders on top) */}
           {secondaryValueKey && (() => {

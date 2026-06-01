@@ -2423,6 +2423,9 @@ export interface TaggerTrainingMetric {
   train_f1?: number | null;
   threshold: number | null;
   learning_rate: number | null;
+  // Macro precision/recall at the current threshold (null for old runs that pre-date this field)
+  precision?: number | null;
+  recall?: number | null;
   timestamp?: string;
 }
 

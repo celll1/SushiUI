@@ -12,7 +12,7 @@ import {
 } from "@/utils/api";
 import { wsClient, TaggerMetrics, DatasetScanProgress } from "@/utils/websocket";
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
-import TaggerMetricChart from "./TaggerMetricChart";
+import TaggerMetricChart, { EpochBoundary } from "./TaggerMetricChart";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -71,6 +71,7 @@ export default function TaggerTrainingMonitor({
 }: TaggerTrainingMonitorProps) {
   const [run, setRun] = useState<TaggerTrainingRun>(initialRun);
   const [metrics, setMetrics] = useState<TaggerTrainingMetric[]>([]);
+  const [epochBoundaries, setEpochBoundaries] = useState<EpochBoundary[]>([]);
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +116,25 @@ export default function TaggerTrainingMonitor({
     onStatusChange(updated);
   }, [onStatusChange]);
 
+  // Extract epoch boundaries from a raw metric map.
+  // Only rows with epoch != null and step > 0 are considered.
+  // If multiple rows share the same epoch, the one with the largest step wins.
+  const extractEpochBoundaries = useCallback(
+    (rawMap: Map<string, TaggerTrainingMetric>): EpochBoundary[] => {
+      const byEpoch = new Map<number, number>();
+      for (const m of rawMap.values()) {
+        if (m.epoch !== null && m.epoch !== undefined && m.step > 0) {
+          const existing = byEpoch.get(m.epoch);
+          if (existing === undefined || m.step > existing) byEpoch.set(m.epoch, m.step);
+        }
+      }
+      return [...byEpoch.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([epoch, step]) => ({ epoch, step }));
+    },
+    []
+  );
+
   const fetchStatus = useCallback(async () => {
     try {
       const updated = await getTaggerTrainingRun(run.run_id);
@@ -133,6 +153,9 @@ export default function TaggerTrainingMonitor({
         const rawMap = new Map<string, TaggerTrainingMetric>();
         for (const r of data) rawMap.set(keyOf(r), r);
         rawMetricsRef.current = rawMap;
+
+        // Extract epoch boundaries from the full undecimented data
+        setEpochBoundaries(extractEpochBoundaries(rawMap));
 
         // Apply the same global-stride decimation as the WS flush path so the
         // initial render is consistent with live updates.
@@ -159,7 +182,7 @@ export default function TaggerTrainingMonitor({
     } catch (err) {
       console.error("[TaggerMonitor] Failed to fetch metrics:", err);
     }
-  }, [run.run_id]);
+  }, [run.run_id, extractEpochBoundaries]);
 
   // WebSocket: receive live tagger metrics during training
   useEffect(() => {
@@ -206,6 +229,8 @@ export default function TaggerTrainingMonitor({
         train_f1: m.train_f1 ?? null,
         threshold: m.threshold ?? null,
         learning_rate: m.lr ?? null,
+        precision: m.precision ?? null,
+        recall: m.recall ?? null,
         timestamp: new Date().toISOString(),
       };
 
@@ -304,6 +329,8 @@ export default function TaggerTrainingMonitor({
             sorted = out;
           }
           setMetrics(sorted);
+          // Update epoch boundaries from the full raw map (never decimated)
+          setEpochBoundaries(extractEpochBoundaries(rawMap));
         }, 1000);
       }
     };
@@ -344,7 +371,7 @@ export default function TaggerTrainingMonitor({
         wsFlushRef.current = null;
       }
     };
-  }, [run.run_id]);
+  }, [run.run_id, extractEpochBoundaries]);
 
   // Poll status only (not metrics — metrics come via WebSocket).
   //
@@ -660,6 +687,7 @@ export default function TaggerTrainingMonitor({
               smoothable={true}
               defaultSmoothing={0.9}
               yMinFloor={0}
+              epochBoundaries={epochBoundaries}
             />
             <TaggerMetricChart
               data={metrics}
@@ -673,6 +701,21 @@ export default function TaggerTrainingMonitor({
               smoothable={true}
               defaultSmoothing={0.7}
               yMinFloor={0}
+              epochBoundaries={epochBoundaries}
+            />
+            <TaggerMetricChart
+              data={metrics}
+              valueKey="precision"
+              secondaryValueKey="recall"
+              secondaryColor="#a78bfa"
+              secondaryLabel="Recall"
+              color="#38bdf8"
+              title="Precision / Recall"
+              height={120}
+              smoothable={true}
+              defaultSmoothing={0.7}
+              yMinFloor={0}
+              epochBoundaries={epochBoundaries}
             />
             <TaggerMetricChart
               data={metrics}
@@ -681,6 +724,7 @@ export default function TaggerTrainingMonitor({
               title="Optimal Threshold"
               height={100}
               yMinFloor={0}
+              epochBoundaries={epochBoundaries}
             />
 
             {/* Error message */}

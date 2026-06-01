@@ -7714,23 +7714,29 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             elif event_type == "epoch":
                 run.current_epoch = data.get("epoch", run.current_epoch)
                 run.latest_loss   = data.get("loss")
+                # Use step from trainer emit (includes global_step), fallback to tracked step
+                _epoch_step = data.get("step", run.current_step)
                 if data.get("f1") is not None:
                     _upsert_metric(
-                        step=run.current_step,
+                        step=_epoch_step,
                         epoch=data.get("epoch"),
                         loss=data.get("loss"),
                         f1=data.get("f1"),
                         threshold=data.get("threshold"),
+                        precision=data.get("precision"),
+                        recall=data.get("recall"),
                     )
                 manager.send_tagger_metrics(
                     run_id=rid,
                     event_type="epoch",
-                    step=run.current_step,
+                    step=_epoch_step,
                     epoch=data.get("epoch"),
                     loss=data.get("loss"),
                     f1=data.get("f1"),
                     threshold=data.get("threshold"),
                     resume_seq=resume_seq,
+                    precision=data.get("precision"),
+                    recall=data.get("recall"),
                 )
             elif event_type == "checkpoint":
                 if data.get("name") == "best_f1":
@@ -7750,6 +7756,8 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     step=data.get("step", 0),
                     train_f1=data.get("train_f1"),
                     threshold=data.get("threshold") if data.get("threshold_updated") else None,
+                    precision=data.get("train_precision"),
+                    recall=data.get("train_recall"),
                 )
                 manager.send_tagger_metrics(
                     run_id=rid,
@@ -7758,6 +7766,8 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     train_f1=data.get("train_f1"),
                     threshold=data.get("threshold") if data.get("threshold_updated") else None,
                     resume_seq=resume_seq,
+                    precision=data.get("train_precision"),
+                    recall=data.get("train_recall"),
                 )
             elif event_type == "vocab":
                 run.num_tags = data.get("num_tags")

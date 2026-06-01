@@ -50,6 +50,8 @@ export interface TaggerMetrics {
   train_f1?: number;
   threshold?: number;
   progress?: number;
+  precision?: number;
+  recall?: number;
 }
 
 export interface DatasetScanProgress {
@@ -150,6 +152,8 @@ class ProgressClient {
             train_f1: data.train_f1,
             threshold: data.threshold,
             progress: data.progress,
+            precision: data.precision,
+            recall: data.recall,
           };
           this.taggerMetricsCallbacks.forEach((cb) => cb(metrics));
         } else if (data.type === "dataset_scan_progress") {

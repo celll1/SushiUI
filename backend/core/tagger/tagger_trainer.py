@@ -85,35 +85,15 @@ def _build_optimizer(
 # Validation utilities
 # ------------------------------------------------------------------
 
-def _compute_f1_macro(
-    all_preds: torch.Tensor,
-    all_labels: torch.Tensor,
-    threshold: float = 0.5,
-) -> float:
-    """Compute macro F1 score across all tags."""
-    preds_bin = (all_preds >= threshold).float()
-    tp = (preds_bin * all_labels).sum(dim=0)
-    fp = (preds_bin * (1 - all_labels)).sum(dim=0)
-    fn = ((1 - preds_bin) * all_labels).sum(dim=0)
-    precision = tp / (tp + fp + 1e-8)
-    recall    = tp / (tp + fn + 1e-8)
-    f1        = 2 * precision * recall / (precision + recall + 1e-8)
-    # Only include tags that appear at least once in labels
-    active = all_labels.sum(dim=0) > 0
-    if active.sum() == 0:
-        return 0.0
-    return f1[active].mean().item()
-
-
-def _compute_pr_metrics(
+def _compute_all_metrics(
     all_preds: torch.Tensor,
     all_labels: torch.Tensor,
     threshold: float = 0.5,
 ) -> Dict[str, float]:
-    """Compute macro precision and recall at the given threshold.
+    """Compute macro F1, precision, and recall in a single pass.
 
     Only active tags (at least one positive sample in labels) are included.
-    Returns a dict with keys 'precision' and 'recall'.
+    Returns a dict with keys 'f1', 'precision', 'recall'.
     """
     preds_bin = (all_preds >= threshold).float()
     tp = (preds_bin * all_labels).sum(dim=0)
@@ -121,13 +101,34 @@ def _compute_pr_metrics(
     fn = ((1 - preds_bin) * all_labels).sum(dim=0)
     precision = tp / (tp + fp + 1e-8)
     recall    = tp / (tp + fn + 1e-8)
+    f1        = 2 * precision * recall / (precision + recall + 1e-8)
     active = all_labels.sum(dim=0) > 0
     if active.sum() == 0:
-        return {"precision": 0.0, "recall": 0.0}
+        return {"f1": 0.0, "precision": 0.0, "recall": 0.0}
     return {
+        "f1":        f1[active].mean().item(),
         "precision": precision[active].mean().item(),
         "recall":    recall[active].mean().item(),
     }
+
+
+def _compute_f1_macro(
+    all_preds: torch.Tensor,
+    all_labels: torch.Tensor,
+    threshold: float = 0.5,
+) -> float:
+    """Thin wrapper around _compute_all_metrics that returns only the F1 scalar."""
+    return _compute_all_metrics(all_preds, all_labels, threshold)["f1"]
+
+
+def _compute_pr_metrics(
+    all_preds: torch.Tensor,
+    all_labels: torch.Tensor,
+    threshold: float = 0.5,
+) -> Dict[str, float]:
+    """Thin wrapper around _compute_all_metrics that returns precision and recall."""
+    m = _compute_all_metrics(all_preds, all_labels, threshold)
+    return {"precision": m["precision"], "recall": m["recall"]}
 
 
 def _find_best_threshold(
@@ -141,7 +142,7 @@ def _find_best_threshold(
       1. Coarse grid 0.05–0.95 step 0.05 (19 points)
       2. Refinement around the best at 0.01 step (≤8 new points)
 
-    Total ≤27 _compute_f1_macro calls.  Returns ``(best_threshold, best_f1)``
+    Total ≤27 _compute_all_metrics calls.  Returns ``(best_threshold, best_f1)``
     where both values correspond to the same threshold (consistent).
     """
     if thresholds is None:
@@ -149,7 +150,7 @@ def _find_best_threshold(
 
     f1_at_thr: Dict[float, float] = {}
     for thr in thresholds:
-        f1_at_thr[thr] = _compute_f1_macro(all_preds, all_labels, threshold=thr)
+        f1_at_thr[thr] = _compute_all_metrics(all_preds, all_labels, threshold=thr)["f1"]
 
     best_thr = max(f1_at_thr, key=f1_at_thr.get)
 
@@ -158,7 +159,7 @@ def _find_best_threshold(
     refine = [t for t in refine_candidates
               if 0.01 <= t <= 0.99 and t not in f1_at_thr]
     for thr in refine:
-        f1_at_thr[thr] = _compute_f1_macro(all_preds, all_labels, threshold=thr)
+        f1_at_thr[thr] = _compute_all_metrics(all_preds, all_labels, threshold=thr)["f1"]
 
     best_thr = max(f1_at_thr, key=f1_at_thr.get)
     return best_thr, f1_at_thr[best_thr]
@@ -1229,15 +1230,15 @@ class TaggerTrainer:
                     if _n1_search > 0 and global_step % _n1_search == 0:
                         _f1_threshold, _train_f1_val = _find_best_threshold(_buf_p, _buf_l)
                         _threshold_updated = True
-                    else:
-                        _train_f1_val = _compute_f1_macro(_buf_p, _buf_l, threshold=_f1_threshold)
-                    # Compute precision/recall at the current threshold (minimal overhead)
-                    _pr = _compute_pr_metrics(_buf_p, _buf_l, threshold=_f1_threshold)
+                    # Single-pass computation of F1 + precision + recall at the current threshold
+                    _buf_metrics = _compute_all_metrics(_buf_p, _buf_l, threshold=_f1_threshold)
+                    if not _threshold_updated:
+                        _train_f1_val = _buf_metrics["f1"]
                     self._emit("train_f1", {
                         "step": global_step,
                         "train_f1": _train_f1_val,
-                        "train_precision": _pr["precision"],
-                        "train_recall": _pr["recall"],
+                        "train_precision": _buf_metrics["precision"],
+                        "train_recall": _buf_metrics["recall"],
                         "threshold": _f1_threshold,
                         "threshold_updated": _threshold_updated,
                     })
@@ -1439,8 +1440,9 @@ class TaggerTrainer:
         all_labels = torch.cat(all_labels, dim=0)
 
         threshold, f1 = _find_best_threshold(all_preds, all_labels)
-        pr = _compute_pr_metrics(all_preds, all_labels, threshold=threshold)
-        return {"f1": f1, "threshold": threshold, **pr}
+        m = _compute_all_metrics(all_preds, all_labels, threshold=threshold)
+        return {"f1": f1, "threshold": threshold,
+                "precision": m["precision"], "recall": m["recall"]}
 
     def _collect_val_preds(
         self,

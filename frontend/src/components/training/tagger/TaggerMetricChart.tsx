@@ -582,7 +582,7 @@ export default function TaggerMetricChart({
               </span>
             </div>
           )}
-          {epochBoundaries && epochBoundaries.length >= 2 && (() => {
+          {epochBoundaries && epochBoundaries.length >= 1 && (() => {
             const steps = epochBoundaries.map((b) => b.step);
             const eMin = Math.min(...steps);
             const eMax = Math.max(...steps);

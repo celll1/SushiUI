@@ -7716,16 +7716,17 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                 run.latest_loss   = data.get("loss")
                 # Use step from trainer emit (includes global_step), fallback to tracked step
                 _epoch_step = data.get("step", run.current_step)
-                if data.get("f1") is not None:
-                    _upsert_metric(
-                        step=_epoch_step,
-                        epoch=data.get("epoch"),
-                        loss=data.get("loss"),
-                        f1=data.get("f1"),
-                        threshold=data.get("threshold"),
-                        precision=data.get("precision"),
-                        recall=data.get("recall"),
-                    )
+                # Always upsert the epoch row so the step is recorded for epoch-boundary
+                # tracking even when validation is skipped (f1 will be None in that case).
+                _upsert_metric(
+                    step=_epoch_step,
+                    epoch=data.get("epoch"),
+                    loss=data.get("loss"),
+                    f1=data.get("f1"),
+                    threshold=data.get("threshold"),
+                    precision=data.get("precision"),
+                    recall=data.get("recall"),
+                )
                 manager.send_tagger_metrics(
                     run_id=rid,
                     event_type="epoch",

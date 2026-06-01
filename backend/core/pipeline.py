@@ -4468,7 +4468,13 @@ class DiffusionPipelineManager:
         # Check if SDXL by checking if text_encoder_2 exists (more reliable than isinstance for ControlNet pipelines)
         is_sdxl = hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None
 
-        device = self.device
+        # Use the text encoder's actual device so cpu_text_encoding works correctly:
+        # when TE is kept on CPU, encode_prompt must also receive device="cpu" to avoid
+        # a device mismatch between text_input_ids.to(device) and TE weights.
+        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+            device = next(pipeline.text_encoder.parameters()).device
+        else:
+            device = self.device
         dtype = pipeline.dtype if hasattr(pipeline, 'dtype') else torch.float16
 
         # Parse prompts for emphasis syntax

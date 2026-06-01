@@ -902,6 +902,9 @@ class TaggerTrainingMetrics(TrainingBase):
     train_f1 = Column(Float, nullable=True)
     threshold = Column(Float, nullable=True)
     learning_rate = Column(Float, nullable=True)
+    # Macro precision/recall at the current threshold (nullable for backward compat)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
     timestamp = Column(DateTime, default=get_local_now)
 
     __table_args__ = (
@@ -919,5 +922,7 @@ class TaggerTrainingMetrics(TrainingBase):
             "train_f1": self.train_f1,
             "threshold": self.threshold,
             "learning_rate": self.learning_rate,
+            "precision": self.precision,
+            "recall": self.recall,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }

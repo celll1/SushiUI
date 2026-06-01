@@ -105,6 +105,31 @@ def _compute_f1_macro(
     return f1[active].mean().item()
 
 
+def _compute_pr_metrics(
+    all_preds: torch.Tensor,
+    all_labels: torch.Tensor,
+    threshold: float = 0.5,
+) -> Dict[str, float]:
+    """Compute macro precision and recall at the given threshold.
+
+    Only active tags (at least one positive sample in labels) are included.
+    Returns a dict with keys 'precision' and 'recall'.
+    """
+    preds_bin = (all_preds >= threshold).float()
+    tp = (preds_bin * all_labels).sum(dim=0)
+    fp = (preds_bin * (1 - all_labels)).sum(dim=0)
+    fn = ((1 - preds_bin) * all_labels).sum(dim=0)
+    precision = tp / (tp + fp + 1e-8)
+    recall    = tp / (tp + fn + 1e-8)
+    active = all_labels.sum(dim=0) > 0
+    if active.sum() == 0:
+        return {"precision": 0.0, "recall": 0.0}
+    return {
+        "precision": precision[active].mean().item(),
+        "recall":    recall[active].mean().item(),
+    }
+
+
 def _find_best_threshold(
     all_preds: torch.Tensor,
     all_labels: torch.Tensor,
@@ -1206,9 +1231,13 @@ class TaggerTrainer:
                         _threshold_updated = True
                     else:
                         _train_f1_val = _compute_f1_macro(_buf_p, _buf_l, threshold=_f1_threshold)
+                    # Compute precision/recall at the current threshold (minimal overhead)
+                    _pr = _compute_pr_metrics(_buf_p, _buf_l, threshold=_f1_threshold)
                     self._emit("train_f1", {
                         "step": global_step,
                         "train_f1": _train_f1_val,
+                        "train_precision": _pr["precision"],
+                        "train_recall": _pr["recall"],
                         "threshold": _f1_threshold,
                         "threshold_updated": _threshold_updated,
                     })
@@ -1271,6 +1300,10 @@ class TaggerTrainer:
                                              max_batches=val_max_batches)
                 epoch_f1  = val_metrics.get("f1", 0.0)
                 epoch_thr = val_metrics.get("threshold", 0.5)
+                # Sync training-buffer threshold with the validation-optimal value so
+                # subsequent buffer F1 evaluations use a calibrated threshold rather
+                # than converging to a training-distribution-biased value (~0.42).
+                _f1_threshold = epoch_thr
 
                 if epoch_f1 > best_f1:
                     best_f1        = epoch_f1
@@ -1314,6 +1347,7 @@ class TaggerTrainer:
             self._emit("epoch", {
                 "epoch": epoch,
                 "total_epochs": epochs,
+                "step": global_step,
                 "loss": avg_loss,
                 **val_metrics,
             })
@@ -1405,7 +1439,8 @@ class TaggerTrainer:
         all_labels = torch.cat(all_labels, dim=0)
 
         threshold, f1 = _find_best_threshold(all_preds, all_labels)
-        return {"f1": f1, "threshold": threshold}
+        pr = _compute_pr_metrics(all_preds, all_labels, threshold=threshold)
+        return {"f1": f1, "threshold": threshold, **pr}
 
     def _collect_val_preds(
         self,

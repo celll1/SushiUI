@@ -110,6 +110,8 @@ class ConnectionManager:
         threshold: float = None,
         progress: float = None,
         resume_seq: int = 0,
+        precision: float = None,
+        recall: float = None,
     ):
         """Send tagger training metrics to all connected clients.
 
@@ -141,6 +143,10 @@ class ConnectionManager:
             data["threshold"] = threshold
         if progress is not None:
             data["progress"] = progress
+        if precision is not None:
+            data["precision"] = precision
+        if recall is not None:
+            data["recall"] = recall
         self.message_queue.put(data)
         self._notify_sender()
 

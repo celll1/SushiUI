@@ -194,10 +194,13 @@ export default function TaggerTrainingMonitor({
   // be aware of (e.g. GPU contention, dataloader stall, batch-size
   // change).  null when not enough samples accumulated yet.
   const [iterPerSecLong, setIterPerSecLong] = useState<number | null>(null);
+  // Scan progress during dataset rescan (step/total/pct 0–1). null when not scanning.
+  const [scanProgress, setScanProgress] = useState<{ step: number; total: number; pct: number } | null>(null);
   // 1Hz wall-clock tick to recompute elapsed time without re-rendering
   // on every WS event.  Stored as ms-since-epoch.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const isScanningRef = useRef(false);
   // Full raw metrics accumulator — never decimated, keyed by "resume_seq:step".
   // The decimated display array (metrics state) is always recomputed from this
   // ref on every WS flush, so historical points are never progressively lost.
@@ -349,6 +352,12 @@ export default function TaggerTrainingMonitor({
         setScatterData(m.fp_fn_scatter);
       }
 
+      // Training is live — clear any in-progress scan overlay
+      if (isScanningRef.current) {
+        isScanningRef.current = false;
+        setScanProgress(null);
+      }
+
       // Buffer and flush at most 1x/sec to avoid per-step re-renders
       wsBufferRef.current.push(item);
       if (!wsFlushRef.current) {
@@ -469,7 +478,10 @@ export default function TaggerTrainingMonitor({
         }
       } else if (ev.phase === "rescan") {
         msg = ev.message ?? `Rescanning dataset ${ev.dataset_id}...`;
+        isScanningRef.current = true;
       } else if (ev.phase === "cleanup") {
+        isScanningRef.current = false;
+        setScanProgress(null);
         msg = ev.message ?? `Cleaning orphan cache for dataset ${ev.dataset_id}...`;
       }
       if (msg) {
@@ -478,9 +490,19 @@ export default function TaggerTrainingMonitor({
     };
     wsClient.subscribeToDatasetScanProgress(scanHandler);
 
+    // Generic type:"progress" events from scan_dataset (no run_id).
+    // Only applied when isScanningRef is true (set by rescan phase above).
+    const progressHandler = (step: number, totalSteps: number) => {
+      if (!isScanningRef.current) return;
+      const pct = totalSteps > 0 ? step / totalSteps : 0;
+      setScanProgress({ step, total: totalSteps, pct });
+    };
+    wsClient.subscribe(progressHandler);
+
     return () => {
       wsClient.unsubscribeFromTaggerMetrics(handler);
       wsClient.unsubscribeFromDatasetScanProgress(scanHandler);
+      wsClient.unsubscribe(progressHandler);
       if (wsFlushRef.current) {
         clearTimeout(wsFlushRef.current);
         wsFlushRef.current = null;
@@ -700,12 +722,16 @@ export default function TaggerTrainingMonitor({
                   </span>
                 )}
               </span>
-              <span className="text-gray-300">{(run.progress * 100).toFixed(1)}%</span>
+              <span className="text-gray-300">
+                {scanProgress
+                  ? `${(scanProgress.pct * 100).toFixed(1)}%`
+                  : `${(run.progress * 100).toFixed(1)}%`}
+              </span>
             </div>
             <div className="w-full bg-gray-700 rounded-full h-2">
               <div
-                className="bg-blue-500 h-2 rounded-full transition-all duration-500"
-                style={{ width: `${run.progress * 100}%` }}
+                className={`h-2 rounded-full transition-all duration-500 ${scanProgress ? "bg-yellow-500" : "bg-blue-500"}`}
+                style={{ width: `${(scanProgress ? scanProgress.pct : run.progress) * 100}%` }}
               />
             </div>
             {/* Elapsed (session) / ETA / consistency indicator */}

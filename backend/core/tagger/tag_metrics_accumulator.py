@@ -206,6 +206,55 @@ class TagMetricsAccumulator:
         }
 
     # ------------------------------------------------------------------
+    # Scatter-plot helper (visualization only)
+    # ------------------------------------------------------------------
+
+    def compute_scatter_for_vis(self, min_npos: int = 20) -> dict:
+        """FP/FN scatter data for live visualization (cur epoch only).
+
+        Only includes tags with n_pos >= min_npos in the current epoch,
+        giving statistically reliable FP/FN rate estimates (±0.22 CI at n=20).
+
+        Returns a dict with compact float lists suitable for JSON serialization:
+            fp, fn : FP/FN rate at threshold=0.5, one value per qualifying tag
+            n_pos  : positive sample count per qualifying tag
+            n_tags : number of qualifying tags
+            total_images : images seen in current epoch
+        """
+        pos_h = self.pos_hist_cur                          # [V, K]
+        neg_h = self.total_hist_cur - self.pos_hist_cur    # [V, K]
+
+        n_pos = pos_h.sum(axis=1).astype(np.float32)       # [V]
+        n_neg = neg_h.sum(axis=1).astype(np.float32)       # [V]
+
+        mask = (n_pos >= min_npos) & (n_neg > 0)
+        if not mask.any():
+            return {
+                "fp": [], "fn": [], "n_pos": [],
+                "n_tags": 0, "total_images": self.total_images_cur,
+            }
+
+        bin_50 = self.n_bins // 2  # = 50 for default n_bins=100
+
+        # Suffix cumsum: counts[v, k] = samples with pred >= bin_edge[k]
+        pos_rev = pos_h[:, ::-1].cumsum(axis=1)[:, ::-1].astype(np.float32)
+        neg_rev = neg_h[:, ::-1].cumsum(axis=1)[:, ::-1].astype(np.float32)
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            fp_rate = np.where(n_neg > 0, neg_rev[:, bin_50] / n_neg, np.nan)
+            fn_rate = np.where(n_pos > 0,
+                               1.0 - pos_rev[:, bin_50] / n_pos, np.nan)
+
+        idx = np.where(mask)[0]
+        return {
+            "fp":           np.round(fp_rate[idx], 4).tolist(),
+            "fn":           np.round(fn_rate[idx], 4).tolist(),
+            "n_pos":        n_pos[idx].astype(np.int32).tolist(),
+            "n_tags":       int(mask.sum()),
+            "total_images": self.total_images_cur,
+        }
+
+    # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
 

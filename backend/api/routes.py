@@ -7769,6 +7769,7 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
                     resume_seq=resume_seq,
                     precision=data.get("train_precision"),
                     recall=data.get("train_recall"),
+                    fp_fn_scatter=data.get("fp_fn_scatter"),
                 )
             elif event_type == "vocab":
                 run.num_tags = data.get("num_tags")

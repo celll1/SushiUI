@@ -277,6 +277,22 @@ class SigLIP2InferenceManager:
                 print(f"[SigLIP2Manager] WARNING: LR matrix load failed: {_e}")
                 self.lr_matrix = None
 
+        # 8. Per-tag threshold metrics (optional, saved alongside checkpoint by tagger_trainer).
+        self.tag_metrics: Optional[Dict] = None
+        if not checkpoint_path.endswith(".onnx"):
+            _metrics_path = os.path.join(_ckpt_dir, f"{_ckpt_base}_tag_metrics.npz")
+            if os.path.isfile(_metrics_path):
+                try:
+                    from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
+                    self.tag_metrics = TagMetricsAccumulator.load(_metrics_path)
+                    print(
+                        f"[SigLIP2Manager] Per-tag metrics loaded "
+                        f"({int(self.tag_metrics.get('n_bins', 100))} bins)"
+                    )
+                except Exception as _e:
+                    print(f"[SigLIP2Manager] WARNING: tag_metrics load failed: {_e}")
+                    self.tag_metrics = None
+
         print(
             f"[SigLIP2Manager] Loaded {model_type} model | "
             f"{num_tags} tags | {self.device}"
@@ -298,6 +314,8 @@ class SigLIP2InferenceManager:
         known_tags_neg: Optional[List[str]] = None,
         context_method: str = "none",
         context_lambda: float = 0.5,
+        use_per_tag_threshold: bool = False,
+        min_samples_for_per_tag: int = 5,
     ) -> Dict[str, Any]:
         """Run inference on raw image bytes.
 
@@ -418,11 +436,33 @@ class SigLIP2InferenceManager:
             rating_top  = max(rating_items,  key=lambda x: x["prob"])
 
         # Threshold-filtered tags (exclude Quality / Rating from the main list)
-        filtered = [
-            it for it in all_items
-            if it["prob"] >= threshold
-            and it["category"] not in ("Quality", "Rating")
-        ]
+        if use_per_tag_threshold and self.tag_metrics is not None:
+            import math
+            _m    = self.tag_metrics
+            _bthr = _m.get("best_thr")
+            _npos = _m.get("n_pos")
+            filtered = []
+            for it in all_items:
+                if it["category"] in ("Quality", "Rating"):
+                    continue
+                _idx = tag_to_idx.get(it["tag"])
+                thr_t = threshold  # fallback
+                if (
+                    _idx is not None
+                    and _bthr is not None
+                    and _npos is not None
+                    and int(_npos[_idx]) >= min_samples_for_per_tag
+                    and not math.isnan(float(_bthr[_idx]))
+                ):
+                    thr_t = float(_bthr[_idx])
+                if it["prob"] >= thr_t:
+                    filtered.append(it)
+        else:
+            filtered = [
+                it for it in all_items
+                if it["prob"] >= threshold
+                and it["category"] not in ("Quality", "Rating")
+            ]
         filtered.sort(key=lambda x: x["prob"], reverse=True)
 
         return {

@@ -396,6 +396,39 @@ def _save_vocabulary_snapshot(vocabulary: Any, output_dir: str, name: str) -> No
         print(f"[TaggerTrainer] WARNING: could not save vocabulary snapshot for {name}: {e}")
 
 
+def _save_tag_metrics(
+    accumulator: Any,
+    output_dir: str,
+    name: str,
+    vocabulary: Any,
+    epoch_boundary: bool,
+    save_enabled: bool = True,
+    hard_lo: float = 0.25,
+    hard_hi: float = 0.75,
+) -> None:
+    """Save per-tag threshold metrics alongside a checkpoint.
+
+    Skipped silently when ``save_enabled=False`` or when the accumulator has
+    not yet processed any data (e.g. step-0 checkpoint before the first batch).
+    """
+    if not save_enabled:
+        return
+    if not accumulator.has_data:
+        return
+    try:
+        path = os.path.join(output_dir, f"{name}_tag_metrics.npz")
+        tag_names = [vocabulary.idx_to_tag[i] for i in range(vocabulary.num_tags)]
+        accumulator.save(
+            path,
+            epoch_boundary=epoch_boundary,
+            tag_names=tag_names,
+            hard_lo=hard_lo,
+            hard_hi=hard_hi,
+        )
+    except Exception as e:   # noqa: BLE001
+        print(f"[TaggerTrainer] WARNING: could not save tag_metrics for {name}: {e}")
+
+
 def _resolve_checkpoint_vocab_path(output_dir: str, ckpt_name: str) -> Optional[str]:
     """Resolve the vocabulary file for a specific checkpoint.
 
@@ -928,6 +961,13 @@ class TaggerTrainer:
         _f1_threshold = float(cfg.get("train_f1_initial_threshold", 0.35))
         _train_f1_buffer: deque = deque(maxlen=_buf_size)
 
+        # Per-tag threshold metrics accumulator
+        from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
+        _save_tag_metrics_enabled = bool(cfg.get("save_tag_metrics", True))
+        _hard_lo = float(cfg.get("hard_rate_lo", 0.25))
+        _hard_hi = float(cfg.get("hard_rate_hi", 0.75))
+        _tag_metrics_acc = TagMetricsAccumulator(vocab_size=self.vocabulary.num_tags)
+
         # Training state
         best_f1         = 0.0
         best_threshold  = 0.5
@@ -1160,6 +1200,7 @@ class TaggerTrainer:
                 # Append to training F1 rolling buffer
                 if _n2_eval > 0:
                     _train_f1_buffer.append((_step_probs, _step_labels))
+                    _tag_metrics_acc.update(_step_probs.float(), _step_labels.float())
 
                 # ----- GPU-coordinator pause check (batch boundary) ----------
                 # Generation requests set ``pause_event`` and stash an offload
@@ -1212,6 +1253,10 @@ class TaggerTrainer:
                     )
                     _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                     _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
+                    _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
+                                      self.vocabulary, epoch_boundary=False,
+                                      save_enabled=_save_tag_metrics_enabled,
+                                      hard_lo=_hard_lo, hard_hi=_hard_hi)
                     if keep_last_n_checkpoints > 0:
                         _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
@@ -1269,6 +1314,10 @@ class TaggerTrainer:
                 )
                 _save_optimizer_state(optimizer, self.output_dir, ckpt_name)
                 _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
+                _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
+                                  self.vocabulary, epoch_boundary=False,
+                                  save_enabled=_save_tag_metrics_enabled,
+                                  hard_lo=_hard_lo, hard_hi=_hard_hi)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -1280,6 +1329,10 @@ class TaggerTrainer:
                 )
                 _save_optimizer_state(optimizer, self.output_dir, "latest")
                 _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
+                _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
+                                  self.vocabulary, epoch_boundary=False,
+                                  save_enabled=_save_tag_metrics_enabled,
+                                  hard_lo=_hard_lo, hard_hi=_hard_hi)
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1333,6 +1386,10 @@ class TaggerTrainer:
                     metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
                     _save_model_checkpoint(model, self.output_dir, "best_f1", metadata, checkpoint_save_mode)
                     _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "best_f1")
+                    _save_tag_metrics(_tag_metrics_acc, self.output_dir, "best_f1",
+                                      self.vocabulary, epoch_boundary=True,
+                                      save_enabled=_save_tag_metrics_enabled,
+                                      hard_lo=_hard_lo, hard_hi=_hard_hi)
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
@@ -1343,12 +1400,20 @@ class TaggerTrainer:
             metadata = self._make_metadata(epoch, global_step, best_f1, best_threshold)
             _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
             _save_vocabulary_snapshot(self.vocabulary, self.output_dir, "latest")
+            _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
+                              self.vocabulary, epoch_boundary=True,
+                              save_enabled=_save_tag_metrics_enabled,
+                              hard_lo=_hard_lo, hard_hi=_hard_hi)
 
             # Epoch-based checkpoint (model only; training state = same as latest)
             if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
                 ckpt_name = f"epoch_{epoch:04d}"
                 _save_model_checkpoint(model, self.output_dir, ckpt_name, metadata, checkpoint_save_mode)
                 _save_vocabulary_snapshot(self.vocabulary, self.output_dir, ckpt_name)
+                _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
+                                  self.vocabulary, epoch_boundary=True,
+                                  save_enabled=_save_tag_metrics_enabled,
+                                  hard_lo=_hard_lo, hard_hi=_hard_hi)
                 self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
             _save_training_state(
                 self.output_dir, "latest",
@@ -1357,6 +1422,9 @@ class TaggerTrainer:
                 dataset_fingerprint=current_fingerprint,
             )
             _save_optimizer_state(optimizer, self.output_dir, "latest")
+
+            # Rotate epoch histograms: prev ← cur, cur ← zero
+            _tag_metrics_acc.rotate_epoch()
 
             epoch_summary = {
                 "epoch": epoch,

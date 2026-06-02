@@ -1289,6 +1289,27 @@ class TaggerTrainer:
                 print(f"[TaggerTrainer] Stopped. Checkpoint: {ckpt_name} (epoch {epoch}, step {global_step})")
                 break  # exit epoch loop → skips validation, epoch-end save, _final_threshold_search
 
+            # Release the prefetch iterator and last-batch GPU tensors before
+            # validation so we don't hold two epochs' worth of VRAM simultaneously.
+            try:
+                loader_iter.close()
+            except Exception:
+                pass
+            try:
+                del loader_iter
+            except Exception:
+                pass
+            try:
+                del pv, pam, ss, labels, loss_masks
+            except Exception:
+                pass
+            try:
+                del logits, loss
+            except Exception:
+                pass
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             avg_loss = epoch_loss / max(batches_processed, 1)
 
             # Validation

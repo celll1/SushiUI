@@ -38,6 +38,14 @@ interface TrainingMetrics {
   grad_norm_vision_encoder?: number;
 }
 
+export interface FpFnScatterData {
+  fp: number[];
+  fn: number[];
+  n_pos: number[];
+  n_tags: number;
+  total_images: number;
+}
+
 export interface TaggerMetrics {
   run_id: string;
   event: "step" | "epoch" | "train_f1";
@@ -52,6 +60,7 @@ export interface TaggerMetrics {
   progress?: number;
   precision?: number;
   recall?: number;
+  fp_fn_scatter?: FpFnScatterData;
 }
 
 export interface DatasetScanProgress {
@@ -154,6 +163,7 @@ class ProgressClient {
             progress: data.progress,
             precision: data.precision,
             recall: data.recall,
+            fp_fn_scatter: data.fp_fn_scatter,
           };
           this.taggerMetricsCallbacks.forEach((cb) => cb(metrics));
         } else if (data.type === "dataset_scan_progress") {

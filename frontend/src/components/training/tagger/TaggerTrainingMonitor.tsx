@@ -10,7 +10,7 @@ import {
   TaggerTrainingRun,
   TaggerTrainingMetric,
 } from "@/utils/api";
-import { wsClient, TaggerMetrics, DatasetScanProgress } from "@/utils/websocket";
+import { wsClient, TaggerMetrics, FpFnScatterData, DatasetScanProgress } from "@/utils/websocket";
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 import TaggerMetricChart, { EpochBoundary } from "./TaggerMetricChart";
 
@@ -62,6 +62,115 @@ function formatArrivalTime(etaSec: number | null, nowMs: number): string {
   return `${arrival.getMonth() + 1}/${arrival.getDate()} ${hhmm}`;
 }
 
+// ---------------------------------------------------------------------------
+// FP/FN Scatter Plot component
+// ---------------------------------------------------------------------------
+function FpFnScatterPlot({ data }: { data: FpFnScatterData }) {
+  const W = 280, H = 280;
+  const margin = { top: 28, right: 16, bottom: 36, left: 40 };
+  const pw = W - margin.left - margin.right;
+  const ph = H - margin.top - margin.bottom;
+
+  // n_pos range for opacity mapping
+  const maxNpos = Math.max(...data.n_pos, 1);
+
+  // Map data coordinates → SVG pixel coordinates
+  const px = (fp: number) => margin.left + fp * pw;
+  const py = (fn: number) => margin.top + (1 - fn) * ph;
+
+  // Y-axis tick labels (0, 0.25, 0.5, 0.75, 1.0)
+  const ticks = [0, 0.25, 0.5, 0.75, 1.0];
+
+  return (
+    <div className="bg-gray-900 rounded-lg p-3">
+      <div className="text-xs font-medium text-gray-300 mb-1">
+        FP/FN Rate Distribution @ thr=0.5
+      </div>
+      <svg width={W} height={H} className="block">
+        {/* Grid lines */}
+        {ticks.map((t) => (
+          <line
+            key={`gy-${t}`}
+            x1={margin.left} y1={py(t)}
+            x2={margin.left + pw} y2={py(t)}
+            stroke="#374151" strokeWidth={0.5}
+          />
+        ))}
+        {ticks.map((t) => (
+          <line
+            key={`gx-${t}`}
+            x1={px(t)} y1={margin.top}
+            x2={px(t)} y2={margin.top + ph}
+            stroke="#374151" strokeWidth={0.5}
+          />
+        ))}
+
+        {/* Reference lines: FP=0.5 and FN=0.5 */}
+        <line x1={px(0.5)} y1={margin.top} x2={px(0.5)} y2={margin.top + ph}
+          stroke="#6b7280" strokeWidth={1} strokeDasharray="4 3" />
+        <line x1={margin.left} y1={py(0.5)} x2={margin.left + pw} y2={py(0.5)}
+          stroke="#6b7280" strokeWidth={1} strokeDasharray="4 3" />
+
+        {/* Diagonal reference line FP=FN */}
+        <line x1={px(0)} y1={py(0)} x2={px(1)} y2={py(1)}
+          stroke="#4b5563" strokeWidth={0.8} />
+
+        {/* Data points */}
+        {data.fp.map((fp, i) => {
+          const fn = data.fn[i];
+          if (isNaN(fp) || isNaN(fn)) return null;
+          const opacity = 0.35 + 0.65 * Math.sqrt(data.n_pos[i] / maxNpos);
+          return (
+            <circle
+              key={i}
+              cx={px(fp)} cy={py(fn)}
+              r={2.5}
+              fill="#60a5fa"
+              fillOpacity={opacity}
+            />
+          );
+        })}
+
+        {/* Y-axis labels */}
+        {ticks.map((t) => (
+          <text key={`ty-${t}`} x={margin.left - 4} y={py(t) + 4}
+            textAnchor="end" fontSize={9} fill="#9ca3af">
+            {t.toFixed(2)}
+          </text>
+        ))}
+
+        {/* X-axis labels */}
+        {ticks.map((t) => (
+          <text key={`tx-${t}`} x={px(t)} y={margin.top + ph + 14}
+            textAnchor="middle" fontSize={9} fill="#9ca3af">
+            {t.toFixed(2)}
+          </text>
+        ))}
+
+        {/* Axis labels */}
+        <text x={margin.left + pw / 2} y={H - 2}
+          textAnchor="middle" fontSize={10} fill="#6b7280">
+          FP rate
+        </text>
+        <text
+          x={10} y={margin.top + ph / 2}
+          textAnchor="middle" fontSize={10} fill="#6b7280"
+          transform={`rotate(-90, 10, ${margin.top + ph / 2})`}
+        >
+          FN rate
+        </text>
+
+        {/* Border */}
+        <rect x={margin.left} y={margin.top} width={pw} height={ph}
+          fill="none" stroke="#374151" strokeWidth={1} />
+      </svg>
+      <div className="text-xs text-gray-500 mt-1">
+        {data.n_tags} tags (n_pos ≥ 20, {data.total_images.toLocaleString()} images)
+      </div>
+    </div>
+  );
+}
+
 export default function TaggerTrainingMonitor({
   run: initialRun,
   onClose,
@@ -72,6 +181,7 @@ export default function TaggerTrainingMonitor({
   const [run, setRun] = useState<TaggerTrainingRun>(initialRun);
   const [metrics, setMetrics] = useState<TaggerTrainingMetric[]>([]);
   const [epochBoundaries, setEpochBoundaries] = useState<EpochBoundary[]>([]);
+  const [scatterData, setScatterData] = useState<FpFnScatterData | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -233,6 +343,11 @@ export default function TaggerTrainingMonitor({
         recall: m.recall ?? null,
         timestamp: new Date().toISOString(),
       };
+
+      // Update scatter data immediately (arrives infrequently — every 500 steps)
+      if (m.fp_fn_scatter && m.fp_fn_scatter.n_tags > 0) {
+        setScatterData(m.fp_fn_scatter);
+      }
 
       // Buffer and flush at most 1x/sec to avoid per-step re-renders
       wsBufferRef.current.push(item);
@@ -726,6 +841,11 @@ export default function TaggerTrainingMonitor({
               yMinFloor={0}
               epochBoundaries={epochBoundaries}
             />
+
+            {/* FP/FN scatter plot — shown once first scatter data arrives */}
+            {scatterData && scatterData.n_tags > 0 && (
+              <FpFnScatterPlot data={scatterData} />
+            )}
 
             {/* Error message */}
             {run.error_message && (

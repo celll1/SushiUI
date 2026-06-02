@@ -112,6 +112,7 @@ class ConnectionManager:
         resume_seq: int = 0,
         precision: float = None,
         recall: float = None,
+        fp_fn_scatter: dict = None,
     ):
         """Send tagger training metrics to all connected clients.
 
@@ -147,6 +148,8 @@ class ConnectionManager:
             data["precision"] = precision
         if recall is not None:
             data["recall"] = recall
+        if fp_fn_scatter is not None:
+            data["fp_fn_scatter"] = fp_fn_scatter
         self.message_queue.put(data)
         self._notify_sender()
 

@@ -1279,6 +1279,10 @@ class TaggerTrainer:
                     _buf_metrics = _compute_all_metrics(_buf_p, _buf_l, threshold=_f1_threshold)
                     if not _threshold_updated:
                         _train_f1_val = _buf_metrics["f1"]
+                    # Scatter data: compute at threshold-search intervals only
+                    _scatter_data: Optional[Dict] = None
+                    if _n1_search > 0 and global_step % _n1_search == 0:
+                        _scatter_data = _tag_metrics_acc.compute_scatter_for_vis(min_npos=20)
                     self._emit("train_f1", {
                         "step": global_step,
                         "train_f1": _train_f1_val,
@@ -1286,6 +1290,7 @@ class TaggerTrainer:
                         "train_recall": _buf_metrics["recall"],
                         "threshold": _f1_threshold,
                         "threshold_updated": _threshold_updated,
+                        "fp_fn_scatter": _scatter_data,
                     })
                     del _buf_p, _buf_l
 

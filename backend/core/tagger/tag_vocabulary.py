@@ -154,11 +154,20 @@ class TagVocabulary:
             filtered = {t: c for t, c in filtered.items()
                         if tag_categories.get(t, "General") not in excl}
 
-        # Filter by ban_tags (fnmatch wildcards supported)
+        # Filter by ban_tags (fnmatch wildcards supported).
+        # Tags are stored with spaces ("bad id") but patterns are typically
+        # written with underscores ("bad_id", "bad_*_id") following Danbooru
+        # convention.  Match against both the original form and the
+        # underscore-normalised form so either notation works.
         if ban_tags:
             ban_patterns = [p.strip() for p in ban_tags if p.strip()]
-            filtered = {t: c for t, c in filtered.items()
-                        if not any(fnmatch.fnmatch(t, pat) for pat in ban_patterns)}
+            def _is_banned(tag: str) -> bool:
+                tag_u = tag.replace(" ", "_")
+                return any(
+                    fnmatch.fnmatch(tag, pat) or fnmatch.fnmatch(tag_u, pat)
+                    for pat in ban_patterns
+                )
+            filtered = {t: c for t, c in filtered.items() if not _is_banned(t)}
 
         # Sort: category order first, then alphabetically within each category
         def _sort_key(tag: str) -> tuple:

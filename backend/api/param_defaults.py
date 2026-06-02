@@ -357,4 +357,11 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     # Number of recent training batches kept in the rolling buffer.
     # Memory ≈ buffer_batches × batch_size × num_tags × 3 bytes (fp16 probs + bool labels).
     "train_f1_buffer_batches": 16,
+    # Per-tag threshold metrics saved alongside each checkpoint as
+    # ``{name}_tag_metrics.npz``.  Set to False to disable.
+    # Memory: ≈ 4 × vocab_size × n_bins × 4 bytes (two epoch histogram slots).
+    "save_tag_metrics": True,
+    # Probability band considered "hard" for hard_rate computation.
+    "hard_rate_lo": 0.25,
+    "hard_rate_hi": 0.75,
 }

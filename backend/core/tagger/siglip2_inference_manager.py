@@ -316,6 +316,7 @@ class SigLIP2InferenceManager:
         context_lambda: float = 0.5,
         use_per_tag_threshold: bool = False,
         min_samples_for_per_tag: int = 5,
+        use_calibration: bool = False,
     ) -> Dict[str, Any]:
         """Run inference on raw image bytes.
 
@@ -401,6 +402,20 @@ class SigLIP2InferenceManager:
             if context_correction is not None:
                 _logits = _logits + torch.from_numpy(context_correction).to(_logits.device)
             probs = torch.sigmoid(_logits).cpu().numpy()  # [num_tags]
+
+        # Calibration: replace sigmoid probs with P(y=1 | score_bin, tag)
+        # derived from training histogram.  NaN bins fall back to raw sigmoid.
+        if use_calibration and self.tag_metrics is not None:
+            _calib = self.tag_metrics.get("calibration_table")  # [V, K] float16 or None
+            if _calib is not None:
+                _n_bins = int(self.tag_metrics.get("n_bins", np.array([100]))[0])
+                _bin_idx = np.clip(
+                    (probs * _n_bins).astype(np.int32), 0, _n_bins - 1
+                )  # [V]
+                _cal = _calib[np.arange(len(probs)), _bin_idx].astype(np.float32)
+                _nan = np.isnan(_cal)
+                _cal[_nan] = probs[_nan]   # fallback for bins with no data
+                probs = _cal
 
         idx_to_tag      = self.vocabulary["idx_to_tag"]
         tag_to_category = self.vocabulary["tag_to_category"]

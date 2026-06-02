@@ -258,6 +258,24 @@ class TagMetricsAccumulator:
     # Serialisation
     # ------------------------------------------------------------------
 
+    def compute_calibration_table(self, epoch_boundary: bool = False) -> np.ndarray:
+        """Compute per-tag per-bin calibrated posterior probabilities.
+
+        Returns a float16 array of shape [vocab_size, n_bins] where entry
+        [v, b] = P(y=1 | score_bin=b, tag=v) = pos_hist[v,b] / total_hist[v,b].
+        Bins with no observations are set to NaN (fall back to sigmoid at inference).
+        Uses the same merged window as save() (cur-only when epoch_boundary=True,
+        cur+prev otherwise).
+        """
+        pos_h, total_h, _ = self._merged(epoch_boundary)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            calib = np.where(
+                total_h > 0,
+                pos_h.astype(np.float32) / total_h.astype(np.float32),
+                np.nan,
+            )
+        return calib.astype(np.float16)
+
     def save(
         self,
         path: str,
@@ -272,13 +290,14 @@ class TagMetricsAccumulator:
                                        hard_lo=hard_lo, hard_hi=hard_hi)
 
         save_kwargs: dict = {
-            "pos_hist":     pos_h,
-            "total_hist":   total_h,
-            "tag_count":    self.tag_count,
-            "total_images": np.array([total_images], dtype=np.int64),
-            "n_bins":       np.array([self.n_bins],  dtype=np.int32),
-            "hard_lo":      np.array([hard_lo],      dtype=np.float32),
-            "hard_hi":      np.array([hard_hi],      dtype=np.float32),
+            "pos_hist":          pos_h,
+            "total_hist":        total_h,
+            "calibration_table": self.compute_calibration_table(epoch_boundary),
+            "tag_count":         self.tag_count,
+            "total_images":      np.array([total_images], dtype=np.int64),
+            "n_bins":            np.array([self.n_bins],  dtype=np.int32),
+            "hard_lo":           np.array([hard_lo],      dtype=np.float32),
+            "hard_hi":           np.array([hard_hi],      dtype=np.float32),
         }
         save_kwargs.update({k: v for k, v in metrics.items()})
 

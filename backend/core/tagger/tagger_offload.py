@@ -68,6 +68,8 @@ class TaggerTrainerHandle:
         self._model: Optional[torch.nn.Module] = None
         self._optimizer: Optional[torch.optim.Optimizer] = None
         self._criterion: Optional[torch.nn.Module] = None
+        self._processor = None  # AutoProcessor — for training-model inference
+        self._vocabulary = None  # TagVocabulary snapshot — for training-model inference
         self._owner_tid: Optional[int] = None
 
         # Set by offload(), consumed by restore()
@@ -101,12 +103,16 @@ class TaggerTrainerHandle:
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         criterion: Optional[torch.nn.Module],
+        processor=None,
+        vocabulary=None,
     ) -> None:
         """Called by the trainer once model / optimizer / criterion exist
         (start of train()).  Must be invoked from the trainer thread."""
         self._model = model
         self._optimizer = optimizer
         self._criterion = criterion
+        self._processor = processor
+        self._vocabulary = vocabulary
         self._owner_tid = threading.get_ident()
 
     def detach(self) -> None:
@@ -114,6 +120,8 @@ class TaggerTrainerHandle:
         self._model = None
         self._optimizer = None
         self._criterion = None
+        self._processor = None
+        self._vocabulary = None
         self._owner_tid = None
         # Cleanup any leftover swap file
         if self._swap_path and os.path.isfile(self._swap_path):
@@ -225,3 +233,70 @@ class TaggerTrainerHandle:
         mode_was = self._active_decision.mode
         self._active_decision = None
         print(f"[TaggerHandle:{self.run_id[:8]}] restore complete (mode was {mode_was})")
+
+    # -- inference from training model -----------------------------------
+
+    def can_predict(self) -> bool:
+        """True when the training model is attached and currently on CUDA."""
+        if self._model is None or self._processor is None or self._vocabulary is None:
+            return False
+        p = next(iter(self._model.parameters()), None)
+        return p is not None and p.device.type == "cuda"
+
+    def predict(self, image_bytes: bytes, threshold: float) -> dict:
+        """Run inference with the training model (eval mode, no_grad).
+
+        Returns the same dict shape as SigLIP2InferenceManager.predict():
+          { "tags": [...], "scores": {tag: score}, "source": "training_model" }
+
+        Raises RuntimeError if the model is not on CUDA (offloaded).
+        """
+        if not self.can_predict():
+            raise RuntimeError("Training model not available for inference "
+                               "(not attached or currently offloaded to CPU/disk)")
+
+        import io
+        import numpy as np
+        from PIL import Image as PILImage
+
+        vocab = self._vocabulary
+
+        pil_img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
+        inputs = self._processor(images=[pil_img], return_tensors="pt")
+        device = next(iter(self._model.parameters())).device
+        inputs = {k: v.to(device) for k, v in inputs.items()
+                  if isinstance(v, torch.Tensor)}
+
+        self._model.eval()
+        with torch.no_grad():
+            logits = self._model(**inputs)  # [1, V]
+            probs = torch.sigmoid(logits[0]).cpu().float().numpy()  # [V]
+
+        filtered = []
+        quality_items = []
+        rating_items  = []
+        for idx, score in enumerate(probs):
+            tag = vocab.idx_to_tag.get(idx)
+            if tag is None:
+                continue
+            score_f = float(score)
+            category = vocab.tag_to_category.get(tag, "General")
+            if category == "Quality":
+                quality_items.append({"tag": tag, "prob": score_f, "category": category})
+            elif category == "Rating":
+                rating_items.append({"tag": tag, "prob": score_f, "category": category})
+            elif score_f >= threshold:
+                filtered.append({"tag": tag, "prob": score_f, "category": category})
+
+        filtered.sort(key=lambda x: x["prob"], reverse=True)
+        quality_top = max(quality_items, key=lambda x: x["prob"]) if quality_items else None
+        rating_top  = max(rating_items,  key=lambda x: x["prob"]) if rating_items  else None
+
+        return {
+            "tags":          filtered,
+            "quality_top":   quality_top,
+            "rating_top":    rating_top,
+            "num_predicted": len(filtered),
+            "source":        "training_model",
+            "run_id":        self.run_id,
+        }

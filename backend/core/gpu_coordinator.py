@@ -147,6 +147,16 @@ class GPUCoordinator:
         with self._lock:
             return self._active_generations > 0
 
+    def get_active_tagger_handle(self):
+        """Return the first registered TaggerTrainerHandle that can currently
+        run inference (model on CUDA, processor attached), or None."""
+        with self._lock:
+            handles = list(self._handles)
+        for h in handles:
+            if hasattr(h, "can_predict") and h.can_predict():
+                return h
+        return None
+
     # -- decision logic --------------------------------------------------
 
     def _free_vram_gb(self) -> float:

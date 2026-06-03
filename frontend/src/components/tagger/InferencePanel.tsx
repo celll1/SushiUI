@@ -1,16 +1,20 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import {
   predictSigLIP2Tags,
+  getSigLIP2Status,
+  fetchTagMetrics,
   SigLIP2PredictResponse,
   SigLIP2TagResult,
   SigLIP2ContextMethod,
+  TagMetricsData,
 } from "@/utils/api";
 import { sendBase64ImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import TagResultsChart from "./TagResultsChart";
+import TagMetricsAnalysis from "./TagMetricsAnalysis";
 
 interface InferencePanelProps {
   modelLoaded: boolean;
@@ -49,6 +53,41 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
 
   // Training model option
   const [useTrainingModel, setUseTrainingModel] = useState(false);
+
+  // Analysis tab state
+  const [activeTab, setActiveTab]         = useState<"inference" | "analysis">("inference");
+  const [hasTagMetrics, setHasTagMetrics] = useState(false);
+  const [tagMetrics, setTagMetrics]       = useState<TagMetricsData | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError]   = useState<string | null>(null);
+
+  useEffect(() => {
+    if (modelLoaded) {
+      getSigLIP2Status()
+        .then((s) => setHasTagMetrics(s.has_tag_metrics ?? false))
+        .catch(() => {});
+    } else {
+      setHasTagMetrics(false);
+      setActiveTab("inference");
+      setTagMetrics(null);
+    }
+  }, [modelLoaded]);
+
+  const handleTabChange = async (tab: "inference" | "analysis") => {
+    setActiveTab(tab);
+    if (tab === "analysis" && tagMetrics === null && !metricsLoading) {
+      setMetricsLoading(true);
+      setMetricsError(null);
+      try {
+        const data = await fetchTagMetrics();
+        setTagMetrics(data);
+      } catch (e: any) {
+        setMetricsError(e?.response?.data?.detail ?? "Failed to load tag metrics");
+      } finally {
+        setMetricsLoading(false);
+      }
+    }
+  };
 
   // Conditional inference state (Phase 0: head_sim)
   const [contextMethod,  setContextMethod]  = useState<SigLIP2ContextMethod>("none");
@@ -213,6 +252,46 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
 
   return (
     <div className="flex flex-col gap-4 p-4 h-full">
+
+      {/* ── Tab bar ── */}
+      {modelLoaded && (
+        <div className="flex gap-1 border-b border-gray-700 flex-shrink-0 -mb-2">
+          <button
+            onClick={() => handleTabChange("inference")}
+            className={`px-3 py-1.5 text-sm transition-colors ${
+              activeTab === "inference"
+                ? "text-white border-b-2 border-blue-500 -mb-px"
+                : "text-gray-400 hover:text-gray-200"
+            }`}
+          >
+            推論
+          </button>
+          {hasTagMetrics && (
+            <button
+              onClick={() => handleTabChange("analysis")}
+              className={`px-3 py-1.5 text-sm transition-colors ${
+                activeTab === "analysis"
+                  ? "text-white border-b-2 border-blue-500 -mb-px"
+                  : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              分析
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* ── Analysis tab ── */}
+      {activeTab === "analysis" && (
+        <TagMetricsAnalysis
+          data={tagMetrics}
+          loading={metricsLoading}
+          error={metricsError}
+        />
+      )}
+
+      {/* ── Inference tab (hidden but not unmounted when analysis is active) ── */}
+      <div className={`flex flex-col gap-4 flex-1 min-h-0 ${activeTab !== "inference" ? "hidden" : ""}`}>
 
       {/* ── Top row: image + controls ── */}
       <div className="flex gap-4">
@@ -540,6 +619,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
           />
         </div>
       )}
+      </div>{/* end inference tab wrapper */}
     </div>
   );
 }

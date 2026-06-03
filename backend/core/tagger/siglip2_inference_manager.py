@@ -104,6 +104,12 @@ class SigLIP2InferenceManager:
         vocab_path = vocab_path.strip().strip('"').strip("'")
         vision_encoder_path = vision_encoder_path.strip().strip('"').strip("'")
 
+        # Early file-existence checks — fail fast before any network/IO work.
+        if not checkpoint_path:
+            raise ValueError("checkpoint_path is empty")
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
         # Resolve vocabulary path with per-checkpoint priority.
         # The per-checkpoint snapshot ``<ckpt_basename>_vocabulary.json`` is
         # frozen at save time and is the authoritative source for tag→idx

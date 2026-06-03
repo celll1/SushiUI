@@ -415,7 +415,8 @@ class SigLIP2InferenceManager:
         if use_calibration and self.tag_metrics is not None:
             _calib = self.tag_metrics.get("calibration_table")  # [V, K] float16 or None
             if _calib is not None:
-                _n_bins = int(self.tag_metrics.get("n_bins", np.array([100]))[0])
+                _nb = self.tag_metrics.get("n_bins", 100)
+                _n_bins = int(_nb) if np.ndim(_nb) == 0 else int(_nb[0])
                 _bin_idx = np.clip(
                     (probs * _n_bins).astype(np.int32), 0, _n_bins - 1
                 )  # [V]

@@ -118,15 +118,31 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
     """Drop legacy indices and create the new ones for tables that changed
     their UNIQUE / Index definitions in the model.
 
-    SQLite stores ``UniqueConstraint(..., name="X")`` as an index of that
-    name (visible in ``sqlite_master`` with ``sql LIKE 'CREATE UNIQUE INDEX%'``),
-    so we can swap them out via DROP / CREATE INDEX without rebuilding the
-    table.  All statements are idempotent.
+    SQLite stores named UniqueConstraints defined in CREATE TABLE as inline
+    CONSTRAINT clauses, which are NOT visible as separate index rows in
+    sqlite_master.  Such inline constraints can only be removed by rebuilding
+    the entire table.  This function handles both cases:
+
+    1. Standalone ``CREATE [UNIQUE] INDEX`` entries — drop by name and recreate.
+    2. Inline ``CONSTRAINT … UNIQUE (…)`` clauses in the CREATE TABLE DDL —
+       detected via the table's DDL text and handled by a full table rebuild.
     """
-    # Map of table → (legacy_index_names_to_drop, new_index_sql_to_create)
+    # -------------------------------------------------------------------
+    # Plan: per-table list of (inline_constraint_fragments_to_remove,
+    #        legacy_standalone_index_names_to_drop,
+    #        new_index_sqls_to_create)
+    # -------------------------------------------------------------------
     plan = {
+        # tagger_training_metrics was originally created with an inline
+        # CONSTRAINT uq_tagger_run_step UNIQUE (run_id, step).
+        # That constraint is embedded in the table DDL and cannot be dropped
+        # with DROP INDEX — only a table rebuild can remove it.
         "tagger_training_metrics": (
+            # inline DDL fragments whose presence triggers a rebuild
+            ("CONSTRAINT uq_tagger_run_step",),
+            # standalone legacy index names to drop
             ("uq_tagger_run_step", "idx_tagger_run_step"),
+            # new indices to create after the rebuild (or instead of the legacy ones)
             (
                 "CREATE UNIQUE INDEX IF NOT EXISTS uq_tagger_run_resume_step "
                 "ON tagger_training_metrics(run_id, resume_seq, step)",
@@ -137,8 +153,20 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
     }
     if table_name not in plan:
         return
-    legacy_names, create_sqls = plan[table_name]
+    inline_triggers, legacy_names, create_sqls = plan[table_name]
 
+    # ---- Check for inline constraint fragments in the CREATE TABLE DDL ----
+    ddl_row = conn.execute(text(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=:t"
+    ), {"t": table_name}).fetchone()
+    table_ddl = ddl_row[0] if ddl_row else ""
+
+    needs_rebuild = any(frag in table_ddl for frag in inline_triggers)
+    if needs_rebuild:
+        _rebuild_table_remove_inline_constraints(conn, db_name, table_name, create_sqls, applied)
+        return
+
+    # ---- Normal path: drop standalone legacy indices, create new ones ----
     rows = conn.execute(text(
         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=:t"
     ), {"t": table_name}).fetchall()
@@ -154,10 +182,8 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
                 pass
 
     for sql in create_sqls:
-        # Extract index name from "CREATE [UNIQUE] INDEX IF NOT EXISTS <name> ..."
         idx_name = sql.split("IF NOT EXISTS")[1].split("ON")[0].strip()
         if idx_name in existing and not changed:
-            # Already present from a prior run; skip silently.
             continue
         try:
             conn.execute(text(sql))
@@ -169,6 +195,66 @@ def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> No
         conn.commit()
         print(f"[AutoMigrate] {db_name}: rebuilt {table_name} indices")
         applied.append(f"{table_name}.indices")
+
+
+def _rebuild_table_remove_inline_constraints(
+    conn, db_name: str, table_name: str, create_sqls: tuple, applied: list
+) -> None:
+    """Rebuild *table_name* without any inline UNIQUE/CHECK constraints.
+
+    SQLite does not support ALTER TABLE DROP CONSTRAINT, so removing an
+    inline table constraint requires recreating the table:
+        1. CREATE … _new with correct schema (no inline constraints)
+        2. INSERT INTO _new SELECT * FROM old
+        3. DROP old / RENAME _new → old
+        4. CREATE INDEX …
+
+    Column list is derived from the live table to stay schema-agnostic.
+    """
+    # Fetch column names in ordinal order
+    col_rows = conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    cols = [r[1] for r in col_rows]  # r[1] = name
+    cols_csv = ", ".join(cols)
+
+    # Build a minimal CREATE TABLE DDL: same columns, no inline constraints.
+    # Each column keeps its type, NOT NULL, and DEFAULT from the live schema.
+    col_defs = []
+    for r in col_rows:
+        # r = (cid, name, type, notnull, dflt_value, pk)
+        cid, name, ctype, notnull, dflt, pk = r
+        part = f"{name} {ctype}"
+        if pk:
+            part += " NOT NULL PRIMARY KEY"
+        elif notnull:
+            part += " NOT NULL"
+        if dflt is not None:
+            part += f" DEFAULT {dflt}"
+        col_defs.append(part)
+
+    new_table = f"{table_name}_new"
+    create_ddl = f"CREATE TABLE {new_table} (\n    " + ",\n    ".join(col_defs) + "\n)"
+
+    try:
+        conn.execute(text(f"DROP TABLE IF EXISTS {new_table}"))
+        conn.execute(text(create_ddl))
+        conn.execute(text(
+            f"INSERT INTO {new_table} ({cols_csv}) SELECT {cols_csv} FROM {table_name}"
+        ))
+        conn.execute(text(f"DROP TABLE {table_name}"))
+        conn.execute(text(f"ALTER TABLE {new_table} RENAME TO {table_name}"))
+
+        for sql in create_sqls:
+            try:
+                conn.execute(text(sql))
+            except OperationalError as e:
+                print(f"[AutoMigrate] {db_name}: index creation after rebuild failed: {e}")
+
+        conn.commit()
+        print(f"[AutoMigrate] {db_name}: rebuilt {table_name} (removed inline constraints)")
+        applied.append(f"{table_name}.rebuild")
+    except Exception as e:
+        conn.rollback()
+        print(f"[AutoMigrate] {db_name}: table rebuild for {table_name} failed: {e}")
 
 
 def auto_migrate_all_databases():

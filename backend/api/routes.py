@@ -3028,14 +3028,18 @@ class SigLIP2ExtractEncoderRequest(BaseModel):
 async def siglip2_load(request: SigLIP2LoadRequest):
     """Load a SigLIP2 tagger checkpoint (full or LoRA, auto-detected)."""
     try:
-        mgr = get_siglip2_inference_manager()
-        result = mgr.load_model(
-            checkpoint_path=request.checkpoint_path,
-            vocab_path=request.vocab_path,
-            vision_encoder_path=request.vision_encoder_path,
-            lora_rank=request.lora_rank,
-            lora_alpha=request.lora_alpha,
-        )
+        # Pause any active tagger training before loading a second model onto
+        # the same GPU (SigLIP2-SO400M bf16 ≈ 1.7 GB + head weights).
+        from core.gpu_coordinator import gpu_coordinator
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=2.5, timeout=60.0):
+            mgr = get_siglip2_inference_manager()
+            result = mgr.load_model(
+                checkpoint_path=request.checkpoint_path,
+                vocab_path=request.vocab_path,
+                vision_encoder_path=request.vision_encoder_path,
+                lora_rank=request.lora_rank,
+                lora_alpha=request.lora_alpha,
+            )
         return result
     except Exception as e:
         import traceback
@@ -3048,16 +3052,21 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
     """Run inference with the loaded SigLIP2 model."""
     try:
         import base64
+        # Pause any active tagger training for the duration of the forward
+        # pass — cuBLAS workspace allocations during training backward can
+        # conflict even with small additional allocations.
+        from core.gpu_coordinator import gpu_coordinator
         mgr = get_siglip2_inference_manager()
         image_bytes = base64.b64decode(request.image_base64)
-        result = mgr.predict(
-            image_bytes=image_bytes,
-            threshold=request.threshold,
-            known_tags_pos=request.known_tags_pos,
-            known_tags_neg=request.known_tags_neg,
-            context_method=request.context_method,
-            context_lambda=request.context_lambda,
-        )
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=2.5, timeout=60.0):
+            result = mgr.predict(
+                image_bytes=image_bytes,
+                threshold=request.threshold,
+                known_tags_pos=request.known_tags_pos,
+                known_tags_neg=request.known_tags_neg,
+                context_method=request.context_method,
+                context_lambda=request.context_lambda,
+            )
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

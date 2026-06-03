@@ -47,6 +47,9 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [result,       setResult]       = useState<SigLIP2PredictResponse | null>(null);
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
 
+  // Training model option
+  const [useTrainingModel, setUseTrainingModel] = useState(false);
+
   // Conditional inference state (Phase 0: head_sim)
   const [contextMethod,  setContextMethod]  = useState<SigLIP2ContextMethod>("none");
   const [contextLambda,  setContextLambda]  = useState(0.5);
@@ -117,6 +120,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         known_tags_neg: knownTagsNeg,
         context_method: contextMethod,
         context_lambda: contextLambda,
+        use_training_model: useTrainingModel,
       });
       setResult(res);
       const allTags = new Set<string>([
@@ -432,21 +436,42 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
             )}
           </div>
 
+          {/* Use training model toggle */}
+          <label
+            className="flex items-center gap-2 cursor-pointer select-none"
+            title="When enabled, uses the currently-training model for inference. Falls back to the loaded model if no training is active or the training model is temporarily offloaded."
+          >
+            <input
+              type="checkbox"
+              checked={useTrainingModel}
+              onChange={(e) => setUseTrainingModel(e.target.checked)}
+              className="w-3.5 h-3.5 rounded accent-blue-500"
+            />
+            <span className="text-xs text-gray-400">Use training model</span>
+          </label>
+
           {/* Predict button */}
           <button
             onClick={handlePredict}
-            disabled={!imageBase64 || !modelLoaded || running}
+            disabled={!imageBase64 || (!modelLoaded && !useTrainingModel) || running}
             className="py-2 rounded text-sm font-medium bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
           >
             {running ? "Running…" : "Predict Tags"}
           </button>
 
-          {!modelLoaded && (
+          {!modelLoaded && !useTrainingModel && (
             <p className="text-sm text-yellow-500">Load a model first (left panel)</p>
           )}
 
           {error && (
             <p className="text-sm text-red-400 break-all">{error}</p>
+          )}
+
+          {result?.source === "training_model" && (
+            <p className="text-xs text-blue-400">
+              Result from training model
+              {result.run_id && ` (run ${result.run_id.slice(0, 8)})`}
+            </p>
           )}
 
           {/* Send-to-panel buttons */}

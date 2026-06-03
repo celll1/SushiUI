@@ -1149,6 +1149,8 @@ export interface SigLIP2PredictResponse {
   quality_top: SigLIP2TagResult | null;
   rating_top: SigLIP2TagResult | null;
   num_predicted: number;
+  source?: string;   // "training_model" when training-model inference was used
+  run_id?: string;
 }
 
 export interface SigLIP2StatusResponse {
@@ -1167,6 +1169,7 @@ export interface SigLIP2PredictOptions {
   known_tags_neg?: string[];
   context_method?: SigLIP2ContextMethod;
   context_lambda?: number;
+  use_training_model?: boolean;
 }
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
@@ -1191,6 +1194,9 @@ export const predictSigLIP2Tags = async (
   }
   if (typeof options?.context_lambda === "number") {
     body.context_lambda = options.context_lambda;
+  }
+  if (options?.use_training_model) {
+    body.use_training_model = true;
   }
   const response = await api.post("/tagger/siglip2/predict", body);
   return response.data;

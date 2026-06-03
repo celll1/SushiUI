@@ -942,7 +942,9 @@ class TaggerTrainer:
         # pause us at the next batch boundary.  Cleanup happens at the end of
         # train() and defensively in run_tagger_training()'s finally.
         from core.gpu_coordinator import gpu_coordinator
-        self._coordinator_handle.attach(model, optimizer, criterion)
+        self._coordinator_handle.attach(model, optimizer, criterion,
+                                        processor=processor,
+                                        vocabulary=self.vocabulary)
         gpu_coordinator.register_trainer(self._coordinator_handle)
 
         # Step-based checkpoint interval (0 = disabled)

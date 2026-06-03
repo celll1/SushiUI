@@ -3008,6 +3008,10 @@ class SigLIP2PredictRequest(BaseModel):
     known_tags_neg: Optional[List[str]] = None
     context_method: str = "none"      # "none" | "head_sim" | "lr_matrix"
     context_lambda: float = 0.5
+    # When True, attempt to use the currently-training model instead of the
+    # loaded inference model.  Falls back to the inference model automatically
+    # if no training is active or the training model is offloaded to CPU.
+    use_training_model: bool = False
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str
@@ -3049,15 +3053,38 @@ async def siglip2_load(request: SigLIP2LoadRequest):
 
 @router.post("/tagger/siglip2/predict")
 async def siglip2_predict(request: SigLIP2PredictRequest):
-    """Run inference with the loaded SigLIP2 model."""
+    """Run inference with the loaded SigLIP2 model.
+
+    When use_training_model=True, the currently-training model is used instead
+    of the loaded inference model.  Falls back to the inference model if no
+    training is active or the training model is temporarily offloaded.
+    """
     try:
         import base64
-        # Pause any active tagger training for the duration of the forward
-        # pass — cuBLAS workspace allocations during training backward can
-        # conflict even with small additional allocations.
         from core.gpu_coordinator import gpu_coordinator
-        mgr = get_siglip2_inference_manager()
         image_bytes = base64.b64decode(request.image_base64)
+
+        # Try training-model path when requested
+        if request.use_training_model:
+            handle = gpu_coordinator.get_active_tagger_handle()
+            if handle is not None:
+                # Training model is on CUDA — use it directly (it shares the GPU
+                # with the coordinator's grace period, no need for generation_slot).
+                try:
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None, handle.predict, image_bytes, request.threshold
+                    )
+                    return result
+                except RuntimeError as _e:
+                    # Model was offloaded between can_predict() and predict() — fall through
+                    print(f"[SigLIP2Predict] Training model unavailable ({_e}); "
+                          f"falling back to inference model")
+            else:
+                print("[SigLIP2Predict] use_training_model=True but no active training; "
+                      "falling back to inference model")
+
+        # Standard inference-model path
+        mgr = get_siglip2_inference_manager()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=2.5, timeout=60.0):
             result = mgr.predict(
                 image_bytes=image_bytes,

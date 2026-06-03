@@ -491,9 +491,15 @@ export default function TaggerTrainingMonitor({
     wsClient.subscribeToDatasetScanProgress(scanHandler);
 
     // Generic type:"progress" events from scan_dataset (no run_id).
-    // Only applied when isScanningRef is true (set by rescan phase above).
-    const progressHandler = (step: number, totalSteps: number) => {
-      if (!isScanningRef.current) return;
+    // The "rescan" dataset_scan_progress event and the first progress event
+    // may arrive out of order (both queued on the same backend thread, so
+    // progress events can arrive before the rescan flag is set).
+    // Detect scan events by their message pattern so the bar updates even
+    // when isScanningRef hasn't been set yet.
+    const progressHandler = (step: number, totalSteps: number, message: string) => {
+      const isScanning = isScanningRef.current || (message ?? "").startsWith("Scanning:");
+      if (!isScanning) return;
+      if (!isScanningRef.current) isScanningRef.current = true;
       const pct = totalSteps > 0 ? step / totalSteps : 0;
       setScanProgress({ step, total: totalSteps, pct });
     };

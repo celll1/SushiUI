@@ -405,6 +405,9 @@ def _save_tag_metrics(
     save_enabled: bool = True,
     hard_lo: float = 0.25,
     hard_hi: float = 0.75,
+    calib_method: str = "jeffreys",
+    calib_eps: float = 0.5,
+    calib_prior_strength: float = 10.0,
 ) -> None:
     """Save per-tag threshold metrics alongside a checkpoint.
 
@@ -424,6 +427,9 @@ def _save_tag_metrics(
             tag_names=tag_names,
             hard_lo=hard_lo,
             hard_hi=hard_hi,
+            calib_method=calib_method,
+            calib_eps=calib_eps,
+            calib_prior_strength=calib_prior_strength,
         )
     except Exception as e:   # noqa: BLE001
         print(f"[TaggerTrainer] WARNING: could not save tag_metrics for {name}: {e}")
@@ -968,6 +974,9 @@ class TaggerTrainer:
         _save_tag_metrics_enabled = bool(cfg.get("save_tag_metrics", True))
         _hard_lo = float(cfg.get("hard_rate_lo", 0.25))
         _hard_hi = float(cfg.get("hard_rate_hi", 0.75))
+        _calib_method         = str(cfg.get("calib_method", "jeffreys"))
+        _calib_eps            = float(cfg.get("calib_eps", 0.5))
+        _calib_prior_strength = float(cfg.get("calib_prior_strength", 10.0))
         _tag_metrics_acc = TagMetricsAccumulator(vocab_size=self.vocabulary.num_tags)
 
         # Training state
@@ -1276,7 +1285,10 @@ class TaggerTrainer:
                     _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
                                       self.vocabulary, epoch_boundary=False,
                                       save_enabled=_save_tag_metrics_enabled,
-                                      hard_lo=_hard_lo, hard_hi=_hard_hi)
+                                      hard_lo=_hard_lo, hard_hi=_hard_hi,
+                                      calib_method=_calib_method,
+                                      calib_eps=_calib_eps,
+                                      calib_prior_strength=_calib_prior_strength)
                     if keep_last_n_checkpoints > 0:
                         _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
@@ -1342,7 +1354,10 @@ class TaggerTrainer:
                 _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
                                   self.vocabulary, epoch_boundary=False,
                                   save_enabled=_save_tag_metrics_enabled,
-                                  hard_lo=_hard_lo, hard_hi=_hard_hi)
+                                  hard_lo=_hard_lo, hard_hi=_hard_hi,
+                                  calib_method=_calib_method,
+                                  calib_eps=_calib_eps,
+                                  calib_prior_strength=_calib_prior_strength)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -1357,7 +1372,10 @@ class TaggerTrainer:
                 _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
                                   self.vocabulary, epoch_boundary=False,
                                   save_enabled=_save_tag_metrics_enabled,
-                                  hard_lo=_hard_lo, hard_hi=_hard_hi)
+                                  hard_lo=_hard_lo, hard_hi=_hard_hi,
+                                  calib_method=_calib_method,
+                                  calib_eps=_calib_eps,
+                                  calib_prior_strength=_calib_prior_strength)
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1414,7 +1432,10 @@ class TaggerTrainer:
                     _save_tag_metrics(_tag_metrics_acc, self.output_dir, "best_f1",
                                       self.vocabulary, epoch_boundary=True,
                                       save_enabled=_save_tag_metrics_enabled,
-                                      hard_lo=_hard_lo, hard_hi=_hard_hi)
+                                      hard_lo=_hard_lo, hard_hi=_hard_hi,
+                                      calib_method=_calib_method,
+                                      calib_eps=_calib_eps,
+                                      calib_prior_strength=_calib_prior_strength)
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
@@ -1428,7 +1449,10 @@ class TaggerTrainer:
             _save_tag_metrics(_tag_metrics_acc, self.output_dir, "latest",
                               self.vocabulary, epoch_boundary=True,
                               save_enabled=_save_tag_metrics_enabled,
-                              hard_lo=_hard_lo, hard_hi=_hard_hi)
+                              hard_lo=_hard_lo, hard_hi=_hard_hi,
+                              calib_method=_calib_method,
+                              calib_eps=_calib_eps,
+                              calib_prior_strength=_calib_prior_strength)
 
             # Epoch-based checkpoint (model only; training state = same as latest)
             if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
@@ -1438,7 +1462,10 @@ class TaggerTrainer:
                 _save_tag_metrics(_tag_metrics_acc, self.output_dir, ckpt_name,
                                   self.vocabulary, epoch_boundary=True,
                                   save_enabled=_save_tag_metrics_enabled,
-                                  hard_lo=_hard_lo, hard_hi=_hard_hi)
+                                  hard_lo=_hard_lo, hard_hi=_hard_hi,
+                                  calib_method=_calib_method,
+                                  calib_eps=_calib_eps,
+                                  calib_prior_strength=_calib_prior_strength)
                 self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
             _save_training_state(
                 self.output_dir, "latest",

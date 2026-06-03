@@ -271,40 +271,49 @@ class TagMetricsAccumulator:
     def compute_calibration_table(
         self,
         epoch_boundary: bool = False,
+        method: str = "jeffreys",
+        eps: float = 0.5,
         prior_strength: float = 10.0,
     ) -> np.ndarray:
         """Compute per-tag per-bin calibrated posterior probabilities.
 
-        Uses Beta-Binomial smoothing with a tag-specific prior so that bins
-        with no training observations fall back to the tag's marginal frequency
-        rather than NaN.  This avoids the sigmoid (≈0.5) fallback that would
-        catastrophically over-estimate rare tags on intermediate scores.
+        Supported methods:
 
-        Formula per bin b, tag v:
-            π[v]      = n_pos[v] / n_total[v]   (tag marginal frequency)
-            α[v]      = π[v] * prior_strength
-            β[v]      = (1 - π[v]) * prior_strength
-            calib[v,b] = (pos_hist[v,b] + α[v]) / (total_hist[v,b] + α[v] + β[v])
+        ``"jeffreys"`` (default):
+            Jeffreys-prior / Laplace smoothing per bin:
+                calib[v,b] = (pos[v,b] + eps) / (total[v,b] + 2*eps)
+            Empty bins fall back to the tag's marginal frequency π[v].
+            Correct for bimodal discriminative models: bins with 0 negatives
+            and ≥1 positive yield a high posterior (e.g. 0.75–0.90) instead
+            of the artificially low value produced by the Beta-BB prior.
 
-        When total_hist[v,b] == 0  →  calib[v,b] = α / (α+β) = π[v].
-        When total_hist[v,b] >> prior_strength  →  calib[v,b] ≈ empirical ratio.
+        ``"beta_bb"`` (legacy):
+            Beta-Binomial smoothing with tag-specific prior:
+                π[v]       = n_pos[v] / n_total[v]
+                α[v]       = π[v] * prior_strength
+                β[v]       = (1 − π[v]) * prior_strength
+                calib[v,b] = (pos[v,b] + α[v]) / (total[v,b] + α[v] + β[v])
+            Empty bins naturally yield π[v].
 
-        Returns float16 [vocab_size, n_bins].  No NaN values — inference needs
-        no fallback path.
+        Returns float16 [vocab_size, n_bins].  No NaN values.
         """
         pos_h, total_h, _ = self._merged(epoch_boundary)
         pos_f   = pos_h.astype(np.float32)
         total_f = total_h.astype(np.float32)
 
-        # Per-tag marginal frequency (sum over all bins)
         n_pos_tag   = pos_f.sum(axis=1, keepdims=True)    # [V, 1]
         n_total_tag = total_f.sum(axis=1, keepdims=True)  # [V, 1]
         pi = np.where(n_total_tag > 0, n_pos_tag / n_total_tag, 0.0)  # [V, 1]
 
-        alpha = pi * prior_strength          # [V, 1]  broadcast over K
-        beta  = (1.0 - pi) * prior_strength  # [V, 1]
+        if method == "beta_bb":
+            alpha = pi * prior_strength
+            beta  = (1.0 - pi) * prior_strength
+            calib = (pos_f + alpha) / (total_f + alpha + beta)
+        else:  # "jeffreys"
+            calib = (pos_f + eps) / (total_f + 2.0 * eps)
+            # Empty bins: fall back to marginal base rate
+            calib = np.where(total_f > 0, calib, pi)
 
-        calib = (pos_f + alpha) / (total_f + alpha + beta)  # [V, K]
         return calib.astype(np.float16)
 
     def save(
@@ -314,6 +323,8 @@ class TagMetricsAccumulator:
         tag_names: Optional[List[str]] = None,
         hard_lo: float = 0.25,
         hard_hi: float = 0.75,
+        calib_method: str = "jeffreys",
+        calib_eps: float = 0.5,
         calib_prior_strength: float = 10.0,
     ) -> None:
         """Save histograms + derived metrics to a compressed .npz file."""
@@ -325,7 +336,12 @@ class TagMetricsAccumulator:
             "pos_hist":            pos_h,
             "total_hist":          total_h,
             "calibration_table":   self.compute_calibration_table(
-                                       epoch_boundary, calib_prior_strength),
+                                       epoch_boundary,
+                                       method=calib_method,
+                                       eps=calib_eps,
+                                       prior_strength=calib_prior_strength),
+            "calib_method":        np.array([calib_method],          dtype=object),
+            "calib_eps":           np.array([calib_eps],             dtype=np.float32),
             "calib_prior_strength": np.array([calib_prior_strength], dtype=np.float32),
             "tag_count":           self.tag_count,
             "total_images":        np.array([total_images],          dtype=np.int64),

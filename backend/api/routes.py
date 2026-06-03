@@ -3013,6 +3013,9 @@ class SigLIP2PredictRequest(BaseModel):
     # loaded inference model.  Falls back to the inference model automatically
     # if no training is active or the training model is offloaded to CPU.
     use_training_model: bool = False
+    # When True, apply the calibration table to convert sigmoid scores to
+    # posterior probabilities.  Requires tag_metrics to be loaded.
+    use_calibration: bool = False
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str
@@ -3094,6 +3097,7 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
                 known_tags_neg=request.known_tags_neg,
                 context_method=request.context_method,
                 context_lambda=request.context_lambda,
+                use_calibration=request.use_calibration,
             )
         return result
     except Exception as e:
@@ -3201,6 +3205,51 @@ async def siglip2_unload():
     """Unload the SigLIP2 model."""
     get_siglip2_inference_manager().unload()
     return {"status": "ok"}
+
+
+class SigLIP2CalibrationRequest(BaseModel):
+    method: str = "jeffreys"            # "jeffreys" | "beta_bb"
+    eps: float = 0.5                    # Jeffreys epsilon (used when method="jeffreys")
+    prior_strength: float = 10.0        # Beta-BB prior strength (used when method="beta_bb")
+
+
+@router.get("/tagger/siglip2/calibration")
+async def siglip2_calibration_get():
+    """Return current calibration settings for the loaded SigLIP2 model."""
+    mgr = get_siglip2_inference_manager()
+    if not mgr.status.get("loaded"):
+        raise HTTPException(status_code=400, detail="No model loaded")
+    return {
+        "method":         mgr.calib_method,
+        "eps":            mgr.calib_eps,
+        "prior_strength": mgr.calib_prior_strength,
+        "has_tag_metrics": mgr.tag_metrics is not None,
+    }
+
+
+@router.post("/tagger/siglip2/calibration")
+async def siglip2_calibration_set(request: SigLIP2CalibrationRequest):
+    """Recompute the in-memory calibration table with the specified method/params."""
+    mgr = get_siglip2_inference_manager()
+    if not mgr.status.get("loaded"):
+        raise HTTPException(status_code=400, detail="No model loaded")
+    if mgr.tag_metrics is None:
+        raise HTTPException(status_code=404, detail="tag_metrics not available for this checkpoint")
+    if request.method not in ("jeffreys", "beta_bb"):
+        raise HTTPException(status_code=422, detail="method must be 'jeffreys' or 'beta_bb'")
+    ok = mgr.recompute_calibration_table(
+        method=request.method,
+        eps=request.eps,
+        prior_strength=request.prior_strength,
+    )
+    if not ok:
+        raise HTTPException(status_code=500, detail="Calibration recomputation failed")
+    return {
+        "status":         "ok",
+        "method":         mgr.calib_method,
+        "eps":            mgr.calib_eps,
+        "prior_strength": mgr.calib_prior_strength,
+    }
 
 
 @router.post("/tagger/siglip2/merge-lora")

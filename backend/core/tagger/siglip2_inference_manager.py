@@ -80,6 +80,10 @@ class SigLIP2InferenceManager:
         # Loaded from <model_dir>/lr_matrix.npz when present; None otherwise.
         # Format: {anchor_idx, offsets, target_idx, lr_values, anchor_lookup}.
         self.lr_matrix: Optional[Dict[str, Any]] = None
+        # Current calibration settings (used by recompute_calibration_table)
+        self.calib_method: str = "jeffreys"
+        self.calib_eps: float = 0.5
+        self.calib_prior_strength: float = 10.0
 
     # ------------------------------------------------------------------
     # Public API
@@ -291,9 +295,18 @@ class SigLIP2InferenceManager:
                 try:
                     from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
                     self.tag_metrics = TagMetricsAccumulator.load(_metrics_path)
+                    # Restore calibration settings from NPZ (if saved by newer trainer)
+                    _cm = self.tag_metrics.get("calib_method")
+                    if _cm is not None:
+                        _cm_val = _cm.item() if hasattr(_cm, "item") else str(_cm)
+                        self.calib_method = str(_cm_val)
+                    _ce = self.tag_metrics.get("calib_eps")
+                    if _ce is not None:
+                        self.calib_eps = float(_ce.item() if hasattr(_ce, "item") else _ce)
                     print(
                         f"[SigLIP2Manager] Per-tag metrics loaded "
-                        f"({int(self.tag_metrics.get('n_bins', 100))} bins)"
+                        f"({int(self.tag_metrics.get('n_bins', 100))} bins, "
+                        f"calib={self.calib_method})"
                     )
                 except Exception as _e:
                     print(f"[SigLIP2Manager] WARNING: tag_metrics load failed: {_e}")
@@ -910,6 +923,46 @@ class SigLIP2InferenceManager:
         p = base + "_tag_metrics.npz"
         return p if os.path.isfile(p) else None
 
+    def recompute_calibration_table(
+        self,
+        method: str = "jeffreys",
+        eps: float = 0.5,
+        prior_strength: float = 10.0,
+    ) -> bool:
+        """Recompute and replace the in-memory calibration_table with new settings.
+
+        Reads ``pos_hist`` and ``total_hist`` from the loaded tag_metrics dict and
+        applies the requested formula.  Returns True on success, False if tag_metrics
+        or required arrays are not loaded.
+        """
+        if self.tag_metrics is None:
+            return False
+        pos_h   = self.tag_metrics.get("pos_hist")
+        total_h = self.tag_metrics.get("total_hist")
+        if pos_h is None or total_h is None:
+            return False
+
+        pos_f   = pos_h.astype(np.float32)
+        total_f = total_h.astype(np.float32)
+
+        n_pos_tag   = pos_f.sum(axis=1, keepdims=True)
+        n_total_tag = total_f.sum(axis=1, keepdims=True)
+        pi = np.where(n_total_tag > 0, n_pos_tag / n_total_tag, 0.0)
+
+        if method == "beta_bb":
+            alpha = pi * prior_strength
+            beta  = (1.0 - pi) * prior_strength
+            calib = (pos_f + alpha) / (total_f + alpha + beta)
+        else:  # "jeffreys"
+            calib = (pos_f + eps) / (total_f + 2.0 * eps)
+            calib = np.where(total_f > 0, calib, pi)
+
+        self.tag_metrics["calibration_table"] = calib.astype(np.float16)
+        self.calib_method      = method
+        self.calib_eps         = eps
+        self.calib_prior_strength = prior_strength
+        return True
+
     @property
     def status(self) -> Dict[str, Any]:
         return {
@@ -920,4 +973,7 @@ class SigLIP2InferenceManager:
             "num_tags":          len(self.vocabulary["idx_to_tag"]) if self.vocabulary else 0,
             "lr_matrix_loaded":  self.lr_matrix is not None,
             "has_tag_metrics":   self.get_tag_metrics_path() is not None,
+            "calib_method":      self.calib_method,
+            "calib_eps":         self.calib_eps,
+            "calib_prior_strength": self.calib_prior_strength,
         }

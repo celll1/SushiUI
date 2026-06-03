@@ -6,9 +6,12 @@ import {
   predictSigLIP2Tags,
   getSigLIP2Status,
   fetchTagMetrics,
+  getCalibrationSettings,
+  setCalibrationSettings,
   SigLIP2PredictResponse,
   SigLIP2TagResult,
   SigLIP2ContextMethod,
+  SigLIP2CalibrationSettings,
   TagMetricsData,
 } from "@/utils/api";
 import { sendBase64ImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
@@ -64,7 +67,12 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   useEffect(() => {
     if (modelLoaded) {
       getSigLIP2Status()
-        .then((s) => setHasTagMetrics(s.has_tag_metrics ?? false))
+        .then((s) => {
+          setHasTagMetrics(s.has_tag_metrics ?? false);
+          if (s.calib_method) setCalibMethod(s.calib_method as "jeffreys" | "beta_bb");
+          if (typeof s.calib_eps === "number") setCalibEps(s.calib_eps);
+          if (typeof s.calib_prior_strength === "number") setCalibPriorStrength(s.calib_prior_strength);
+        })
         .catch(() => {});
     } else {
       setHasTagMetrics(false);
@@ -72,6 +80,21 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
       setTagMetrics(null);
     }
   }, [modelLoaded]);
+
+  const handleApplyCalibration = async () => {
+    setCalibApplying(true);
+    try {
+      await setCalibrationSettings({
+        method: calibMethod,
+        eps: calibEps,
+        prior_strength: calibPriorStrength,
+      });
+    } catch {
+      // silently ignore; model may not have tag_metrics
+    } finally {
+      setCalibApplying(false);
+    }
+  };
 
   const handleTabChange = async (tab: "inference" | "analysis") => {
     setActiveTab(tab);
@@ -88,6 +111,13 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
       }
     }
   };
+
+  // Calibration settings
+  const [calibMethod,        setCalibMethod]        = useState<"jeffreys" | "beta_bb">("jeffreys");
+  const [calibEps,           setCalibEps]           = useState(0.5);
+  const [calibPriorStrength, setCalibPriorStrength] = useState(10.0);
+  const [calibApplying,      setCalibApplying]      = useState(false);
+  const [useCalibration,     setUseCalibration]     = useState(true);
 
   // Conditional inference state (Phase 0: head_sim)
   const [contextMethod,  setContextMethod]  = useState<SigLIP2ContextMethod>("none");
@@ -160,6 +190,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         context_method: contextMethod,
         context_lambda: contextLambda,
         use_training_model: useTrainingModel,
+        use_calibration: useCalibration && hasTagMetrics,
       });
       setResult(res);
       const allTags = new Set<string>([
@@ -514,6 +545,73 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
               </>
             )}
           </div>
+
+          {/* Calibration settings */}
+          {hasTagMetrics && (
+            <div className="border border-gray-700 rounded p-2 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-400 font-medium">Calibration</span>
+                <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={useCalibration}
+                    onChange={(e) => setUseCalibration(e.target.checked)}
+                    className="w-3 h-3 rounded accent-blue-500"
+                  />
+                  <span className="text-xs text-gray-400">Enable</span>
+                </label>
+              </div>
+              {useCalibration && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 w-12">Method</span>
+                    <div className="flex gap-1">
+                      {(["jeffreys", "beta_bb"] as const).map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => setCalibMethod(m)}
+                          className={`px-2 py-0.5 text-xs rounded ${calibMethod === m ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                        >
+                          {m === "jeffreys" ? "Jeffreys" : "Beta-BB"}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {calibMethod === "jeffreys" && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 w-12">ε</span>
+                      <input
+                        type="range" min={0.1} max={2.0} step={0.1}
+                        value={calibEps}
+                        onChange={(e) => setCalibEps(parseFloat(e.target.value))}
+                        className="flex-1 accent-blue-500"
+                      />
+                      <span className="text-xs text-gray-400 w-8">{calibEps.toFixed(1)}</span>
+                    </div>
+                  )}
+                  {calibMethod === "beta_bb" && (
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-500 w-12">Prior</span>
+                      <input
+                        type="range" min={0.5} max={50} step={0.5}
+                        value={calibPriorStrength}
+                        onChange={(e) => setCalibPriorStrength(parseFloat(e.target.value))}
+                        className="flex-1 accent-blue-500"
+                      />
+                      <span className="text-xs text-gray-400 w-8">{calibPriorStrength.toFixed(1)}</span>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleApplyCalibration}
+                    disabled={calibApplying}
+                    className="w-full py-0.5 text-xs rounded bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-gray-200 transition-colors"
+                  >
+                    {calibApplying ? "Applying…" : "Apply"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* Use training model toggle */}
           <label

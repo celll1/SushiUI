@@ -1161,7 +1161,29 @@ export interface SigLIP2StatusResponse {
   num_tags: number;
   lr_matrix_loaded?: boolean;
   has_tag_metrics?: boolean;
+  calib_method?: string;
+  calib_eps?: number;
+  calib_prior_strength?: number;
 }
+
+export interface SigLIP2CalibrationSettings {
+  method: "jeffreys" | "beta_bb";
+  eps: number;
+  prior_strength: number;
+  has_tag_metrics?: boolean;
+}
+
+export const getCalibrationSettings = async (): Promise<SigLIP2CalibrationSettings> => {
+  const response = await api.get("/tagger/siglip2/calibration");
+  return response.data;
+};
+
+export const setCalibrationSettings = async (
+  settings: Omit<SigLIP2CalibrationSettings, "has_tag_metrics">
+): Promise<SigLIP2CalibrationSettings> => {
+  const response = await api.post("/tagger/siglip2/calibration", settings);
+  return response.data;
+};
 
 export interface TagMetricsData {
   n_tags: number;
@@ -1193,6 +1215,7 @@ export interface SigLIP2PredictOptions {
   context_method?: SigLIP2ContextMethod;
   context_lambda?: number;
   use_training_model?: boolean;
+  use_calibration?: boolean;
 }
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
@@ -1220,6 +1243,9 @@ export const predictSigLIP2Tags = async (
   }
   if (options?.use_training_model) {
     body.use_training_model = true;
+  }
+  if (typeof options?.use_calibration === "boolean") {
+    body.use_calibration = options.use_calibration;
   }
   const response = await api.post("/tagger/siglip2/predict", body);
   return response.data;

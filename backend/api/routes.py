@@ -2992,6 +2992,7 @@ async def unload_tagger_model():
 # ============================================================================
 
 from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
+from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
 
 class SigLIP2LoadRequest(BaseModel):
     checkpoint_path: str
@@ -3115,6 +3116,68 @@ async def siglip2_vocabulary():
     if not vocab:
         raise HTTPException(status_code=404, detail="Vocabulary not available")
     return vocab
+
+
+@router.get("/tagger/siglip2/tag-metrics")
+async def siglip2_tag_metrics():
+    """Return per-tag metrics from the _tag_metrics.npz saved alongside the loaded checkpoint.
+
+    Response is in columnar format: parallel arrays of length n_tags.
+    NaN values are serialized as null.
+    """
+    mgr = get_siglip2_inference_manager()
+    if not mgr.status.get("loaded"):
+        raise HTTPException(status_code=400, detail="No model loaded")
+    path = mgr.get_tag_metrics_path()
+    if path is None:
+        raise HTTPException(status_code=404, detail="tag_metrics.npz not found for this checkpoint")
+
+    try:
+        data = TagMetricsAccumulator.load(path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load tag_metrics.npz: {e}")
+
+    vocab = mgr.vocabulary or {}
+    idx_to_tag = vocab.get("idx_to_tag", {})
+    tag_to_category = vocab.get("tag_to_category", {})
+    n_pos_arr = data.get("n_pos")
+    if n_pos_arr is None:
+        raise HTTPException(status_code=500, detail="tag_metrics.npz missing n_pos array")
+    V = int(n_pos_arr.shape[0])
+    tag_names_arr = data.get("tag_names", None)
+
+    def to_list(key: str):
+        arr = data.get(key)
+        if arr is None:
+            return [None] * V
+        return [None if (v != v) else float(v) for v in arr.tolist()]
+
+    tag_names: list = []
+    categories: list = []
+    for i in range(V):
+        if tag_names_arr is not None and i < len(tag_names_arr):
+            name = str(tag_names_arr[i])
+        else:
+            name = idx_to_tag.get(str(i), f"tag_{i}")
+        tag_names.append(name)
+        categories.append(tag_to_category.get(name, "Unknown"))
+
+    return {
+        "n_tags":       V,
+        "total_images": int(data["total_images"]),
+        "hard_lo":      float(data.get("hard_lo", 0.25)),
+        "hard_hi":      float(data.get("hard_hi", 0.75)),
+        "tag_names":    tag_names,
+        "categories":   categories,
+        "n_pos":        to_list("n_pos"),
+        "n_neg":        to_list("n_neg"),
+        "global_freq":  to_list("global_freq"),
+        "hard_rate":    to_list("hard_rate"),
+        "fp_rate_50":   to_list("fp_rate_50"),
+        "fn_rate_50":   to_list("fn_rate_50"),
+        "best_f1":      to_list("best_f1"),
+        "best_thr":     to_list("best_thr"),
+    }
 
 
 @router.get("/tagger/siglip2/checkpoint-meta")

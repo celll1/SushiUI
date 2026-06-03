@@ -1160,7 +1160,30 @@ export interface SigLIP2StatusResponse {
   model_type: string;
   num_tags: number;
   lr_matrix_loaded?: boolean;
+  has_tag_metrics?: boolean;
 }
+
+export interface TagMetricsData {
+  n_tags: number;
+  total_images: number;
+  hard_lo: number;
+  hard_hi: number;
+  tag_names: string[];
+  categories: string[];
+  n_pos: (number | null)[];
+  n_neg: (number | null)[];
+  global_freq: (number | null)[];
+  hard_rate: (number | null)[];
+  fp_rate_50: (number | null)[];
+  fn_rate_50: (number | null)[];
+  best_f1: (number | null)[];
+  best_thr: (number | null)[];
+}
+
+export const fetchTagMetrics = async (): Promise<TagMetricsData> => {
+  const response = await api.get("/tagger/siglip2/tag-metrics");
+  return response.data as TagMetricsData;
+};
 
 export type SigLIP2ContextMethod = "none" | "head_sim" | "lr_matrix";
 

@@ -901,13 +901,22 @@ class SigLIP2InferenceManager:
 
     # ------------------------------------------------------------------
 
+    def get_tag_metrics_path(self) -> Optional[str]:
+        """Return _tag_metrics.npz path for the loaded checkpoint, or None if absent."""
+        if not self.checkpoint_path:
+            return None
+        base = os.path.splitext(self.checkpoint_path)[0]
+        p = base + "_tag_metrics.npz"
+        return p if os.path.isfile(p) else None
+
     @property
     def status(self) -> Dict[str, Any]:
         return {
-            "loaded":           self.model is not None or self.onnx_session is not None,
-            "checkpoint_path":  self.checkpoint_path,
-            "vocab_path":       self.vocab_path,
-            "model_type":       self.model_type,
-            "num_tags":         len(self.vocabulary["idx_to_tag"]) if self.vocabulary else 0,
-            "lr_matrix_loaded": self.lr_matrix is not None,
+            "loaded":            self.model is not None or self.onnx_session is not None,
+            "checkpoint_path":   self.checkpoint_path,
+            "vocab_path":        self.vocab_path,
+            "model_type":        self.model_type,
+            "num_tags":          len(self.vocabulary["idx_to_tag"]) if self.vocabulary else 0,
+            "lr_matrix_loaded":  self.lr_matrix is not None,
+            "has_tag_metrics":   self.get_tag_metrics_path() is not None,
         }

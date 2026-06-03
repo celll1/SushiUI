@@ -299,6 +299,8 @@ export default function TaggerTrainingMonitor({
 
   // WebSocket: receive live tagger metrics during training
   useEffect(() => {
+    wsClient.connect();
+
     const handler = (m: TaggerMetrics) => {
       if (m.run_id !== run.run_id) return;
 

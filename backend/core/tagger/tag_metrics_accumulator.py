@@ -168,8 +168,8 @@ class TagMetricsAccumulator:
             fp_rate = np.where(n_neg[:, None] > 0, neg_rev / n_neg[:, None], np.nan)
             fn_rate = 1.0 - tp_rate  # miss rate
 
-        # FP/FN at threshold=0.50 (bin index = 50)
-        bin_50 = 50
+        # FP/FN at threshold=0.50 (bin index = n_bins // 2)
+        bin_50 = self.n_bins // 2
         fp_rate_50 = fp_rate[:, bin_50]
         fn_rate_50 = fn_rate[:, bin_50]
 
@@ -184,12 +184,22 @@ class TagMetricsAccumulator:
             rec  = tp_arr / (tp_arr + fn_arr + 1e-8)
             f1   = 2.0 * prec * rec / (prec + rec + 1e-8)
 
-        # For tags with no positive samples, f1 is NaN → best_f1 = NaN
-        has_pos = n_pos > 0
-        best_f1  = np.where(has_pos, np.nanmax(f1, axis=1),  np.nan).astype(np.float32)
-        best_bin = np.where(has_pos, np.nanargmax(f1, axis=1), -1).astype(np.int32)
+        # Best F1 / threshold per tag.
+        # nanmax / nanargmax raise ValueError when an entire row is NaN (numpy
+        # treats that as an error, not just a warning).  This occurs for tags
+        # where n_neg == 0 in the current window (all observations positive),
+        # making fp_rate — and therefore all f1 values — NaN.
+        # Guard: temporarily replace all-NaN rows with 0 so the reduction
+        # doesn't raise; those rows are excluded from the result by the mask.
+        has_pos  = n_pos > 0
+        _all_nan = np.all(np.isnan(f1), axis=1)          # rows where f1 is entirely NaN
+        _f1_safe = f1.copy()
+        _f1_safe[_all_nan, 0] = 0.0                       # dummy non-NaN to suppress error
+        has_valid_f1 = has_pos & ~_all_nan
+        best_f1  = np.where(has_valid_f1, np.nanmax(_f1_safe,    axis=1), np.nan).astype(np.float32)
+        best_bin = np.where(has_valid_f1, np.nanargmax(_f1_safe,  axis=1), -1  ).astype(np.int32)
         best_thr = np.where(
-            has_pos,
+            has_valid_f1,
             best_bin.astype(np.float32) / self.n_bins,
             np.nan,
         ).astype(np.float32)

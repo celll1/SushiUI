@@ -10,6 +10,28 @@ export async function GET(request: NextRequest) {
   const encoder = new TextEncoder();
 
   let ws: WebSocket | null = null;
+  let controllerClosed = false;
+
+  const safeEnqueue = (controller: ReadableStreamDefaultController, data: Uint8Array) => {
+    if (!controllerClosed) {
+      try {
+        controller.enqueue(data);
+      } catch {
+        controllerClosed = true;
+      }
+    }
+  };
+
+  const safeClose = (controller: ReadableStreamDefaultController) => {
+    if (!controllerClosed) {
+      controllerClosed = true;
+      try {
+        controller.close();
+      } catch {
+        // already closed
+      }
+    }
+  };
 
   const stream = new ReadableStream({
     start(controller) {
@@ -27,7 +49,7 @@ export async function GET(request: NextRequest) {
         console.log('[SSE] Connected to backend WebSocket');
         // Send initial connection message
         const data = `data: ${JSON.stringify({ type: 'connected' })}\n\n`;
-        controller.enqueue(encoder.encode(data));
+        safeEnqueue(controller, encoder.encode(data));
       });
 
       ws.on('message', (message: Buffer) => {
@@ -48,7 +70,7 @@ export async function GET(request: NextRequest) {
 
           // Forward WebSocket message as SSE event
           const data = `data: ${messageStr}\n\n`;
-          controller.enqueue(encoder.encode(data));
+          safeEnqueue(controller, encoder.encode(data));
         } catch (error) {
           console.error('[SSE] Error processing message:', error);
         }
@@ -57,19 +79,20 @@ export async function GET(request: NextRequest) {
       ws.on('error', (error) => {
         console.error('[SSE] WebSocket error:', error);
         const data = `data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`;
-        controller.enqueue(encoder.encode(data));
+        safeEnqueue(controller, encoder.encode(data));
       });
 
       ws.on('close', (code, reason) => {
         console.log(`[SSE] WebSocket closed (code: ${code}, reason: ${reason.toString()})`);
         const data = `data: ${JSON.stringify({ type: 'closed', code, reason: reason.toString() })}\n\n`;
-        controller.enqueue(encoder.encode(data));
-        controller.close();
+        safeEnqueue(controller, encoder.encode(data));
+        safeClose(controller);
       });
     },
 
     cancel() {
       console.log('[SSE] Client disconnected, closing WebSocket');
+      controllerClosed = true;
       if (ws) {
         ws.close();
         ws = null;

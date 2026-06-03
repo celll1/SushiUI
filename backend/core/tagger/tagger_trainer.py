@@ -1041,6 +1041,24 @@ class TaggerTrainer:
                 if loaded:
                     print(f"[TaggerTrainer] Optimizer state restored from {resume_ckpt_name}")
 
+            # Restore tag metrics accumulator from latest_tag_metrics.npz so
+            # histogram data is not discarded across resume boundaries.
+            if _save_tag_metrics_enabled:
+                _metrics_npz = os.path.join(self.output_dir, "latest_tag_metrics.npz")
+                restored = _tag_metrics_acc.restore_from_npz(_metrics_npz)
+                if restored:
+                    print(
+                        f"[TaggerTrainer] Tag metrics accumulator restored from "
+                        f"latest_tag_metrics.npz "
+                        f"(total_images_prev={_tag_metrics_acc.total_images_prev:,}, "
+                        f"total_images_all={_tag_metrics_acc.total_images_all:,})"
+                    )
+                else:
+                    print(
+                        f"[TaggerTrainer] WARNING: latest_tag_metrics.npz not found or "
+                        f"incompatible — accumulator starts fresh"
+                    )
+
             # Fast-forward LR scheduler to match resumed global_step
             for _ in range(global_step):
                 scheduler.step()

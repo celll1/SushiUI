@@ -328,7 +328,8 @@ class TagMetricsAccumulator:
                                        epoch_boundary, calib_prior_strength),
             "calib_prior_strength": np.array([calib_prior_strength], dtype=np.float32),
             "tag_count":           self.tag_count,
-            "total_images":        np.array([total_images], dtype=np.int64),
+            "total_images":        np.array([total_images],          dtype=np.int64),
+            "total_images_all":    np.array([self.total_images_all], dtype=np.int64),
             "n_bins":              np.array([self.n_bins],  dtype=np.int32),
             "hard_lo":             np.array([hard_lo],      dtype=np.float32),
             "hard_hi":             np.array([hard_hi],      dtype=np.float32),
@@ -340,6 +341,62 @@ class TagMetricsAccumulator:
             save_kwargs["tag_names"] = np.array(tag_names, dtype=object)
 
         np.savez_compressed(path, **save_kwargs)
+
+    def restore_from_npz(self, path: str) -> bool:
+        """Restore accumulator state from a previously saved .npz file.
+
+        Called on training resume so that accumulated histogram data is not
+        lost.  The saved file stores the *merged* (cur+prev) histograms, so
+        we restore them into the ``prev`` slot and leave ``cur`` zeroed —
+        equivalent to having just completed the last checkpoint's epoch.
+
+        Returns True on success, False if the file is missing or incompatible.
+        """
+        if not os.path.isfile(path):
+            return False
+        try:
+            data = np.load(path, allow_pickle=True)
+
+            saved_n_bins = int(data["n_bins"].item() if data["n_bins"].ndim == 0
+                               else data["n_bins"][0])
+            if saved_n_bins != self.n_bins:
+                print(
+                    f"[TagMetricsAccumulator] restore_from_npz: n_bins mismatch "
+                    f"(saved={saved_n_bins}, current={self.n_bins}) — skipping restore"
+                )
+                return False
+
+            pos_h   = data["pos_hist"].astype(np.int32)    # [V_saved, K]
+            total_h = data["total_hist"].astype(np.int32)  # [V_saved, K]
+            V_saved = pos_h.shape[0]
+
+            # Vocabulary may have grown since the checkpoint was saved.
+            # Restore only the rows that exist in both old and new vocab.
+            V_restore = min(V_saved, self.vocab_size)
+
+            self.pos_hist_prev[:V_restore]   = pos_h[:V_restore]
+            self.total_hist_prev[:V_restore] = total_h[:V_restore]
+
+            _ti = data["total_images"]
+            self.total_images_prev = int(_ti.item() if _ti.ndim == 0 else _ti[0])
+
+            # tag_count: all-epoch cumulative
+            if "tag_count" in data.files:
+                tc = data["tag_count"].astype(np.int32)
+                self.tag_count[:min(len(tc), self.vocab_size)] = tc[:min(len(tc), self.vocab_size)]
+
+            # total_images_all: all-epoch image count (added in newer saves)
+            if "total_images_all" in data.files:
+                _tia = data["total_images_all"]
+                self.total_images_all = int(_tia.item() if _tia.ndim == 0 else _tia[0])
+            else:
+                # Older NPZ without total_images_all: use total_images as fallback
+                self.total_images_all = self.total_images_prev
+
+            return True
+        except Exception as e:
+            print(f"[TagMetricsAccumulator] restore_from_npz failed ({path}): {e}")
+            return False
 
     @staticmethod
     def load(path: str) -> dict:

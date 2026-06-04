@@ -65,17 +65,16 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [metricsError, setMetricsError]   = useState<string | null>(null);
 
   useEffect(() => {
-    if (modelLoaded) {
-      getSigLIP2Status()
-        .then((s) => {
-          setHasTagMetrics(s.has_tag_metrics ?? false);
-          if (s.calib_method) setCalibMethod(s.calib_method as "jeffreys" | "beta_bb");
-          if (typeof s.calib_eps === "number") setCalibEps(s.calib_eps);
-          if (typeof s.calib_prior_strength === "number") setCalibPriorStrength(s.calib_prior_strength);
-        })
-        .catch(() => {});
-    } else {
-      setHasTagMetrics(false);
+    // Always poll status so calibration panel shows even when using training model
+    getSigLIP2Status()
+      .then((s) => {
+        setHasTagMetrics(s.has_tag_metrics ?? false);
+        if (s.calib_method) setCalibMethod(s.calib_method as "jeffreys" | "beta_bb");
+        if (typeof s.calib_eps === "number") setCalibEps(s.calib_eps);
+        if (typeof s.calib_prior_strength === "number") setCalibPriorStrength(s.calib_prior_strength);
+      })
+      .catch(() => {});
+    if (!modelLoaded) {
       setActiveTab("inference");
       setTagMetrics(null);
     }
@@ -648,6 +647,14 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
             <p className="text-xs text-blue-400">
               Result from training model
               {result.run_id && ` (run ${result.run_id.slice(0, 8)})`}
+            </p>
+          )}
+
+          {result && (
+            <p className="text-xs text-gray-500">
+              {result.calibrated
+                ? `後験確率 (${calibMethod === "jeffreys" ? `Jeffreys ε=${calibEps.toFixed(1)}` : `Beta-BB S=${calibPriorStrength.toFixed(1)}`})`
+                : "Raw sigmoid prob"}
             </p>
           )}
 

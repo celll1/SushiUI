@@ -3072,11 +3072,23 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
         if request.use_training_model:
             handle = gpu_coordinator.get_active_tagger_handle()
             if handle is not None:
+                # Calibration for training model: borrow table from inference manager
+                # if it is loaded and use_calibration was requested.
+                _calib_table = None
+                _n_bins      = 100
+                if request.use_calibration:
+                    _mgr = get_siglip2_inference_manager()
+                    if _mgr.tag_metrics is not None:
+                        _calib_table = _mgr.tag_metrics.get("calibration_table")
+                        _nb = _mgr.tag_metrics.get("n_bins", 100)
+                        _n_bins = int(_nb) if hasattr(_nb, "__int__") else 100
+
                 # Training model is on CUDA — use it directly (it shares the GPU
                 # with the coordinator's grace period, no need for generation_slot).
                 try:
                     result = await asyncio.get_event_loop().run_in_executor(
-                        None, handle.predict, image_bytes, request.threshold
+                        None, handle.predict, image_bytes, request.threshold,
+                        _calib_table, _n_bins,
                     )
                     return result
                 except RuntimeError as _e:

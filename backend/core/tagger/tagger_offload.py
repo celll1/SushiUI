@@ -243,11 +243,21 @@ class TaggerTrainerHandle:
         p = next(iter(self._model.parameters()), None)
         return p is not None and p.device.type == "cuda"
 
-    def predict(self, image_bytes: bytes, threshold: float) -> dict:
+    def predict(
+        self,
+        image_bytes: bytes,
+        threshold: float,
+        calibration_table: "Optional[np.ndarray]" = None,
+        n_bins: int = 100,
+    ) -> dict:
         """Run inference with the training model (eval mode, no_grad).
 
         Returns the same dict shape as SigLIP2InferenceManager.predict():
-          { "tags": [...], "scores": {tag: score}, "source": "training_model" }
+          { "tags": [...], "scores": {tag: score}, "source": "training_model",
+            "calibrated": bool }
+
+        When calibration_table [V, K] is provided, sigmoid probs are replaced
+        with calibrated posteriors before threshold filtering.
 
         Raises RuntimeError if the model is not on CUDA (offloaded).
         """
@@ -271,6 +281,22 @@ class TaggerTrainerHandle:
         with torch.no_grad():
             logits = self._model(**inputs)  # [1, V]
             probs = torch.sigmoid(logits[0]).cpu().float().numpy()  # [V]
+
+        # Apply calibration table if provided
+        calibrated = False
+        if calibration_table is not None:
+            try:
+                bin_idx = np.clip(
+                    (probs * n_bins).astype(np.int32), 0, n_bins - 1
+                )
+                cal = calibration_table[np.arange(len(probs)), bin_idx].astype(np.float32)
+                nan_mask = np.isnan(cal)
+                if nan_mask.any():
+                    cal[nan_mask] = probs[nan_mask]
+                probs = cal
+                calibrated = True
+            except Exception:
+                pass  # fall back to raw probs silently
 
         filtered = []
         quality_items = []
@@ -299,4 +325,5 @@ class TaggerTrainerHandle:
             "num_predicted": len(filtered),
             "source":        "training_model",
             "run_id":        self.run_id,
+            "calibrated":    calibrated,
         }

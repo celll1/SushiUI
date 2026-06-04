@@ -423,8 +423,7 @@ class SigLIP2InferenceManager:
             probs = torch.sigmoid(_logits).cpu().numpy()  # [num_tags]
 
         # Calibration: replace sigmoid probs with P(y=1 | score_bin, tag)
-        # derived from Beta-Binomial smoothed training histogram.
-        # No NaN fallback needed — Beta-prior guarantees all bins have values.
+        _calibrated = False
         if use_calibration and self.tag_metrics is not None:
             _calib = self.tag_metrics.get("calibration_table")  # [V, K] float16 or None
             if _calib is not None:
@@ -434,6 +433,7 @@ class SigLIP2InferenceManager:
                     (probs * _n_bins).astype(np.int32), 0, _n_bins - 1
                 )  # [V]
                 probs = _calib[np.arange(len(probs)), _bin_idx].astype(np.float32)
+                _calibrated = True
 
         idx_to_tag      = self.vocabulary["idx_to_tag"]
         tag_to_category = self.vocabulary["tag_to_category"]
@@ -503,6 +503,7 @@ class SigLIP2InferenceManager:
             "quality_top":   quality_top,
             "rating_top":    rating_top,
             "num_predicted": len(filtered),
+            "calibrated":    _calibrated,
         }
 
     # ------------------------------------------------------------------

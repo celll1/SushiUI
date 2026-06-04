@@ -1149,8 +1149,9 @@ export interface SigLIP2PredictResponse {
   quality_top: SigLIP2TagResult | null;
   rating_top: SigLIP2TagResult | null;
   num_predicted: number;
-  source?: string;   // "training_model" when training-model inference was used
+  source?: string;      // "training_model" when training-model inference was used
   run_id?: string;
+  calibrated?: boolean; // true when calibration table was applied
 }
 
 export interface SigLIP2StatusResponse {

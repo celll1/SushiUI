@@ -336,6 +336,7 @@ class SigLIP2InferenceManager:
         use_per_tag_threshold: bool = False,
         min_samples_for_per_tag: int = 5,
         use_calibration: bool = False,
+        display_calibration: bool = False,
     ) -> Dict[str, Any]:
         """Run inference on raw image bytes.
 
@@ -422,39 +423,64 @@ class SigLIP2InferenceManager:
                 _logits = _logits + torch.from_numpy(context_correction).to(_logits.device)
             probs = torch.sigmoid(_logits).cpu().numpy()  # [num_tags]
 
-        # Calibration: replace sigmoid probs with P(y=1 | score_bin, tag)
+        # Keep raw sigmoid probs for best_thr filtering; calibrated only for display
+        raw_probs = probs.copy()
+
+        # use_calibration (legacy): replaces probs used for both filtering AND display
         _calibrated = False
         if use_calibration and self.tag_metrics is not None:
-            _calib = self.tag_metrics.get("calibration_table")  # [V, K] float16 or None
+            _calib = self.tag_metrics.get("calibration_table")
             if _calib is not None:
                 _nb = self.tag_metrics.get("n_bins", 100)
                 _n_bins = int(_nb) if np.ndim(_nb) == 0 else int(_nb[0])
                 _bin_idx = np.clip(
                     (probs * _n_bins).astype(np.int32), 0, _n_bins - 1
-                )  # [V]
+                )
                 probs = _calib[np.arange(len(probs)), _bin_idx].astype(np.float32)
+                raw_probs = probs  # in legacy mode, display == filtered probs
                 _calibrated = True
+
+        # display_calibration: keep raw probs for filtering, use calibrated for display only
+        display_probs = raw_probs
+        _display_calibrated = False
+        if display_calibration and not use_calibration and self.tag_metrics is not None:
+            _calib = self.tag_metrics.get("calibration_table")
+            if _calib is not None:
+                _nb = self.tag_metrics.get("n_bins", 100)
+                _n_bins = int(_nb) if np.ndim(_nb) == 0 else int(_nb[0])
+                _bin_idx = np.clip(
+                    (raw_probs * _n_bins).astype(np.int32), 0, _n_bins - 1
+                )
+                _cal = _calib[np.arange(len(raw_probs)), _bin_idx].astype(np.float32)
+                _nan = np.isnan(_cal)
+                if _nan.any():
+                    _cal[_nan] = raw_probs[_nan]
+                display_probs = _cal
+                _display_calibrated = True
 
         idx_to_tag      = self.vocabulary["idx_to_tag"]
         tag_to_category = self.vocabulary["tag_to_category"]
         tag_to_idx      = self.vocabulary.get("tag_to_idx", {})
 
         # Force known-positive tags to prob=1.0 in the output (after sigmoid).
-        # known_tags_neg are NOT forced to 0.0 — the correction already pushed them
-        # down, but we keep their numeric value so the user can see how the model
-        # would have ranked them.
         if known_tags_pos:
             for _tag in known_tags_pos:
                 _idx = tag_to_idx.get(_tag)
                 if _idx is not None:
-                    probs[_idx] = 1.0
+                    raw_probs[_idx] = 1.0
+                    display_probs[_idx] = 1.0
 
-        # Build full list
+        # Build full list — display_probs for shown values, raw_probs for filtering
         all_items: List[Dict] = []
-        for i, prob in enumerate(probs):
+        for i in range(len(raw_probs)):
             tag      = idx_to_tag.get(i, f"__unk_{i}__")
             category = tag_to_category.get(tag, "Unknown")
-            all_items.append({"tag": tag, "prob": float(prob), "category": category})
+            all_items.append({
+                "tag": tag,
+                "prob": float(display_probs[i]),
+                "raw_prob": float(raw_probs[i]),
+                "category": category,
+            })
 
         # Quality / Rating: pick the max regardless of threshold
         quality_top: Optional[Dict] = None
@@ -469,11 +495,12 @@ class SigLIP2InferenceManager:
             rating_top  = max(rating_items,  key=lambda x: x["prob"])
 
         # Threshold-filtered tags (exclude Quality / Rating from the main list)
+        # Filtering always uses raw_prob; display prob is in the "prob" field.
+        _used_best_thr = False
         if use_per_tag_threshold and self.tag_metrics is not None:
             import math
-            _m    = self.tag_metrics
-            _bthr = _m.get("best_thr")
-            _npos = _m.get("n_pos")
+            _bthr = self.tag_metrics.get("best_thr")
+            _npos = self.tag_metrics.get("n_pos")
             filtered = []
             for it in all_items:
                 if it["category"] in ("Quality", "Rating"):
@@ -488,22 +515,25 @@ class SigLIP2InferenceManager:
                     and not math.isnan(float(_bthr[_idx]))
                 ):
                     thr_t = float(_bthr[_idx])
-                if it["prob"] >= thr_t:
+                if it["raw_prob"] >= thr_t:
                     filtered.append(it)
+            _used_best_thr = True
         else:
             filtered = [
                 it for it in all_items
-                if it["prob"] >= threshold
+                if it["raw_prob"] >= threshold
                 and it["category"] not in ("Quality", "Rating")
             ]
         filtered.sort(key=lambda x: x["prob"], reverse=True)
 
         return {
-            "tags":          filtered,
-            "quality_top":   quality_top,
-            "rating_top":    rating_top,
-            "num_predicted": len(filtered),
-            "calibrated":    _calibrated,
+            "tags":               filtered,
+            "quality_top":        quality_top,
+            "rating_top":         rating_top,
+            "num_predicted":      len(filtered),
+            "calibrated":         _calibrated or _display_calibrated,
+            "display_calibrated": _display_calibrated,
+            "used_best_thr":      _used_best_thr,
         }
 
     # ------------------------------------------------------------------

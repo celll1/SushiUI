@@ -3013,9 +3013,12 @@ class SigLIP2PredictRequest(BaseModel):
     # loaded inference model.  Falls back to the inference model automatically
     # if no training is active or the training model is offloaded to CPU.
     use_training_model: bool = False
-    # When True, apply the calibration table to convert sigmoid scores to
-    # posterior probabilities.  Requires tag_metrics to be loaded.
+    # Legacy: apply calibration to both filtering and display.
     use_calibration: bool = False
+    # New: filter by per-tag best_thr (raw sigmoid), display probs are still raw.
+    use_per_tag_threshold: bool = False
+    # New: display calibrated probs in output while filtering uses raw sigmoid + best_thr.
+    display_calibration: bool = False
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str
@@ -3110,6 +3113,8 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
                 context_method=request.context_method,
                 context_lambda=request.context_lambda,
                 use_calibration=request.use_calibration,
+                use_per_tag_threshold=request.use_per_tag_threshold,
+                display_calibration=request.display_calibration,
             )
         return result
     except Exception as e:

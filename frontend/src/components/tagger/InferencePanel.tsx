@@ -68,7 +68,9 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
     // Always poll status so calibration panel shows even when using training model
     getSigLIP2Status()
       .then((s) => {
-        setHasTagMetrics(s.has_tag_metrics ?? false);
+        const hasMet = s.has_tag_metrics ?? false;
+        setHasTagMetrics(hasMet);
+        if (hasMet) setInferMode("best_thr");
         if (s.calib_method) setCalibMethod(s.calib_method as "jeffreys" | "beta_bb");
         if (typeof s.calib_eps === "number") setCalibEps(s.calib_eps);
         if (typeof s.calib_prior_strength === "number") setCalibPriorStrength(s.calib_prior_strength);
@@ -111,12 +113,17 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
     }
   };
 
-  // Calibration settings
+  // Inference mode: "best_thr" = raw sigmoid + per-tag best_thr (default when metrics available)
+  //                 "fixed"    = fixed/per-category threshold (legacy)
+  const [inferMode,         setInferMode]         = useState<"best_thr" | "fixed">("fixed");
+  const [displayCalibrated, setDisplayCalibrated] = useState(false);
+
+  // Calibration settings (used for display_calibration and legacy use_calibration)
   const [calibMethod,        setCalibMethod]        = useState<"jeffreys" | "beta_bb">("jeffreys");
   const [calibEps,           setCalibEps]           = useState(0.5);
   const [calibPriorStrength, setCalibPriorStrength] = useState(10.0);
   const [calibApplying,      setCalibApplying]      = useState(false);
-  const [useCalibration,     setUseCalibration]     = useState(true);
+  const [useCalibration,     setUseCalibration]     = useState(false); // legacy
 
   // Conditional inference state (Phase 0: head_sim)
   const [contextMethod,  setContextMethod]  = useState<SigLIP2ContextMethod>("none");
@@ -163,9 +170,11 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
     return globalThreshold;
   };
 
-  // Filter tags based on current threshold settings
+  // Filter tags based on current threshold settings.
+  // In best_thr mode the backend already filtered; just return all.
   const filterTags = (allTags: SigLIP2TagResult[]): SigLIP2TagResult[] => {
-    return allTags.filter(t => t.prob >= thresholdFor(t.category));
+    if (result?.used_best_thr) return allTags;
+    return allTags.filter(t => (t.raw_prob ?? t.prob) >= thresholdFor(t.category));
   };
 
   // Effective threshold passed to chart (for display in flat mode)
@@ -189,7 +198,12 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         context_method: contextMethod,
         context_lambda: contextLambda,
         use_training_model: useTrainingModel,
-        use_calibration: useCalibration && hasTagMetrics,
+        // best_thr mode: per-tag threshold on raw sigmoid
+        use_per_tag_threshold: inferMode === "best_thr" && hasTagMetrics,
+        // display: show calibrated or raw probs
+        display_calibration: displayCalibrated && hasTagMetrics,
+        // legacy fixed-thr + calibration (only in fixed mode when explicitly enabled)
+        use_calibration: inferMode === "fixed" && useCalibration && hasTagMetrics,
       });
       setResult(res);
       const allTags = new Set<string>([
@@ -545,11 +559,24 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
             )}
           </div>
 
-          {/* Calibration settings */}
+          {/* Inference mode + display settings */}
           {hasTagMetrics && (
             <div className="border border-gray-700 rounded p-2 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-gray-400 font-medium">Calibration</span>
+              <span className="text-xs text-gray-400 font-medium">Inference</span>
+              <div className="flex gap-1">
+                {(["best_thr", "fixed"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setInferMode(m)}
+                    className={`px-2 py-0.5 text-xs rounded ${inferMode === m ? "bg-blue-700 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                  >
+                    {m === "best_thr" ? "Best-thr" : "固定閾値"}
+                  </button>
+                ))}
+              </div>
+
+              {/* Fixed threshold mode: show legacy calibration enable */}
+              {inferMode === "fixed" && (
                 <label className="flex items-center gap-1.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -557,10 +584,10 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                     onChange={(e) => setUseCalibration(e.target.checked)}
                     className="w-3 h-3 rounded accent-blue-500"
                   />
-                  <span className="text-xs text-gray-400">Enable</span>
+                  <span className="text-xs text-gray-400">Calibration (legacy)</span>
                 </label>
-              </div>
-              {useCalibration && (
+              )}
+              {inferMode === "fixed" && useCalibration && (
                 <>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-500 w-12">Method</span>
@@ -609,6 +636,17 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                   </button>
                 </>
               )}
+
+              {/* Display calibration toggle (both modes) */}
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={displayCalibrated}
+                  onChange={(e) => setDisplayCalibrated(e.target.checked)}
+                  className="w-3 h-3 rounded accent-blue-500"
+                />
+                <span className="text-xs text-gray-400">確率表示: 校正後</span>
+              </label>
             </div>
           )}
 
@@ -652,9 +690,13 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
 
           {result && (
             <p className="text-xs text-gray-500">
-              {result.calibrated
-                ? `後験確率 (${calibMethod === "jeffreys" ? `Jeffreys ε=${calibEps.toFixed(1)}` : `Beta-BB S=${calibPriorStrength.toFixed(1)}`})`
-                : "Raw sigmoid prob"}
+              {result.used_best_thr
+                ? (result.display_calibrated
+                    ? `校正後確率表示 / Best-thr (Jeffreys ε=${calibEps.toFixed(1)})`
+                    : "Raw sigmoid prob / Best-thr")
+                : (result.calibrated
+                    ? `後験確率 (${calibMethod === "jeffreys" ? `Jeffreys ε=${calibEps.toFixed(1)}` : `Beta-BB S=${calibPriorStrength.toFixed(1)}`})`
+                    : "Raw sigmoid prob / 固定閾値")}
             </p>
           )}
 

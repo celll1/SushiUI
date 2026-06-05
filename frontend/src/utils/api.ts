@@ -1140,7 +1140,8 @@ export interface SigLIP2LoadRequest {
 
 export interface SigLIP2TagResult {
   tag: string;
-  prob: number;
+  prob: number;         // display prob (calibrated when display_calibration=true)
+  raw_prob?: number;    // raw sigmoid prob (always present when use_per_tag_threshold)
   category: string;
 }
 
@@ -1149,9 +1150,11 @@ export interface SigLIP2PredictResponse {
   quality_top: SigLIP2TagResult | null;
   rating_top: SigLIP2TagResult | null;
   num_predicted: number;
-  source?: string;      // "training_model" when training-model inference was used
+  source?: string;
   run_id?: string;
-  calibrated?: boolean; // true when calibration table was applied
+  calibrated?: boolean;
+  display_calibrated?: boolean; // true when display_calibration was applied
+  used_best_thr?: boolean;      // true when per-tag best_thr was used
 }
 
 export interface SigLIP2StatusResponse {
@@ -1216,7 +1219,9 @@ export interface SigLIP2PredictOptions {
   context_method?: SigLIP2ContextMethod;
   context_lambda?: number;
   use_training_model?: boolean;
-  use_calibration?: boolean;
+  use_calibration?: boolean;       // legacy
+  use_per_tag_threshold?: boolean; // new: filter by per-tag best_thr
+  display_calibration?: boolean;   // new: show calibrated probs in display
 }
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
@@ -1247,6 +1252,12 @@ export const predictSigLIP2Tags = async (
   }
   if (typeof options?.use_calibration === "boolean") {
     body.use_calibration = options.use_calibration;
+  }
+  if (options?.use_per_tag_threshold) {
+    body.use_per_tag_threshold = true;
+  }
+  if (options?.display_calibration) {
+    body.display_calibration = true;
   }
   const response = await api.post("/tagger/siglip2/predict", body);
   return response.data;

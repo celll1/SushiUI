@@ -1222,6 +1222,8 @@ export interface SigLIP2PredictOptions {
   use_calibration?: boolean;       // legacy
   use_per_tag_threshold?: boolean; // new: filter by per-tag best_thr
   display_calibration?: boolean;   // new: show calibrated probs in display
+  min_best_thr?: number;           // clamp floor for best_thr (default 0.30)
+  min_best_f1?: number;            // skip tags with best_f1 below this (default 0.05)
 }
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
@@ -1258,6 +1260,12 @@ export const predictSigLIP2Tags = async (
   }
   if (options?.display_calibration) {
     body.display_calibration = true;
+  }
+  if (typeof options?.min_best_thr === "number") {
+    body.min_best_thr = options.min_best_thr;
+  }
+  if (typeof options?.min_best_f1 === "number") {
+    body.min_best_f1 = options.min_best_f1;
   }
   const response = await api.post("/tagger/siglip2/predict", body);
   return response.data;

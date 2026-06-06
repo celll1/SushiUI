@@ -3019,6 +3019,11 @@ class SigLIP2PredictRequest(BaseModel):
     use_per_tag_threshold: bool = False
     # New: display calibrated probs in output while filtering uses raw sigmoid + best_thr.
     display_calibration: bool = False
+    # Quality filters for per-tag threshold mode.
+    # min_best_thr: clamp best_thr to this floor (suppresses noise-level FPs from untrained tags).
+    # min_best_f1: skip tags whose best_f1 is below this (exclude effectively-untrained tags).
+    min_best_thr: float = 0.30
+    min_best_f1: float = 0.05
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str
@@ -3114,6 +3119,8 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
                 context_lambda=request.context_lambda,
                 use_calibration=request.use_calibration,
                 use_per_tag_threshold=request.use_per_tag_threshold,
+                min_best_thr=request.min_best_thr,
+                min_best_f1=request.min_best_f1,
                 display_calibration=request.display_calibration,
             )
         return result

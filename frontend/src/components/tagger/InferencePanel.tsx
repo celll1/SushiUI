@@ -117,6 +117,8 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   //                 "fixed"    = fixed/per-category threshold (legacy)
   const [inferMode,         setInferMode]         = useState<"best_thr" | "fixed">("fixed");
   const [displayCalibrated, setDisplayCalibrated] = useState(false);
+  const [minBestThr,        setMinBestThr]        = useState(0.30);
+  const [minBestF1,         setMinBestF1]         = useState(0.05);
 
   // Calibration settings (used for display_calibration and legacy use_calibration)
   const [calibMethod,        setCalibMethod]        = useState<"jeffreys" | "beta_bb">("jeffreys");
@@ -200,6 +202,8 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         use_training_model: useTrainingModel,
         // best_thr mode: per-tag threshold on raw sigmoid
         use_per_tag_threshold: inferMode === "best_thr" && hasTagMetrics,
+        min_best_thr: minBestThr,
+        min_best_f1: minBestF1,
         // display: show calibrated or raw probs
         display_calibration: displayCalibrated && hasTagMetrics,
         // legacy fixed-thr + calibration (only in fixed mode when explicitly enabled)
@@ -634,6 +638,32 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                   >
                     {calibApplying ? "Applying…" : "Apply"}
                   </button>
+                </>
+              )}
+
+              {/* Best-thr quality filters */}
+              {inferMode === "best_thr" && (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 w-20 flex-shrink-0">min best_thr</span>
+                    <input
+                      type="range" min={0.10} max={0.50} step={0.01}
+                      value={minBestThr}
+                      onChange={(e) => setMinBestThr(parseFloat(e.target.value))}
+                      className="flex-1 accent-blue-500"
+                    />
+                    <span className="text-xs text-gray-400 w-8 text-right">{minBestThr.toFixed(2)}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 w-20 flex-shrink-0">min best_F1</span>
+                    <input
+                      type="range" min={0.00} max={0.30} step={0.01}
+                      value={minBestF1}
+                      onChange={(e) => setMinBestF1(parseFloat(e.target.value))}
+                      className="flex-1 accent-blue-500"
+                    />
+                    <span className="text-xs text-gray-400 w-8 text-right">{minBestF1.toFixed(2)}</span>
+                  </div>
                 </>
               )}
 

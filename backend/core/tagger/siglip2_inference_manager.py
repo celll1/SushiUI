@@ -335,6 +335,8 @@ class SigLIP2InferenceManager:
         context_lambda: float = 0.5,
         use_per_tag_threshold: bool = False,
         min_samples_for_per_tag: int = 5,
+        min_best_thr: float = 0.30,
+        min_best_f1: float = 0.05,
         use_calibration: bool = False,
         display_calibration: bool = False,
     ) -> Dict[str, Any]:
@@ -500,6 +502,7 @@ class SigLIP2InferenceManager:
         if use_per_tag_threshold and self.tag_metrics is not None:
             import math
             _bthr = self.tag_metrics.get("best_thr")
+            _bf1  = self.tag_metrics.get("best_f1")
             _npos = self.tag_metrics.get("n_pos")
             filtered = []
             for it in all_items:
@@ -514,7 +517,13 @@ class SigLIP2InferenceManager:
                     and int(_npos[_idx]) >= min_samples_for_per_tag
                     and not math.isnan(float(_bthr[_idx]))
                 ):
-                    thr_t = float(_bthr[_idx])
+                    raw_thr = float(_bthr[_idx])
+                    # Skip tag entirely if best_f1 is below minimum (unreliable detector)
+                    if _bf1 is not None and not math.isnan(float(_bf1[_idx])):
+                        if float(_bf1[_idx]) < min_best_f1:
+                            continue
+                    # Clamp best_thr to minimum to suppress noise-level FPs
+                    thr_t = max(raw_thr, min_best_thr)
                 if it["raw_prob"] >= thr_t:
                     filtered.append(it)
             _used_best_thr = True

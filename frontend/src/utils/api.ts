@@ -1155,6 +1155,7 @@ export interface SigLIP2PredictResponse {
   calibrated?: boolean;
   display_calibrated?: boolean; // true when display_calibration was applied
   used_best_thr?: boolean;      // true when per-tag best_thr was used
+  ood_distance?: number | null; // Mahalanobis distance (null when OOD detection not used)
 }
 
 export interface SigLIP2StatusResponse {
@@ -1165,6 +1166,7 @@ export interface SigLIP2StatusResponse {
   num_tags: number;
   lr_matrix_loaded?: boolean;
   has_tag_metrics?: boolean;
+  has_ood_reference?: boolean;
   calib_method?: string;
   calib_eps?: number;
   calib_prior_strength?: number;
@@ -1224,6 +1226,7 @@ export interface SigLIP2PredictOptions {
   display_calibration?: boolean;   // new: show calibrated probs in display
   min_best_thr?: number;           // clamp floor for best_thr (default 0.30)
   min_best_f1?: number;            // skip tags with best_f1 below this (default 0.05)
+  use_ood_detection?: boolean;     // raise threshold for OOD images (requires OOD reference)
 }
 
 export const loadSigLIP2Model = async (req: SigLIP2LoadRequest) => {
@@ -1267,7 +1270,18 @@ export const predictSigLIP2Tags = async (
   if (typeof options?.min_best_f1 === "number") {
     body.min_best_f1 = options.min_best_f1;
   }
+  if (options?.use_ood_detection) {
+    body.use_ood_detection = true;
+  }
   const response = await api.post("/tagger/siglip2/predict", body);
+  return response.data;
+};
+
+export const buildSigLIP2OodReference = async (
+  image_dir: string,
+  max_images: number = 2000,
+): Promise<{ n_images: number; n_errors: number; p50: number; p95: number; save_path: string }> => {
+  const response = await api.post("/tagger/siglip2/build-ood-reference", { image_dir, max_images });
   return response.data;
 };
 

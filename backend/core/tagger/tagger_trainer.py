@@ -435,6 +435,33 @@ def _save_tag_metrics(
         print(f"[TaggerTrainer] WARNING: could not save tag_metrics for {name}: {e}")
 
 
+def _save_ood_reference(
+    accumulator: Any,
+    output_dir: str,
+    name: str,
+    save_enabled: bool = True,
+) -> None:
+    """Fit and save the OOD reference distribution alongside a checkpoint.
+
+    Skipped when *save_enabled* is False or fewer than 10 embeddings have been
+    collected.  Saves ``{name}_ood_ref.npz`` in *output_dir*.
+    Also keeps a ``latest_ood_reservoir.npz`` so that training can be resumed
+    without re-collecting embeddings from scratch.
+    """
+    if not save_enabled:
+        return
+    if accumulator.n_seen < 10:
+        return
+    try:
+        path = os.path.join(output_dir, f"{name}_ood_ref.npz")
+        accumulator.finalize(path)
+        # Persist raw reservoir for resume
+        reservoir_path = os.path.join(output_dir, "latest_ood_reservoir.npz")
+        accumulator.save_reservoir(reservoir_path)
+    except Exception as _e:
+        print(f"[TaggerTrainer] WARNING: could not save ood_reference for {name}: {_e}")
+
+
 def _resolve_checkpoint_vocab_path(output_dir: str, ckpt_name: str) -> Optional[str]:
     """Resolve the vocabulary file for a specific checkpoint.
 
@@ -979,6 +1006,11 @@ class TaggerTrainer:
         _calib_prior_strength = float(cfg.get("calib_prior_strength", 10.0))
         _tag_metrics_acc = TagMetricsAccumulator(vocab_size=self.vocabulary.num_tags)
 
+        # OOD embedding accumulator (reservoir sampling of CLS embeddings)
+        from core.tagger.ood_embedding_accumulator import OodEmbeddingAccumulator
+        _save_ood_ref_enabled = bool(cfg.get("save_ood_reference", True))
+        _ood_emb_acc = OodEmbeddingAccumulator(max_samples=4000)
+
         # Training state
         best_f1         = 0.0
         best_threshold  = 0.5
@@ -1068,6 +1100,11 @@ class TaggerTrainer:
                         f"incompatible — accumulator starts fresh"
                     )
 
+            # Restore OOD embedding reservoir for resume continuity
+            if _save_ood_ref_enabled:
+                _ood_reservoir_npz = os.path.join(self.output_dir, "latest_ood_reservoir.npz")
+                _ood_emb_acc.restore_from_reservoir(_ood_reservoir_npz)
+
             # Fast-forward LR scheduler to match resumed global_step
             for _ in range(global_step):
                 scheduler.step()
@@ -1085,6 +1122,23 @@ class TaggerTrainer:
         print(f"[TaggerTrainer] Training started: {epochs} epochs, "
               f"{len(train_loader)} steps/epoch, amp={'on ('+mp+')' if use_amp else 'off'}")
         self._emit("phase", {"phase": "training", "message": "Training started"})
+
+        # ------------------------------------------------------------------
+        # Forward hook to capture CLS embeddings for OOD reference building.
+        # The hook fires on model.head (the final Linear layer), capturing its
+        # input (= pooled CLS embedding).  A one-shot flag prevents double
+        # capture during gradient-checkpointing recomputation.
+        # ------------------------------------------------------------------
+        _ood_cap_buf: list = []  # receives (B, D) float32 CPU tensors
+        _ood_cap_once = [False]  # one-shot flag: reset before forward, cleared by hook
+
+        def _ood_forward_pre_hook(module, args):
+            if _ood_cap_once[0]:
+                _ood_cap_once[0] = False
+                inp = args[0]  # (B, D) on GPU, possibly bf16/fp16
+                _ood_cap_buf.append(inp.detach().float().cpu())
+
+        _ood_hook_handle = model.head.register_forward_pre_hook(_ood_forward_pre_hook)
 
         # ------------------------------------------------------------------
         # Training loop
@@ -1174,6 +1228,10 @@ class TaggerTrainer:
 
                 optimizer.zero_grad()
 
+                # Arm the OOD hook (one-shot flag) before the forward pass
+                if _save_ood_ref_enabled:
+                    _ood_cap_once[0] = True
+
                 if use_amp:
                     with torch.autocast(device_type="cuda", dtype=amp_dtype):
                         logits = model(pv, pam, ss)
@@ -1181,6 +1239,10 @@ class TaggerTrainer:
                 else:
                     logits = model(pv, pam, ss)
                     loss   = criterion(logits, labels, loss_masks)
+
+                # Feed any captured CLS embeddings to the OOD accumulator
+                if _save_ood_ref_enabled and _ood_cap_buf:
+                    _ood_emb_acc.update(_ood_cap_buf.pop().numpy())
 
                 # Skip batch only when loss itself is NaN/Inf (backward is meaningless)
                 loss_val = loss.item()
@@ -1289,6 +1351,8 @@ class TaggerTrainer:
                                       calib_method=_calib_method,
                                       calib_eps=_calib_eps,
                                       calib_prior_strength=_calib_prior_strength)
+                    _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
+                                        save_enabled=_save_ood_ref_enabled)
                     if keep_last_n_checkpoints > 0:
                         _prune_step_checkpoints(self.output_dir, keep_last_n_checkpoints)
                     self._emit("checkpoint", {
@@ -1358,6 +1422,8 @@ class TaggerTrainer:
                                   calib_method=_calib_method,
                                   calib_eps=_calib_eps,
                                   calib_prior_strength=_calib_prior_strength)
+                _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
+                                    save_enabled=_save_ood_ref_enabled)
                 # Also update "latest" to the stop position
                 _save_model_checkpoint(model, self.output_dir, "latest", metadata, checkpoint_save_mode)
                 _save_training_state(
@@ -1376,6 +1442,8 @@ class TaggerTrainer:
                                   calib_method=_calib_method,
                                   calib_eps=_calib_eps,
                                   calib_prior_strength=_calib_prior_strength)
+                _save_ood_reference(_ood_emb_acc, self.output_dir, "latest",
+                                    save_enabled=_save_ood_ref_enabled)
                 self._emit("checkpoint", {
                     "name": ckpt_name,
                     "step": global_step,
@@ -1436,6 +1504,8 @@ class TaggerTrainer:
                                       calib_method=_calib_method,
                                       calib_eps=_calib_eps,
                                       calib_prior_strength=_calib_prior_strength)
+                    _save_ood_reference(_ood_emb_acc, self.output_dir, "best_f1",
+                                        save_enabled=_save_ood_ref_enabled)
                     self._emit("checkpoint", {"name": "best_f1", "f1": best_f1, "epoch": epoch})
 
             # Save latest checkpoint at epoch boundary.
@@ -1453,6 +1523,8 @@ class TaggerTrainer:
                               calib_method=_calib_method,
                               calib_eps=_calib_eps,
                               calib_prior_strength=_calib_prior_strength)
+            _save_ood_reference(_ood_emb_acc, self.output_dir, "latest",
+                                save_enabled=_save_ood_ref_enabled)
 
             # Epoch-based checkpoint (model only; training state = same as latest)
             if save_every_n_epochs > 0 and epoch % save_every_n_epochs == 0:
@@ -1466,6 +1538,8 @@ class TaggerTrainer:
                                   calib_method=_calib_method,
                                   calib_eps=_calib_eps,
                                   calib_prior_strength=_calib_prior_strength)
+                _save_ood_reference(_ood_emb_acc, self.output_dir, ckpt_name,
+                                    save_enabled=_save_ood_ref_enabled)
                 self._emit("checkpoint", {"name": ckpt_name, "epoch": epoch, "step": global_step})
             _save_training_state(
                 self.output_dir, "latest",
@@ -1493,6 +1567,12 @@ class TaggerTrainer:
                 "loss": avg_loss,
                 **val_metrics,
             })
+
+        # Remove OOD hook early (validation does not need it)
+        try:
+            _ood_hook_handle.remove()
+        except Exception:
+            pass
 
         if self._stop_requested:
             # Training was stopped mid-run; skip threshold search and "completed" event

@@ -3024,6 +3024,13 @@ class SigLIP2PredictRequest(BaseModel):
     # min_best_f1: skip tags whose best_f1 is below this (exclude effectively-untrained tags).
     min_best_thr: float = 0.30
     min_best_f1: float = 0.05
+    # OOD detection: raise threshold for Character/Copyright when image is OOD.
+    # Only active when use_per_tag_threshold=True and an OOD reference is loaded.
+    use_ood_detection: bool = False
+
+class SigLIP2BuildOodReferenceRequest(BaseModel):
+    image_dir: str   # directory to walk for in-distribution images
+    max_images: int = 2000
 
 class SigLIP2MergeLoRARequest(BaseModel):
     output_path: str
@@ -3122,9 +3129,50 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
                 min_best_thr=request.min_best_thr,
                 min_best_f1=request.min_best_f1,
                 display_calibration=request.display_calibration,
+                use_ood_detection=request.use_ood_detection,
             )
         return result
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tagger/siglip2/build-ood-reference")
+async def siglip2_build_ood_reference(request: SigLIP2BuildOodReferenceRequest):
+    """Build OOD reference distribution from an in-distribution image directory.
+
+    Walks *image_dir* recursively, extracts CLS embeddings from up to
+    *max_images* images, fits a multivariate Gaussian with Ledoit-Wolf
+    shrinkage, and saves the result as ``{onnx_base}_ood_ref.npz``.
+    """
+    mgr = get_siglip2_inference_manager()
+    if not mgr.status.get("loaded"):
+        raise HTTPException(status_code=400, detail="No model loaded")
+    if mgr.model_type != "onnx":
+        raise HTTPException(status_code=400, detail="OOD reference requires an ONNX model")
+
+    image_dir = request.image_dir.strip().strip('"').strip("'")
+    if not os.path.isdir(image_dir):
+        raise HTTPException(status_code=400, detail=f"Directory not found: {image_dir}")
+
+    # Collect image paths
+    exts = {".jpg", ".jpeg", ".png", ".webp"}
+    paths = []
+    for root, _, files in os.walk(image_dir):
+        for f in files:
+            if os.path.splitext(f)[1].lower() in exts:
+                paths.append(os.path.join(root, f))
+
+    if len(paths) == 0:
+        raise HTTPException(status_code=400, detail="No images found in directory")
+
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, mgr.build_ood_reference, paths, None, request.max_images
+        )
+        return result
+    except Exception as e:
+        import traceback
+        print(f"[BuildOodReference] ERROR: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

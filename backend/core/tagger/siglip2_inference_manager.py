@@ -61,6 +61,11 @@ def _read_metadata(checkpoint_path: str) -> dict:
 # Manager class
 # ---------------------------------------------------------------------------
 
+# ONNX intermediate node name for CLS embedding (input to final classification head).
+# Used for OOD detection via Mahalanobis distance on the 1152-dim feature vector.
+_OOD_EMB_NODE = "/vision_encoder/head/Gather_1_output_0"
+
+
 class SigLIP2InferenceManager:
     """Manages a single loaded SigLIP2 tagger model for inference."""
 
@@ -84,6 +89,11 @@ class SigLIP2InferenceManager:
         self.calib_method: str = "jeffreys"
         self.calib_eps: float = 0.5
         self.calib_prior_strength: float = 10.0
+        # OOD detection state (Mahalanobis distance on CLS embedding).
+        # ood_ref: dict with mu, cov_inv, p50 loaded from {onnx_base}_ood_ref.npz
+        # ood_emb_session: ORT session for modified ONNX with embedding output
+        self.ood_ref: Optional[Dict[str, Any]] = None
+        self.ood_emb_session = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -312,6 +322,19 @@ class SigLIP2InferenceManager:
                     print(f"[SigLIP2Manager] WARNING: tag_metrics load failed: {_e}")
                     self.tag_metrics = None
 
+        # 9. OOD reference (optional, built by build_ood_reference()).
+        # File: {onnx_base}_ood_ref.npz alongside the ONNX checkpoint.
+        self.ood_ref = None
+        self.ood_emb_session = None
+        if checkpoint_path.endswith(".onnx"):
+            _ood_ref_path = os.path.splitext(checkpoint_path)[0] + "_ood_ref.npz"
+            if os.path.isfile(_ood_ref_path):
+                try:
+                    self._load_ood_reference(_ood_ref_path)
+                    print(f"[SigLIP2Manager] OOD reference loaded from {_ood_ref_path}")
+                except Exception as _e:
+                    print(f"[SigLIP2Manager] WARNING: OOD reference load failed: {_e}")
+
         print(
             f"[SigLIP2Manager] Loaded {model_type} model | "
             f"{num_tags} tags | {self.device}"
@@ -339,6 +362,7 @@ class SigLIP2InferenceManager:
         min_best_f1: float = 0.05,
         use_calibration: bool = False,
         display_calibration: bool = False,
+        use_ood_detection: bool = False,
     ) -> Dict[str, Any]:
         """Run inference on raw image bytes.
 
@@ -391,18 +415,35 @@ class SigLIP2InferenceManager:
             known_tags_pos, known_tags_neg, context_method, context_lambda,
         )
 
+        ood_distance: Optional[float] = None
         if self.model_type == "onnx":
             pv_np = inputs["pixel_values"].float().numpy()
-            if self.is_naflex:
+            # Use OOD embedding session when requested and available
+            _use_ood = (
+                use_ood_detection
+                and self.ood_ref is not None
+                and self.ood_emb_session is not None
+            )
+            if _use_ood:
+                # OOD session outputs: [logits, embedding]
+                ood_out = self.ood_emb_session.run(
+                    ["logits", _OOD_EMB_NODE],
+                    {"pixel_values": pv_np},
+                )
+                logits_np = ood_out[0][0]  # [num_tags]
+                emb_np    = ood_out[1][0]  # [cls_dim]
+                ood_distance = float(self._compute_mahalanobis(emb_np))
+            elif self.is_naflex:
                 pam_np = inputs["pixel_attention_mask"].float().numpy()
                 ss_np  = inputs["spatial_shapes"].numpy().astype(np.int64)
                 outputs = self.onnx_session.run(
                     ["logits"],
                     {"pixel_values": pv_np, "pixel_attention_mask": pam_np, "spatial_shapes": ss_np},
                 )
+                logits_np = outputs[0][0]
             else:
                 outputs = self.onnx_session.run(["logits"], {"pixel_values": pv_np})
-            logits_np = outputs[0][0]  # [num_tags]
+                logits_np = outputs[0][0]  # [num_tags]
             if self.logit_bias is not None:
                 logits_np = logits_np - self.logit_bias
             if context_correction is not None:
@@ -498,6 +539,14 @@ class SigLIP2InferenceManager:
 
         # Threshold-filtered tags (exclude Quality / Rating from the main list)
         # Filtering always uses raw_prob; display prob is in the "prob" field.
+        # OOD dynamic threshold scale factor (0 = in-dist, 1 = fully OOD).
+        # Only computed when OOD detection is active and distance is available.
+        _ood_t: float = 0.0
+        if ood_distance is not None and self.ood_ref is not None:
+            _p50 = float(self.ood_ref["p50"])
+            # Linear ramp: 0 at in-dist p50, 1 at p50*40 (well below OOD median ~1143)
+            _ood_t = max(0.0, min(1.0, (ood_distance - _p50) / (_p50 * 39.0)))
+
         _used_best_thr = False
         if use_per_tag_threshold and self.tag_metrics is not None:
             import math
@@ -524,6 +573,10 @@ class SigLIP2InferenceManager:
                             continue
                     # Clamp best_thr to minimum to suppress noise-level FPs
                     thr_t = max(raw_thr, min_best_thr)
+                # OOD dynamic threshold: raise threshold for Character/Copyright
+                # proportionally to how far the image is from the training distribution.
+                if _ood_t > 0.0 and it["category"] in ("Character", "Copyright"):
+                    thr_t = thr_t + _ood_t * (0.85 - thr_t)
                 if it["raw_prob"] >= thr_t:
                     filtered.append(it)
             _used_best_thr = True
@@ -543,6 +596,7 @@ class SigLIP2InferenceManager:
             "calibrated":         _calibrated or _display_calibrated,
             "display_calibrated": _display_calibrated,
             "used_best_thr":      _used_best_thr,
+            "ood_distance":       ood_distance,
         }
 
     # ------------------------------------------------------------------
@@ -951,9 +1005,174 @@ class SigLIP2InferenceManager:
         self.model_type          = ""
         self.logit_bias          = None
         self.lr_matrix           = None
+        if self.ood_emb_session is not None:
+            del self.ood_emb_session
+            self.ood_emb_session = None
+        self.ood_ref = None
         print("[SigLIP2Manager] Model unloaded.")
 
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # OOD detection helpers
+    # ------------------------------------------------------------------
+
+    def _ensure_ood_session(self) -> None:
+        """Create (or reuse) an ORT session that outputs logits + CLS embedding.
+
+        Modifies a copy of the loaded ONNX model to expose the intermediate
+        CLS-embedding node as a graph output, then creates an ORT session from
+        the modified model bytes (no file written).
+        """
+        if self.ood_emb_session is not None:
+            return
+        if not (self.checkpoint_path and self.checkpoint_path.endswith(".onnx")):
+            raise RuntimeError("OOD session requires an ONNX model.")
+
+        import onnx
+        import onnxruntime as ort
+
+        # Load ONNX without external data (weights referenced via .data file)
+        model_proto = onnx.load(self.checkpoint_path, load_external_data=False)
+
+        # Add the CLS embedding node as a graph output
+        emb_type = onnx.helper.make_tensor_value_info(
+            _OOD_EMB_NODE, onnx.TensorProto.FLOAT, None
+        )
+        model_proto.graph.output.append(emb_type)
+
+        # Serialize to bytes (external data stays referenced via relative path)
+        model_bytes = model_proto.SerializeToString()
+
+        opts = ort.SessionOptions()
+        opts.log_severity_level = 3
+        self.ood_emb_session = ort.InferenceSession(
+            model_bytes,
+            sess_options=opts,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+
+    def _load_ood_reference(self, path: str) -> None:
+        """Load OOD reference distribution from npz file."""
+        import numpy as np
+        data = np.load(path)
+        self.ood_ref = {
+            "mu":      data["mu"].astype(np.float64),
+            "cov_inv": data["cov_inv"].astype(np.float64),
+            "p50":     float(data["p50"]),
+            "p95":     float(data["p95"]) if "p95" in data else 0.0,
+        }
+
+    def _compute_mahalanobis(self, emb: "np.ndarray") -> float:
+        """Compute Mahalanobis distance between emb and the in-dist reference."""
+        import numpy as np
+        diff = emb.astype(np.float64) - self.ood_ref["mu"]
+        return float(np.sqrt(max(0.0, diff @ self.ood_ref["cov_inv"] @ diff)))
+
+    def build_ood_reference(
+        self,
+        image_paths: List[str],
+        save_path: Optional[str] = None,
+        max_images: int = 2000,
+    ) -> Dict[str, Any]:
+        """Build OOD reference distribution from in-distribution images.
+
+        Collects CLS embeddings, fits a multivariate Gaussian (full covariance
+        with shrinkage regularisation), and saves to *save_path* (defaults to
+        ``{onnx_base}_ood_ref.npz``).
+
+        Returns summary statistics dict.
+        """
+        import numpy as np
+
+        if not (self.checkpoint_path and self.checkpoint_path.endswith(".onnx")):
+            raise RuntimeError("build_ood_reference requires an ONNX model.")
+
+        self._ensure_ood_session()
+
+        if save_path is None:
+            save_path = os.path.splitext(self.checkpoint_path)[0] + "_ood_ref.npz"
+
+        # Sample image paths
+        import random
+        rng = random.Random(42)
+        paths = list(image_paths)
+        rng.shuffle(paths)
+        paths = paths[:max_images]
+
+        print(f"[SigLIP2Manager] Building OOD reference from {len(paths)} images...")
+
+        IMG_SIZE = 384
+        MEAN = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+        STD  = np.array([0.5, 0.5, 0.5], dtype=np.float32)
+
+        embeddings = []
+        errors = 0
+        for i, p in enumerate(paths):
+            if i % 200 == 0:
+                print(f"  [{i}/{len(paths)}]")
+            try:
+                img = Image.open(p).convert("RGB")
+                img = img.resize((IMG_SIZE, IMG_SIZE), Image.BICUBIC)
+                arr = np.array(img, dtype=np.float32) / 255.0
+                arr = (arr - MEAN) / STD
+                pv_np = arr.transpose(2, 0, 1)[None]  # (1,3,H,W)
+                out = self.ood_emb_session.run(
+                    ["logits", _OOD_EMB_NODE],
+                    {"pixel_values": pv_np},
+                )
+                embeddings.append(out[1][0].astype(np.float64))
+            except Exception as _e:
+                errors += 1
+                if errors <= 5:
+                    print(f"  ERROR {p}: {_e}")
+
+        if len(embeddings) < 10:
+            raise RuntimeError(f"Too few successful embeddings ({len(embeddings)}); cannot fit distribution.")
+
+        E = np.stack(embeddings, axis=0)  # (N, D)
+        mu = E.mean(axis=0)
+
+        # Full covariance with Ledoit-Wolf shrinkage
+        try:
+            from sklearn.covariance import LedoitWolf
+            lw = LedoitWolf(assume_centered=False)
+            lw.fit(E)
+            cov_inv = np.linalg.inv(lw.covariance_)
+        except Exception:
+            # Fallback: diagonal regularisation
+            cov = np.cov(E, rowvar=False)
+            cov += np.eye(cov.shape[0]) * 1e-6
+            cov_inv = np.linalg.inv(cov)
+
+        # Compute distances on the training set to get percentiles
+        dists = np.array([
+            float(np.sqrt(max(0.0, (e - mu) @ cov_inv @ (e - mu))))
+            for e in embeddings
+        ])
+        p50 = float(np.percentile(dists, 50))
+        p95 = float(np.percentile(dists, 95))
+
+        np.savez_compressed(
+            save_path,
+            mu=mu.astype(np.float32),
+            cov_inv=cov_inv.astype(np.float32),
+            p50=np.float32(p50),
+            p95=np.float32(p95),
+        )
+        self._load_ood_reference(save_path)
+
+        print(
+            f"[SigLIP2Manager] OOD reference saved → {save_path} "
+            f"| n={len(embeddings)} | p50={p50:.2f} | p95={p95:.2f}"
+        )
+        return {
+            "n_images":  len(embeddings),
+            "n_errors":  errors,
+            "p50":       p50,
+            "p95":       p95,
+            "save_path": save_path,
+        }
 
     def get_tag_metrics_path(self) -> Optional[str]:
         """Return _tag_metrics.npz path for the loaded checkpoint, or None if absent."""
@@ -1013,6 +1232,7 @@ class SigLIP2InferenceManager:
             "num_tags":          len(self.vocabulary["idx_to_tag"]) if self.vocabulary else 0,
             "lr_matrix_loaded":  self.lr_matrix is not None,
             "has_tag_metrics":   self.get_tag_metrics_path() is not None,
+            "has_ood_reference": self.ood_ref is not None,
             "calib_method":      self.calib_method,
             "calib_eps":         self.calib_eps,
             "calib_prior_strength": self.calib_prior_strength,

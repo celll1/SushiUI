@@ -8,6 +8,7 @@ import {
   fetchTagMetrics,
   getCalibrationSettings,
   setCalibrationSettings,
+  buildSigLIP2OodReference,
   SigLIP2PredictResponse,
   SigLIP2TagResult,
   SigLIP2ContextMethod,
@@ -64,6 +65,13 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   const [metricsLoading, setMetricsLoading] = useState(false);
   const [metricsError, setMetricsError]   = useState<string | null>(null);
 
+  // OOD detection state
+  const [hasOodReference, setHasOodReference] = useState(false);
+  const [useOodDetection, setUseOodDetection] = useState(false);
+  const [oodBuilding, setOodBuilding]         = useState(false);
+  const [oodBuildError, setOodBuildError]     = useState<string | null>(null);
+  const [oodBuildResult, setOodBuildResult]   = useState<{ p50: number; p95: number; n_images: number } | null>(null);
+
   useEffect(() => {
     // Always poll status so calibration panel shows even when using training model
     getSigLIP2Status()
@@ -74,6 +82,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         if (s.calib_method) setCalibMethod(s.calib_method as "jeffreys" | "beta_bb");
         if (typeof s.calib_eps === "number") setCalibEps(s.calib_eps);
         if (typeof s.calib_prior_strength === "number") setCalibPriorStrength(s.calib_prior_strength);
+        setHasOodReference(s.has_ood_reference ?? false);
       })
       .catch(() => {});
     if (!modelLoaded) {
@@ -208,6 +217,8 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         display_calibration: displayCalibrated && hasTagMetrics,
         // legacy fixed-thr + calibration (only in fixed mode when explicitly enabled)
         use_calibration: inferMode === "fixed" && useCalibration && hasTagMetrics,
+        // OOD detection: dynamic threshold for Character/Copyright
+        use_ood_detection: useOodDetection && hasOodReference && inferMode === "best_thr",
       });
       setResult(res);
       const allTags = new Set<string>([
@@ -667,6 +678,45 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                 </>
               )}
 
+              {/* OOD detection toggle + build button (best_thr mode only) */}
+              {inferMode === "best_thr" && (
+                <div className="space-y-1.5">
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={useOodDetection}
+                      onChange={(e) => setUseOodDetection(e.target.checked)}
+                      disabled={!hasOodReference}
+                      className="w-3 h-3 rounded accent-purple-500 disabled:opacity-40"
+                    />
+                    <span className={`text-xs ${hasOodReference ? "text-gray-300" : "text-gray-500"}`}>
+                      OOD検出
+                      {hasOodReference ? "" : " (参照未構築)"}
+                    </span>
+                  </label>
+                  {/* Build OOD reference section */}
+                  <OodReferenceBuilder
+                    building={oodBuilding}
+                    buildResult={oodBuildResult}
+                    buildError={oodBuildError}
+                    onBuild={async (dir, maxImages) => {
+                      setOodBuilding(true);
+                      setOodBuildError(null);
+                      setOodBuildResult(null);
+                      try {
+                        const res = await buildSigLIP2OodReference(dir, maxImages);
+                        setOodBuildResult(res);
+                        setHasOodReference(true);
+                      } catch (e: any) {
+                        setOodBuildError(e?.response?.data?.detail ?? e?.message ?? "Failed");
+                      } finally {
+                        setOodBuilding(false);
+                      }
+                    }}
+                  />
+                </div>
+              )}
+
               {/* Display calibration toggle (both modes) */}
               <label className="flex items-center gap-1.5 cursor-pointer select-none">
                 <input
@@ -719,15 +769,23 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
           )}
 
           {result && (
-            <p className="text-xs text-gray-500">
-              {result.used_best_thr
-                ? (result.display_calibrated
-                    ? `校正後確率表示 / Best-thr (Jeffreys ε=${calibEps.toFixed(1)})`
-                    : "Raw sigmoid prob / Best-thr")
-                : (result.calibrated
-                    ? `後験確率 (${calibMethod === "jeffreys" ? `Jeffreys ε=${calibEps.toFixed(1)}` : `Beta-BB S=${calibPriorStrength.toFixed(1)}`})`
-                    : "Raw sigmoid prob / 固定閾値")}
-            </p>
+            <div className="space-y-0.5">
+              <p className="text-xs text-gray-500">
+                {result.used_best_thr
+                  ? (result.display_calibrated
+                      ? `校正後確率表示 / Best-thr (Jeffreys ε=${calibEps.toFixed(1)})`
+                      : "Raw sigmoid prob / Best-thr")
+                  : (result.calibrated
+                      ? `後験確率 (${calibMethod === "jeffreys" ? `Jeffreys ε=${calibEps.toFixed(1)}` : `Beta-BB S=${calibPriorStrength.toFixed(1)}`})`
+                      : "Raw sigmoid prob / 固定閾値")}
+              </p>
+              {result.ood_distance != null && (
+                <p className={`text-xs ${result.ood_distance > 100 ? "text-orange-400" : "text-gray-500"}`}>
+                  OOD distance: {result.ood_distance.toFixed(1)}
+                  {result.ood_distance > 100 ? " ⚠ OOD" : ""}
+                </p>
+              )}
+            </div>
           )}
 
           {/* Send-to-panel buttons */}
@@ -797,6 +855,70 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         </div>
       )}
       </div>{/* end inference tab wrapper */}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// OOD Reference Builder sub-component
+// ---------------------------------------------------------------------------
+
+interface OodReferenceBuilderProps {
+  building: boolean;
+  buildResult: { p50: number; p95: number; n_images: number } | null;
+  buildError: string | null;
+  onBuild: (dir: string, maxImages: number) => Promise<void>;
+}
+
+function OodReferenceBuilder({ building, buildResult, buildError, onBuild }: OodReferenceBuilderProps) {
+  const [expanded, setExpanded] = useState(false);
+  const [dir, setDir] = useState("");
+  const [maxImages, setMaxImages] = useState(2000);
+
+  return (
+    <div className="text-xs">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="text-gray-500 hover:text-gray-300 underline"
+      >
+        {expanded ? "▲ OOD参照構築を閉じる" : "▼ OOD参照を構築…"}
+      </button>
+      {expanded && (
+        <div className="mt-1.5 space-y-1.5 p-2 bg-gray-800 rounded">
+          <div>
+            <label className="text-gray-400">学習内データディレクトリ</label>
+            <input
+              type="text"
+              value={dir}
+              onChange={(e) => setDir(e.target.value)}
+              placeholder="M:/dataset_07/..."
+              className="w-full mt-0.5 px-2 py-1 bg-gray-700 rounded text-gray-200 text-xs"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-gray-400 w-20 flex-shrink-0">最大枚数</label>
+            <input
+              type="number" min={100} max={10000} step={100}
+              value={maxImages}
+              onChange={(e) => setMaxImages(parseInt(e.target.value) || 2000)}
+              className="w-24 px-2 py-1 bg-gray-700 rounded text-gray-200 text-xs"
+            />
+          </div>
+          <button
+            onClick={() => onBuild(dir, maxImages)}
+            disabled={building || !dir.trim()}
+            className="w-full py-1 rounded bg-purple-700 hover:bg-purple-600 disabled:opacity-40 text-white transition-colors"
+          >
+            {building ? "構築中…" : "OOD参照を構築"}
+          </button>
+          {buildError && <p className="text-red-400">{buildError}</p>}
+          {buildResult && (
+            <p className="text-green-400">
+              完了: {buildResult.n_images} 枚 | p50={buildResult.p50.toFixed(1)} | p95={buildResult.p95.toFixed(1)}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -68,18 +68,34 @@ function applySmoothing(points: Point[], factor: number, initialState?: number):
 // Chart padding (used everywhere; constant)
 const PAD = { top: 6, right: 8, bottom: 18, left: 44 };
 
-// Robust Y-range: 5–95th percentiles + 5% padding
-function robustYRange(values: number[], yMinFloor: number): { min: number; max: number } {
+// Robust Y-range: 5–95th percentiles on primary + 5% padding.
+// mustInclude values (e.g. secondary series actual min/max) are always
+// extended into the range so they are never clipped by the percentile cut.
+function robustYRange(
+  values: number[],
+  yMinFloor: number,
+  mustInclude: number[] = [],
+): { min: number; max: number } {
   const valid = values.filter((v) => Number.isFinite(v));
-  if (valid.length === 0) return { min: yMinFloor, max: yMinFloor + 1 };
-  if (valid.length === 1) {
+  let lo: number, hi: number;
+  if (valid.length === 0) {
+    lo = yMinFloor; hi = yMinFloor + 1;
+  } else if (valid.length === 1) {
     const v = valid[0];
     const pad = Math.max(Math.abs(v) * 0.1, 1e-6);
-    return { min: Math.max(yMinFloor, v - pad), max: v + pad };
+    lo = Math.max(yMinFloor, v - pad); hi = v + pad;
+  } else {
+    const sorted = [...valid].sort((a, b) => a - b);
+    lo = sorted[Math.floor(sorted.length * 0.05)];
+    hi = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
   }
-  const sorted = [...valid].sort((a, b) => a - b);
-  const lo = sorted[Math.floor(sorted.length * 0.05)];
-  const hi = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
+  // Extend to include secondary series min/max before applying padding
+  for (const v of mustInclude) {
+    if (Number.isFinite(v)) {
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+  }
   const range = hi - lo || Math.max(Math.abs(hi) * 0.1, 1e-6);
   const pad = range * 0.05;
   return { min: Math.max(yMinFloor, lo - pad), max: hi + pad };
@@ -346,8 +362,9 @@ export default function TaggerMetricChart({
   const xSpan = xMax - xMin || 1;
   const toX = (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW;
 
-  // Y scale: pool primary + secondary for a shared scale.
-  const sourceForRange = useMemo(() => {
+  // Y scale: primary uses percentile-based robust range (handles loss spikes).
+  // Secondary actual min/max are passed as mustInclude so they are never clipped.
+  const { primaryValsForRange, secondaryValsForRange } = useMemo(() => {
     const primaryVals = smoothing > 0 && smoothedVisibleAllPoints.length > 0
       ? smoothedVisibleAllPoints.map((p) => p.value)
       : visiblePoints.map((p) => p.value);
@@ -356,12 +373,16 @@ export default function TaggerMetricChart({
         ? smoothedVisibleSecondary.map((p) => p.value)
         : visibleSecondary.map((p) => p.value)
       : [];
-    return [...primaryVals, ...secondaryVals];
+    return { primaryValsForRange: primaryVals, secondaryValsForRange: secondaryVals };
   }, [
     smoothing, smoothedVisibleAllPoints, visiblePoints,
     secondaryValueKey, smoothedVisibleSecondary, visibleSecondary,
   ]);
-  const { min: yMin, max: yMax } = robustYRange(sourceForRange, yMinFloor);
+  const { min: yMin, max: yMax } = robustYRange(
+    primaryValsForRange,
+    yMinFloor,
+    secondaryValsForRange,  // always include secondary actual min/max
+  );
   const ySpan = yMax - yMin || 1;
   const toY = (v: number) => PAD.top + ((yMax - v) / ySpan) * chartH;
 

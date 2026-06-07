@@ -363,25 +363,24 @@ export default function TaggerMetricChart({
   const toX = (step: number) => PAD.left + ((step - xMin) / xSpan) * chartW;
 
   // Y scale: primary uses percentile-based robust range (handles loss spikes).
-  // Secondary actual min/max are passed as mustInclude so they are never clipped.
-  const { primaryValsForRange, secondaryValsForRange } = useMemo(() => {
+  // Secondary raw actual min/max are always passed as mustInclude — using raw (not
+  // smoothed) because EMA dampens extreme values and secondary has very few points,
+  // so every raw value matters and must remain within the visible range.
+  const { primaryValsForRange, secondaryRawVals } = useMemo(() => {
     const primaryVals = smoothing > 0 && smoothedVisibleAllPoints.length > 0
       ? smoothedVisibleAllPoints.map((p) => p.value)
       : visiblePoints.map((p) => p.value);
-    const secondaryVals = secondaryValueKey
-      ? smoothing > 0 && smoothedVisibleSecondary.length > 0
-        ? smoothedVisibleSecondary.map((p) => p.value)
-        : visibleSecondary.map((p) => p.value)
-      : [];
-    return { primaryValsForRange: primaryVals, secondaryValsForRange: secondaryVals };
+    // Always use raw secondary values for range, regardless of smoothing.
+    const rawSecondary = secondaryValueKey ? visibleSecondary.map((p) => p.value) : [];
+    return { primaryValsForRange: primaryVals, secondaryRawVals: rawSecondary };
   }, [
     smoothing, smoothedVisibleAllPoints, visiblePoints,
-    secondaryValueKey, smoothedVisibleSecondary, visibleSecondary,
+    secondaryValueKey, visibleSecondary,
   ]);
   const { min: yMin, max: yMax } = robustYRange(
     primaryValsForRange,
     yMinFloor,
-    secondaryValsForRange,  // always include secondary actual min/max
+    secondaryRawVals,  // raw secondary min/max always visible
   );
   const ySpan = yMax - yMin || 1;
   const toY = (v: number) => PAD.top + ((yMax - v) / ySpan) * chartH;

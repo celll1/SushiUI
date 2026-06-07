@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any
@@ -3362,6 +3362,131 @@ async def siglip2_extract_encoder(request: SigLIP2ExtractEncoderRequest):
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Tagger Browser Endpoints
+# ---------------------------------------------------------------------------
+
+_BROWSER_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+
+
+@router.get("/tagger/browser/list")
+async def browser_list(dir: str, recursive: bool = False):
+    """List image files in a directory. Returns path, rel_path, has_tags, mtime."""
+    import os as _os
+    root = _os.path.abspath(dir)
+    if not _os.path.isdir(root):
+        raise HTTPException(status_code=400, detail="Invalid directory")
+    results = []
+    if recursive:
+        walker = _os.walk(root)
+    else:
+        try:
+            entries = sorted(_os.listdir(root))
+        except PermissionError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        walker = [(root, [], entries)]
+    for dirpath, _, files in walker:
+        for f in sorted(files):
+            ext = _os.path.splitext(f)[1].lower()
+            if ext not in _BROWSER_IMAGE_EXTS:
+                continue
+            abs_path = _os.path.join(dirpath, f)
+            txt_path = _os.path.splitext(abs_path)[0] + ".txt"
+            results.append({
+                "path": abs_path,
+                "rel_path": _os.path.relpath(abs_path, root),
+                "has_tags": _os.path.isfile(txt_path),
+                "mtime": _os.path.getmtime(abs_path),
+            })
+    return {"images": results, "root": root}
+
+
+@router.get("/tagger/browser/image")
+async def browser_image(path: str, size: int = 0):
+    """Serve an image file. size=0: original, size=N: resize to NxN (JPEG, keep aspect)."""
+    import os as _os
+    abs_path = _os.path.abspath(path)
+    if not _os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found")
+    if size > 0:
+        import io
+        from PIL import Image as _Image
+        img = _Image.open(abs_path).convert("RGB")
+        img.thumbnail((size, size), _Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        buf.seek(0)
+        return Response(content=buf.read(), media_type="image/jpeg")
+    return FileResponse(abs_path)
+
+
+@router.get("/tagger/browser/tags")
+async def browser_get_tags(path: str):
+    """Read .txt sidecar file for an image. Returns tags list and raw text."""
+    import os as _os
+    txt = _os.path.splitext(_os.path.abspath(path))[0] + ".txt"
+    if not _os.path.isfile(txt):
+        return {"tags": [], "raw": ""}
+    with open(txt, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    tags = [t.strip() for t in content.split(",") if t.strip()]
+    return {"tags": tags, "raw": content}
+
+
+class BrowserSaveTagsRequest(BaseModel):
+    path: str
+    tags: List[str]
+
+
+@router.post("/tagger/browser/tags")
+async def browser_save_tags(req: BrowserSaveTagsRequest):
+    """Write tags to .txt sidecar file (comma-separated)."""
+    import os as _os
+    txt = _os.path.splitext(_os.path.abspath(req.path))[0] + ".txt"
+    content = ", ".join(req.tags)
+    with open(txt, "w", encoding="utf-8") as f:
+        f.write(content)
+    return {"saved": True, "path": txt}
+
+
+class BrowserBatchInferRequest(BaseModel):
+    paths: List[str]
+    overwrite: bool = False
+    use_ood_detection: bool = False
+
+
+@router.post("/tagger/browser/batch-infer")
+async def browser_batch_infer(req: BrowserBatchInferRequest):
+    """Batch inference with SSE progress streaming. Writes .txt sidecar files."""
+    import json as _json
+    import os as _os
+    mgr = get_siglip2_inference_manager()
+    if not mgr.status.get("loaded"):
+        raise HTTPException(status_code=400, detail="No model loaded")
+
+    async def generate():
+        total = len(req.paths)
+        for i, path in enumerate(req.paths):
+            txt = _os.path.splitext(path)[0] + ".txt"
+            if not req.overwrite and _os.path.isfile(txt):
+                yield f"data: {_json.dumps({'type': 'skip', 'i': i, 'total': total, 'path': path})}\n\n"
+                continue
+            try:
+                from PIL import Image as _Image
+                img = _Image.open(path).convert("RGB")
+                result = mgr.predict(img, use_ood_detection=req.use_ood_detection)
+                tags = result.get("tags", [])
+                content = ", ".join(tags)
+                with open(txt, "w", encoding="utf-8") as f:
+                    f.write(content)
+                yield f"data: {_json.dumps({'type': 'done', 'i': i, 'total': total, 'path': path, 'n_tags': len(tags)})}\n\n"
+            except Exception as e:
+                yield f"data: {_json.dumps({'type': 'error', 'i': i, 'total': total, 'path': path, 'error': str(e)})}\n\n"
+        yield f"data: {_json.dumps({'type': 'complete', 'total': total})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.get("/system/gpu-stats")

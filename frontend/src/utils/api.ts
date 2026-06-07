@@ -1356,6 +1356,103 @@ export const getSigLIP2LoadedVocabulary = async (): Promise<VocabularyData> => {
   return response.data as VocabularyData;
 };
 
+// ---------------------------------------------------------------------------
+// Tagger Browser API
+// ---------------------------------------------------------------------------
+
+export interface BrowserImageEntry {
+  path: string;
+  rel_path: string;
+  has_tags: boolean;
+  mtime: number;
+}
+
+export interface BrowserListResponse {
+  images: BrowserImageEntry[];
+  root: string;
+}
+
+export interface BrowserTagsResponse {
+  tags: string[];
+  raw: string;
+}
+
+export type BrowserBatchEvent =
+  | { type: "done"; i: number; total: number; path: string; n_tags: number }
+  | { type: "skip"; i: number; total: number; path: string }
+  | { type: "error"; i: number; total: number; path: string; error: string }
+  | { type: "complete"; total: number };
+
+export const browserListImages = async (
+  dir: string,
+  recursive = false
+): Promise<BrowserListResponse> => {
+  const response = await api.get("/tagger/browser/list", {
+    params: { dir, recursive },
+  });
+  return response.data as BrowserListResponse;
+};
+
+export const browserGetTags = async (
+  path: string
+): Promise<BrowserTagsResponse> => {
+  const response = await api.get("/tagger/browser/tags", { params: { path } });
+  return response.data as BrowserTagsResponse;
+};
+
+export const browserSaveTags = async (
+  path: string,
+  tags: string[]
+): Promise<void> => {
+  await api.post("/tagger/browser/tags", { path, tags });
+};
+
+export const browserImageUrl = (path: string, size = 0): string => {
+  const encoded = encodeURIComponent(path);
+  return `/api/v1/tagger/browser/image?path=${encoded}&size=${size}`;
+};
+
+export const browserBatchInfer = (
+  paths: string[],
+  options: { overwrite?: boolean; use_ood_detection?: boolean },
+  onProgress: (ev: BrowserBatchEvent) => void
+): AbortController => {
+  const ctrl = new AbortController();
+  (async () => {
+    try {
+      const res = await fetch("/api/v1/tagger/browser/batch-infer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths, ...options }),
+        signal: ctrl.signal,
+      });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split("\n\n");
+        buf = parts.pop() ?? "";
+        for (const part of parts) {
+          if (part.startsWith("data: ")) {
+            try {
+              onProgress(JSON.parse(part.slice(6)) as BrowserBatchEvent);
+            } catch {
+              // ignore malformed SSE
+            }
+          }
+        }
+      }
+    } catch {
+      // aborted or network error
+    }
+  })();
+  return ctrl;
+};
+
 export const addTagToCategory = async (
   tag: string,
   category: string,

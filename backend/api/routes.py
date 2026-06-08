@@ -3465,11 +3465,12 @@ async def browser_pick_directory():
 
 
 @router.get("/tagger/browser/list")
-async def browser_list(recursive: bool = False):
+async def browser_list(recursive: bool = False, include_tags: bool = False):
     """List image files under the active browser root.
 
     Response contains only rel_path (relative to root), has_tags, and mtime.
     Absolute paths are never sent to the client.
+    When include_tags=True, each entry also includes a 'tags' list read from the sidecar .txt.
     """
     import os as _os
     if _browser_root is None:
@@ -3490,11 +3491,23 @@ async def browser_list(recursive: bool = False):
                 continue
             abs_path = _os.path.join(dirpath, f)
             txt_path = _os.path.splitext(abs_path)[0] + ".txt"
-            results.append({
+            has_tags = _os.path.isfile(txt_path)
+            entry = {
                 "rel_path": _os.path.relpath(abs_path, _browser_root),
-                "has_tags": _os.path.isfile(txt_path),
+                "has_tags": has_tags,
                 "mtime": _os.path.getmtime(abs_path),
-            })
+            }
+            if include_tags:
+                if has_tags:
+                    try:
+                        with open(txt_path, "r", encoding="utf-8") as fh:
+                            raw = fh.read().strip()
+                        entry["tags"] = [t.strip() for t in raw.split(",") if t.strip()]
+                    except Exception:
+                        entry["tags"] = []
+                else:
+                    entry["tags"] = []
+            results.append(entry)
     return {"images": results}
 
 

@@ -1367,6 +1367,7 @@ export interface BrowserImageEntry {
   rel_path: string;
   has_tags: boolean;
   mtime: number;
+  tags?: string[]; // present when include_tags=true
 }
 
 export interface BrowserListResponse {
@@ -1403,10 +1404,11 @@ export const browserPickDirectory = async (): Promise<{
 
 /** List images under the active browser root. */
 export const browserListImages = async (
-  recursive = false
+  recursive = false,
+  includeTags = false
 ): Promise<BrowserListResponse> => {
   const response = await api.get("/tagger/browser/list", {
-    params: { recursive },
+    params: { recursive, include_tags: includeTags },
   });
   return response.data as BrowserListResponse;
 };

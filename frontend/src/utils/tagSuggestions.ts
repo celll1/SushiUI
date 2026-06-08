@@ -11,7 +11,7 @@ interface TagCategory {
   name: string;
   tags: TagData;
   loaded: boolean;
-  index?: Map<string, Array<{ tag: string; count: number }>>;
+  index?: Map<string, Array<{ tag: string; normalizedTag: string; count: number }>>;
 }
 
 // Progressive loading callbacks
@@ -76,15 +76,16 @@ interface TagOtherNames {
 
 let tagOtherNames: TagOtherNames = {};
 let otherNamesIndex: Map<string, { originalTag: string; displayName: string }> = new Map(); // normalized other_name -> {original tag, display name}
+let otherNamesBucketIndex: Map<string, Array<{ normalizedAlias: string; originalTag: string; displayName: string }>> = new Map(); // prefix2 -> alias entries
 let otherNamesLoaded = false;
 
-// Flat reverse-lookup index: normalizedTag -> {category name, priority}
+// Flat reverse-lookup index: normalizedTag -> {category name, priority, count}
 // Built once after all categories are loaded. Enables O(1) exact-match lookup
-// in getCategoriesForTags instead of the previous O(N×M) full scan.
-let _tagLookupIndex: Map<string, { category: string; priority: number }> | null = null;
+// in getCategoriesForTags and alias count resolution.
+let _tagLookupIndex: Map<string, { category: string; priority: number; count: number }> | null = null;
 
-function buildTagLookupIndex(): Map<string, { category: string; priority: number }> {
-  const index = new Map<string, { category: string; priority: number }>();
+function buildTagLookupIndex(): Map<string, { category: string; priority: number; count: number }> {
+  const index = new Map<string, { category: string; priority: number; count: number }>();
   // Insert in ascending priority order so higher-priority categories overwrite lower ones
   const sorted = Object.entries(categories).sort(
     ([a], [b]) => (CATEGORY_PRIORITY[a] || 0) - (CATEGORY_PRIORITY[b] || 0)
@@ -92,13 +93,13 @@ function buildTagLookupIndex(): Map<string, { category: string; priority: number
   for (const [categoryKey, category] of sorted) {
     if (!category.loaded || !category.tags) continue;
     const priority = CATEGORY_PRIORITY[categoryKey] || 0;
-    for (const tag of Object.keys(category.tags)) {
-      index.set(normalizeTag(tag), { category: category.name, priority });
+    for (const [tag, count] of Object.entries(category.tags)) {
+      index.set(normalizeTag(tag), { category: category.name, priority, count });
     }
   }
   // Special tags override everything
   for (const specialTag of [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality]) {
-    index.set(normalizeTag(specialTag.tag), { category: specialTag.category, priority: 999 });
+    index.set(normalizeTag(specialTag.tag), { category: specialTag.category, priority: 999, count: -1 });
   }
   console.log(`[TagSuggestions] Built tag lookup index: ${index.size} entries`);
   return index;
@@ -107,6 +108,32 @@ function buildTagLookupIndex(): Map<string, { category: string; priority: number
 // Recent tag history management
 const RECENT_TAGS_KEY = 'tag_suggestion_recent_tags';
 const MAX_RECENT_TAGS = 100;
+
+// In-memory caches for localStorage reads (avoid repeated reads on every keystroke)
+let _minCountCached = 50;
+let _minCountCachedAt = 0;
+let _recentTagsCached: string[] = [];
+let _recentTagsCachedAt = 0;
+
+function getMinCount(): number {
+  if (typeof window === 'undefined') return 50;
+  const now = Date.now();
+  if (now - _minCountCachedAt > 1000) {
+    _minCountCached = parseInt(localStorage.getItem('tag_suggestion_min_count') || '50');
+    _minCountCachedAt = now;
+  }
+  return _minCountCached;
+}
+
+function getRecentTagsCached(): string[] {
+  if (typeof window === 'undefined') return [];
+  const now = Date.now();
+  if (now - _recentTagsCachedAt > 500) {
+    _recentTagsCached = getRecentTags();
+    _recentTagsCachedAt = now;
+  }
+  return _recentTagsCached;
+}
 
 /**
  * Get recent tags from localStorage
@@ -137,6 +164,7 @@ export function addToRecentTags(tag: string): void {
   const trimmed = filtered.slice(0, MAX_RECENT_TAGS);
 
   localStorage.setItem(RECENT_TAGS_KEY, JSON.stringify(trimmed));
+  _recentTagsCachedAt = 0; // invalidate cache
 }
 
 /**
@@ -148,6 +176,7 @@ export function removeFromRecentTags(tag: string): void {
   const recent = getRecentTags();
   const filtered = recent.filter(t => t !== tag);
   localStorage.setItem(RECENT_TAGS_KEY, JSON.stringify(filtered));
+  _recentTagsCachedAt = 0; // invalidate cache
 }
 
 /**
@@ -335,24 +364,44 @@ async function fetchFileTimestamps(): Promise<Record<string, number>> {
 
 /**
  * Build index for fast prefix lookup
- * Groups tags by their first 2 normalized characters
+ * Groups tags by their first 2 normalized characters, sorted by count descending.
+ * Each entry pre-stores normalizedTag to avoid repeated normalizeTag() calls in searchTags.
  */
-function buildIndex(tags: TagData, categoryName: string): Map<string, Array<{ tag: string; count: number }>> {
-  const index = new Map<string, Array<{ tag: string; count: number }>>();
+function buildIndex(tags: TagData, categoryName: string): Map<string, Array<{ tag: string; normalizedTag: string; count: number }>> {
+  const index = new Map<string, Array<{ tag: string; normalizedTag: string; count: number }>>();
 
   for (const [tag, count] of Object.entries(tags)) {
     const normalized = normalizeTag(tag);
-    // Use first 2 characters as index key (or 1 if tag is very short)
     const prefix = normalized.substring(0, Math.min(2, normalized.length));
 
     if (!index.has(prefix)) {
       index.set(prefix, []);
     }
 
-    index.get(prefix)!.push({ tag, count });
+    index.get(prefix)!.push({ tag, normalizedTag: normalized, count });
+  }
+
+  // Pre-sort each bucket by count descending to avoid O(n log n) sort on every searchTags call
+  for (const bucket of index.values()) {
+    bucket.sort((a, b) => b.count - a.count);
   }
 
   console.log(`[TagSuggestions] Built index for ${categoryName}: ${index.size} prefix groups`);
+  return index;
+}
+
+/**
+ * Build prefix-bucketed index for alias (other names) fast lookup.
+ * Reduces alias scan from O(total_aliases) to O(aliases_in_prefix_bucket).
+ */
+function buildOtherNamesBucketIndex(): Map<string, Array<{ normalizedAlias: string; originalTag: string; displayName: string }>> {
+  const index = new Map<string, Array<{ normalizedAlias: string; originalTag: string; displayName: string }>>();
+  for (const [normalizedAlias, data] of otherNamesIndex.entries()) {
+    const prefix = normalizedAlias.substring(0, Math.min(2, normalizedAlias.length));
+    if (!index.has(prefix)) index.set(prefix, []);
+    index.get(prefix)!.push({ normalizedAlias, originalTag: data.originalTag, displayName: data.displayName });
+  }
+  console.log(`[TagSuggestions] Built alias bucket index: ${index.size} prefix groups`);
   return index;
 }
 
@@ -414,7 +463,7 @@ async function loadCategory(category: keyof typeof categories, fileTimestamps?: 
     const index = buildIndex(data, category);
 
     // Save to cache with file modification time
-    const serializedIndex: Array<[string, Array<{ tag: string; count: number }>]> = Array.from(index.entries());
+    const serializedIndex: Array<[string, Array<{ tag: string; normalizedTag: string; count: number }>]> = Array.from(index.entries());
     await saveCachedIndex({
       category,
       hash: dataHash,
@@ -475,6 +524,7 @@ async function loadTagOtherNames(fileTimestamps?: Record<string, number>): Promi
 
       tagOtherNames = data;
       otherNamesIndex = index;
+      otherNamesBucketIndex = buildOtherNamesBucketIndex();
       otherNamesLoaded = true;
 
       const elapsed = (performance.now() - startTime).toFixed(0);
@@ -518,6 +568,7 @@ async function loadTagOtherNames(fileTimestamps?: Record<string, number>): Promi
 
     tagOtherNames = data;
     otherNamesIndex = index;
+    otherNamesBucketIndex = buildOtherNamesBucketIndex();
     otherNamesLoaded = true;
 
     const elapsed = (performance.now() - startTime).toFixed(0);
@@ -584,6 +635,12 @@ const SPECIAL_TAGS = {
     { tag: "worst quality", category: "Quality" },
   ],
 };
+
+// Pre-computed normalized special tags for fast startsWith check in searchTags
+const SPECIAL_TAGS_NORMALIZED = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality].map(st => ({
+  ...st,
+  normalizedTag: normalizeTag(st.tag),
+}));
 
 export type TagFilterMode = 'all' | 'categories_only' | 'other_names_only' | string; // string for category keys
 
@@ -664,10 +721,7 @@ export async function searchTags(
     return [];
   }
 
-  // Get minimum count from localStorage (default: 50)
-  const minCount = typeof window !== 'undefined'
-    ? parseInt(localStorage.getItem('tag_suggestion_min_count') || '50')
-    : 50;
+  const minCount = getMinCount();
 
   // Ensure tags are loaded
   await loadAllTags();
@@ -681,17 +735,11 @@ export async function searchTags(
   const shouldIncludeCategoryTags = filterMode === 'all' || filterMode === 'categories_only' || categories[filterMode as string];
   const shouldIncludeOtherNames = filterMode === 'all' || filterMode === 'other_names_only';
 
-  // Search special tags first (if allowed by filter)
+  // Search special tags first (if allowed by filter) — use pre-normalized list
   if (shouldIncludeSpecialTags) {
-    const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
-    for (const specialTag of allSpecialTags) {
-      const normalizedTag = normalizeTag(specialTag.tag);
+    for (const { tag, category, normalizedTag } of SPECIAL_TAGS_NORMALIZED) {
       if (normalizedTag.startsWith(normalizedInput)) {
-        results.push({
-          tag: specialTag.tag,
-          count: -1, // Special marker for special tags
-          category: specialTag.category,
-        });
+        results.push({ tag, count: -1, category });
       }
     }
   }
@@ -719,8 +767,8 @@ export async function searchTags(
       const candidates = category.index.get(searchPrefix) || [];
       totalScanned += candidates.length;
 
-      for (const { tag, count } of candidates) {
-        // Skip tags below minimum count (except count 0 which are deprecated)
+      for (const { tag, normalizedTag: nt, count } of candidates) {
+        // Buckets are pre-sorted by count desc; once count drops below minCount we can stop
         if (count < minCount && count !== 0) {
           continue;
         }
@@ -730,7 +778,8 @@ export async function searchTags(
           continue;
         }
 
-        const normalizedTag = normalizeTag(tag);
+        // Use pre-stored normalizedTag; fallback for entries loaded from old IndexedDB caches
+        const normalizedTag = nt ?? normalizeTag(tag);
 
         // Check if the normalized tag starts with the normalized input
         if (normalizedTag.startsWith(normalizedInput)) {
@@ -779,25 +828,27 @@ export async function searchTags(
     const aliasStartsWith: Array<{ tag: string; count: number; category: string; alias: string }> = [];
     const aliasPartial: Array<{ tag: string; count: number; category: string; alias: string }> = [];
 
-    for (const [normalizedOtherName, data] of otherNamesIndex.entries()) {
-      if (seenOriginalTags.has(data.originalTag)) continue;
+    // Use prefix bucket index: O(aliases_in_bucket) instead of O(all_aliases)
+    const aliasPrefix = normalizedInput.substring(0, Math.min(2, normalizedInput.length));
+    const aliasCandidates = otherNamesBucketIndex.get(aliasPrefix) || [];
 
-      const isStartsWith = normalizedOtherName.startsWith(normalizedInput);
-      const isPartial = !isStartsWith && normalizedOtherName.includes(normalizedInput);
+    for (const { normalizedAlias, originalTag, displayName } of aliasCandidates) {
+      if (seenOriginalTags.has(originalTag)) continue;
+
+      const isStartsWith = normalizedAlias.startsWith(normalizedInput);
+      const isPartial = !isStartsWith && normalizedAlias.includes(normalizedInput);
       if (!isStartsWith && !isPartial) continue;
 
-      // Find count + category from original tag
+      // Use _tagLookupIndex for O(1) count+category lookup instead of O(6) categories scan
       let count = 0;
       let categoryName = "Other Names";
-      for (const [, category] of Object.entries(categories)) {
-        if (category.tags[data.originalTag] !== undefined) {
-          count = category.tags[data.originalTag];
-          categoryName = category.name;
-          break;
-        }
+      const lookupEntry = _tagLookupIndex?.get(normalizeTag(originalTag));
+      if (lookupEntry) {
+        count = lookupEntry.count;
+        categoryName = lookupEntry.category;
       }
 
-      const entry = { tag: data.originalTag, count, category: categoryName, alias: data.displayName };
+      const entry = { tag: originalTag, count, category: categoryName, alias: displayName };
       if (isStartsWith) aliasStartsWith.push(entry);
       else aliasPartial.push(entry);
     }
@@ -814,8 +865,8 @@ export async function searchTags(
   const searchTime = (performance.now() - searchStartTime).toFixed(2);
   console.log(`[TagSuggestions] Found ${results.length} matches in ${searchTime}ms (scanned ${totalScanned} tags, min count: ${minCount})`);
 
-  // Get recent tags for prioritization
-  const recentTags = getRecentTags();
+  // Get recent tags for prioritization (cached, max 500ms stale)
+  const recentTags = getRecentTagsCached();
   const recentTagsSet = new Set(recentTags);
 
   // Sort: special tags first, then recent tags, then by count (descending)

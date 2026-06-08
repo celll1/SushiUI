@@ -17,6 +17,7 @@ import {
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
+import { usePanelResize } from "@/hooks/usePanelResize";
 
 interface TagEditorPanelProps {
   image: BrowserImageEntry;
@@ -78,6 +79,25 @@ export default function TagEditorPanel({
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tagSuggestionsCtx = useTagSuggestions();
+
+  // Resizable split between image and tag editor
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [tagPanelWidthPx, setTagPanelWidthPx] = useState<number | null>(null);
+  // usePanelResize measures the FIRST child (image side), so we invert for the tag panel
+  const { onMouseDown: onDividerMouseDown } = usePanelResize({
+    containerRef: splitContainerRef,
+    direction: "horizontal",
+    minPx: 160,
+    maxRatio: 0.75,
+    onResize: (imagePx) => {
+      // Compute container width then derive tag panel width
+      const el = splitContainerRef.current;
+      if (!el) return;
+      const total = el.getBoundingClientRect().width;
+      // 6px for the divider itself
+      setTagPanelWidthPx(Math.max(160, total - imagePx - 6));
+    },
+  });
 
   const resolveCategories = useCallback(
     async (tagList: string[]) => {
@@ -263,6 +283,7 @@ export default function TagEditorPanel({
 
   return (
     <div
+      ref={splitContainerRef}
       className="flex flex-row h-full min-h-0 outline-none"
       tabIndex={-1}
       onKeyDown={handleKeyDown}
@@ -309,8 +330,24 @@ export default function TagEditorPanel({
         )}
       </div>
 
+      {/* Drag divider */}
+      <div
+        onMouseDown={onDividerMouseDown}
+        className="w-1.5 flex-shrink-0 cursor-col-resize flex items-center justify-center bg-gray-700 hover:bg-blue-600 transition-colors group"
+        title="ドラッグして幅を調整"
+      >
+        <div className="w-0.5 h-8 bg-gray-500 rounded group-hover:bg-blue-300 transition-colors" />
+      </div>
+
       {/* Right: tag editor panel */}
-      <div className="flex flex-col min-h-0 w-80 flex-shrink-0">
+      <div
+        className="flex flex-col min-h-0 flex-shrink-0"
+        style={
+          tagPanelWidthPx !== null
+            ? { width: tagPanelWidthPx }
+            : { width: "20rem" /* 320px = w-80 */ }
+        }
+      >
         {/* Action bar */}
         <div className="flex items-center gap-1.5 px-2 py-1.5 flex-shrink-0 border-b border-gray-700 flex-wrap">
           <button

@@ -11,6 +11,7 @@ import {
 } from "@/utils/api";
 import ThumbnailGrid from "./ThumbnailGrid";
 import TagEditorPanel from "./TagEditorPanel";
+import { usePanelResize } from "@/hooks/usePanelResize";
 
 interface DatasetBrowserPanelProps {
   modelLoaded: boolean;
@@ -43,6 +44,17 @@ export default function DatasetBrowserPanel({
   } | null>(null);
   const batchCtrlRef = useRef<AbortController | null>(null);
   const [picking, setPicking] = useState(false);
+
+  // Resizable split between grid and editor
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  const [gridWidthPx, setGridWidthPx] = useState<number | null>(null);
+  const { onMouseDown: onDividerMouseDown } = usePanelResize({
+    containerRef: splitContainerRef,
+    direction: "horizontal",
+    minPx: 160,
+    maxRatio: 0.7,
+    onResize: setGridWidthPx,
+  });
 
   // --- helpers ---
 
@@ -179,9 +191,19 @@ export default function DatasetBrowserPanel({
   const filteredCount = filteredImages.length;
 
   return (
-    <div className="flex flex-col lg:flex-row h-full min-h-0 gap-0">
+    <div
+      ref={splitContainerRef}
+      className="flex flex-col lg:flex-row h-full min-h-0 gap-0"
+    >
       {/* Left: Grid panel */}
-      <div className="lg:w-1/3 flex flex-col min-h-0 border-r border-gray-700">
+      <div
+        className="flex flex-col min-h-0 border-r border-gray-700 flex-shrink-0"
+        style={
+          gridWidthPx !== null
+            ? { width: gridWidthPx }
+            : { width: "33.333%" }
+        }
+      >
         {/* Toolbar */}
         <div className="p-2 border-b border-gray-700 flex flex-col gap-2 flex-shrink-0">
           {/* Directory input row */}
@@ -329,8 +351,17 @@ export default function DatasetBrowserPanel({
         />
       </div>
 
+      {/* Drag divider */}
+      <div
+        onMouseDown={onDividerMouseDown}
+        className="hidden lg:flex w-1.5 flex-shrink-0 cursor-col-resize items-center justify-center bg-gray-700 hover:bg-blue-600 transition-colors group"
+        title="ドラッグして幅を調整"
+      >
+        <div className="w-0.5 h-8 bg-gray-500 rounded group-hover:bg-blue-300 transition-colors" />
+      </div>
+
       {/* Right: Tag editor */}
-      <div className="lg:w-2/3 flex flex-col min-h-0 overflow-hidden">
+      <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
         {selectedIdx !== null && filteredImages[selectedIdx] ? (
           <TagEditorPanel
             key={filteredImages[selectedIdx].rel_path}

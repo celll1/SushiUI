@@ -78,6 +78,32 @@ let tagOtherNames: TagOtherNames = {};
 let otherNamesIndex: Map<string, { originalTag: string; displayName: string }> = new Map(); // normalized other_name -> {original tag, display name}
 let otherNamesLoaded = false;
 
+// Flat reverse-lookup index: normalizedTag -> {category name, priority}
+// Built once after all categories are loaded. Enables O(1) exact-match lookup
+// in getCategoriesForTags instead of the previous O(N×M) full scan.
+let _tagLookupIndex: Map<string, { category: string; priority: number }> | null = null;
+
+function buildTagLookupIndex(): Map<string, { category: string; priority: number }> {
+  const index = new Map<string, { category: string; priority: number }>();
+  // Insert in ascending priority order so higher-priority categories overwrite lower ones
+  const sorted = Object.entries(categories).sort(
+    ([a], [b]) => (CATEGORY_PRIORITY[a] || 0) - (CATEGORY_PRIORITY[b] || 0)
+  );
+  for (const [categoryKey, category] of sorted) {
+    if (!category.loaded || !category.tags) continue;
+    const priority = CATEGORY_PRIORITY[categoryKey] || 0;
+    for (const tag of Object.keys(category.tags)) {
+      index.set(normalizeTag(tag), { category: category.name, priority });
+    }
+  }
+  // Special tags override everything
+  for (const specialTag of [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality]) {
+    index.set(normalizeTag(specialTag.tag), { category: specialTag.category, priority: 999 });
+  }
+  console.log(`[TagSuggestions] Built tag lookup index: ${index.size} entries`);
+  return index;
+}
+
 // Recent tag history management
 const RECENT_TAGS_KEY = 'tag_suggestion_recent_tags';
 const MAX_RECENT_TAGS = 100;
@@ -525,6 +551,11 @@ export async function loadAllTags(): Promise<void> {
   // Wait for all to complete (though UI can update progressively via callbacks)
   await Promise.all(promises);
   console.log('[TagSuggestions] All tag categories loaded');
+
+  // Build flat reverse-lookup index for O(1) categorization
+  if (!_tagLookupIndex) {
+    _tagLookupIndex = buildTagLookupIndex();
+  }
 }
 
 // Special tags that should always be available
@@ -819,78 +850,50 @@ export async function searchTags(
  * @returns Map of tag -> category
  */
 export async function getCategoriesForTags(tags: string[]): Promise<Map<string, string>> {
-  // Ensure tags are loaded
+  // Ensure tags are loaded (also builds _tagLookupIndex)
   await loadAllTags();
 
   const startTime = performance.now();
   const result = new Map<string, string>();
+  const index = _tagLookupIndex;
+  let found = 0;
 
-  // Normalize all input tags once
-  // Use array to handle duplicate normalized tags (e.g., "long hair" and "long_hair")
-  const normalizedInputTags = new Map<string, string[]>(); // normalized -> original[]
-  for (const tag of tags) {
-    const normalized = normalizeTag(tag);
-    if (!normalizedInputTags.has(normalized)) {
-      normalizedInputTags.set(normalized, []);
+  if (index) {
+    // Fast O(1) lookup path — one Map.get() per tag
+    for (const tag of tags) {
+      const entry = index.get(normalizeTag(tag));
+      result.set(tag, entry ? entry.category : "Unknown");
+      if (entry) found++;
     }
-    normalizedInputTags.get(normalized)!.push(tag);
-  }
-
-  // Track which tags we've found with their priority
-  const foundTags = new Map<string, { category: string; priority: number }>();
-
-  // Check special tags first
-  const allSpecialTags = [...SPECIAL_TAGS.rating, ...SPECIAL_TAGS.quality];
-  for (const specialTag of allSpecialTags) {
-    const normalizedTag = normalizeTag(specialTag.tag);
-    if (normalizedInputTags.has(normalizedTag)) {
-      const originalTags = normalizedInputTags.get(normalizedTag)!;
-      for (const originalTag of originalTags) {
-        foundTags.set(originalTag, {
-          category: specialTag.category,
-          priority: 999, // Highest priority for special tags
-        });
-      }
+  } else {
+    // Fallback: full scan (index not ready yet — should not normally occur)
+    const normalizedInputTags = new Map<string, string[]>();
+    for (const tag of tags) {
+      const n = normalizeTag(tag);
+      (normalizedInputTags.get(n) ?? (normalizedInputTags.set(n, []), normalizedInputTags.get(n)!)).push(tag);
     }
-  }
-
-  // Search in all categories
-  for (const [categoryKey, category] of Object.entries(categories)) {
-    if (!category.loaded || !category.tags) {
-      continue;
-    }
-
-    const categoryPriority = CATEGORY_PRIORITY[categoryKey] || 0;
-
-    for (const [tag, _count] of Object.entries(category.tags)) {
-      const normalizedTag = normalizeTag(tag);
-
-      // Check if this tag matches any of our input tags
-      if (normalizedInputTags.has(normalizedTag)) {
-        const originalTags = normalizedInputTags.get(normalizedTag)!;
-        for (const originalTag of originalTags) {
-          const existing = foundTags.get(originalTag);
-
-          // If not found yet, or if this category has higher priority
-          if (!existing || categoryPriority > existing.priority) {
-            foundTags.set(originalTag, {
-              category: category.name,
-              priority: categoryPriority,
-            });
-          }
+    const foundTags = new Map<string, { category: string; priority: number }>();
+    for (const [categoryKey, category] of Object.entries(categories)) {
+      if (!category.loaded || !category.tags) continue;
+      const priority = CATEGORY_PRIORITY[categoryKey] || 0;
+      for (const tag of Object.keys(category.tags)) {
+        const n = normalizeTag(tag);
+        if (!normalizedInputTags.has(n)) continue;
+        for (const orig of normalizedInputTags.get(n)!) {
+          const ex = foundTags.get(orig);
+          if (!ex || priority > ex.priority) foundTags.set(orig, { category: category.name, priority });
         }
       }
     }
-  }
-
-  // Build result map
-  for (const tag of tags) {
-    const found = foundTags.get(tag);
-    result.set(tag, found ? found.category : "Unknown");
+    for (const tag of tags) {
+      const f = foundTags.get(tag);
+      result.set(tag, f ? f.category : "Unknown");
+      if (f) found++;
+    }
   }
 
   const elapsed = (performance.now() - startTime).toFixed(2);
-  console.log(`[TagSuggestions] Categorized ${tags.length} tags in ${elapsed}ms (${foundTags.size} found in JSONs, ${tags.length - foundTags.size} unknown)`);
+  console.log(`[TagSuggestions] Categorized ${tags.length} tags in ${elapsed}ms (${found} found, ${tags.length - found} unknown)`);
 
   return result;
 }

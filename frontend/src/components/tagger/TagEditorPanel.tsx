@@ -96,6 +96,7 @@ export default function TagEditorPanel({
   const [semanticMode, setSemanticMode] = useState(false);
   const [actionHistory, setActionHistory] = useState<ActionEntry[]>([]);
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [tagsReady, setTagsReady] = useState(false);
 
   // Undo/Redo
   const [history, setHistory] = useState<string[][]>([[]]);
@@ -171,6 +172,8 @@ export default function TagEditorPanel({
     setHistoryIdx(0);
     setTagCategories(new Map());
     setActionHistory([]);
+    setTagsReady(false);
+    setImgLoaded(false);
 
     browserGetTags(image.rel_path)
       .then(({ tags: loaded }) => {
@@ -178,8 +181,12 @@ export default function TagEditorPanel({
         setHistory([loaded]);
         setHistoryIdx(0);
         resolveCategories(loaded);
+        setTagsReady(true);
       })
-      .catch((e) => setLoadError(String(e)));
+      .catch((e) => {
+        setLoadError(String(e));
+        setTagsReady(true); // still unblock image on error
+      });
   }, [image.rel_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save with debounce
@@ -433,24 +440,25 @@ export default function TagEditorPanel({
           </button>
         </div>
 
-        {/* Image — progressive: thumbnail blur → 1200px full view */}
-        <div className="flex-1 min-h-0 flex justify-center bg-gray-900 overflow-hidden relative">
-          {/* Thumbnail placeholder (blurred) shown while full image loads */}
-          {!imgLoaded && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={browserImageUrl(image.rel_path, 160)}
-              alt=""
-              aria-hidden
-              className="absolute inset-0 object-contain w-full h-full"
-              style={{ filter: "blur(12px)", transform: "scale(1.08)" }}
-            />
-          )}
+        {/* Image — progressive: blur placeholder → 1200px cross-fade */}
+        <div className="flex-1 min-h-0 bg-gray-900 overflow-hidden relative">
+          {/* Blur placeholder — always rendered, fades out when full image is ready */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={browserImageUrl(image.rel_path, 1200)}
+            src={browserImageUrl(image.rel_path, 160)}
+            alt=""
+            aria-hidden
+            className={`absolute inset-0 object-contain w-full h-full transition-opacity duration-200 ${
+              imgLoaded ? "opacity-0 pointer-events-none" : "opacity-100"
+            }`}
+            style={{ filter: "blur(12px)", transform: "scale(1.08)" }}
+          />
+          {/* Full image — src set only after tags are ready (tags get network priority) */}
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={tagsReady ? browserImageUrl(image.rel_path, 1200) : undefined}
             alt={image.rel_path}
-            className={`object-contain w-full h-full relative transition-opacity duration-150 ${
+            className={`absolute inset-0 object-contain w-full h-full transition-opacity duration-200 ${
               imgLoaded ? "opacity-100" : "opacity-0"
             }`}
             fetchPriority="high"

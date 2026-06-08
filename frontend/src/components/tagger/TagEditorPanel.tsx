@@ -5,6 +5,7 @@ import {
   useEffect,
   useCallback,
   useRef,
+  useMemo,
   KeyboardEvent,
 } from "react";
 import {
@@ -15,6 +16,7 @@ import {
   predictSigLIP2Tags,
 } from "@/utils/api";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
+import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 
 interface TagEditorPanelProps {
   image: BrowserImageEntry;
@@ -26,14 +28,28 @@ interface TagEditorPanelProps {
   onTagsSaved?: (relPath: string, hasTags: boolean) => void;
 }
 
+// Category display order and colors (matching image-tag-helper)
+const CATEGORY_ORDER = [
+  "Copyright",
+  "Character",
+  "Artist",
+  "General",
+  "Meta",
+  "Quality",
+  "Rating",
+  "Unknown",
+] as const;
+
+type CategoryName = typeof CATEGORY_ORDER[number];
+
 const CATEGORY_COLORS: Record<string, string> = {
-  General: "#4ade80",
-  Character: "#60a5fa",
   Copyright: "#c084fc",
+  Character: "#60a5fa",
+  Artist: "#f472b6",
+  General: "#4ade80",
   Meta: "#9ca3af",
   Quality: "#facc15",
   Rating: "#fb923c",
-  Artist: "#f472b6",
   Unknown: "#6b7280",
 };
 
@@ -47,8 +63,9 @@ export default function TagEditorPanel({
   onTagsSaved,
 }: TagEditorPanelProps) {
   const [tags, setTags] = useState<string[]>([]);
-  const [tagCategories, setTagCategories] = useState<Record<string, string>>({});
+  const [tagCategories, setTagCategories] = useState<Map<string, string>>(new Map());
   const [inputValue, setInputValue] = useState("");
+  const [tagSearch, setTagSearch] = useState("");
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [inferring, setInferring] = useState(false);
@@ -60,24 +77,41 @@ export default function TagEditorPanel({
   const [historyIdx, setHistoryIdx] = useState(0);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const tagSuggestionsCtx = useTagSuggestions();
+
+  const resolveCategories = useCallback(
+    async (tagList: string[]) => {
+      if (tagList.length === 0) return;
+      try {
+        const map = await tagSuggestionsCtx.getCategoriesForTags(tagList);
+        setTagCategories(map);
+      } catch {
+        // category lookup failure is non-fatal
+      }
+    },
+    [tagSuggestionsCtx]
+  );
 
   // Load tags when image changes
   useEffect(() => {
     setInputValue("");
+    setTagSearch("");
     setDirty(false);
     setInferError(null);
     setLoadError(null);
     setHistory([[]]);
     setHistoryIdx(0);
+    setTagCategories(new Map());
 
     browserGetTags(image.rel_path)
       .then(({ tags: loaded }) => {
         setTags(loaded);
         setHistory([loaded]);
         setHistoryIdx(0);
+        resolveCategories(loaded);
       })
       .catch((e) => setLoadError(String(e)));
-  }, [image.rel_path]);
+  }, [image.rel_path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-save with debounce
   useEffect(() => {
@@ -127,10 +161,13 @@ export default function TagEditorPanel({
         setInputValue("");
         return;
       }
-      const newTags = [...tags, normalized];
-      applyTags(newTags);
+      applyTags([...tags, normalized]);
       if (category) {
-        setTagCategories((c) => ({ ...c, [normalized]: category }));
+        setTagCategories((prev) => {
+          const next = new Map(prev);
+          next.set(normalized, category);
+          return next;
+        });
       }
       setInputValue("");
     },
@@ -138,9 +175,7 @@ export default function TagEditorPanel({
   );
 
   const removeTag = useCallback(
-    (tag: string) => {
-      applyTags(tags.filter((t) => t !== tag));
-    },
+    (tag: string) => applyTags(tags.filter((t) => t !== tag)),
     [tags, applyTags]
   );
 
@@ -160,17 +195,11 @@ export default function TagEditorPanel({
     setDirty(true);
   }, [history, historyIdx]);
 
-  // Keyboard shortcuts
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
       if (e.ctrlKey || e.metaKey) {
-        if (e.key === "z") {
-          e.preventDefault();
-          undo();
-        } else if (e.key === "y") {
-          e.preventDefault();
-          redo();
-        }
+        if (e.key === "z") { e.preventDefault(); undo(); }
+        else if (e.key === "y") { e.preventDefault(); redo(); }
       } else if (!e.target || (e.target as HTMLElement).tagName !== "INPUT") {
         if (e.key === "ArrowLeft") onPrev();
         else if (e.key === "ArrowRight") onNext();
@@ -179,13 +208,11 @@ export default function TagEditorPanel({
     [undo, redo, onPrev, onNext]
   );
 
-  // Single-image inference
   const handleInfer = useCallback(async () => {
     if (!modelLoaded || inferring) return;
     setInferring(true);
     setInferError(null);
     try {
-      // Fetch image as base64
       const imgRes = await fetch(browserImageUrl(image.rel_path, 0));
       const blob = await imgRes.blob();
       const base64 = await new Promise<string>((resolve, reject) => {
@@ -196,134 +223,207 @@ export default function TagEditorPanel({
         reader.readAsDataURL(blob);
       });
       const result = await predictSigLIP2Tags(base64, 0.5);
-      const inferred = result.tags ?? [];
-      if (
-        tags.length === 0 ||
-        confirm(`既存の ${tags.length} タグを上書きしますか？`)
-      ) {
+      const inferred: string[] = result.tags ?? [];
+      if (tags.length === 0 || confirm(`既存の ${tags.length} タグを上書きしますか？`)) {
         applyTags(inferred);
+        resolveCategories(inferred);
       }
     } catch (e) {
       setInferError(String(e));
     } finally {
       setInferring(false);
     }
-  }, [modelLoaded, inferring, image.rel_path, tags.length, applyTags]);
+  }, [modelLoaded, inferring, image.rel_path, tags.length, applyTags, resolveCategories]);
+
+  // Group tags by category, filtered by search, sorted within group
+  const groupedTags = useMemo(() => {
+    const search = tagSearch.toLowerCase();
+    const filtered = search
+      ? tags.filter((t) => t.toLowerCase().includes(search))
+      : tags;
+
+    const groups = new Map<CategoryName, string[]>(
+      CATEGORY_ORDER.map((c) => [c, []])
+    );
+    for (const tag of filtered) {
+      const raw = tagCategories.get(tag) ?? "Unknown";
+      const cat: CategoryName = CATEGORY_ORDER.includes(raw as CategoryName)
+        ? (raw as CategoryName)
+        : "Unknown";
+      groups.get(cat)!.push(tag);
+    }
+    for (const arr of groups.values()) arr.sort();
+    return groups;
+  }, [tags, tagCategories, tagSearch]);
+
+  const totalGrouped = useMemo(
+    () => [...groupedTags.values()].reduce((s, a) => s + a.length, 0),
+    [groupedTags]
+  );
 
   return (
     <div
-      className="flex flex-col h-full min-h-0 p-3 gap-3 outline-none"
+      className="flex flex-row h-full min-h-0 outline-none"
       tabIndex={-1}
       onKeyDown={handleKeyDown}
     >
-      {/* Navigation */}
-      <div className="flex items-center gap-2 flex-shrink-0">
-        <button
-          onClick={onPrev}
-          disabled={!hasPrev}
-          className="px-2 py-1 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
-        >
-          ← 前
-        </button>
-        <span className="text-xs text-gray-400 truncate flex-1 text-center">
-          {image.rel_path}
-        </span>
-        <button
-          onClick={onNext}
-          disabled={!hasNext}
-          className="px-2 py-1 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
-        >
-          次 →
-        </button>
-      </div>
+      {/* Left: image + navigation */}
+      <div className="flex flex-col min-h-0 flex-1 min-w-0 border-r border-gray-700">
+        {/* Navigation */}
+        <div className="flex items-center gap-2 px-2 py-1.5 flex-shrink-0 border-b border-gray-700">
+          <button
+            onClick={onPrev}
+            disabled={!hasPrev}
+            className="px-2 py-1 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
+          >
+            ← 前
+          </button>
+          <span className="text-xs text-gray-400 truncate flex-1 text-center">
+            {image.rel_path}
+          </span>
+          <button
+            onClick={onNext}
+            disabled={!hasNext}
+            className="px-2 py-1 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
+          >
+            次 →
+          </button>
+        </div>
 
-      {/* Image preview — flex-1 so it takes all available vertical space */}
-      <div className="flex-1 min-h-0 flex justify-center bg-gray-900 rounded overflow-hidden">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={browserImageUrl(image.rel_path, 0)}
-          alt={image.rel_path}
-          className="object-contain w-full h-full"
-          fetchPriority="high"
-          decoding="async"
-        />
-      </div>
+        {/* Image */}
+        <div className="flex-1 min-h-0 flex justify-center bg-gray-900 overflow-hidden">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={browserImageUrl(image.rel_path, 0)}
+            alt={image.rel_path}
+            className="object-contain w-full h-full"
+            fetchPriority="high"
+            decoding="async"
+          />
+        </div>
 
-      {loadError && (
-        <p className="text-red-400 text-xs">読込エラー: {loadError}</p>
-      )}
-
-      {/* Tag chips */}
-      <div className="flex flex-wrap gap-1 min-h-8 max-h-32 overflow-y-auto flex-shrink-0">
-        {tags.map((tag) => {
-          const cat = tagCategories[tag] ?? "Unknown";
-          const color = CATEGORY_COLORS[cat] ?? CATEGORY_COLORS.Unknown;
-          return (
-            <span
-              key={tag}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs text-white"
-              style={{ backgroundColor: "#374151", borderLeft: `3px solid ${color}` }}
-            >
-              {tag}
-              <button
-                onClick={() => removeTag(tag)}
-                className="text-gray-400 hover:text-white leading-none"
-              >
-                ×
-              </button>
-            </span>
-          );
-        })}
-        {tags.length === 0 && (
-          <span className="text-gray-600 text-xs">タグなし</span>
+        {loadError && (
+          <p className="text-red-400 text-xs px-2 pb-1 flex-shrink-0">
+            読込エラー: {loadError}
+          </p>
         )}
       </div>
 
-      {/* Tag input */}
-      <div className="flex-shrink-0">
-        <InputWithTagSuggestions
-          value={inputValue}
-          onChange={setInputValue}
-          onTagAdd={(tag, category) => addTag(tag, category)}
-          placeholder="タグを入力..."
-          showSuggestionsAbove={true}
-          className="w-full px-2 py-1.5 text-sm bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-        />
-      </div>
+      {/* Right: tag editor panel */}
+      <div className="flex flex-col min-h-0 w-80 flex-shrink-0">
+        {/* Action bar */}
+        <div className="flex items-center gap-1.5 px-2 py-1.5 flex-shrink-0 border-b border-gray-700 flex-wrap">
+          <button
+            onClick={handleInfer}
+            disabled={!modelLoaded || inferring}
+            className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded"
+          >
+            {inferring ? "推論中..." : "推論"}
+          </button>
+          <button
+            onClick={undo}
+            disabled={historyIdx <= 0}
+            className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
+            title="Ctrl+Z"
+          >
+            元に戻す
+          </button>
+          <button
+            onClick={redo}
+            disabled={historyIdx >= history.length - 1}
+            className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
+            title="Ctrl+Y"
+          >
+            やり直し
+          </button>
+          <span className="ml-auto text-xs text-gray-500">
+            {saving ? "保存中..." : dirty ? "未保存" : `${tags.length} タグ`}
+          </span>
+        </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-        <button
-          onClick={handleInfer}
-          disabled={!modelLoaded || inferring}
-          className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded"
-        >
-          {inferring ? "推論中..." : "推論"}
-        </button>
-        <button
-          onClick={undo}
-          disabled={historyIdx <= 0}
-          className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
-          title="Ctrl+Z"
-        >
-          元に戻す
-        </button>
-        <button
-          onClick={redo}
-          disabled={historyIdx >= history.length - 1}
-          className="px-2 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded"
-          title="Ctrl+Y"
-        >
-          やり直し
-        </button>
-        <span className="ml-auto text-xs text-gray-500">
-          {saving ? "保存中..." : dirty ? "未保存" : `${tags.length} タグ`}
-        </span>
-      </div>
+        {inferError && (
+          <p className="text-red-400 text-xs px-2 pt-1 flex-shrink-0">
+            推論エラー: {inferError}
+          </p>
+        )}
 
-      {inferError && (
-        <p className="text-red-400 text-xs">推論エラー: {inferError}</p>
-      )}
+        {/* Tag input */}
+        <div className="px-2 pt-2 flex-shrink-0">
+          <InputWithTagSuggestions
+            value={inputValue}
+            onChange={setInputValue}
+            onTagAdd={(tag, category) => addTag(tag, category)}
+            placeholder="タグを追加..."
+            showSuggestionsAbove={false}
+            className="w-full px-2 py-1.5 text-sm bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        {/* Tag search */}
+        <div className="px-2 pt-1.5 pb-2 flex-shrink-0">
+          <input
+            type="text"
+            value={tagSearch}
+            onChange={(e) => setTagSearch(e.target.value)}
+            placeholder="タグを検索..."
+            className="w-full px-2 py-1 text-xs bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+          />
+        </div>
+
+        {/* Category-grouped tags (scrollable) */}
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
+          {tags.length === 0 ? (
+            <span className="text-gray-600 text-sm">タグなし</span>
+          ) : totalGrouped === 0 ? (
+            <span className="text-gray-600 text-sm">一致なし</span>
+          ) : (
+            CATEGORY_ORDER.map((cat) => {
+              const catTags = groupedTags.get(cat) ?? [];
+              if (catTags.length === 0) return null;
+              const color = CATEGORY_COLORS[cat];
+              return (
+                <div key={cat} className="mb-3">
+                  {/* Category header */}
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <span
+                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                      style={{ backgroundColor: color }}
+                    />
+                    <span className="text-xs font-semibold text-gray-300">
+                      {cat}
+                    </span>
+                    <span className="text-xs text-gray-600">
+                      ({catTags.length})
+                    </span>
+                  </div>
+                  {/* Tag chips */}
+                  <div className="flex flex-wrap gap-1.5 pl-4">
+                    {catTags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-sm text-white"
+                        style={{
+                          backgroundColor: "#374151",
+                          borderLeft: `3px solid ${color}`,
+                        }}
+                      >
+                        {tag}
+                        <button
+                          onClick={() => removeTag(tag)}
+                          className="text-gray-400 hover:text-white ml-0.5 text-base leading-none"
+                          title="削除"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
     </div>
   );
 }

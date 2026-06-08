@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useMemo } from "react";
 import {
   BrowserImageEntry,
   browserListImages,
+  browserPickDirectory,
   browserBatchInfer,
   BrowserBatchEvent,
 } from "@/utils/api";
@@ -35,6 +36,20 @@ export default function DatasetBrowserPanel({
     errors: number;
   } | null>(null);
   const batchCtrlRef = useRef<AbortController | null>(null);
+
+  // Open native folder picker (server-side tkinter dialog)
+  const [picking, setPicking] = useState(false);
+  const handlePickDirectory = useCallback(async () => {
+    setPicking(true);
+    try {
+      const picked = await browserPickDirectory();
+      if (picked) {
+        setDirPath(picked);
+      }
+    } finally {
+      setPicking(false);
+    }
+  }, []);
 
   // Load directory
   const handleLoad = useCallback(async () => {
@@ -153,6 +168,22 @@ export default function DatasetBrowserPanel({
               placeholder="ディレクトリパス..."
               className="flex-1 px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 min-w-0"
             />
+            {/* Native folder picker */}
+            <button
+              onClick={handlePickDirectory}
+              disabled={picking}
+              title="フォルダを選択"
+              className="px-2 py-1 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded flex-shrink-0"
+            >
+              {picking ? (
+                <span className="text-xs">...</span>
+              ) : (
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                </svg>
+              )}
+            </button>
             <button
               onClick={handleLoad}
               disabled={loading || !dirPath.trim()}

@@ -1383,6 +1383,11 @@ export type BrowserBatchEvent =
   | { type: "error"; i: number; total: number; path: string; error: string }
   | { type: "complete"; total: number };
 
+export const browserPickDirectory = async (): Promise<string | null> => {
+  const response = await api.get("/tagger/browser/pick-directory");
+  return (response.data as { path: string | null }).path;
+};
+
 export const browserListImages = async (
   dir: string,
   recursive = false

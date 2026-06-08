@@ -3371,6 +3371,35 @@ async def siglip2_extract_encoder(request: SigLIP2ExtractEncoderRequest):
 _BROWSER_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
 
+@router.get("/tagger/browser/pick-directory")
+async def browser_pick_directory():
+    """Open a native OS folder-picker dialog (tkinter) and return the selected path.
+
+    Only works when the server is running on the same machine as the browser.
+    Returns {"path": "<selected_path>"} or {"path": null} if cancelled.
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _pick():
+        try:
+            import tkinter as _tk
+            from tkinter import filedialog as _fd
+            root = _tk.Tk()
+            root.withdraw()
+            root.wm_attributes("-topmost", True)
+            path = _fd.askdirectory(title="フォルダを選択")
+            root.destroy()
+            return path or None
+        except Exception as _e:
+            raise HTTPException(status_code=500, detail=f"Directory picker failed: {_e}")
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        selected = await loop.run_in_executor(pool, _pick)
+    return {"path": selected}
+
+
 @router.get("/tagger/browser/list")
 async def browser_list(dir: str, recursive: bool = False):
     """List image files in a directory. Returns path, rel_path, has_tags, mtime."""

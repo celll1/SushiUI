@@ -181,7 +181,7 @@ export default function DatasetBrowserPanel({
   return (
     <div className="flex flex-col lg:flex-row h-full min-h-0 gap-0">
       {/* Left: Grid panel */}
-      <div className="lg:w-2/5 flex flex-col min-h-0 border-r border-gray-700">
+      <div className="lg:w-1/3 flex flex-col min-h-0 border-r border-gray-700">
         {/* Toolbar */}
         <div className="p-2 border-b border-gray-700 flex flex-col gap-2 flex-shrink-0">
           {/* Directory input row */}
@@ -330,7 +330,7 @@ export default function DatasetBrowserPanel({
       </div>
 
       {/* Right: Tag editor */}
-      <div className="lg:w-3/5 flex flex-col min-h-0 overflow-hidden">
+      <div className="lg:w-2/3 flex flex-col min-h-0 overflow-hidden">
         {selectedIdx !== null && filteredImages[selectedIdx] ? (
           <TagEditorPanel
             key={filteredImages[selectedIdx].rel_path}

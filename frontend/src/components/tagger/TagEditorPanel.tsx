@@ -237,13 +237,15 @@ export default function TagEditorPanel({
         </button>
       </div>
 
-      {/* Image preview */}
-      <div className="flex-shrink-0 flex justify-center bg-gray-900 rounded overflow-hidden max-h-64">
+      {/* Image preview — flex-1 so it takes all available vertical space */}
+      <div className="flex-1 min-h-0 flex justify-center bg-gray-900 rounded overflow-hidden">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={browserImageUrl(image.rel_path, 512)}
+          src={browserImageUrl(image.rel_path, 0)}
           alt={image.rel_path}
-          className="object-contain max-h-64"
+          className="object-contain w-full h-full"
+          fetchPriority="high"
+          decoding="async"
         />
       </div>
 
@@ -252,7 +254,7 @@ export default function TagEditorPanel({
       )}
 
       {/* Tag chips */}
-      <div className="flex flex-wrap gap-1 min-h-8 max-h-48 overflow-y-auto">
+      <div className="flex flex-wrap gap-1 min-h-8 max-h-32 overflow-y-auto flex-shrink-0">
         {tags.map((tag) => {
           const cat = tagCategories[tag] ?? "Unknown";
           const color = CATEGORY_COLORS[cat] ?? CATEGORY_COLORS.Unknown;
@@ -285,6 +287,7 @@ export default function TagEditorPanel({
           onTagAdd={(tag, category) => addTag(tag, category)}
           placeholder="タグを入力..."
           showSuggestionsAbove={true}
+          className="w-full px-2 py-1.5 text-sm bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
         />
       </div>
 

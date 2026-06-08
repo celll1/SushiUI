@@ -168,6 +168,7 @@ export default function ThumbnailGrid({
                   style={{ height: CARD_H - 24 }}
                   loading="lazy"
                   decoding="async"
+                  fetchPriority="low"
                 />
                 <div className="text-xs truncate px-1 text-gray-400 leading-5">
                   {img.rel_path.split(/[\\/]/).pop()}

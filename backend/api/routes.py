@@ -3515,14 +3515,37 @@ _BROWSER_IMAGE_CACHE_HEADERS = {
     "Cache-Control": "private, max-age=3600",
 }
 
+# In-memory LRU cache for resized browser images.
+# Key: (abs_path, size, mtime) — mtime invalidates stale entries automatically.
+# RAM-only (consistent with security policy: no persistent browser-root data).
+from collections import OrderedDict as _OrderedDict
+
+_browser_img_cache: "_OrderedDict[tuple, bytes]" = _OrderedDict()
+_BROWSER_IMG_CACHE_MAX = 200  # ~200 * ~300KB ≈ 60MB worst case
+
+
+def _img_cache_get(key: tuple) -> "bytes | None":
+    if key in _browser_img_cache:
+        _browser_img_cache.move_to_end(key)
+        return _browser_img_cache[key]
+    return None
+
+
+def _img_cache_put(key: tuple, data: bytes) -> None:
+    _browser_img_cache[key] = data
+    _browser_img_cache.move_to_end(key)
+    while len(_browser_img_cache) > _BROWSER_IMG_CACHE_MAX:
+        _browser_img_cache.popitem(last=False)
+
 
 @router.get("/tagger/browser/image")
 async def browser_image(rel_path: str, size: int = 0):
     """Serve an image by rel_path (relative to active browser root).
 
-    size=0: original file; size=N: JPEG thumbnail at NxN (keep aspect).
-    Cache-Control: private, max-age=3600 — browser caches thumbnails so
-    virtual-scroll re-mounts never trigger network requests.
+    size=0: original file; size=N: JPEG at NxN max (keep aspect).
+    Resized results are kept in an in-memory LRU cache (200 entries) keyed by
+    (abs_path, size, mtime) so repeated requests skip PIL encode entirely.
+    Cache-Control: private, max-age=3600 for browser-side HTTP caching.
     """
     import os as _os
     abs_path = _resolve_browser_path(rel_path)
@@ -3531,13 +3554,23 @@ async def browser_image(rel_path: str, size: int = 0):
     if size > 0:
         import io
         from PIL import Image as _Image
+        mtime = _os.path.getmtime(abs_path)
+        cache_key = (abs_path, size, mtime)
+        cached = _img_cache_get(cache_key)
+        if cached is not None:
+            return Response(
+                content=cached,
+                media_type="image/jpeg",
+                headers=_BROWSER_IMAGE_CACHE_HEADERS,
+            )
         img = _Image.open(abs_path).convert("RGB")
         img.thumbnail((size, size), _Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
-        buf.seek(0)
+        data = buf.getvalue()
+        _img_cache_put(cache_key, data)
         return Response(
-            content=buf.read(),
+            content=data,
             media_type="image/jpeg",
             headers=_BROWSER_IMAGE_CACHE_HEADERS,
         )

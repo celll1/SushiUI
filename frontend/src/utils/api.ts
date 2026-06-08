@@ -1358,10 +1358,12 @@ export const getSigLIP2LoadedVocabulary = async (): Promise<VocabularyData> => {
 
 // ---------------------------------------------------------------------------
 // Tagger Browser API
+// Security: absolute paths are never sent to/from the client.
+// All file operations use rel_path (relative to the server-side browser root).
 // ---------------------------------------------------------------------------
 
+/** Image entry returned by /tagger/browser/list — no absolute path field. */
 export interface BrowserImageEntry {
-  path: string;
   rel_path: string;
   has_tags: boolean;
   mtime: number;
@@ -1369,7 +1371,6 @@ export interface BrowserImageEntry {
 
 export interface BrowserListResponse {
   images: BrowserImageEntry[];
-  root: string;
 }
 
 export interface BrowserTagsResponse {
@@ -1378,47 +1379,62 @@ export interface BrowserTagsResponse {
 }
 
 export type BrowserBatchEvent =
-  | { type: "done"; i: number; total: number; path: string; n_tags: number }
-  | { type: "skip"; i: number; total: number; path: string }
-  | { type: "error"; i: number; total: number; path: string; error: string }
+  | { type: "done"; i: number; total: number; rel_path: string; n_tags: number }
+  | { type: "skip"; i: number; total: number; rel_path: string }
+  | { type: "error"; i: number; total: number; rel_path: string; error: string }
   | { type: "complete"; total: number };
 
-export const browserPickDirectory = async (): Promise<string | null> => {
-  const response = await api.get("/tagger/browser/pick-directory");
-  return (response.data as { path: string | null }).path;
+/** Set browser root by typed path. Returns display_name (folder basename only). */
+export const browserSetDirectory = async (
+  dir: string
+): Promise<{ ok: boolean; display_name: string | null }> => {
+  const response = await api.post("/tagger/browser/set-directory", { dir });
+  return response.data as { ok: boolean; display_name: string | null };
 };
 
+/** Open native OS folder picker. Returns display_name (folder basename only). */
+export const browserPickDirectory = async (): Promise<{
+  ok: boolean;
+  display_name: string | null;
+}> => {
+  const response = await api.post("/tagger/browser/pick-directory");
+  return response.data as { ok: boolean; display_name: string | null };
+};
+
+/** List images under the active browser root. */
 export const browserListImages = async (
-  dir: string,
   recursive = false
 ): Promise<BrowserListResponse> => {
   const response = await api.get("/tagger/browser/list", {
-    params: { dir, recursive },
+    params: { recursive },
   });
   return response.data as BrowserListResponse;
 };
 
 export const browserGetTags = async (
-  path: string
+  rel_path: string
 ): Promise<BrowserTagsResponse> => {
-  const response = await api.get("/tagger/browser/tags", { params: { path } });
+  const response = await api.get("/tagger/browser/tags", {
+    params: { rel_path },
+  });
   return response.data as BrowserTagsResponse;
 };
 
 export const browserSaveTags = async (
-  path: string,
+  rel_path: string,
   tags: string[]
 ): Promise<void> => {
-  await api.post("/tagger/browser/tags", { path, tags });
+  await api.post("/tagger/browser/tags", { rel_path, tags });
 };
 
-export const browserImageUrl = (path: string, size = 0): string => {
-  const encoded = encodeURIComponent(path);
-  return `/api/v1/tagger/browser/image?path=${encoded}&size=${size}`;
+/** Build URL for an image served by rel_path. */
+export const browserImageUrl = (rel_path: string, size = 0): string => {
+  const encoded = encodeURIComponent(rel_path);
+  return `/api/v1/tagger/browser/image?rel_path=${encoded}&size=${size}`;
 };
 
 export const browserBatchInfer = (
-  paths: string[],
+  rel_paths: string[],
   options: { overwrite?: boolean; use_ood_detection?: boolean },
   onProgress: (ev: BrowserBatchEvent) => void
 ): AbortController => {
@@ -1428,7 +1444,7 @@ export const browserBatchInfer = (
       const res = await fetch("/api/v1/tagger/browser/batch-infer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths, ...options }),
+        body: JSON.stringify({ rel_paths, ...options }),
         signal: ctrl.signal,
       });
       if (!res.ok || !res.body) return;

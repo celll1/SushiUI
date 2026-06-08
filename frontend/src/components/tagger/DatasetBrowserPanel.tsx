@@ -3,6 +3,7 @@
 import { useState, useCallback, useRef, useMemo } from "react";
 import {
   BrowserImageEntry,
+  browserSetDirectory,
   browserListImages,
   browserPickDirectory,
   browserBatchInfer,
@@ -20,9 +21,14 @@ type FilterMode = "all" | "tagged" | "untagged";
 export default function DatasetBrowserPanel({
   modelLoaded,
 }: DatasetBrowserPanelProps) {
+  // dirPath is shown in the input for user convenience, but absolute path is
+  // never sent back from the server in API responses.
   const [dirPath, setDirPath] = useState("");
+  // displayName is the folder basename returned by the server (not full path).
+  const [displayName, setDisplayName] = useState<string | null>(null);
   const [recursive, setRecursive] = useState(false);
   const [images, setImages] = useState<BrowserImageEntry[]>([]);
+  // taggedSet uses rel_path as keys (no absolute paths).
   const [taggedSet, setTaggedSet] = useState<Set<string>>(new Set());
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -36,33 +42,20 @@ export default function DatasetBrowserPanel({
     errors: number;
   } | null>(null);
   const batchCtrlRef = useRef<AbortController | null>(null);
-
-  // Open native folder picker (server-side tkinter dialog)
   const [picking, setPicking] = useState(false);
-  const handlePickDirectory = useCallback(async () => {
-    setPicking(true);
-    try {
-      const picked = await browserPickDirectory();
-      if (picked) {
-        setDirPath(picked);
-      }
-    } finally {
-      setPicking(false);
-    }
-  }, []);
 
-  // Load directory
-  const handleLoad = useCallback(async () => {
-    if (!dirPath.trim()) return;
+  // --- helpers ---
+
+  const loadImages = useCallback(async () => {
     setLoading(true);
     setLoadError(null);
     setSelectedIdx(null);
     try {
-      const { images: imgs } = await browserListImages(dirPath.trim(), recursive);
+      const { images: imgs } = await browserListImages(recursive);
       setImages(imgs);
       const tagged = new Set<string>();
       imgs.forEach((img) => {
-        if (img.has_tags) tagged.add(img.path);
+        if (img.has_tags) tagged.add(img.rel_path);
       });
       setTaggedSet(tagged);
     } catch (e) {
@@ -71,66 +64,99 @@ export default function DatasetBrowserPanel({
     } finally {
       setLoading(false);
     }
-  }, [dirPath, recursive]);
+  }, [recursive]);
 
-  // Filtered image list
+  // Set directory via typed path, then load
+  const handleLoad = useCallback(async () => {
+    if (!dirPath.trim()) return;
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const res = await browserSetDirectory(dirPath.trim());
+      if (!res.ok) {
+        setLoadError("ディレクトリの設定に失敗しました");
+        setLoading(false);
+        return;
+      }
+      setDisplayName(res.display_name);
+    } catch (e) {
+      setLoadError(String(e));
+      setLoading(false);
+      return;
+    }
+    await loadImages();
+  }, [dirPath, loadImages]);
+
+  // Open native folder picker, then load
+  const handlePickDirectory = useCallback(async () => {
+    setPicking(true);
+    try {
+      const res = await browserPickDirectory();
+      if (!res.ok || !res.display_name) return;
+      setDisplayName(res.display_name);
+      setDirPath(""); // clear typed path — actual path is server-side only
+      await loadImages();
+    } catch (e) {
+      setLoadError(String(e));
+    } finally {
+      setPicking(false);
+    }
+  }, [loadImages]);
+
+  // Filtered image list (uses rel_path for taggedSet lookup)
   const filteredImages = useMemo(() => {
     if (filter === "all") return images;
     return images.filter((img) => {
-      const has = taggedSet.has(img.path) || img.has_tags;
+      const has = taggedSet.has(img.rel_path) || img.has_tags;
       return filter === "tagged" ? has : !has;
     });
   }, [images, filter, taggedSet]);
 
-  // Update taggedSet when tags are saved
-  const handleTagsSaved = useCallback((path: string, hasTags: boolean) => {
+  // Called by TagEditorPanel after auto-save
+  const handleTagsSaved = useCallback((relPath: string, hasTags: boolean) => {
     setTaggedSet((prev) => {
       const next = new Set(prev);
-      if (hasTags) next.add(path);
-      else next.delete(path);
+      if (hasTags) next.add(relPath);
+      else next.delete(relPath);
       return next;
     });
   }, []);
 
   // Navigation
-  const handleSelect = useCallback(
-    (idx: number) => setSelectedIdx(idx),
+  const handleSelect = useCallback((idx: number) => setSelectedIdx(idx), []);
+  const handlePrev = useCallback(
+    () => setSelectedIdx((i) => (i !== null && i > 0 ? i - 1 : i)),
     []
   );
-  const handlePrev = useCallback(() => {
-    setSelectedIdx((i) => (i !== null && i > 0 ? i - 1 : i));
-  }, []);
-  const handleNext = useCallback(() => {
-    setSelectedIdx((i) =>
-      i !== null && i < filteredImages.length - 1 ? i + 1 : i
-    );
-  }, [filteredImages.length]);
+  const handleNext = useCallback(
+    () =>
+      setSelectedIdx((i) =>
+        i !== null && i < filteredImages.length - 1 ? i + 1 : i
+      ),
+    [filteredImages.length]
+  );
 
   // Batch inference
   const handleBatchInfer = useCallback(() => {
     if (!modelLoaded || batchRunning) return;
-    const paths = filteredImages.map((img) => img.path);
-    if (paths.length === 0) return;
+    const rel_paths = filteredImages.map((img) => img.rel_path);
+    if (rel_paths.length === 0) return;
     setBatchRunning(true);
-    setBatchProgress({ done: 0, total: paths.length, errors: 0 });
+    setBatchProgress({ done: 0, total: rel_paths.length, errors: 0 });
 
     const ctrl = browserBatchInfer(
-      paths,
+      rel_paths,
       { overwrite: overwriteMode },
       (ev: BrowserBatchEvent) => {
         if (ev.type === "done") {
           setTaggedSet((prev) => {
             const next = new Set(prev);
-            next.add(ev.path);
+            next.add(ev.rel_path);
             return next;
           });
-          setBatchProgress((p) =>
-            p ? { ...p, done: p.done + 1 } : p
-          );
+          setBatchProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
         } else if (ev.type === "skip") {
-          setBatchProgress((p) =>
-            p ? { ...p, done: p.done + 1 } : p
-          );
+          setBatchProgress((p) => (p ? { ...p, done: p.done + 1 } : p));
         } else if (ev.type === "error") {
           setBatchProgress((p) =>
             p ? { ...p, done: p.done + 1, errors: p.errors + 1 } : p
@@ -158,29 +184,40 @@ export default function DatasetBrowserPanel({
       <div className="lg:w-2/5 flex flex-col min-h-0 border-r border-gray-700">
         {/* Toolbar */}
         <div className="p-2 border-b border-gray-700 flex flex-col gap-2 flex-shrink-0">
-          {/* Directory input */}
+          {/* Directory input row */}
           <div className="flex gap-1">
             <input
               type="text"
               value={dirPath}
               onChange={(e) => setDirPath(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleLoad()}
-              placeholder="ディレクトリパス..."
+              placeholder={
+                displayName ? `現在: ${displayName}` : "ディレクトリパス..."
+              }
               className="flex-1 px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 min-w-0"
             />
             {/* Native folder picker */}
             <button
               onClick={handlePickDirectory}
-              disabled={picking}
-              title="フォルダを選択"
+              disabled={picking || loading}
+              title="フォルダを選択（OS標準ダイアログ）"
               className="px-2 py-1 text-sm bg-gray-700 hover:bg-gray-600 disabled:opacity-40 rounded flex-shrink-0"
             >
               {picking ? (
                 <span className="text-xs">...</span>
               ) : (
-                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                    d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"
+                  />
                 </svg>
               )}
             </button>
@@ -280,9 +317,7 @@ export default function DatasetBrowserPanel({
             </div>
           )}
 
-          {loadError && (
-            <p className="text-red-400 text-xs">{loadError}</p>
-          )}
+          {loadError && <p className="text-red-400 text-xs">{loadError}</p>}
         </div>
 
         {/* Thumbnail grid */}
@@ -298,7 +333,7 @@ export default function DatasetBrowserPanel({
       <div className="lg:w-3/5 flex flex-col min-h-0 overflow-hidden">
         {selectedIdx !== null && filteredImages[selectedIdx] ? (
           <TagEditorPanel
-            key={filteredImages[selectedIdx].path}
+            key={filteredImages[selectedIdx].rel_path}
             image={filteredImages[selectedIdx]}
             modelLoaded={modelLoaded}
             onPrev={handlePrev}

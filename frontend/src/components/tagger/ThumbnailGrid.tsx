@@ -93,11 +93,11 @@ export default function ThumbnailGrid({
             const selected = idx === selectedIdx;
             const hasTagsNow =
               taggedSet !== undefined
-                ? taggedSet.has(img.path)
+                ? taggedSet.has(img.rel_path)
                 : img.has_tags;
             return (
               <div
-                key={img.path}
+                key={img.rel_path}
                 onClick={() => onSelect(idx)}
                 className={`relative cursor-pointer rounded overflow-hidden border-2 transition-colors ${
                   selected
@@ -108,7 +108,7 @@ export default function ThumbnailGrid({
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img
-                  src={browserImageUrl(img.path, 160)}
+                  src={browserImageUrl(img.rel_path, 160)}
                   alt={img.rel_path}
                   className="w-full object-cover"
                   style={{ height: CARD_H - 24 }}

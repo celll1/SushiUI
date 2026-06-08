@@ -7,11 +7,10 @@ interface ThumbnailGridProps {
   images: BrowserImageEntry[];
   selectedIdx: number | null;
   onSelect: (idx: number) => void;
-  /** Called when has_tags state changes (e.g. after auto-save) */
   taggedSet?: Set<string>;
 }
 
-const CARD_H = 128; // px per row
+const CARD_H = 128;
 const BUFFER_ROWS = 4;
 
 export default function ThumbnailGrid({
@@ -21,41 +20,96 @@ export default function ThumbnailGrid({
   taggedSet,
 }: ThumbnailGridProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewH, setViewH] = useState(600);
   const [cols, setCols] = useState(4);
 
-  // Measure container dimensions
+  // Visible row range stored as state — updated only when range actually changes.
+  // This avoids re-renders on every scroll pixel.
+  const [visibleRange, setVisibleRange] = useState({ startRow: 0, endRow: 20 });
+
+  // Internal refs — updated on every scroll event without triggering renders.
+  const scrollTopRef = useRef(0);
+  const viewHRef = useRef(600);
+  const colsRef = useRef(4);
+  const rafRef = useRef<number | null>(null);
+
+  const computeRange = useCallback(
+    (st: number, vh: number, c: number, total: number) => {
+      const totalRows = Math.ceil(total / c);
+      const start = Math.max(0, Math.floor(st / CARD_H) - BUFFER_ROWS);
+      const end = Math.min(
+        totalRows,
+        Math.ceil((st + vh) / CARD_H) + BUFFER_ROWS
+      );
+      return { startRow: start, endRow: end };
+    },
+    []
+  );
+
+  // ResizeObserver: update cols + viewport height, recompute range
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      setViewH(el.clientHeight);
+      viewHRef.current = el.clientHeight;
       const w = el.clientWidth;
-      // Responsive cols: <480 → 3, <768 → 4, else → 5
-      setCols(w < 480 ? 3 : w < 768 ? 4 : 5);
+      const c = w < 480 ? 3 : w < 768 ? 4 : 5;
+      colsRef.current = c;
+      setCols(c);
+      const range = computeRange(
+        scrollTopRef.current,
+        el.clientHeight,
+        c,
+        images.length
+      );
+      setVisibleRange(range);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [images.length, computeRange]);
 
+  // Recompute range when images list changes (load / filter change)
+  useEffect(() => {
+    const range = computeRange(
+      scrollTopRef.current,
+      viewHRef.current,
+      colsRef.current,
+      images.length
+    );
+    setVisibleRange(range);
+  }, [images.length, computeRange]);
+
+  // Scroll handler: update range only when visible rows actually change.
+  // Uses rAF to batch rapid scroll events into one update per frame.
   const handleScroll = useCallback(() => {
-    setScrollTop(scrollRef.current?.scrollTop ?? 0);
-  }, []);
+    const el = scrollRef.current;
+    if (!el) return;
+    scrollTopRef.current = el.scrollTop;
 
-  // Virtual scroll calculations
-  const totalRows = Math.ceil(images.length / cols);
-  const totalH = totalRows * CARD_H;
-  const startRow = Math.max(0, Math.floor(scrollTop / CARD_H) - BUFFER_ROWS);
-  const endRow = Math.min(
-    totalRows,
-    Math.ceil((scrollTop + viewH) / CARD_H) + BUFFER_ROWS
+    if (rafRef.current !== null) return; // already scheduled this frame
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null;
+      const next = computeRange(
+        scrollTopRef.current,
+        viewHRef.current,
+        colsRef.current,
+        images.length
+      );
+      // Only trigger React state update if the row range changed
+      setVisibleRange((prev) => {
+        if (prev.startRow === next.startRow && prev.endRow === next.endRow)
+          return prev; // same reference → no re-render
+        return next;
+      });
+    });
+  }, [images.length, computeRange]);
+
+  // Cleanup rAF on unmount
+  useEffect(
+    () => () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    },
+    []
   );
-  const visibleStart = startRow * cols;
-  const visibleEnd = Math.min(images.length, endRow * cols);
-  const visibleItems = images.slice(visibleStart, visibleEnd);
-  const topPad = startRow * CARD_H;
-  const bottomPad = Math.max(0, (totalRows - endRow) * CARD_H);
 
   if (images.length === 0) {
     return (
@@ -65,12 +119,16 @@ export default function ThumbnailGrid({
     );
   }
 
+  const { startRow, endRow } = visibleRange;
+  const totalRows = Math.ceil(images.length / cols);
+  const totalH = totalRows * CARD_H;
+  const visibleStart = startRow * cols;
+  const visibleEnd = Math.min(images.length, endRow * cols);
+  const visibleItems = images.slice(visibleStart, visibleEnd);
+  const topPad = startRow * CARD_H;
+
   const gridCols =
-    cols === 3
-      ? "grid-cols-3"
-      : cols === 4
-        ? "grid-cols-4"
-        : "grid-cols-5";
+    cols === 3 ? "grid-cols-3" : cols === 4 ? "grid-cols-4" : "grid-cols-5";
 
   return (
     <div
@@ -78,14 +136,10 @@ export default function ThumbnailGrid({
       className="flex-1 overflow-y-auto min-h-0"
       onScroll={handleScroll}
     >
+      {/* Fixed-height container maintains scrollbar */}
       <div style={{ height: totalH, position: "relative" }}>
         <div
-          style={{
-            position: "absolute",
-            top: topPad,
-            left: 0,
-            right: 0,
-          }}
+          style={{ position: "absolute", top: topPad, left: 0, right: 0 }}
           className={`grid ${gridCols} gap-1 p-1`}
         >
           {visibleItems.map((img, localIdx) => {
@@ -113,6 +167,7 @@ export default function ThumbnailGrid({
                   className="w-full object-cover"
                   style={{ height: CARD_H - 24 }}
                   loading="lazy"
+                  decoding="async"
                 />
                 <div className="text-xs truncate px-1 text-gray-400 leading-5">
                   {img.rel_path.split(/[\\/]/).pop()}
@@ -124,8 +179,6 @@ export default function ThumbnailGrid({
             );
           })}
         </div>
-        {/* Bottom spacer */}
-        <div style={{ height: bottomPad }} />
       </div>
     </div>
   );

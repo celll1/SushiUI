@@ -80,6 +80,28 @@ export default function TagEditorPanel({
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tagSuggestionsCtx = useTagSuggestions();
 
+  // Refs that stay current without triggering re-renders — used in unmount flush
+  const dirtyRef = useRef(false);
+  const tagsRef = useRef<string[]>([]);
+  const relPathRef = useRef(image.rel_path); // never changes for a given keyed instance
+  const onTagsSavedRef = useRef(onTagsSaved);
+  useEffect(() => { dirtyRef.current = dirty; }, [dirty]);
+  useEffect(() => { tagsRef.current = tags; }, [tags]);
+  useEffect(() => { onTagsSavedRef.current = onTagsSaved; }, [onTagsSaved]);
+
+  // Flush unsaved changes when the component unmounts (image switch)
+  useEffect(() => {
+    return () => {
+      if (!dirtyRef.current) return;
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      const rp = relPathRef.current;
+      const t = tagsRef.current;
+      browserSaveTags(rp, t)
+        .then(() => onTagsSavedRef.current?.(rp, t.length > 0))
+        .catch(() => {});
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Resizable split between image and tag editor
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [tagPanelWidthPx, setTagPanelWidthPx] = useState<number | null>(null);

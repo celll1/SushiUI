@@ -11,7 +11,17 @@ import {
 } from "@/utils/api";
 import ThumbnailGrid from "./ThumbnailGrid";
 import TagEditorPanel from "./TagEditorPanel";
+import BulkTagEditorPanel from "./BulkTagEditorPanel";
+import ChipInput from "@/components/common/ChipInput";
 import { usePanelResize } from "@/hooks/usePanelResize";
+import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
+import {
+  FilterQuery,
+  EMPTY_FILTER,
+  isFilterActive,
+  needsTagsLoaded,
+  compileFilter,
+} from "@/utils/browserFilter";
 
 interface DatasetBrowserPanelProps {
   modelLoaded: boolean;
@@ -22,16 +32,15 @@ type FilterMode = "all" | "tagged" | "untagged";
 export default function DatasetBrowserPanel({
   modelLoaded,
 }: DatasetBrowserPanelProps) {
-  // dirPath is shown in the input for user convenience, but absolute path is
-  // never sent back from the server in API responses.
   const [dirPath, setDirPath] = useState("");
-  // displayName is the folder basename returned by the server (not full path).
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [recursive, setRecursive] = useState(false);
   const [images, setImages] = useState<BrowserImageEntry[]>([]);
-  // taggedSet uses rel_path as keys (no absolute paths).
   const [taggedSet, setTaggedSet] = useState<Set<string>>(new Set());
-  const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
+  // Multi-select state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [primaryId, setPrimaryId] = useState<string | null>(null);
+  const [rangeAnchorId, setRangeAnchorId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterMode>("all");
@@ -44,6 +53,15 @@ export default function DatasetBrowserPanel({
   } | null>(null);
   const batchCtrlRef = useRef<AbortController | null>(null);
   const [picking, setPicking] = useState(false);
+
+  // Advanced filter
+  const [filterQuery, setFilterQuery] = useState<FilterQuery>(EMPTY_FILTER);
+  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
+  // category map for compileFilter — populated lazily when tags are loaded
+  const [filterCategoryMap, setFilterCategoryMap] = useState<Map<string, string>>(new Map());
+  const filterDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const tagSuggestionsCtx = useTagSuggestions();
 
   // Resizable split between grid and editor
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -58,27 +76,49 @@ export default function DatasetBrowserPanel({
 
   // --- helpers ---
 
-  const loadImages = useCallback(async () => {
-    setLoading(true);
-    setLoadError(null);
-    setSelectedIdx(null);
-    try {
-      const { images: imgs } = await browserListImages(recursive);
-      setImages(imgs);
-      const tagged = new Set<string>();
-      imgs.forEach((img) => {
-        if (img.has_tags) tagged.add(img.rel_path);
-      });
-      setTaggedSet(tagged);
-    } catch (e) {
-      setLoadError(String(e));
-      setImages([]);
-    } finally {
-      setLoading(false);
-    }
-  }, [recursive]);
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setPrimaryId(null);
+    setRangeAnchorId(null);
+  }, []);
 
-  // Set directory via typed path, then load
+  const loadImages = useCallback(
+    async (includeTags = false) => {
+      setLoading(true);
+      setLoadError(null);
+      clearSelection();
+      try {
+        const { images: imgs } = await browserListImages(recursive, includeTags);
+        setImages(imgs);
+        const tagged = new Set<string>();
+        imgs.forEach((img) => {
+          if (img.has_tags) tagged.add(img.rel_path);
+        });
+        setTaggedSet(tagged);
+
+        // Resolve categories for all unique tags (for filter category matching)
+        if (includeTags) {
+          const allTags = new Set<string>();
+          for (const img of imgs) {
+            for (const t of img.tags ?? []) allTags.add(t);
+          }
+          if (allTags.size > 0) {
+            tagSuggestionsCtx
+              .getCategoriesForTags([...allTags])
+              .then((map) => setFilterCategoryMap(map))
+              .catch(() => {});
+          }
+        }
+      } catch (e) {
+        setLoadError(String(e));
+        setImages([]);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [recursive, clearSelection, tagSuggestionsCtx]
+  );
+
   const handleLoad = useCallback(async () => {
     if (!dirPath.trim()) return;
     setLoading(true);
@@ -96,35 +136,58 @@ export default function DatasetBrowserPanel({
       setLoading(false);
       return;
     }
-    await loadImages();
-  }, [dirPath, loadImages]);
+    await loadImages(needsTagsLoaded(filterQuery));
+  }, [dirPath, loadImages, filterQuery]);
 
-  // Open native folder picker, then load
   const handlePickDirectory = useCallback(async () => {
     setPicking(true);
     try {
       const res = await browserPickDirectory();
       if (!res.ok || !res.display_name) return;
       setDisplayName(res.display_name);
-      setDirPath(""); // clear typed path — actual path is server-side only
-      await loadImages();
+      setDirPath("");
+      await loadImages(needsTagsLoaded(filterQuery));
     } catch (e) {
       setLoadError(String(e));
     } finally {
       setPicking(false);
     }
-  }, [loadImages]);
+  }, [loadImages, filterQuery]);
 
-  // Filtered image list (uses rel_path for taggedSet lookup)
+  // Re-fetch when filter conditions change (debounced 300ms)
+  useEffect(() => {
+    if (images.length === 0) return; // not loaded yet
+    if (filterDebounceRef.current) clearTimeout(filterDebounceRef.current);
+    filterDebounceRef.current = setTimeout(() => {
+      loadImages(needsTagsLoaded(filterQuery));
+    }, 300);
+    return () => {
+      if (filterDebounceRef.current) clearTimeout(filterDebounceRef.current);
+    };
+  }, [filterQuery]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Compile filter function
+  const filterFn = useMemo(
+    () => compileFilter(filterQuery, filterCategoryMap),
+    [filterQuery, filterCategoryMap]
+  );
+
   const filteredImages = useMemo(() => {
-    if (filter === "all") return images;
-    return images.filter((img) => {
-      const has = taggedSet.has(img.rel_path) || img.has_tags;
-      return filter === "tagged" ? has : !has;
-    });
-  }, [images, filter, taggedSet]);
+    let result = images;
+    // tagged/untagged mode filter
+    if (filter !== "all") {
+      result = result.filter((img) => {
+        const has = taggedSet.has(img.rel_path) || img.has_tags;
+        return filter === "tagged" ? has : !has;
+      });
+    }
+    // advanced filter
+    if (isFilterActive(filterQuery)) {
+      result = result.filter(filterFn);
+    }
+    return result;
+  }, [images, filter, taggedSet, filterQuery, filterFn]);
 
-  // Called by TagEditorPanel after auto-save
   const handleTagsSaved = useCallback((relPath: string, hasTags: boolean) => {
     setTaggedSet((prev) => {
       const next = new Set(prev);
@@ -134,19 +197,74 @@ export default function DatasetBrowserPanel({
     });
   }, []);
 
-  // Navigation
-  const handleSelect = useCallback((idx: number) => setSelectedIdx(idx), []);
-  const handlePrev = useCallback(
-    () => setSelectedIdx((i) => (i !== null && i > 0 ? i - 1 : i)),
+  const handleBulkTagsSaved = useCallback(
+    (updates: Array<{ relPath: string; hasTags: boolean }>) => {
+      setTaggedSet((prev) => {
+        const next = new Set(prev);
+        for (const { relPath, hasTags } of updates) {
+          if (hasTags) next.add(relPath);
+          else next.delete(relPath);
+        }
+        return next;
+      });
+    },
     []
   );
-  const handleNext = useCallback(
-    () =>
-      setSelectedIdx((i) =>
-        i !== null && i < filteredImages.length - 1 ? i + 1 : i
-      ),
-    [filteredImages.length]
+
+  // Multi-select handler
+  const handleSelectMulti = useCallback(
+    (rel_path: string, { ctrl, shift }: { ctrl: boolean; shift: boolean }) => {
+      if (shift && rangeAnchorId) {
+        const anchorIdx = filteredImages.findIndex((i) => i.rel_path === rangeAnchorId);
+        const clickIdx = filteredImages.findIndex((i) => i.rel_path === rel_path);
+        if (anchorIdx >= 0 && clickIdx >= 0) {
+          const lo = Math.min(anchorIdx, clickIdx);
+          const hi = Math.max(anchorIdx, clickIdx);
+          const rangeIds = new Set(filteredImages.slice(lo, hi + 1).map((i) => i.rel_path));
+          setSelectedIds(rangeIds);
+          setPrimaryId(rel_path);
+          return;
+        }
+      }
+
+      if (ctrl) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (next.has(rel_path)) next.delete(rel_path);
+          else next.add(rel_path);
+          return next;
+        });
+        setPrimaryId(rel_path);
+        setRangeAnchorId(rel_path);
+      } else {
+        setSelectedIds(new Set([rel_path]));
+        setPrimaryId(rel_path);
+        setRangeAnchorId(rel_path);
+      }
+    },
+    [filteredImages, rangeAnchorId]
   );
+
+  // Navigation (single-image mode)
+  const primaryIdx = primaryId
+    ? filteredImages.findIndex((i) => i.rel_path === primaryId)
+    : -1;
+
+  const handlePrev = useCallback(() => {
+    if (primaryIdx <= 0) return;
+    const newId = filteredImages[primaryIdx - 1].rel_path;
+    setSelectedIds(new Set([newId]));
+    setPrimaryId(newId);
+    setRangeAnchorId(newId);
+  }, [filteredImages, primaryIdx]);
+
+  const handleNext = useCallback(() => {
+    if (primaryIdx < 0 || primaryIdx >= filteredImages.length - 1) return;
+    const newId = filteredImages[primaryIdx + 1].rel_path;
+    setSelectedIds(new Set([newId]));
+    setPrimaryId(newId);
+    setRangeAnchorId(newId);
+  }, [filteredImages, primaryIdx]);
 
   // Batch inference
   const handleBatchInfer = useCallback(() => {
@@ -186,34 +304,57 @@ export default function DatasetBrowserPanel({
     setBatchRunning(false);
   }, []);
 
-  // Keyboard fallback: fires only when no image is selected (TagEditorPanel not mounted)
+  // Keyboard fallback: fires only when no image is selected
   useEffect(() => {
-    if (selectedIdx !== null) return;
+    if (primaryId !== null) return;
     const handler = (e: globalThis.KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === "INPUT") return;
       if (e.key === "PageDown" || e.key === "j") {
         e.preventDefault();
-        setSelectedIdx((i) =>
-          i === null
-            ? filteredImages.length > 0 ? 0 : null
-            : i < filteredImages.length - 1 ? i + 1 : i
-        );
+        if (filteredImages.length > 0) {
+          const newId = filteredImages[0].rel_path;
+          setSelectedIds(new Set([newId]));
+          setPrimaryId(newId);
+          setRangeAnchorId(newId);
+        }
       } else if (e.key === "PageUp" || e.key === "k") {
         e.preventDefault();
-        setSelectedIdx((i) =>
-          i === null
-            ? filteredImages.length > 0 ? 0 : null
-            : i > 0 ? i - 1 : i
-        );
+        if (filteredImages.length > 0) {
+          const newId = filteredImages[0].rel_path;
+          setSelectedIds(new Set([newId]));
+          setPrimaryId(newId);
+          setRangeAnchorId(newId);
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectedIdx, filteredImages.length]);
+  }, [primaryId, filteredImages]);
 
   const taggedCount = taggedSet.size;
   const totalCount = images.length;
   const filteredCount = filteredImages.length;
+
+  const selectedImageObjects = useMemo(
+    () => filteredImages.filter((img) => selectedIds.has(img.rel_path)),
+    [filteredImages, selectedIds]
+  );
+  const primaryImage = primaryId
+    ? filteredImages.find((i) => i.rel_path === primaryId) ?? null
+    : null;
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (filterQuery.includeTags.length > 0) n++;
+    if (filterQuery.excludeTags.length > 0) n++;
+    if (filterQuery.tagCountMin !== null) n++;
+    if (filterQuery.tagCountMax !== null) n++;
+    if (filterQuery.missingCopyright) n++;
+    if (filterQuery.missingCharacter) n++;
+    return n;
+  }, [filterQuery]);
+
+  const resetFilter = useCallback(() => setFilterQuery(EMPTY_FILTER), []);
 
   return (
     <div
@@ -223,11 +364,7 @@ export default function DatasetBrowserPanel({
       {/* Left: Grid panel */}
       <div
         className="flex flex-col min-h-0 border-r border-gray-700 flex-shrink-0"
-        style={
-          gridWidthPx !== null
-            ? { width: gridWidthPx }
-            : { width: "33.333%" }
-        }
+        style={gridWidthPx !== null ? { width: gridWidthPx } : { width: "33.333%" }}
       >
         {/* Toolbar */}
         <div className="p-2 border-b border-gray-700 flex flex-col gap-2 flex-shrink-0">
@@ -238,12 +375,9 @@ export default function DatasetBrowserPanel({
               value={dirPath}
               onChange={(e) => setDirPath(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleLoad()}
-              placeholder={
-                displayName ? `現在: ${displayName}` : "ディレクトリパス..."
-              }
+              placeholder={displayName ? `現在: ${displayName}` : "ディレクトリパス..."}
               className="flex-1 px-2 py-1 text-sm bg-gray-800 border border-gray-600 rounded text-white placeholder-gray-500 min-w-0"
             />
-            {/* Native folder picker */}
             <button
               onClick={handlePickDirectory}
               disabled={picking || loading}
@@ -253,18 +387,9 @@ export default function DatasetBrowserPanel({
               {picking ? (
                 <span className="text-xs">...</span>
               ) : (
-                <svg
-                  className="w-4 h-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z"
-                  />
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                    d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
                 </svg>
               )}
             </button>
@@ -297,17 +422,121 @@ export default function DatasetBrowserPanel({
               <option value="tagged">タグあり</option>
               <option value="untagged">タグなし</option>
             </select>
+            {/* Advanced filter toggle */}
+            <button
+              onClick={() => setFilterPanelOpen((v) => !v)}
+              className={`text-xs px-2 py-0.5 rounded flex items-center gap-1 ${
+                filterPanelOpen || activeFilterCount > 0
+                  ? "bg-blue-700 text-blue-100"
+                  : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+              }`}
+            >
+              フィルタ
+              {activeFilterCount > 0 && (
+                <span className="bg-blue-500 text-white rounded-full w-4 h-4 text-[10px] flex items-center justify-center">
+                  {activeFilterCount}
+                </span>
+              )}
+            </button>
             <span className="text-xs text-gray-500 ml-auto">
               {filteredCount !== totalCount
                 ? `${filteredCount} / ${totalCount} 件`
                 : `${totalCount} 件`}
               {totalCount > 0 && (
-                <span className="ml-1 text-green-600">
-                  ({taggedCount} タグ済)
-                </span>
+                <span className="ml-1 text-green-600">({taggedCount} タグ済)</span>
               )}
             </span>
           </div>
+
+          {/* Advanced filter panel (collapsible) */}
+          {filterPanelOpen && (
+            <div className="flex flex-col gap-2 pt-1 border-t border-gray-700">
+              <div>
+                <label className="text-xs text-gray-400 block mb-0.5">
+                  含むタグ (AND、*ワイルドカード、&lt;category&gt;)
+                </label>
+                <ChipInput
+                  chips={filterQuery.includeTags}
+                  onChange={(chips) => setFilterQuery((q) => ({ ...q, includeTags: chips }))}
+                  placeholder="例: *hair, <character>"
+                  chipColor="#14532d"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-400 block mb-0.5">
+                  除外タグ (OR)
+                </label>
+                <ChipInput
+                  chips={filterQuery.excludeTags}
+                  onChange={(chips) => setFilterQuery((q) => ({ ...q, excludeTags: chips }))}
+                  placeholder="例: watermark"
+                  chipColor="#450a0a"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-gray-400">タグ数:</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={filterQuery.tagCountMin ?? ""}
+                  onChange={(e) =>
+                    setFilterQuery((q) => ({
+                      ...q,
+                      tagCountMin: e.target.value === "" ? null : parseInt(e.target.value, 10),
+                    }))
+                  }
+                  placeholder="min"
+                  className="w-14 px-1 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-white"
+                />
+                <span className="text-xs text-gray-500">〜</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={filterQuery.tagCountMax ?? ""}
+                  onChange={(e) =>
+                    setFilterQuery((q) => ({
+                      ...q,
+                      tagCountMax: e.target.value === "" ? null : parseInt(e.target.value, 10),
+                    }))
+                  }
+                  placeholder="max"
+                  className="w-14 px-1 py-0.5 text-xs bg-gray-800 border border-gray-600 rounded text-white"
+                />
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={filterQuery.missingCopyright}
+                    onChange={(e) =>
+                      setFilterQuery((q) => ({ ...q, missingCopyright: e.target.checked }))
+                    }
+                    className="accent-blue-500"
+                  />
+                  版権タグなし
+                </label>
+                <label className="flex items-center gap-1 text-xs text-gray-400 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={filterQuery.missingCharacter}
+                    onChange={(e) =>
+                      setFilterQuery((q) => ({ ...q, missingCharacter: e.target.checked }))
+                    }
+                    className="accent-blue-500"
+                  />
+                  キャラタグなし
+                </label>
+                {activeFilterCount > 0 && (
+                  <button
+                    onClick={resetFilter}
+                    className="text-xs px-2 py-0.5 bg-gray-700 hover:bg-gray-600 rounded ml-auto"
+                  >
+                    リセット
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Batch inference controls */}
           {images.length > 0 && (
@@ -339,24 +568,15 @@ export default function DatasetBrowserPanel({
                     <span>
                       {batchProgress.done}/{batchProgress.total}
                       {batchProgress.errors > 0 && (
-                        <span className="text-red-400 ml-1">
-                          ({batchProgress.errors} エラー)
-                        </span>
+                        <span className="text-red-400 ml-1">({batchProgress.errors} エラー)</span>
                       )}
                     </span>
-                    <span>
-                      {Math.round(
-                        (batchProgress.done / batchProgress.total) * 100
-                      )}
-                      %
-                    </span>
+                    <span>{Math.round((batchProgress.done / batchProgress.total) * 100)}%</span>
                   </div>
                   <div className="w-full bg-gray-700 rounded-full h-1.5">
                     <div
                       className="bg-blue-500 h-1.5 rounded-full transition-all"
-                      style={{
-                        width: `${(batchProgress.done / batchProgress.total) * 100}%`,
-                      }}
+                      style={{ width: `${(batchProgress.done / batchProgress.total) * 100}%` }}
                     />
                   </div>
                 </div>
@@ -370,8 +590,9 @@ export default function DatasetBrowserPanel({
         {/* Thumbnail grid */}
         <ThumbnailGrid
           images={filteredImages}
-          selectedIdx={selectedIdx}
-          onSelect={handleSelect}
+          selectedIds={selectedIds}
+          primaryId={primaryId}
+          onSelectMulti={handleSelectMulti}
           taggedSet={taggedSet}
         />
       </div>
@@ -387,23 +608,29 @@ export default function DatasetBrowserPanel({
 
       {/* Right: Tag editor */}
       <div className="flex-1 min-w-0 flex flex-col min-h-0 overflow-hidden">
-        {selectedIdx !== null && filteredImages[selectedIdx] ? (
-          <TagEditorPanel
-            key={filteredImages[selectedIdx].rel_path}
-            image={filteredImages[selectedIdx]}
-            modelLoaded={modelLoaded}
-            onPrev={handlePrev}
-            onNext={handleNext}
-            hasPrev={selectedIdx > 0}
-            hasNext={selectedIdx < filteredImages.length - 1}
-            onTagsSaved={handleTagsSaved}
-          />
-        ) : (
+        {selectedIds.size === 0 ? (
           <div className="flex-1 flex items-center justify-center text-gray-600 text-sm">
             {images.length === 0
               ? "ディレクトリを読み込んでください"
               : "画像を選択してください"}
           </div>
+        ) : selectedIds.size === 1 && primaryImage ? (
+          <TagEditorPanel
+            key={primaryImage.rel_path}
+            image={primaryImage}
+            modelLoaded={modelLoaded}
+            onPrev={handlePrev}
+            onNext={handleNext}
+            hasPrev={primaryIdx > 0}
+            hasNext={primaryIdx < filteredImages.length - 1}
+            onTagsSaved={handleTagsSaved}
+          />
+        ) : (
+          <BulkTagEditorPanel
+            selectedImages={selectedImageObjects}
+            onTagsSaved={handleBulkTagsSaved}
+            onDeselectAll={clearSelection}
+          />
         )}
       </div>
     </div>

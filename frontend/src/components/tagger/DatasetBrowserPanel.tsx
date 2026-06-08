@@ -7,6 +7,7 @@ import {
   browserListImages,
   browserPickDirectory,
   browserBatchInfer,
+  browserImageUrl,
   BrowserBatchEvent,
 } from "@/utils/api";
 import ThumbnailGrid from "./ThumbnailGrid";
@@ -303,6 +304,18 @@ export default function DatasetBrowserPanel({
     batchCtrlRef.current?.abort();
     setBatchRunning(false);
   }, []);
+
+  // Prefetch prev/next images (size=1200) when primary selection changes
+  useEffect(() => {
+    if (primaryIdx < 0) return;
+    const rps: string[] = [];
+    if (primaryIdx > 0) rps.push(filteredImages[primaryIdx - 1].rel_path);
+    if (primaryIdx < filteredImages.length - 1) rps.push(filteredImages[primaryIdx + 1].rel_path);
+    for (const rp of rps) {
+      const img = new window.Image();
+      img.src = browserImageUrl(rp, 1200);
+    }
+  }, [primaryIdx, filteredImages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keyboard fallback: fires only when no image is selected
   useEffect(() => {

@@ -95,6 +95,7 @@ export default function TagEditorPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [semanticMode, setSemanticMode] = useState(false);
   const [actionHistory, setActionHistory] = useState<ActionEntry[]>([]);
+  const [imgLoaded, setImgLoaded] = useState(false);
 
   // Undo/Redo
   const [history, setHistory] = useState<string[][]>([[]]);
@@ -432,15 +433,29 @@ export default function TagEditorPanel({
           </button>
         </div>
 
-        {/* Image */}
-        <div className="flex-1 min-h-0 flex justify-center bg-gray-900 overflow-hidden">
+        {/* Image — progressive: thumbnail blur → 1200px full view */}
+        <div className="flex-1 min-h-0 flex justify-center bg-gray-900 overflow-hidden relative">
+          {/* Thumbnail placeholder (blurred) shown while full image loads */}
+          {!imgLoaded && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={browserImageUrl(image.rel_path, 160)}
+              alt=""
+              aria-hidden
+              className="absolute inset-0 object-contain w-full h-full"
+              style={{ filter: "blur(12px)", transform: "scale(1.08)" }}
+            />
+          )}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={browserImageUrl(image.rel_path, 0)}
+            src={browserImageUrl(image.rel_path, 1200)}
             alt={image.rel_path}
-            className="object-contain w-full h-full"
+            className={`object-contain w-full h-full relative transition-opacity duration-150 ${
+              imgLoaded ? "opacity-100" : "opacity-0"
+            }`}
             fetchPriority="high"
             decoding="async"
+            onLoad={() => setImgLoaded(true)}
           />
         </div>
 

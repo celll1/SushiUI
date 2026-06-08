@@ -23,7 +23,7 @@ interface TagEditorPanelProps {
   onNext: () => void;
   hasPrev: boolean;
   hasNext: boolean;
-  onTagsSaved?: (path: string, hasTags: boolean) => void;
+  onTagsSaved?: (relPath: string, hasTags: boolean) => void;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -70,14 +70,14 @@ export default function TagEditorPanel({
     setHistory([[]]);
     setHistoryIdx(0);
 
-    browserGetTags(image.path)
+    browserGetTags(image.rel_path)
       .then(({ tags: loaded }) => {
         setTags(loaded);
         setHistory([loaded]);
         setHistoryIdx(0);
       })
       .catch((e) => setLoadError(String(e)));
-  }, [image.path]);
+  }, [image.rel_path]);
 
   // Auto-save with debounce
   useEffect(() => {
@@ -86,9 +86,9 @@ export default function TagEditorPanel({
     saveTimerRef.current = setTimeout(async () => {
       setSaving(true);
       try {
-        await browserSaveTags(image.path, tags);
+        await browserSaveTags(image.rel_path, tags);
         setDirty(false);
-        onTagsSaved?.(image.path, tags.length > 0);
+        onTagsSaved?.(image.rel_path, tags.length > 0);
       } finally {
         setSaving(false);
       }
@@ -96,7 +96,7 @@ export default function TagEditorPanel({
     return () => {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     };
-  }, [tags, dirty, image.path, onTagsSaved]);
+  }, [tags, dirty, image.rel_path, onTagsSaved]);
 
   const pushHistory = useCallback(
     (newTags: string[]) => {
@@ -186,7 +186,7 @@ export default function TagEditorPanel({
     setInferError(null);
     try {
       // Fetch image as base64
-      const imgRes = await fetch(browserImageUrl(image.path, 0));
+      const imgRes = await fetch(browserImageUrl(image.rel_path, 0));
       const blob = await imgRes.blob();
       const base64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -208,7 +208,7 @@ export default function TagEditorPanel({
     } finally {
       setInferring(false);
     }
-  }, [modelLoaded, inferring, image.path, tags.length, applyTags]);
+  }, [modelLoaded, inferring, image.rel_path, tags.length, applyTags]);
 
   return (
     <div
@@ -241,7 +241,7 @@ export default function TagEditorPanel({
       <div className="flex-shrink-0 flex justify-center bg-gray-900 rounded overflow-hidden max-h-64">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={browserImageUrl(image.path, 512)}
+          src={browserImageUrl(image.rel_path, 512)}
           alt={image.rel_path}
           className="object-contain max-h-64"
         />

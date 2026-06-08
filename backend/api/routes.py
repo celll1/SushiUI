@@ -3367,18 +3367,77 @@ async def siglip2_extract_encoder(request: SigLIP2ExtractEncoderRequest):
 # ---------------------------------------------------------------------------
 # Tagger Browser Endpoints
 # ---------------------------------------------------------------------------
+# Security design:
+#   - _browser_root is stored in server RAM only (never written to disk / git).
+#   - All client-facing responses use rel_path only; absolute paths are never
+#     sent to the frontend.
+#   - _resolve_browser_path() rejects path-traversal attempts before any I/O.
+# ---------------------------------------------------------------------------
 
 _BROWSER_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
 
+# Active root directory for the browser session.
+# Lives in server RAM; cleared on process restart. Never persisted.
+_browser_root: Optional[str] = None
 
-@router.get("/tagger/browser/pick-directory")
+
+def _resolve_browser_path(rel_path: str) -> str:
+    """Resolve rel_path under _browser_root and validate it stays within root.
+
+    Raises 400 if no root is set, 403 on path-traversal attempt.
+    """
+    import os as _os
+    if _browser_root is None:
+        raise HTTPException(status_code=400, detail="No browser directory set. Call set-directory first.")
+    # Normalise: collapse '..' sequences, strip leading separators
+    norm = _os.path.normpath(rel_path).lstrip(_os.sep).lstrip("/")
+    if norm.startswith(".."):
+        raise HTTPException(status_code=403, detail="Path traversal not allowed")
+    abs_path = _os.path.join(_browser_root, norm)
+    # Final containment check (handles edge cases like symlinks expanding outside)
+    real_root = _os.path.realpath(_browser_root)
+    real_abs  = _os.path.realpath(abs_path)
+    if real_abs != real_root and not real_abs.startswith(real_root + _os.sep):
+        raise HTTPException(status_code=403, detail="Path outside allowed directory")
+    return abs_path
+
+
+def _set_browser_root(path: str) -> str:
+    """Validate and set _browser_root. Returns the normalised absolute path."""
+    import os as _os
+    global _browser_root
+    abs_dir = _os.path.abspath(path)
+    if not _os.path.isdir(abs_dir):
+        raise HTTPException(status_code=400, detail="Invalid directory")
+    _browser_root = abs_dir
+    return abs_dir
+
+
+class BrowserSetDirectoryRequest(BaseModel):
+    dir: str
+
+
+@router.post("/tagger/browser/set-directory")
+async def browser_set_directory(req: BrowserSetDirectoryRequest):
+    """Set the active browser root directory (server RAM only; never persisted).
+
+    Returns only the folder display name, not the full path.
+    """
+    import os as _os
+    root = _set_browser_root(req.dir)
+    return {"ok": True, "display_name": _os.path.basename(root)}
+
+
+@router.post("/tagger/browser/pick-directory")
 async def browser_pick_directory():
-    """Open a native OS folder-picker dialog (tkinter) and return the selected path.
+    """Open a native OS folder-picker dialog (tkinter), set as browser root,
+    and return only the folder display name.
 
-    Only works when the server is running on the same machine as the browser.
-    Returns {"path": "<selected_path>"} or {"path": null} if cancelled.
+    Absolute path is stored in server RAM only and never sent to the client.
+    Only meaningful when server runs on the same machine as the browser.
     """
     import asyncio
+    import os as _os
     from concurrent.futures import ThreadPoolExecutor
 
     def _pick():
@@ -3388,34 +3447,42 @@ async def browser_pick_directory():
             root = _tk.Tk()
             root.withdraw()
             root.wm_attributes("-topmost", True)
-            path = _fd.askdirectory(title="フォルダを選択")
+            selected = _fd.askdirectory(title="フォルダを選択")
             root.destroy()
-            return path or None
+            return selected or None
         except Exception as _e:
             raise HTTPException(status_code=500, detail=f"Directory picker failed: {_e}")
 
     loop = asyncio.get_event_loop()
     with ThreadPoolExecutor(max_workers=1) as pool:
         selected = await loop.run_in_executor(pool, _pick)
-    return {"path": selected}
+
+    if selected is None:
+        return {"ok": False, "display_name": None}
+
+    root = _set_browser_root(selected)
+    return {"ok": True, "display_name": _os.path.basename(root)}
 
 
 @router.get("/tagger/browser/list")
-async def browser_list(dir: str, recursive: bool = False):
-    """List image files in a directory. Returns path, rel_path, has_tags, mtime."""
+async def browser_list(recursive: bool = False):
+    """List image files under the active browser root.
+
+    Response contains only rel_path (relative to root), has_tags, and mtime.
+    Absolute paths are never sent to the client.
+    """
     import os as _os
-    root = _os.path.abspath(dir)
-    if not _os.path.isdir(root):
-        raise HTTPException(status_code=400, detail="Invalid directory")
+    if _browser_root is None:
+        raise HTTPException(status_code=400, detail="No browser directory set")
     results = []
     if recursive:
-        walker = _os.walk(root)
+        walker = _os.walk(_browser_root)
     else:
         try:
-            entries = sorted(_os.listdir(root))
+            entries = sorted(_os.listdir(_browser_root))
         except PermissionError as e:
             raise HTTPException(status_code=403, detail=str(e))
-        walker = [(root, [], entries)]
+        walker = [(_browser_root, [], entries)]
     for dirpath, _, files in walker:
         for f in sorted(files):
             ext = _os.path.splitext(f)[1].lower()
@@ -3424,19 +3491,21 @@ async def browser_list(dir: str, recursive: bool = False):
             abs_path = _os.path.join(dirpath, f)
             txt_path = _os.path.splitext(abs_path)[0] + ".txt"
             results.append({
-                "path": abs_path,
-                "rel_path": _os.path.relpath(abs_path, root),
+                "rel_path": _os.path.relpath(abs_path, _browser_root),
                 "has_tags": _os.path.isfile(txt_path),
                 "mtime": _os.path.getmtime(abs_path),
             })
-    return {"images": results, "root": root}
+    return {"images": results}
 
 
 @router.get("/tagger/browser/image")
-async def browser_image(path: str, size: int = 0):
-    """Serve an image file. size=0: original, size=N: resize to NxN (JPEG, keep aspect)."""
+async def browser_image(rel_path: str, size: int = 0):
+    """Serve an image by rel_path (relative to active browser root).
+
+    size=0: original file; size=N: JPEG thumbnail at NxN (keep aspect).
+    """
     import os as _os
-    abs_path = _os.path.abspath(path)
+    abs_path = _resolve_browser_path(rel_path)
     if not _os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
     if size > 0:
@@ -3452,10 +3521,11 @@ async def browser_image(path: str, size: int = 0):
 
 
 @router.get("/tagger/browser/tags")
-async def browser_get_tags(path: str):
-    """Read .txt sidecar file for an image. Returns tags list and raw text."""
+async def browser_get_tags(rel_path: str):
+    """Read .txt sidecar file for rel_path. Returns tags list and raw text."""
     import os as _os
-    txt = _os.path.splitext(_os.path.abspath(path))[0] + ".txt"
+    abs_path = _resolve_browser_path(rel_path)
+    txt = _os.path.splitext(abs_path)[0] + ".txt"
     if not _os.path.isfile(txt):
         return {"tags": [], "raw": ""}
     with open(txt, "r", encoding="utf-8") as f:
@@ -3465,7 +3535,7 @@ async def browser_get_tags(path: str):
 
 
 class BrowserSaveTagsRequest(BaseModel):
-    path: str
+    rel_path: str
     tags: List[str]
 
 
@@ -3473,15 +3543,16 @@ class BrowserSaveTagsRequest(BaseModel):
 async def browser_save_tags(req: BrowserSaveTagsRequest):
     """Write tags to .txt sidecar file (comma-separated)."""
     import os as _os
-    txt = _os.path.splitext(_os.path.abspath(req.path))[0] + ".txt"
+    abs_path = _resolve_browser_path(req.rel_path)
+    txt = _os.path.splitext(abs_path)[0] + ".txt"
     content = ", ".join(req.tags)
     with open(txt, "w", encoding="utf-8") as f:
         f.write(content)
-    return {"saved": True, "path": txt}
+    return {"saved": True}
 
 
 class BrowserBatchInferRequest(BaseModel):
-    paths: List[str]
+    rel_paths: List[str]
     overwrite: bool = False
     use_ood_detection: bool = False
 
@@ -3495,24 +3566,28 @@ async def browser_batch_infer(req: BrowserBatchInferRequest):
     if not mgr.status.get("loaded"):
         raise HTTPException(status_code=400, detail="No model loaded")
 
+    # Resolve all paths up-front; abort immediately on traversal attempt
+    resolved = []
+    for rp in req.rel_paths:
+        resolved.append((_resolve_browser_path(rp), rp))
+
     async def generate():
-        total = len(req.paths)
-        for i, path in enumerate(req.paths):
-            txt = _os.path.splitext(path)[0] + ".txt"
+        total = len(resolved)
+        for i, (abs_path, rel) in enumerate(resolved):
+            txt = _os.path.splitext(abs_path)[0] + ".txt"
             if not req.overwrite and _os.path.isfile(txt):
-                yield f"data: {_json.dumps({'type': 'skip', 'i': i, 'total': total, 'path': path})}\n\n"
+                yield f"data: {_json.dumps({'type': 'skip', 'i': i, 'total': total, 'rel_path': rel})}\n\n"
                 continue
             try:
                 from PIL import Image as _Image
-                img = _Image.open(path).convert("RGB")
+                img = _Image.open(abs_path).convert("RGB")
                 result = mgr.predict(img, use_ood_detection=req.use_ood_detection)
                 tags = result.get("tags", [])
-                content = ", ".join(tags)
                 with open(txt, "w", encoding="utf-8") as f:
-                    f.write(content)
-                yield f"data: {_json.dumps({'type': 'done', 'i': i, 'total': total, 'path': path, 'n_tags': len(tags)})}\n\n"
+                    f.write(", ".join(tags))
+                yield f"data: {_json.dumps({'type': 'done', 'i': i, 'total': total, 'rel_path': rel, 'n_tags': len(tags)})}\n\n"
             except Exception as e:
-                yield f"data: {_json.dumps({'type': 'error', 'i': i, 'total': total, 'path': path, 'error': str(e)})}\n\n"
+                yield f"data: {_json.dumps({'type': 'error', 'i': i, 'total': total, 'rel_path': rel, 'error': str(e)})}\n\n"
         yield f"data: {_json.dumps({'type': 'complete', 'total': total})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")

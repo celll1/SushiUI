@@ -18,6 +18,7 @@ import {
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
 import { useTagSuggestions } from "@/contexts/TagSuggestionsContext";
 import { usePanelResize } from "@/hooks/usePanelResize";
+import { getSemanticGroup, SEMANTIC_GROUP_NAMES } from "@/utils/semanticGroups";
 
 interface TagEditorPanelProps {
   image: BrowserImageEntry;
@@ -27,6 +28,12 @@ interface TagEditorPanelProps {
   hasPrev: boolean;
   hasNext: boolean;
   onTagsSaved?: (relPath: string, hasTags: boolean) => void;
+}
+
+interface ActionEntry {
+  type: "add" | "remove";
+  tag: string;
+  category?: string;
 }
 
 // Category display order and colors (matching image-tag-helper)
@@ -54,6 +61,20 @@ const CATEGORY_COLORS: Record<string, string> = {
   Unknown: "#6b7280",
 };
 
+// Semantic sub-group header color (same hue as General, darker)
+const SEMANTIC_SUB_COLOR = "#2d6b47";
+
+interface TagGroupEntry {
+  key: string;
+  label: string;
+  dotColor: string;
+  labelColor?: string;
+  tags: string[];
+  isSubGroup?: boolean;
+}
+
+const MAX_ACTION_HISTORY = 5;
+
 export default function TagEditorPanel({
   image,
   modelLoaded,
@@ -72,6 +93,8 @@ export default function TagEditorPanel({
   const [inferring, setInferring] = useState(false);
   const [inferError, setInferError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [semanticMode, setSemanticMode] = useState(false);
+  const [actionHistory, setActionHistory] = useState<ActionEntry[]>([]);
 
   // Undo/Redo
   const [history, setHistory] = useState<string[][]>([[]]);
@@ -105,18 +128,15 @@ export default function TagEditorPanel({
   // Resizable split between image and tag editor
   const splitContainerRef = useRef<HTMLDivElement>(null);
   const [tagPanelWidthPx, setTagPanelWidthPx] = useState<number | null>(null);
-  // usePanelResize measures the FIRST child (image side), so we invert for the tag panel
   const { onMouseDown: onDividerMouseDown } = usePanelResize({
     containerRef: splitContainerRef,
     direction: "horizontal",
     minPx: 160,
     maxRatio: 0.75,
     onResize: (imagePx) => {
-      // Compute container width then derive tag panel width
       const el = splitContainerRef.current;
       if (!el) return;
       const total = el.getBoundingClientRect().width;
-      // 6px for the divider itself
       setTagPanelWidthPx(Math.max(160, total - imagePx - 6));
     },
   });
@@ -144,6 +164,7 @@ export default function TagEditorPanel({
     setHistory([[]]);
     setHistoryIdx(0);
     setTagCategories(new Map());
+    setActionHistory([]);
 
     browserGetTags(image.rel_path)
       .then(({ tags: loaded }) => {
@@ -195,8 +216,18 @@ export default function TagEditorPanel({
     [pushHistory]
   );
 
+  const recordAction = useCallback((entry: ActionEntry) => {
+    setActionHistory((prev) => {
+      // Don't duplicate the same action at slot 0
+      if (prev.length > 0 && prev[0].type === entry.type && prev[0].tag === entry.tag) {
+        return prev;
+      }
+      return [entry, ...prev].slice(0, MAX_ACTION_HISTORY);
+    });
+  }, []);
+
   const addTag = useCallback(
-    (tag: string, category?: string) => {
+    (tag: string, category?: string, suppressHistory = false) => {
       const normalized = tag.trim().replace(/ /g, "_");
       if (!normalized) return;
       if (tags.includes(normalized)) {
@@ -212,14 +243,30 @@ export default function TagEditorPanel({
         });
       }
       setInputValue("");
+      if (!suppressHistory) recordAction({ type: "add", tag: normalized, category });
     },
-    [tags, applyTags]
+    [tags, applyTags, recordAction]
   );
 
   const removeTag = useCallback(
-    (tag: string) => applyTags(tags.filter((t) => t !== tag)),
-    [tags, applyTags]
+    (tag: string, suppressHistory = false) => {
+      applyTags(tags.filter((t) => t !== tag));
+      if (!suppressHistory) recordAction({ type: "remove", tag });
+    },
+    [tags, applyTags, recordAction]
   );
+
+  const replayAction = useCallback(
+    (entry: ActionEntry) => {
+      if (entry.type === "add") addTag(entry.tag, entry.category, true);
+      else removeTag(entry.tag, true);
+    },
+    [addTag, removeTag]
+  );
+
+  const dismissHistorySlot = useCallback((idx: number) => {
+    setActionHistory((prev) => prev.filter((_, i) => i !== idx));
+  }, []);
 
   const undo = useCallback(() => {
     if (historyIdx <= 0) return;
@@ -245,9 +292,17 @@ export default function TagEditorPanel({
       } else if (!e.target || (e.target as HTMLElement).tagName !== "INPUT") {
         if (e.key === "ArrowLeft") onPrev();
         else if (e.key === "ArrowRight") onNext();
+        else if (e.key === "PageUp" || e.key === "k") { e.preventDefault(); onPrev(); }
+        else if (e.key === "PageDown" || e.key === "j") { e.preventDefault(); onNext(); }
+        else if (e.key === ".") {
+          if (actionHistory.length > 0) { e.preventDefault(); replayAction(actionHistory[0]); }
+        } else if (e.key >= "1" && e.key <= "5") {
+          const idx = parseInt(e.key, 10) - 1;
+          if (idx < actionHistory.length) { e.preventDefault(); replayAction(actionHistory[idx]); }
+        }
       }
     },
-    [undo, redo, onPrev, onNext]
+    [undo, redo, onPrev, onNext, actionHistory, replayAction]
   );
 
   const handleInfer = useCallback(async () => {
@@ -277,14 +332,15 @@ export default function TagEditorPanel({
     }
   }, [modelLoaded, inferring, image.rel_path, tags.length, applyTags, resolveCategories]);
 
-  // Group tags by category, filtered by search, sorted within group
-  const groupedTags = useMemo(() => {
+  // Group tags by category (and semantic sub-group when enabled), filtered by search
+  const groupedTags = useMemo((): TagGroupEntry[] => {
     const search = tagSearch.toLowerCase();
     const filtered = search
       ? tags.filter((t) => t.toLowerCase().includes(search))
       : tags;
 
-    const groups = new Map<CategoryName, string[]>(
+    // Collect per-category arrays
+    const catMap = new Map<CategoryName, string[]>(
       CATEGORY_ORDER.map((c) => [c, []])
     );
     for (const tag of filtered) {
@@ -292,14 +348,52 @@ export default function TagEditorPanel({
       const cat: CategoryName = CATEGORY_ORDER.includes(raw as CategoryName)
         ? (raw as CategoryName)
         : "Unknown";
-      groups.get(cat)!.push(tag);
+      catMap.get(cat)!.push(tag);
     }
-    for (const arr of groups.values()) arr.sort();
-    return groups;
-  }, [tags, tagCategories, tagSearch]);
+    for (const arr of catMap.values()) arr.sort();
+
+    const result: TagGroupEntry[] = [];
+
+    for (const cat of CATEGORY_ORDER) {
+      const catTags = catMap.get(cat)!;
+      if (catTags.length === 0) continue;
+      const color = CATEGORY_COLORS[cat];
+
+      // Semantic sub-grouping applies only to General / Unknown
+      if (semanticMode && (cat === "General" || cat === "Unknown")) {
+        const subMap = new Map<string, string[]>(
+          SEMANTIC_GROUP_NAMES.map((g) => [g, []])
+        );
+        for (const tag of catTags) {
+          subMap.get(getSemanticGroup(tag))!.push(tag);
+        }
+        for (const subName of SEMANTIC_GROUP_NAMES) {
+          const subTags = subMap.get(subName)!;
+          if (subTags.length === 0) continue;
+          result.push({
+            key: `${cat}:${subName}`,
+            label: `${cat} › ${subName}`,
+            dotColor: SEMANTIC_SUB_COLOR,
+            labelColor: "#86efac", // text-green-300 equivalent
+            tags: subTags,
+            isSubGroup: true,
+          });
+        }
+      } else {
+        result.push({
+          key: cat,
+          label: cat,
+          dotColor: color,
+          tags: catTags,
+        });
+      }
+    }
+
+    return result;
+  }, [tags, tagCategories, tagSearch, semanticMode]);
 
   const totalGrouped = useMemo(
-    () => [...groupedTags.values()].reduce((s, a) => s + a.length, 0),
+    () => groupedTags.reduce((s, g) => s + g.tags.length, 0),
     [groupedTags]
   );
 
@@ -395,6 +489,17 @@ export default function TagEditorPanel({
           >
             やり直し
           </button>
+          <button
+            onClick={() => setSemanticMode((v) => !v)}
+            className={`px-2 py-1.5 text-xs rounded ${
+              semanticMode
+                ? "bg-green-700 text-green-100"
+                : "bg-gray-700 hover:bg-gray-600 text-gray-300"
+            }`}
+            title="General/Unknownタグをセマンティックグループに分類"
+          >
+            意味分類
+          </button>
           <span className="ml-auto text-xs text-gray-500">
             {saving ? "保存中..." : dirty ? "未保存" : `${tags.length} タグ`}
           </span>
@@ -404,6 +509,38 @@ export default function TagEditorPanel({
           <p className="text-red-400 text-xs px-2 pt-1 flex-shrink-0">
             推論エラー: {inferError}
           </p>
+        )}
+
+        {/* Action history pills */}
+        {actionHistory.length > 0 && (
+          <div className="px-2 pt-1.5 flex-shrink-0 flex flex-wrap gap-1">
+            {actionHistory.map((entry, idx) => (
+              <span
+                key={`${entry.type}-${entry.tag}-${idx}`}
+                className="inline-flex items-center gap-0.5 rounded text-xs"
+                style={{
+                  backgroundColor: entry.type === "add" ? "#14532d" : "#450a0a",
+                  color: entry.type === "add" ? "#86efac" : "#fca5a5",
+                  padding: "2px 6px",
+                }}
+              >
+                <button
+                  onClick={() => replayAction(entry)}
+                  className="hover:underline"
+                  title={`再実行 (${idx === 0 ? "." : idx + 1}キー)`}
+                >
+                  {entry.type === "add" ? "+" : "−"}{entry.tag}
+                </button>
+                <button
+                  onClick={() => dismissHistorySlot(idx)}
+                  className="ml-0.5 opacity-60 hover:opacity-100 text-sm leading-none"
+                  title="履歴から削除"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
         )}
 
         {/* Tag input */}
@@ -436,34 +573,37 @@ export default function TagEditorPanel({
           ) : totalGrouped === 0 ? (
             <span className="text-gray-600 text-sm">一致なし</span>
           ) : (
-            CATEGORY_ORDER.map((cat) => {
-              const catTags = groupedTags.get(cat) ?? [];
-              if (catTags.length === 0) return null;
-              const color = CATEGORY_COLORS[cat];
-              return (
-                <div key={cat} className="mb-3">
-                  {/* Category header */}
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <span
-                      className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                      style={{ backgroundColor: color }}
-                    />
-                    <span className="text-xs font-semibold text-gray-300">
-                      {cat}
-                    </span>
-                    <span className="text-xs text-gray-600">
-                      ({catTags.length})
-                    </span>
-                  </div>
-                  {/* Tag chips */}
-                  <div className="flex flex-wrap gap-1.5 pl-4">
-                    {catTags.map((tag) => (
+            groupedTags.map((group) => (
+              <div key={group.key} className={group.isSubGroup ? "mb-2" : "mb-3"}>
+                {/* Group header */}
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <span
+                    className="w-2 h-2 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: group.dotColor }}
+                  />
+                  <span
+                    className={`text-xs font-semibold ${group.isSubGroup ? "" : "text-gray-300"}`}
+                    style={group.labelColor ? { color: group.labelColor } : undefined}
+                  >
+                    {group.label}
+                  </span>
+                  <span className="text-xs text-gray-600">
+                    ({group.tags.length})
+                  </span>
+                </div>
+                {/* Tag chips */}
+                <div className="flex flex-wrap gap-1.5 pl-4">
+                  {group.tags.map((tag) => {
+                    const chipColor = CATEGORY_COLORS[
+                      tagCategories.get(tag) as CategoryName
+                    ] ?? CATEGORY_COLORS.Unknown;
+                    return (
                       <span
                         key={tag}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-sm text-white"
                         style={{
                           backgroundColor: "#374151",
-                          borderLeft: `3px solid ${color}`,
+                          borderLeft: `3px solid ${chipColor}`,
                         }}
                       >
                         {tag}
@@ -475,11 +615,11 @@ export default function TagEditorPanel({
                           ×
                         </button>
                       </span>
-                    ))}
-                  </div>
+                    );
+                  })}
                 </div>
-              );
-            })
+              </div>
+            ))
           )}
         </div>
       </div>

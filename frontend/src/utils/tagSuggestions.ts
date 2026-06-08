@@ -741,33 +741,41 @@ export async function searchTags(
 
   // Search in tag other names (aliases) - partial match (if allowed by filter)
   if (shouldIncludeOtherNames && otherNamesLoaded) {
+    // Pre-populate seen set from direct category results to prevent alias duplicates
+    const seenOriginalTags = new Set<string>(results.filter(r => !r.alias).map(r => r.tag));
+
+    // Two-pass collection: starts-with first (higher priority), then partial-contains
+    const aliasStartsWith: Array<{ tag: string; count: number; category: string; alias: string }> = [];
+    const aliasPartial: Array<{ tag: string; count: number; category: string; alias: string }> = [];
+
     for (const [normalizedOtherName, data] of otherNamesIndex.entries()) {
-      // Check for partial match (contains)
-      if (normalizedOtherName.includes(normalizedInput)) {
-        // Find the count from the original tag in categories
-        let count = 0;
-        let categoryName = "Other Names";
+      if (seenOriginalTags.has(data.originalTag)) continue;
 
-        for (const [categoryKey, category] of Object.entries(categories)) {
-          if (category.tags[data.originalTag] !== undefined) {
-            count = category.tags[data.originalTag];
-            categoryName = category.name;
-            break;
-          }
+      const isStartsWith = normalizedOtherName.startsWith(normalizedInput);
+      const isPartial = !isStartsWith && normalizedOtherName.includes(normalizedInput);
+      if (!isStartsWith && !isPartial) continue;
+
+      // Find count + category from original tag
+      let count = 0;
+      let categoryName = "Other Names";
+      for (const [, category] of Object.entries(categories)) {
+        if (category.tags[data.originalTag] !== undefined) {
+          count = category.tags[data.originalTag];
+          categoryName = category.name;
+          break;
         }
+      }
 
-        // Only add if not already in results from category search (category results take priority)
-        // Check if this tag already exists without an alias (i.e., from category search)
-        const alreadyInCategoryResults = results.find(r => r.tag === data.originalTag && !r.alias);
+      const entry = { tag: data.originalTag, count, category: categoryName, alias: data.displayName };
+      if (isStartsWith) aliasStartsWith.push(entry);
+      else aliasPartial.push(entry);
+    }
 
-        if (!alreadyInCategoryResults) {
-          results.push({
-            tag: data.originalTag,
-            count: count,
-            category: categoryName,
-            alias: data.displayName, // Add alias for display
-          });
-        }
+    // Merge starts-with before partial; deduplicate by originalTag
+    for (const entry of [...aliasStartsWith, ...aliasPartial]) {
+      if (!seenOriginalTags.has(entry.tag)) {
+        seenOriginalTags.add(entry.tag);
+        results.push(entry);
       }
     }
   }

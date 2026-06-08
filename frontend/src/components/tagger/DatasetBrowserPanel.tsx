@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useRef, useMemo, useEffect } from "react";
 import {
   BrowserImageEntry,
   browserSetDirectory,
@@ -185,6 +185,31 @@ export default function DatasetBrowserPanel({
     batchCtrlRef.current?.abort();
     setBatchRunning(false);
   }, []);
+
+  // Keyboard fallback: fires only when no image is selected (TagEditorPanel not mounted)
+  useEffect(() => {
+    if (selectedIdx !== null) return;
+    const handler = (e: globalThis.KeyboardEvent) => {
+      if ((e.target as HTMLElement).tagName === "INPUT") return;
+      if (e.key === "PageDown" || e.key === "j") {
+        e.preventDefault();
+        setSelectedIdx((i) =>
+          i === null
+            ? filteredImages.length > 0 ? 0 : null
+            : i < filteredImages.length - 1 ? i + 1 : i
+        );
+      } else if (e.key === "PageUp" || e.key === "k") {
+        e.preventDefault();
+        setSelectedIdx((i) =>
+          i === null
+            ? filteredImages.length > 0 ? 0 : null
+            : i > 0 ? i - 1 : i
+        );
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedIdx, filteredImages.length]);
 
   const taggedCount = taggedSet.size;
   const totalCount = images.length;

@@ -127,6 +127,11 @@ export default function TagEditorPanel({
 
   // Resizable split between image and tag editor
   const splitContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auto-focus on mount so keyboard shortcuts work immediately after image navigation
+  useEffect(() => {
+    splitContainerRef.current?.focus();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [tagPanelWidthPx, setTagPanelWidthPx] = useState<number | null>(null);
   const { onMouseDown: onDividerMouseDown } = usePanelResize({
     containerRef: splitContainerRef,

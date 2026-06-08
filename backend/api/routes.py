@@ -3498,11 +3498,18 @@ async def browser_list(recursive: bool = False):
     return {"images": results}
 
 
+_BROWSER_IMAGE_CACHE_HEADERS = {
+    "Cache-Control": "private, max-age=3600",
+}
+
+
 @router.get("/tagger/browser/image")
 async def browser_image(rel_path: str, size: int = 0):
     """Serve an image by rel_path (relative to active browser root).
 
     size=0: original file; size=N: JPEG thumbnail at NxN (keep aspect).
+    Cache-Control: private, max-age=3600 — browser caches thumbnails so
+    virtual-scroll re-mounts never trigger network requests.
     """
     import os as _os
     abs_path = _resolve_browser_path(rel_path)
@@ -3516,8 +3523,12 @@ async def browser_image(rel_path: str, size: int = 0):
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         buf.seek(0)
-        return Response(content=buf.read(), media_type="image/jpeg")
-    return FileResponse(abs_path)
+        return Response(
+            content=buf.read(),
+            media_type="image/jpeg",
+            headers=_BROWSER_IMAGE_CACHE_HEADERS,
+        )
+    return FileResponse(abs_path, headers=_BROWSER_IMAGE_CACHE_HEADERS)
 
 
 @router.get("/tagger/browser/tags")

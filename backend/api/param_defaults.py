@@ -364,4 +364,13 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     # Probability band considered "hard" for hard_rate computation.
     "hard_rate_lo": 0.25,
     "hard_rate_hi": 0.75,
+    # Online Danbooru augmentation
+    "enable_danbooru_augmentation": False,
+    "danbooru_tags": "",              # newline-separated tag queries (one per line)
+    "danbooru_max_inject_per_batch": 1,
+    "danbooru_min_score": 0,
+    "danbooru_max_posts_per_query": 200,
+    "danbooru_api_interval": 1.4,
+    "danbooru_dl_speed_kbps": 500,
+    "danbooru_buffer_size": 32,
 }

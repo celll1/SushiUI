@@ -1982,6 +1982,47 @@ def run_tagger_training(
             num_workers=effective_workers, collate_fn=tagger_collate_fn,
             pin_memory=False,
         )
+
+        # ------------------------------------------------------------------
+        # Online Danbooru augmentation (optional)
+        # ------------------------------------------------------------------
+        _danbooru_buffer = None
+        if config.get("enable_danbooru_augmentation", False):
+            _tag_queries = [
+                t.strip()
+                for t in (config.get("danbooru_tags") or "").splitlines()
+                if t.strip()
+            ]
+            if _tag_queries:
+                from .danbooru_sampler import DanbooruSampleBuffer, MixedDataLoader as _MixedDL
+                _danbooru_buffer = DanbooruSampleBuffer(
+                    tag_queries=_tag_queries,
+                    vocabulary=vocabulary,
+                    processor=processor,
+                    is_naflex=_is_naflex,
+                    quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
+                    alias_resolver=alias_resolver,
+                    max_posts_per_query=config.get("danbooru_max_posts_per_query", 200),
+                    min_score=config.get("danbooru_min_score", 0),
+                    buffer_size=config.get("danbooru_buffer_size", 32),
+                    api_interval=config.get("danbooru_api_interval", 1.4),
+                    dl_speed_kbps=config.get("danbooru_dl_speed_kbps", 500),
+                )
+                _danbooru_buffer.start()
+                train_loader = _MixedDL(
+                    train_loader,
+                    buffer=_danbooru_buffer,
+                    max_inject_per_batch=config.get("danbooru_max_inject_per_batch", 1),
+                )
+                print(
+                    f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} quer"
+                    f"{'y' if len(_tag_queries) == 1 else 'ies'}, "
+                    f"inject≤{config.get('danbooru_max_inject_per_batch', 1)}/batch, "
+                    f"buffer={config.get('danbooru_buffer_size', 32)}"
+                )
+            else:
+                print("[TaggerTraining] enable_danbooru_augmentation=True but no tag queries specified, skipping")
+
         steps_per_epoch = len(train_loader)
         print(f"[TaggerTraining] Steps per epoch: {steps_per_epoch}")
 
@@ -2106,6 +2147,14 @@ def run_tagger_training(
 
     finally:
         import gc as _gc
+        # Stop the Danbooru background fetch thread if it was started.
+        try:
+            if _danbooru_buffer is not None:
+                _danbooru_buffer.stop()
+        except NameError:
+            pass
+        except Exception as _e:
+            print(f"[TaggerTraining] Danbooru buffer stop error: {_e}")
         # Explicitly delete DataLoaders to terminate worker processes before GC.
         # Without this, worker processes (num_workers > 0) outlive the finally block
         # because train_loader/val_loader locals still reference the iterators.

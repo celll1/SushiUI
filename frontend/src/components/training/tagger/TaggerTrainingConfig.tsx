@@ -76,6 +76,15 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   train_f1_threshold_search_every_n_steps: 500,
   train_f1_initial_threshold: 0.35,
   train_f1_buffer_batches: 16,
+  // Online Danbooru augmentation
+  enable_danbooru_augmentation: false,
+  danbooru_tags: "",
+  danbooru_max_inject_per_batch: 1,
+  danbooru_min_score: 0,
+  danbooru_max_posts_per_query: 200,
+  danbooru_api_interval: 1.4,
+  danbooru_dl_speed_kbps: 500,
+  danbooru_buffer_size: 32,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -1050,6 +1059,91 @@ export default function TaggerTrainingConfig({
             />
             <span className="text-sm text-gray-300">Save Best Only (by F1)</span>
           </label>
+        </section>
+
+        {/* Online Danbooru Augmentation */}
+        <section className="space-y-3 border-t border-gray-700 pt-4">
+          <h3 className="text-sm font-semibold text-gray-300">Online Danbooru Augmentation</h3>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!config.enable_danbooru_augmentation}
+              onChange={(e) => setField("enable_danbooru_augmentation", e.target.checked)}
+              className="accent-blue-500"
+            />
+            <span className="text-sm text-gray-300">Enable Danbooru Augmentation</span>
+          </label>
+
+          {config.enable_danbooru_augmentation && (
+            <div className="space-y-3 pl-2">
+              <div className="p-3 bg-yellow-900/30 border border-yellow-700 rounded text-xs text-yellow-300">
+                ⚠ Danbooru API rate limit: minimum 1.4 s between calls. Avoid accessing Danbooru from other
+                processes while this is running.
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Tag Queries (one per line)</label>
+                <textarea
+                  rows={4}
+                  value={config.danbooru_tags ?? ""}
+                  onChange={(e) => setField("danbooru_tags", e.target.value)}
+                  placeholder={"hoshimachi_suisei\nhololive score:>=10"}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 resize-y"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Danbooru tag search queries. Space-separated terms are ANDed.
+                  Only tags already in the vocabulary are used for training.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Max inject per batch</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={config.danbooru_max_inject_per_batch ?? 1}
+                  onChange={(e) => setField("danbooru_max_inject_per_batch", parseInt(e.target.value) || 1)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Min post score</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={config.danbooru_min_score ?? 0}
+                  onChange={(e) => setField("danbooru_min_score", parseInt(e.target.value) || 0)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Max posts per query</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={config.danbooru_max_posts_per_query ?? 200}
+                  onChange={(e) => setField("danbooru_max_posts_per_query", parseInt(e.target.value) || 200)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Buffer size (samples)</label>
+                <input
+                  type="number"
+                  min={4}
+                  max={256}
+                  value={config.danbooru_buffer_size ?? 32}
+                  onChange={(e) => setField("danbooru_buffer_size", parseInt(e.target.value) || 32)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+          )}
         </section>
 
         {/* Error */}

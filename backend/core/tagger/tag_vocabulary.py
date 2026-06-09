@@ -243,6 +243,47 @@ class TagVocabulary:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def add_tags(
+        self,
+        new_tags: List[str],
+        category: str = "General",
+    ) -> List[Tuple[str, int]]:
+        """Add new tags to the vocabulary in place.
+
+        Each tag is normalized before insertion.  Tags already present are
+        silently skipped.  New indices are assigned sequentially starting from
+        the current ``num_tags``.
+
+        After insertion ``_build_special_indices()`` is re-run so that
+        ``rating_indices`` and ``quality_indices`` stay consistent.
+
+        Parameters
+        ----------
+        new_tags : raw tag strings (will be normalized internally)
+        category : default category assigned to new tags
+
+        Returns
+        -------
+        List of ``(normalized_tag, new_index)`` for tags that were actually added.
+        """
+        added: List[Tuple[str, int]] = []
+        for raw in new_tags:
+            norm = normalize_tag(raw)
+            if not norm or norm in self.tag_to_idx:
+                continue
+            idx = len(self.tag_to_idx)
+            self.tag_to_idx[norm] = idx
+            self.idx_to_tag[idx] = norm
+            self.tag_to_category[norm] = category
+            added.append((norm, idx))
+
+        if added:
+            # Re-build rating/quality index lists to pick up any newly added
+            # special tags (unlikely but correct).
+            self._build_special_indices()
+
+        return added
+
     def _build_special_indices(self) -> None:
         """Populate rating_indices and quality_indices from current tag_to_idx.
 

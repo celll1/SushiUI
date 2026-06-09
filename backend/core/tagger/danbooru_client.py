@@ -132,6 +132,67 @@ class DanbooruClient:
 
         return data
 
+    def fetch_tags(
+        self,
+        created_after: str,
+        min_count: int,
+        category: int,
+        page: int = 1,
+    ) -> List[dict]:
+        """Fetch tags created on or after ``created_after`` with post_count >= min_count.
+
+        Parameters
+        ----------
+        created_after : ISO-8601 date string, e.g. ``"2026-03-01"``
+        min_count     : minimum post_count threshold
+        category      : Danbooru category code (0=General, 3=Copyright, 4=Character, …)
+        page          : 1-based page index
+
+        Returns
+        -------
+        List of tag dicts with keys ``name``, ``post_count``, ``created_at``,
+        ``category``.  Empty list on any error or rate-limit response.
+        """
+        self._wait_for_api_rate()
+
+        url = (
+            f"https://danbooru.donmai.us/tags.json"
+            f"?search[post_count]={min_count}.."
+            f"&search[category]={category}"
+            f"&search[created_at]={created_after}.."
+            f"&search[order]=count"
+            f"&limit=200&page={page}"
+        )
+        headers = {"User-Agent": _USER_AGENT}
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+        except requests.exceptions.RequestException as exc:
+            print(f"[DanbooruClient] fetch_tags network error: {exc}")
+            return []
+
+        if response.status_code in (429, 503):
+            print(
+                f"[DanbooruClient] fetch_tags rate-limited (HTTP {response.status_code}). "
+                "Waiting 10 s."
+            )
+            time.sleep(10.0)
+            return []
+
+        if response.status_code != 200:
+            print(f"[DanbooruClient] fetch_tags HTTP {response.status_code} for {url!r}")
+            return []
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(f"[DanbooruClient] fetch_tags JSON decode error: {exc}")
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        return data
+
     def download_inmemory(
         self, post: dict
     ) -> Optional[Tuple[bytes, str, List[str]]]:

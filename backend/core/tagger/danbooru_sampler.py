@@ -2,8 +2,16 @@
 Danbooru online augmentation for tagger training.
 
 DanbooruSampleBuffer runs a daemon thread that pre-fetches images from Danbooru
-and converts them to tensors.  MixedDataLoader wraps a DataLoader and injects
-buffered samples into each batch without blocking when the buffer is empty.
+and converts them to tensors.  Samples are stored as raw tag lists; labels are
+built at injection time in MixedDataLoader so that vocabulary expansions are
+reflected immediately.
+
+MixedDataLoader wraps a DataLoader and:
+  1. Checks VocabExpander for pending new tags and calls expansion_callback.
+  2. Pads base-loader batch labels/loss_masks to the current vocabulary size.
+     New-tag columns get label=0, loss_mask=1 (genuine negatives).
+  3. Drains up to max_inject_per_batch Danbooru samples, builds their labels
+     using the current vocabulary, and re-collates the combined batch.
 """
 
 from __future__ import annotations
@@ -13,9 +21,10 @@ import random
 import threading
 import time
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torch.utils.data import DataLoader
 from transformers import AutoProcessor
@@ -87,9 +96,12 @@ def _build_label_and_mask_standalone(
 class DanbooruSampleBuffer:
     """Background daemon thread that pre-fetches Danbooru images as tensors.
 
-    Samples are placed in a bounded queue.  The training loop drains the queue
-    without blocking — if the fetch thread cannot keep up, training continues
-    on the local dataset alone.
+    Each buffered sample is a tuple (pixel_values, pixel_attention_mask,
+    spatial_shapes, raw_tags) — labels are NOT pre-computed so they stay
+    consistent after vocabulary expansions.
+
+    The training loop drains the queue without blocking — if the fetch thread
+    cannot keep up, training continues on the local dataset alone.
     """
 
     def __init__(
@@ -105,6 +117,8 @@ class DanbooruSampleBuffer:
         buffer_size: int = 32,
         api_interval: float = 1.4,
         dl_speed_kbps: int = 500,
+        expander: Any = None,
+        surveyor: Any = None,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -115,14 +129,13 @@ class DanbooruSampleBuffer:
         self._max_posts        = max_posts_per_query
         self._min_score        = min_score
         self._buffer_size      = buffer_size
+        self._expander         = expander
+        self._surveyor         = surveyor
 
         self._client  = DanbooruClient(api_interval=api_interval, dl_speed_kbps=dl_speed_kbps)
         self._queue: queue.Queue = queue.Queue(maxsize=buffer_size)
         self._stop    = threading.Event()
         self._thread: Optional[threading.Thread] = None
-
-        self._unknown_tags: Set[str] = set()
-        self._unknown_tags_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -143,17 +156,11 @@ class DanbooruSampleBuffer:
     # ------------------------------------------------------------------
 
     def get_nowait(self) -> Optional[Tuple]:
-        """Return a buffered sample or None if the buffer is empty."""
+        """Return a buffered sample (pv, pam, ss, raw_tags) or None."""
         try:
             return self._queue.get_nowait()
         except queue.Empty:
             return None
-
-    @property
-    def unknown_tags(self) -> Set[str]:
-        """Tags seen in Danbooru posts that are not in the current vocabulary."""
-        with self._unknown_tags_lock:
-            return set(self._unknown_tags)
 
     # ------------------------------------------------------------------
     # Worker thread
@@ -223,22 +230,16 @@ class DanbooruSampleBuffer:
             pixel_attention_mask = torch.zeros(0, dtype=torch.int32)
             spatial_shapes       = torch.zeros(0, dtype=torch.int64)
 
-        # Collect unknown tags before building the label (for future vocab expansion)
-        voc = self._vocabulary
-        normalized = [normalize_tag(t) for t in raw_tags]
-        unknowns = [t for t in normalized if t and t not in voc.tag_to_idx]
-        if unknowns:
-            with self._unknown_tags_lock:
-                self._unknown_tags.update(unknowns)
+        # Propose unknown approved tags to vocab expander (if configured)
+        if self._expander is not None and self._surveyor is not None:
+            voc = self._vocabulary
+            approved = self._surveyor.get_approved()
+            normalized = {normalize_tag(t) for t in raw_tags if t}
+            new_approved = normalized & approved - set(voc.tag_to_idx.keys())
+            if new_approved:
+                self._expander.propose(new_approved)
 
-        label, loss_mask = _build_label_and_mask_standalone(
-            raw_tags,
-            voc,
-            quality_masking_mode=self._quality_masking,
-            alias_resolver=self._alias_resolver,
-        )
-
-        return (pixel_values, pixel_attention_mask, spatial_shapes, label, loss_mask)
+        return (pixel_values, pixel_attention_mask, spatial_shapes, raw_tags)
 
 
 # ---------------------------------------------------------------------------
@@ -249,13 +250,14 @@ class MixedDataLoader:
     """DataLoader wrapper that injects Danbooru samples into each batch.
 
     On every batch yielded by the base loader:
-      1. Drain up to ``max_inject_per_batch`` items from the buffer (non-blocking).
-      2. If at least one was available, unpack the batch into individual items,
-         append the injected samples, and re-collate with tagger_collate_fn.
-      3. If the buffer is empty, yield the batch unchanged.
+      1. Check VocabExpander for pending new tags; call expansion_callback if any.
+      2. Pad base-loader labels/loss_masks to the current vocabulary size.
+         New tag columns: label=0 (negative), loss_mask=1 (train on negatives).
+      3. Drain up to ``max_inject_per_batch`` items from the buffer, build labels
+         with the current vocabulary, and re-collate the combined batch.
 
     Delegates ``.dataset``, ``.num_workers``, ``.batch_size`` to the base loader
-    so the trainer's resume-loader construction (which reads these attributes) works.
+    so the trainer's resume-loader construction works correctly.
     """
 
     def __init__(
@@ -263,10 +265,20 @@ class MixedDataLoader:
         base_loader: DataLoader,
         buffer: DanbooruSampleBuffer,
         max_inject_per_batch: int = 1,
+        expander: Any = None,
+        expansion_callback: Optional[Callable[[List[str]], None]] = None,
+        vocabulary: Optional[TagVocabulary] = None,
+        quality_masking_mode: str = "intra_group",
+        alias_resolver: Any = None,
     ) -> None:
         self.base_loader          = base_loader
         self._buffer              = buffer
         self._max_inject          = max_inject_per_batch
+        self._expander            = expander
+        self._expansion_callback  = expansion_callback
+        self._vocabulary          = vocabulary
+        self._quality_masking     = quality_masking_mode
+        self._alias_resolver      = alias_resolver
 
     # Proxy attributes used by the trainer
     @property
@@ -290,19 +302,43 @@ class MixedDataLoader:
                 yield batch
                 continue
 
+            # ① Vocabulary expansion check (training thread)
+            if self._expander is not None and self._expander.has_pending():
+                new_tags = self._expander.consume_pending()
+                if self._expansion_callback is not None:
+                    self._expansion_callback(new_tags)
+
+            pv, pam, ss, labels, loss_masks = batch
+
+            # ② Pad base-loader batch labels to current vocabulary size
+            if self._vocabulary is not None:
+                current_n = self._vocabulary.num_tags
+                if labels.shape[1] < current_n:
+                    pad = current_n - labels.shape[1]
+                    labels     = F.pad(labels,     (0, pad), value=0.0)
+                    loss_masks = F.pad(loss_masks, (0, pad), value=1.0)
+
+            # ③ Drain Danbooru buffer and build labels at injection time
             injections = []
             for _ in range(self._max_inject):
                 s = self._buffer.get_nowait()
-                if s is not None:
-                    injections.append(s)
+                if s is None:
+                    break
+                pv_d, pam_d, ss_d, raw_tags = s
+                voc = self._vocabulary if self._vocabulary is not None else self._buffer._vocabulary
+                lbl, lm = _build_label_and_mask_standalone(
+                    raw_tags, voc,
+                    quality_masking_mode=self._quality_masking,
+                    alias_resolver=self._alias_resolver,
+                )
+                injections.append((pv_d, pam_d, ss_d, lbl, lm))
 
             if not injections:
-                yield batch
+                yield (pv, pam, ss, labels, loss_masks)
                 continue
 
-            # Unpack batch into individual items and re-collate with injections
-            pv, pam, ss, labels, loss_masks = batch
+            # ④ Re-collate base items + injections
             B = pv.shape[0]
             items = [(pv[i], pam[i], ss[i], labels[i], loss_masks[i]) for i in range(B)]
             merged = tagger_collate_fn(items + injections)
-            yield merged if merged is not None else batch
+            yield merged if merged is not None else (pv, pam, ss, labels, loss_masks)

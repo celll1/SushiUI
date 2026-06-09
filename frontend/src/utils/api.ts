@@ -2627,6 +2627,11 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_api_interval?: number;
   danbooru_dl_speed_kbps?: number;
   danbooru_buffer_size?: number;
+  danbooru_vocab_expand?: boolean;
+  danbooru_new_tag_min_count?: number;
+  danbooru_new_tag_lookback_days?: number;
+  danbooru_new_tag_categories?: number[];
+  danbooru_new_tag_survey_interval?: number;
 }
 
 export interface TaggerTrainingMetric {

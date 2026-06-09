@@ -373,4 +373,9 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_api_interval": 1.4,
     "danbooru_dl_speed_kbps": 500,
     "danbooru_buffer_size": 32,
+    "danbooru_vocab_expand": False,
+    "danbooru_new_tag_min_count": 200,
+    "danbooru_new_tag_lookback_days": 90,
+    "danbooru_new_tag_categories": [0, 3, 4],
+    "danbooru_new_tag_survey_interval": 3600,
 }

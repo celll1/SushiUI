@@ -8141,6 +8141,19 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     train_f1_threshold_search_every_n_steps: int   = 500
     train_f1_initial_threshold:              float = 0.35
     train_f1_buffer_batches:                 int   = 16
+    # Online Danbooru augmentation
+    enable_danbooru_augmentation: bool = False
+    danbooru_tags: Optional[str] = None        # newline-separated tag queries
+    danbooru_max_inject_per_batch: int = 1
+    danbooru_min_score: int = 0
+    danbooru_max_posts_per_query: int = 200
+    danbooru_api_interval: float = 1.4
+    danbooru_dl_speed_kbps: int = 500
+    danbooru_buffer_size: int = 32
+    # save_tag_metrics / hard_rate (passed through to trainer)
+    save_tag_metrics: bool = True
+    hard_rate_lo: float = 0.25
+    hard_rate_hi: float = 0.75
 
 
 # Active tagger training threads

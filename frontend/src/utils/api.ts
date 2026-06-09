@@ -2618,6 +2618,15 @@ export interface TaggerTrainingRunCreateRequest {
   train_f1_threshold_search_every_n_steps?: number;
   train_f1_initial_threshold?: number;
   train_f1_buffer_batches?: number;
+  // Online Danbooru augmentation
+  enable_danbooru_augmentation?: boolean;
+  danbooru_tags?: string;
+  danbooru_max_inject_per_batch?: number;
+  danbooru_min_score?: number;
+  danbooru_max_posts_per_query?: number;
+  danbooru_api_interval?: number;
+  danbooru_dl_speed_kbps?: number;
+  danbooru_buffer_size?: number;
 }
 
 export interface TaggerTrainingMetric {

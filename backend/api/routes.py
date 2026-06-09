@@ -8150,6 +8150,11 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_api_interval: float = 1.4
     danbooru_dl_speed_kbps: int = 500
     danbooru_buffer_size: int = 32
+    danbooru_vocab_expand: bool = False
+    danbooru_new_tag_min_count: int = 200
+    danbooru_new_tag_lookback_days: int = 90
+    danbooru_new_tag_categories: List[int] = [0, 3, 4]
+    danbooru_new_tag_survey_interval: int = 3600
     # save_tag_metrics / hard_rate (passed through to trainer)
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25

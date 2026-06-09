@@ -403,6 +403,51 @@ class SigLIP2TaggerModel(nn.Module):
         return self.head(pooled)                                # [B, num_tags]
 
     # ------------------------------------------------------------------
+    # Head expansion (live vocabulary growth)
+    # ------------------------------------------------------------------
+
+    def expand_head(self, new_num_tags: int) -> "Tuple[nn.Parameter, nn.Parameter]":
+        """Replace ``self.head`` with a larger Linear layer.
+
+        The first ``old_n`` rows of the new weight/bias are copied from the
+        existing head; rows for new tags are zero-initialized (so they start
+        with zero logit contribution, matching the original head initialization).
+
+        Parameters
+        ----------
+        new_num_tags : target output size; must be strictly larger than the
+                       current ``self.head.out_features``
+
+        Returns
+        -------
+        ``(new_weight, new_bias)`` — the Parameter objects of the new head,
+        needed by the caller to update optimizer param_groups.
+        """
+        old_head = self.head
+        old_n    = old_head.out_features
+        assert new_num_tags > old_n, (
+            f"expand_head: new_num_tags={new_num_tags} must be > current {old_n}"
+        )
+
+        has_bias = old_head.bias is not None
+        new_head = nn.Linear(old_head.in_features, new_num_tags, bias=has_bias)
+        nn.init.zeros_(new_head.weight)
+        if has_bias:
+            nn.init.zeros_(new_head.bias)
+
+        with torch.no_grad():
+            new_head.weight[:old_n] = old_head.weight
+            if has_bias:
+                new_head.bias[:old_n] = old_head.bias
+
+        new_head = new_head.to(
+            device=old_head.weight.device,
+            dtype=old_head.weight.dtype,
+        )
+        self.head = new_head
+        return new_head.weight, new_head.bias
+
+    # ------------------------------------------------------------------
     # Save / load
     # ------------------------------------------------------------------
 

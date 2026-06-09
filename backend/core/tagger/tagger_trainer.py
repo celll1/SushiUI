@@ -1987,6 +1987,8 @@ def run_tagger_training(
         # Online Danbooru augmentation (optional)
         # ------------------------------------------------------------------
         _danbooru_buffer = None
+        _expander = None
+        _surveyor = None
         if config.get("enable_danbooru_augmentation", False):
             _tag_queries = [
                 t.strip()
@@ -1995,6 +1997,40 @@ def run_tagger_training(
             ]
             if _tag_queries:
                 from .danbooru_sampler import DanbooruSampleBuffer, MixedDataLoader as _MixedDL
+                from .danbooru_vocab_expander import VocabExpander, expand_vocab_and_head
+
+                _expander = VocabExpander()
+
+                if config.get("danbooru_vocab_expand", False):
+                    from .danbooru_tag_surveyor import DanbooruTagSurveyor
+                    _surveyor = DanbooruTagSurveyor(
+                        vocabulary=vocabulary,
+                        categories=config.get("danbooru_new_tag_categories", [0, 3, 4]),
+                        min_count=config.get("danbooru_new_tag_min_count", 200),
+                        lookback_days=config.get("danbooru_new_tag_lookback_days", 90),
+                        survey_interval=float(config.get("danbooru_new_tag_survey_interval", 3600)),
+                        api_interval=config.get("danbooru_api_interval", 1.4),
+                        dl_speed_kbps=config.get("danbooru_dl_speed_kbps", 500),
+                    )
+                    _surveyor.start()
+
+                def _expansion_callback(new_tags: List[str]) -> None:
+                    n = expand_vocab_and_head(new_tags, vocabulary, model, optimizer)
+                    if n > 0:
+                        if _surveyor is not None:
+                            _surveyor.mark_added(new_tags)
+                        # Save vocabulary snapshot so training can resume with expanded vocab
+                        try:
+                            vocab_path = os.path.join(output_dir, "vocabulary_latest.json")
+                            with open(vocab_path, "w", encoding="utf-8") as _vf:
+                                _vf.write(vocabulary.to_json())
+                        except Exception as _ve:
+                            print(f"[TaggerTraining] Vocab snapshot save error: {_ve}")
+                        print(
+                            f"[TaggerTraining] Vocab expanded: +{n} tag(s), "
+                            f"total={vocabulary.num_tags}"
+                        )
+
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_tag_queries,
                     vocabulary=vocabulary,
@@ -2007,18 +2043,27 @@ def run_tagger_training(
                     buffer_size=config.get("danbooru_buffer_size", 32),
                     api_interval=config.get("danbooru_api_interval", 1.4),
                     dl_speed_kbps=config.get("danbooru_dl_speed_kbps", 500),
+                    expander=_expander,
+                    surveyor=_surveyor,
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(
                     train_loader,
                     buffer=_danbooru_buffer,
                     max_inject_per_batch=config.get("danbooru_max_inject_per_batch", 1),
+                    expander=_expander,
+                    expansion_callback=_expansion_callback if config.get("danbooru_vocab_expand", False) else None,
+                    vocabulary=vocabulary,
+                    quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
+                    alias_resolver=alias_resolver,
                 )
                 print(
                     f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} quer"
                     f"{'y' if len(_tag_queries) == 1 else 'ies'}, "
                     f"inject≤{config.get('danbooru_max_inject_per_batch', 1)}/batch, "
                     f"buffer={config.get('danbooru_buffer_size', 32)}"
+                    + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)})"
+                       if config.get("danbooru_vocab_expand", False) else "")
                 )
             else:
                 print("[TaggerTraining] enable_danbooru_augmentation=True but no tag queries specified, skipping")
@@ -2155,6 +2200,13 @@ def run_tagger_training(
             pass
         except Exception as _e:
             print(f"[TaggerTraining] Danbooru buffer stop error: {_e}")
+        try:
+            if _surveyor is not None:
+                _surveyor.stop()
+        except NameError:
+            pass
+        except Exception as _e:
+            print(f"[TaggerTraining] Danbooru surveyor stop error: {_e}")
         # Explicitly delete DataLoaders to terminate worker processes before GC.
         # Without this, worker processes (num_workers > 0) outlive the finally block
         # because train_loader/val_loader locals still reference the iterators.

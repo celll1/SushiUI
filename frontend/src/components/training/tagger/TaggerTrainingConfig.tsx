@@ -85,6 +85,11 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_api_interval: 1.4,
   danbooru_dl_speed_kbps: 500,
   danbooru_buffer_size: 32,
+  danbooru_vocab_expand: false,
+  danbooru_new_tag_min_count: 200,
+  danbooru_new_tag_lookback_days: 90,
+  danbooru_new_tag_categories: [0, 3, 4],
+  danbooru_new_tag_survey_interval: 3600,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -1141,6 +1146,55 @@ export default function TaggerTrainingConfig({
                   onChange={(e) => setField("danbooru_buffer_size", parseInt(e.target.value) || 32)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
+              </div>
+
+              {/* Vocab Expansion */}
+              <div className="pt-2 border-t border-gray-700">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!config.danbooru_vocab_expand}
+                    onChange={(e) => setField("danbooru_vocab_expand", e.target.checked)}
+                    className="w-4 h-4 rounded"
+                  />
+                  <span className="text-sm text-gray-300">Vocab Expansion (auto-add new Danbooru tags during training)</span>
+                </label>
+
+                {config.danbooru_vocab_expand && (
+                  <div className="mt-3 space-y-3 pl-7">
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Min post count</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={config.danbooru_new_tag_min_count ?? 200}
+                        onChange={(e) => setField("danbooru_new_tag_min_count", parseInt(e.target.value) || 200)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Lookback days</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={config.danbooru_new_tag_lookback_days ?? 90}
+                        onChange={(e) => setField("danbooru_new_tag_lookback_days", parseInt(e.target.value) || 90)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Survey interval (sec)</label>
+                      <input
+                        type="number"
+                        min={60}
+                        value={config.danbooru_new_tag_survey_interval ?? 3600}
+                        onChange={(e) => setField("danbooru_new_tag_survey_interval", parseInt(e.target.value) || 3600)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

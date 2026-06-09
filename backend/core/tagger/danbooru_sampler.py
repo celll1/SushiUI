@@ -178,6 +178,8 @@ class DanbooruSampleBuffer:
                     time.sleep(2.0)
                     continue
 
+                if self._max_posts < len(posts):
+                    posts = posts[:self._max_posts]
                 random.shuffle(posts)
                 for post in posts:
                     if self._stop.is_set():
@@ -235,7 +237,7 @@ class DanbooruSampleBuffer:
             voc = self._vocabulary
             approved = self._surveyor.get_approved()
             normalized = {normalize_tag(t) for t in raw_tags if t}
-            new_approved = normalized & approved - set(voc.tag_to_idx.keys())
+            new_approved = (normalized & approved) - set(voc.tag_to_idx.keys())
             if new_approved:
                 self._expander.propose(new_approved)
 

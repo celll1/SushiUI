@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -406,7 +406,7 @@ class SigLIP2TaggerModel(nn.Module):
     # Head expansion (live vocabulary growth)
     # ------------------------------------------------------------------
 
-    def expand_head(self, new_num_tags: int) -> "Tuple[nn.Parameter, nn.Parameter]":
+    def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, Optional[nn.Parameter]]:
         """Replace ``self.head`` with a larger Linear layer.
 
         The first ``old_n`` rows of the new weight/bias are copied from the

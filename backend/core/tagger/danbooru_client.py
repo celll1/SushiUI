@@ -47,25 +47,34 @@ _TAG_STRING_KEYS = [
 
 
 class DanbooruClient:
-    """Thread-safe, rate-limited Danbooru API client (anonymous access)."""
+    """Thread-safe, rate-limited Danbooru API client (anonymous access).
+
+    The API rate limit is enforced globally across all instances via class-level
+    lock and timestamp so that DanbooruSampleBuffer and DanbooruTagSurveyor (which
+    each own a DanbooruClient) cannot interleave calls and violate the 1.4s interval.
+    """
+
+    _global_lock: threading.Lock = threading.Lock()
+    _global_last_call: float = 0.0
 
     def __init__(self, api_interval: float = 1.4, dl_speed_kbps: int = 500) -> None:
         self._api_interval = api_interval
         self._dl_speed_bytes_per_sec = dl_speed_kbps * 1024
-        self._last_api_call: float = 0.0
-        self._api_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
     def _wait_for_api_rate(self) -> None:
-        """Block until at least api_interval seconds have passed since the last API call."""
-        with self._api_lock:
-            elapsed = time.monotonic() - self._last_api_call
+        """Block until at least api_interval seconds have passed since the last API call.
+
+        Uses a class-level lock so all DanbooruClient instances share one rate limit.
+        """
+        with DanbooruClient._global_lock:
+            elapsed = time.monotonic() - DanbooruClient._global_last_call
             if elapsed < self._api_interval:
                 time.sleep(self._api_interval - elapsed)
-            self._last_api_call = time.monotonic()
+            DanbooruClient._global_last_call = time.monotonic()
 
     # ------------------------------------------------------------------
     # Public API

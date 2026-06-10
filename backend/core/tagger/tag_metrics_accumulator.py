@@ -7,7 +7,7 @@ metrics (hard_rate, FP/FN rates, best F1 threshold) which are saved alongside th
 model as ``{name}_tag_metrics.npz``.
 
 Memory footprint (V=106 k tags, K=100 bins):
-  2 × (pos_hist + total_hist) × V × K × 4 bytes ≈ 170 MB  (sample-count independent)
+  3 × (pos_hist + total_hist) × V × K × 4 bytes ≈ 255 MB  (sample-count independent)
 """
 
 from __future__ import annotations
@@ -20,15 +20,36 @@ import torch
 
 
 class TagMetricsAccumulator:
-    """Online per-tag histogram accumulator with two-epoch sliding window.
+    """Online per-tag histogram accumulator with smooth sliding window.
 
-    Two histogram sets are maintained:
-    - ``cur_*``: predictions from the *current* (in-progress) epoch.
-    - ``prev_*``: predictions from the *previous completed* epoch.
+    Three histogram slots are maintained:
 
-    At mid-epoch checkpoint saves: use ``cur + prev`` (partial current + full previous).
-    At epoch-boundary saves: use ``cur`` only (full current epoch, cleanest signal).
-    After saving at epoch boundary: rotate (prev ← cur, cur ← zero).
+    - ``cur_*``:  predictions from the current (in-progress) epoch (epoch N).
+    - ``prev_*``: full predictions from the previous completed epoch (epoch N-1).
+    - ``pp_*``:   full predictions from epoch N-2, faded out as epoch N progresses.
+
+    Window at any point during epoch N after ``cur_images`` batches have been seen::
+
+        pp_weight  = max(0, 1 - cur_images / pp_images)
+        effective  = cur  +  prev  +  pp * pp_weight
+
+    This keeps the effective window at ≈ 2 epochs throughout training, eliminating
+    the abrupt 2-epoch → 1-epoch jump that occurred at epoch boundaries in the
+    old two-slot design.
+
+    **Edge cases:**
+
+    *Epoch size decreases:*
+        pp is consumed more slowly (pp_weight > 0 at epoch end).  On the
+        next :meth:`rotate_epoch` call, the old pp is discarded and replaced by
+        old prev, so data older than 2 epochs is never retained past a rotation.
+
+    *Epoch size increases:*
+        pp_weight clamps to 0 before the epoch ends.  The pp contribution
+        vanishes entirely; prev is never touched mid-epoch.
+
+    At epoch-boundary checkpoint saves the window is ``cur + prev`` (pp_weight ≈ 0
+    and about to be discarded by rotate_epoch anyway).
 
     ``tag_count`` accumulates across *all* epochs and is never reset —
     it represents training-set tag frequency.
@@ -38,15 +59,20 @@ class TagMetricsAccumulator:
         self.vocab_size = vocab_size
         self.n_bins = n_bins
 
-        # Current epoch
+        # Current epoch (epoch N)
         self.pos_hist_cur   = np.zeros((vocab_size, n_bins), dtype=np.int32)
         self.total_hist_cur = np.zeros((vocab_size, n_bins), dtype=np.int32)
         self.total_images_cur: int = 0
 
-        # Previous completed epoch
+        # Previous completed epoch (epoch N-1)
         self.pos_hist_prev   = np.zeros((vocab_size, n_bins), dtype=np.int32)
         self.total_hist_prev = np.zeros((vocab_size, n_bins), dtype=np.int32)
         self.total_images_prev: int = 0
+
+        # Prev-prev epoch (epoch N-2), being faded out
+        self.pos_hist_pp   = np.zeros((vocab_size, n_bins), dtype=np.int32)
+        self.total_hist_pp = np.zeros((vocab_size, n_bins), dtype=np.int32)
+        self.total_images_pp: int = 0
 
         # All-epoch cumulative tag frequency (never reset)
         self.tag_count = np.zeros(vocab_size, dtype=np.int32)
@@ -102,12 +128,24 @@ class TagMetricsAccumulator:
     def rotate_epoch(self) -> None:
         """Call at epoch end (after saving epoch-boundary checkpoint).
 
-        Moves current epoch histograms to the ``prev`` slot and zeros ``cur``.
+        Performs a three-way rotation:
+          pp  ← prev   (prev-prev becomes the new fade-out slot)
+          prev ← cur   (current becomes previous)
+          cur  ← zero  (ready for the next epoch)
+
+        Data older than 2 epochs (the old pp) is discarded on rotation.
         """
+        # pp ← prev
+        np.copyto(self.pos_hist_pp,   self.pos_hist_prev)
+        np.copyto(self.total_hist_pp, self.total_hist_prev)
+        self.total_images_pp = self.total_images_prev
+
+        # prev ← cur
         np.copyto(self.pos_hist_prev,   self.pos_hist_cur)
         np.copyto(self.total_hist_prev, self.total_hist_cur)
         self.total_images_prev = self.total_images_cur
 
+        # cur ← zero
         self.pos_hist_cur[:] = 0
         self.total_hist_cur[:] = 0
         self.total_images_cur = 0
@@ -117,15 +155,39 @@ class TagMetricsAccumulator:
     # ------------------------------------------------------------------
 
     def _merged(self, epoch_boundary: bool):
-        """Return (pos_hist, total_hist, total_images) for the requested window."""
-        if epoch_boundary:
-            return self.pos_hist_cur, self.total_hist_cur, self.total_images_cur
+        """Return (pos_hist_f, total_hist_f, total_images) for the current window.
+
+        At ``epoch_boundary=True``:
+            Returns ``cur + prev`` as float32.  pp is omitted because it is
+            about to be discarded by the next :meth:`rotate_epoch` call, and
+            its weight would already be near 0 at a full-epoch boundary.
+
+        At ``epoch_boundary=False`` (mid-epoch):
+            Returns ``cur + prev + pp * pp_weight`` where::
+
+                pp_weight = max(0, 1 − total_images_cur / total_images_pp)
+
+            This gives a smooth transition as the current epoch progresses.
+        """
+        cur_f   = self.pos_hist_cur.astype(np.float32)
+        prev_f  = self.pos_hist_prev.astype(np.float32)
+        c_tot_f = self.total_hist_cur.astype(np.float32)
+        p_tot_f = self.total_hist_prev.astype(np.float32)
+
+        if epoch_boundary or self.total_images_pp == 0:
+            pos   = cur_f   + prev_f
+            total = c_tot_f + p_tot_f
+            n_img = self.total_images_cur + self.total_images_prev
         else:
-            return (
-                self.pos_hist_cur  + self.pos_hist_prev,
-                self.total_hist_cur + self.total_hist_prev,
-                self.total_images_cur + self.total_images_prev,
-            )
+            pp_weight = max(0.0, 1.0 - self.total_images_cur / self.total_images_pp)
+            pp_f     = self.pos_hist_pp.astype(np.float32)
+            pp_tot_f = self.total_hist_pp.astype(np.float32)
+            pos   = cur_f   + prev_f   + pp_f     * pp_weight
+            total = c_tot_f + p_tot_f  + pp_tot_f * pp_weight
+            n_img = (self.total_images_cur + self.total_images_prev
+                     + int(self.total_images_pp * pp_weight))
+
+        return pos, total, n_img
 
     def compute_metrics(
         self,
@@ -333,8 +395,9 @@ class TagMetricsAccumulator:
                                        hard_lo=hard_lo, hard_hi=hard_hi)
 
         save_kwargs: dict = {
-            "pos_hist":            pos_h,
-            "total_hist":          total_h,
+            # Merged window histograms (used by inference and restore)
+            "pos_hist":            pos_h.astype(np.float32),
+            "total_hist":          total_h.astype(np.float32),
             "calibration_table":   self.compute_calibration_table(
                                        epoch_boundary,
                                        method=calib_method,
@@ -349,6 +412,10 @@ class TagMetricsAccumulator:
             "n_bins":              np.array([self.n_bins],  dtype=np.int32),
             "hard_lo":             np.array([hard_lo],      dtype=np.float32),
             "hard_hi":             np.array([hard_hi],      dtype=np.float32),
+            # Individual slot sizes — allow restore_from_npz to rebuild the window
+            "total_images_cur":    np.array([self.total_images_cur],  dtype=np.int64),
+            "total_images_prev":   np.array([self.total_images_prev], dtype=np.int64),
+            "total_images_pp":     np.array([self.total_images_pp],   dtype=np.int64),
         }
         save_kwargs.update({k: v for k, v in metrics.items()})
 
@@ -361,10 +428,14 @@ class TagMetricsAccumulator:
     def restore_from_npz(self, path: str) -> bool:
         """Restore accumulator state from a previously saved .npz file.
 
-        Called on training resume so that accumulated histogram data is not
-        lost.  The saved file stores the *merged* (cur+prev) histograms, so
-        we restore them into the ``prev`` slot and leave ``cur`` zeroed —
-        equivalent to having just completed the last checkpoint's epoch.
+        The saved file stores the *merged* window histograms (cur+prev+pp*w).
+        On restore these are loaded into the ``prev`` slot; ``cur`` and ``pp``
+        are left zeroed.  After the next epoch rotation, pp will be populated
+        with the restored data, giving a correct two-epoch sliding window.
+
+        ``total_images_prev`` and ``total_images_pp`` are restored from the
+        saved slot-size keys (added in the three-slot design) or estimated
+        from ``total_images`` for older files.
 
         Returns True on success, False if the file is missing or incompatible.
         """
@@ -393,20 +464,30 @@ class TagMetricsAccumulator:
             self.pos_hist_prev[:V_restore]   = pos_h[:V_restore]
             self.total_hist_prev[:V_restore] = total_h[:V_restore]
 
+            # Restore slot image counts
+            def _load_int(key: str, fallback: int) -> int:
+                if key not in data.files:
+                    return fallback
+                v = data[key]
+                return int(v.item() if v.ndim == 0 else v[0])
+
             _ti = data["total_images"]
-            self.total_images_prev = int(_ti.item() if _ti.ndim == 0 else _ti[0])
+            total_images_merged = int(_ti.item() if _ti.ndim == 0 else _ti[0])
+
+            self.total_images_prev = _load_int("total_images_prev", total_images_merged)
+            self.total_images_pp   = _load_int("total_images_pp",   0)
+            # cur is zeroed — total_images_cur stays 0
 
             # tag_count: all-epoch cumulative
             if "tag_count" in data.files:
                 tc = data["tag_count"].astype(np.int32)
                 self.tag_count[:min(len(tc), self.vocab_size)] = tc[:min(len(tc), self.vocab_size)]
 
-            # total_images_all: all-epoch image count (added in newer saves)
+            # total_images_all: all-epoch image count
             if "total_images_all" in data.files:
                 _tia = data["total_images_all"]
                 self.total_images_all = int(_tia.item() if _tia.ndim == 0 else _tia[0])
             else:
-                # Older NPZ without total_images_all: use total_images as fallback
                 self.total_images_all = self.total_images_prev
 
             return True

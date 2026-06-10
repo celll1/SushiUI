@@ -1091,8 +1091,9 @@ class TaggerTrainer:
                     print(
                         f"[TaggerTrainer] Tag metrics accumulator restored from "
                         f"latest_tag_metrics.npz "
-                        f"(total_images_prev={_tag_metrics_acc.total_images_prev:,}, "
-                        f"total_images_all={_tag_metrics_acc.total_images_all:,})"
+                        f"(prev={_tag_metrics_acc.total_images_prev:,}, "
+                        f"pp={_tag_metrics_acc.total_images_pp:,}, "
+                        f"all={_tag_metrics_acc.total_images_all:,})"
                     )
                 else:
                     print(

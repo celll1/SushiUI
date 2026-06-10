@@ -376,7 +376,7 @@ class SigLIP2InferenceManager:
         min_best_thr: float = 0.30,
         min_best_f1: float = 0.05,
         use_calibration: bool = False,
-        display_calibration: bool = False,
+        display_calibration: bool = False,   # kept for backward compat; ignored (cal_prob always computed)
         use_ood_detection: bool = False,
     ) -> Dict[str, Any]:
         """Run inference on raw image bytes.
@@ -501,27 +501,16 @@ class SigLIP2InferenceManager:
                 _logits = _logits + torch.from_numpy(context_correction).to(_logits.device)
             probs = torch.sigmoid(_logits).cpu().numpy()  # [num_tags]
 
-        # Keep raw sigmoid probs for best_thr filtering; calibrated only for display
+        # raw_probs: raw sigmoid output — always used for threshold filtering
         raw_probs = probs.copy()
 
-        # use_calibration (legacy): replaces probs used for both filtering AND display
+        # cal_probs: Jeffreys-calibrated probabilities for display toggle.
+        # Computed unconditionally when calibration table is available so the
+        # client can switch between raw and calibrated views without re-inference.
+        # use_calibration (legacy): also replaces raw_probs used for filtering.
+        cal_probs: Optional[np.ndarray] = None
         _calibrated = False
-        if use_calibration and self.tag_metrics is not None:
-            _calib = self.tag_metrics.get("calibration_table")
-            if _calib is not None:
-                _nb = self.tag_metrics.get("n_bins", 100)
-                _n_bins = int(_nb) if np.ndim(_nb) == 0 else int(_nb[0])
-                _bin_idx = np.clip(
-                    (probs * _n_bins).astype(np.int32), 0, _n_bins - 1
-                )
-                probs = _calib[np.arange(len(probs)), _bin_idx].astype(np.float32)
-                raw_probs = probs  # in legacy mode, display == filtered probs
-                _calibrated = True
-
-        # display_calibration: keep raw probs for filtering, use calibrated for display only
-        display_probs = raw_probs
-        _display_calibrated = False
-        if display_calibration and not use_calibration and self.tag_metrics is not None:
+        if self.tag_metrics is not None:
             _calib = self.tag_metrics.get("calibration_table")
             if _calib is not None:
                 _nb = self.tag_metrics.get("n_bins", 100)
@@ -533,8 +522,11 @@ class SigLIP2InferenceManager:
                 _nan = np.isnan(_cal)
                 if _nan.any():
                     _cal[_nan] = raw_probs[_nan]
-                display_probs = _cal
-                _display_calibrated = True
+                cal_probs = _cal
+                if use_calibration:
+                    # Legacy mode: calibrated probs also replace the filtering baseline
+                    raw_probs = _cal
+                    _calibrated = True
 
         idx_to_tag      = self.vocabulary["idx_to_tag"]
         tag_to_category = self.vocabulary["tag_to_category"]
@@ -546,19 +538,26 @@ class SigLIP2InferenceManager:
                 _idx = tag_to_idx.get(_tag)
                 if _idx is not None:
                     raw_probs[_idx] = 1.0
-                    display_probs[_idx] = 1.0
+                    if cal_probs is not None:
+                        cal_probs[_idx] = 1.0
 
-        # Build full list — display_probs for shown values, raw_probs for filtering
+        # Build full list.
+        # prob     = raw sigmoid (always; used for filtering and default display)
+        # cal_prob = Jeffreys-calibrated probability (present when calibration table
+        #            is available; client toggles between the two views)
         all_items: List[Dict] = []
         for i in range(len(raw_probs)):
             tag      = idx_to_tag.get(i, f"__unk_{i}__")
             category = tag_to_category.get(tag, "Unknown")
-            all_items.append({
-                "tag": tag,
-                "prob": float(display_probs[i]),
+            item: Dict = {
+                "tag":      tag,
+                "prob":     float(raw_probs[i]),
                 "raw_prob": float(raw_probs[i]),
                 "category": category,
-            })
+            }
+            if cal_probs is not None:
+                item["cal_prob"] = float(cal_probs[i])
+            all_items.append(item)
 
         # Quality / Rating: pick the max regardless of threshold
         quality_top: Optional[Dict] = None
@@ -628,14 +627,14 @@ class SigLIP2InferenceManager:
         filtered.sort(key=lambda x: x["prob"], reverse=True)
 
         return {
-            "tags":               filtered,
-            "quality_top":        quality_top,
-            "rating_top":         rating_top,
-            "num_predicted":      len(filtered),
-            "calibrated":         _calibrated or _display_calibrated,
-            "display_calibrated": _display_calibrated,
-            "used_best_thr":      _used_best_thr,
-            "ood_distance":       ood_distance,
+            "tags":             filtered,
+            "quality_top":      quality_top,
+            "rating_top":       rating_top,
+            "num_predicted":    len(filtered),
+            "calibrated":       _calibrated,
+            "has_calibration":  cal_probs is not None,   # client can offer cal toggle
+            "used_best_thr":    _used_best_thr,
+            "ood_distance":     ood_distance,
         }
 
     # ------------------------------------------------------------------

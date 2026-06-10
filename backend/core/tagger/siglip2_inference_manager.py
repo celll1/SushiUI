@@ -1258,6 +1258,8 @@ class SigLIP2InferenceManager:
             "lr_matrix_loaded":  self.lr_matrix is not None,
             "has_tag_metrics":   self.get_tag_metrics_path() is not None,
             "has_ood_reference": self.ood_ref is not None,
+            "ood_p50":           float(self.ood_ref["p50"]) if self.ood_ref is not None else None,
+            "ood_p95":           float(self.ood_ref["p95"]) if self.ood_ref is not None else None,
             "calib_method":      self.calib_method,
             "calib_eps":         self.calib_eps,
             "calib_prior_strength": self.calib_prior_strength,

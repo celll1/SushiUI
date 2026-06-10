@@ -56,35 +56,27 @@ function BarRow({ tag, prob, category, selected, onToggle, showCategory = true }
   return (
     <button
       onClick={() => onToggle(tag)}
-      className={`w-full flex items-center gap-2 px-2 py-1 rounded text-left hover:bg-gray-700 transition-colors ${
+      className={`w-full flex items-center gap-1.5 px-2 py-0.5 rounded text-left hover:bg-gray-700 transition-colors ${
         selected ? "bg-gray-700 ring-1 ring-blue-500" : ""
       }`}
     >
-      {/* Category badge */}
       {showCategory && (
-        <span className={`text-xs w-16 shrink-0 ${textColor(category)}`}>
+        <span className={`text-xs w-14 shrink-0 ${textColor(category)}`}>
           {category}
         </span>
       )}
-
-      {/* Tag name */}
-      <span className="text-sm text-gray-200 flex-1 truncate" title={tag}>
+      <span className="text-sm text-gray-200 flex-1 truncate min-w-0" title={tag}>
         {tag}
       </span>
-
-      {/* Bar */}
-      <div className="w-32 h-3.5 bg-gray-800 rounded overflow-hidden shrink-0">
+      {/* Bar — flexible width */}
+      <div className="w-20 h-3 bg-gray-800 rounded overflow-hidden shrink-0">
         <div
           className={`h-full rounded transition-all ${barColor(category)}`}
           style={{ width: pct }}
         />
       </div>
-
-      {/* Probability */}
-      <span className="text-xs text-gray-400 w-12 text-right shrink-0">{pct}</span>
-
-      {/* Checkbox indicator */}
-      <span className={`text-sm w-4 shrink-0 ${selected ? "text-blue-400" : "text-gray-600"}`}>
+      <span className="text-xs text-gray-400 w-10 text-right shrink-0">{pct}</span>
+      <span className={`text-xs w-3.5 shrink-0 ${selected ? "text-blue-400" : "text-gray-600"}`}>
         {selected ? "✓" : "○"}
       </span>
     </button>
@@ -109,25 +101,15 @@ function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup,
 
   return (
     <div className="border border-gray-700 rounded mb-2">
-      <div className="flex items-center gap-2 px-2 py-1.5 bg-gray-800 rounded-t">
+      <div className="flex items-center gap-2 px-2 py-1 bg-gray-800 rounded-t">
         <button onClick={() => setCollapsed(c => !c)} className="text-gray-400 hover:text-white text-xs">
           {collapsed ? "▶" : "▼"}
         </button>
-        <span className={`text-sm font-medium ${textColor(category)}`}>{category}</span>
+        <span className={`text-xs font-medium ${textColor(category)}`}>{category}</span>
         <span className="text-xs text-gray-500 ml-1">({selectedCount}/{items.length})</span>
         <div className="ml-auto flex gap-2">
-          <button
-            onClick={() => onSelectGroup(tagNames)}
-            className="text-xs text-blue-400 hover:text-blue-300 underline"
-          >
-            All
-          </button>
-          <button
-            onClick={() => onDeselectGroup(tagNames)}
-            className="text-xs text-gray-400 hover:text-gray-300 underline"
-          >
-            None
-          </button>
+          <button onClick={() => onSelectGroup(tagNames)} className="text-xs text-blue-400 hover:text-blue-300 underline">All</button>
+          <button onClick={() => onDeselectGroup(tagNames)} className="text-xs text-gray-400 hover:text-gray-300 underline">None</button>
         </div>
       </div>
       {!collapsed && (
@@ -176,7 +158,12 @@ export default function TagResultsChart({
     try { return (localStorage.getItem("tagger_view_mode") as "flat" | "grouped") || "grouped"; }
     catch { return "grouped"; }
   });
+  const [numCols, setNumCols] = useState<1 | 2>(() => {
+    try { return (parseInt(localStorage.getItem("tagger_num_cols") ?? "2") as 1 | 2); }
+    catch { return 2; }
+  });
   useEffect(() => { localStorage.setItem("tagger_view_mode", viewMode); }, [viewMode]);
+  useEffect(() => { localStorage.setItem("tagger_num_cols", String(numCols)); }, [numCols]);
 
   const handleSelectGroup = (tagNames: string[]) => {
     tagNames.forEach(t => { if (!selectedTags.has(t)) onTagToggle(t); });
@@ -202,140 +189,129 @@ export default function TagResultsChart({
     (grouped[t.category] ??= []).push(t);
   }
 
+  const orderedCategories = [
+    ...CATEGORY_ORDER.filter(c => c !== "Quality" && c !== "Rating" && grouped[c]?.length > 0),
+    ...Object.keys(grouped).filter(c => !CATEGORY_ORDER.includes(c)),
+  ];
+
   return (
     <div className="space-y-1">
-      {/* Legend */}
-      <div className="flex flex-wrap gap-x-4 gap-y-1 px-2 pb-1">
-        {CATEGORY_ORDER.filter(c => CATEGORY_TEXT_COLOR[c]).map((cat) => (
-          <span key={cat} className={`text-xs ${textColor(cat)}`}>● {cat}</span>
-        ))}
-      </div>
-
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-2 pb-1">
+      <div className="flex items-center gap-3 px-2 pb-1 flex-wrap">
         <button onClick={onSelectAll} className="text-xs text-blue-400 hover:text-blue-300 underline">
           Select all
         </button>
         <button onClick={onDeselectAll} className="text-xs text-gray-400 hover:text-gray-300 underline">
           Deselect all
         </button>
-        <span className="text-xs text-gray-500 ml-auto mr-2">
+        <span className="text-xs text-gray-500">
           {selectedTags.size} / {totalCount}
         </span>
-        {/* View mode toggle */}
-        <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
-          <button
-            onClick={() => setViewMode("flat")}
-            className={`px-2 py-0.5 ${viewMode === "flat" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
-          >
-            Flat
-          </button>
-          <button
-            onClick={() => setViewMode("grouped")}
-            className={`px-2 py-0.5 ${viewMode === "grouped" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
-          >
-            Grouped
-          </button>
+        <div className="ml-auto flex gap-1">
+          {/* View mode */}
+          <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
+            <button
+              onClick={() => setViewMode("flat")}
+              className={`px-2 py-0.5 ${viewMode === "flat" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+            >
+              Flat
+            </button>
+            <button
+              onClick={() => setViewMode("grouped")}
+              className={`px-2 py-0.5 ${viewMode === "grouped" ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+            >
+              Grouped
+            </button>
+          </div>
+          {/* Column toggle */}
+          <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
+            <button
+              onClick={() => setNumCols(1)}
+              className={`px-2 py-0.5 ${numCols === 1 ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+              title="1 column"
+            >
+              ▌
+            </button>
+            <button
+              onClick={() => setNumCols(2)}
+              className={`px-2 py-0.5 ${numCols === 2 ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+              title="2 columns"
+            >
+              ▌▌
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Pinned: Quality & Rating (always shown) */}
-      {pinnedItems.length > 0 && viewMode === "flat" && (
-        <div className="border border-gray-700 rounded p-1 mb-1">
-          <p className="text-xs text-gray-500 px-2 pb-0.5">Quality / Rating (always shown)</p>
-          {pinnedItems.map((item) => (
-            <BarRow
-              key={item.tag}
-              tag={item.tag}
-              prob={item.prob}
-              category={item.category}
-              selected={selectedTags.has(item.tag)}
-              onToggle={onTagToggle}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Threshold separator (flat mode only) */}
-      {viewMode === "flat" && tags.length > 0 && (
-        <div className="flex items-center gap-2 px-2 py-0.5">
-          <div className="h-px flex-1 bg-yellow-600 opacity-60" />
-          <span className="text-xs text-yellow-600">threshold {threshold.toFixed(2)}</span>
-          <div className="h-px flex-1 bg-yellow-600 opacity-60" />
-        </div>
-      )}
-
       {/* Flat view */}
       {viewMode === "flat" && (
-        <div className="space-y-0.5">
-          {tags.map((item) => (
-            <BarRow
-              key={item.tag}
-              tag={item.tag}
-              prob={item.prob}
-              category={item.category}
-              selected={selectedTags.has(item.tag)}
-              onToggle={onTagToggle}
-            />
-          ))}
-        </div>
+        <>
+          {pinnedItems.length > 0 && (
+            <div className="border border-gray-700 rounded p-1 mb-1">
+              <p className="text-xs text-gray-500 px-2 pb-0.5">Quality / Rating</p>
+              {pinnedItems.map((item) => (
+                <BarRow key={item.tag} tag={item.tag} prob={item.prob} category={item.category}
+                  selected={selectedTags.has(item.tag)} onToggle={onTagToggle} />
+              ))}
+            </div>
+          )}
+          <div className="flex items-center gap-2 px-2 py-0.5">
+            <div className="h-px flex-1 bg-yellow-600 opacity-60" />
+            <span className="text-xs text-yellow-600">threshold {threshold.toFixed(2)}</span>
+            <div className="h-px flex-1 bg-yellow-600 opacity-60" />
+          </div>
+          {numCols === 1 ? (
+            <div className="space-y-0.5">
+              {tags.map(item => (
+                <BarRow key={item.tag} tag={item.tag} prob={item.prob} category={item.category}
+                  selected={selectedTags.has(item.tag)} onToggle={onTagToggle} />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-x-2">
+              {[tags.slice(0, Math.ceil(tags.length / 2)), tags.slice(Math.ceil(tags.length / 2))].map((half, ci) => (
+                <div key={ci} className="space-y-0.5 min-w-0">
+                  {half.map(item => (
+                    <BarRow key={item.tag} tag={item.tag} prob={item.prob} category={item.category}
+                      selected={selectedTags.has(item.tag)} onToggle={onTagToggle} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {/* Grouped view */}
       {viewMode === "grouped" && (
-        <div>
-          {/* Quality / Rating in their own groups */}
+        <>
+          {/* Quality / Rating always single row */}
           {pinnedItems.length > 0 && (
-            <>
+            <div className={numCols === 2 ? "grid grid-cols-2 gap-2" : ""}>
               {qualityTop && (
-                <CategoryGroup
-                  category="Quality"
-                  items={[qualityTop]}
-                  selectedTags={selectedTags}
-                  onToggle={onTagToggle}
-                  onSelectGroup={handleSelectGroup}
-                  onDeselectGroup={handleDeselectGroup}
-                />
+                <CategoryGroup category="Quality" items={[qualityTop]} selectedTags={selectedTags}
+                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
               )}
               {ratingTop && (
-                <CategoryGroup
-                  category="Rating"
-                  items={[ratingTop]}
-                  selectedTags={selectedTags}
-                  onToggle={onTagToggle}
-                  onSelectGroup={handleSelectGroup}
-                  onDeselectGroup={handleDeselectGroup}
-                />
+                <CategoryGroup category="Rating" items={[ratingTop]} selectedTags={selectedTags}
+                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
               )}
-            </>
+            </div>
           )}
-          {/* Other categories in order */}
-          {CATEGORY_ORDER.filter(c => c !== "Quality" && c !== "Rating" && grouped[c]?.length > 0).map(cat => (
-            <CategoryGroup
-              key={cat}
-              category={cat}
-              items={grouped[cat]}
-              selectedTags={selectedTags}
-              onToggle={onTagToggle}
-              onSelectGroup={handleSelectGroup}
-              onDeselectGroup={handleDeselectGroup}
-            />
-          ))}
-          {/* Any unlisted categories */}
-          {Object.keys(grouped)
-            .filter(c => !CATEGORY_ORDER.includes(c))
-            .map(cat => (
-              <CategoryGroup
-                key={cat}
-                category={cat}
-                items={grouped[cat]}
-                selectedTags={selectedTags}
-                onToggle={onTagToggle}
-                onSelectGroup={handleSelectGroup}
-                onDeselectGroup={handleDeselectGroup}
-              />
-            ))}
-        </div>
+          {numCols === 1 ? (
+            orderedCategories.map(cat => (
+              <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
+                onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
+            ))
+          ) : (
+            <div className="grid grid-cols-2 gap-x-2 items-start">
+              {orderedCategories.map(cat => (
+                <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
+                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );

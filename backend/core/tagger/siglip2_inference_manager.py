@@ -479,12 +479,13 @@ class SigLIP2InferenceManager:
             _use_autocast = (
                 self.device.startswith("cuda")
                 and torch.cuda.is_available()
-                and torch.cuda.is_bf16_supported()
+                and getattr(torch.cuda, "is_bf16_supported", lambda: False)()
             )
             with torch.no_grad():
                 if _use_autocast:
                     with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
                         logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
+                    logits = logits.float()  # bf16 → float32; numpy does not support bf16
                 else:
                     logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
             if (

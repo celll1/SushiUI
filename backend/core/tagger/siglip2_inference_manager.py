@@ -1017,6 +1017,20 @@ class SigLIP2InferenceManager:
         with open(_onnx_meta_path, "w", encoding="utf-8") as _fh:
             json.dump(_onnx_meta, _fh, ensure_ascii=False, indent=2)
 
+        # Copy companion files (_ood_ref.npz, _tag_metrics.npz) from the source
+        # checkpoint directory to the ONNX output directory so the ONNX model
+        # can use OOD detection and calibrated thresholds without the original
+        # safetensors checkpoint.
+        _onnx_stem  = os.path.splitext(output_path)[0]           # …/onnx/step_N
+        _ckpt_dir   = os.path.dirname(self.checkpoint_path)
+        _ckpt_base  = os.path.splitext(os.path.basename(self.checkpoint_path))[0]
+        for _suffix in ("_ood_ref.npz", "_tag_metrics.npz"):
+            _src = os.path.join(_ckpt_dir, _ckpt_base + _suffix)
+            if os.path.isfile(_src):
+                _dst = _onnx_stem + _suffix
+                shutil.copy2(_src, _dst)
+                print(f"[SigLIP2Manager] Copied {os.path.basename(_src)} → {_dst}")
+
         print(f"[SigLIP2Manager] ONNX exported → {output_path}")
         print(f"[SigLIP2Manager] Vocabulary  → {vocab_out}")
         print(f"[SigLIP2Manager] Metadata    → {_onnx_meta_path}")

@@ -79,7 +79,7 @@ class OodEmbeddingAccumulator:
 
         # Compute per-sample Mahalanobis distances for percentile thresholds
         diffs = E - mu  # (N, D)
-        dists = np.sqrt(np.maximum(0.0, np.einsum("nd,dd,nd->n", diffs, cov_inv, diffs)))
+        dists = np.sqrt(np.maximum(0.0, np.einsum("nd,de,ne->n", diffs, cov_inv, diffs)))
         p50 = float(np.percentile(dists, 50))
         p95 = float(np.percentile(dists, 95))
 

@@ -337,15 +337,30 @@ export default function TagResultsChart({
                 onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
                 displayProb={displayProb} />
             ))
-          ) : (
-            <div className="grid grid-cols-2 gap-x-2 items-start">
-              {orderedCategories.map(cat => (
-                <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
-                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
-                  displayProb={displayProb} />
-              ))}
-            </div>
-          )}
+          ) : (() => {
+            // Greedy bin-packing: assign each category to the shorter column
+            const cols: string[][] = [[], []];
+            const heights = [0, 0];
+            for (const cat of orderedCategories) {
+              const h = grouped[cat]?.length ?? 0;
+              const idx = heights[0] <= heights[1] ? 0 : 1;
+              cols[idx].push(cat);
+              heights[idx] += h + 2; // +2 for group header overhead
+            }
+            return (
+              <div className="grid grid-cols-2 gap-x-2 items-start">
+                {[0, 1].map(ci => (
+                  <div key={ci} className="min-w-0">
+                    {cols[ci].map(cat => (
+                      <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
+                        onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                        displayProb={displayProb} />
+                    ))}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </>
       )}
     </div>

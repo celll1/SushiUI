@@ -93,12 +93,14 @@ interface CategoryGroupProps {
   onSelectGroup: (tags: string[]) => void;
   onDeselectGroup: (tags: string[]) => void;
   displayProb: (item: SigLIP2TagResult) => number;
+  innerCols?: 1 | 2;
 }
 
-function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup, onDeselectGroup, displayProb }: CategoryGroupProps) {
+function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup, onDeselectGroup, displayProb, innerCols = 1 }: CategoryGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const tagNames = items.map(t => t.tag);
   const selectedCount = tagNames.filter(t => selectedTags.has(t)).length;
+  const useTwoCols = innerCols === 2 && items.length > 5;
 
   return (
     <div className="border border-gray-700 rounded mb-2">
@@ -114,7 +116,7 @@ function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup,
         </div>
       </div>
       {!collapsed && (
-        <div className="p-1 space-y-0.5">
+        <div className={`p-1 ${useTwoCols ? "grid grid-cols-2 gap-x-1" : "space-y-0.5"}`}>
           {items.map(item => (
             <BarRow
               key={item.tag}
@@ -316,7 +318,7 @@ export default function TagResultsChart({
       {/* Grouped view */}
       {viewMode === "grouped" && (
         <>
-          {/* Quality / Rating always single row */}
+          {/* Quality / Rating always side-by-side */}
           {pinnedItems.length > 0 && (
             <div className={numCols === 2 ? "grid grid-cols-2 gap-2" : ""}>
               {qualityTop && (
@@ -331,36 +333,13 @@ export default function TagResultsChart({
               )}
             </div>
           )}
-          {numCols === 1 ? (
-            orderedCategories.map(cat => (
-              <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
-                onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
-                displayProb={displayProb} />
-            ))
-          ) : (() => {
-            // Greedy bin-packing: assign each category to the shorter column
-            const cols: string[][] = [[], []];
-            const heights = [0, 0];
-            for (const cat of orderedCategories) {
-              const h = grouped[cat]?.length ?? 0;
-              const idx = heights[0] <= heights[1] ? 0 : 1;
-              cols[idx].push(cat);
-              heights[idx] += h + 2; // +2 for group header overhead
-            }
-            return (
-              <div className="grid grid-cols-2 gap-x-2 items-start">
-                {[0, 1].map(ci => (
-                  <div key={ci} className="min-w-0">
-                    {cols[ci].map(cat => (
-                      <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
-                        onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
-                        displayProb={displayProb} />
-                    ))}
-                  </div>
-                ))}
-              </div>
-            );
-          })()}
+          {/* In 2-col mode: single column of groups, but each group's bars render in 2 sub-columns.
+              This avoids dead space caused by uneven category sizes. */}
+          {orderedCategories.map(cat => (
+            <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
+              onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+              displayProb={displayProb} innerCols={numCols} />
+          ))}
         </>
       )}
     </div>

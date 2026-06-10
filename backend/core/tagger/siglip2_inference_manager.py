@@ -580,10 +580,11 @@ class SigLIP2InferenceManager:
         if ood_distance is not None and self.ood_ref is not None:
             _p50 = float(self.ood_ref["p50"])
             _p95 = float(self.ood_ref["p95"])
-            # Linear ramp: 0 at p50 (in-dist median), 1 at p95 (in-dist 95th pct).
-            # Beyond p95 the image is clearly outside the training distribution.
-            _span = max(_p95 - _p50, 1e-6)
-            _ood_t = max(0.0, min(1.0, (ood_distance - _p50) / _span))
+            # Ramp: 0 for dist <= p95 (images in the in-dist tail get no penalty),
+            # rising to 1 at dist = p95 + 2*(p95-p50).  This avoids penalising
+            # borderline in-dist images (p50 < dist <= p95, the top-5% tail).
+            _tail = max(_p95 - _p50, 1e-6)
+            _ood_t = max(0.0, min(1.0, (ood_distance - _p95) / (2.0 * _tail)))
 
         _used_best_thr = False
         if use_per_tag_threshold and self.tag_metrics is not None:

@@ -38,17 +38,23 @@ function OodBadge({ distance, p50, p95 }: { distance: number; p50: number | null
   let label = `${distance.toFixed(2)}`;
   let cls = "bg-gray-700 text-gray-300";
   if (p50 != null && p95 != null) {
-    if (distance <= p50) {
+    const tail = Math.max(p95 - p50, 1e-6);
+    const fullOodBoundary = p95 + 2 * tail;
+    if (distance <= p95) {
+      // No OOD correction applied
       cls = "bg-green-900 text-green-300 border border-green-700";
       label += " In-dist";
-    } else if (distance <= p95) {
+    } else if (distance <= fullOodBoundary) {
+      // Ramp zone: correction gradually increases
+      const t = (distance - p95) / (2 * tail);
       cls = "bg-yellow-900 text-yellow-300 border border-yellow-700";
-      label += " Borderline";
+      label += ` OOD~ (${(t * 100).toFixed(0)}%)`;
     } else {
+      // Full OOD correction
       cls = "bg-orange-900 text-orange-300 border border-orange-700";
       label += " OOD ⚠";
     }
-    label += ` (p50=${p50.toFixed(1)}, p95=${p95.toFixed(1)})`;
+    label += ` (p95=${p95.toFixed(1)})`;
   }
   return (
     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-mono ${cls}`}>

@@ -100,7 +100,7 @@ function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup,
   const [collapsed, setCollapsed] = useState(false);
   const tagNames = items.map(t => t.tag);
   const selectedCount = tagNames.filter(t => selectedTags.has(t)).length;
-  const useTwoCols = innerCols === 2 && items.length > 5;
+  const useTwoCols = innerCols === 2 && items.length > 3;
 
   return (
     <div className="border border-gray-700 rounded mb-2">

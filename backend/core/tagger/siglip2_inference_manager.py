@@ -472,8 +472,21 @@ class SigLIP2InferenceManager:
             else:
                 pixel_attn_mask = torch.zeros(0, dtype=torch.int32, device=self.device)
                 spatial_shapes  = torch.zeros(0, dtype=torch.int64, device=self.device)
+            # Run in bf16 autocast to match training AMP precision — the OOD
+            # reference was built from bf16 embeddings captured during training.
+            # Without autocast, float32 activations differ systematically from
+            # the bf16 reference distribution, shifting Mahalanobis distances.
+            _use_autocast = (
+                self.device.startswith("cuda")
+                and torch.cuda.is_available()
+                and torch.cuda.is_bf16_supported()
+            )
             with torch.no_grad():
-                logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
+                if _use_autocast:
+                    with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
+                else:
+                    logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
             if (
                 use_ood_detection
                 and self.ood_ref is not None
@@ -565,8 +578,11 @@ class SigLIP2InferenceManager:
         _ood_t: float = 0.0
         if ood_distance is not None and self.ood_ref is not None:
             _p50 = float(self.ood_ref["p50"])
-            # Linear ramp: 0 at in-dist p50, 1 at p50*40 (well below OOD median ~1143)
-            _ood_t = max(0.0, min(1.0, (ood_distance - _p50) / (_p50 * 39.0)))
+            _p95 = float(self.ood_ref["p95"])
+            # Linear ramp: 0 at p50 (in-dist median), 1 at p95 (in-dist 95th pct).
+            # Beyond p95 the image is clearly outside the training distribution.
+            _span = max(_p95 - _p50, 1e-6)
+            _ood_t = max(0.0, min(1.0, (ood_distance - _p50) / _span))
 
         _used_best_thr = False
         if use_per_tag_threshold and self.tag_metrics is not None:

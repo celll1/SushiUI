@@ -94,6 +94,9 @@ class SigLIP2InferenceManager:
         # ood_emb_session: ORT session for modified ONNX with embedding output
         self.ood_ref: Optional[Dict[str, Any]] = None
         self.ood_emb_session = None
+        # PyTorch path: forward_pre_hook on model.head captures the CLS embedding.
+        self._last_cls_emb: Optional["np.ndarray"] = None
+        self._cls_emb_hook_handle = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -323,17 +326,29 @@ class SigLIP2InferenceManager:
                     self.tag_metrics = None
 
         # 9. OOD reference (optional, built by build_ood_reference()).
-        # File: {onnx_base}_ood_ref.npz alongside the ONNX checkpoint.
+        # File: {checkpoint_base}_ood_ref.npz alongside the checkpoint.
         self.ood_ref = None
         self.ood_emb_session = None
-        if checkpoint_path.endswith(".onnx"):
-            _ood_ref_path = os.path.splitext(checkpoint_path)[0] + "_ood_ref.npz"
-            if os.path.isfile(_ood_ref_path):
-                try:
-                    self._load_ood_reference(_ood_ref_path)
-                    print(f"[SigLIP2Manager] OOD reference loaded from {_ood_ref_path}")
-                except Exception as _e:
-                    print(f"[SigLIP2Manager] WARNING: OOD reference load failed: {_e}")
+        self._last_cls_emb = None
+        self._cls_emb_hook_handle = None
+        _ood_ref_path = os.path.join(_ckpt_dir, f"{_ckpt_base}_ood_ref.npz")
+        if os.path.isfile(_ood_ref_path):
+            try:
+                self._load_ood_reference(_ood_ref_path)
+                print(f"[SigLIP2Manager] OOD reference loaded from {_ood_ref_path}")
+            except Exception as _e:
+                print(f"[SigLIP2Manager] WARNING: OOD reference load failed: {_e}")
+        if not checkpoint_path.endswith(".onnx") and self.ood_ref is not None and self.model is not None:
+            # Register a persistent forward_pre_hook on the classification head to
+            # capture the CLS embedding (head input) for Mahalanobis distance computation.
+            def _capture_cls_emb(module, args):
+                import numpy as np
+                # args[0]: [1, pool_dim] or [pool_dim] tensor
+                emb = args[0].detach().float().cpu()
+                if emb.dim() > 1:
+                    emb = emb[0]
+                self._last_cls_emb = emb.numpy()
+            self._cls_emb_hook_handle = self.model.head.register_forward_pre_hook(_capture_cls_emb)
 
         print(
             f"[SigLIP2Manager] Loaded {model_type} model | "
@@ -459,6 +474,12 @@ class SigLIP2InferenceManager:
                 spatial_shapes  = torch.zeros(0, dtype=torch.int64, device=self.device)
             with torch.no_grad():
                 logits = self.model(pixel_values, pixel_attn_mask, spatial_shapes)
+            if (
+                use_ood_detection
+                and self.ood_ref is not None
+                and self._last_cls_emb is not None
+            ):
+                ood_distance = float(self._compute_mahalanobis(self._last_cls_emb))
             _logits = logits[0]
             if self.logit_bias is not None:
                 _logits = _logits - torch.from_numpy(self.logit_bias).to(_logits.device)
@@ -1009,6 +1030,10 @@ class SigLIP2InferenceManager:
             del self.ood_emb_session
             self.ood_emb_session = None
         self.ood_ref = None
+        if self._cls_emb_hook_handle is not None:
+            self._cls_emb_hook_handle.remove()
+            self._cls_emb_hook_handle = None
+        self._last_cls_emb = None
         print("[SigLIP2Manager] Model unloaded.")
 
     # ------------------------------------------------------------------

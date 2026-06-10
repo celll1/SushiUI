@@ -145,7 +145,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
   };
 
   const [inferMode,         setInferMode]         = useState<"best_thr" | "fixed">("fixed");
-  const [displayCalibrated, setDisplayCalibrated] = useState(false);
+
   const [minBestThr,        setMinBestThr]        = useState(0.30);
   const [minBestF1,         setMinBestF1]         = useState(0.05);
   const [calibMethod,       setCalibMethod]       = useState<"jeffreys" | "beta_bb">("jeffreys");
@@ -218,7 +218,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
         use_per_tag_threshold: inferMode === "best_thr" && hasTagMetrics,
         min_best_thr: minBestThr,
         min_best_f1: minBestF1,
-        display_calibration: displayCalibrated && hasTagMetrics,
+        display_calibration: false,   // cal_prob now always included in response
         use_calibration: inferMode === "fixed" && useCalibration && hasTagMetrics,
         use_ood_detection: useOodDetection && hasOodReference && inferMode === "best_thr",
       });
@@ -621,16 +621,8 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
                   </div>
                 )}
 
-                {/* Display calibration + misc toggles */}
+                {/* Misc toggles */}
                 <div className="flex flex-col gap-1.5">
-                  {hasTagMetrics && (
-                    <label className="flex items-center gap-1.5 cursor-pointer select-none">
-                      <input type="checkbox" checked={displayCalibrated}
-                        onChange={(e) => setDisplayCalibrated(e.target.checked)}
-                        className="w-3 h-3 rounded accent-blue-500" />
-                      <span className="text-xs text-gray-400">確率表示: 校正後</span>
-                    </label>
-                  )}
                   <label className="flex items-center gap-1.5 cursor-pointer select-none"
                     title="Use the currently-training model for inference.">
                     <input type="checkbox" checked={useTrainingModel}
@@ -714,6 +706,7 @@ export default function InferencePanel({ modelLoaded }: InferencePanelProps) {
               onTagToggle={handleTagToggle}
               onSelectAll={handleSelectAll}
               onDeselectAll={handleDeselectAll}
+              hasCalibration={result.has_calibration === true}
             />
           </div>
         )}

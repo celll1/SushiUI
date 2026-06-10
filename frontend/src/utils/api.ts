@@ -1140,8 +1140,9 @@ export interface SigLIP2LoadRequest {
 
 export interface SigLIP2TagResult {
   tag: string;
-  prob: number;         // display prob (calibrated when display_calibration=true)
-  raw_prob?: number;    // raw sigmoid prob (always present when use_per_tag_threshold)
+  prob: number;          // raw sigmoid probability (always)
+  raw_prob?: number;     // alias for prob (backward compat)
+  cal_prob?: number;     // Jeffreys-calibrated probability (present when calibration table available)
   category: string;
 }
 
@@ -1153,7 +1154,7 @@ export interface SigLIP2PredictResponse {
   source?: string;
   run_id?: string;
   calibrated?: boolean;
-  display_calibrated?: boolean; // true when display_calibration was applied
+  has_calibration?: boolean;    // true when cal_prob fields are present in results
   used_best_thr?: boolean;      // true when per-tag best_thr was used
   ood_distance?: number | null; // Mahalanobis distance (null when OOD detection not used)
 }

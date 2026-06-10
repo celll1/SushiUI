@@ -92,9 +92,10 @@ interface CategoryGroupProps {
   onToggle: (tag: string) => void;
   onSelectGroup: (tags: string[]) => void;
   onDeselectGroup: (tags: string[]) => void;
+  displayProb: (item: SigLIP2TagResult) => number;
 }
 
-function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup, onDeselectGroup }: CategoryGroupProps) {
+function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup, onDeselectGroup, displayProb }: CategoryGroupProps) {
   const [collapsed, setCollapsed] = useState(false);
   const tagNames = items.map(t => t.tag);
   const selectedCount = tagNames.filter(t => selectedTags.has(t)).length;
@@ -118,7 +119,7 @@ function CategoryGroup({ category, items, selectedTags, onToggle, onSelectGroup,
             <BarRow
               key={item.tag}
               tag={item.tag}
-              prob={item.prob}
+              prob={displayProb(item)}
               category={item.category}
               selected={selectedTags.has(item.tag)}
               onToggle={onToggle}
@@ -142,6 +143,7 @@ export interface TagResultsChartProps {
   onTagToggle: (tag: string) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
+  hasCalibration?: boolean;
 }
 
 export default function TagResultsChart({
@@ -153,6 +155,7 @@ export default function TagResultsChart({
   onTagToggle,
   onSelectAll,
   onDeselectAll,
+  hasCalibration = false,
 }: TagResultsChartProps) {
   const [viewMode, setViewMode] = useState<"flat" | "grouped">(() => {
     try { return (localStorage.getItem("tagger_view_mode") as "flat" | "grouped") || "grouped"; }
@@ -162,8 +165,17 @@ export default function TagResultsChart({
     try { return (parseInt(localStorage.getItem("tagger_num_cols") ?? "2") as 1 | 2); }
     catch { return 2; }
   });
+  const [showCal, setShowCal] = useState<boolean>(() => {
+    try { return localStorage.getItem("tagger_show_cal") === "1"; }
+    catch { return false; }
+  });
   useEffect(() => { localStorage.setItem("tagger_view_mode", viewMode); }, [viewMode]);
   useEffect(() => { localStorage.setItem("tagger_num_cols", String(numCols)); }, [numCols]);
+  useEffect(() => { localStorage.setItem("tagger_show_cal", showCal ? "1" : "0"); }, [showCal]);
+
+  // Resolve display probability: cal_prob when showCal and available, else prob
+  const displayProb = (item: SigLIP2TagResult) =>
+    showCal && item.cal_prob != null ? item.cal_prob : item.prob;
 
   const handleSelectGroup = (tagNames: string[]) => {
     tagNames.forEach(t => { if (!selectedTags.has(t)) onTagToggle(t); });
@@ -208,6 +220,25 @@ export default function TagResultsChart({
           {selectedTags.size} / {totalCount}
         </span>
         <div className="ml-auto flex gap-1">
+          {/* Raw / Cal toggle (only when calibration is available) */}
+          {hasCalibration && (
+            <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
+              <button
+                onClick={() => setShowCal(false)}
+                className={`px-2 py-0.5 ${!showCal ? "bg-gray-600 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                title="Raw sigmoid probabilities"
+              >
+                Raw
+              </button>
+              <button
+                onClick={() => setShowCal(true)}
+                className={`px-2 py-0.5 ${showCal ? "bg-blue-700 text-white" : "text-gray-400 hover:bg-gray-700"}`}
+                title="Jeffreys-calibrated probabilities"
+              >
+                Cal
+              </button>
+            </div>
+          )}
           {/* View mode */}
           <div className="flex rounded overflow-hidden border border-gray-600 text-xs">
             <button
@@ -250,7 +281,7 @@ export default function TagResultsChart({
             <div className="border border-gray-700 rounded p-1 mb-1">
               <p className="text-xs text-gray-500 px-2 pb-0.5">Quality / Rating</p>
               {pinnedItems.map((item) => (
-                <BarRow key={item.tag} tag={item.tag} prob={item.prob} category={item.category}
+                <BarRow key={item.tag} tag={item.tag} prob={displayProb(item)} category={item.category}
                   selected={selectedTags.has(item.tag)} onToggle={onTagToggle} />
               ))}
             </div>
@@ -263,7 +294,7 @@ export default function TagResultsChart({
           {numCols === 1 ? (
             <div className="space-y-0.5">
               {tags.map(item => (
-                <BarRow key={item.tag} tag={item.tag} prob={item.prob} category={item.category}
+                <BarRow key={item.tag} tag={item.tag} prob={displayProb(item)} category={item.category}
                   selected={selectedTags.has(item.tag)} onToggle={onTagToggle} />
               ))}
             </div>
@@ -272,7 +303,7 @@ export default function TagResultsChart({
               {[tags.slice(0, Math.ceil(tags.length / 2)), tags.slice(Math.ceil(tags.length / 2))].map((half, ci) => (
                 <div key={ci} className="space-y-0.5 min-w-0">
                   {half.map(item => (
-                    <BarRow key={item.tag} tag={item.tag} prob={item.prob} category={item.category}
+                    <BarRow key={item.tag} tag={item.tag} prob={displayProb(item)} category={item.category}
                       selected={selectedTags.has(item.tag)} onToggle={onTagToggle} />
                   ))}
                 </div>
@@ -290,24 +321,28 @@ export default function TagResultsChart({
             <div className={numCols === 2 ? "grid grid-cols-2 gap-2" : ""}>
               {qualityTop && (
                 <CategoryGroup category="Quality" items={[qualityTop]} selectedTags={selectedTags}
-                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
+                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                  displayProb={displayProb} />
               )}
               {ratingTop && (
                 <CategoryGroup category="Rating" items={[ratingTop]} selectedTags={selectedTags}
-                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
+                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                  displayProb={displayProb} />
               )}
             </div>
           )}
           {numCols === 1 ? (
             orderedCategories.map(cat => (
               <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
-                onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
+                onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                displayProb={displayProb} />
             ))
           ) : (
             <div className="grid grid-cols-2 gap-x-2 items-start">
               {orderedCategories.map(cat => (
                 <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
-                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup} />
+                  onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                  displayProb={displayProb} />
               ))}
             </div>
           )}

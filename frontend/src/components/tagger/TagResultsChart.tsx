@@ -333,13 +333,40 @@ export default function TagResultsChart({
               )}
             </div>
           )}
-          {/* In 2-col mode: single column of groups, but each group's bars render in 2 sub-columns.
-              This avoids dead space caused by uneven category sizes. */}
-          {orderedCategories.map(cat => (
-            <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
-              onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
-              displayProb={displayProb} innerCols={numCols} />
-          ))}
+          {/* Render categories: small groups (≤3 tags) are paired side-by-side;
+              large groups span full width with inner 2-cols when numCols=2. */}
+          {(() => {
+            const SMALL = 3;
+            const rows: React.ReactNode[] = [];
+            let i = 0;
+            while (i < orderedCategories.length) {
+              const cat = orderedCategories[i];
+              const isSmall = (grouped[cat]?.length ?? 0) <= SMALL;
+              const nextCat = orderedCategories[i + 1];
+              const nextSmall = nextCat !== undefined && (grouped[nextCat]?.length ?? 0) <= SMALL;
+              if (isSmall && nextSmall) {
+                rows.push(
+                  <div key={`pair-${i}`} className="grid grid-cols-2 gap-x-2">
+                    <CategoryGroup category={cat} items={grouped[cat]} selectedTags={selectedTags}
+                      onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                      displayProb={displayProb} />
+                    <CategoryGroup category={nextCat} items={grouped[nextCat]} selectedTags={selectedTags}
+                      onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                      displayProb={displayProb} />
+                  </div>
+                );
+                i += 2;
+              } else {
+                rows.push(
+                  <CategoryGroup key={cat} category={cat} items={grouped[cat]} selectedTags={selectedTags}
+                    onToggle={onTagToggle} onSelectGroup={handleSelectGroup} onDeselectGroup={handleDeselectGroup}
+                    displayProb={displayProb} innerCols={isSmall ? 1 : numCols} />
+                );
+                i++;
+              }
+            }
+            return rows;
+          })()}
         </>
       )}
     </div>

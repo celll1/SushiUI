@@ -366,13 +366,14 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "hard_rate_hi": 0.75,
     # Online Danbooru augmentation
     "enable_danbooru_augmentation": False,
-    "danbooru_tags": "",              # newline-separated tag queries (one per line)
-    "danbooru_max_inject_per_batch": 1,
+    "danbooru_tags": "",              # newline-separated queries (use !tag or -tag to exclude)
+    "danbooru_injection_interval": 4, # interrupt-batch every N base steps
+    "danbooru_injection_batch_size_ratio": 1.0,  # 1.0 = full batch, 0.5 = half, etc.
     "danbooru_min_score": 0,
     "danbooru_max_posts_per_query": 200,
     "danbooru_api_interval": 1.4,
     "danbooru_dl_speed_kbps": 500,
-    "danbooru_buffer_size": 32,
+    "danbooru_buffer_size": None,     # None → auto (2 × batch_size)
     "danbooru_vocab_expand": False,
     "danbooru_new_tag_min_count": 200,
     "danbooru_new_tag_lookback_days": 90,

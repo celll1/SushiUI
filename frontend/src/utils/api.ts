@@ -2622,12 +2622,13 @@ export interface TaggerTrainingRunCreateRequest {
   // Online Danbooru augmentation
   enable_danbooru_augmentation?: boolean;
   danbooru_tags?: string;
-  danbooru_max_inject_per_batch?: number;
+  danbooru_injection_interval?: number;
+  danbooru_injection_batch_size_ratio?: number;
   danbooru_min_score?: number;
   danbooru_max_posts_per_query?: number;
   danbooru_api_interval?: number;
   danbooru_dl_speed_kbps?: number;
-  danbooru_buffer_size?: number;
+  danbooru_buffer_size?: number | null;
   danbooru_vocab_expand?: boolean;
   danbooru_new_tag_min_count?: number;
   danbooru_new_tag_lookback_days?: number;
@@ -2699,6 +2700,38 @@ export const stopTaggerTrainingRun = async (
 
 export const deleteTaggerTrainingRun = async (runId: string): Promise<void> => {
   await api.delete(`/tagger-training/runs/${runId}`);
+};
+
+export interface DanbooruRecentPost {
+  post_id: number;
+  tags: string[];
+  tag_count: number;
+  timestamp: number;
+}
+
+export interface DanbooruTopTag {
+  tag: string;
+  count: number;
+}
+
+export interface DanbooruAugmentationMetrics {
+  enabled: boolean;
+  total_collected?: number;
+  total_injected_batches?: number;
+  buffer_starvation_count?: number;
+  buffer_capacity?: number;
+  buffer_current?: number;
+  unique_tags_seen?: number;
+  top_tags?: DanbooruTopTag[];
+  recent_posts?: DanbooruRecentPost[];
+  error?: string;
+}
+
+export const getTaggerDanbooruMetrics = async (
+  runId: string,
+): Promise<DanbooruAugmentationMetrics> => {
+  const response = await api.get(`/tagger-training/runs/${runId}/danbooru-metrics`);
+  return response.data;
 };
 
 export const getTaggerTrainingMetrics = async (

@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 import os
 import sys
+import json
 import subprocess
 from PIL import Image
 import io
@@ -8143,13 +8144,14 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     train_f1_buffer_batches:                 int   = 16
     # Online Danbooru augmentation
     enable_danbooru_augmentation: bool = False
-    danbooru_tags: Optional[str] = None        # newline-separated tag queries
-    danbooru_max_inject_per_batch: int = 1
+    danbooru_tags: Optional[str] = None        # newline-separated; use !tag or -tag to exclude
+    danbooru_injection_interval: int = 4       # interrupt-batch every N base steps
+    danbooru_injection_batch_size_ratio: float = 1.0  # 1.0=B, 0.5=B/2, etc.
     danbooru_min_score: int = 0
     danbooru_max_posts_per_query: int = 200
     danbooru_api_interval: float = 1.4
     danbooru_dl_speed_kbps: int = 500
-    danbooru_buffer_size: int = 32
+    danbooru_buffer_size: Optional[int] = None  # None → auto (2 × batch_size)
     danbooru_vocab_expand: bool = False
     danbooru_new_tag_min_count: int = 200
     danbooru_new_tag_lookback_days: int = 90
@@ -8645,6 +8647,34 @@ def delete_tagger_training_run(run_id: str, training_db: Session = Depends(get_t
     training_db.delete(run)
     training_db.commit()
     return {"deleted": run_id}
+
+
+@router.get("/tagger-training/runs/{run_id}/danbooru-metrics")
+def get_tagger_danbooru_metrics(
+    run_id: str,
+    training_db: Session = Depends(get_training_db),
+):
+    """Return Danbooru augmentation metrics for a tagger run.
+
+    Reads ``{output_dir}/danbooru_metrics.json`` written periodically by the
+    trainer (every 10 base steps).  Returns ``enabled=false`` when the file
+    is missing (augmentation disabled or no steps written yet).
+    """
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.output_dir or not os.path.isdir(run.output_dir):
+        return {"enabled": False}
+    path = os.path.join(run.output_dir, "danbooru_metrics.json")
+    if not os.path.isfile(path):
+        return {"enabled": False}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["enabled"] = True
+        return data
+    except Exception as e:
+        return {"enabled": False, "error": str(e)}
 
 
 @router.get("/tagger-training/runs/{run_id}/metrics")

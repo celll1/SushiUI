@@ -6,16 +6,18 @@ and converts them to tensors.  Samples are stored as raw tag lists; labels are
 built at injection time in MixedDataLoader so that vocabulary expansions are
 reflected immediately.
 
-MixedDataLoader wraps a DataLoader and:
-  1. Checks VocabExpander for pending new tags and calls expansion_callback.
-  2. Pads base-loader batch labels/loss_masks to the current vocabulary size.
-     New-tag columns get label=0, loss_mask=1 (genuine negatives).
-  3. Drains up to max_inject_per_batch Danbooru samples, builds their labels
-     using the current vocabulary, and re-collates the combined batch.
+MixedDataLoader wraps a DataLoader and interleaves pure-Danbooru batches:
+  1. Each base batch is yielded as (batch, is_injection=False).
+  2. Every injection_interval base batches, a pure-Danbooru batch of size
+     injection_batch_size is yielded as (batch, is_injection=True) — but
+     only if the buffer has enough samples; otherwise skipped.
+  3. The training loop must skip scheduler.step() and global_step += 1 on
+     injection batches so LR / resume reproducibility match the base loader.
 """
 
 from __future__ import annotations
 
+import collections
 import queue
 import random
 import threading
@@ -137,6 +139,14 @@ class DanbooruSampleBuffer:
         self._stop    = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
+        # Metrics (thread-safe via _metrics_lock)
+        self._metrics_lock = threading.Lock()
+        self._tag_freq: Dict[str, int] = {}
+        self._recent_posts: collections.deque = collections.deque(maxlen=100)
+        self._total_collected = 0
+        self._total_injected_batches = 0
+        self._buffer_starvation = 0
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -162,14 +172,70 @@ class DanbooruSampleBuffer:
         except queue.Empty:
             return None
 
+    def drain_batch(self, n: int) -> Optional[List[Tuple]]:
+        """Return n samples if available, else None (no partial drain).
+
+        Used by the interrupt-batch scheme: only yield a Danbooru batch when
+        we can fill it completely.  If fewer than n samples are buffered, we
+        leave them in the queue and skip this injection slot.
+        """
+        if self._queue.qsize() < n:
+            with self._metrics_lock:
+                self._buffer_starvation += 1
+            return None
+        items = []
+        for _ in range(n):
+            try:
+                items.append(self._queue.get_nowait())
+            except queue.Empty:
+                # Race: someone else drained. Put back what we have.
+                for it in items:
+                    try:
+                        self._queue.put_nowait(it)
+                    except queue.Full:
+                        pass
+                with self._metrics_lock:
+                    self._buffer_starvation += 1
+                return None
+        with self._metrics_lock:
+            self._total_injected_batches += 1
+        return items
+
+    def get_metrics(self) -> Dict[str, Any]:
+        """Return a snapshot of collection metrics (thread-safe)."""
+        with self._metrics_lock:
+            top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
+            return {
+                "total_collected":         self._total_collected,
+                "total_injected_batches":  self._total_injected_batches,
+                "buffer_starvation_count": self._buffer_starvation,
+                "buffer_capacity":         self._buffer_size,
+                "buffer_current":          self._queue.qsize(),
+                "unique_tags_seen":        len(self._tag_freq),
+                "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
+                "recent_posts":            list(self._recent_posts),
+            }
+
     # ------------------------------------------------------------------
     # Worker thread
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _translate_query(q: str) -> str:
+        """Translate convenience prefix '!tag' → Danbooru '-tag' (exclude)."""
+        parts = []
+        for tok in q.split():
+            if tok.startswith("!"):
+                parts.append("-" + tok[1:])
+            else:
+                parts.append(tok)
+        return " ".join(parts)
+
     def _worker(self) -> None:
         query_idx = 0
         while not self._stop.is_set():
-            query = self._tag_queries[query_idx % len(self._tag_queries)]
+            raw_query = self._tag_queries[query_idx % len(self._tag_queries)]
+            query = self._translate_query(raw_query)
             query_idx += 1
 
             try:
@@ -241,6 +307,21 @@ class DanbooruSampleBuffer:
             if new_approved:
                 self._expander.propose(new_approved)
 
+        # Record metrics
+        with self._metrics_lock:
+            self._total_collected += 1
+            for t in raw_tags:
+                nt = normalize_tag(t) if t else ""
+                if nt:
+                    self._tag_freq[nt] = self._tag_freq.get(nt, 0) + 1
+            preview_tags = [normalize_tag(t) for t in raw_tags[:20] if t]
+            self._recent_posts.append({
+                "post_id":    int(post.get("id", 0) or 0),
+                "tags":       preview_tags,
+                "tag_count":  len([t for t in raw_tags if t]),
+                "timestamp":  time.time(),
+            })
+
         return (pixel_values, pixel_attention_mask, spatial_shapes, raw_tags)
 
 
@@ -249,24 +330,36 @@ class DanbooruSampleBuffer:
 # ---------------------------------------------------------------------------
 
 class MixedDataLoader:
-    """DataLoader wrapper that injects Danbooru samples into each batch.
+    """DataLoader wrapper that interleaves pure-Danbooru batches.
 
-    On every batch yielded by the base loader:
-      1. Check VocabExpander for pending new tags; call expansion_callback if any.
-      2. Pad base-loader labels/loss_masks to the current vocabulary size.
-         New tag columns: label=0 (negative), loss_mask=1 (train on negatives).
-      3. Drain up to ``max_inject_per_batch`` items from the buffer, build labels
-         with the current vocabulary, and re-collate the combined batch.
+    The base loader's batches are passed through untouched (only label-padded
+    after vocabulary expansion).  Every ``injection_interval`` base batches,
+    we attempt to drain a full Danbooru batch from the buffer and yield it
+    as an "injection batch".
 
-    Delegates ``.dataset``, ``.num_workers``, ``.batch_size`` to the base loader
-    so the trainer's resume-loader construction works correctly.
+    Yielded items are 2-tuples: ``(batch, is_injection: bool)``.
+
+    The training loop must:
+      - Always do ``optimizer.step()``.
+      - Skip ``scheduler.step()`` and ``global_step += 1`` when is_injection=True.
+      - This way, LR phase remains aligned with the base loader's progress
+        and resume reproducibility is preserved.
+
+    If the buffer cannot supply ``injection_batch_size`` samples, the
+    injection slot is skipped silently (training continues on base batches).
+
+    Delegates ``.dataset``, ``.num_workers``, ``.batch_size`` to the base
+    loader so the trainer's resume-loader construction works correctly.
+    ``__len__`` returns the base loader's length (injection batches are
+    "bonus" updates and don't count toward epoch progress).
     """
 
     def __init__(
         self,
         base_loader: DataLoader,
         buffer: DanbooruSampleBuffer,
-        max_inject_per_batch: int = 1,
+        injection_interval: int = 4,
+        injection_batch_size: Optional[int] = None,
         expander: Any = None,
         expansion_callback: Optional[Callable[[List[str]], None]] = None,
         vocabulary: Optional[TagVocabulary] = None,
@@ -275,7 +368,12 @@ class MixedDataLoader:
     ) -> None:
         self.base_loader          = base_loader
         self._buffer              = buffer
-        self._max_inject          = max_inject_per_batch
+        self._injection_interval  = max(1, int(injection_interval))
+        # Fall back to base_loader.batch_size when not specified
+        if injection_batch_size is None or injection_batch_size <= 0:
+            self._injection_batch_size = int(base_loader.batch_size or 1)
+        else:
+            self._injection_batch_size = int(injection_batch_size)
         self._expander            = expander
         self._expansion_callback  = expansion_callback
         self._vocabulary          = vocabulary
@@ -298,10 +396,29 @@ class MixedDataLoader:
     def __len__(self) -> int:
         return len(self.base_loader)
 
+    def _build_injection_batch(self) -> Optional[Tuple]:
+        """Drain a full Danbooru batch, build labels, and collate. None if
+        buffer is insufficient or all samples failed to collate.
+        """
+        items = self._buffer.drain_batch(self._injection_batch_size)
+        if items is None:
+            return None
+        voc = self._vocabulary if self._vocabulary is not None else self._buffer._vocabulary
+        built = []
+        for (pv_d, pam_d, ss_d, raw_tags) in items:
+            lbl, lm = _build_label_and_mask_standalone(
+                raw_tags, voc,
+                quality_masking_mode=self._quality_masking,
+                alias_resolver=self._alias_resolver,
+            )
+            built.append((pv_d, pam_d, ss_d, lbl, lm))
+        return tagger_collate_fn(built)
+
     def __iter__(self):
+        base_step = 0
         for batch in self.base_loader:
             if batch is None:
-                yield batch
+                yield (None, False)
                 continue
 
             # ① Vocabulary expansion check (training thread)
@@ -320,27 +437,12 @@ class MixedDataLoader:
                     labels     = F.pad(labels,     (0, pad), value=0.0)
                     loss_masks = F.pad(loss_masks, (0, pad), value=1.0)
 
-            # ③ Drain Danbooru buffer and build labels at injection time
-            injections = []
-            for _ in range(self._max_inject):
-                s = self._buffer.get_nowait()
-                if s is None:
-                    break
-                pv_d, pam_d, ss_d, raw_tags = s
-                voc = self._vocabulary if self._vocabulary is not None else self._buffer._vocabulary
-                lbl, lm = _build_label_and_mask_standalone(
-                    raw_tags, voc,
-                    quality_masking_mode=self._quality_masking,
-                    alias_resolver=self._alias_resolver,
-                )
-                injections.append((pv_d, pam_d, ss_d, lbl, lm))
+            yield ((pv, pam, ss, labels, loss_masks), False)
+            base_step += 1
 
-            if not injections:
-                yield (pv, pam, ss, labels, loss_masks)
-                continue
-
-            # ④ Re-collate base items + injections
-            B = pv.shape[0]
-            items = [(pv[i], pam[i], ss[i], labels[i], loss_masks[i]) for i in range(B)]
-            merged = tagger_collate_fn(items + injections)
-            yield merged if merged is not None else (pv, pam, ss, labels, loss_masks)
+            # ③ Interrupt batch: every injection_interval base batches,
+            #    attempt to yield a pure-Danbooru batch.
+            if base_step % self._injection_interval == 0:
+                inj = self._build_injection_batch()
+                if inj is not None:
+                    yield (inj, True)

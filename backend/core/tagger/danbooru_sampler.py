@@ -6,6 +6,15 @@ and converts them to tensors.  Samples are stored as raw tag lists; labels are
 built at injection time in MixedDataLoader so that vocabulary expansions are
 reflected immediately.
 
+When vocabulary expansion is enabled, the buffer also drives *dynamic* queries:
+tags discovered by the surveyor are queried directly so the freshly-grown heads
+receive positive samples.  Within one epoch each dynamic tag is collected at
+most once (tracked by post_id — no tensor caching, so no DRAM growth); a tag
+whose posts are fully collected is skipped for the rest of the epoch.  At each
+epoch boundary MixedDataLoader.__iter__ calls reset_download_cycle() so the next
+epoch collects them again — mirroring the base dataset, which re-reads every
+image once per epoch.
+
 MixedDataLoader wraps a DataLoader and interleaves pure-Danbooru batches:
   1. Each base batch is yielded as (batch, is_injection=False).
   2. Every injection_interval base batches, a pure-Danbooru batch of size
@@ -149,6 +158,16 @@ class DanbooruSampleBuffer:
         self._dynamic_tags: List[str] = []
         self._dynamic_seen: Set[str] = set()
 
+        # Per-epoch download cycle (memory-free dedup; only post_ids stored).
+        # Within one epoch each dynamic tag is collected at most once, mirroring
+        # how the base dataset reads each image exactly once per epoch.  A tag
+        # whose posts are all collected is marked "exhausted" and skipped for the
+        # rest of the epoch; reset_download_cycle() (called at each epoch start)
+        # clears these so the next epoch collects them again.
+        self._cycle_lock = threading.Lock()
+        self._downloaded_ids: Set[int] = set()
+        self._exhausted_tags: Set[str] = set()
+
         # Metrics (thread-safe via _metrics_lock)
         self._metrics_lock = threading.Lock()
         self._tag_freq: Dict[str, int] = {}
@@ -171,6 +190,17 @@ class DanbooruSampleBuffer:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=5)
+
+    def reset_download_cycle(self) -> None:
+        """Begin a new collection cycle (called at each epoch boundary).
+
+        Clears the per-epoch downloaded-id and exhausted-tag sets so that every
+        discovered new tag is collected once again in the new epoch — matching
+        the base dataset, which re-reads each image once per epoch.
+        """
+        with self._cycle_lock:
+            self._downloaded_ids.clear()
+            self._exhausted_tags.clear()
 
     # ------------------------------------------------------------------
     # Consumer
@@ -272,15 +302,19 @@ class DanbooruSampleBuffer:
             if dq:
                 self._dynamic_tags.append(dq)
 
-    def _next_query(self, static_idx: int, dyn_idx: int) -> Tuple[str, bool]:
-        """Choose the next query. Returns (query_string, is_dynamic).
+    def _next_query(self, static_idx: int, dyn_idx: int) -> Optional[Tuple[str, bool]]:
+        """Choose the next query. Returns (query_string, is_dynamic) or None.
 
-        When dynamic (new-tag) queries are available, a fraction
-        ``new_tag_query_ratio`` of cycles target them so the freshly-grown
-        heads receive positive samples. Falls back to static queries when no
-        dynamic tags exist (or no static queries to begin with).
+        Dynamic (new-tag) queries that are already exhausted for this epoch are
+        skipped — within an epoch each new tag is collected at most once, so we
+        never round-robin back to a tag we have already covered. A fraction
+        ``new_tag_query_ratio`` of cycles target active dynamic tags. Returns
+        None when there is nothing left to fetch this epoch (worker then idles
+        until reset_download_cycle()).
         """
-        have_dynamic = len(self._dynamic_tags) > 0
+        with self._cycle_lock:
+            active_dyn = [t for t in self._dynamic_tags if t not in self._exhausted_tags]
+        have_dynamic = len(active_dyn) > 0
         have_static  = len(self._tag_queries) > 0
 
         use_dynamic = (
@@ -288,10 +322,11 @@ class DanbooruSampleBuffer:
             and (not have_static or random.random() < self._new_tag_query_ratio)
         )
         if use_dynamic:
-            tag = self._dynamic_tags[dyn_idx % len(self._dynamic_tags)]
-            return tag, True
-        raw = self._tag_queries[static_idx % len(self._tag_queries)]
-        return self._translate_query(raw), False
+            return active_dyn[dyn_idx % len(active_dyn)], True
+        if have_static:
+            raw = self._tag_queries[static_idx % len(self._tag_queries)]
+            return self._translate_query(raw), False
+        return None  # no static queries and all dynamic tags exhausted this epoch
 
     def _worker(self) -> None:
         static_idx = 0
@@ -299,12 +334,14 @@ class DanbooruSampleBuffer:
         while not self._stop.is_set():
             self._refresh_dynamic_tags()
 
-            if not self._tag_queries and not self._dynamic_tags:
-                # Nothing to query yet (e.g. surveyor hasn't approved anything).
+            choice = self._next_query(static_idx, dyn_idx)
+            if choice is None:
+                # Nothing to fetch: surveyor empty, or all dynamic tags collected
+                # for this epoch. Idle until reset_download_cycle() or new tags.
                 time.sleep(2.0)
                 continue
 
-            query, is_dynamic = self._next_query(static_idx, dyn_idx)
+            query, is_dynamic = choice
             if is_dynamic:
                 dyn_idx += 1
             else:
@@ -313,25 +350,50 @@ class DanbooruSampleBuffer:
             try:
                 posts = self._client.fetch_posts(query, page=1, min_score=self._min_score)
                 if not posts:
+                    if is_dynamic:
+                        # No posts (or transient error) — don't hammer this tag again
+                        # this epoch.
+                        with self._cycle_lock:
+                            self._exhausted_tags.add(query)
                     time.sleep(2.0)
                     continue
 
                 if self._max_posts < len(posts):
                     posts = posts[:self._max_posts]
                 random.shuffle(posts)
+
+                dedup_skipped = 0
                 for post in posts:
                     if self._stop.is_set():
                         return
+                    pid = int(post.get("id", 0) or 0)
+                    if is_dynamic:
+                        with self._cycle_lock:
+                            if pid in self._downloaded_ids:
+                                dedup_skipped += 1
+                                continue  # already collected this epoch
                     sample = self._process_post(post)
                     if sample is None:
                         continue
                     try:
                         self._queue.put(sample, timeout=10.0)
-                        if is_dynamic:
-                            with self._metrics_lock:
-                                self._total_dynamic_collected += 1
                     except queue.Full:
-                        pass  # buffer full — drop and keep fetching
+                        continue  # backpressure — drop, retry on next visit
+                    if is_dynamic:
+                        # Mark collected only after a successful enqueue, so a
+                        # dropped sample can be retried before the tag exhausts.
+                        with self._cycle_lock:
+                            self._downloaded_ids.add(pid)
+                        with self._metrics_lock:
+                            self._total_dynamic_collected += 1
+
+                # A dynamic tag is exhausted for this epoch once every post it
+                # returned was already collected (pure dedup pass). Decode errors
+                # and backpressure drops do NOT exhaust it — those posts are
+                # retried on a later visit until genuinely collected.
+                if is_dynamic and dedup_skipped == len(posts) and len(posts) > 0:
+                    with self._cycle_lock:
+                        self._exhausted_tags.add(query)
 
             except Exception as exc:
                 print(f"[DanbooruSampler] Worker error: {exc}")
@@ -490,6 +552,10 @@ class MixedDataLoader:
         return tagger_collate_fn(built)
 
     def __iter__(self):
+        # New epoch: let the buffer collect each new tag once again this epoch
+        # (mirrors the base dataset re-reading every image per epoch).
+        if hasattr(self._buffer, "reset_download_cycle"):
+            self._buffer.reset_download_cycle()
         base_step = 0
         for batch in self.base_loader:
             if batch is None:

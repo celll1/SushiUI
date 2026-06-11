@@ -1210,8 +1210,17 @@ class TaggerTrainer:
                 _prefetch_loader(_loader_for_epoch, self._stop_event) if _loader_for_epoch.num_workers == 0
                 else iter(_loader_for_epoch)
             )
-            for _loop_idx, batch in enumerate(loader_iter):
+            for _loop_idx, _yielded in enumerate(loader_iter):
                 batch_idx = _loop_idx + _batch_idx_offset
+
+                # MixedDataLoader yields (payload, is_injection); plain loaders
+                # yield payload directly. Normalize here so the rest of the loop
+                # is uniform.
+                if (isinstance(_yielded, tuple) and len(_yielded) == 2
+                        and isinstance(_yielded[1], bool)):
+                    batch, is_injection_batch = _yielded
+                else:
+                    batch, is_injection_batch = _yielded, False
 
                 if batch is None:
                     continue  # entire batch was corrupt images
@@ -1284,8 +1293,11 @@ class TaggerTrainer:
                         continue
                     optimizer.step()
 
-                scheduler.step()
-                global_step      += 1
+                # Injection (Danbooru pure-batch) updates: skip LR scheduler
+                # and step counter so resume reproducibility is preserved.
+                if not is_injection_batch:
+                    scheduler.step()
+                    global_step      += 1
                 epoch_loss       += loss_val
                 batches_processed += 1
 
@@ -1330,6 +1342,19 @@ class TaggerTrainer:
                         "lr": current_lr,
                         "progress": global_step / total_steps,
                     })
+
+                    # Snapshot Danbooru metrics to JSON (for the frontend panel)
+                    _db_buf = getattr(train_loader, "_buffer", None)
+                    if _db_buf is not None and hasattr(_db_buf, "get_metrics"):
+                        try:
+                            _m = _db_buf.get_metrics()
+                            _mp = os.path.join(self.output_dir, "danbooru_metrics.json")
+                            _tmp = _mp + ".tmp"
+                            with open(_tmp, "w", encoding="utf-8") as _mf:
+                                json.dump(_m, _mf, ensure_ascii=False)
+                            os.replace(_tmp, _mp)
+                        except Exception:
+                            pass
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
@@ -2032,6 +2057,16 @@ def run_tagger_training(
                             f"total={vocabulary.num_tags}"
                         )
 
+                # Resolve buffer_size: None → 2 * batch_size
+                _base_B = int(config.get("batch_size", 8) or 8)
+                _buf_cfg = config.get("danbooru_buffer_size")
+                _buffer_size = int(_buf_cfg) if _buf_cfg else 2 * _base_B
+
+                # Resolve injection batch size from ratio (default 1.0 × B)
+                _inj_ratio = float(config.get("danbooru_injection_batch_size_ratio", 1.0) or 1.0)
+                _inj_batch_size = max(1, int(round(_base_B * _inj_ratio)))
+                _inj_interval = int(config.get("danbooru_injection_interval", 4) or 4)
+
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_tag_queries,
                     vocabulary=vocabulary,
@@ -2041,7 +2076,7 @@ def run_tagger_training(
                     alias_resolver=alias_resolver,
                     max_posts_per_query=config.get("danbooru_max_posts_per_query", 200),
                     min_score=config.get("danbooru_min_score", 0),
-                    buffer_size=config.get("danbooru_buffer_size", 32),
+                    buffer_size=_buffer_size,
                     api_interval=config.get("danbooru_api_interval", 1.4),
                     dl_speed_kbps=config.get("danbooru_dl_speed_kbps", 500),
                     expander=_expander,
@@ -2051,7 +2086,8 @@ def run_tagger_training(
                 train_loader = _MixedDL(
                     train_loader,
                     buffer=_danbooru_buffer,
-                    max_inject_per_batch=config.get("danbooru_max_inject_per_batch", 1),
+                    injection_interval=_inj_interval,
+                    injection_batch_size=_inj_batch_size,
                     expander=_expander,
                     expansion_callback=_expansion_callback if config.get("danbooru_vocab_expand", False) else None,
                     vocabulary=vocabulary,
@@ -2061,8 +2097,8 @@ def run_tagger_training(
                 print(
                     f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} quer"
                     f"{'y' if len(_tag_queries) == 1 else 'ies'}, "
-                    f"inject≤{config.get('danbooru_max_inject_per_batch', 1)}/batch, "
-                    f"buffer={config.get('danbooru_buffer_size', 32)}"
+                    f"interrupt-batch every {_inj_interval} steps "
+                    f"(size={_inj_batch_size}), buffer={_buffer_size}"
                     + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)})"
                        if config.get("danbooru_vocab_expand", False) else "")
                 )

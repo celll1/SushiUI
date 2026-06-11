@@ -79,12 +79,13 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   // Online Danbooru augmentation
   enable_danbooru_augmentation: false,
   danbooru_tags: "",
-  danbooru_max_inject_per_batch: 1,
+  danbooru_injection_interval: 4,
+  danbooru_injection_batch_size_ratio: 1.0,
   danbooru_min_score: 0,
   danbooru_max_posts_per_query: 200,
   danbooru_api_interval: 1.4,
   danbooru_dl_speed_kbps: 500,
-  danbooru_buffer_size: 32,
+  danbooru_buffer_size: null,
   danbooru_vocab_expand: false,
   danbooru_new_tag_min_count: 200,
   danbooru_new_tag_lookback_days: 90,
@@ -1092,25 +1093,46 @@ export default function TaggerTrainingConfig({
                   rows={4}
                   value={config.danbooru_tags ?? ""}
                   onChange={(e) => setField("danbooru_tags", e.target.value)}
-                  placeholder={"hoshimachi_suisei\nhololive score:>=10"}
+                  placeholder={"1girl score:>50\n1boy score:>30\nsolo -monochrome score:>20"}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 resize-y"
                 />
                 <p className="text-xs text-gray-500 mt-1">
                   Danbooru tag search queries. Space-separated terms are ANDed.
-                  Only tags already in the vocabulary are used for training.
+                  Prefix a tag with <code>!</code> or <code>-</code> to exclude
+                  (e.g. <code>solo !furry</code>). Use a negative-style query line to
+                  collect posts that are deliberately outside your target tag set —
+                  this improves robustness against false positives.
                 </p>
               </div>
 
               <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-400 w-48">Max inject per batch</label>
+                <label className="text-xs text-gray-400 w-48">Injection interval (base steps)</label>
                 <input
                   type="number"
                   min={1}
-                  max={8}
-                  value={config.danbooru_max_inject_per_batch ?? 1}
-                  onChange={(e) => setField("danbooru_max_inject_per_batch", parseInt(e.target.value) || 1)}
+                  max={64}
+                  value={config.danbooru_injection_interval ?? 4}
+                  onChange={(e) => setField("danbooru_injection_interval", parseInt(e.target.value) || 4)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
+                <span className="text-xs text-gray-500">
+                  Interrupt-batch every N base steps. LR scheduler & global_step do not advance
+                  on injection batches (resume-safe).
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Injection batch size ratio</label>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={1.0}
+                  step={0.05}
+                  value={config.danbooru_injection_batch_size_ratio ?? 1.0}
+                  onChange={(e) => setField("danbooru_injection_batch_size_ratio", parseFloat(e.target.value) || 1.0)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+                <span className="text-xs text-gray-500">1.0 = full batch (B), 0.5 = B/2.</span>
               </div>
 
               <div className="flex items-center gap-3">
@@ -1140,12 +1162,16 @@ export default function TaggerTrainingConfig({
                 <label className="text-xs text-gray-400 w-48">Buffer size (samples)</label>
                 <input
                   type="number"
-                  min={4}
-                  max={256}
-                  value={config.danbooru_buffer_size ?? 32}
-                  onChange={(e) => setField("danbooru_buffer_size", parseInt(e.target.value) || 32)}
+                  min={0}
+                  max={512}
+                  value={config.danbooru_buffer_size ?? 0}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value);
+                    setField("danbooru_buffer_size", Number.isFinite(v) && v > 0 ? v : null);
+                  }}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
+                <span className="text-xs text-gray-500">0 = auto (2 × batch_size).</span>
               </div>
 
               {/* Vocab Expansion */}

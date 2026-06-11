@@ -13,6 +13,7 @@ import {
 import { wsClient, TaggerMetrics, FpFnScatterData, DatasetScanProgress } from "@/utils/websocket";
 import VocabularyBrowser from "@/components/tagger/VocabularyBrowser";
 import TaggerMetricChart, { EpochBoundary } from "./TaggerMetricChart";
+import DanbooruMetricsPanel from "./DanbooruMetricsPanel";
 
 interface TaggerTrainingMonitorProps {
   run: TaggerTrainingRun;
@@ -894,6 +895,12 @@ export default function TaggerTrainingMonitor({
 
           {/* Side column */}
           <div className="space-y-4 min-w-0">
+            {/* Danbooru augmentation metrics (only when enabled) */}
+            <DanbooruMetricsPanel
+              runId={run.run_id}
+              active={run.status === "running" || run.status === "starting"}
+            />
+
             {/* Configuration */}
             <div>
               <div className="text-sm font-medium text-gray-300 mb-2">Configuration</div>

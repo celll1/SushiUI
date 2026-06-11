@@ -80,9 +80,13 @@ let otherNamesBucketIndex: Map<string, Array<{ normalizedAlias: string; original
 let otherNamesLoaded = false;
 
 // Flat reverse-lookup index: normalizedTag -> {category name, priority, count}
-// Built once after all categories are loaded. Enables O(1) exact-match lookup
-// in getCategoriesForTags and alias count resolution.
+// Rebuilt whenever more categories become available. Enables O(1) exact-match
+// lookup in getCategoriesForTags and alias count resolution.
 let _tagLookupIndex: Map<string, { category: string; priority: number; count: number }> | null = null;
+// Number of loaded categories at the time _tagLookupIndex was last built. Used
+// to detect a partially-built index (e.g. when the first load happened before
+// the backend taglist endpoints were ready) and rebuild once more load.
+let _tagLookupIndexCategoryCount = -1;
 
 function buildTagLookupIndex(): Map<string, { category: string; priority: number; count: number }> {
   const index = new Map<string, { category: string; priority: number; count: number }>();
@@ -603,9 +607,16 @@ export async function loadAllTags(): Promise<void> {
   await Promise.all(promises);
   console.log('[TagSuggestions] All tag categories loaded');
 
-  // Build flat reverse-lookup index for O(1) categorization
-  if (!_tagLookupIndex) {
+  // Build (or rebuild) the flat reverse-lookup index for O(1) categorization.
+  // Rebuild when MORE categories are now loaded than when we last built — this
+  // self-heals a partial index from an earlier call where some taglist fetches
+  // failed (e.g. backend not yet ready). Without this, a once-built partial
+  // index would persist for the whole SPA session (no full page reload), making
+  // every non-rating/quality tag show as "Unknown".
+  const loadedCount = Object.values(categories).filter(c => c.loaded).length;
+  if (!_tagLookupIndex || loadedCount > _tagLookupIndexCategoryCount) {
     _tagLookupIndex = buildTagLookupIndex();
+    _tagLookupIndexCategoryCount = loadedCount;
   }
 }
 

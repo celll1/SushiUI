@@ -379,4 +379,5 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_new_tag_lookback_days": 90,
     "danbooru_new_tag_categories": [0, 3, 4],
     "danbooru_new_tag_survey_interval": 3600,
+    "danbooru_new_tag_query_ratio": 0.5,  # fraction of fetch cycles targeting discovered new tags
 }

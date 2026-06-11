@@ -8157,6 +8157,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_new_tag_lookback_days: int = 90
     danbooru_new_tag_categories: List[int] = [0, 3, 4]
     danbooru_new_tag_survey_interval: int = 3600
+    danbooru_new_tag_query_ratio: float = 0.5
     # save_tag_metrics / hard_rate (passed through to trainer)
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25

@@ -121,6 +121,7 @@ class DanbooruSampleBuffer:
         dl_speed_kbps: int = 500,
         expander: Any = None,
         surveyor: Any = None,
+        new_tag_query_ratio: float = 0.5,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -133,11 +134,20 @@ class DanbooruSampleBuffer:
         self._buffer_size      = buffer_size
         self._expander         = expander
         self._surveyor         = surveyor
+        self._new_tag_query_ratio = max(0.0, min(1.0, float(new_tag_query_ratio)))
 
         self._client  = DanbooruClient(api_interval=api_interval, dl_speed_kbps=dl_speed_kbps)
         self._queue: queue.Queue = queue.Queue(maxsize=buffer_size)
         self._stop    = threading.Event()
         self._thread: Optional[threading.Thread] = None
+
+        # Dynamic queries: Danbooru tag names (underscored) discovered by the
+        # surveyor.  We accumulate these into a *persistent* list so we keep
+        # downloading a new tag's posts even after it has been added to the
+        # vocabulary (the surveyor drops it from its approved set on add, but
+        # the freshly-grown head still needs positive samples).
+        self._dynamic_tags: List[str] = []
+        self._dynamic_seen: Set[str] = set()
 
         # Metrics (thread-safe via _metrics_lock)
         self._metrics_lock = threading.Lock()
@@ -146,6 +156,7 @@ class DanbooruSampleBuffer:
         self._total_collected = 0
         self._total_injected_batches = 0
         self._buffer_starvation = 0
+        self._total_dynamic_collected = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -212,6 +223,8 @@ class DanbooruSampleBuffer:
                 "buffer_capacity":         self._buffer_size,
                 "buffer_current":          self._queue.qsize(),
                 "unique_tags_seen":        len(self._tag_freq),
+                "dynamic_tags_count":      len(self._dynamic_tags),
+                "total_dynamic_collected": self._total_dynamic_collected,
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "recent_posts":            list(self._recent_posts),
             }
@@ -231,12 +244,71 @@ class DanbooruSampleBuffer:
                 parts.append(tok)
         return " ".join(parts)
 
+    @staticmethod
+    def _denormalize_tag(norm: str) -> str:
+        """Convert a vocabulary-normalized tag back to a Danbooru query token.
+
+        normalize_tag() lowercases and turns underscores into spaces; Danbooru
+        tag search expects underscores. Parentheses stay literal (URL-encoded
+        downstream by fetch_posts). This recovers the queryable name for the
+        overwhelming majority of character/copyright tags.
+        """
+        return norm.strip().replace(" ", "_")
+
+    def _refresh_dynamic_tags(self) -> None:
+        """Pull newly-approved tags from the surveyor into the persistent
+        dynamic-query list. Idempotent; safe to call every iteration."""
+        if self._surveyor is None:
+            return
+        try:
+            approved = self._surveyor.get_approved()
+        except Exception:
+            return
+        for norm in approved:
+            if norm in self._dynamic_seen:
+                continue
+            self._dynamic_seen.add(norm)
+            dq = self._denormalize_tag(norm)
+            if dq:
+                self._dynamic_tags.append(dq)
+
+    def _next_query(self, static_idx: int, dyn_idx: int) -> Tuple[str, bool]:
+        """Choose the next query. Returns (query_string, is_dynamic).
+
+        When dynamic (new-tag) queries are available, a fraction
+        ``new_tag_query_ratio`` of cycles target them so the freshly-grown
+        heads receive positive samples. Falls back to static queries when no
+        dynamic tags exist (or no static queries to begin with).
+        """
+        have_dynamic = len(self._dynamic_tags) > 0
+        have_static  = len(self._tag_queries) > 0
+
+        use_dynamic = (
+            have_dynamic
+            and (not have_static or random.random() < self._new_tag_query_ratio)
+        )
+        if use_dynamic:
+            tag = self._dynamic_tags[dyn_idx % len(self._dynamic_tags)]
+            return tag, True
+        raw = self._tag_queries[static_idx % len(self._tag_queries)]
+        return self._translate_query(raw), False
+
     def _worker(self) -> None:
-        query_idx = 0
+        static_idx = 0
+        dyn_idx = 0
         while not self._stop.is_set():
-            raw_query = self._tag_queries[query_idx % len(self._tag_queries)]
-            query = self._translate_query(raw_query)
-            query_idx += 1
+            self._refresh_dynamic_tags()
+
+            if not self._tag_queries and not self._dynamic_tags:
+                # Nothing to query yet (e.g. surveyor hasn't approved anything).
+                time.sleep(2.0)
+                continue
+
+            query, is_dynamic = self._next_query(static_idx, dyn_idx)
+            if is_dynamic:
+                dyn_idx += 1
+            else:
+                static_idx += 1
 
             try:
                 posts = self._client.fetch_posts(query, page=1, min_score=self._min_score)
@@ -255,6 +327,9 @@ class DanbooruSampleBuffer:
                         continue
                     try:
                         self._queue.put(sample, timeout=10.0)
+                        if is_dynamic:
+                            with self._metrics_lock:
+                                self._total_dynamic_collected += 1
                     except queue.Full:
                         pass  # buffer full — drop and keep fetching
 

@@ -2634,6 +2634,7 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_new_tag_lookback_days?: number;
   danbooru_new_tag_categories?: number[];
   danbooru_new_tag_survey_interval?: number;
+  danbooru_new_tag_query_ratio?: number;
 }
 
 export interface TaggerTrainingMetric {
@@ -2722,6 +2723,8 @@ export interface DanbooruAugmentationMetrics {
   buffer_capacity?: number;
   buffer_current?: number;
   unique_tags_seen?: number;
+  dynamic_tags_count?: number;
+  total_dynamic_collected?: number;
   top_tags?: DanbooruTopTag[];
   recent_posts?: DanbooruRecentPost[];
   error?: string;

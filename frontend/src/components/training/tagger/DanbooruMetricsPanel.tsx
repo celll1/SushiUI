@@ -55,6 +55,14 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         <Stat label="Starvations" value={(data.buffer_starvation_count ?? 0).toLocaleString()} />
       </div>
 
+      {/* New-tag (dynamic query) stats — only when vocab expansion is active */}
+      {(data.dynamic_tags_count ?? 0) > 0 && (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Stat label="New tags targeted" value={(data.dynamic_tags_count ?? 0).toLocaleString()} />
+          <Stat label="New-tag posts collected" value={(data.total_dynamic_collected ?? 0).toLocaleString()} />
+        </div>
+      )}
+
       {/* Buffer fill bar */}
       <div>
         <div className="flex items-center justify-between text-xs text-gray-400 mb-1">

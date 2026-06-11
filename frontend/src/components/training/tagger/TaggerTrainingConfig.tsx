@@ -91,6 +91,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_new_tag_lookback_days: 90,
   danbooru_new_tag_categories: [0, 3, 4],
   danbooru_new_tag_survey_interval: 3600,
+  danbooru_new_tag_query_ratio: 0.5,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -1218,6 +1219,58 @@ export default function TaggerTrainingConfig({
                         onChange={(e) => setField("danbooru_new_tag_survey_interval", parseInt(e.target.value) || 3600)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
+                    </div>
+
+                    {/* Tag categories to discover */}
+                    <div className="flex items-start gap-3">
+                      <label className="text-xs text-gray-400 w-48 pt-1">Tag categories</label>
+                      <div className="flex flex-wrap gap-3">
+                        {[
+                          { code: 0, label: "General" },
+                          { code: 4, label: "Character" },
+                          { code: 3, label: "Copyright" },
+                          { code: 1, label: "Artist" },
+                          { code: 5, label: "Meta" },
+                        ].map(({ code, label }) => {
+                          const cats = config.danbooru_new_tag_categories ?? [0, 3, 4];
+                          const checked = cats.includes(code);
+                          return (
+                            <label key={code} className="flex items-center gap-1.5 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  const cur = config.danbooru_new_tag_categories ?? [0, 3, 4];
+                                  const next = e.target.checked
+                                    ? [...cur, code].sort((a, b) => a - b)
+                                    : cur.filter((c) => c !== code);
+                                  setField("danbooru_new_tag_categories", next);
+                                }}
+                                className="w-3.5 h-3.5 rounded accent-blue-500"
+                              />
+                              <span className="text-xs text-gray-300">{label}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* New-tag fetch priority */}
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">New-tag fetch ratio</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={config.danbooru_new_tag_query_ratio ?? 0.5}
+                        onChange={(e) => setField("danbooru_new_tag_query_ratio", parseFloat(e.target.value) || 0)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">
+                        Fraction of fetch cycles that target discovered new tags (so their
+                        new heads receive positives). 1.0 = collect new tags only.
+                      </span>
                     </div>
                   </div>
                 )}

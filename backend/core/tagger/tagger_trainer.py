@@ -2021,7 +2021,11 @@ def run_tagger_training(
                 for t in (config.get("danbooru_tags") or "").splitlines()
                 if t.strip()
             ]
-            if _tag_queries:
+            # Augmentation runs when there are static queries OR vocab expansion
+            # is enabled (the surveyor then drives dynamic new-tag queries on its
+            # own, so static queries are optional in that mode).
+            _vocab_expand_on = config.get("danbooru_vocab_expand", False)
+            if _tag_queries or _vocab_expand_on:
                 from .danbooru_sampler import DanbooruSampleBuffer, MixedDataLoader as _MixedDL
                 from .danbooru_vocab_expander import VocabExpander, expand_vocab_and_head
 
@@ -2081,6 +2085,7 @@ def run_tagger_training(
                     dl_speed_kbps=config.get("danbooru_dl_speed_kbps", 500),
                     expander=_expander,
                     surveyor=_surveyor,
+                    new_tag_query_ratio=config.get("danbooru_new_tag_query_ratio", 0.5),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(
@@ -2095,15 +2100,17 @@ def run_tagger_training(
                     alias_resolver=alias_resolver,
                 )
                 print(
-                    f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} quer"
+                    f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} static quer"
                     f"{'y' if len(_tag_queries) == 1 else 'ies'}, "
                     f"interrupt-batch every {_inj_interval} steps "
                     f"(size={_inj_batch_size}), buffer={_buffer_size}"
-                    + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)})"
-                       if config.get("danbooru_vocab_expand", False) else "")
+                    + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)}, "
+                       f"new_tag_query_ratio={config.get('danbooru_new_tag_query_ratio', 0.5)})"
+                       if _vocab_expand_on else "")
                 )
             else:
-                print("[TaggerTraining] enable_danbooru_augmentation=True but no tag queries specified, skipping")
+                print("[TaggerTraining] enable_danbooru_augmentation=True but no tag queries "
+                      "and vocab_expand is off — nothing to fetch, skipping")
 
         steps_per_epoch = len(train_loader)
         print(f"[TaggerTraining] Steps per epoch: {steps_per_epoch}")

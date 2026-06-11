@@ -167,6 +167,7 @@ class DanbooruSampleBuffer:
         self._cycle_lock = threading.Lock()
         self._downloaded_ids: Set[int] = set()
         self._exhausted_tags: Set[str] = set()
+        self._cycle_gen = 0   # bumped on each reset; guards cross-epoch exhaustion
 
         # Metrics (thread-safe via _metrics_lock)
         self._metrics_lock = threading.Lock()
@@ -201,6 +202,7 @@ class DanbooruSampleBuffer:
         with self._cycle_lock:
             self._downloaded_ids.clear()
             self._exhausted_tags.clear()
+            self._cycle_gen += 1
 
     # ------------------------------------------------------------------
     # Consumer
@@ -244,6 +246,10 @@ class DanbooruSampleBuffer:
 
     def get_metrics(self) -> Dict[str, Any]:
         """Return a snapshot of collection metrics (thread-safe)."""
+        # _dynamic_tags is mutated by the worker under _cycle_lock; read its
+        # length under the same lock rather than racing the worker's append.
+        with self._cycle_lock:
+            dynamic_tags_count = len(self._dynamic_tags)
         with self._metrics_lock:
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
             return {
@@ -253,7 +259,7 @@ class DanbooruSampleBuffer:
                 "buffer_capacity":         self._buffer_size,
                 "buffer_current":          self._queue.qsize(),
                 "unique_tags_seen":        len(self._tag_freq),
-                "dynamic_tags_count":      len(self._dynamic_tags),
+                "dynamic_tags_count":      dynamic_tags_count,
                 "total_dynamic_collected": self._total_dynamic_collected,
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "recent_posts":            list(self._recent_posts),
@@ -300,7 +306,10 @@ class DanbooruSampleBuffer:
             self._dynamic_seen.add(norm)
             dq = self._denormalize_tag(norm)
             if dq:
-                self._dynamic_tags.append(dq)
+                # _dynamic_tags is read by get_metrics()/_next_query under
+                # _cycle_lock; append under the same lock to avoid a race.
+                with self._cycle_lock:
+                    self._dynamic_tags.append(dq)
 
     def _next_query(self, static_idx: int, dyn_idx: int) -> Optional[Tuple[str, bool]]:
         """Choose the next query. Returns (query_string, is_dynamic) or None.
@@ -347,6 +356,14 @@ class DanbooruSampleBuffer:
             else:
                 static_idx += 1
 
+            # Snapshot the epoch generation: exhaustion decisions computed below
+            # must only apply to THIS epoch. If reset_download_cycle() runs (epoch
+            # boundary) before we mark a tag exhausted, the generation changes and
+            # we discard the decision — otherwise a tag could be wrongly skipped
+            # for the whole next epoch.
+            with self._cycle_lock:
+                start_gen = self._cycle_gen
+
             try:
                 posts = self._client.fetch_posts(query, page=1, min_score=self._min_score)
                 if not posts:
@@ -354,7 +371,8 @@ class DanbooruSampleBuffer:
                         # No posts (or transient error) — don't hammer this tag again
                         # this epoch.
                         with self._cycle_lock:
-                            self._exhausted_tags.add(query)
+                            if self._cycle_gen == start_gen:
+                                self._exhausted_tags.add(query)
                     time.sleep(2.0)
                     continue
 
@@ -390,10 +408,17 @@ class DanbooruSampleBuffer:
                 # A dynamic tag is exhausted for this epoch once every post it
                 # returned was already collected (pure dedup pass). Decode errors
                 # and backpressure drops do NOT exhaust it — those posts are
-                # retried on a later visit until genuinely collected.
-                if is_dynamic and dedup_skipped == len(posts) and len(posts) > 0:
+                # retried on a later visit until genuinely collected. Guard on the
+                # epoch generation so a reset mid-fetch doesn't carry the decision
+                # into the next epoch.
+                if is_dynamic and len(posts) > 0 and dedup_skipped == len(posts):
                     with self._cycle_lock:
-                        self._exhausted_tags.add(query)
+                        if self._cycle_gen == start_gen:
+                            self._exhausted_tags.add(query)
+
+            except Exception as exc:
+                print(f"[DanbooruSampler] Worker error: {exc}")
+                time.sleep(5.0)
 
             except Exception as exc:
                 print(f"[DanbooruSampler] Worker error: {exc}")

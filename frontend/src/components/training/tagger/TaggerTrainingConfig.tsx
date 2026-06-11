@@ -157,6 +157,22 @@ export default function TaggerTrainingConfig({
         train_f1_threshold_search_every_n_steps: (editRun.config?.train_f1_threshold_search_every_n_steps as number) ?? DEFAULT_CONFIG.train_f1_threshold_search_every_n_steps,
         train_f1_initial_threshold: (editRun.config?.train_f1_initial_threshold as number) ?? DEFAULT_CONFIG.train_f1_initial_threshold,
         train_f1_buffer_batches: (editRun.config?.train_f1_buffer_batches as number) ?? DEFAULT_CONFIG.train_f1_buffer_batches,
+        // Online Danbooru augmentation
+        enable_danbooru_augmentation: (editRun.config?.enable_danbooru_augmentation as boolean) ?? DEFAULT_CONFIG.enable_danbooru_augmentation,
+        danbooru_tags: (editRun.config?.danbooru_tags as string) ?? DEFAULT_CONFIG.danbooru_tags,
+        danbooru_injection_interval: (editRun.config?.danbooru_injection_interval as number) ?? DEFAULT_CONFIG.danbooru_injection_interval,
+        danbooru_injection_batch_size_ratio: (editRun.config?.danbooru_injection_batch_size_ratio as number) ?? DEFAULT_CONFIG.danbooru_injection_batch_size_ratio,
+        danbooru_min_score: (editRun.config?.danbooru_min_score as number) ?? DEFAULT_CONFIG.danbooru_min_score,
+        danbooru_max_posts_per_query: (editRun.config?.danbooru_max_posts_per_query as number) ?? DEFAULT_CONFIG.danbooru_max_posts_per_query,
+        danbooru_api_interval: (editRun.config?.danbooru_api_interval as number) ?? DEFAULT_CONFIG.danbooru_api_interval,
+        danbooru_dl_speed_kbps: (editRun.config?.danbooru_dl_speed_kbps as number) ?? DEFAULT_CONFIG.danbooru_dl_speed_kbps,
+        danbooru_buffer_size: (editRun.config?.danbooru_buffer_size as number | null) ?? DEFAULT_CONFIG.danbooru_buffer_size,
+        danbooru_vocab_expand: (editRun.config?.danbooru_vocab_expand as boolean) ?? DEFAULT_CONFIG.danbooru_vocab_expand,
+        danbooru_new_tag_min_count: (editRun.config?.danbooru_new_tag_min_count as number) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count,
+        danbooru_new_tag_lookback_days: (editRun.config?.danbooru_new_tag_lookback_days as number) ?? DEFAULT_CONFIG.danbooru_new_tag_lookback_days,
+        danbooru_new_tag_categories: (editRun.config?.danbooru_new_tag_categories as number[]) ?? DEFAULT_CONFIG.danbooru_new_tag_categories,
+        danbooru_new_tag_survey_interval: (editRun.config?.danbooru_new_tag_survey_interval as number) ?? DEFAULT_CONFIG.danbooru_new_tag_survey_interval,
+        danbooru_new_tag_query_ratio: (editRun.config?.danbooru_new_tag_query_ratio as number) ?? DEFAULT_CONFIG.danbooru_new_tag_query_ratio,
       }
     : DEFAULT_CONFIG;
 

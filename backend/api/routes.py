@@ -8432,6 +8432,18 @@ def _make_tagger_progress_callback(run_id: str, training_db_factory):
             elif event_type == "phase":
                 msg = data.get("message") or data.get("phase") or ""
                 run.status_message = msg
+            elif event_type == "dataset_progress":
+                # Live pre-training dataset-loading progress → WS/SSE bar.
+                msg = data.get("message") or "Loading dataset..."
+                try:
+                    manager.send_progress_sync(
+                        int(data.get("step", 0)),
+                        int(data.get("total", 1)),
+                        msg,
+                    )
+                except Exception:
+                    pass
+                run.status_message = msg
             elif event_type == "completed":
                 run.status         = "completed"
                 run.progress       = 1.0

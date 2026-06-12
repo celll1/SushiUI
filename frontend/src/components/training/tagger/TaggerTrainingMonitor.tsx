@@ -516,11 +516,17 @@ export default function TaggerTrainingMonitor({
     // Detect scan events by their message pattern so the bar updates even
     // when isScanningRef hasn't been set yet.
     const progressHandler = (step: number, totalSteps: number, message: string) => {
-      const isScanning = isScanningRef.current || (message ?? "").startsWith("Scanning:");
+      // "Loading ..." = pre-training dataset loading (TaggerDataset build);
+      // "Scanning:" = the rescan's per-file scan. Both drive the yellow bar.
+      const isLoading = (message ?? "").startsWith("Loading ");
+      const isScanning = isScanningRef.current || (message ?? "").startsWith("Scanning:") || isLoading;
       if (!isScanning) return;
       if (!isScanningRef.current) isScanningRef.current = true;
       const pct = totalSteps > 0 ? step / totalSteps : 0;
       setScanProgress({ step, total: totalSteps, pct });
+      // Dataset loading has no dataset_scan_progress event to set the text, so
+      // surface its message here (rescan messages are handled by scanHandler).
+      if (isLoading) setRun(prev => ({ ...prev, status_message: message }));
     };
     wsClient.subscribe(progressHandler);
 

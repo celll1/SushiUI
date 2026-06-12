@@ -1985,6 +1985,15 @@ def run_tagger_training(
         progress_callback and progress_callback(run_id, "phase", {
             "phase": "dataset", "message": f"Loading dataset ({vocabulary.num_tags} tags)..."
         })
+
+        def _ds_progress(done: int, total: int, message: str) -> None:
+            # Forwarded to the route callback as a "dataset_progress" event,
+            # which pushes it to the WS/SSE progress bar (send_progress_sync).
+            if progress_callback:
+                progress_callback(run_id, "dataset_progress", {
+                    "step": done, "total": total, "message": message,
+                })
+
         full_ds = TaggerDataset(
             dataset_ids=dataset_ids,
             vocabulary=vocabulary,
@@ -1992,6 +2001,7 @@ def run_tagger_training(
             processor=processor,
             alias_resolver=alias_resolver,
             quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
+            progress_callback=_ds_progress,
         )
         total_samples = len(full_ds)
         print(f"[TaggerTraining] Dataset: {total_samples} samples total")

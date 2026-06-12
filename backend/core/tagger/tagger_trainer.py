@@ -1892,6 +1892,13 @@ def run_tagger_training(
             else:
                 print(f"[TaggerTraining] WARNING: use_tag_aliases=True but tag_aliases.json not found at {alias_path}")
 
+        def _vocab_progress(done: int, total: int, message: str) -> None:
+            # Forward to the route callback → WS/SSE progress bar (send_progress_sync).
+            if progress_callback:
+                progress_callback(run_id, "dataset_progress", {
+                    "step": done, "total": total, "message": message,
+                })
+
         vocabulary = TagVocabulary.build_from_dataset_ids(
             dataset_ids=dataset_ids,
             datasets_db=datasets_db,
@@ -1899,6 +1906,7 @@ def run_tagger_training(
             excluded_categories=excl_cats,
             ban_tags=ban_tags,
             alias_resolver=alias_resolver,
+            progress_callback=_vocab_progress,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")
         if excl_cats:

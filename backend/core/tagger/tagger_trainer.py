@@ -1412,6 +1412,26 @@ class TaggerTrainer:
                     _scatter_data: Optional[Dict] = None
                     if _n1_search > 0 and global_step % _n1_search == 0:
                         _scatter_data = _tag_metrics_acc.compute_scatter_for_vis(min_npos=20)
+
+                        # Refresh low-F1 deficiency targets for Danbooru
+                        # augmentation (synced to the threshold-search cadence).
+                        # Existing vocab tags with a valid F1 below the threshold
+                        # are pushed to the sampler's deficiency provider so it
+                        # collects extra samples for them.
+                        _db_buf2 = getattr(train_loader, "_buffer", None)
+                        _provider = getattr(_db_buf2, "_deficiency_provider", None)
+                        if _provider is not None:
+                            try:
+                                _idxs = _tag_metrics_acc.deficient_tag_indices(
+                                    f1_threshold=float(cfg.get("danbooru_low_f1_threshold", 0.5)),
+                                    top_k=int(cfg.get("danbooru_low_f1_top_k", 500)),
+                                )
+                                _names = [
+                                    self.vocabulary.idx_to_tag.get(i, "") for i in _idxs
+                                ]
+                                _provider.set_targets([n for n in _names if n])
+                            except Exception as _de:
+                                print(f"[TaggerTrainer] Deficiency target refresh error: {_de}")
                     self._emit("train_f1", {
                         "step": global_step,
                         "train_f1": _train_f1_val,
@@ -2022,6 +2042,7 @@ def run_tagger_training(
         _danbooru_buffer = None
         _expander = None
         _surveyor = None
+        _deficiency_provider = None
         if config.get("enable_danbooru_augmentation", False):
             _tag_queries = [
                 t.strip()
@@ -2029,14 +2050,20 @@ def run_tagger_training(
                 if t.strip()
             ]
             # Augmentation runs when there are static queries OR vocab expansion
-            # is enabled (the surveyor then drives dynamic new-tag queries on its
-            # own, so static queries are optional in that mode).
+            # OR low-F1 deficiency collection is enabled (the surveyor / trainer
+            # then drive dynamic queries on their own, so static queries are
+            # optional in those modes).
             _vocab_expand_on = config.get("danbooru_vocab_expand", False)
-            if _tag_queries or _vocab_expand_on:
+            _low_f1_on = config.get("danbooru_low_f1_enable", False)
+            if _tag_queries or _vocab_expand_on or _low_f1_on:
                 from .danbooru_sampler import DanbooruSampleBuffer, MixedDataLoader as _MixedDL
                 from .danbooru_vocab_expander import VocabExpander, expand_vocab_and_head
 
                 _expander = VocabExpander()
+
+                if _low_f1_on:
+                    from .danbooru_deficiency_provider import DanbooruDeficiencyProvider
+                    _deficiency_provider = DanbooruDeficiencyProvider()
 
                 if config.get("danbooru_vocab_expand", False):
                     from .danbooru_tag_surveyor import DanbooruTagSurveyor
@@ -2092,7 +2119,11 @@ def run_tagger_training(
                     dl_speed_kbps=config.get("danbooru_dl_speed_kbps", 500),
                     expander=_expander,
                     surveyor=_surveyor,
-                    new_tag_query_ratio=config.get("danbooru_new_tag_query_ratio", 0.5),
+                    deficiency_provider=_deficiency_provider,
+                    weight_static=config.get("danbooru_query_weight_static", 1.0),
+                    weight_new_tag=config.get("danbooru_query_weight_new_tag", 1.0),
+                    weight_low_f1=config.get("danbooru_query_weight_low_f1", 1.0),
+                    low_f1_min_posts=config.get("danbooru_low_f1_min_posts", 50),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(
@@ -2110,10 +2141,16 @@ def run_tagger_training(
                     f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} static quer"
                     f"{'y' if len(_tag_queries) == 1 else 'ies'}, "
                     f"interrupt-batch every {_inj_interval} steps "
-                    f"(size={_inj_batch_size}), buffer={_buffer_size}"
-                    + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)}, "
-                       f"new_tag_query_ratio={config.get('danbooru_new_tag_query_ratio', 0.5)})"
+                    f"(size={_inj_batch_size}), buffer={_buffer_size}, "
+                    f"weights(static={config.get('danbooru_query_weight_static', 1.0)}, "
+                    f"new_tag={config.get('danbooru_query_weight_new_tag', 1.0)}, "
+                    f"low_f1={config.get('danbooru_query_weight_low_f1', 1.0)})"
+                    + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)})"
                        if _vocab_expand_on else "")
+                    + (f", low_f1=on (threshold={config.get('danbooru_low_f1_threshold', 0.5)}, "
+                       f"top_k={config.get('danbooru_low_f1_top_k', 500)}, "
+                       f"min_posts={config.get('danbooru_low_f1_min_posts', 50)})"
+                       if _low_f1_on else "")
                 )
             else:
                 print("[TaggerTraining] enable_danbooru_augmentation=True but no tag queries "

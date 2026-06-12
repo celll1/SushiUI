@@ -130,7 +130,11 @@ class DanbooruSampleBuffer:
         dl_speed_kbps: int = 500,
         expander: Any = None,
         surveyor: Any = None,
-        new_tag_query_ratio: float = 0.5,
+        deficiency_provider: Any = None,
+        weight_static: float = 1.0,
+        weight_new_tag: float = 1.0,
+        weight_low_f1: float = 1.0,
+        low_f1_min_posts: int = 50,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -143,7 +147,17 @@ class DanbooruSampleBuffer:
         self._buffer_size      = buffer_size
         self._expander         = expander
         self._surveyor         = surveyor
-        self._new_tag_query_ratio = max(0.0, min(1.0, float(new_tag_query_ratio)))
+        self._deficiency_provider = deficiency_provider
+        # Collection-path weights for weighted random query selection.  Paths
+        # with no available queries are excluded and the remaining weights are
+        # renormalized at selection time.
+        self._weight_static    = max(0.0, float(weight_static))
+        self._weight_new_tag   = max(0.0, float(weight_new_tag))
+        self._weight_low_f1    = max(0.0, float(weight_low_f1))
+        # A low-F1 tag is only collected when Danbooru can supply at least this
+        # many posts for it (page-1 fetch count); otherwise it is marked
+        # unavailable and skipped (genuinely rare tags we cannot augment).
+        self._low_f1_min_posts = int(low_f1_min_posts)
 
         self._client  = DanbooruClient(api_interval=api_interval, dl_speed_kbps=dl_speed_kbps)
         self._queue: queue.Queue = queue.Queue(maxsize=buffer_size)
@@ -157,6 +171,14 @@ class DanbooruSampleBuffer:
         # the freshly-grown head still needs positive samples).
         self._dynamic_tags: List[str] = []
         self._dynamic_seen: Set[str] = set()
+
+        # Low-F1 queries: existing-vocab Danbooru tag names (underscored) fed by
+        # the trainer's deficiency provider (worst per-tag F1).  Like dynamic
+        # tags they are collected per-epoch; additionally each is gated by a
+        # one-time Danbooru availability check (>= low_f1_min_posts) — tags that
+        # are too rare on Danbooru to augment go into _low_f1_unavailable.
+        self._low_f1_tags: List[str] = []
+        self._low_f1_unavailable: Set[str] = set()   # below min_posts (persistent)
 
         # Per-epoch download cycle (memory-free dedup; only post_ids stored).
         # Within one epoch each dynamic tag is collected at most once, mirroring
@@ -178,11 +200,14 @@ class DanbooruSampleBuffer:
         # *which* new tags augmentation is actively collecting, instead of the
         # ever-dominant common tags (1girl, solo, …) in _tag_freq.
         self._dynamic_tag_freq: Dict[str, int] = {}
+        # Per-targeted-low-F1-tag collected sample count (same keying as above).
+        self._low_f1_tag_freq: Dict[str, int] = {}
         self._recent_posts: collections.deque = collections.deque(maxlen=100)
         self._total_collected = 0
         self._total_injected_batches = 0
         self._buffer_starvation = 0
         self._total_dynamic_collected = 0
+        self._total_low_f1_collected = 0
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -256,9 +281,12 @@ class DanbooruSampleBuffer:
         # length under the same lock rather than racing the worker's append.
         with self._cycle_lock:
             dynamic_tags_count = len(self._dynamic_tags)
+            low_f1_tags_count = len(self._low_f1_tags)
+            low_f1_unavailable_count = len(self._low_f1_unavailable)
         with self._metrics_lock:
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
             top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
+            top_low_f1_tags = sorted(self._low_f1_tag_freq.items(), key=lambda x: -x[1])[:100]
             return {
                 "total_collected":         self._total_collected,
                 "total_injected_batches":  self._total_injected_batches,
@@ -269,8 +297,13 @@ class DanbooruSampleBuffer:
                 "dynamic_tags_count":      dynamic_tags_count,
                 "total_dynamic_collected": self._total_dynamic_collected,
                 "dynamic_unique_tags_collected": len(self._dynamic_tag_freq),
+                "low_f1_tags_count":       low_f1_tags_count,
+                "low_f1_unavailable_count": low_f1_unavailable_count,
+                "total_low_f1_collected":  self._total_low_f1_collected,
+                "low_f1_unique_tags_collected": len(self._low_f1_tag_freq),
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "top_dynamic_tags":        [{"tag": t, "count": c} for t, c in top_dynamic_tags],
+                "top_low_f1_tags":         [{"tag": t, "count": c} for t, c in top_low_f1_tags],
                 "recent_posts":            list(self._recent_posts),
             }
 
@@ -320,50 +353,99 @@ class DanbooruSampleBuffer:
                 with self._cycle_lock:
                     self._dynamic_tags.append(dq)
 
-    def _next_query(self, static_idx: int, dyn_idx: int) -> Optional[Tuple[str, bool]]:
-        """Choose the next query. Returns (query_string, is_dynamic) or None.
+    def _refresh_low_f1_tags(self) -> None:
+        """Sync the low-F1 query list to the deficiency provider's current set.
 
-        Dynamic (new-tag) queries that are already exhausted for this epoch are
-        skipped — within an epoch each new tag is collected at most once, so we
-        never round-robin back to a tag we have already covered. A fraction
-        ``new_tag_query_ratio`` of cycles target active dynamic tags. Returns
-        None when there is nothing left to fetch this epoch (worker then idles
-        until reset_download_cycle()).
+        Unlike dynamic (new) tags — which persist because a freshly-grown head
+        keeps needing samples — low-F1 targets are *rebuilt* each refresh so a
+        tag whose F1 has recovered (and was dropped by the trainer) stops being
+        collected. Availability (_low_f1_unavailable) persists across rebuilds
+        since Danbooru post counts don't change during a run.
+        """
+        if self._deficiency_provider is None:
+            return
+        try:
+            targets = self._deficiency_provider.get_targets()
+        except Exception:
+            return
+        dq_list = [dq for dq in (self._denormalize_tag(n) for n in targets) if dq]
+        with self._cycle_lock:
+            self._low_f1_tags = dq_list
+
+    def _next_query(
+        self, static_idx: int, dyn_idx: int, lowf1_idx: int
+    ) -> Optional[Tuple[str, str]]:
+        """Choose the next query via weighted random path selection.
+
+        Returns ``(query_string, kind)`` where ``kind`` is one of
+        ``"static"`` / ``"new_tag"`` / ``"low_f1"``, or ``None`` when nothing is
+        available this epoch (worker idles until reset_download_cycle()).
+
+        Each path contributes its configured weight only when it has at least
+        one available query; weights are renormalized over the available paths.
+        Dynamic/low-F1 tags already exhausted this epoch (and, for low-F1, tags
+        below the Danbooru availability threshold) are excluded.
         """
         with self._cycle_lock:
             active_dyn = [t for t in self._dynamic_tags if t not in self._exhausted_tags]
-        have_dynamic = len(active_dyn) > 0
-        have_static  = len(self._tag_queries) > 0
+            active_lowf1 = [
+                t for t in self._low_f1_tags
+                if t not in self._exhausted_tags and t not in self._low_f1_unavailable
+            ]
 
-        use_dynamic = (
-            have_dynamic
-            and (not have_static or random.random() < self._new_tag_query_ratio)
-        )
-        if use_dynamic:
-            return active_dyn[dyn_idx % len(active_dyn)], True
-        if have_static:
+        paths: List[Tuple[str, float]] = []
+        if self._tag_queries and self._weight_static > 0:
+            paths.append(("static", self._weight_static))
+        if active_dyn and self._weight_new_tag > 0:
+            paths.append(("new_tag", self._weight_new_tag))
+        if active_lowf1 and self._weight_low_f1 > 0:
+            paths.append(("low_f1", self._weight_low_f1))
+        if not paths:
+            return None
+
+        total_w = sum(w for _, w in paths)
+        r = random.random() * total_w
+        acc = 0.0
+        chosen = paths[-1][0]
+        for name, w in paths:
+            acc += w
+            if r <= acc:
+                chosen = name
+                break
+
+        if chosen == "static":
             raw = self._tag_queries[static_idx % len(self._tag_queries)]
-            return self._translate_query(raw), False
-        return None  # no static queries and all dynamic tags exhausted this epoch
+            return self._translate_query(raw), "static"
+        if chosen == "new_tag":
+            return active_dyn[dyn_idx % len(active_dyn)], "new_tag"
+        return active_lowf1[lowf1_idx % len(active_lowf1)], "low_f1"
 
     def _worker(self) -> None:
         static_idx = 0
         dyn_idx = 0
+        lowf1_idx = 0
         while not self._stop.is_set():
             self._refresh_dynamic_tags()
+            self._refresh_low_f1_tags()
 
-            choice = self._next_query(static_idx, dyn_idx)
+            choice = self._next_query(static_idx, dyn_idx, lowf1_idx)
             if choice is None:
-                # Nothing to fetch: surveyor empty, or all dynamic tags collected
-                # for this epoch. Idle until reset_download_cycle() or new tags.
+                # Nothing to fetch: all feeds empty/exhausted for this epoch.
+                # Idle until reset_download_cycle() or new targets arrive.
                 time.sleep(2.0)
                 continue
 
-            query, is_dynamic = choice
-            if is_dynamic:
+            query, kind = choice
+            if kind == "new_tag":
                 dyn_idx += 1
+            elif kind == "low_f1":
+                lowf1_idx += 1
             else:
                 static_idx += 1
+
+            # new_tag and low_f1 are per-epoch "collected" paths: dedup post_ids
+            # and exhaust the tag once fully collected. static is unbounded.
+            is_collected = kind in ("new_tag", "low_f1")
 
             # Snapshot the epoch generation: exhaustion decisions computed below
             # must only apply to THIS epoch. If reset_download_cycle() runs (epoch
@@ -375,10 +457,23 @@ class DanbooruSampleBuffer:
 
             try:
                 posts = self._client.fetch_posts(query, page=1, min_score=self._min_score)
+
+                # Low-F1 availability gate: only augment tags Danbooru can supply
+                # >= low_f1_min_posts for. Reuses the page-1 fetch (no extra API
+                # call). Only a non-empty-but-short result is a reliable "too
+                # rare" signal — an empty result may be a transient error/rate
+                # limit, so it is left to the per-epoch exhaustion path below.
+                # Once blacklisted a tag is excluded from future selection.
+                if kind == "low_f1" and 0 < len(posts) < self._low_f1_min_posts:
+                    with self._cycle_lock:
+                        self._low_f1_unavailable.add(query)
+                    time.sleep(0.3)
+                    continue
+
                 if not posts:
-                    if is_dynamic:
-                        # No posts (or transient error) — don't hammer this tag again
-                        # this epoch.
+                    if is_collected:
+                        # No posts (or transient error) — don't hammer this tag
+                        # again this epoch.
                         with self._cycle_lock:
                             if self._cycle_gen == start_gen:
                                 self._exhausted_tags.add(query)
@@ -394,7 +489,7 @@ class DanbooruSampleBuffer:
                     if self._stop.is_set():
                         return
                     pid = int(post.get("id", 0) or 0)
-                    if is_dynamic:
+                    if is_collected:
                         with self._cycle_lock:
                             if pid in self._downloaded_ids:
                                 dedup_skipped += 1
@@ -406,31 +501,32 @@ class DanbooruSampleBuffer:
                         self._queue.put(sample, timeout=10.0)
                     except queue.Full:
                         continue  # backpressure — drop, retry on next visit
-                    if is_dynamic:
+                    if is_collected:
                         # Mark collected only after a successful enqueue, so a
                         # dropped sample can be retried before the tag exhausts.
                         with self._cycle_lock:
                             self._downloaded_ids.add(pid)
+                        _nt = normalize_tag(query) if query else ""
                         with self._metrics_lock:
-                            self._total_dynamic_collected += 1
-                            _ndt = normalize_tag(query) if query else ""
-                            if _ndt:
-                                self._dynamic_tag_freq[_ndt] = self._dynamic_tag_freq.get(_ndt, 0) + 1
+                            if kind == "new_tag":
+                                self._total_dynamic_collected += 1
+                                if _nt:
+                                    self._dynamic_tag_freq[_nt] = self._dynamic_tag_freq.get(_nt, 0) + 1
+                            else:  # low_f1
+                                self._total_low_f1_collected += 1
+                                if _nt:
+                                    self._low_f1_tag_freq[_nt] = self._low_f1_tag_freq.get(_nt, 0) + 1
 
-                # A dynamic tag is exhausted for this epoch once every post it
+                # A collected tag is exhausted for this epoch once every post it
                 # returned was already collected (pure dedup pass). Decode errors
                 # and backpressure drops do NOT exhaust it — those posts are
                 # retried on a later visit until genuinely collected. Guard on the
                 # epoch generation so a reset mid-fetch doesn't carry the decision
                 # into the next epoch.
-                if is_dynamic and len(posts) > 0 and dedup_skipped == len(posts):
+                if is_collected and len(posts) > 0 and dedup_skipped == len(posts):
                     with self._cycle_lock:
                         if self._cycle_gen == start_gen:
                             self._exhausted_tags.add(query)
-
-            except Exception as exc:
-                print(f"[DanbooruSampler] Worker error: {exc}")
-                time.sleep(5.0)
 
             except Exception as exc:
                 print(f"[DanbooruSampler] Worker error: {exc}")

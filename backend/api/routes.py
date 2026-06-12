@@ -8157,7 +8157,15 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_new_tag_lookback_days: int = 90
     danbooru_new_tag_categories: List[int] = [0, 3, 4]
     danbooru_new_tag_survey_interval: int = 3600
-    danbooru_new_tag_query_ratio: float = 0.5
+    # Collection-path weights (weighted selection among available paths)
+    danbooru_query_weight_static: float = 1.0
+    danbooru_query_weight_new_tag: float = 1.0
+    danbooru_query_weight_low_f1: float = 1.0
+    # Low-F1 deficiency collection (existing vocab tags with low per-tag F1)
+    danbooru_low_f1_enable: bool = False
+    danbooru_low_f1_threshold: float = 0.5
+    danbooru_low_f1_top_k: int = 500
+    danbooru_low_f1_min_posts: int = 50
     # save_tag_metrics / hard_rate (passed through to trainer)
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25

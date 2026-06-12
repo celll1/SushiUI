@@ -970,7 +970,13 @@ export default function TaggerTrainingMonitor({
                   danbooru_new_tag_lookback_days: "New-tag lookback (days)",
                   danbooru_new_tag_categories: "New-tag categories",
                   danbooru_new_tag_survey_interval: "Survey interval (s)",
-                  danbooru_new_tag_query_ratio: "New-tag query ratio",
+                  danbooru_query_weight_static: "Weight: static",
+                  danbooru_query_weight_new_tag: "Weight: new-tag",
+                  danbooru_query_weight_low_f1: "Weight: low-F1",
+                  danbooru_low_f1_enable: "Low-F1 collection",
+                  danbooru_low_f1_threshold: "Low-F1 threshold",
+                  danbooru_low_f1_top_k: "Low-F1 top-K",
+                  danbooru_low_f1_min_posts: "Low-F1 min posts",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -988,16 +994,24 @@ export default function TaggerTrainingMonitor({
                 // new-tag (vocab-expansion) sub-keys only when vocab_expand is on.
                 const danbooruOn = Boolean(cfg.enable_danbooru_augmentation);
                 const vocabExpandOn = Boolean(cfg.danbooru_vocab_expand);
+                const lowF1On = Boolean(cfg.danbooru_low_f1_enable);
                 const DANBOORU_DETAIL_KEYS = new Set([
                   "danbooru_tags", "danbooru_injection_interval", "danbooru_injection_batch_size_ratio",
                   "danbooru_min_score", "danbooru_max_posts_per_query", "danbooru_api_interval",
                   "danbooru_dl_speed_kbps", "danbooru_buffer_size", "danbooru_vocab_expand",
                   "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
-                  "danbooru_new_tag_survey_interval", "danbooru_new_tag_query_ratio",
+                  "danbooru_new_tag_survey_interval",
+                  "danbooru_query_weight_static", "danbooru_query_weight_new_tag", "danbooru_query_weight_low_f1",
+                  "danbooru_low_f1_enable", "danbooru_low_f1_threshold", "danbooru_low_f1_top_k",
+                  "danbooru_low_f1_min_posts",
                 ]);
                 const DANBOORU_VOCAB_KEYS = new Set([
                   "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
-                  "danbooru_new_tag_survey_interval", "danbooru_new_tag_query_ratio",
+                  "danbooru_new_tag_survey_interval",
+                ]);
+                // Low-F1 sub-parameters only meaningful when low-F1 collection is on.
+                const DANBOORU_LOW_F1_KEYS = new Set([
+                  "danbooru_low_f1_threshold", "danbooru_low_f1_top_k", "danbooru_low_f1_min_posts",
                 ]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
@@ -1005,7 +1019,7 @@ export default function TaggerTrainingMonitor({
                     label,
                     value:
                       key === "loss_function" ? (cfg[key] ?? "asl")
-                      : key === "enable_danbooru_augmentation" ? Boolean(cfg[key])
+                      : (key === "enable_danbooru_augmentation" || key === "danbooru_low_f1_enable") ? Boolean(cfg[key])
                       : cfg[key],
                   }))
                   .filter(({ key, value }) => {
@@ -1017,6 +1031,7 @@ export default function TaggerTrainingMonitor({
                     if (LR_SUB_KEYS.has(key) && !buildLR) return false;
                     if (DANBOORU_DETAIL_KEYS.has(key) && !danbooruOn) return false;
                     if (DANBOORU_VOCAB_KEYS.has(key) && !vocabExpandOn) return false;
+                    if (DANBOORU_LOW_F1_KEYS.has(key) && !lowF1On) return false;
                     return true;
                   });
                 return (

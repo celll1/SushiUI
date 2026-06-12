@@ -13,7 +13,7 @@ interface Props {
  *  augmentation is disabled (no metrics file present). */
 export default function DanbooruMetricsPanel({ runId, active }: Props) {
   const [data, setData] = useState<DanbooruAugmentationMetrics | null>(null);
-  const [tab, setTab] = useState<"top" | "new" | "recent">("top");
+  const [tab, setTab] = useState<"top" | "new" | "lowf1" | "recent">("top");
 
   useEffect(() => {
     let cancelled = false;
@@ -43,6 +43,13 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
   const newMax = newTags.reduce((m, t) => Math.max(m, t.count), 0) || 1;
   const hasNewTags = (data.dynamic_tags_count ?? 0) > 0;
 
+  const lowF1Tags = data.top_low_f1_tags ?? [];
+  const lowF1Max = lowF1Tags.reduce((m, t) => Math.max(m, t.count), 0) || 1;
+  const hasLowF1 =
+    (data.low_f1_tags_count ?? 0) > 0 ||
+    (data.total_low_f1_collected ?? 0) > 0 ||
+    lowF1Tags.length > 0;
+
   return (
     <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -67,6 +74,16 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
+      {/* Low-F1 deficiency stats — only when low-F1 collection is active */}
+      {hasLowF1 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <Stat label="Low-F1 targeted" value={(data.low_f1_tags_count ?? 0).toLocaleString()} />
+          <Stat label="Low-F1 collected" value={(data.low_f1_unique_tags_collected ?? 0).toLocaleString()} />
+          <Stat label="Low-F1 posts" value={(data.total_low_f1_collected ?? 0).toLocaleString()} />
+          <Stat label="Unavailable" value={(data.low_f1_unavailable_count ?? 0).toLocaleString()} />
+        </div>
+      )}
+
       {/* Buffer fill bar */}
       <div>
         <div className="flex items-center justify-between text-xs text-gray-400 mb-1">
@@ -88,6 +105,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         <TabBtn label="Top tags" active={tab === "top"} onClick={() => setTab("top")} />
         {hasNewTags && (
           <TabBtn label="New tags" active={tab === "new"} onClick={() => setTab("new")} />
+        )}
+        {hasLowF1 && (
+          <TabBtn label="Low-F1 tags" active={tab === "lowf1"} onClick={() => setTab("lowf1")} />
         )}
         <TabBtn label="Recent posts" active={tab === "recent"} onClick={() => setTab("recent")} />
       </div>
@@ -126,6 +146,26 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
           ))}
           {newTags.length === 0 && (
             <p className="text-xs text-gray-500 italic">No new-tag samples collected yet.</p>
+          )}
+        </div>
+      )}
+
+      {/* Low-F1 tags — per-targeted-low-F1-tag collected sample counts. Surfaces
+          which deficient existing vocab tags augmentation is gathering extra
+          samples for (driven by the trainer's per-tag F1). */}
+      {tab === "lowf1" && (
+        <div className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
+          {lowF1Tags.slice(0, 50).map((t) => (
+            <div key={t.tag} className="flex items-center gap-2 text-xs">
+              <span className="w-40 truncate text-gray-200" title={t.tag}>{t.tag}</span>
+              <div className="flex-1 h-2 bg-gray-800 rounded overflow-hidden">
+                <div className="h-full bg-amber-500" style={{ width: `${(t.count / lowF1Max) * 100}%` }} />
+              </div>
+              <span className="w-10 text-right text-gray-500 font-mono">{t.count}</span>
+            </div>
+          ))}
+          {lowF1Tags.length === 0 && (
+            <p className="text-xs text-gray-500 italic">No low-F1 samples collected yet.</p>
           )}
         </div>
       )}

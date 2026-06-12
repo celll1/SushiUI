@@ -278,6 +278,44 @@ class TagMetricsAccumulator:
         }
 
     # ------------------------------------------------------------------
+    # Deficiency selection (low-F1 Danbooru augmentation feed)
+    # ------------------------------------------------------------------
+
+    def deficient_tag_indices(
+        self,
+        f1_threshold: float,
+        top_k: int,
+        epoch_boundary: bool = False,
+    ) -> List[int]:
+        """Return vocab indices of existing tags whose per-tag F1 is deficient.
+
+        A tag qualifies when it has a *valid* (non-NaN) ``best_f1`` below
+        ``f1_threshold``.  Tags with NaN F1 are excluded on purpose: early in
+        training most tags are NaN simply because their batches have not been
+        seen yet (not because they are genuinely deficient), so including them
+        would flood the augmentation feed with noise.  Established vocab tags
+        always have data, so NaN is transient.
+
+        No minimum positive-count gate is applied — a tag with even a single
+        positive yields a (noisy) valid F1 and is eligible, matching the
+        intent of surfacing under-collected tags.
+
+        Results are sorted by F1 ascending (worst first) and capped at
+        ``top_k``.
+        """
+        if top_k <= 0:
+            return []
+        m = self.compute_metrics(epoch_boundary=epoch_boundary)
+        best_f1 = m["best_f1"]  # [V] float32, NaN where insufficient data
+        valid = ~np.isnan(best_f1)
+        deficient = valid & (best_f1 < f1_threshold)
+        idx = np.where(deficient)[0]
+        if idx.size == 0:
+            return []
+        order = np.argsort(best_f1[idx])  # ascending: worst F1 first
+        return idx[order][:top_k].astype(int).tolist()
+
+    # ------------------------------------------------------------------
     # Scatter-plot helper (visualization only)
     # ------------------------------------------------------------------
 

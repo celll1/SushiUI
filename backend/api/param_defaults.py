@@ -379,5 +379,14 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_new_tag_lookback_days": 90,
     "danbooru_new_tag_categories": [0, 3, 4],
     "danbooru_new_tag_survey_interval": 3600,
-    "danbooru_new_tag_query_ratio": 0.5,  # fraction of fetch cycles targeting discovered new tags
+    # Collection-path weights (weighted random selection among available paths)
+    "danbooru_query_weight_static": 1.0,   # user static queries
+    "danbooru_query_weight_new_tag": 1.0,  # surveyor-discovered new tags (vocab expansion)
+    "danbooru_query_weight_low_f1": 1.0,   # low-F1 existing vocab tags (deficiency collection)
+    # Low-F1 deficiency collection: existing vocab tags whose per-tag F1 is below
+    # threshold are collected. Targets recomputed at the train-F1 threshold-search cadence.
+    "danbooru_low_f1_enable": False,
+    "danbooru_low_f1_threshold": 0.5,  # tags with valid F1 below this are targeted (NaN excluded)
+    "danbooru_low_f1_top_k": 500,      # cap on number of worst-F1 tags targeted
+    "danbooru_low_f1_min_posts": 50,   # min Danbooru page-1 posts to include a tag (else skipped)
 }

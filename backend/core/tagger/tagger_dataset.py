@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+import time
+from typing import Callable, Dict, List, Optional, Tuple
 
 import torch
 from PIL import Image
@@ -45,6 +46,7 @@ class TaggerDataset(Dataset):
         caption_types: Optional[List[str]] = None,
         alias_resolver=None,
         quality_masking_mode: str = "intra_group",
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> None:
         """
         Parameters
@@ -88,6 +90,7 @@ class TaggerDataset(Dataset):
         print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
+        self._progress_callback = progress_callback
         self._build_samples(dataset_ids, datasets_db, caption_types)
 
     # ------------------------------------------------------------------
@@ -102,7 +105,26 @@ class TaggerDataset(Dataset):
     ) -> None:
         from database.models import DatasetItem, DatasetCaption
 
-        for dataset_id in dataset_ids:
+        # Throttled progress reporter (drives the frontend pre-training bar via
+        # send_progress_sync upstream). Emits at most ~3x/sec so the WS/SSE
+        # channel is not flooded while loading multi-million-item datasets.
+        _last_emit = [0.0]
+        n_datasets = len(dataset_ids)
+
+        def _emit(done: int, total: int, label: str, force: bool = False) -> None:
+            if self._progress_callback is None:
+                return
+            now = time.monotonic()
+            if not force and now - _last_emit[0] < 0.3:
+                return
+            _last_emit[0] = now
+            try:
+                self._progress_callback(int(done), int(max(1, total)), label)
+            except Exception:
+                pass
+
+        for _di, dataset_id in enumerate(dataset_ids):
+            _ds_tag = f"dataset {dataset_id}" + (f" ({_di + 1}/{n_datasets})" if n_datasets > 1 else "")
             print(f"[TaggerDataset] Loading dataset_id={dataset_id}...")
 
             # Bulk-load all items for this dataset in one query
@@ -119,7 +141,10 @@ class TaggerDataset(Dataset):
             _MAX_SHOW = 5
             skipped_examples: List[str] = []
             skipped_no_path = 0
-            for item in tqdm(items, desc=f"  Checking files (dataset {dataset_id})", unit="item", leave=False):
+            _n_items = len(items)
+            for _ii, item in enumerate(tqdm(items, desc=f"  Checking files (dataset {dataset_id})", unit="item", leave=False)):
+                if _ii % 2000 == 0:
+                    _emit(_ii, _n_items, f"Loading {_ds_tag}: checking files {_ii:,}/{_n_items:,}")
                 if item.image_path and os.path.isfile(item.image_path):
                     item_path_map[item.id] = item.image_path
                 else:
@@ -147,8 +172,10 @@ class TaggerDataset(Dataset):
             captions_by_item: Dict[int, list] = defaultdict(list)
             total_captions = 0
             n_chunks = (len(valid_item_ids) + CHUNK - 1) // CHUNK
-            for i in tqdm(range(0, len(valid_item_ids), CHUNK), total=n_chunks,
-                          desc=f"  Loading captions (dataset {dataset_id})", unit="chunk", leave=False):
+            for _ci, i in enumerate(tqdm(range(0, len(valid_item_ids), CHUNK), total=n_chunks,
+                          desc=f"  Loading captions (dataset {dataset_id})", unit="chunk", leave=False)):
+                _pct = int((_ci / max(1, n_chunks)) * 100)
+                _emit(_ci, n_chunks, f"Loading {_ds_tag}: captions {_ci:,}/{n_chunks:,} ({_pct}%)")
                 chunk_ids = valid_item_ids[i:i + CHUNK]
                 q = (
                     datasets_db.query(DatasetCaption)
@@ -165,7 +192,10 @@ class TaggerDataset(Dataset):
             print(f"[TaggerDataset]   {total_captions} tag captions loaded")
 
             # Build samples
-            for item_id in tqdm(valid_item_ids, desc=f"  Building samples (dataset {dataset_id})", unit="item", leave=False):
+            _n_valid = len(valid_item_ids)
+            for _bi, item_id in enumerate(tqdm(valid_item_ids, desc=f"  Building samples (dataset {dataset_id})", unit="item", leave=False)):
+                if _bi % 5000 == 0:
+                    _emit(_bi, _n_valid, f"Loading {_ds_tag}: building samples {_bi:,}/{_n_valid:,}")
                 item_captions = captions_by_item.get(item_id)
                 if not item_captions:
                     continue

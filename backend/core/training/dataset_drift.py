@@ -296,8 +296,16 @@ def detect_drift(
         if p:
             db_paths.add(os.path.abspath(p))
 
+    # ``missing`` stays path-based: a registered file that vanished (incl. an
+    # extension swap like foo.png → foo.webp) is real drift to re-scan.
     missing = db_paths - on_disk
-    new     = on_disk - db_paths
+    # ``new`` is stem-based: scan_dataset registers one item per stem-group
+    # (base_name within a directory), so an on-disk image whose stem is already
+    # registered under a *different extension* (e.g. foo.png registered, foo.webp
+    # on disk) would never become its own item — counting it as "new" caused
+    # perpetual false-positive drift and a rescan on every training start.
+    db_stems = {os.path.splitext(p)[0] for p in db_paths}
+    new = {f for f in on_disk if os.path.splitext(f)[0] not in db_stems}
 
     # 3) Caption mtime drift (smart mode only)
     captions_stale = 0

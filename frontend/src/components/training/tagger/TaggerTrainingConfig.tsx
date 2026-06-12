@@ -91,7 +91,13 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_new_tag_lookback_days: 90,
   danbooru_new_tag_categories: [0, 3, 4],
   danbooru_new_tag_survey_interval: 3600,
-  danbooru_new_tag_query_ratio: 0.5,
+  danbooru_query_weight_static: 1.0,
+  danbooru_query_weight_new_tag: 1.0,
+  danbooru_query_weight_low_f1: 1.0,
+  danbooru_low_f1_enable: false,
+  danbooru_low_f1_threshold: 0.5,
+  danbooru_low_f1_top_k: 500,
+  danbooru_low_f1_min_posts: 50,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -172,7 +178,13 @@ export default function TaggerTrainingConfig({
         danbooru_new_tag_lookback_days: (editRun.config?.danbooru_new_tag_lookback_days as number) ?? DEFAULT_CONFIG.danbooru_new_tag_lookback_days,
         danbooru_new_tag_categories: (editRun.config?.danbooru_new_tag_categories as number[]) ?? DEFAULT_CONFIG.danbooru_new_tag_categories,
         danbooru_new_tag_survey_interval: (editRun.config?.danbooru_new_tag_survey_interval as number) ?? DEFAULT_CONFIG.danbooru_new_tag_survey_interval,
-        danbooru_new_tag_query_ratio: (editRun.config?.danbooru_new_tag_query_ratio as number) ?? DEFAULT_CONFIG.danbooru_new_tag_query_ratio,
+        danbooru_query_weight_static: (editRun.config?.danbooru_query_weight_static as number) ?? DEFAULT_CONFIG.danbooru_query_weight_static,
+        danbooru_query_weight_new_tag: (editRun.config?.danbooru_query_weight_new_tag as number) ?? DEFAULT_CONFIG.danbooru_query_weight_new_tag,
+        danbooru_query_weight_low_f1: (editRun.config?.danbooru_query_weight_low_f1 as number) ?? DEFAULT_CONFIG.danbooru_query_weight_low_f1,
+        danbooru_low_f1_enable: (editRun.config?.danbooru_low_f1_enable as boolean) ?? DEFAULT_CONFIG.danbooru_low_f1_enable,
+        danbooru_low_f1_threshold: (editRun.config?.danbooru_low_f1_threshold as number) ?? DEFAULT_CONFIG.danbooru_low_f1_threshold,
+        danbooru_low_f1_top_k: (editRun.config?.danbooru_low_f1_top_k as number) ?? DEFAULT_CONFIG.danbooru_low_f1_top_k,
+        danbooru_low_f1_min_posts: (editRun.config?.danbooru_low_f1_min_posts as number) ?? DEFAULT_CONFIG.danbooru_low_f1_min_posts,
       }
     : DEFAULT_CONFIG;
 
@@ -1271,22 +1283,98 @@ export default function TaggerTrainingConfig({
                       </div>
                     </div>
 
-                    {/* New-tag fetch priority */}
+                  </div>
+                )}
+              </div>
+
+              {/* Collection path weights */}
+              <div className="pt-2 border-t border-gray-700 space-y-2">
+                <div className="text-sm text-gray-300">Collection Path Weights</div>
+                <p className="text-xs text-gray-500">
+                  Weighted random selection among available collection paths. A path with no
+                  available queries is skipped and the remaining weights renormalize.
+                </p>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">Static weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    value={config.danbooru_query_weight_static ?? 1.0}
+                    onChange={(e) => setField("danbooru_query_weight_static", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-xs text-gray-500">User static queries.</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">New-tag weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    value={config.danbooru_query_weight_new_tag ?? 1.0}
+                    onChange={(e) => setField("danbooru_query_weight_new_tag", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-xs text-gray-500">Discovered new tags (requires Vocab Expansion).</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">Low-F1 weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    value={config.danbooru_query_weight_low_f1 ?? 1.0}
+                    onChange={(e) => setField("danbooru_query_weight_low_f1", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-xs text-gray-500">Deficiency collection (requires Low-F1 below).</span>
+                </div>
+              </div>
+
+              {/* Low-F1 deficiency collection */}
+              <div className="pt-2 border-t border-gray-700">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!config.danbooru_low_f1_enable}
+                    onChange={(e) => setField("danbooru_low_f1_enable", e.target.checked)}
+                    className="w-4 h-4 rounded"
+                  />
+                  <span className="text-sm text-gray-300">
+                    Low-F1 Deficiency Collection (collect existing vocab tags with low per-tag F1)
+                  </span>
+                </label>
+                {config.danbooru_low_f1_enable && (
+                  <div className="mt-2 ml-7 space-y-2">
+                    <p className="text-xs text-gray-500">
+                      Requires training F1 metrics enabled. Targets are recomputed at the threshold-search
+                      interval; existing vocab tags with a valid F1 below the threshold are collected
+                      (untrained tags with no F1 yet are excluded).
+                    </p>
                     <div className="flex items-center gap-3">
-                      <label className="text-xs text-gray-400 w-48">New-tag fetch ratio</label>
+                      <label className="text-xs text-gray-400 w-48">F1 threshold</label>
                       <input
-                        type="number"
-                        min={0}
-                        max={1}
-                        step={0.05}
-                        value={config.danbooru_new_tag_query_ratio ?? 0.5}
-                        onChange={(e) => setField("danbooru_new_tag_query_ratio", parseFloat(e.target.value) || 0)}
+                        type="number" min={0} max={1} step={0.01}
+                        value={config.danbooru_low_f1_threshold ?? 0.5}
+                        onChange={(e) => setField("danbooru_low_f1_threshold", parseFloat(e.target.value) || 0)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
-                      <span className="text-xs text-gray-500">
-                        Fraction of fetch cycles that target discovered new tags (so their
-                        new heads receive positives). 1.0 = collect new tags only.
-                      </span>
+                      <span className="text-xs text-gray-500">Tags below this F1 are targeted.</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Top-K tags</label>
+                      <input
+                        type="number" min={1} step={50}
+                        value={config.danbooru_low_f1_top_k ?? 500}
+                        onChange={(e) => setField("danbooru_low_f1_top_k", parseInt(e.target.value) || 1)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">Max worst-F1 tags to collect.</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Min Danbooru posts</label>
+                      <input
+                        type="number" min={1} max={200} step={10}
+                        value={config.danbooru_low_f1_min_posts ?? 50}
+                        onChange={(e) => setField("danbooru_low_f1_min_posts", parseInt(e.target.value) || 1)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">Skip tags with fewer page-1 posts than this (≤200).</span>
                     </div>
                   </div>
                 )}

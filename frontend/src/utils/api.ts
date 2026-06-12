@@ -2634,7 +2634,15 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_new_tag_lookback_days?: number;
   danbooru_new_tag_categories?: number[];
   danbooru_new_tag_survey_interval?: number;
-  danbooru_new_tag_query_ratio?: number;
+  // Collection-path weights (weighted selection among available paths)
+  danbooru_query_weight_static?: number;
+  danbooru_query_weight_new_tag?: number;
+  danbooru_query_weight_low_f1?: number;
+  // Low-F1 deficiency collection (existing vocab tags with low per-tag F1)
+  danbooru_low_f1_enable?: boolean;
+  danbooru_low_f1_threshold?: number;
+  danbooru_low_f1_top_k?: number;
+  danbooru_low_f1_min_posts?: number;
 }
 
 export interface TaggerTrainingMetric {
@@ -2726,8 +2734,13 @@ export interface DanbooruAugmentationMetrics {
   dynamic_tags_count?: number;
   total_dynamic_collected?: number;
   dynamic_unique_tags_collected?: number;
+  low_f1_tags_count?: number;
+  low_f1_unavailable_count?: number;
+  total_low_f1_collected?: number;
+  low_f1_unique_tags_collected?: number;
   top_tags?: DanbooruTopTag[];
   top_dynamic_tags?: DanbooruTopTag[];
+  top_low_f1_tags?: DanbooruTopTag[];
   recent_posts?: DanbooruRecentPost[];
   error?: string;
 }

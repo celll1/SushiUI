@@ -212,6 +212,29 @@ def _prefetch_loader(loader, stop_event: threading.Event, maxsize: int = 2):
 # Label statistics for π-aware loss functions
 # ------------------------------------------------------------------
 
+def _grow_criterion_buffers(criterion, new_size: int) -> int:
+    """Pad any 1-D per-tag buffer on *criterion* (pi, gammas, label_weight, …)
+    up to *new_size* when the vocabulary expands mid-training.
+
+    New-tag entries get the buffer's mean (a neutral default) — approximate but
+    keeps the loss's per-tag tensors aligned with the grown logits/labels.
+    Scalar-gamma losses (simple ASL) register no such buffers, so this is a
+    no-op for them. Returns the number of buffers grown.
+    """
+    grown = 0
+    bufs = getattr(criterion, "_buffers", None)
+    if not bufs:
+        return 0
+    for name, buf in list(bufs.items()):
+        if buf is None or buf.dim() != 1 or buf.shape[0] >= new_size:
+            continue
+        pad = new_size - buf.shape[0]
+        fill = float(buf.float().mean().item()) if buf.numel() > 0 else 0.0
+        bufs[name] = torch.cat([buf, buf.new_full((pad,), fill)])
+        grown += 1
+    return grown
+
+
 def _compute_label_stats(
     dataset,
     num_tags: int,
@@ -976,6 +999,11 @@ class TaggerTrainer:
         else:
             raise ValueError(f"Unknown loss_function: {loss_fn_name!r}")
 
+        # Expose for the Danbooru vocab-expansion callback (defined in
+        # run_tagger_training) so it can grow per-tag structures when the
+        # vocabulary expands mid-training. See _expansion_callback.
+        self.criterion = criterion
+
         # Register with the GPU coordinator so image-generation requests can
         # pause us at the next batch boundary.  Cleanup happens at the end of
         # train() and defensively in run_tagger_training()'s finally.
@@ -1000,6 +1028,7 @@ class TaggerTrainer:
         _buf_size     = max(int(cfg.get("train_f1_buffer_batches", 16)), 1)
         _f1_threshold = float(cfg.get("train_f1_initial_threshold", 0.35))
         _train_f1_buffer: deque = deque(maxlen=_buf_size)
+        self._train_f1_buffer = _train_f1_buffer  # exposed for vocab-expansion reset
 
         # Per-tag threshold metrics accumulator
         from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
@@ -1010,6 +1039,7 @@ class TaggerTrainer:
         _calib_eps            = float(cfg.get("calib_eps", 0.5))
         _calib_prior_strength = float(cfg.get("calib_prior_strength", 10.0))
         _tag_metrics_acc = TagMetricsAccumulator(vocab_size=self.vocabulary.num_tags)
+        self._tag_metrics_acc = _tag_metrics_acc  # exposed for vocab-expansion grow
 
         # OOD embedding accumulator (reservoir sampling of CLS embeddings)
         from core.tagger.ood_embedding_accumulator import OodEmbeddingAccumulator
@@ -1710,6 +1740,14 @@ class TaggerTrainer:
                 else:
                     logits = model(pv, pam, ss)
 
+                # Vocab may have expanded mid-training: the val loader's workers
+                # hold a stale vocabulary snapshot and emit old-width labels, so
+                # pad them to the current logit width before comparing.
+                if labels.shape[1] < logits.shape[1]:
+                    labels = torch.nn.functional.pad(
+                        labels, (0, logits.shape[1] - labels.shape[1]), value=0.0
+                    )
+
                 # float16 to halve memory usage (84k tags × many samples)
                 probs = torch.sigmoid(logits).to(torch.float16).cpu()
                 all_preds.append(probs)
@@ -1750,6 +1788,11 @@ class TaggerTrainer:
                         logits = model(pv, pam, ss)
                 else:
                     logits = model(pv, pam, ss)
+                # Pad stale-width val labels after a mid-training vocab expansion.
+                if labels.shape[1] < logits.shape[1]:
+                    labels = torch.nn.functional.pad(
+                        labels, (0, logits.shape[1] - labels.shape[1]), value=0.0
+                    )
                 all_preds.append(torch.sigmoid(logits).to(torch.float16).cpu())
                 all_labels.append(labels.to(torch.float16))
         return torch.cat(all_preds, dim=0), torch.cat(all_labels, dim=0)
@@ -2122,6 +2165,31 @@ def run_tagger_training(
                         new_tags, vocabulary, trainer.model, trainer.optimizer
                     )
                     if n > 0:
+                        _new_size = vocabulary.num_tags
+                        # Grow the other in-train per-tag structures so they stay
+                        # aligned with the expanded head/labels (otherwise the
+                        # next metrics update / loss hits a shape mismatch).
+                        try:
+                            _acc = getattr(trainer, "_tag_metrics_acc", None)
+                            if _acc is not None:
+                                _acc.grow(_new_size)
+                        except Exception as _ge:
+                            print(f"[TaggerTraining] metrics accumulator grow failed: {_ge}")
+                        try:
+                            _ng = _grow_criterion_buffers(trainer.criterion, _new_size)
+                            if _ng:
+                                print(f"[TaggerTraining] Grew {_ng} per-tag loss buffer(s) for new tags")
+                        except Exception as _ce:
+                            print(f"[TaggerTraining] criterion buffer grow failed: {_ce}")
+                        # The train-F1 rolling buffer holds old-width probs/labels
+                        # which can no longer be concatenated with new-width ones.
+                        try:
+                            _tb = getattr(trainer, "_train_f1_buffer", None)
+                            if _tb is not None:
+                                _tb.clear()
+                        except Exception:
+                            pass
+
                         if _surveyor is not None:
                             _surveyor.mark_added(new_tags)
                         # Save vocabulary snapshot so training can resume with expanded vocab

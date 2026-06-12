@@ -6,7 +6,7 @@ Pass 2: Associate text/JSON files with image stems via prefix matching.
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 CAPTION_EXTS = {".txt", ".json"}
@@ -18,6 +18,7 @@ def scan_directory_structure(
     max_depth: Optional[int] = None,
     reference_suffixes: Optional[List[str]] = None,
     target_suffixes: Optional[List[str]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Dict]:
     """Scan directory and build structured file groups.
 
@@ -26,12 +27,16 @@ def scan_directory_structure(
             "images": [{"path": str, "role": "main"|"reference"|"target"}],
             "captions": [{"path": str, "suffix": str, "ext": str}],
         }
+
+    ``should_cancel`` (optional) is polled during the directory walk; if it
+    returns True a ``RescanSkipped`` is raised so a training pre-flight rescan
+    can abort the current dataset (see core.training.rescan_control).
     """
     reference_suffixes = reference_suffixes or []
     target_suffixes = target_suffixes or []
 
     # Collect all files
-    all_files = _collect_files(dir_path, recursive, max_depth)
+    all_files = _collect_files(dir_path, recursive, max_depth, should_cancel=should_cancel)
 
     # Pass 1: Identify image stems
     image_stems = {}  # stem -> [{"path", "role", "group_name"}]
@@ -232,8 +237,19 @@ def _collect_files(
     recursive: bool = True,
     max_depth: Optional[int] = None,
     _current_depth: int = 0,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> List[str]:
-    """Collect all files in directory."""
+    """Collect all files in directory.
+
+    Polls ``should_cancel`` once per directory (raising ``RescanSkipped``) so a
+    training pre-flight rescan can abort the walk of the current dataset within
+    ~1 directory of the skip request.
+    """
+    if should_cancel is not None and should_cancel():
+        # Local import: keeps this lightweight util free of the heavy
+        # core.training package at module load; only paid on an actual skip.
+        from core.training.rescan_control import RescanSkipped
+        raise RescanSkipped()
     files = []
     try:
         entries = os.listdir(dir_path)
@@ -246,7 +262,7 @@ def _collect_files(
             files.append(full_path)
         elif os.path.isdir(full_path) and recursive:
             if max_depth is None or _current_depth < max_depth:
-                files.extend(_collect_files(full_path, recursive, max_depth, _current_depth + 1))
+                files.extend(_collect_files(full_path, recursive, max_depth, _current_depth + 1, should_cancel))
 
     return files
 

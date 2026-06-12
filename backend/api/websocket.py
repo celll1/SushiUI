@@ -159,12 +159,13 @@ class ConnectionManager:
         scope: str,        # "tagger" | "training"
         run_id,            # str for tagger, int for LoRA/Full-FT
         dataset_id: int,
-        phase: str,        # "drift_walk" | "drift_done" | "rescan" | "cleanup"
+        phase: str,        # "drift_walk" | "drift_done" | "rescan" | "cleanup" | "skipped"
         files_walked: int = 0,
         items_in_db: int = 0,
         items_missing: int = 0,
         items_new: int = 0,
         message: str = "",
+        dataset_name: str = "",
     ):
         """Broadcast a dataset-scan / drift-check progress event.
 
@@ -186,6 +187,8 @@ class ConnectionManager:
         }
         if message:
             data["message"] = message
+        if dataset_name:
+            data["dataset_name"] = dataset_name
         self.message_queue.put(data)
         self._notify_sender()
 

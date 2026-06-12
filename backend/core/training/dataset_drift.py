@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 
+from core.training.rescan_control import RescanSkipped
+
 # Same extension set the rescan endpoint uses
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -132,6 +134,7 @@ def _walk_dataset_dir(
     extensions: Set[str],
     sidecar_extensions: Optional[Set[str]] = None,
     progress_callback: Optional[Callable[[int], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
     progress_every_files: int = 5000,
     progress_every_sec: float = 1.0,
 ) -> "Tuple[Set[str], Dict[str, float]]":
@@ -164,6 +167,11 @@ def _walk_dataset_dir(
     last_report = time.monotonic()
     last_count = 0
     while stack:
+        # Cooperative cancellation: checked per-directory and (below) at the
+        # progress cadence, so a skip aborts the walk within ~1s even on a huge
+        # tree. Raises RescanSkipped, which the route handler catches.
+        if should_cancel is not None and should_cancel():
+            raise RescanSkipped()
         cur, remaining = stack.pop()
         try:
             it = os.scandir(cur)
@@ -192,6 +200,8 @@ def _walk_dataset_dir(
                                         pass
                                     last_count = cnt
                                     last_report = now
+                                    if should_cancel is not None and should_cancel():
+                                        raise RescanSkipped()
                         elif track_sidecars and ext in sidecar_extensions:
                             # scandir's DirEntry caches stat on Windows so this
                             # is essentially free (no extra syscall).
@@ -220,6 +230,7 @@ def detect_drift(
     *,
     check_caption_mtime: bool = False,
     progress_callback: Optional[Callable[[int], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> DriftReport:
     """Compare on-disk files against DB rows for *dataset_id*.
 
@@ -268,6 +279,7 @@ def detect_drift(
             extensions=exts,
             sidecar_extensions=SIDECAR_EXTS if check_caption_mtime else None,
             progress_callback=progress_callback,
+            should_cancel=should_cancel,
         )
 
     # 2) Files according to the DB.  Normalise to absolute paths so the
@@ -349,6 +361,7 @@ def detect_drift(
 async def rescan_dataset_inline(
     dataset_id: int, datasets_db,
     *, progress_callback: Optional[Callable[[str], None]] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """Run a full rescan of *dataset_id* by directly calling the
     existing ``scan_dataset`` FastAPI route function with a manually-
@@ -365,7 +378,10 @@ async def rescan_dataset_inline(
         except Exception: pass
     # Lazy import to avoid circular dependency at module load time.
     from api.routes import scan_dataset
-    result = await scan_dataset(dataset_id=dataset_id, db=datasets_db, incremental=True)
+    result = await scan_dataset(
+        dataset_id=dataset_id, db=datasets_db, incremental=True,
+        should_cancel=should_cancel,
+    )
     return result
 
 

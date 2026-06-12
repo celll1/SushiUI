@@ -67,11 +67,13 @@ export interface DatasetScanProgress {
   scope: "tagger" | "training";
   run_id: string | number;
   dataset_id: number;
+  dataset_name?: string;
   /** "drift_walk" – walking the directory tree;
    *  "drift_done" – walk finished, report counts;
    *  "rescan" – running full /datasets/scan;
-   *  "cleanup" – cleaning orphan latent cache (LoRA only). */
-  phase: "drift_walk" | "drift_done" | "rescan" | "cleanup";
+   *  "cleanup" – cleaning orphan latent cache (LoRA only);
+   *  "skipped" – user skipped this dataset's rescan. */
+  phase: "drift_walk" | "drift_done" | "rescan" | "cleanup" | "skipped";
   files_walked?: number;
   items_in_db?: number;
   items_missing?: number;
@@ -171,6 +173,7 @@ class ProgressClient {
             scope: data.scope,
             run_id: data.run_id,
             dataset_id: data.dataset_id,
+            dataset_name: data.dataset_name,
             phase: data.phase,
             files_walked: data.files_walked,
             items_in_db: data.items_in_db,

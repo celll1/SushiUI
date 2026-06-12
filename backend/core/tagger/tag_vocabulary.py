@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 # Category sort order for vocabulary organization
 CATEGORY_ORDER: List[str] = [
@@ -86,6 +87,7 @@ class TagVocabulary:
         excluded_categories: Optional[List[str]] = None,
         ban_tags: Optional[List[str]] = None,
         alias_resolver=None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> "TagVocabulary":
         """Build vocabulary by scanning DatasetCaption rows for given dataset IDs.
 
@@ -105,23 +107,49 @@ class TagVocabulary:
         tag_counts: Dict[str, int] = defaultdict(int)
         tag_categories: Dict[str, str] = {}
 
-        # Single JOIN query — avoids N+1 (one query per item for lazy caption load)
-        captions = (
+        # Single JOIN query — avoids N+1 (one query per item for lazy caption load).
+        # Stream with yield_per instead of .all() so we can report progress and
+        # avoid materialising millions of caption rows in memory at once.
+        _base_q = (
             datasets_db.query(DatasetCaption)
             .join(DatasetItem, DatasetCaption.item_id == DatasetItem.id)
             .filter(
                 DatasetItem.dataset_id.in_(dataset_ids),
                 DatasetCaption.is_tags_format == True,
             )
-            .all()
         )
-        for caption in captions:
+        _total = 0
+        if progress_callback is not None:
+            # Emit before count() (which itself scans) so the bar isn't blank.
+            try:
+                progress_callback(0, 1, "Building vocabulary: scanning captions...")
+            except Exception:
+                pass
+            try:
+                _total = _base_q.count()
+            except Exception:
+                _total = 0
+            try:
+                progress_callback(0, max(1, _total), f"Building vocabulary: 0/{_total:,} captions")
+            except Exception:
+                pass
+        _last_emit = 0.0
+        for _i, caption in enumerate(_base_q.yield_per(5000)):
             tags_with_cats = _parse_caption_tags(caption)
             for tag, category in tags_with_cats:
                 norm = alias_resolver.resolve(tag) if alias_resolver else normalize_tag(tag)
                 tag_counts[norm] += 1
                 if norm not in tag_categories:
                     tag_categories[norm] = category
+            # Throttled progress (~3x/sec) over the caption scan.
+            if progress_callback is not None and _i % 5000 == 0:
+                _now = time.monotonic()
+                if _now - _last_emit >= 0.3:
+                    _last_emit = _now
+                    try:
+                        progress_callback(_i, max(1, _total), f"Building vocabulary: {_i:,}/{_total:,} captions")
+                    except Exception:
+                        pass
 
         # Resolve "__lookup__" sentinels AND "Unknown" tags via taglist_cache.
         # "Unknown" may appear in tag_data when captions were built before a tag was

@@ -558,6 +558,28 @@ class MixedDataLoader:
     def __len__(self) -> int:
         return len(self.base_loader)
 
+    def rewrap(self, new_base_loader: DataLoader) -> "MixedDataLoader":
+        """Return a new MixedDataLoader over *new_base_loader*, sharing this
+        instance's Danbooru buffer, expander, vocabulary and injection settings.
+
+        Used on mid-epoch resume: the trainer rebuilds a plain base DataLoader
+        that skips the already-processed batches, then re-wraps it here so the
+        interrupt-batch injection continues for the resumed epoch.  Without this
+        the resumed epoch would run on the bare base loader and Danbooru
+        injection would silently stop until the next epoch boundary.
+        """
+        return MixedDataLoader(
+            new_base_loader,
+            buffer=self._buffer,
+            injection_interval=self._injection_interval,
+            injection_batch_size=self._injection_batch_size,
+            expander=self._expander,
+            expansion_callback=self._expansion_callback,
+            vocabulary=self._vocabulary,
+            quality_masking_mode=self._quality_masking,
+            alias_resolver=self._alias_resolver,
+        )
+
     def _build_injection_batch(self) -> Optional[Tuple]:
         """Drain a full Danbooru batch, build labels, and collate. None if
         buffer is insufficient or all samples failed to collate.

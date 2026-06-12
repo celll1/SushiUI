@@ -955,6 +955,22 @@ export default function TaggerTrainingMonitor({
                   lr_top_targets: "LR top targets",
                   lr_threshold: "LR threshold",
                   lr_min_anchor_count: "LR min anchor count",
+                  // Online Danbooru augmentation
+                  enable_danbooru_augmentation: "Danbooru aug",
+                  danbooru_tags: "Danbooru tags",
+                  danbooru_injection_interval: "Injection interval",
+                  danbooru_injection_batch_size_ratio: "Injection batch ratio",
+                  danbooru_min_score: "Danbooru min score",
+                  danbooru_max_posts_per_query: "Max posts / query",
+                  danbooru_api_interval: "API interval (s)",
+                  danbooru_dl_speed_kbps: "DL speed (kbps)",
+                  danbooru_buffer_size: "Buffer size",
+                  danbooru_vocab_expand: "Vocab expansion",
+                  danbooru_new_tag_min_count: "New-tag min count",
+                  danbooru_new_tag_lookback_days: "New-tag lookback (days)",
+                  danbooru_new_tag_categories: "New-tag categories",
+                  danbooru_new_tag_survey_interval: "Survey interval (s)",
+                  danbooru_new_tag_query_ratio: "New-tag query ratio",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -968,11 +984,29 @@ export default function TaggerTrainingMonitor({
                   "lr_top_anchors", "lr_top_targets", "lr_threshold", "lr_min_anchor_count",
                 ]);
                 const buildLR = Boolean(cfg.build_lr_matrix_on_start);
+                // Danbooru augmentation: detail keys only meaningful when enabled;
+                // new-tag (vocab-expansion) sub-keys only when vocab_expand is on.
+                const danbooruOn = Boolean(cfg.enable_danbooru_augmentation);
+                const vocabExpandOn = Boolean(cfg.danbooru_vocab_expand);
+                const DANBOORU_DETAIL_KEYS = new Set([
+                  "danbooru_tags", "danbooru_injection_interval", "danbooru_injection_batch_size_ratio",
+                  "danbooru_min_score", "danbooru_max_posts_per_query", "danbooru_api_interval",
+                  "danbooru_dl_speed_kbps", "danbooru_buffer_size", "danbooru_vocab_expand",
+                  "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
+                  "danbooru_new_tag_survey_interval", "danbooru_new_tag_query_ratio",
+                ]);
+                const DANBOORU_VOCAB_KEYS = new Set([
+                  "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
+                  "danbooru_new_tag_survey_interval", "danbooru_new_tag_query_ratio",
+                ]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
                     key,
                     label,
-                    value: key === "loss_function" ? (cfg[key] ?? "asl") : cfg[key],
+                    value:
+                      key === "loss_function" ? (cfg[key] ?? "asl")
+                      : key === "enable_danbooru_augmentation" ? Boolean(cfg[key])
+                      : cfg[key],
                   }))
                   .filter(({ key, value }) => {
                     if (value === undefined || value === null || value === "") return false;
@@ -981,6 +1015,8 @@ export default function TaggerTrainingMonitor({
                     if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
                     if (H_CS_ASL_KEYS.has(key) && lossFn !== "h_cs_asl") return false;
                     if (LR_SUB_KEYS.has(key) && !buildLR) return false;
+                    if (DANBOORU_DETAIL_KEYS.has(key) && !danbooruOn) return false;
+                    if (DANBOORU_VOCAB_KEYS.has(key) && !vocabExpandOn) return false;
                     return true;
                   });
                 return (

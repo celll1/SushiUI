@@ -1198,6 +1198,13 @@ class TaggerTrainer:
                     num_workers=train_loader.num_workers,
                     collate_fn=tagger_collate_fn, pin_memory=False,
                 )
+                # If Danbooru augmentation is active (train_loader is a
+                # MixedDataLoader), re-wrap the rebuilt base loader so the
+                # interrupt-batch injection continues for the resumed epoch.
+                # Without this, resuming mid-epoch silently disables Danbooru
+                # injection until the next epoch boundary.
+                if hasattr(train_loader, "rewrap"):
+                    _resume_loader = train_loader.rewrap(_resume_loader)
                 print(f"[TaggerTrainer] Skipped {resume_batch_idx + 1} batches efficiently "
                       f"(resume from batch {resume_batch_idx + 1})")
                 _loader_for_epoch = _resume_loader

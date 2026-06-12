@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Callable
 from pydantic import BaseModel
 from datetime import datetime
 from pathlib import Path
@@ -4333,6 +4333,7 @@ async def scan_dataset(
     db: Session = Depends(get_datasets_db),
     *,
     incremental: bool = False,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ):
     """Scan dataset directory and register images/captions.
 
@@ -4420,16 +4421,26 @@ async def scan_dataset(
     import asyncio
     print(f"[Dataset Scan] Pre-scanning directory structure...")
     loop = asyncio.get_event_loop()
-    pre_scan_groups = await loop.run_in_executor(
-        None,
-        lambda: scan_directory_structure(
-            dir_path=dataset.path,
-            recursive=dataset.recursive,
-            max_depth=dataset.max_depth if dataset.max_depth else None,
-            reference_suffixes=dataset.reference_suffixes or [],
-            target_suffixes=dataset.target_suffixes or [],
+    from core.training.rescan_control import RescanSkipped
+    try:
+        pre_scan_groups = await loop.run_in_executor(
+            None,
+            lambda: scan_directory_structure(
+                dir_path=dataset.path,
+                recursive=dataset.recursive,
+                max_depth=dataset.max_depth if dataset.max_depth else None,
+                reference_suffixes=dataset.reference_suffixes or [],
+                target_suffixes=dataset.target_suffixes or [],
+                should_cancel=should_cancel,
+            )
         )
-    )
+    except RescanSkipped:
+        # Skipped during the pre-scan walk — nothing written yet.
+        print(f"[Dataset Scan] Skipped during pre-scan walk for dataset {dataset_id}")
+        return {
+            "items_found": 0, "captions_found": 0, "captions_updated": 0,
+            "items_purged": 0, "cancelled": True, "dataset": dataset.to_dict(),
+        }
 
     # Build suffix caption lookup and count images from pre-scan results
     suffix_captions_by_stem = {}
@@ -4482,6 +4493,12 @@ async def scan_dataset(
 
     def scan_directory(dir_path, current_depth=0):
         nonlocal items_found, captions_found, captions_updated, files_processed
+
+        # Cooperative cancellation (training pre-flight skip): checked per
+        # directory and per image-group below. Raises RescanSkipped which the
+        # registration await catches to commit partial progress.
+        if should_cancel is not None and should_cancel():
+            raise RescanSkipped()
 
         try:
             entries = os.listdir(dir_path)
@@ -4586,6 +4603,10 @@ async def scan_dataset(
             # Log progress every 1k groups
             if groups_processed % 1000 == 0:
                 print(f"[Dataset Scan] Processed {groups_processed}/{len(file_groups)} file groups in {dir_path}")
+            # Cooperative cancellation: poll every 200 image-groups so a skip
+            # aborts a large flat directory promptly (RescanSkipped propagates).
+            if should_cancel is not None and groups_processed % 200 == 0 and should_cancel():
+                raise RescanSkipped()
 
             # Determine which image to use as main and which as reference
             main_images = []
@@ -4861,7 +4882,34 @@ async def scan_dataset(
     # SQLite is configured with check_same_thread=False, so cross-thread access is safe
     import asyncio
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, lambda: scan_directory(dataset.path))
+    _scan_cancelled = False
+    try:
+        await loop.run_in_executor(None, lambda: scan_directory(dataset.path))
+    except RescanSkipped:
+        _scan_cancelled = True
+        print(f"[Dataset Scan] Rescan skipped mid-walk for dataset {dataset_id}; "
+              f"committing {items_found} new items, skipping purge")
+
+    if _scan_cancelled:
+        # Skip the purge: we did not finish seeing every on-disk file, so the
+        # stale-path diff is incomplete and purging would wrongly delete items
+        # we simply hadn't reached. Commit the new items/captions added so far
+        # and leave last_scanned_at unchanged so the next pre-flight re-detects
+        # drift (already-applied changes stay, per the skip contract).
+        db.commit()
+        db.refresh(dataset)
+        manager.send_progress_sync(
+            total_steps, total_steps,
+            f"Rescan skipped: committed {items_found} new items (partial)"
+        )
+        return {
+            "items_found": items_found,
+            "captions_found": captions_found,
+            "captions_updated": captions_updated,
+            "items_purged": 0,
+            "cancelled": True,
+            "dataset": dataset.to_dict(),
+        }
 
     # --- Purge: remove DB records whose files no longer exist on disk ---
     stale_paths = set(existing_paths.keys()) - seen_existing_paths
@@ -6630,91 +6678,141 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
 
                 ddb = DatasetsSessionLocal()
                 try:
+                    from core.training.rescan_control import rescan_skip_controller, RescanSkipped
+                    import asyncio as _asyncio
+                    _ev_loop = _asyncio.get_event_loop()
                     for ds_id in ds_ids:
-                        # "force" mode skips drift detection entirely and
-                        # always triggers a rescan.  "path" and "smart"
-                        # walk first; "smart" additionally collects sidecar
-                        # mtimes for content-only caption drift.
-                        should_rescan: bool
-                        report = None
-                        if _rescan_mode == "force":
-                            should_rescan = True
-                        else:
-                            # Live walk-progress → WebSocket
-                            def _drift_progress(files_walked: int, _ds_id=ds_id):
+                        # Resolve dataset name once for progress display.
+                        try:
+                            _ds_row = ddb.query(_Dataset).filter(_Dataset.id == ds_id).first()
+                            _ds_name = (_ds_row.name if _ds_row else "") or ""
+                        except Exception:
+                            _ds_name = ""
+
+                        # Register this dataset as the current rescan target so a
+                        # frontend "skip" can flag it; poll the flag via _skip_cb.
+                        rescan_skip_controller.begin("training", run_id, ds_id)
+                        def _skip_cb(_rid=run_id):
+                            return rescan_skip_controller.should_skip("training", _rid)
+                        try:
+                            # "force" mode skips drift detection entirely and
+                            # always triggers a rescan.  "path" and "smart"
+                            # walk first; "smart" additionally collects sidecar
+                            # mtimes for content-only caption drift.
+                            should_rescan: bool
+                            report = None
+                            if _rescan_mode == "force":
+                                should_rescan = True
+                            else:
+                                # Live walk-progress → WebSocket
+                                def _drift_progress(files_walked: int, _ds_id=ds_id, _nm=_ds_name):
+                                    try:
+                                        manager.send_dataset_scan_progress(
+                                            scope="training", run_id=run_id,
+                                            dataset_id=int(_ds_id), phase="drift_walk",
+                                            files_walked=files_walked, dataset_name=_nm,
+                                        )
+                                    except Exception:
+                                        pass
+                                # Run the (blocking) drift walk off the event loop so
+                                # the skip endpoint can be received and progress flushes.
+                                report = await _ev_loop.run_in_executor(
+                                    None,
+                                    lambda: detect_drift(
+                                        ds_id, ddb,
+                                        check_caption_mtime=(_rescan_mode == "smart"),
+                                        progress_callback=_drift_progress,
+                                        should_cancel=_skip_cb,
+                                    ),
+                                )
+                                print(f"[Training {run_id}] Dataset drift {ds_id} ({_rescan_mode}): {report.to_dict()}")
                                 try:
                                     manager.send_dataset_scan_progress(
                                         scope="training", run_id=run_id,
-                                        dataset_id=int(_ds_id), phase="drift_walk",
-                                        files_walked=files_walked,
+                                        dataset_id=int(ds_id), phase="drift_done",
+                                        files_walked=report.files_walked,
+                                        items_in_db=report.items_in_db,
+                                        items_missing=report.items_missing,
+                                        items_new=report.items_new,
+                                        dataset_name=_ds_name,
                                     )
                                 except Exception:
                                     pass
-                            report = detect_drift(
-                                ds_id, ddb,
-                                check_caption_mtime=(_rescan_mode == "smart"),
-                                progress_callback=_drift_progress,
-                            )
-                            print(f"[Training {run_id}] Dataset drift {ds_id} ({_rescan_mode}): {report.to_dict()}")
-                            try:
-                                manager.send_dataset_scan_progress(
-                                    scope="training", run_id=run_id,
-                                    dataset_id=int(ds_id), phase="drift_done",
-                                    files_walked=report.files_walked,
-                                    items_in_db=report.items_in_db,
-                                    items_missing=report.items_missing,
-                                    items_new=report.items_new,
-                                )
-                            except Exception:
-                                pass
-                            should_rescan = report.has_drift
+                                should_rescan = report.has_drift
 
-                        if should_rescan:
-                            reason = (
-                                "force mode"
-                                if _rescan_mode == "force"
-                                else (
-                                    f"{report.items_missing} missing, {report.items_new} new"
-                                    + (f", {report.captions_stale} stale captions" if (report and report.captions_stale) else "")
-                                )
-                            )
-                            print(f"[Training {run_id}] Rescan triggered for dataset {ds_id} ({reason})")
-                            try:
-                                manager.send_dataset_scan_progress(
-                                    scope="training", run_id=run_id,
-                                    dataset_id=int(ds_id), phase="rescan",
-                                    files_walked=(report.files_walked if report else 0),
-                                    items_missing=(report.items_missing if report else 0),
-                                    items_new=(report.items_new if report else 0),
-                                    message=f"Rescanning... ({reason})",
-                                )
-                            except Exception:
-                                pass
-                            try:
-                                await rescan_dataset_inline(ds_id, ddb)
-                            except Exception as _re:
-                                print(f"[Training {run_id}] Rescan failed: {_re}")
-                            # Cleanup orphan latent cache for this dataset
-                            try:
-                                manager.send_dataset_scan_progress(
-                                    scope="training", run_id=run_id,
-                                    dataset_id=int(ds_id), phase="cleanup",
-                                    message="Cleaning orphan latent cache...",
-                                )
-                            except Exception:
-                                pass
-                            try:
-                                _ds = ddb.query(_Dataset).filter(_Dataset.id == ds_id).first()
-                                if _ds is not None and getattr(_ds, "unique_id", None):
-                                    removed = cleanup_orphan_latent_cache(
-                                        dataset_unique_id=_ds.unique_id,
-                                        datasets_db=ddb,
-                                        dataset_id=ds_id,
+                            if should_rescan:
+                                reason = (
+                                    "force mode"
+                                    if _rescan_mode == "force"
+                                    else (
+                                        f"{report.items_missing} missing, {report.items_new} new"
+                                        + (f", {report.captions_stale} stale captions" if (report and report.captions_stale) else "")
                                     )
-                                    if removed:
-                                        print(f"[Training {run_id}] Cleaned {removed} orphan latent cache files")
-                            except Exception as _ce:
-                                print(f"[Training {run_id}] Latent cache cleanup failed: {_ce}")
+                                )
+                                print(f"[Training {run_id}] Rescan triggered for dataset {ds_id} ({reason})")
+                                try:
+                                    manager.send_dataset_scan_progress(
+                                        scope="training", run_id=run_id,
+                                        dataset_id=int(ds_id), phase="rescan",
+                                        files_walked=(report.files_walked if report else 0),
+                                        items_missing=(report.items_missing if report else 0),
+                                        items_new=(report.items_new if report else 0),
+                                        message=f"Rescanning... ({reason})",
+                                        dataset_name=_ds_name,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    _res = await rescan_dataset_inline(ds_id, ddb, should_cancel=_skip_cb)
+                                    if isinstance(_res, dict) and _res.get("cancelled"):
+                                        print(f"[Training {run_id}] Rescan of {ds_id} skipped by user (partial commit kept)")
+                                        try:
+                                            manager.send_dataset_scan_progress(
+                                                scope="training", run_id=run_id,
+                                                dataset_id=int(ds_id), phase="skipped",
+                                                dataset_name=_ds_name,
+                                                message=f"Skipped rescan of {_ds_name or ds_id}",
+                                            )
+                                        except Exception:
+                                            pass
+                                except Exception as _re:
+                                    print(f"[Training {run_id}] Rescan failed: {_re}")
+                                # Cleanup orphan latent cache for this dataset
+                                try:
+                                    manager.send_dataset_scan_progress(
+                                        scope="training", run_id=run_id,
+                                        dataset_id=int(ds_id), phase="cleanup",
+                                        message="Cleaning orphan latent cache...",
+                                        dataset_name=_ds_name,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    _ds = ddb.query(_Dataset).filter(_Dataset.id == ds_id).first()
+                                    if _ds is not None and getattr(_ds, "unique_id", None):
+                                        removed = cleanup_orphan_latent_cache(
+                                            dataset_unique_id=_ds.unique_id,
+                                            datasets_db=ddb,
+                                            dataset_id=ds_id,
+                                        )
+                                        if removed:
+                                            print(f"[Training {run_id}] Cleaned {removed} orphan latent cache files")
+                                except Exception as _ce:
+                                    print(f"[Training {run_id}] Latent cache cleanup failed: {_ce}")
+                        except RescanSkipped:
+                            # Raised from the drift walk (executor path) when skipped.
+                            print(f"[Training {run_id}] Drift/rescan of {ds_id} skipped by user")
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="training", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="skipped",
+                                    dataset_name=_ds_name,
+                                    message=f"Skipped rescan of {_ds_name or ds_id}",
+                                )
+                            except Exception:
+                                pass
+                        finally:
+                            rescan_skip_controller.end("training", run_id)
                 finally:
                     ddb.close()
             except Exception as _de:
@@ -6825,6 +6923,26 @@ async def stop_training_run(run_id: int, db: Session = Depends(get_training_db))
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to stop training: {str(e)}")
+
+
+class SkipRescanRequest(BaseModel):
+    dataset_id: Optional[int] = None  # skip only if it matches the current rescan
+
+
+@router.post("/training/runs/{run_id}/skip-rescan")
+async def skip_training_rescan(run_id: int, request: SkipRescanRequest = SkipRescanRequest()):
+    """Skip the dataset currently being rescanned in this run's pre-flight.
+
+    Flags the cooperative-cancel flag the rescan's directory walkers poll, so the
+    current dataset's drift-walk / rescan aborts (keeping any already-applied
+    changes) and the pre-flight continues with the remaining datasets.
+    """
+    from core.training.rescan_control import rescan_skip_controller
+    flagged = rescan_skip_controller.request_skip("training", run_id, request.dataset_id)
+    return {
+        "skipped": flagged,
+        "current_dataset": rescan_skip_controller.current_dataset("training", run_id),
+    }
 
 @router.patch("/training/runs/{run_id}/config")
 async def update_training_config(run_id: int, config_data: dict, db: Session = Depends(get_training_db)):
@@ -8499,81 +8617,122 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                 from core.training.dataset_drift import (
                     detect_drift, rescan_dataset_inline,
                 )
+                from core.training.rescan_control import rescan_skip_controller, RescanSkipped
+                from database.models import Dataset as _Dataset
                 ddb = DatasetsSessionLocal()
                 try:
                     for ds_id in dataset_ids:
-                        should_rescan: bool
-                        report = None
+                        # Resolve dataset name once for progress display.
+                        try:
+                            _ds_row = ddb.query(_Dataset).filter(_Dataset.id == int(ds_id)).first()
+                            _ds_name = (_ds_row.name if _ds_row else "") or ""
+                        except Exception:
+                            _ds_name = ""
 
-                        if _rescan_mode == "force":
-                            should_rescan = True
-                            callback(run_id, "phase", {
-                                "phase": "dataset_rescan",
-                                "message": f"Force rescan: dataset {ds_id}...",
-                            })
-                        else:
-                            # "path" or "smart" — walk and compare.
-                            def _drift_progress(files_walked: int, _ds_id=ds_id):
+                        rescan_skip_controller.begin("tagger", run_id, int(ds_id))
+                        def _skip_cb(_rid=run_id):
+                            return rescan_skip_controller.should_skip("tagger", _rid)
+                        try:
+                            should_rescan: bool
+                            report = None
+
+                            if _rescan_mode == "force":
+                                should_rescan = True
+                                callback(run_id, "phase", {
+                                    "phase": "dataset_rescan",
+                                    "message": f"Force rescan: {_ds_name or ds_id}...",
+                                })
+                            else:
+                                # "path" or "smart" — walk and compare.
+                                def _drift_progress(files_walked: int, _ds_id=ds_id, _nm=_ds_name):
+                                    try:
+                                        manager.send_dataset_scan_progress(
+                                            scope="tagger", run_id=run_id,
+                                            dataset_id=int(_ds_id), phase="drift_walk",
+                                            files_walked=files_walked, dataset_name=_nm,
+                                        )
+                                    except Exception:
+                                        pass
+                                callback(run_id, "phase", {
+                                    "phase": "dataset_drift",
+                                    "message": f"Drift check ({_rescan_mode}): {_ds_name or ds_id}...",
+                                })
+                                report = detect_drift(
+                                    int(ds_id), ddb,
+                                    check_caption_mtime=(_rescan_mode == "smart"),
+                                    progress_callback=_drift_progress,
+                                    should_cancel=_skip_cb,
+                                )
+                                print(f"[TaggerTraining] Drift {ds_id} ({_rescan_mode}): {report.to_dict()}")
+                                callback(run_id, "dataset_drift", report.to_dict())
                                 try:
                                     manager.send_dataset_scan_progress(
                                         scope="tagger", run_id=run_id,
-                                        dataset_id=int(_ds_id), phase="drift_walk",
-                                        files_walked=files_walked,
+                                        dataset_id=int(ds_id), phase="drift_done",
+                                        files_walked=report.files_walked,
+                                        items_in_db=report.items_in_db,
+                                        items_missing=report.items_missing,
+                                        items_new=report.items_new,
+                                        dataset_name=_ds_name,
                                     )
                                 except Exception:
                                     pass
-                            callback(run_id, "phase", {
-                                "phase": "dataset_drift",
-                                "message": f"Drift check ({_rescan_mode}): dataset {ds_id}...",
-                            })
-                            report = detect_drift(
-                                int(ds_id), ddb,
-                                check_caption_mtime=(_rescan_mode == "smart"),
-                                progress_callback=_drift_progress,
-                            )
-                            print(f"[TaggerTraining] Drift {ds_id} ({_rescan_mode}): {report.to_dict()}")
-                            callback(run_id, "dataset_drift", report.to_dict())
-                            try:
-                                manager.send_dataset_scan_progress(
-                                    scope="tagger", run_id=run_id,
-                                    dataset_id=int(ds_id), phase="drift_done",
-                                    files_walked=report.files_walked,
-                                    items_in_db=report.items_in_db,
-                                    items_missing=report.items_missing,
-                                    items_new=report.items_new,
-                                )
-                            except Exception:
-                                pass
-                            should_rescan = report.has_drift
+                                should_rescan = report.has_drift
 
-                        if should_rescan:
-                            if _rescan_mode == "force":
-                                reason = "force mode"
-                            else:
-                                parts = []
-                                if report.items_missing:  parts.append(f"{report.items_missing} missing")
-                                if report.items_new:      parts.append(f"{report.items_new} new")
-                                if report.captions_stale: parts.append(f"{report.captions_stale} stale captions")
-                                reason = ", ".join(parts) or "drift detected"
-                            callback(run_id, "phase", {
-                                "phase": "dataset_rescan",
-                                "message": f"Rescanning dataset {ds_id} ({reason})...",
-                            })
+                            if should_rescan:
+                                if _rescan_mode == "force":
+                                    reason = "force mode"
+                                else:
+                                    parts = []
+                                    if report.items_missing:  parts.append(f"{report.items_missing} missing")
+                                    if report.items_new:      parts.append(f"{report.items_new} new")
+                                    if report.captions_stale: parts.append(f"{report.captions_stale} stale captions")
+                                    reason = ", ".join(parts) or "drift detected"
+                                callback(run_id, "phase", {
+                                    "phase": "dataset_rescan",
+                                    "message": f"Rescanning {_ds_name or ds_id} ({reason})...",
+                                })
+                                try:
+                                    manager.send_dataset_scan_progress(
+                                        scope="tagger", run_id=run_id,
+                                        dataset_id=int(ds_id), phase="rescan",
+                                        files_walked=(report.files_walked if report else 0),
+                                        items_missing=(report.items_missing if report else 0),
+                                        items_new=(report.items_new if report else 0),
+                                        message=f"Rescanning... ({reason})",
+                                        dataset_name=_ds_name,
+                                    )
+                                except Exception:
+                                    pass
+                                try:
+                                    _res = asyncio.run(rescan_dataset_inline(int(ds_id), ddb, should_cancel=_skip_cb))
+                                    if isinstance(_res, dict) and _res.get("cancelled"):
+                                        print(f"[TaggerTraining] Rescan of {ds_id} skipped by user (partial commit kept)")
+                                        try:
+                                            manager.send_dataset_scan_progress(
+                                                scope="tagger", run_id=run_id,
+                                                dataset_id=int(ds_id), phase="skipped",
+                                                dataset_name=_ds_name,
+                                                message=f"Skipped rescan of {_ds_name or ds_id}",
+                                            )
+                                        except Exception:
+                                            pass
+                                except Exception as _rs_e:
+                                    print(f"[TaggerTraining] Rescan of {ds_id} failed: {_rs_e}")
+                        except RescanSkipped:
+                            # Raised from the drift walk when skipped.
+                            print(f"[TaggerTraining] Drift/rescan of {ds_id} skipped by user")
                             try:
                                 manager.send_dataset_scan_progress(
                                     scope="tagger", run_id=run_id,
-                                    dataset_id=int(ds_id), phase="rescan",
-                                    files_walked=(report.files_walked if report else 0),
-                                    items_missing=(report.items_missing if report else 0),
-                                    items_new=(report.items_new if report else 0),
-                                    message=f"Rescanning... ({reason})",
+                                    dataset_id=int(ds_id), phase="skipped",
+                                    dataset_name=_ds_name,
+                                    message=f"Skipped rescan of {_ds_name or ds_id}",
                                 )
                             except Exception:
                                 pass
-                            try:
-                                asyncio.run(rescan_dataset_inline(int(ds_id), ddb))
-                            except Exception as _rs_e:
-                                print(f"[TaggerTraining] Rescan of {ds_id} failed: {_rs_e}")
+                        finally:
+                            rescan_skip_controller.end("tagger", run_id)
                 finally:
                     ddb.close()
 
@@ -8645,6 +8804,22 @@ def stop_tagger_training_run(run_id: str, training_db: Session = Depends(get_tra
     training_db.commit()
     training_db.refresh(run)
     return {"message": "stop_requested", "run": run.to_dict()}
+
+
+@router.post("/tagger-training/runs/{run_id}/skip-rescan")
+def skip_tagger_rescan(run_id: str, request: SkipRescanRequest = SkipRescanRequest()):
+    """Skip the dataset currently being rescanned in this tagger run's pre-flight.
+
+    Flags the cooperative-cancel flag the rescan's directory walkers poll, so the
+    current dataset's drift-walk / rescan aborts (keeping any already-applied
+    changes) and the pre-flight continues with the remaining datasets.
+    """
+    from core.training.rescan_control import rescan_skip_controller
+    flagged = rescan_skip_controller.request_skip("tagger", run_id, request.dataset_id)
+    return {
+        "skipped": flagged,
+        "current_dataset": rescan_skip_controller.current_dataset("tagger", run_id),
+    }
 
 
 @router.delete("/tagger-training/runs/{run_id}")

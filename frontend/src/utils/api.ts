@@ -2156,6 +2156,26 @@ export const stopTrainingRun = async (id: number): Promise<{ message: string; ru
   return response.data;
 };
 
+/** Skip the dataset currently being rescanned during a LoRA/Full-FT run's
+ *  pre-flight. Pass the dataset_id of the in-progress rescan so a stale skip
+ *  (for a dataset that already finished) is ignored. */
+export const skipTrainingRescan = async (
+  id: number,
+  datasetId?: number,
+): Promise<{ skipped: boolean; current_dataset: number | null }> => {
+  const response = await api.post(`/training/runs/${id}/skip-rescan`, { dataset_id: datasetId ?? null });
+  return response.data;
+};
+
+/** Skip the dataset currently being rescanned during a tagger run's pre-flight. */
+export const skipTaggerRescan = async (
+  runId: string,
+  datasetId?: number,
+): Promise<{ skipped: boolean; current_dataset: number | null }> => {
+  const response = await api.post(`/tagger-training/runs/${runId}/skip-rescan`, { dataset_id: datasetId ?? null });
+  return response.data;
+};
+
 export const updateTrainingConfig = async (id: number, configYaml: string): Promise<{ message: string; run: TrainingRun }> => {
   const response = await api.patch(`/training/runs/${id}/config`, { config_yaml: configYaml });
   return response.data;

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Play, Square, Trash2 } from "lucide-react";
-import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization } from "@/utils/api";
+import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, deleteTrainingRun, updateTrainingConfig, reloadTrainingConfig, getTrainingSamples, TrainingSampleStep, getDebugLatents, DebugLatent, visualizeDebugLatent, DebugLatentVisualization, skipTrainingRescan } from "@/utils/api";
 import { wsClient, DatasetScanProgress } from "@/utils/websocket";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
@@ -42,6 +42,10 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
   // Dataset scan progress (drift detection / rescan) — shown until training proper starts
   const [scanMessage, setScanMessage] = useState<string | null>(null);
+  // Dataset currently being rescanned (drift_walk / rescan phase) — drives the
+  // "Skip rescan" button. null when no skippable scan is in progress.
+  const [scanDatasetId, setScanDatasetId] = useState<number | null>(null);
+  const [scanSkipping, setScanSkipping] = useState(false);
 
   // Poll training status
   useEffect(() => {
@@ -112,19 +116,28 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
     const handler = (ev: DatasetScanProgress) => {
       if (ev.scope !== "training") return;
       if (String(ev.run_id) !== String(currentRun.id)) return;
+      // "MyDataset (#25)" when a name is known, else "dataset 25".
+      const dsLabel = ev.dataset_name ? `${ev.dataset_name} (#${ev.dataset_id})` : `dataset ${ev.dataset_id}`;
       let msg = "";
       if (ev.phase === "drift_walk") {
-        msg = `Drift check: dataset ${ev.dataset_id} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;
+        msg = `Drift check: ${dsLabel} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;
+        setScanDatasetId(ev.dataset_id);
       } else if (ev.phase === "drift_done") {
         if ((ev.items_missing ?? 0) === 0 && (ev.items_new ?? 0) === 0) {
-          msg = `Drift check: dataset ${ev.dataset_id} — no drift (${(ev.files_walked ?? 0).toLocaleString()} files)`;
+          msg = `Drift check: ${dsLabel} — no drift (${(ev.files_walked ?? 0).toLocaleString()} files)`;
         } else {
-          msg = `Drift check: dataset ${ev.dataset_id} — ${ev.items_missing ?? 0} missing, ${ev.items_new ?? 0} new`;
+          msg = `Drift check: ${dsLabel} — ${ev.items_missing ?? 0} missing, ${ev.items_new ?? 0} new`;
         }
       } else if (ev.phase === "rescan") {
-        msg = ev.message ?? `Rescanning dataset ${ev.dataset_id}...`;
+        msg = `Rescanning ${dsLabel}${ev.message ? ` — ${ev.message}` : "..."}`;
+        setScanDatasetId(ev.dataset_id);
       } else if (ev.phase === "cleanup") {
-        msg = ev.message ?? `Cleaning orphan latent cache for dataset ${ev.dataset_id}...`;
+        msg = `Cleaning orphan latent cache for ${dsLabel}...`;
+        setScanDatasetId(null);
+      } else if (ev.phase === "skipped") {
+        msg = `Skipped rescan of ${dsLabel}`;
+        setScanDatasetId(null);
+        setScanSkipping(false);
       }
       if (msg) setScanMessage(msg);
     };
@@ -136,6 +149,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
   useEffect(() => {
     if (currentRun.phase === "training" || currentRun.phase === "latent_cache" || currentRun.phase === "text_encoder_cache") {
       setScanMessage(null);
+      setScanDatasetId(null);
+      setScanSkipping(false);
     }
   }, [currentRun.phase]);
 
@@ -333,8 +348,26 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
               {/* Detail message — scan progress takes priority over phase_detail */}
               {scanMessage ? (
-                <div className="text-xs text-blue-300 mb-1">
-                  {scanMessage}
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="text-xs text-blue-300 flex-1">{scanMessage}</div>
+                  {scanDatasetId !== null && (
+                    <button
+                      onClick={async () => {
+                        setScanSkipping(true);
+                        try {
+                          await skipTrainingRescan(currentRun.id, scanDatasetId);
+                        } catch (err) {
+                          console.error("Failed to skip rescan:", err);
+                          setScanSkipping(false);
+                        }
+                      }}
+                      disabled={scanSkipping}
+                      className="text-xs px-2 py-0.5 rounded border border-yellow-600 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                      title="Skip rescanning this dataset and continue (already-applied changes are kept)"
+                    >
+                      {scanSkipping ? "Skipping…" : "Skip rescan"}
+                    </button>
+                  )}
                 </div>
               ) : currentRun.phase_detail && currentRun.phase !== "training" ? (
                 <div className="text-xs text-gray-500 mb-1">

@@ -7,6 +7,7 @@ import {
   startTaggerTrainingRun,
   stopTaggerTrainingRun,
   deleteTaggerTrainingRun,
+  skipTaggerRescan,
   TaggerTrainingRun,
   TaggerTrainingMetric,
 } from "@/utils/api";
@@ -197,6 +198,10 @@ export default function TaggerTrainingMonitor({
   const [iterPerSecLong, setIterPerSecLong] = useState<number | null>(null);
   // Scan progress during dataset rescan (step/total/pct 0–1). null when not scanning.
   const [scanProgress, setScanProgress] = useState<{ step: number; total: number; pct: number } | null>(null);
+  // Dataset currently being rescanned (drift_walk / rescan) — drives the
+  // "Skip rescan" button. null when no skippable scan is in progress.
+  const [scanDatasetId, setScanDatasetId] = useState<number | null>(null);
+  const [scanSkipping, setScanSkipping] = useState(false);
   // 1Hz wall-clock tick to recompute elapsed time without re-rendering
   // on every WS event.  Stored as ms-since-epoch.
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
@@ -359,6 +364,8 @@ export default function TaggerTrainingMonitor({
       if (isScanningRef.current) {
         isScanningRef.current = false;
         setScanProgress(null);
+        setScanDatasetId(null);
+        setScanSkipping(false);
       }
 
       // Buffer and flush at most 1x/sec to avoid per-step re-renders
@@ -470,22 +477,31 @@ export default function TaggerTrainingMonitor({
     const scanHandler = (ev: DatasetScanProgress) => {
       if (ev.scope !== "tagger") return;
       if (String(ev.run_id) !== String(run.run_id)) return;
+      const dsLabel = ev.dataset_name ? `${ev.dataset_name} (#${ev.dataset_id})` : `dataset ${ev.dataset_id}`;
       let msg = "";
       if (ev.phase === "drift_walk") {
-        msg = `Drift check: dataset ${ev.dataset_id} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;
+        msg = `Drift check: ${dsLabel} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;
+        setScanDatasetId(ev.dataset_id);
       } else if (ev.phase === "drift_done") {
         if ((ev.items_missing ?? 0) === 0 && (ev.items_new ?? 0) === 0) {
-          msg = `Drift check: dataset ${ev.dataset_id} — no drift (${(ev.files_walked ?? 0).toLocaleString()} files)`;
+          msg = `Drift check: ${dsLabel} — no drift (${(ev.files_walked ?? 0).toLocaleString()} files)`;
         } else {
-          msg = `Drift check: dataset ${ev.dataset_id} — ${ev.items_missing ?? 0} missing, ${ev.items_new ?? 0} new`;
+          msg = `Drift check: ${dsLabel} — ${ev.items_missing ?? 0} missing, ${ev.items_new ?? 0} new`;
         }
       } else if (ev.phase === "rescan") {
-        msg = ev.message ?? `Rescanning dataset ${ev.dataset_id}...`;
+        msg = `Rescanning ${dsLabel}${ev.message ? ` — ${ev.message}` : "..."}`;
         isScanningRef.current = true;
+        setScanDatasetId(ev.dataset_id);
       } else if (ev.phase === "cleanup") {
         isScanningRef.current = false;
         setScanProgress(null);
-        msg = ev.message ?? `Cleaning orphan cache for dataset ${ev.dataset_id}...`;
+        setScanDatasetId(null);
+        msg = `Cleaning orphan cache for ${dsLabel}...`;
+      } else if (ev.phase === "skipped") {
+        setScanProgress(null);
+        setScanDatasetId(null);
+        setScanSkipping(false);
+        msg = `Skipped rescan of ${dsLabel}`;
       }
       if (msg) {
         setRun(prev => ({ ...prev, status_message: msg }));
@@ -731,11 +747,31 @@ export default function TaggerTrainingMonitor({
                   </span>
                 )}
               </span>
-              <span className="text-gray-300">
-                {scanProgress
-                  ? `${(scanProgress.pct * 100).toFixed(1)}%`
-                  : `${(run.progress * 100).toFixed(1)}%`}
-              </span>
+              <div className="flex items-center gap-2">
+                {scanDatasetId !== null && (
+                  <button
+                    onClick={async () => {
+                      setScanSkipping(true);
+                      try {
+                        await skipTaggerRescan(run.run_id, scanDatasetId);
+                      } catch (err) {
+                        console.error("Failed to skip rescan:", err);
+                        setScanSkipping(false);
+                      }
+                    }}
+                    disabled={scanSkipping}
+                    className="text-xs px-2 py-0.5 rounded border border-yellow-600 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                    title="Skip rescanning this dataset and continue (already-applied changes are kept)"
+                  >
+                    {scanSkipping ? "Skipping…" : "Skip rescan"}
+                  </button>
+                )}
+                <span className="text-gray-300">
+                  {scanProgress
+                    ? `${(scanProgress.pct * 100).toFixed(1)}%`
+                    : `${(run.progress * 100).toFixed(1)}%`}
+                </span>
+              </div>
             </div>
             <div className="w-full bg-gray-700 rounded-full h-2">
               <div

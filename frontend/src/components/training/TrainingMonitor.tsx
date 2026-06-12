@@ -118,6 +118,18 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       if (String(ev.run_id) !== String(currentRun.id)) return;
       // "MyDataset (#25)" when a name is known, else "dataset 25".
       const dsLabel = ev.dataset_name ? `${ev.dataset_name} (#${ev.dataset_id})` : `dataset ${ev.dataset_id}`;
+      // scan_start/scan_end bracket the skippable window — the Skip button is
+      // shown only while scanDatasetId is set (between these two events).
+      if (ev.phase === "scan_start") {
+        setScanDatasetId(ev.dataset_id);
+        setScanSkipping(false);
+        setScanMessage(`Checking ${dsLabel}...`);
+        return;
+      }
+      if (ev.phase === "scan_end") {
+        setScanDatasetId((cur) => (cur === ev.dataset_id ? null : cur));
+        return;
+      }
       let msg = "";
       if (ev.phase === "drift_walk") {
         msg = `Drift check: ${dsLabel} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;

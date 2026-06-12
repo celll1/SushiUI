@@ -6692,6 +6692,18 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                         # Register this dataset as the current rescan target so a
                         # frontend "skip" can flag it; poll the flag via _skip_cb.
                         rescan_skip_controller.begin("training", run_id, ds_id)
+                        # Mark the start of the skippable window for this dataset
+                        # (begin→end). The UI shows the Skip button only between
+                        # scan_start and scan_end, so it can't be pressed when no
+                        # rescan is active.
+                        try:
+                            manager.send_dataset_scan_progress(
+                                scope="training", run_id=run_id,
+                                dataset_id=int(ds_id), phase="scan_start",
+                                dataset_name=_ds_name,
+                            )
+                        except Exception:
+                            pass
                         def _skip_cb(_rid=run_id):
                             return rescan_skip_controller.should_skip("training", _rid)
                         try:
@@ -6813,6 +6825,15 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                                 pass
                         finally:
                             rescan_skip_controller.end("training", run_id)
+                            # End of the skippable window → UI hides the button.
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="training", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="scan_end",
+                                    dataset_name=_ds_name,
+                                )
+                            except Exception:
+                                pass
                 finally:
                     ddb.close()
             except Exception as _de:
@@ -8642,6 +8663,16 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                             _ds_name = ""
 
                         rescan_skip_controller.begin("tagger", run_id, int(ds_id))
+                        # Start of the skippable window (begin→end): the UI shows
+                        # the Skip button only between scan_start and scan_end.
+                        try:
+                            manager.send_dataset_scan_progress(
+                                scope="tagger", run_id=run_id,
+                                dataset_id=int(ds_id), phase="scan_start",
+                                dataset_name=_ds_name,
+                            )
+                        except Exception:
+                            pass
                         def _skip_cb(_rid=run_id):
                             return rescan_skip_controller.should_skip("tagger", _rid)
                         try:
@@ -8745,6 +8776,15 @@ async def start_tagger_training_run(run_id: str, training_db: Session = Depends(
                                 pass
                         finally:
                             rescan_skip_controller.end("tagger", run_id)
+                            # End of the skippable window → UI hides the button.
+                            try:
+                                manager.send_dataset_scan_progress(
+                                    scope="tagger", run_id=run_id,
+                                    dataset_id=int(ds_id), phase="scan_end",
+                                    dataset_name=_ds_name,
+                                )
+                            except Exception:
+                                pass
                 finally:
                     ddb.close()
 

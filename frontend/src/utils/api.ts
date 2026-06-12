@@ -2663,6 +2663,9 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_low_f1_threshold?: number;
   danbooru_low_f1_top_k?: number;
   danbooru_low_f1_min_posts?: number;
+  // Co-occurrence vocab discovery
+  danbooru_cooc_expand_enable?: boolean;
+  danbooru_cooc_min_count?: number;
 }
 
 export interface TaggerTrainingMetric {
@@ -2758,6 +2761,9 @@ export interface DanbooruAugmentationMetrics {
   low_f1_unavailable_count?: number;
   total_low_f1_collected?: number;
   low_f1_unique_tags_collected?: number;
+  cooc_pending_count?: number;
+  cooc_promoted_count?: number;
+  total_cooc_proposed?: number;
   top_tags?: DanbooruTopTag[];
   top_dynamic_tags?: DanbooruTopTag[];
   top_low_f1_tags?: DanbooruTopTag[];

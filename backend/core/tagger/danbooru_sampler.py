@@ -49,6 +49,16 @@ from .tag_vocabulary import (
 )
 from .tagger_dataset import tagger_collate_fn
 
+# Danbooru post field → category code, for co-occurrence vocab discovery.
+# (general=0, artist=1, copyright=3, character=4, meta=5)
+_COOC_CATEGORY_FIELDS = (
+    (0, "tag_string_general"),
+    (1, "tag_string_artist"),
+    (3, "tag_string_copyright"),
+    (4, "tag_string_character"),
+    (5, "tag_string_meta"),
+)
+
 
 # ---------------------------------------------------------------------------
 # Standalone label / mask builder (mirrors TaggerDataset._build_label_and_mask)
@@ -135,6 +145,9 @@ class DanbooruSampleBuffer:
         weight_new_tag: float = 1.0,
         weight_low_f1: float = 1.0,
         low_f1_min_posts: int = 50,
+        cooc_expand_enable: bool = False,
+        cooc_min_count: int = 50,
+        cooc_categories: Optional[List[int]] = None,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -148,6 +161,18 @@ class DanbooruSampleBuffer:
         self._expander         = expander
         self._surveyor         = surveyor
         self._deficiency_provider = deficiency_provider
+        # Co-occurrence discovery: add unknown tags that appear in collected
+        # posts >= cooc_min_count times, filtered to cooc_categories. Unlike the
+        # surveyor (which only finds *recently created* tags) this catches tags
+        # that are old on Danbooru but simply absent from the training vocab
+        # (e.g. a new character's copyright/general tags). API-free: the category
+        # comes from the post's tag_string_<category> fields.
+        self._cooc_enable      = bool(cooc_expand_enable)
+        self._cooc_min_count   = max(1, int(cooc_min_count))
+        self._cooc_categories  = set(cooc_categories if cooc_categories is not None else [0, 3, 4])
+        self._cooc_lock        = threading.Lock()
+        self._cooc_counts: Dict[str, int] = {}   # normalized unknown tag → co-occurrence count
+        self._cooc_proposed: Set[str] = set()    # already handed to the expander
         # Collection-path weights for weighted random query selection.  Paths
         # with no available queries are excluded and the remaining weights are
         # renormalized at selection time.
@@ -208,6 +233,7 @@ class DanbooruSampleBuffer:
         self._buffer_starvation = 0
         self._total_dynamic_collected = 0
         self._total_low_f1_collected = 0
+        self._total_cooc_proposed = 0   # unknown co-occurring tags handed to the expander
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -283,6 +309,9 @@ class DanbooruSampleBuffer:
             dynamic_tags_count = len(self._dynamic_tags)
             low_f1_tags_count = len(self._low_f1_tags)
             low_f1_unavailable_count = len(self._low_f1_unavailable)
+        with self._cooc_lock:
+            cooc_pending_count = len(self._cooc_counts)
+            cooc_promoted_count = len(self._cooc_proposed)
         with self._metrics_lock:
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
             top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
@@ -301,6 +330,9 @@ class DanbooruSampleBuffer:
                 "low_f1_unavailable_count": low_f1_unavailable_count,
                 "total_low_f1_collected":  self._total_low_f1_collected,
                 "low_f1_unique_tags_collected": len(self._low_f1_tag_freq),
+                "cooc_pending_count":      cooc_pending_count,
+                "cooc_promoted_count":     cooc_promoted_count,
+                "total_cooc_proposed":     self._total_cooc_proposed,
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "top_dynamic_tags":        [{"tag": t, "count": c} for t, c in top_dynamic_tags],
                 "top_low_f1_tags":         [{"tag": t, "count": c} for t, c in top_low_f1_tags],
@@ -534,6 +566,34 @@ class DanbooruSampleBuffer:
                 print(f"[DanbooruSampler] Worker error: {exc}")
                 time.sleep(5.0)
 
+    def _update_cooc(self, post: dict, known: Set[str]) -> None:
+        """Count unknown tags (category taken from the post's tag_string_<cat>
+        fields) and, once a tag has co-occurred >= cooc_min_count times across
+        collected posts, hand it to the vocab expander. Catches vocab-absent
+        tags regardless of their Danbooru creation date (unlike the surveyor).
+        """
+        to_propose: Set[str] = set()
+        with self._cooc_lock:
+            for cat_code, field in _COOC_CATEGORY_FIELDS:
+                if cat_code not in self._cooc_categories:
+                    continue
+                raw = post.get(field) or ""
+                for tok in raw.split():
+                    norm = normalize_tag(tok)
+                    if not norm or norm in known or norm in self._cooc_proposed:
+                        continue
+                    c = self._cooc_counts.get(norm, 0) + 1
+                    if c >= self._cooc_min_count:
+                        self._cooc_proposed.add(norm)
+                        self._cooc_counts.pop(norm, None)  # promoted — free memory
+                        to_propose.add(norm)
+                    else:
+                        self._cooc_counts[norm] = c
+        if to_propose:
+            self._expander.propose(to_propose)
+            with self._metrics_lock:
+                self._total_cooc_proposed += len(to_propose)
+
     def _process_post(self, post: dict) -> Optional[Tuple]:
         result = self._client.download_inmemory(post)
         if result is None:
@@ -571,13 +631,18 @@ class DanbooruSampleBuffer:
             spatial_shapes       = torch.zeros(0, dtype=torch.int64)
 
         # Propose unknown approved tags to vocab expander (if configured)
-        if self._expander is not None and self._surveyor is not None:
-            voc = self._vocabulary
-            approved = self._surveyor.get_approved()
-            normalized = {normalize_tag(t) for t in raw_tags if t}
-            new_approved = (normalized & approved) - set(voc.tag_to_idx.keys())
-            if new_approved:
-                self._expander.propose(new_approved)
+        if self._expander is not None:
+            known = set(self._vocabulary.tag_to_idx.keys())
+            # 1) Surveyor-approved (recently created) tags appearing in this post.
+            if self._surveyor is not None:
+                approved = self._surveyor.get_approved()
+                new_approved = ({normalize_tag(t) for t in raw_tags if t} & approved) - known
+                if new_approved:
+                    self._expander.propose(new_approved)
+            # 2) Co-occurrence discovery (created-at independent; category from
+            #    the post's tag_string_<category> fields).
+            if self._cooc_enable:
+                self._update_cooc(post, known)
 
         # Record metrics
         with self._metrics_lock:

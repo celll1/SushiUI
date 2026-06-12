@@ -460,10 +460,12 @@ class DanbooruSampleBuffer:
 
                 # Low-F1 availability gate: only augment tags Danbooru can supply
                 # >= low_f1_min_posts for. Reuses the page-1 fetch (no extra API
-                # call). Only a non-empty-but-short result is a reliable "too
-                # rare" signal — an empty result may be a transient error/rate
-                # limit, so it is left to the per-epoch exhaustion path below.
-                # Once blacklisted a tag is excluded from future selection.
+                # call); note the count is post-score-filter (min_score), so a
+                # high min_score raises the effective availability bar. Only a
+                # non-empty-but-short result is a reliable "too rare" signal — an
+                # empty result may be a transient error/rate limit, so it is left
+                # to the per-epoch exhaustion path below. Once blacklisted a tag
+                # is excluded from future selection.
                 if kind == "low_f1" and 0 < len(posts) < self._low_f1_min_posts:
                     with self._cycle_lock:
                         self._low_f1_unavailable.add(query)

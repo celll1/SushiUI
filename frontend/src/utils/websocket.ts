@@ -68,12 +68,14 @@ export interface DatasetScanProgress {
   run_id: string | number;
   dataset_id: number;
   dataset_name?: string;
-  /** "drift_walk" – walking the directory tree;
+  /** "scan_start" – this dataset's skippable window opened (Skip button on);
+   *  "drift_walk" – walking the directory tree;
    *  "drift_done" – walk finished, report counts;
    *  "rescan" – running full /datasets/scan;
-   *  "cleanup" – cleaning orphan latent cache (LoRA only);
-   *  "skipped" – user skipped this dataset's rescan. */
-  phase: "drift_walk" | "drift_done" | "rescan" | "cleanup" | "skipped";
+   *  "cleanup" – cleaning orphan latent cache (LoRA only; not cancellable);
+   *  "skipped" – user skipped this dataset's rescan;
+   *  "scan_end" – skippable window closed (Skip button off). */
+  phase: "scan_start" | "drift_walk" | "drift_done" | "rescan" | "cleanup" | "skipped" | "scan_end";
   files_walked?: number;
   items_in_db?: number;
   items_missing?: number;

@@ -478,6 +478,18 @@ export default function TaggerTrainingMonitor({
       if (ev.scope !== "tagger") return;
       if (String(ev.run_id) !== String(run.run_id)) return;
       const dsLabel = ev.dataset_name ? `${ev.dataset_name} (#${ev.dataset_id})` : `dataset ${ev.dataset_id}`;
+      // scan_start/scan_end bracket the skippable window — the Skip button is
+      // shown only while scanDatasetId is set (between these two events).
+      if (ev.phase === "scan_start") {
+        setScanDatasetId(ev.dataset_id);
+        setScanSkipping(false);
+        setRun(prev => ({ ...prev, status_message: `Checking ${dsLabel}...` }));
+        return;
+      }
+      if (ev.phase === "scan_end") {
+        setScanDatasetId((cur) => (cur === ev.dataset_id ? null : cur));
+        return;
+      }
       let msg = "";
       if (ev.phase === "drift_walk") {
         msg = `Drift check: ${dsLabel} — walked ${(ev.files_walked ?? 0).toLocaleString()} files`;

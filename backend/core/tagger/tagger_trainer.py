@@ -2064,6 +2064,19 @@ def run_tagger_training(
                 if _low_f1_on:
                     from .danbooru_deficiency_provider import DanbooruDeficiencyProvider
                     _deficiency_provider = DanbooruDeficiencyProvider()
+                    # Low-F1 targets are recomputed inside the train-F1
+                    # threshold-search block; if that cadence is disabled the
+                    # provider is never fed and the low-F1 path stays idle.
+                    _lf1_n1 = int(config.get("train_f1_threshold_search_every_n_steps", 0) or 0)
+                    _lf1_n2 = int(config.get("train_f1_eval_every_n_steps", 0) or 0)
+                    if _lf1_n1 <= 0 or _lf1_n2 <= 0:
+                        print(
+                            "[TaggerTraining] WARNING: danbooru_low_f1_enable=True but training-F1 "
+                            "metrics are disabled (train_f1_eval_every_n_steps and "
+                            "train_f1_threshold_search_every_n_steps must both be > 0). "
+                            "Low-F1 deficiency targets will never be computed — the low-F1 "
+                            "collection path will stay idle."
+                        )
 
                 if config.get("danbooru_vocab_expand", False):
                     from .danbooru_tag_surveyor import DanbooruTagSurveyor

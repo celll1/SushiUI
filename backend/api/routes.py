@@ -8305,6 +8305,9 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_low_f1_threshold: float = 0.5
     danbooru_low_f1_top_k: int = 500
     danbooru_low_f1_min_posts: int = 50
+    # Co-occurrence vocab discovery (vocab-absent tags seen in collected posts)
+    danbooru_cooc_expand_enable: bool = False
+    danbooru_cooc_min_count: int = 50
     # save_tag_metrics / hard_rate (passed through to trainer)
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25

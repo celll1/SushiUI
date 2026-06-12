@@ -389,4 +389,10 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_low_f1_threshold": 0.5,  # tags with valid F1 below this are targeted (NaN excluded)
     "danbooru_low_f1_top_k": 500,      # cap on number of worst-F1 tags targeted
     "danbooru_low_f1_min_posts": 50,   # min Danbooru page-1 posts to include a tag (else skipped)
+    # Co-occurrence vocab discovery: add vocab-absent tags that appear in
+    # collected posts >= cooc_min_count times (category from the post fields,
+    # filtered to danbooru_new_tag_categories). Created-at independent, so it
+    # catches old tags missing from the training vocab. Requires vocab_expand.
+    "danbooru_cooc_expand_enable": False,
+    "danbooru_cooc_min_count": 50,
 }

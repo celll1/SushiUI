@@ -2233,6 +2233,11 @@ def run_tagger_training(
                     weight_new_tag=config.get("danbooru_query_weight_new_tag", 1.0),
                     weight_low_f1=config.get("danbooru_query_weight_low_f1", 1.0),
                     low_f1_min_posts=config.get("danbooru_low_f1_min_posts", 50),
+                    # Co-occurrence discovery only makes sense when vocab expansion
+                    # is on (it feeds the same expander/head-growth path).
+                    cooc_expand_enable=bool(config.get("danbooru_cooc_expand_enable", False)) and _vocab_expand_on,
+                    cooc_min_count=config.get("danbooru_cooc_min_count", 50),
+                    cooc_categories=config.get("danbooru_new_tag_categories", [0, 3, 4]),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(
@@ -2260,7 +2265,14 @@ def run_tagger_training(
                        f"top_k={config.get('danbooru_low_f1_top_k', 500)}, "
                        f"min_posts={config.get('danbooru_low_f1_min_posts', 50)})"
                        if _low_f1_on else "")
+                    + (f", cooc_expand=on (min_count={config.get('danbooru_cooc_min_count', 50)}, "
+                       f"categories={config.get('danbooru_new_tag_categories', [0, 3, 4])})"
+                       if (config.get('danbooru_cooc_expand_enable', False) and _vocab_expand_on) else "")
                 )
+                if config.get("danbooru_cooc_expand_enable", False) and not _vocab_expand_on:
+                    print("[TaggerTraining] WARNING: danbooru_cooc_expand_enable=True but "
+                          "danbooru_vocab_expand=False — co-occurrence discovery needs vocab "
+                          "expansion (the head-growth path) to be on; it will stay idle.")
             else:
                 print("[TaggerTraining] enable_danbooru_augmentation=True but no tag queries "
                       "and vocab_expand is off — nothing to fetch, skipping")

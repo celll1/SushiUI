@@ -98,6 +98,8 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_low_f1_threshold: 0.5,
   danbooru_low_f1_top_k: 500,
   danbooru_low_f1_min_posts: 50,
+  danbooru_cooc_expand_enable: false,
+  danbooru_cooc_min_count: 50,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -185,6 +187,8 @@ export default function TaggerTrainingConfig({
         danbooru_low_f1_threshold: (editRun.config?.danbooru_low_f1_threshold as number) ?? DEFAULT_CONFIG.danbooru_low_f1_threshold,
         danbooru_low_f1_top_k: (editRun.config?.danbooru_low_f1_top_k as number) ?? DEFAULT_CONFIG.danbooru_low_f1_top_k,
         danbooru_low_f1_min_posts: (editRun.config?.danbooru_low_f1_min_posts as number) ?? DEFAULT_CONFIG.danbooru_low_f1_min_posts,
+        danbooru_cooc_expand_enable: (editRun.config?.danbooru_cooc_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_expand_enable,
+        danbooru_cooc_min_count: (editRun.config?.danbooru_cooc_min_count as number) ?? DEFAULT_CONFIG.danbooru_cooc_min_count,
       }
     : DEFAULT_CONFIG;
 
@@ -1288,6 +1292,40 @@ export default function TaggerTrainingConfig({
                           );
                         })}
                       </div>
+                    </div>
+
+                    {/* Co-occurrence discovery (created-at independent) */}
+                    <div className="pt-2 border-t border-gray-700/50">
+                      <label className="flex items-center gap-3 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!config.danbooru_cooc_expand_enable}
+                          onChange={(e) => setField("danbooru_cooc_expand_enable", e.target.checked)}
+                          className="w-4 h-4 rounded"
+                        />
+                        <span className="text-sm text-gray-300">
+                          Co-occurrence discovery (add vocab-absent tags seen in collected posts)
+                        </span>
+                      </label>
+                      {config.danbooru_cooc_expand_enable && (
+                        <div className="mt-2 ml-7 space-y-2">
+                          <p className="text-xs text-gray-500">
+                            Adds tags that co-occur in collected posts at least N times, filtered to the
+                            Tag categories above. Unlike the surveyor it ignores creation date, so it also
+                            catches older tags missing from your vocabulary (e.g. a new character&apos;s copyright).
+                          </p>
+                          <div className="flex items-center gap-3">
+                            <label className="text-xs text-gray-400 w-48">Min co-occurrence count</label>
+                            <input
+                              type="number" min={1}
+                              value={config.danbooru_cooc_min_count ?? 50}
+                              onChange={(e) => setField("danbooru_cooc_min_count", parseInt(e.target.value) || 1)}
+                              className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                            />
+                            <span className="text-xs text-gray-500">Times a tag must appear before it is added.</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                   </div>

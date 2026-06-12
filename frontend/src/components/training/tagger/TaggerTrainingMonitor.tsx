@@ -1034,6 +1034,8 @@ export default function TaggerTrainingMonitor({
                   danbooru_low_f1_threshold: "Low-F1 threshold",
                   danbooru_low_f1_top_k: "Low-F1 top-K",
                   danbooru_low_f1_min_posts: "Low-F1 min posts",
+                  danbooru_cooc_expand_enable: "Co-occur discovery",
+                  danbooru_cooc_min_count: "Co-occur min count",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -1052,6 +1054,7 @@ export default function TaggerTrainingMonitor({
                 const danbooruOn = Boolean(cfg.enable_danbooru_augmentation);
                 const vocabExpandOn = Boolean(cfg.danbooru_vocab_expand);
                 const lowF1On = Boolean(cfg.danbooru_low_f1_enable);
+                const coocOn = Boolean(cfg.danbooru_cooc_expand_enable);
                 const DANBOORU_DETAIL_KEYS = new Set([
                   "danbooru_tags", "danbooru_injection_interval", "danbooru_injection_batch_size_ratio",
                   "danbooru_min_score", "danbooru_max_posts_per_query", "danbooru_api_interval",
@@ -1061,22 +1064,26 @@ export default function TaggerTrainingMonitor({
                   "danbooru_query_weight_static", "danbooru_query_weight_new_tag", "danbooru_query_weight_low_f1",
                   "danbooru_low_f1_enable", "danbooru_low_f1_threshold", "danbooru_low_f1_top_k",
                   "danbooru_low_f1_min_posts",
+                  "danbooru_cooc_expand_enable", "danbooru_cooc_min_count",
                 ]);
                 const DANBOORU_VOCAB_KEYS = new Set([
                   "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
                   "danbooru_new_tag_survey_interval",
+                  "danbooru_cooc_expand_enable", "danbooru_cooc_min_count",
                 ]);
                 // Low-F1 sub-parameters only meaningful when low-F1 collection is on.
                 const DANBOORU_LOW_F1_KEYS = new Set([
                   "danbooru_low_f1_threshold", "danbooru_low_f1_top_k", "danbooru_low_f1_min_posts",
                 ]);
+                // Co-occurrence min count only meaningful when co-occur discovery is on.
+                const DANBOORU_COOC_KEYS = new Set(["danbooru_cooc_min_count"]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
                     key,
                     label,
                     value:
                       key === "loss_function" ? (cfg[key] ?? "asl")
-                      : (key === "enable_danbooru_augmentation" || key === "danbooru_low_f1_enable") ? Boolean(cfg[key])
+                      : (key === "enable_danbooru_augmentation" || key === "danbooru_low_f1_enable" || key === "danbooru_cooc_expand_enable") ? Boolean(cfg[key])
                       : cfg[key],
                   }))
                   .filter(({ key, value }) => {
@@ -1089,6 +1096,7 @@ export default function TaggerTrainingMonitor({
                     if (DANBOORU_DETAIL_KEYS.has(key) && !danbooruOn) return false;
                     if (DANBOORU_VOCAB_KEYS.has(key) && !vocabExpandOn) return false;
                     if (DANBOORU_LOW_F1_KEYS.has(key) && !lowF1On) return false;
+                    if (DANBOORU_COOC_KEYS.has(key) && !coocOn) return false;
                     return true;
                   });
                 return (

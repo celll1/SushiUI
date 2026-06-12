@@ -84,6 +84,14 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
+      {/* Co-occurrence vocab-discovery stats — only when active */}
+      {((data.total_cooc_proposed ?? 0) > 0 || (data.cooc_pending_count ?? 0) > 0) && (
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <Stat label="Co-occur added" value={(data.total_cooc_proposed ?? 0).toLocaleString()} />
+          <Stat label="Co-occur pending" value={(data.cooc_pending_count ?? 0).toLocaleString()} />
+        </div>
+      )}
+
       {/* Buffer fill bar */}
       <div>
         <div className="flex items-center justify-between text-xs text-gray-400 mb-1">

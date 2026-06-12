@@ -90,8 +90,11 @@ class TaggerDataset(Dataset):
         print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
-        self._progress_callback = progress_callback
-        self._build_samples(dataset_ids, datasets_db, caption_types)
+        # NOTE: progress_callback is a (closure) callable used only during
+        # construction — do NOT store it on self. The dataset is pickled to
+        # DataLoader worker processes (num_workers>0, Windows spawn) and a local
+        # closure is unpicklable ("Can't pickle local object ..._ds_progress").
+        self._build_samples(dataset_ids, datasets_db, caption_types, progress_callback)
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -102,6 +105,7 @@ class TaggerDataset(Dataset):
         dataset_ids: List[int],
         datasets_db,
         caption_types: Optional[List[str]],
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> None:
         from database.models import DatasetItem, DatasetCaption
 
@@ -112,14 +116,14 @@ class TaggerDataset(Dataset):
         n_datasets = len(dataset_ids)
 
         def _emit(done: int, total: int, label: str, force: bool = False) -> None:
-            if self._progress_callback is None:
+            if progress_callback is None:
                 return
             now = time.monotonic()
             if not force and now - _last_emit[0] < 0.3:
                 return
             _last_emit[0] = now
             try:
-                self._progress_callback(int(done), int(max(1, total)), label)
+                progress_callback(int(done), int(max(1, total)), label)
             except Exception:
                 pass
 

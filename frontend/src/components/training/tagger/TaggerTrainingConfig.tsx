@@ -243,7 +243,14 @@ export default function TaggerTrainingConfig({
         dataset_id: id,
         caption_types: [],
       }));
-      const payload = { ...config, dataset_configs: datasetConfigs };
+      const payload = {
+        ...config,
+        dataset_configs: datasetConfigs,
+        // A disabled collection path contributes weight 0 regardless of the
+        // (preserved) UI value, so the backend never selects an inactive path.
+        danbooru_query_weight_new_tag: config.danbooru_vocab_expand ? config.danbooru_query_weight_new_tag : 0,
+        danbooru_query_weight_low_f1: config.danbooru_low_f1_enable ? config.danbooru_query_weight_low_f1 : 0,
+      };
       const run = isEditMode
         ? await updateTaggerTrainingRun(editRun.run_id, payload)
         : await createTaggerTrainingRun(payload);
@@ -1287,45 +1294,6 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
-              {/* Collection path weights */}
-              <div className="pt-2 border-t border-gray-700 space-y-2">
-                <div className="text-sm text-gray-300">Collection Path Weights</div>
-                <p className="text-xs text-gray-500">
-                  Weighted random selection among available collection paths. A path with no
-                  available queries is skipped and the remaining weights renormalize.
-                </p>
-                <div className="flex items-center gap-3">
-                  <label className="text-xs text-gray-400 w-48">Static weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
-                    value={config.danbooru_query_weight_static ?? 1.0}
-                    onChange={(e) => setField("danbooru_query_weight_static", parseFloat(e.target.value) || 0)}
-                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                  />
-                  <span className="text-xs text-gray-500">User static queries.</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="text-xs text-gray-400 w-48">New-tag weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
-                    value={config.danbooru_query_weight_new_tag ?? 1.0}
-                    onChange={(e) => setField("danbooru_query_weight_new_tag", parseFloat(e.target.value) || 0)}
-                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                  />
-                  <span className="text-xs text-gray-500">Discovered new tags (requires Vocab Expansion).</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <label className="text-xs text-gray-400 w-48">Low-F1 weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
-                    value={config.danbooru_query_weight_low_f1 ?? 1.0}
-                    onChange={(e) => setField("danbooru_query_weight_low_f1", parseFloat(e.target.value) || 0)}
-                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                  />
-                  <span className="text-xs text-gray-500">Deficiency collection (requires Low-F1 below).</span>
-                </div>
-              </div>
-
               {/* Low-F1 deficiency collection */}
               <div className="pt-2 border-t border-gray-700">
                 <label className="flex items-center gap-3 cursor-pointer">
@@ -1378,6 +1346,48 @@ export default function TaggerTrainingConfig({
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Collection path weights (last: balances the enabled paths above) */}
+              <div className="pt-2 border-t border-gray-700 space-y-2">
+                <div className="text-sm text-gray-300">Collection Path Weights</div>
+                <p className="text-xs text-gray-500">
+                  Weighted random selection among the enabled collection paths. A path with no
+                  available queries is skipped and the remaining weights renormalize. A disabled
+                  path (New-tag / Low-F1 unchecked above) is forced to weight 0.
+                </p>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">Static weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    value={config.danbooru_query_weight_static ?? 1.0}
+                    onChange={(e) => setField("danbooru_query_weight_static", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-xs text-gray-500">User static queries.</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">New-tag weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    disabled={!config.danbooru_vocab_expand}
+                    value={config.danbooru_vocab_expand ? (config.danbooru_query_weight_new_tag ?? 1.0) : 0}
+                    onChange={(e) => setField("danbooru_query_weight_new_tag", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <span className="text-xs text-gray-500">Discovered new tags (0 unless Vocab Expansion is enabled).</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">Low-F1 weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    disabled={!config.danbooru_low_f1_enable}
+                    value={config.danbooru_low_f1_enable ? (config.danbooru_query_weight_low_f1 ?? 1.0) : 0}
+                    onChange={(e) => setField("danbooru_query_weight_low_f1", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <span className="text-xs text-gray-500">Deficiency collection (0 unless Low-F1 is enabled).</span>
+                </div>
               </div>
             </div>
           )}

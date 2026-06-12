@@ -283,7 +283,8 @@ def _save_dataset_cache(cache_path: Path, cache_data: dict):
         print(f"[TrainRunner] Warning: Failed to save dataset cache: {e}")
 
 
-def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None) -> list:
+def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None,
+                           run_id: int = None) -> list:
     """
     Get all items from dataset using optimized JOIN query.
 
@@ -294,11 +295,19 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
         db: Database session
         dataset_id: Dataset ID
         caption_types: List of caption types to use
+        run_id: Optional training run id — when given, reports phase progress to
+            the DB (phase_detail/phase_progress) so the frontend bar updates
+            during the (slow, first-epoch) bulk read of large datasets.
 
     Returns:
         List of dicts with item data and caption info
     """
     from sqlalchemy.orm import joinedload
+
+    # The JOIN materialization itself can't be subdivided; flag it so the UI
+    # doesn't look stalled while a multi-million-row dataset is read.
+    _update_phase_progress(run_id, "initializing", 0.0,
+                           f"Reading dataset {dataset_id} from DB...")
 
     # Single query with JOIN to get all items with their captions
     items = db.query(DatasetItem).filter(
@@ -309,7 +318,19 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
 
     dataset_items = []
     skipped_missing = 0
-    for item in items:
+    _n_items = len(items)
+    _last_emit = 0.0
+    for _idx, item in enumerate(items):
+        # Throttled progress (~2x/sec) over the post-fetch processing loop.
+        if run_id is not None:
+            _now = time.time()
+            if _now - _last_emit >= 0.5:
+                _last_emit = _now
+                _pct = (_idx / _n_items * 100.0) if _n_items else 0.0
+                _update_phase_progress(
+                    run_id, "initializing", _pct,
+                    f"Reading dataset {dataset_id}: {_idx:,}/{_n_items:,} items",
+                )
         # Skip items whose image file no longer exists on disk
         if not os.path.exists(item.image_path):
             skipped_missing += 1
@@ -412,7 +433,7 @@ def get_dataset_items_cached(
     # If no cache, fetch from DB with optimized query
     if raw_items is None:
         print(f"[TrainRunner] Fetching dataset {dataset_id} from DB (optimized JOIN query)...")
-        raw_items = get_dataset_items_fast(db, dataset_id, caption_types)
+        raw_items = get_dataset_items_fast(db, dataset_id, caption_types, run_id=run_id)
         print(f"[TrainRunner] Fetched {len(raw_items)} items in {time.time() - start_time:.2f}s")
 
         # Save to cache

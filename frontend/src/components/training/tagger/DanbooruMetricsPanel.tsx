@@ -13,7 +13,7 @@ interface Props {
  *  augmentation is disabled (no metrics file present). */
 export default function DanbooruMetricsPanel({ runId, active }: Props) {
   const [data, setData] = useState<DanbooruAugmentationMetrics | null>(null);
-  const [tab, setTab] = useState<"top" | "recent">("top");
+  const [tab, setTab] = useState<"top" | "new" | "recent">("top");
 
   useEffect(() => {
     let cancelled = false;
@@ -39,6 +39,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
       : 0;
 
   const topMax = (data.top_tags ?? []).reduce((m, t) => Math.max(m, t.count), 0) || 1;
+  const newTags = data.top_dynamic_tags ?? [];
+  const newMax = newTags.reduce((m, t) => Math.max(m, t.count), 0) || 1;
+  const hasNewTags = (data.dynamic_tags_count ?? 0) > 0;
 
   return (
     <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-3">
@@ -56,10 +59,11 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
       </div>
 
       {/* New-tag (dynamic query) stats — only when vocab expansion is active */}
-      {(data.dynamic_tags_count ?? 0) > 0 && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
+      {hasNewTags && (
+        <div className="grid grid-cols-3 gap-2 text-xs">
           <Stat label="New tags targeted" value={(data.dynamic_tags_count ?? 0).toLocaleString()} />
-          <Stat label="New-tag posts collected" value={(data.total_dynamic_collected ?? 0).toLocaleString()} />
+          <Stat label="New tags collected" value={(data.dynamic_unique_tags_collected ?? 0).toLocaleString()} />
+          <Stat label="New-tag posts" value={(data.total_dynamic_collected ?? 0).toLocaleString()} />
         </div>
       )}
 
@@ -82,6 +86,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-700 text-xs">
         <TabBtn label="Top tags" active={tab === "top"} onClick={() => setTab("top")} />
+        {hasNewTags && (
+          <TabBtn label="New tags" active={tab === "new"} onClick={() => setTab("new")} />
+        )}
         <TabBtn label="Recent posts" active={tab === "recent"} onClick={() => setTab("recent")} />
       </div>
 
@@ -99,6 +106,26 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
           ))}
           {(data.top_tags ?? []).length === 0 && (
             <p className="text-xs text-gray-500 italic">No tags collected yet.</p>
+          )}
+        </div>
+      )}
+
+      {/* New tags — per-targeted-new-tag collected sample counts. Surfaces which
+          surveyor-approved new/deficient tags augmentation is actively gathering,
+          independent of the ever-dominant common tags in the Top-tags view. */}
+      {tab === "new" && (
+        <div className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
+          {newTags.slice(0, 50).map((t) => (
+            <div key={t.tag} className="flex items-center gap-2 text-xs">
+              <span className="w-40 truncate text-gray-200" title={t.tag}>{t.tag}</span>
+              <div className="flex-1 h-2 bg-gray-800 rounded overflow-hidden">
+                <div className="h-full bg-emerald-500" style={{ width: `${(t.count / newMax) * 100}%` }} />
+              </div>
+              <span className="w-10 text-right text-gray-500 font-mono">{t.count}</span>
+            </div>
+          ))}
+          {newTags.length === 0 && (
+            <p className="text-xs text-gray-500 italic">No new-tag samples collected yet.</p>
           )}
         </div>
       )}

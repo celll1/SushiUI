@@ -2725,7 +2725,9 @@ export interface DanbooruAugmentationMetrics {
   unique_tags_seen?: number;
   dynamic_tags_count?: number;
   total_dynamic_collected?: number;
+  dynamic_unique_tags_collected?: number;
   top_tags?: DanbooruTopTag[];
+  top_dynamic_tags?: DanbooruTopTag[];
   recent_posts?: DanbooruRecentPost[];
   error?: string;
 }

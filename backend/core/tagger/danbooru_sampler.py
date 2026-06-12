@@ -172,6 +172,12 @@ class DanbooruSampleBuffer:
         # Metrics (thread-safe via _metrics_lock)
         self._metrics_lock = threading.Lock()
         self._tag_freq: Dict[str, int] = {}
+        # Per-targeted-new-tag collected sample count.  Keyed by the normalized
+        # tag name (matching _tag_freq), counting how many posts were gathered
+        # for each surveyor-approved new/deficient tag.  Lets the UI surface
+        # *which* new tags augmentation is actively collecting, instead of the
+        # ever-dominant common tags (1girl, solo, …) in _tag_freq.
+        self._dynamic_tag_freq: Dict[str, int] = {}
         self._recent_posts: collections.deque = collections.deque(maxlen=100)
         self._total_collected = 0
         self._total_injected_batches = 0
@@ -252,6 +258,7 @@ class DanbooruSampleBuffer:
             dynamic_tags_count = len(self._dynamic_tags)
         with self._metrics_lock:
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
+            top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
             return {
                 "total_collected":         self._total_collected,
                 "total_injected_batches":  self._total_injected_batches,
@@ -261,7 +268,9 @@ class DanbooruSampleBuffer:
                 "unique_tags_seen":        len(self._tag_freq),
                 "dynamic_tags_count":      dynamic_tags_count,
                 "total_dynamic_collected": self._total_dynamic_collected,
+                "dynamic_unique_tags_collected": len(self._dynamic_tag_freq),
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
+                "top_dynamic_tags":        [{"tag": t, "count": c} for t, c in top_dynamic_tags],
                 "recent_posts":            list(self._recent_posts),
             }
 
@@ -404,6 +413,9 @@ class DanbooruSampleBuffer:
                             self._downloaded_ids.add(pid)
                         with self._metrics_lock:
                             self._total_dynamic_collected += 1
+                            _ndt = normalize_tag(query) if query else ""
+                            if _ndt:
+                                self._dynamic_tag_freq[_ndt] = self._dynamic_tag_freq.get(_ndt, 0) + 1
 
                 # A dynamic tag is exhausted for this epoch once every post it
                 # returned was already collected (pure dedup pass). Decode errors

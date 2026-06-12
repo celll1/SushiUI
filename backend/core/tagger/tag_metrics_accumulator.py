@@ -278,6 +278,37 @@ class TagMetricsAccumulator:
         }
 
     # ------------------------------------------------------------------
+    # Vocabulary growth (Danbooru vocab expansion during training)
+    # ------------------------------------------------------------------
+
+    def grow(self, new_vocab_size: int) -> None:
+        """Resize all per-tag arrays to ``new_vocab_size`` (zero-padding new tags).
+
+        Called when the vocabulary expands mid-training so the accumulator stays
+        aligned with the grown head/labels. New tags start with empty histograms
+        (best_f1 = NaN until they accumulate data), matching a fresh tag.
+        """
+        if new_vocab_size <= self.vocab_size:
+            return
+        pad = new_vocab_size - self.vocab_size
+
+        def _pad2d(a: np.ndarray) -> np.ndarray:
+            return np.concatenate(
+                [a, np.zeros((pad, self.n_bins), dtype=a.dtype)], axis=0
+            )
+
+        self.pos_hist_cur    = _pad2d(self.pos_hist_cur)
+        self.total_hist_cur  = _pad2d(self.total_hist_cur)
+        self.pos_hist_prev   = _pad2d(self.pos_hist_prev)
+        self.total_hist_prev = _pad2d(self.total_hist_prev)
+        self.pos_hist_pp     = _pad2d(self.pos_hist_pp)
+        self.total_hist_pp   = _pad2d(self.total_hist_pp)
+        self.tag_count = np.concatenate(
+            [self.tag_count, np.zeros(pad, dtype=self.tag_count.dtype)]
+        )
+        self.vocab_size = new_vocab_size
+
+    # ------------------------------------------------------------------
     # Deficiency selection (low-F1 Danbooru augmentation feed)
     # ------------------------------------------------------------------
 

@@ -629,6 +629,39 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             out = self.vision_encoder(pixel_values=pixel_values)
         return self.head(out.pooler_output)  # [B, num_tags]
 
+    def expand_head(self, new_num_tags: int) -> Tuple[nn.Parameter, Optional[nn.Parameter]]:
+        """Grow ``self.head`` to ``new_num_tags`` outputs (for Danbooru vocab
+        expansion during training). The head is a plain nn.Linear, identical to
+        the full model's, so this mirrors SigLIP2TaggerModel.expand_head: the
+        first ``old_n`` rows are copied, new-tag rows are zero-initialized.
+
+        Returns ``(new_weight, new_bias)`` so the caller can update the
+        optimizer's head param group.
+        """
+        old_head = self.head
+        old_n    = old_head.out_features
+        assert new_num_tags > old_n, (
+            f"expand_head: new_num_tags={new_num_tags} must be > current {old_n}"
+        )
+
+        has_bias = old_head.bias is not None
+        new_head = nn.Linear(old_head.in_features, new_num_tags, bias=has_bias)
+        nn.init.zeros_(new_head.weight)
+        if has_bias:
+            nn.init.zeros_(new_head.bias)
+
+        with torch.no_grad():
+            new_head.weight[:old_n] = old_head.weight
+            if has_bias:
+                new_head.bias[:old_n] = old_head.bias
+
+        new_head = new_head.to(
+            device=old_head.weight.device,
+            dtype=old_head.weight.dtype,
+        )
+        self.head = new_head
+        return new_head.weight, new_head.bias
+
     # ------------------------------------------------------------------
     # Save / load (saves only LoRA + head, not full encoder)
     # ------------------------------------------------------------------

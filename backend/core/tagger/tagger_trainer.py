@@ -764,6 +764,9 @@ class TaggerTrainer:
         print(f"[TaggerTrainer] Model built: {trainable_count:,} trainable / {total_count:,} total parameters")
         model = model.to(device)
         print(f"[TaggerTrainer] Model moved to {device}")
+        # Expose the live model so the Danbooru vocab-expansion callback (defined
+        # in run_tagger_training, outside train()'s scope) can grow the head.
+        self.model = model
 
         # Load checkpoint weights if resuming (before any training)
         if resume_state is not None and resume_ckpt_name is not None:
@@ -875,6 +878,8 @@ class TaggerTrainer:
         )
         print(f"[TaggerTrainer] Optimizer: {cfg.get('optimizer', 'adamw8bit')}, "
               f"base_lr={base_lr}, head_lr={base_lr * head_lr_mult} (x{head_lr_mult})")
+        # Expose the live optimizer for the vocab-expansion callback (see above).
+        self.optimizer = optimizer
 
         # LR schedule: linear warmup → cosine decay
         epochs       = int(cfg.get("epochs", 10))
@@ -2102,7 +2107,12 @@ def run_tagger_training(
                     _surveyor.start()
 
                 def _expansion_callback(new_tags: List[str]) -> None:
-                    n = expand_vocab_and_head(new_tags, vocabulary, model, optimizer)
+                    # model/optimizer live in trainer.train()'s scope; reach them
+                    # via the trainer instance (assigned below, before train()
+                    # runs, so the closure resolves them at call time).
+                    n = expand_vocab_and_head(
+                        new_tags, vocabulary, trainer.model, trainer.optimizer
+                    )
                     if n > 0:
                         if _surveyor is not None:
                             _surveyor.mark_added(new_tags)

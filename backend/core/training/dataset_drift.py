@@ -207,9 +207,16 @@ def _walk_dataset_dir(
                             # is essentially free (no extra syscall).
                             stem = os.path.abspath(os.path.splitext(entry.path)[0])
                             try:
-                                mt = entry.stat(follow_symlinks=False).st_mtime
+                                _st = entry.stat(follow_symlinks=False)
                             except OSError:
                                 continue
+                            # Ignore empty sidecars: scan_dataset never creates a
+                            # caption row for a 0-byte .txt/.json, so treating one
+                            # as caption drift flags the item "stale" forever (no
+                            # rescan can ingest an empty file).
+                            if _st.st_size <= 0:
+                                continue
+                            mt = _st.st_mtime
                             prev = sidecar_mtime.get(stem)
                             if prev is None or mt > prev:
                                 sidecar_mtime[stem] = mt

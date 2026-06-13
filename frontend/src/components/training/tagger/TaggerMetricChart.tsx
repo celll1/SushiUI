@@ -183,6 +183,9 @@ export default function TaggerMetricChart({
   const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
   // smoothing
   const [smoothing, setSmoothing] = useState(smoothable ? defaultSmoothing : 0);
+  // Resume legend collapse (defaults collapsed when there are many resumes so
+  // the wrapped legend doesn't cover the chart, esp. on narrow/mobile screens).
+  const [legendOpen, setLegendOpen] = useState(false);
   // brush (drag) state in STEP coords so it survives xRange auto-extension
   const [brush, setBrush] = useState<{ startStep: number; endStep: number } | null>(null);
   // hover tooltip (in chart coords)
@@ -655,29 +658,71 @@ export default function TaggerMetricChart({
             {totalPoints < 2 ? "Not enough data" : ""}
           </div>
         )}
-        {/* Legend (multi-resume OR secondary series present) */}
-        {showLegend && (
-          <div className="absolute top-1 right-1 flex flex-wrap gap-1.5 text-[10px] bg-gray-900/80 px-1.5 py-0.5 rounded border border-gray-700 z-20 pointer-events-none">
-            {showResumeLabels && groupKeys.map((seq) => (
-              <div key={`lg-${seq}`} className="flex items-center gap-1">
-                <span
-                  className="inline-block w-2 h-2 rounded-sm"
-                  style={{ background: colorForResume(seq, color) }}
-                />
-                <span className="text-gray-300">{labelForResume(seq)}</span>
-              </div>
-            ))}
-            {secondaryValueKey && secondaryPoints.length > 0 && (
-              <div className="flex items-center gap-1">
-                {/* Dashed line swatch for secondary */}
-                <svg width="16" height="8" className="inline-block">
-                  <line x1="0" y1="4" x2="16" y2="4" stroke={secondaryColor} strokeWidth="1.5" strokeDasharray="4 2" />
-                </svg>
-                <span style={{ color: secondaryColor }}>{secondaryLabel ?? secondaryValueKey}</span>
-              </div>
-            )}
-          </div>
-        )}
+        {/* Legend (multi-resume OR secondary series present).
+            When there are many resumes the per-resume list is collapsed by
+            default into a compact toggle so it doesn't cover the chart; the
+            secondary (e.g. Val F1) stays visible since it's a single entry. */}
+        {showLegend && (() => {
+          // Collapse sooner on narrow/mobile widths where the legend wraps badly.
+          const legendThreshold = width > 0 && width < 480 ? 3 : 6;
+          const manyResumes = showResumeLabels && groupKeys.length > legendThreshold;
+          const resumeListOpen = showResumeLabels && (!manyResumes || legendOpen);
+          return (
+            <div className="absolute top-1 right-1 z-20 flex flex-col items-end gap-1 max-w-[78%] pointer-events-none">
+              {/* Collapsed toggle */}
+              {manyResumes && !legendOpen && (
+                <button
+                  onClick={() => setLegendOpen(true)}
+                  className="pointer-events-auto flex items-center gap-1 text-[10px] bg-gray-900/85 px-1.5 py-0.5 rounded border border-gray-700 text-gray-300 hover:bg-gray-800 cursor-pointer"
+                  title="Show per-resume legend"
+                >
+                  <span
+                    className="inline-block w-2 h-2 rounded-sm"
+                    style={{ background: colorForResume(groupKeys[groupKeys.length - 1], color) }}
+                  />
+                  <span>{groupKeys.length} resumes</span>
+                  <span className="text-gray-500">▾</span>
+                </button>
+              )}
+              {/* Expanded per-resume list (scrollable + bounded when many) */}
+              {resumeListOpen && (
+                <div
+                  className={`flex flex-wrap justify-end gap-1.5 text-[10px] bg-gray-900/85 px-1.5 py-0.5 rounded border border-gray-700 ${
+                    manyResumes ? "pointer-events-auto max-h-24 overflow-y-auto" : "pointer-events-none"
+                  }`}
+                >
+                  {manyResumes && (
+                    <button
+                      onClick={() => setLegendOpen(false)}
+                      className="pointer-events-auto text-gray-500 hover:text-gray-200 cursor-pointer leading-none"
+                      title="Collapse legend"
+                    >
+                      ▴
+                    </button>
+                  )}
+                  {groupKeys.map((seq) => (
+                    <div key={`lg-${seq}`} className="flex items-center gap-1">
+                      <span
+                        className="inline-block w-2 h-2 rounded-sm"
+                        style={{ background: colorForResume(seq, color) }}
+                      />
+                      <span className="text-gray-300">{labelForResume(seq)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {/* Secondary series — always visible (single entry) */}
+              {secondaryValueKey && secondaryPoints.length > 0 && (
+                <div className="flex items-center gap-1 text-[10px] bg-gray-900/85 px-1.5 py-0.5 rounded border border-gray-700 pointer-events-none">
+                  <svg width="16" height="8" className="inline-block">
+                    <line x1="0" y1="4" x2="16" y2="4" stroke={secondaryColor} strokeWidth="1.5" strokeDasharray="4 2" />
+                  </svg>
+                  <span style={{ color: secondaryColor }}>{secondaryLabel ?? secondaryValueKey}</span>
+                </div>
+              )}
+            </div>
+          );
+        })()}
         {hasEnoughData && (
         <svg
           width={width}

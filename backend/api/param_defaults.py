@@ -339,6 +339,10 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "keep_last_n_checkpoints": 3,
     "checkpoint_save_mode": "lora",
     "mixed_precision": "bf16",
+    # FlashAttention-2 for the SigLIP2 encoder self-attention. Requires
+    # mixed_precision bf16/fp16 (FA2 cannot run in fp32); falls back to SDPA
+    # otherwise. Only affects the encoder (pooling head is unaffected).
+    "use_flash_attention": False,
     "gradient_checkpointing": True,
     "weight_decay": 1e-4,
     "loss_function": "asl",

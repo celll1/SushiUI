@@ -40,6 +40,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   keep_last_n_checkpoints: 3,
   checkpoint_save_mode: "lora",
   mixed_precision: "bf16",
+  use_flash_attention: false,
   gradient_checkpointing: true,
   loss_function: "asl" as string,
   loss_clip: 0.05,
@@ -137,6 +138,7 @@ export default function TaggerTrainingConfig({
         keep_last_n_checkpoints: (editRun.config?.keep_last_n_checkpoints as number) ?? DEFAULT_CONFIG.keep_last_n_checkpoints,
         checkpoint_save_mode: (editRun.config?.checkpoint_save_mode as string) ?? DEFAULT_CONFIG.checkpoint_save_mode,
         mixed_precision: (editRun.config?.mixed_precision as string) ?? DEFAULT_CONFIG.mixed_precision,
+        use_flash_attention: (editRun.config?.use_flash_attention as boolean) ?? DEFAULT_CONFIG.use_flash_attention,
         gradient_checkpointing: (editRun.config?.gradient_checkpointing as boolean) ?? DEFAULT_CONFIG.gradient_checkpointing,
         loss_function: (editRun.config?.loss_function as string) ?? DEFAULT_CONFIG.loss_function,
         loss_gamma_neg: (editRun.config?.loss_gamma_neg as number) ?? DEFAULT_CONFIG.loss_gamma_neg,
@@ -1101,6 +1103,17 @@ export default function TaggerTrainingConfig({
               className="accent-blue-500"
             />
             <span className="text-sm text-gray-300">Gradient Checkpointing</span>
+          </label>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={config.use_flash_attention}
+              onChange={(e) => setField("use_flash_attention", e.target.checked)}
+              className="accent-blue-500"
+            />
+            <span className="text-sm text-gray-300">
+              FlashAttention-2 (encoder; requires bf16/fp16)
+            </span>
           </label>
           <label className="flex items-center gap-3 cursor-pointer">
             <input

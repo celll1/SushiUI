@@ -2767,6 +2767,7 @@ export interface DanbooruAugmentationMetrics {
   cooc_pending_count?: number;
   cooc_promoted_count?: number;
   total_cooc_proposed?: number;
+  cooc_proposed_tags?: string[];
   top_tags?: DanbooruTopTag[];
   top_dynamic_tags?: DanbooruTopTag[];
   top_low_f1_tags?: DanbooruTopTag[];

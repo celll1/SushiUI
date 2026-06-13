@@ -175,6 +175,9 @@ class DanbooruSampleBuffer:
         self._cooc_lock        = threading.Lock()
         self._cooc_counts: Dict[str, int] = {}   # normalized unknown tag → co-occurrence count
         self._cooc_proposed: Set[str] = set()    # already handed to the expander
+        # Recency-ordered names of promoted co-occurrence tags, for UI display.
+        # Bounded; the set above remains the authoritative dedup membership test.
+        self._cooc_promoted_order: collections.deque = collections.deque(maxlen=200)
         # Collection-path weights for weighted random query selection.  Paths
         # with no available queries are excluded and the remaining weights are
         # renormalized at selection time.
@@ -340,6 +343,8 @@ class DanbooruSampleBuffer:
         with self._cooc_lock:
             cooc_pending_count = len(self._cooc_counts)
             cooc_promoted_count = len(self._cooc_proposed)
+            # Most-recently promoted first; bounded snapshot for the UI.
+            cooc_proposed_tags = list(reversed(self._cooc_promoted_order))
         with self._metrics_lock:
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
             top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
@@ -361,6 +366,7 @@ class DanbooruSampleBuffer:
                 "cooc_pending_count":      cooc_pending_count,
                 "cooc_promoted_count":     cooc_promoted_count,
                 "total_cooc_proposed":     self._total_cooc_proposed,
+                "cooc_proposed_tags":      cooc_proposed_tags,
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "top_dynamic_tags":        [{"tag": t, "count": c} for t, c in top_dynamic_tags],
                 "top_low_f1_tags":         [{"tag": t, "count": c} for t, c in top_low_f1_tags],
@@ -643,6 +649,7 @@ class DanbooruSampleBuffer:
                     c = self._cooc_counts.get(norm, 0) + 1
                     if c >= self._cooc_min_count:
                         self._cooc_proposed.add(norm)
+                        self._cooc_promoted_order.append(norm)
                         self._cooc_counts.pop(norm, None)  # promoted — free memory
                         to_propose.add(norm)
                     else:

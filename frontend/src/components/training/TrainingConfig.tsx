@@ -154,6 +154,25 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   text_encoding_swap_interval: 256,
   latent_encoding_mode: "swap_onthefly",
   latent_encoding_swap_interval: 256,
+  // Online Danbooru augmentation (image-generation). Overwritten by
+  // trainingDefaults on startup; literals here are the no-backend fallback.
+  danbooru_aug_enable: false,
+  danbooru_aug_queries: "",
+  danbooru_aug_weight_static: 1.0,
+  danbooru_aug_deficiency_enable: true,
+  danbooru_aug_deficiency_min_count: 20,
+  danbooru_aug_deficiency_top_k: 200,
+  danbooru_aug_deficiency_manual: "",
+  danbooru_aug_weight_deficiency: 1.0,
+  danbooru_aug_injection_interval: 4,
+  danbooru_aug_injection_ratio: 1.0,
+  danbooru_aug_min_score: 0,
+  danbooru_aug_max_posts_per_query: 200,
+  danbooru_aug_api_interval: 1.4,
+  danbooru_aug_dl_speed_kbps: 500,
+  danbooru_aug_buffer_size: null,
+  danbooru_aug_include_rating_tag: false,
+  danbooru_aug_max_caption_tags: 0,
   blocks_to_swap: 0,
   use_pinned_memory: false,
   num_optimizer_groups: 0,
@@ -658,6 +677,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       condition_preprocessors: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_preprocessors : undefined,
       condition_cache_mode: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_cache_mode : undefined,
       rescan_before_training: params.rescan_before_training ?? "off",
+      danbooru_aug_enable: params.danbooru_aug_enable,
+      danbooru_aug_queries: params.danbooru_aug_queries,
+      danbooru_aug_weight_static: params.danbooru_aug_weight_static,
+      danbooru_aug_deficiency_enable: params.danbooru_aug_deficiency_enable,
+      danbooru_aug_deficiency_min_count: params.danbooru_aug_deficiency_min_count,
+      danbooru_aug_deficiency_top_k: params.danbooru_aug_deficiency_top_k,
+      danbooru_aug_deficiency_manual: params.danbooru_aug_deficiency_manual,
+      danbooru_aug_weight_deficiency: params.danbooru_aug_weight_deficiency,
+      danbooru_aug_injection_interval: params.danbooru_aug_injection_interval,
+      danbooru_aug_injection_ratio: params.danbooru_aug_injection_ratio,
+      danbooru_aug_min_score: params.danbooru_aug_min_score,
+      danbooru_aug_max_posts_per_query: params.danbooru_aug_max_posts_per_query,
+      danbooru_aug_api_interval: params.danbooru_aug_api_interval,
+      danbooru_aug_dl_speed_kbps: params.danbooru_aug_dl_speed_kbps,
+      danbooru_aug_buffer_size: params.danbooru_aug_buffer_size,
+      danbooru_aug_include_rating_tag: params.danbooru_aug_include_rating_tag,
+      danbooru_aug_max_caption_tags: params.danbooru_aug_max_caption_tags,
       priority_training: priorityEnabled && priorityText.trim() ? {
         entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
         multiplier: priorityMultiplier,
@@ -782,6 +818,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "mixed_precision", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
+      "danbooru_aug_enable", "danbooru_aug_queries", "danbooru_aug_weight_static",
+      "danbooru_aug_deficiency_enable", "danbooru_aug_deficiency_min_count",
+      "danbooru_aug_deficiency_top_k", "danbooru_aug_deficiency_manual",
+      "danbooru_aug_weight_deficiency", "danbooru_aug_injection_interval",
+      "danbooru_aug_injection_ratio", "danbooru_aug_min_score",
+      "danbooru_aug_max_posts_per_query", "danbooru_aug_api_interval",
+      "danbooru_aug_dl_speed_kbps", "danbooru_aug_buffer_size",
+      "danbooru_aug_include_rating_tag", "danbooru_aug_max_caption_tags",
       "blocks_to_swap", "use_pinned_memory", "num_optimizer_groups",
       "multi_noise_timesteps", "multi_noise_mode", "trajectory_blend_alpha",
       "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
@@ -3765,6 +3809,110 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         )}
 
+        {/* Online Danbooru Augmentation */}
+        <div className="border border-gray-700 rounded p-4 space-y-3">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!params.danbooru_aug_enable}
+              onChange={(e) => updateParam("danbooru_aug_enable", e.target.checked)}
+            />
+            <h3 className="text-sm font-medium text-gray-300">Online Danbooru Augmentation</h3>
+          </label>
+          <p className="text-xs text-gray-500">
+            Fetch extra training images from Danbooru during training and inject them as samples
+            (interrupt-batch). No vocabulary expansion. Requires Latent Encoding Mode
+            swap_onthefly or onthefly_gpu.
+          </p>
+
+          {params.danbooru_aug_enable && (
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Static queries (one per line)</label>
+                <textarea
+                  value={params.danbooru_aug_queries ?? ""}
+                  onChange={(e) => updateParam("danbooru_aug_queries", e.target.value)}
+                  rows={3}
+                  placeholder={"1girl solo score:>=50\nhatsune_miku"}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm font-mono focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!params.danbooru_aug_deficiency_enable}
+                  onChange={(e) => updateParam("danbooru_aug_deficiency_enable", e.target.checked)}
+                />
+                <span className="text-xs text-gray-300">
+                  Auto-collect under-represented tags (dataset frequency based)
+                </span>
+              </label>
+
+              {params.danbooru_aug_deficiency_enable && (
+                <div className="grid grid-cols-2 gap-3">
+                  <NumField label="Deficiency min count" value={params.danbooru_aug_deficiency_min_count}
+                    onChange={(v) => updateParam("danbooru_aug_deficiency_min_count", v)} step={1} />
+                  <NumField label="Deficiency top-K" value={params.danbooru_aug_deficiency_top_k}
+                    onChange={(v) => updateParam("danbooru_aug_deficiency_top_k", v)} step={1} />
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Manual deficiency tags (comma or newline)</label>
+                <textarea
+                  value={params.danbooru_aug_deficiency_manual ?? ""}
+                  onChange={(e) => updateParam("danbooru_aug_deficiency_manual", e.target.value)}
+                  rows={2}
+                  className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm font-mono focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <NumField label="Weight: static" value={params.danbooru_aug_weight_static}
+                  onChange={(v) => updateParam("danbooru_aug_weight_static", v)} step={0.1} />
+                <NumField label="Weight: deficiency" value={params.danbooru_aug_weight_deficiency}
+                  onChange={(v) => updateParam("danbooru_aug_weight_deficiency", v)} step={0.1} />
+                <NumField label="Injection interval (batches)" value={params.danbooru_aug_injection_interval}
+                  onChange={(v) => updateParam("danbooru_aug_injection_interval", v)} step={1} />
+                <NumField label="Injection ratio (x batch)" value={params.danbooru_aug_injection_ratio}
+                  onChange={(v) => updateParam("danbooru_aug_injection_ratio", v)} step={0.1} />
+                <NumField label="Min score" value={params.danbooru_aug_min_score}
+                  onChange={(v) => updateParam("danbooru_aug_min_score", v)} step={1} />
+                <NumField label="Max posts / query" value={params.danbooru_aug_max_posts_per_query}
+                  onChange={(v) => updateParam("danbooru_aug_max_posts_per_query", v)} step={1} />
+                <NumField label="API interval (s)" value={params.danbooru_aug_api_interval}
+                  onChange={(v) => updateParam("danbooru_aug_api_interval", v)} step={0.1} />
+                <NumField label="DL speed (KB/s)" value={params.danbooru_aug_dl_speed_kbps}
+                  onChange={(v) => updateParam("danbooru_aug_dl_speed_kbps", v)} step={1} />
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Buffer size (blank=auto)</label>
+                  <input
+                    type="number"
+                    step={1}
+                    value={params.danbooru_aug_buffer_size ?? ""}
+                    onChange={(e) =>
+                      updateParam("danbooru_aug_buffer_size", e.target.value === "" ? null : parseInt(e.target.value, 10))
+                    }
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <NumField label="Max caption tags (0=all)" value={params.danbooru_aug_max_caption_tags}
+                  onChange={(v) => updateParam("danbooru_aug_max_caption_tags", v)} step={1} />
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!params.danbooru_aug_include_rating_tag}
+                  onChange={(e) => updateParam("danbooru_aug_include_rating_tag", e.target.checked)}
+                />
+                <span className="text-xs text-gray-300">Include rating word in caption (general/sensitive/…)</span>
+              </label>
+            </div>
+          )}
+        </div>
+
         {/* Latent Encoding Mode */}
         <div className="border border-gray-700 rounded p-4 space-y-3">
           <h3 className="text-sm font-medium text-gray-300 mb-3">Latent Encoding Mode (VAE)</h3>
@@ -4569,6 +4717,37 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Compact labelled numeric input. Integer vs float is inferred from `step`. */
+function NumField({
+  label,
+  value,
+  onChange,
+  step = 1,
+}: {
+  label: string;
+  value: number | undefined;
+  onChange: (v: number) => void;
+  step?: number;
+}) {
+  return (
+    <div>
+      <label className="block text-xs text-gray-400 mb-1">{label}</label>
+      <input
+        type="number"
+        step={step}
+        value={value ?? ""}
+        onChange={(e) => {
+          const raw = e.target.value;
+          if (raw === "") return;
+          const v = step % 1 === 0 ? parseInt(raw, 10) : parseFloat(raw);
+          if (!Number.isNaN(v)) onChange(v);
+        }}
+        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+      />
     </div>
   );
 }

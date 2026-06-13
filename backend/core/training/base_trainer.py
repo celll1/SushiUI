@@ -8036,6 +8036,95 @@ class BaseTrainer(ABC):
             sample.save(sample_path)
             print(f"{self.log_prefix} [Step 0] Saved sample to {sample_path.relative_to(self.output_dir)}")
 
+        # ------------------------------------------------------------------
+        # Online Danbooru augmentation (image-generation) setup
+        # ------------------------------------------------------------------
+        # Background collector + interrupt-batch injection.  Unlike the tagger
+        # there is NO vocabulary expansion (diffusion text conditioning is
+        # open-vocab) — we only fetch extra Danbooru images (static user queries
+        # + auto/manual under-represented tags) and inject them as ordinary
+        # training samples.  Injection encodes via the existing swap-buffer
+        # refill cycle, so it is only enabled for the on-the-fly-capable latent
+        # modes (pre_encoded_cache / disk caches offload the VAE differently).
+        self._danbooru_collector = None
+        self._danbooru_inj_batch_size = 0
+        self._danbooru_inj_interval = 0
+        self._danbooru_metrics_path = None
+        try:
+            if bool(self.config.get("danbooru_aug_enable", False)):
+                if latent_encoding_mode not in ("swap_onthefly", "onthefly_gpu"):
+                    print(f"{self.log_prefix} [DanbooruAug] Disabled: requires "
+                          f"latent_encoding_mode swap_onthefly/onthefly_gpu "
+                          f"(got {latent_encoding_mode}).")
+                else:
+                    from core.training.bucketing import get_bucket_sizes
+                    from core.training.danbooru_image_augment import (
+                        DanbooruImageCollector, DatasetTagFrequencyAnalyzer,
+                    )
+                    _R = (base_resolutions[0] if base_resolutions else 1024)
+                    _bucket_res = [(b.width, b.height) for b in get_bucket_sizes(_R)] or [(_R, _R)]
+
+                    # Auto deficiency: rarest tags in the training dataset captions.
+                    _defic_queries = []
+                    if bool(self.config.get("danbooru_aug_deficiency_enable", True)):
+                        _an = DatasetTagFrequencyAnalyzer()
+                        for _ds in datasets:
+                            for _it in getattr(_ds, "items", []):
+                                _cap = _it.get("caption") or ""
+                                if _cap:
+                                    _an.add_caption_tags(
+                                        [t.strip() for t in _cap.replace("\n", ",").split(",") if t.strip()]
+                                    )
+                        _defic_queries = _an.deficient_queries(
+                            min_count=int(self.config.get("danbooru_aug_deficiency_min_count", 20)),
+                            top_k=int(self.config.get("danbooru_aug_deficiency_top_k", 200)),
+                        )
+                    # Manual deficiency: explicit user top-up tags.
+                    _manual = self.config.get("danbooru_aug_deficiency_manual", "") or ""
+                    _manual_q = [
+                        q.strip().replace(" ", "_")
+                        for q in _manual.replace("\n", ",").split(",") if q.strip()
+                    ]
+                    _defic_queries = list(dict.fromkeys(_defic_queries + _manual_q))
+
+                    _static = [
+                        q.strip()
+                        for q in (self.config.get("danbooru_aug_queries", "") or "").splitlines()
+                        if q.strip()
+                    ]
+                    _bs = self.config.get("danbooru_aug_buffer_size") or max(8, 4 * batch_size)
+                    self._danbooru_inj_batch_size = max(
+                        1, round(float(self.config.get("danbooru_aug_injection_ratio", 1.0)) * batch_size)
+                    )
+                    self._danbooru_inj_interval = max(
+                        1, int(self.config.get("danbooru_aug_injection_interval", 4))
+                    )
+                    self._danbooru_metrics_path = os.path.join(
+                        str(self.output_dir), "danbooru_metrics.json"
+                    )
+                    self._danbooru_collector = DanbooruImageCollector(
+                        static_queries=_static,
+                        deficiency_queries=_defic_queries,
+                        bucket_resolutions=_bucket_res,
+                        weight_static=float(self.config.get("danbooru_aug_weight_static", 1.0)),
+                        weight_deficiency=float(self.config.get("danbooru_aug_weight_deficiency", 1.0)),
+                        min_score=int(self.config.get("danbooru_aug_min_score", 0)),
+                        max_posts_per_query=int(self.config.get("danbooru_aug_max_posts_per_query", 200)),
+                        api_interval=float(self.config.get("danbooru_aug_api_interval", 1.4)),
+                        dl_speed_kbps=int(self.config.get("danbooru_aug_dl_speed_kbps", 500)),
+                        buffer_size=int(_bs),
+                        include_rating_tag=bool(self.config.get("danbooru_aug_include_rating_tag", False)),
+                        max_caption_tags=int(self.config.get("danbooru_aug_max_caption_tags", 0)),
+                    )
+                    self._danbooru_collector.start()
+                    print(f"{self.log_prefix} [DanbooruAug] Enabled: "
+                          f"{len(_static)} static + {len(_defic_queries)} deficiency queries, "
+                          f"inject {self._danbooru_inj_batch_size} img every "
+                          f"{self._danbooru_inj_interval} batches, buffer={_bs}")
+        except Exception as _dae:  # noqa: BLE001 — never block training on aug setup
+            print(f"{self.log_prefix} [DanbooruAug] Setup failed (continuing without): {_dae}")
+            self._danbooru_collector = None
+
         try:
             for epoch in range(start_epoch, num_epochs):
                 print(f"\n{self.log_prefix} Epoch {epoch + 1}/{num_epochs}")
@@ -8213,6 +8302,43 @@ class BaseTrainer(ABC):
                             clean_batches.append(_b)
                     _random_ve.shuffle(clean_batches)
                     batches = clean_batches
+
+                # Interrupt-batch injection of online Danbooru samples (image-gen
+                # augmentation).  Drained from the bounded collector buffer and
+                # spliced every N base batches; their latents/embeddings are
+                # encoded by the swap-refill cycle below (no per-step encoder
+                # swap).  Injected batches are first-class — counted in the step
+                # totals computed further down.
+                if getattr(self, "_danbooru_collector", None) is not None and self._danbooru_inj_interval > 0:
+                    try:
+                        self._danbooru_collector.reset_download_cycle()
+                    except Exception:
+                        pass
+                    _inj_n = self._danbooru_inj_batch_size
+                    _pseudo_ds = datasets[0] if datasets else None
+                    _spliced = []
+                    _injected = 0
+                    for _bi, _b in enumerate(batches):
+                        _spliced.append(_b)
+                        if (_bi + 1) % self._danbooru_inj_interval == 0:
+                            _items = self._danbooru_collector.drain_batch(_inj_n)
+                            if _items:
+                                _danb_batch = []
+                                for _ri in _items:
+                                    _danb_batch.append(({
+                                        "image_path": f"danbooru://{_ri.post_id}",
+                                        "caption": _ri.caption,
+                                        "width": _ri.bucket_w,
+                                        "height": _ri.bucket_h,
+                                        "_danbooru_image": _ri.image,
+                                        "_danbooru": True,
+                                    }, _pseudo_ds))
+                                _spliced.append(_danb_batch)
+                                _injected += 1
+                    if _injected:
+                        batches = _spliced
+                        print(f"{self.log_prefix} [DanbooruAug] Injected {_injected} batch(es) "
+                              f"x{_inj_n} img into epoch {epoch + 1} (total batches now {len(batches)})")
 
                 # Initialize swap mode buffer if needed (all architectures)
                 # Use dict keyed by image_path for robust lookup (immune to index misalignment)
@@ -8399,6 +8525,17 @@ class BaseTrainer(ABC):
                         stop_flag_file.unlink()  # Clean up flag file
                         raise KeyboardInterrupt("Training stopped by user")
 
+                    # Periodically publish Danbooru augmentation metrics for the
+                    # UI (read by the /training/runs/{id}/danbooru-metrics endpoint).
+                    if getattr(self, "_danbooru_collector", None) is not None and \
+                            self._danbooru_metrics_path and batch_idx % 25 == 0:
+                        try:
+                            import json as _dj
+                            with open(self._danbooru_metrics_path, "w", encoding="utf-8") as _mf:
+                                _dj.dump(self._danbooru_collector.get_metrics(), _mf, ensure_ascii=False)
+                        except Exception:
+                            pass
+
                     # Check for on-demand preview requests from the API
                     # (file-based RPC, see core/training/training_preview_rpc.py).
                     # Each request is processed in-place using the current
@@ -8557,9 +8694,15 @@ class BaseTrainer(ABC):
 
                             # Load and encode image with corruption handling
                             try:
-                                image = Image.open(image_path)
-                                # Force load to detect truncated images early
-                                image.load()
+                                _danb_img = item.get("_danbooru_image")
+                                if _danb_img is not None:
+                                    # Online Danbooru sample — image is already in
+                                    # memory (no disk path).
+                                    image = _danb_img
+                                else:
+                                    image = Image.open(image_path)
+                                    # Force load to detect truncated images early
+                                    image.load()
                                 latent = self.encode_image(
                                     image=image,
                                     target_width=width,
@@ -8571,6 +8714,11 @@ class BaseTrainer(ABC):
                                     latent.cpu(),
                                     caption,  # String (CPU memory, minimal overhead)
                                 )
+                                if _danb_img is not None:
+                                    # Free the in-memory Danbooru image immediately
+                                    # once its latent is buffered (incremental
+                                    # cleanup — keeps CPU RAM bounded).
+                                    item["_danbooru_image"] = None
                             except Exception as img_error:
                                 # Log corrupted image and skip it
                                 corrupted_images.append(image_path)
@@ -8643,8 +8791,12 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} WARNING: Image not in latent swap buffer, encoding on-the-fly: {image_path}")
                                 try:
                                     self.move_vae_to_gpu()
-                                    image = Image.open(image_path)
-                                    image.load()  # Force load to detect truncated images
+                                    _danb_img = item.get("_danbooru_image")
+                                    if _danb_img is not None:
+                                        image = _danb_img
+                                    else:
+                                        image = Image.open(image_path)
+                                        image.load()  # Force load to detect truncated images
                                     latent = self.encode_image(
                                         image=image,
                                         target_width=width,
@@ -8655,6 +8807,8 @@ class BaseTrainer(ABC):
                                     latent = latent.to(self.device)
                                     latents_list.append(latent)
                                     self.move_vae_to_cpu()
+                                    if _danb_img is not None:
+                                        item["_danbooru_image"] = None
                                 except Exception as img_error:
                                     # Corrupted image - log and skip entire batch
                                     print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {image_path}")
@@ -8699,8 +8853,12 @@ class BaseTrainer(ABC):
                         elif latent_encoding_mode == "onthefly_gpu":
                             # Encode on GPU without cache
                             try:
-                                image = Image.open(item["image_path"])
-                                image.load()  # Force load to detect truncated images
+                                _danb_img = item.get("_danbooru_image")
+                                if _danb_img is not None:
+                                    image = _danb_img
+                                else:
+                                    image = Image.open(item["image_path"])
+                                    image.load()  # Force load to detect truncated images
                                 latent = self.encode_image(
                                     image=image,
                                     target_width=width,
@@ -8708,6 +8866,8 @@ class BaseTrainer(ABC):
                                     bucket_strategy=bucket_strategy
                                 )
                                 latents_list.append(latent)
+                                if _danb_img is not None:
+                                    item["_danbooru_image"] = None
                             except Exception as img_error:
                                 # Corrupted image - log and skip entire batch
                                 print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {item['image_path']}")
@@ -9549,11 +9709,23 @@ class BaseTrainer(ABC):
                     te_prefetcher.stop()
                     te_prefetcher = None
 
+            # All epochs complete — stop the Danbooru collector thread.
+            try:
+                if getattr(self, "_danbooru_collector", None) is not None:
+                    self._danbooru_collector.stop()
+            except Exception:
+                pass
+
         except KeyboardInterrupt:
             # Stop cpu_prefetch worker if it was running (no-op otherwise)
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
                     te_prefetcher.stop()
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_danbooru_collector", None) is not None:
+                    self._danbooru_collector.stop()
             except Exception:
                 pass
             print(f"\n{self.log_prefix} Training interrupted by user")
@@ -9617,6 +9789,11 @@ class BaseTrainer(ABC):
             try:
                 if 'te_prefetcher' in locals() and te_prefetcher is not None:
                     te_prefetcher.stop()
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_danbooru_collector", None) is not None:
+                    self._danbooru_collector.stop()
             except Exception:
                 pass
             # Emergency checkpoint save on any unhandled exception (CUDA errors, etc.)

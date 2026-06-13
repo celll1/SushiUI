@@ -5957,6 +5957,27 @@ class TrainingRunCreateRequest(BaseModel):
     async_cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["async_cpu_offload_checkpointing"]
     fp8_base_dtype: Optional[str] = TRAINING_DEFAULTS["fp8_base_dtype"]
 
+    # Online Danbooru augmentation (image-generation). SSOT: TRAINING_DEFAULTS.
+    # No vocabulary expansion (diffusion text conditioning is open-vocab);
+    # interrupt-batch injection of extra Danbooru images only.
+    danbooru_aug_enable: bool = TRAINING_DEFAULTS["danbooru_aug_enable"]
+    danbooru_aug_queries: str = TRAINING_DEFAULTS["danbooru_aug_queries"]
+    danbooru_aug_weight_static: float = TRAINING_DEFAULTS["danbooru_aug_weight_static"]
+    danbooru_aug_deficiency_enable: bool = TRAINING_DEFAULTS["danbooru_aug_deficiency_enable"]
+    danbooru_aug_deficiency_min_count: int = TRAINING_DEFAULTS["danbooru_aug_deficiency_min_count"]
+    danbooru_aug_deficiency_top_k: int = TRAINING_DEFAULTS["danbooru_aug_deficiency_top_k"]
+    danbooru_aug_deficiency_manual: str = TRAINING_DEFAULTS["danbooru_aug_deficiency_manual"]
+    danbooru_aug_weight_deficiency: float = TRAINING_DEFAULTS["danbooru_aug_weight_deficiency"]
+    danbooru_aug_injection_interval: int = TRAINING_DEFAULTS["danbooru_aug_injection_interval"]
+    danbooru_aug_injection_ratio: float = TRAINING_DEFAULTS["danbooru_aug_injection_ratio"]
+    danbooru_aug_min_score: int = TRAINING_DEFAULTS["danbooru_aug_min_score"]
+    danbooru_aug_max_posts_per_query: int = TRAINING_DEFAULTS["danbooru_aug_max_posts_per_query"]
+    danbooru_aug_api_interval: float = TRAINING_DEFAULTS["danbooru_aug_api_interval"]
+    danbooru_aug_dl_speed_kbps: int = TRAINING_DEFAULTS["danbooru_aug_dl_speed_kbps"]
+    danbooru_aug_buffer_size: Optional[int] = TRAINING_DEFAULTS["danbooru_aug_buffer_size"]
+    danbooru_aug_include_rating_tag: bool = TRAINING_DEFAULTS["danbooru_aug_include_rating_tag"]
+    danbooru_aug_max_caption_tags: int = TRAINING_DEFAULTS["danbooru_aug_max_caption_tags"]
+
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2
     training_dtype: str = "fp16"  # fp16, bf16, fp8_e4m3fn, fp8_e5m2 (activation dtype during training)
@@ -6282,6 +6303,31 @@ async def get_training_run(run_id: int, db: Session = Depends(get_training_db)):
     if not run:
         raise HTTPException(status_code=404, detail="Training run not found")
     return run.to_dict()
+
+
+@router.get("/training/runs/{run_id}/danbooru-metrics")
+async def get_training_danbooru_metrics(run_id: int, db: Session = Depends(get_training_db)):
+    """Return online Danbooru augmentation metrics for an image-generation run.
+
+    Reads ``{output_dir}/danbooru_metrics.json`` written periodically by the
+    trainer (every 25 base steps).  Returns ``enabled=false`` when the file is
+    missing (augmentation disabled or no steps written yet).
+    """
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if not run.output_dir or not os.path.isdir(run.output_dir):
+        return {"enabled": False}
+    path = os.path.join(run.output_dir, "danbooru_metrics.json")
+    if not os.path.isfile(path):
+        return {"enabled": False}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["enabled"] = True
+        return data
+    except Exception as e:
+        return {"enabled": False, "error": str(e)}
 
 # YAML field locations for fields that don't live in process_config.train with the same name.
 # Format: field_name -> (section_path, [yaml_key])  yaml_key defaults to field_name.

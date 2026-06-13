@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List, Tuple
+from io import BytesIO
 from PIL import Image, PngImagePlugin
 from tqdm import tqdm
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDPMScheduler, StableDiffusionPipeline, StableDiffusionXLPipeline
@@ -8056,20 +8057,47 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [DanbooruAug] Disabled: requires "
                           f"latent_encoding_mode swap_onthefly/onthefly_gpu "
                           f"(got {latent_encoding_mode}).")
+                elif getattr(self, "use_condition_images", False):
+                    # ControlNet condition-image training needs a paired condition
+                    # image per sample, which Danbooru-injected samples don't have.
+                    print(f"{self.log_prefix} [DanbooruAug] Disabled: not supported "
+                          f"with ControlNet condition-image training.")
                 else:
-                    from core.training.bucketing import get_bucket_sizes
                     from core.training.danbooru_image_augment import (
                         DanbooruImageCollector, DatasetTagFrequencyAnalyzer,
                     )
+                    # Coarse aspect-ratio bucket set centred on the base-resolution
+                    # area.  Using a small set (not the ~41 full training buckets)
+                    # so a full SAME-resolution injection batch can actually be
+                    # drained from a bounded buffer; also avoids the extreme
+                    # 8192x128-style buckets.
                     _R = (base_resolutions[0] if base_resolutions else 1024)
-                    _bucket_res = [(b.width, b.height) for b in get_bucket_sizes(_R)] or [(_R, _R)]
+                    _area = float(_R * _R)
+                    _bucket_res = []
+                    for _aw, _ah in ((1, 1), (4, 3), (3, 4), (3, 2), (2, 3), (16, 9), (9, 16)):
+                        _w = int((_area * _aw / _ah) ** 0.5)
+                        _h = int((_area * _ah / _aw) ** 0.5)
+                        _w -= _w % 8
+                        _h -= _h % 8
+                        _bucket_res.append((max(64, _w), max(64, _h)))
 
                     # Auto deficiency: rarest tags in the training dataset captions.
+                    # Cap the scan so startup stays bounded on multi-million-item
+                    # datasets (a sample is enough to surface the rarest tags).
                     _defic_queries = []
                     if bool(self.config.get("danbooru_aug_deficiency_enable", True)):
                         _an = DatasetTagFrequencyAnalyzer()
+                        _MAX_SCAN = 100000
+                        _scanned = 0
+                        _scan_done = False
                         for _ds in datasets:
+                            if _scan_done:
+                                break
                             for _it in getattr(_ds, "items", []):
+                                if _scanned >= _MAX_SCAN:
+                                    _scan_done = True
+                                    break
+                                _scanned += 1
                                 _cap = _it.get("caption") or ""
                                 if _cap:
                                     _an.add_caption_tags(
@@ -8079,6 +8107,8 @@ class BaseTrainer(ABC):
                             min_count=int(self.config.get("danbooru_aug_deficiency_min_count", 20)),
                             top_k=int(self.config.get("danbooru_aug_deficiency_top_k", 200)),
                         )
+                        print(f"{self.log_prefix} [DanbooruAug] Scanned {_scanned} captions "
+                              f"({_an.total_unique_tags} unique tags) -> {len(_defic_queries)} deficiency queries")
                     # Manual deficiency: explicit user top-up tags.
                     _manual = self.config.get("danbooru_aug_deficiency_manual", "") or ""
                     _manual_q = [
@@ -8092,7 +8122,10 @@ class BaseTrainer(ABC):
                         for q in (self.config.get("danbooru_aug_queries", "") or "").splitlines()
                         if q.strip()
                     ]
-                    _bs = self.config.get("danbooru_aug_buffer_size") or max(8, 4 * batch_size)
+                    # Default buffer scales with batch size so a same-bucket
+                    # injection batch can be filled even when images spread across
+                    # several aspect-ratio buckets.
+                    _bs = self.config.get("danbooru_aug_buffer_size") or max(32, 16 * batch_size)
                     self._danbooru_inj_batch_size = max(
                         1, round(float(self.config.get("danbooru_aug_injection_ratio", 1.0)) * batch_size)
                     )
@@ -8330,7 +8363,7 @@ class BaseTrainer(ABC):
                                         "caption": _ri.caption,
                                         "width": _ri.bucket_w,
                                         "height": _ri.bucket_h,
-                                        "_danbooru_image": _ri.image,
+                                        "_danbooru_image_bytes": _ri.image_bytes,
                                         "_danbooru": True,
                                     }, _pseudo_ds))
                                 _spliced.append(_danb_batch)
@@ -8694,15 +8727,15 @@ class BaseTrainer(ABC):
 
                             # Load and encode image with corruption handling
                             try:
-                                _danb_img = item.get("_danbooru_image")
-                                if _danb_img is not None:
-                                    # Online Danbooru sample — image is already in
-                                    # memory (no disk path).
-                                    image = _danb_img
+                                _danb_b = item.get("_danbooru_image_bytes")
+                                if _danb_b is not None:
+                                    # Online Danbooru sample — decode the in-memory
+                                    # bytes lazily here (one at a time, no disk path).
+                                    image = Image.open(BytesIO(_danb_b))
                                 else:
                                     image = Image.open(image_path)
-                                    # Force load to detect truncated images early
-                                    image.load()
+                                # Force load to detect truncated images early
+                                image.load()
                                 latent = self.encode_image(
                                     image=image,
                                     target_width=width,
@@ -8714,11 +8747,11 @@ class BaseTrainer(ABC):
                                     latent.cpu(),
                                     caption,  # String (CPU memory, minimal overhead)
                                 )
-                                if _danb_img is not None:
-                                    # Free the in-memory Danbooru image immediately
+                                if _danb_b is not None:
+                                    # Free the in-memory Danbooru bytes immediately
                                     # once its latent is buffered (incremental
                                     # cleanup — keeps CPU RAM bounded).
-                                    item["_danbooru_image"] = None
+                                    item["_danbooru_image_bytes"] = None
                             except Exception as img_error:
                                 # Log corrupted image and skip it
                                 corrupted_images.append(image_path)
@@ -8791,12 +8824,12 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} WARNING: Image not in latent swap buffer, encoding on-the-fly: {image_path}")
                                 try:
                                     self.move_vae_to_gpu()
-                                    _danb_img = item.get("_danbooru_image")
-                                    if _danb_img is not None:
-                                        image = _danb_img
+                                    _danb_b = item.get("_danbooru_image_bytes")
+                                    if _danb_b is not None:
+                                        image = Image.open(BytesIO(_danb_b))
                                     else:
                                         image = Image.open(image_path)
-                                        image.load()  # Force load to detect truncated images
+                                    image.load()  # Force load to detect truncated images
                                     latent = self.encode_image(
                                         image=image,
                                         target_width=width,
@@ -8807,8 +8840,8 @@ class BaseTrainer(ABC):
                                     latent = latent.to(self.device)
                                     latents_list.append(latent)
                                     self.move_vae_to_cpu()
-                                    if _danb_img is not None:
-                                        item["_danbooru_image"] = None
+                                    if _danb_b is not None:
+                                        item["_danbooru_image_bytes"] = None
                                 except Exception as img_error:
                                     # Corrupted image - log and skip entire batch
                                     print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {image_path}")
@@ -8853,12 +8886,12 @@ class BaseTrainer(ABC):
                         elif latent_encoding_mode == "onthefly_gpu":
                             # Encode on GPU without cache
                             try:
-                                _danb_img = item.get("_danbooru_image")
-                                if _danb_img is not None:
-                                    image = _danb_img
+                                _danb_b = item.get("_danbooru_image_bytes")
+                                if _danb_b is not None:
+                                    image = Image.open(BytesIO(_danb_b))
                                 else:
                                     image = Image.open(item["image_path"])
-                                    image.load()  # Force load to detect truncated images
+                                image.load()  # Force load to detect truncated images
                                 latent = self.encode_image(
                                     image=image,
                                     target_width=width,
@@ -8866,8 +8899,8 @@ class BaseTrainer(ABC):
                                     bucket_strategy=bucket_strategy
                                 )
                                 latents_list.append(latent)
-                                if _danb_img is not None:
-                                    item["_danbooru_image"] = None
+                                if _danb_b is not None:
+                                    item["_danbooru_image_bytes"] = None
                             except Exception as img_error:
                                 # Corrupted image - log and skip entire batch
                                 print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {item['image_path']}")

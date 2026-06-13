@@ -383,6 +383,10 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_new_tag_lookback_days": 90,
     "danbooru_new_tag_categories": [0, 3, 4],
     "danbooru_new_tag_survey_interval": 3600,
+    # LRU cap on the dynamic new-tag query list (surveyor-discovered tags that
+    # keep being collected across epochs/resumes). 0 = unlimited. When >0, the
+    # least-recently-collected tag is evicted once the cap is exceeded.
+    "danbooru_max_dynamic_tags": 0,
     # Collection-path weights (weighted random selection among available paths)
     "danbooru_query_weight_static": 1.0,   # user static queries
     "danbooru_query_weight_new_tag": 1.0,  # surveyor-discovered new tags (vocab expansion)

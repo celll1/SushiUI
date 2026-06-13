@@ -2231,16 +2231,18 @@ def run_tagger_training(
                 # Restore the dynamic (new-tag) query list so previously expanded
                 # tags keep being collected after a resume — the surveyor won't
                 # re-discover them (they are already in the vocab now).
-                _initial_dynamic_tags: List[str] = []
+                # {tag: last_used} (current) or [tag, ...] (legacy) — the buffer
+                # accepts both. Preserves LRU recency across resume.
+                _initial_dynamic_tags: Any = None
                 try:
                     _dt_path = os.path.join(output_dir, "danbooru_dynamic_tags.json")
                     if os.path.isfile(_dt_path):
                         with open(_dt_path, "r", encoding="utf-8") as _df:
                             _loaded = json.load(_df)
-                        if isinstance(_loaded, list):
-                            _initial_dynamic_tags = [str(t) for t in _loaded if t]
-                            print(f"[TaggerTraining] Restored {len(_initial_dynamic_tags)} dynamic "
-                                  f"new-tag queries for continued collection across resume")
+                        if isinstance(_loaded, (dict, list)) and len(_loaded) > 0:
+                            _initial_dynamic_tags = _loaded
+                            print(f"[TaggerTraining] Restored {len(_loaded)} dynamic new-tag "
+                                  f"queries for continued collection across resume")
                 except Exception as _dte:
                     print(f"[TaggerTraining] Could not restore dynamic tag list: {_dte}")
 
@@ -2269,6 +2271,7 @@ def run_tagger_training(
                     cooc_min_count=config.get("danbooru_cooc_min_count", 50),
                     cooc_categories=config.get("danbooru_cooc_categories", [0, 3, 4]),
                     initial_dynamic_tags=_initial_dynamic_tags,
+                    max_dynamic_tags=config.get("danbooru_max_dynamic_tags", 0),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

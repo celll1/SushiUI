@@ -148,7 +148,8 @@ class DanbooruSampleBuffer:
         cooc_expand_enable: bool = False,
         cooc_min_count: int = 50,
         cooc_categories: Optional[List[int]] = None,
-        initial_dynamic_tags: Optional[List[str]] = None,
+        initial_dynamic_tags: Optional[Any] = None,
+        max_dynamic_tags: int = 0,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -201,7 +202,27 @@ class DanbooruSampleBuffer:
         # being collected. ``initial_dynamic_tags`` re-seeds the list from a
         # persisted snapshot so collection (and thus learning) of expanded tags
         # continues across resumes regardless of vocab membership.
-        self._dynamic_tags: List[str] = [t for t in (initial_dynamic_tags or []) if t]
+        #
+        # LRU bound: the list grows monotonically (surveyor + resume seeds), so
+        # when max_dynamic_tags > 0 the least-recently-*collected* tag is evicted
+        # once the cap is exceeded. ``_dynamic_last_used`` (tag → wall-clock) is
+        # the recency key, persisted alongside the tags so the LRU order survives
+        # resume. A regressed evicted tag is re-collected by the low-F1 path.
+        self._max_dynamic_tags = int(max_dynamic_tags)
+        self._dynamic_last_used: Dict[str, float] = {}
+        _seed = initial_dynamic_tags or []
+        if isinstance(_seed, dict):
+            self._dynamic_tags: List[str] = [t for t in _seed.keys() if t]
+            for t in self._dynamic_tags:
+                try:
+                    self._dynamic_last_used[t] = float(_seed[t])
+                except (TypeError, ValueError):
+                    self._dynamic_last_used[t] = time.time()
+        else:  # list (fresh run or legacy snapshot format)
+            self._dynamic_tags = [t for t in _seed if t]
+            _now0 = time.time()
+            for t in self._dynamic_tags:
+                self._dynamic_last_used[t] = _now0
         self._dynamic_seen: Set[str] = {normalize_tag(t) for t in self._dynamic_tags}
 
         # Low-F1 queries: existing-vocab Danbooru tag names (underscored) fed by
@@ -346,12 +367,12 @@ class DanbooruSampleBuffer:
                 "recent_posts":            list(self._recent_posts),
             }
 
-    def snapshot_dynamic_tags(self) -> List[str]:
-        """Return a copy of the dynamic (new-tag) query list for persistence, so
-        the surveyor-discovered tags can be re-seeded on resume (see
+    def snapshot_dynamic_tags(self) -> Dict[str, float]:
+        """Return ``{tag: last_used}`` for the dynamic (new-tag) query list, so it
+        (and its LRU recency) can be re-seeded on resume (see
         ``initial_dynamic_tags``)."""
         with self._cycle_lock:
-            return list(self._dynamic_tags)
+            return {t: self._dynamic_last_used.get(t, 0.0) for t in self._dynamic_tags}
 
     # ------------------------------------------------------------------
     # Worker thread
@@ -388,6 +409,7 @@ class DanbooruSampleBuffer:
             approved = self._surveyor.get_approved()
         except Exception:
             return
+        _now = time.time()
         for norm in approved:
             if norm in self._dynamic_seen:
                 continue
@@ -398,6 +420,25 @@ class DanbooruSampleBuffer:
                 # _cycle_lock; append under the same lock to avoid a race.
                 with self._cycle_lock:
                     self._dynamic_tags.append(dq)
+                    self._dynamic_last_used[dq] = _now  # fresh tag — protected from eviction
+                    self._evict_dynamic_lru_locked()
+
+    def _evict_dynamic_lru_locked(self) -> None:
+        """Evict least-recently-collected dynamic tags down to the cap.
+        Caller must hold _cycle_lock. No-op when max_dynamic_tags <= 0."""
+        cap = self._max_dynamic_tags
+        if cap <= 0:
+            return
+        while len(self._dynamic_tags) > cap:
+            # Least-recently-used = smallest last_used timestamp.
+            victim = min(self._dynamic_tags, key=lambda t: self._dynamic_last_used.get(t, 0.0))
+            try:
+                self._dynamic_tags.remove(victim)
+            except ValueError:
+                break
+            self._dynamic_last_used.pop(victim, None)
+            self._dynamic_seen.discard(normalize_tag(victim))
+            self._exhausted_tags.discard(victim)
 
     def _refresh_low_f1_tags(self) -> None:
         """Sync the low-F1 query list to the deficiency provider's current set.
@@ -554,6 +595,9 @@ class DanbooruSampleBuffer:
                         # dropped sample can be retried before the tag exhausts.
                         with self._cycle_lock:
                             self._downloaded_ids.add(pid)
+                            if kind == "new_tag":
+                                # Refresh LRU recency: this tag is still productive.
+                                self._dynamic_last_used[query] = time.time()
                         _nt = normalize_tag(query) if query else ""
                         with self._metrics_lock:
                             if kind == "new_tag":

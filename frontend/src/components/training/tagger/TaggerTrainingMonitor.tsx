@@ -1027,6 +1027,7 @@ export default function TaggerTrainingMonitor({
                   danbooru_new_tag_lookback_days: "New-tag lookback (days)",
                   danbooru_new_tag_categories: "New-tag categories",
                   danbooru_new_tag_survey_interval: "Survey interval (s)",
+                  danbooru_max_dynamic_tags: "Max dynamic tags",
                   danbooru_query_weight_static: "Weight: static",
                   danbooru_query_weight_new_tag: "Weight: new-tag",
                   danbooru_query_weight_low_f1: "Weight: low-F1",
@@ -1063,7 +1064,7 @@ export default function TaggerTrainingMonitor({
                   "danbooru_dl_speed_kbps", "danbooru_buffer_size", "danbooru_vocab_expand",
                   "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
                   "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
-                  "danbooru_new_tag_survey_interval",
+                  "danbooru_new_tag_survey_interval", "danbooru_max_dynamic_tags",
                   "danbooru_query_weight_static", "danbooru_query_weight_new_tag", "danbooru_query_weight_low_f1",
                   "danbooru_low_f1_enable", "danbooru_low_f1_threshold", "danbooru_low_f1_top_k",
                   "danbooru_low_f1_min_posts",
@@ -1072,7 +1073,7 @@ export default function TaggerTrainingMonitor({
                 const DANBOORU_VOCAB_KEYS = new Set([
                   "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
                   "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
-                  "danbooru_new_tag_survey_interval",
+                  "danbooru_new_tag_survey_interval", "danbooru_max_dynamic_tags",
                   "danbooru_cooc_expand_enable", "danbooru_cooc_min_count", "danbooru_cooc_categories",
                 ]);
                 // Low-F1 sub-parameters only meaningful when low-F1 collection is on.

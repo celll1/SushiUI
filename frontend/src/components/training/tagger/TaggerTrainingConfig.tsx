@@ -92,6 +92,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_new_tag_categories: [0, 3, 4],
   danbooru_new_tag_min_count_by_cat: {} as Record<string, number>,
   danbooru_new_tag_survey_interval: 3600,
+  danbooru_max_dynamic_tags: 0,
   danbooru_query_weight_static: 1.0,
   danbooru_query_weight_new_tag: 1.0,
   danbooru_query_weight_low_f1: 1.0,
@@ -183,6 +184,7 @@ export default function TaggerTrainingConfig({
         danbooru_new_tag_categories: (editRun.config?.danbooru_new_tag_categories as number[]) ?? DEFAULT_CONFIG.danbooru_new_tag_categories,
         danbooru_new_tag_min_count_by_cat: (editRun.config?.danbooru_new_tag_min_count_by_cat as Record<string, number>) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count_by_cat,
         danbooru_new_tag_survey_interval: (editRun.config?.danbooru_new_tag_survey_interval as number) ?? DEFAULT_CONFIG.danbooru_new_tag_survey_interval,
+        danbooru_max_dynamic_tags: (editRun.config?.danbooru_max_dynamic_tags as number) ?? DEFAULT_CONFIG.danbooru_max_dynamic_tags,
         danbooru_query_weight_static: (editRun.config?.danbooru_query_weight_static as number) ?? DEFAULT_CONFIG.danbooru_query_weight_static,
         danbooru_query_weight_new_tag: (editRun.config?.danbooru_query_weight_new_tag as number) ?? DEFAULT_CONFIG.danbooru_query_weight_new_tag,
         danbooru_query_weight_low_f1: (editRun.config?.danbooru_query_weight_low_f1 as number) ?? DEFAULT_CONFIG.danbooru_query_weight_low_f1,
@@ -1262,6 +1264,20 @@ export default function TaggerTrainingConfig({
                         onChange={(e) => setField("danbooru_new_tag_survey_interval", parseInt(e.target.value) || 3600)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Max dynamic tags</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={config.danbooru_max_dynamic_tags ?? 0}
+                        onChange={(e) => setField("danbooru_max_dynamic_tags", parseInt(e.target.value) || 0)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">
+                        LRU cap on the persisted new-tag collection list (0 = unlimited). Evicts the
+                        least-recently-collected tag; a regressed tag is re-collected by Low-F1.
+                      </span>
                     </div>
 
                     {/* Tag categories to discover */}

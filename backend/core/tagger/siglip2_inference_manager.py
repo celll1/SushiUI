@@ -157,6 +157,30 @@ class SigLIP2InferenceManager:
         tag_to_category  = vocab.get("tag_to_category", {})
         num_tags         = len(idx_to_tag)
 
+        # Correct Rating / Quality categories from the canonical constants.
+        # Checkpoints saved before the RATING_TAGS convention fix (or by a
+        # training process still running the old code) store the bare rating
+        # words (general/sensitive/questionable/explicit) under "General"; the
+        # inference UI reads this dict verbatim, so ratings would show up as
+        # General tags. Mirror TagVocabulary._build_special_indices() here so
+        # they group under "Rating" regardless of when the vocab was saved.
+        try:
+            from core.tagger.tag_vocabulary import (
+                RATING_TAGS, QUALITY_TAG_GROUPS, normalize_tag,
+            )
+            _rating_norms = {normalize_tag(t) for t in RATING_TAGS}
+            _quality_norms = {
+                normalize_tag(t) for grp in QUALITY_TAG_GROUPS.values() for t in grp
+            }
+            for _tag in list(tag_to_category.keys()):
+                _n = normalize_tag(_tag)
+                if _n in _rating_norms:
+                    tag_to_category[_tag] = "Rating"
+                elif _n in _quality_norms:
+                    tag_to_category[_tag] = "Quality"
+        except Exception as _ce:  # noqa: BLE001 — never block inference on this
+            print(f"[SigLIP2Manager] Rating/Quality category correction skipped: {_ce}")
+
         # 2. Read checkpoint metadata (before processor — needed to resolve processor repo)
         from core.tagger.siglip2_tagger_model import SIGLIP2_DEFAULT_REPO_ID
         if checkpoint_path.endswith(".onnx"):

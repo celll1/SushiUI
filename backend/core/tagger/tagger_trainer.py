@@ -769,6 +769,21 @@ class TaggerTrainer:
         print(f"[TaggerTrainer] Building model (method={cfg.get('training_method', 'lora')}, "
               f"num_tags={self.vocabulary.num_tags}, device={device})...")
         self._emit("phase", {"phase": "initializing", "message": "Building model..."})
+        # FlashAttention-2 for the encoder self-attention (opt-in per run).
+        # FA2 cannot run in fp32 — it only engages under fp16/bf16 autocast — so
+        # fall back to SDPA when mixed precision is disabled.
+        _use_fa2 = bool(cfg.get("use_flash_attention", False))
+        _mp_str = str(cfg.get("mixed_precision", "bf16")).lower()
+        if _use_fa2 and _mp_str not in ("bf16", "fp16"):
+            print(f"[TaggerTrainer] FlashAttention-2 requested but mixed_precision={_mp_str} "
+                  f"(FA2 needs bf16/fp16) — falling back to SDPA")
+            _attn_impl = "sdpa"
+        elif _use_fa2:
+            _attn_impl = "flash_attention_2"
+            print(f"[TaggerTrainer] Using FlashAttention-2 for encoder self-attention "
+                  f"(mixed_precision={_mp_str})")
+        else:
+            _attn_impl = "sdpa"
         model = build_tagger_model(
             training_method=cfg.get("training_method", "lora"),
             num_tags=self.vocabulary.num_tags,
@@ -781,6 +796,7 @@ class TaggerTrainer:
             new_vocab=self.vocabulary.tag_to_idx,
             repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
             is_naflex=cfg.get("is_naflex", True),
+            attn_implementation=_attn_impl,
         )
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_count     = sum(p.numel() for p in model.parameters())

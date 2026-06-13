@@ -8301,6 +8301,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     keep_last_n_checkpoints: int = 3
     checkpoint_save_mode: str = "lora"
     mixed_precision: str = "bf16"
+    use_flash_attention: bool = TAGGER_TRAINING_DEFAULTS["use_flash_attention"]
     gradient_checkpointing: bool = True
     weight_decay: float = 1e-4
     loss_function: str = "asl"

@@ -2621,6 +2621,7 @@ export interface TaggerTrainingRunCreateRequest {
   keep_last_n_checkpoints?: number;
   checkpoint_save_mode?: string;
   mixed_precision?: string;
+  use_flash_attention?: boolean;
   gradient_checkpointing?: boolean;
   loss_function?: string;
   loss_gamma_neg?: number;

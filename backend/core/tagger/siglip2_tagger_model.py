@@ -131,7 +131,11 @@ class LoRALinear(nn.Module):
 # Vision encoder loader
 # ------------------------------------------------------------------
 
-def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_REPO_ID) -> nn.Module:
+def _load_vision_encoder(
+    safetensors_path: str,
+    repo_id: str = SIGLIP2_DEFAULT_REPO_ID,
+    attn_implementation: str = "sdpa",
+) -> nn.Module:
     """Load SigLIP2 vision encoder from a safetensors file, a HF repo ID, or URL.
 
     *safetensors_path* may be:
@@ -141,8 +145,17 @@ def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_R
 
     *repo_id* controls which HuggingFace model is used for the module structure when
     loading a local safetensors file.  Defaults to ``SIGLIP2_DEFAULT_REPO_ID``.
+
+    *attn_implementation* selects the encoder self-attention kernel
+    ("sdpa" default, or "flash_attention_2").  Weights are still loaded in fp32;
+    FlashAttention-2 engages at runtime only under fp16/bf16 autocast (it cannot
+    run in fp32), so the caller must use fp16/bf16 mixed precision.  Only the
+    encoder's Siglip2Attention is affected — the MultiheadAttention pooling head
+    is unaffected (and negligible: a single-query attention).
     """
     from transformers import AutoModel
+
+    _ai = {"attn_implementation": attn_implementation} if attn_implementation else {}
 
     # Strip surrounding quotes that may come from user input
     safetensors_path = safetensors_path.strip().strip('"').strip("'")
@@ -150,20 +163,21 @@ def _load_vision_encoder(safetensors_path: str, repo_id: str = SIGLIP2_DEFAULT_R
     # --- HuggingFace repo / URL shortcut ---
     is_hf, resolved_repo = _is_hf_repo_or_url(safetensors_path)
     if is_hf:
-        print(f"[VisionEncoder] Loading directly from HuggingFace repo: {resolved_repo}")
+        print(f"[VisionEncoder] Loading directly from HuggingFace repo: {resolved_repo} "
+              f"(attn={attn_implementation})")
         try:
-            full_model = AutoModel.from_pretrained(resolved_repo, dtype=torch.float32, local_files_only=True)
+            full_model = AutoModel.from_pretrained(resolved_repo, dtype=torch.float32, local_files_only=True, **_ai)
         except Exception:
-            full_model = AutoModel.from_pretrained(resolved_repo, dtype=torch.float32)
+            full_model = AutoModel.from_pretrained(resolved_repo, dtype=torch.float32, **_ai)
         return full_model.vision_model
 
     # Try local cache first to avoid network access and reduce peak memory.
     try:
         full_model = AutoModel.from_pretrained(
-            repo_id, dtype=torch.float32, local_files_only=True
+            repo_id, dtype=torch.float32, local_files_only=True, **_ai
         )
     except Exception:
-        full_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32)
+        full_model = AutoModel.from_pretrained(repo_id, dtype=torch.float32, **_ai)
     vision_encoder = full_model.vision_model
 
     # Load our fine-tuned / custom weights
@@ -1070,6 +1084,7 @@ def build_tagger_model(
     new_vocab: Optional[Dict[str, int]] = None,
     repo_id: str = SIGLIP2_DEFAULT_REPO_ID,
     is_naflex: bool = True,
+    attn_implementation: str = "sdpa",
 ) -> nn.Module:
     """Build the appropriate tagger model.
 
@@ -1096,7 +1111,9 @@ def build_tagger_model(
                           tag-name alignment; falls back to positional copy if None.
     """
     print(f"[TaggerModel] Loading vision encoder from: {vision_encoder_path}")
-    vision_encoder = _load_vision_encoder(vision_encoder_path, repo_id=repo_id)
+    vision_encoder = _load_vision_encoder(
+        vision_encoder_path, repo_id=repo_id, attn_implementation=attn_implementation
+    )
 
     if training_method == "lora":
         if cls_dim:

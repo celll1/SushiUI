@@ -985,6 +985,7 @@ export default function TaggerTrainingMonitor({
                   batch_size: "Batch size",
                   optimizer: "Optimizer",
                   mixed_precision: "Precision",
+                  use_flash_attention: "FlashAttn-2",
                   loss_function: "Loss fn",
                   lora_rank: "LoRA rank",
                   lora_alpha: "LoRA alpha",

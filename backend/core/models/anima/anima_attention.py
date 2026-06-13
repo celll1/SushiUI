@@ -79,12 +79,26 @@ def attention(
     if attn_params is None:
         attn_params = AttentionParams.create_attention_params("torch", False)
 
+    attn_mask = attn_params.attention_mask if attn_params is not None else None
+
+    # Optional FlashAttention-2 path (opt-in via attn_mode="flash", set by the
+    # trainer). q/k/v are already [B, L, H, D] (bshd) — exactly what
+    # flash_attn_func expects.  Only the unmasked case is routed to flash
+    # (flash_attn_func has no additive-mask support); any failure falls back to
+    # SDPA, so the default path is unchanged when attn_mode != "flash".
+    if attn_params.attn_mode == "flash" and attn_mask is None:
+        try:
+            from flash_attn import flash_attn_func
+            x = flash_attn_func(q, k, v, dropout_p=drop_rate)  # [B, L, H, D]
+            return x.reshape(x.shape[0], x.shape[1], -1)        # [B, L, H*D]
+        except Exception:
+            pass  # fall through to SDPA
+
     # bshd -> bhsd for SDPA
     q_t = q.transpose(1, 2)
     k_t = k.transpose(1, 2)
     v_t = v.transpose(1, 2)
 
-    attn_mask = attn_params.attention_mask if attn_params is not None else None
     x = F.scaled_dot_product_attention(q_t, k_t, v_t, attn_mask=attn_mask, dropout_p=drop_rate)
 
     x = x.transpose(1, 2)  # [B, L, H, D]

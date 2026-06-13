@@ -169,7 +169,22 @@ class LensJointAttention(nn.Module):
             if attention_mask.shape != expected_mask_shape:
                 raise ValueError(f"attention_mask must have shape {expected_mask_shape}, got {tuple(attention_mask.shape)}.")
             attention_mask = attention_mask.to(q.dtype)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
+        # Optional FlashAttention-2 path (opt-in via _use_flash_attn, set by the
+        # trainer). Only used for the unmasked case (flash_attn_func has no
+        # additive-mask support); any failure falls back to SDPA, so the default
+        # path is byte-for-byte unchanged when the flag is off.
+        out = None
+        if getattr(self, "_use_flash_attn", False) and attention_mask is None:
+            try:
+                from flash_attn import flash_attn_func
+                # q/k/v are [B, H, S, D]; flash_attn_func expects [B, S, H, D].
+                out = flash_attn_func(
+                    q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+                ).transpose(1, 2)
+            except Exception:
+                out = None
+        if out is None:
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
         out = out.transpose(1, 2).reshape(bsz, seq_img + seq_txt, -1)
         img_out = self.to_out[1](self.to_out[0](out[:, :seq_img, :]))
         txt_out = self.to_add_out(out[:, seq_img:, :])

@@ -1126,6 +1126,10 @@ class BaseTrainer(ABC):
               f"(block swap, if any, will redistribute after adapter setup)")
         self.transformer.to(self.device)
 
+        # Setup Flash Attention if enabled (opt-in; SDPA fallback otherwise)
+        if self.use_flash_attention:
+            self._setup_flash_attention_anima()
+
         print(f"{self.log_prefix} Anima model loaded successfully")
         print(f"{self.log_prefix} Scheduler: {self.scheduler.__class__.__name__}, "
               f"latent_channels=16")
@@ -1243,6 +1247,11 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Moving Lens transformer to {self.device}")
         self.transformer.to(self.device)
+
+        # Setup Flash Attention if enabled (opt-in; SDPA fallback otherwise)
+        if self.use_flash_attention:
+            self._setup_flash_attention_lens()
+
         print(f"{self.log_prefix} Lens model loaded successfully")
 
     def setup_lens_block_swap(self):
@@ -2031,24 +2040,33 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} {'SDXL' if self.is_sdxl else 'SD1.5'} model loaded successfully")
 
     def _setup_flash_attention_zimage(self):
-        """Setup Flash Attention for Z-Image models."""
+        """Setup Flash Attention for Z-Image models.
+
+        Falls back silently (keeps the default backend) if flash-attn is not
+        installed / the module can't be resolved, so a missing dependency never
+        aborts training — matching the SD/SDXL/FLUX.2 setup behaviour.
+        """
         import sys
 
-        # The transformer is loaded via importlib with module name "zimage_transformer"
-        # We need to access the ACTUAL module used, not core.models.zimage_transformer
-        if 'zimage_transformer' in sys.modules:
-            zimage_transformer_module = sys.modules['zimage_transformer']
-            ZImageAttention = zimage_transformer_module.ZImageAttention
-            print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
-            print(f"{self.log_prefix} [DEBUG] Module: {zimage_transformer_module.__name__}")
+        try:
+            # The transformer is loaded via importlib with module name
+            # "zimage_transformer"; access the ACTUAL module used, not
+            # core.models.zimage_transformer.
+            if 'zimage_transformer' in sys.modules:
+                zimage_transformer_module = sys.modules['zimage_transformer']
+                ZImageAttention = zimage_transformer_module.ZImageAttention
+                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
+                print(f"{self.log_prefix} [DEBUG] Module: {zimage_transformer_module.__name__}")
+            else:
+                # Fallback: core.models.zimage_transformer (inference pipeline path)
+                from core.models.zimage_transformer import ZImageAttention
+                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (fallback)...")
             ZImageAttention._attention_backend = "flash"
             print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
-        else:
-            # Fallback: Try core.models.zimage_transformer (for inference pipeline)
-            from core.models.zimage_transformer import ZImageAttention
-            print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (fallback)...")
-            ZImageAttention._attention_backend = "flash"
-            print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for Z-Image: {e}")
+            print(f"{self.log_prefix} Continuing with the default attention backend "
+                  f"(ensure flash-attn is installed: pip install flash-attn)")
 
     def _setup_flash_attention_sd_sdxl(self):
         """Setup Flash Attention for SD/SDXL models.
@@ -2092,6 +2110,52 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
         except Exception as e:
             print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
+
+    def _setup_flash_attention_anima(self):
+        """Setup Flash Attention for Anima (Cosmos DiT) models.
+
+        Anima's vendored attention dispatches on a per-block ``attn_mode``; set
+        it to 'flash' so anima_attention.attention() routes unmasked attention
+        through flash_attn_func.  Masked attention (and any failure) falls back
+        to SDPA, so the default path is unchanged when this is not called.
+        """
+        if self.transformer is None:
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
+            return
+        try:
+            n = 0
+            for m in self.transformer.modules():
+                if hasattr(m, "attn_mode"):
+                    m.attn_mode = "flash"
+                    n += 1
+            print(f"{self.log_prefix} [OK] Flash Attention enabled on {n} Anima block(s) "
+                  f"(unmasked attention; SDPA fallback otherwise)")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for Anima: {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
+
+    def _setup_flash_attention_lens(self):
+        """Setup Flash Attention for Lens (DiT) models.
+
+        Lens' vendored joint-attention hardcodes SDPA; set a per-module flag so
+        LensJointAttention.forward routes unmasked attention through
+        flash_attn_func.  Masked attention (and any failure) falls back to SDPA,
+        so the default path is unchanged when this is not called.
+        """
+        if self.transformer is None:
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
+            return
+        try:
+            n = 0
+            for m in self.transformer.modules():
+                if type(m).__name__ == "LensJointAttention":
+                    m._use_flash_attn = True
+                    n += 1
+            print(f"{self.log_prefix} [OK] Flash Attention enabled on {n} Lens attention module(s) "
+                  f"(unmasked attention; SDPA fallback otherwise)")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for Lens: {e}")
             print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
 
     # ============================================================

@@ -1997,6 +1997,24 @@ export interface TrainingRunCreateRequest {
   text_encoding_swap_interval?: number;
   latent_encoding_mode?: string;
   latent_encoding_swap_interval?: number;
+  // Online Danbooru augmentation (image-generation training)
+  danbooru_aug_enable?: boolean;
+  danbooru_aug_queries?: string;
+  danbooru_aug_weight_static?: number;
+  danbooru_aug_deficiency_enable?: boolean;
+  danbooru_aug_deficiency_min_count?: number;
+  danbooru_aug_deficiency_top_k?: number;
+  danbooru_aug_deficiency_manual?: string;
+  danbooru_aug_weight_deficiency?: number;
+  danbooru_aug_injection_interval?: number;
+  danbooru_aug_injection_ratio?: number;
+  danbooru_aug_min_score?: number;
+  danbooru_aug_max_posts_per_query?: number;
+  danbooru_aug_api_interval?: number;
+  danbooru_aug_dl_speed_kbps?: number;
+  danbooru_aug_buffer_size?: number | null;
+  danbooru_aug_include_rating_tag?: boolean;
+  danbooru_aug_max_caption_tags?: number;
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
   num_optimizer_groups?: number;
@@ -2779,6 +2797,39 @@ export const getTaggerDanbooruMetrics = async (
   runId: string,
 ): Promise<DanbooruAugmentationMetrics> => {
   const response = await api.get(`/tagger-training/runs/${runId}/danbooru-metrics`);
+  return response.data;
+};
+
+// Online Danbooru augmentation metrics for IMAGE-GENERATION training.
+// No vocabulary expansion (open-vocab) — collection + interrupt-batch only.
+export interface DanbooruImageAugRecentPost {
+  post_id: number;
+  tag_count: number;
+  tags: string[];
+  path?: string;  // "static" | "deficiency"
+}
+
+export interface DanbooruImageAugMetrics {
+  enabled: boolean;
+  total_collected?: number;
+  total_injected_batches?: number;
+  buffer_starvation_count?: number;
+  buffer_capacity?: number;
+  buffer_current?: number;
+  unique_tags_seen?: number;
+  static_collected?: number;
+  deficiency_collected?: number;
+  deficiency_query_count?: number;
+  bucket_distribution?: Record<string, number>;
+  top_tags?: DanbooruTopTag[];
+  recent_posts?: DanbooruImageAugRecentPost[];
+  error?: string;
+}
+
+export const getTrainingDanbooruMetrics = async (
+  runId: number,
+): Promise<DanbooruImageAugMetrics> => {
+  const response = await api.get(`/training/runs/${runId}/danbooru-metrics`);
   return response.data;
 };
 

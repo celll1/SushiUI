@@ -6,6 +6,7 @@ import { TrainingRun, getTrainingStatus, startTrainingRun, stopTrainingRun, dele
 import { wsClient, DatasetScanProgress } from "@/utils/websocket";
 import LossChart from "./LossChart";
 import GradNormChart from "./GradNormChart";
+import DanbooruImageMetricsPanel from "./DanbooruImageMetricsPanel";
 import ParamChangeChart from "./ParamChangeChart";
 import CheckpointList from "./CheckpointList";
 
@@ -539,6 +540,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                 <GradNormChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
               </div>
               <ParamChangeChart runId={currentRun.id} isRunning={currentRun.status === "running"} />
+              <DanbooruImageMetricsPanel runId={currentRun.id} active={currentRun.status === "running"} />
             </>
           )}
 

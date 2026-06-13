@@ -272,6 +272,38 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (Full FT needs trainable base weights — flag is silently ignored).
     # None | "fp8_e4m3fn" | "fp8_e5m2".
     "fp8_base_dtype": None,
+
+    # ---- Online Danbooru augmentation (image-generation training) ----
+    # Diffusion-side counterpart of the tagger's Danbooru augmentation. Text
+    # conditioning accepts arbitrary tokens, so there is NO vocabulary
+    # expansion here — the mechanism only fetches extra training images from
+    # Danbooru and injects them as ordinary samples (interrupt-batch).
+    # See core/training/danbooru_image_augment.py.
+    "danbooru_aug_enable": False,
+    # Static path: user-supplied general Danbooru queries (newline-separated;
+    # each line is one query, Danbooru tag syntax, e.g. "1girl solo score:>=50").
+    "danbooru_aug_queries": "",
+    "danbooru_aug_weight_static": 1.0,
+    # Deficiency path (auto + manual). Collects images for under-represented
+    # tags to rebalance the dataset. No per-tag F1 (diffusion has none) — purely
+    # dataset tag-frequency based.
+    "danbooru_aug_deficiency_enable": True,      # auto: detect rare tags from dataset captions
+    "danbooru_aug_deficiency_min_count": 20,     # tags in fewer than N dataset images are deficient
+    "danbooru_aug_deficiency_top_k": 200,        # cap on the number of rarest tags targeted
+    "danbooru_aug_deficiency_manual": "",        # manual: extra tags to top up (newline-separated)
+    "danbooru_aug_weight_deficiency": 1.0,
+    # Injection cadence / sizing.
+    "danbooru_aug_injection_interval": 4,        # inject a Danbooru batch every N base batches
+    "danbooru_aug_injection_ratio": 1.0,         # injection batch size = ratio x train batch_size
+    # Collection / API settings.
+    "danbooru_aug_min_score": 0,
+    "danbooru_aug_max_posts_per_query": 200,
+    "danbooru_aug_api_interval": 1.4,            # Danbooru TOS rate limit (seconds)
+    "danbooru_aug_dl_speed_kbps": 500,
+    "danbooru_aug_buffer_size": None,            # None -> auto (4 x batch_size)
+    # Caption construction from the post's per-category tag fields.
+    "danbooru_aug_include_rating_tag": False,    # prepend rating word (general/sensitive/...)
+    "danbooru_aug_max_caption_tags": 0,          # 0 = keep all tags
 }
 
 # ---------------------------------------------------------------------------

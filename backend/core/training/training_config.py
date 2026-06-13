@@ -170,6 +170,27 @@ def _build_train_section(
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)
 
+    # ---- Online Danbooru augmentation (image-generation) ----
+    # Read unconditionally; ignored when danbooru_aug_enable is False.
+    # SSoT: api/param_defaults.TRAINING_DEFAULTS.
+    train["danbooru_aug_enable"] = p.get("danbooru_aug_enable", False)
+    train["danbooru_aug_queries"] = p.get("danbooru_aug_queries", "")
+    train["danbooru_aug_weight_static"] = p.get("danbooru_aug_weight_static", 1.0)
+    train["danbooru_aug_deficiency_enable"] = p.get("danbooru_aug_deficiency_enable", True)
+    train["danbooru_aug_deficiency_min_count"] = p.get("danbooru_aug_deficiency_min_count", 20)
+    train["danbooru_aug_deficiency_top_k"] = p.get("danbooru_aug_deficiency_top_k", 200)
+    train["danbooru_aug_deficiency_manual"] = p.get("danbooru_aug_deficiency_manual", "")
+    train["danbooru_aug_weight_deficiency"] = p.get("danbooru_aug_weight_deficiency", 1.0)
+    train["danbooru_aug_injection_interval"] = p.get("danbooru_aug_injection_interval", 4)
+    train["danbooru_aug_injection_ratio"] = p.get("danbooru_aug_injection_ratio", 1.0)
+    train["danbooru_aug_min_score"] = p.get("danbooru_aug_min_score", 0)
+    train["danbooru_aug_max_posts_per_query"] = p.get("danbooru_aug_max_posts_per_query", 200)
+    train["danbooru_aug_api_interval"] = p.get("danbooru_aug_api_interval", 1.4)
+    train["danbooru_aug_dl_speed_kbps"] = p.get("danbooru_aug_dl_speed_kbps", 500)
+    train["danbooru_aug_buffer_size"] = p.get("danbooru_aug_buffer_size", None)
+    train["danbooru_aug_include_rating_tag"] = p.get("danbooru_aug_include_rating_tag", False)
+    train["danbooru_aug_max_caption_tags"] = p.get("danbooru_aug_max_caption_tags", 0)
+
     # Reference images / Vision encoder
     if include_reference_images:
         train["use_reference_images"] = p.get("use_reference_images", False)

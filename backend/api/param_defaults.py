@@ -300,7 +300,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_aug_max_posts_per_query": 200,
     "danbooru_aug_api_interval": 1.4,            # Danbooru TOS rate limit (seconds)
     "danbooru_aug_dl_speed_kbps": 500,
-    "danbooru_aug_buffer_size": None,            # None -> auto (4 x batch_size)
+    "danbooru_aug_buffer_size": None,            # None -> auto (max(32, 16 x batch_size))
     # Caption construction from the post's per-category tag fields.
     "danbooru_aug_include_rating_tag": False,    # prepend rating word (general/sensitive/...)
     "danbooru_aug_max_caption_tags": 0,          # 0 = keep all tags

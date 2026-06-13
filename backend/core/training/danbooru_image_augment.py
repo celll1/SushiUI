@@ -13,10 +13,11 @@ Design (efficiency):
     in-memory image download, decode, and caption construction.  It never
     touches the GPU (the VAE / text-encoder are owned by the training thread
     and, in swap modes, are off-GPU during training).
-  - Collected items are kept fully IN MEMORY (decoded PIL images) — no disk
-    writes.  The buffer is bounded; once an injection batch has been consumed
-    by the training loop its PIL data is dropped (GC), so memory stays bounded
-    to ~buffer_size images of CPU RAM (VRAM is unaffected).
+  - Collected items are kept fully IN MEMORY as COMPRESSED bytes (no disk
+    writes, no full-resolution decode held in the buffer).  The buffer is
+    bounded; the training loop decodes one image at a time at encode time and
+    frees the bytes immediately after, so CPU RAM stays bounded to roughly
+    buffer_size compressed images (a few MB each).  VRAM is unaffected.
   - The training loop splices full same-bucket Danbooru batches into the
     epoch's batch list every N base batches (interrupt-batch injection).  Their
     latents/embeddings are encoded by the existing swap-buffer refill cycle
@@ -134,15 +135,16 @@ class DatasetTagFrequencyAnalyzer:
 # ----------------------------------------------------------------------------
 
 class _ReadyItem:
-    """One collected, decoded image ready for injection.  Holds the PIL image
-    in memory plus the caption and the assigned bucket dimensions."""
+    """One collected image ready for injection.  Holds the COMPRESSED image
+    bytes (not a decoded PIL) so the buffer stays bounded to a few MB/image;
+    the training loop decodes lazily, one at a time, at encode time."""
 
-    __slots__ = ("post_id", "image", "caption", "bucket_w", "bucket_h", "tags")
+    __slots__ = ("post_id", "image_bytes", "caption", "bucket_w", "bucket_h", "tags")
 
-    def __init__(self, post_id: int, image: Image.Image, caption: str,
+    def __init__(self, post_id: int, image_bytes: bytes, caption: str,
                  bucket_w: int, bucket_h: int, tags: List[str]) -> None:
         self.post_id = post_id
-        self.image = image
+        self.image_bytes = image_bytes
         self.caption = caption
         self.bucket_w = bucket_w
         self.bucket_h = bucket_h
@@ -413,24 +415,24 @@ class DanbooruImageCollector:
         if result is None:
             return None
         img_bytes, _ext, _flat_tags = result
+        # Header-only size read (no full pixel decode) so the buffer holds only
+        # the compressed bytes — keeps CPU RAM bounded.  Full decode + any mode
+        # conversion happens later in the training loop (same as a normal
+        # on-disk image), one image at a time.
         try:
-            img = Image.open(io.BytesIO(img_bytes))
-            img.load()
-            if img.mode == "RGBA":
-                bg = Image.new("RGB", img.size, (255, 255, 255))
-                bg.paste(img, mask=img.split()[3])
-                img = bg
-            elif img.mode != "RGB":
-                img = img.convert("RGB")
+            with Image.open(io.BytesIO(img_bytes)) as _im:
+                w, h = _im.size
         except (OSError, Image.DecompressionBombError) as exc:
-            print(f"[DanbooruImageCollector] decode error (post {post.get('id')}): {exc}")
+            print(f"[DanbooruImageCollector] header read error (post {post.get('id')}): {exc}")
+            return None
+        if not w or not h:
             return None
 
-        bucket_w, bucket_h = self._assign_bucket(img.width, img.height)
+        bucket_w, bucket_h = self._assign_bucket(int(w), int(h))
         caption, tags = self._build_caption(post)
         return _ReadyItem(
             post_id=int(post.get("id")),
-            image=img,
+            image_bytes=img_bytes,
             caption=caption,
             bucket_w=bucket_w,
             bucket_h=bucket_h,

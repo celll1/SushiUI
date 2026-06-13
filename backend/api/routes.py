@@ -3239,11 +3239,27 @@ async def siglip2_tag_metrics():
         tag_names.append(name)
         categories.append(tag_to_category.get(name, "Unknown"))
 
+    def _scalar(v, default=0.0):
+        # npz scalars are saved as 1-element arrays (e.g. np.array([x])); numpy 2.x
+        # rejects int()/float() on non-0-d arrays, so unwrap via .item(). Some keys
+        # are already unwrapped to Python scalars by TagMetricsAccumulator.load().
+        if v is None:
+            return default
+        if isinstance(v, (int, float)):
+            return v
+        try:
+            return v.item()
+        except (AttributeError, ValueError):
+            try:
+                return v.reshape(-1)[0].item()
+            except Exception:
+                return default
+
     return {
         "n_tags":       V,
-        "total_images": int(data["total_images"]),
-        "hard_lo":      float(data.get("hard_lo", 0.25)),
-        "hard_hi":      float(data.get("hard_hi", 0.75)),
+        "total_images": int(_scalar(data.get("total_images"), 0)),
+        "hard_lo":      float(_scalar(data.get("hard_lo"), 0.25)),
+        "hard_hi":      float(_scalar(data.get("hard_hi"), 0.75)),
         "tag_names":    tag_names,
         "categories":   categories,
         "n_pos":        to_list("n_pos"),

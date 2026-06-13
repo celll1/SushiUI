@@ -3071,6 +3071,12 @@ async def siglip2_load(request: SigLIP2LoadRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Tracks whether the "no active training, falling back" notice has already been
+# logged for the current no-training stretch (re-armed when a training model
+# becomes available), so it isn't printed on every single inference request.
+_SIGLIP2_TRAIN_FALLBACK_LOGGED = False
+
+
 @router.post("/tagger/siglip2/predict")
 async def siglip2_predict(request: SigLIP2PredictRequest):
     """Run inference with the loaded SigLIP2 model.
@@ -3079,6 +3085,7 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
     of the loaded inference model.  Falls back to the inference model if no
     training is active or the training model is temporarily offloaded.
     """
+    global _SIGLIP2_TRAIN_FALLBACK_LOGGED
     try:
         import base64
         from core.gpu_coordinator import gpu_coordinator
@@ -3088,6 +3095,7 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
         if request.use_training_model:
             handle = gpu_coordinator.get_active_tagger_handle()
             if handle is not None:
+                _SIGLIP2_TRAIN_FALLBACK_LOGGED = False  # available again → re-arm the log
                 # Calibration for training model: borrow table from inference manager
                 # if it is loaded and use_calibration was requested.
                 _calib_table = None
@@ -3111,9 +3119,13 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
                     # Model was offloaded between can_predict() and predict() — fall through
                     print(f"[SigLIP2Predict] Training model unavailable ({_e}); "
                           f"falling back to inference model")
-            else:
+            elif not _SIGLIP2_TRAIN_FALLBACK_LOGGED:
+                # Log once per no-active-training stretch; re-armed above when a
+                # training model becomes available again. Avoids one line per
+                # inference when the UI keeps use_training_model on with no run.
                 print("[SigLIP2Predict] use_training_model=True but no active training; "
-                      "falling back to inference model")
+                      "falling back to inference model (suppressing repeats)")
+                _SIGLIP2_TRAIN_FALLBACK_LOGGED = True
 
         # Standard inference-model path
         mgr = get_siglip2_inference_manager()

@@ -8293,6 +8293,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_buffer_size: Optional[int] = None  # None → auto (2 × batch_size)
     danbooru_vocab_expand: bool = False
     danbooru_new_tag_min_count: int = 200
+    danbooru_new_tag_min_count_by_cat: Dict[str, int] = {}
     danbooru_new_tag_lookback_days: int = 90
     danbooru_new_tag_categories: List[int] = [0, 3, 4]
     danbooru_new_tag_survey_interval: int = 3600
@@ -8308,6 +8309,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     # Co-occurrence vocab discovery (vocab-absent tags seen in collected posts)
     danbooru_cooc_expand_enable: bool = False
     danbooru_cooc_min_count: int = 50
+    danbooru_cooc_categories: List[int] = [0, 3, 4]
     # save_tag_metrics / hard_rate (passed through to trainer)
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25

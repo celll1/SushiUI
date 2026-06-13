@@ -376,6 +376,10 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_buffer_size": None,     # None → auto (2 × batch_size)
     "danbooru_vocab_expand": False,
     "danbooru_new_tag_min_count": 200,
+    # Per-category post_count threshold overrides for the surveyor (category code
+    # → min). Empty = use danbooru_new_tag_min_count for all. Lets copyright use a
+    # higher bar than character (copyright post counts dwarf individual chars).
+    "danbooru_new_tag_min_count_by_cat": {},
     "danbooru_new_tag_lookback_days": 90,
     "danbooru_new_tag_categories": [0, 3, 4],
     "danbooru_new_tag_survey_interval": 3600,
@@ -395,4 +399,8 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     # catches old tags missing from the training vocab. Requires vocab_expand.
     "danbooru_cooc_expand_enable": False,
     "danbooru_cooc_min_count": 50,
+    # Categories eligible for co-occurrence discovery — independent of the
+    # surveyor's categories, so a character-only surveyor net still lets the
+    # accompanying copyright/general tags be added when they co-occur.
+    "danbooru_cooc_categories": [0, 3, 4],
 }

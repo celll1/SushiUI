@@ -262,8 +262,16 @@ class TaggerDataset(Dataset):
         self, tags: List[str]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         voc = self.vocabulary
-        label     = torch.zeros(self.num_tags, dtype=torch.float32)
-        loss_mask = torch.ones(self.num_tags,  dtype=torch.float32)
+        # Size to the LIVE vocabulary, not the cached self.num_tags. Online
+        # Danbooru vocab expansion grows the vocabulary during training; each
+        # DataLoader worker re-pickles the vocab at its (grown) size at the epoch
+        # boundary, so voc.tag_to_idx can exceed the stale self.num_tags captured
+        # at dataset construction -> IndexError at label[idx]. Using voc.num_tags
+        # (== len(tag_to_idx)) guarantees every index fits; the MixedDataLoader
+        # still pads up to any further mid-epoch head growth.
+        n_tags = voc.num_tags
+        label     = torch.zeros(n_tags, dtype=torch.float32)
+        loss_mask = torch.ones(n_tags,  dtype=torch.float32)
 
         # Set positive labels
         tag_set = set(tags)

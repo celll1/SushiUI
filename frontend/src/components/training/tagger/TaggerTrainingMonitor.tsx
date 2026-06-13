@@ -597,15 +597,24 @@ export default function TaggerTrainingMonitor({
     };
   }, [run.status]);
 
-  // Decay the rate display when no new step events arrive (e.g. while a
-  // validation pass runs between epochs).  After 10s of silence, clear.
+  // Decay the rate display only on a *real* pause (e.g. a validation pass
+  // between epochs), not between normal step events. Step WS events arrive
+  // every ~10 global_steps, so at slow speeds (e.g. 1.5 s/it → ~15 s apart) a
+  // fixed 10 s window would clear the rate — and its samples — between every
+  // event, so it would only ever flash on. Make the silence threshold adapt to
+  // the recent inter-event spacing (≥ 20 s, or 3× the last gap).
   useEffect(() => {
     if (run.status !== "running") return;
     const timer = setInterval(() => {
       const samples = iterRateSamplesRef.current;
       if (samples.length === 0) return;
       const last = samples[samples.length - 1];
-      if (performance.now() - last.t > 10_000) {
+      let staleMs = 20_000;
+      if (samples.length >= 2) {
+        const gap = last.t - samples[samples.length - 2].t;
+        if (Number.isFinite(gap) && gap > 0) staleMs = Math.max(20_000, gap * 3);
+      }
+      if (performance.now() - last.t > staleMs) {
         setIterPerSec(null);
         setIterPerSecLong(null);
         iterRateSamplesRef.current = [];

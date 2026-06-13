@@ -68,13 +68,17 @@ function applySmoothing(points: Point[], factor: number, initialState?: number):
 // Chart padding (used everywhere; constant)
 const PAD = { top: 6, right: 8, bottom: 18, left: 44 };
 
-// Robust Y-range: 5–95th percentiles on primary + 5% padding.
+// Y-range with 5% padding.  ``bounded`` metrics (F1, threshold, precision,
+// recall — all in [0,1] with no spikes) use the FULL data min/max so the
+// highest/lowest points are never clipped off-screen.  Unbounded metrics
+// (loss) use 5–95th percentiles to reject the occasional spike.
 // mustInclude values (e.g. secondary series actual min/max) are always
-// extended into the range so they are never clipped by the percentile cut.
+// extended into the range so they are never clipped.
 function robustYRange(
   values: number[],
   yMinFloor: number,
   mustInclude: number[] = [],
+  bounded: boolean = false,
 ): { min: number; max: number } {
   const valid = values.filter((v) => Number.isFinite(v));
   let lo: number, hi: number;
@@ -84,6 +88,11 @@ function robustYRange(
     const v = valid[0];
     const pad = Math.max(Math.abs(v) * 0.1, 1e-6);
     lo = Math.max(yMinFloor, v - pad); hi = v + pad;
+  } else if (bounded) {
+    // Full range — no percentile clipping (these metrics have no outliers).
+    const sorted = [...valid].sort((a, b) => a - b);
+    lo = sorted[0];
+    hi = sorted[sorted.length - 1];
   } else {
     const sorted = [...valid].sort((a, b) => a - b);
     lo = sorted[Math.floor(sorted.length * 0.05)];
@@ -381,6 +390,7 @@ export default function TaggerMetricChart({
     primaryValsForRange,
     yMinFloor,
     secondaryRawVals,  // raw secondary min/max always visible
+    valueKey !== "loss",  // bounded metrics (F1 etc.) use full range, no clipping
   );
   const ySpan = yMax - yMin || 1;
   const toY = (v: number) => PAD.top + ((yMax - v) / ySpan) * chartH;

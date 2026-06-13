@@ -1397,6 +1397,19 @@ class TaggerTrainer:
                             os.replace(_tmp, _mp)
                         except Exception:
                             pass
+                        # Persist the dynamic new-tag query list so it survives a
+                        # resume (the surveyor can't rediscover already-in-vocab
+                        # tags — see initial_dynamic_tags).
+                        if hasattr(_db_buf, "snapshot_dynamic_tags"):
+                            try:
+                                _dyn = _db_buf.snapshot_dynamic_tags()
+                                _dp = os.path.join(self.output_dir, "danbooru_dynamic_tags.json")
+                                _dtmp = _dp + ".tmp"
+                                with open(_dtmp, "w", encoding="utf-8") as _df:
+                                    json.dump(_dyn, _df, ensure_ascii=False)
+                                os.replace(_dtmp, _dp)
+                            except Exception:
+                                pass
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
@@ -2214,6 +2227,22 @@ def run_tagger_training(
                 _inj_batch_size = max(1, int(round(_base_B * _inj_ratio)))
                 _inj_interval = int(config.get("danbooru_injection_interval", 4) or 4)
 
+                # Restore the dynamic (new-tag) query list so previously expanded
+                # tags keep being collected after a resume — the surveyor won't
+                # re-discover them (they are already in the vocab now).
+                _initial_dynamic_tags: List[str] = []
+                try:
+                    _dt_path = os.path.join(output_dir, "danbooru_dynamic_tags.json")
+                    if os.path.isfile(_dt_path):
+                        with open(_dt_path, "r", encoding="utf-8") as _df:
+                            _loaded = json.load(_df)
+                        if isinstance(_loaded, list):
+                            _initial_dynamic_tags = [str(t) for t in _loaded if t]
+                            print(f"[TaggerTraining] Restored {len(_initial_dynamic_tags)} dynamic "
+                                  f"new-tag queries for continued collection across resume")
+                except Exception as _dte:
+                    print(f"[TaggerTraining] Could not restore dynamic tag list: {_dte}")
+
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_tag_queries,
                     vocabulary=vocabulary,
@@ -2238,6 +2267,7 @@ def run_tagger_training(
                     cooc_expand_enable=bool(config.get("danbooru_cooc_expand_enable", False)) and _vocab_expand_on,
                     cooc_min_count=config.get("danbooru_cooc_min_count", 50),
                     cooc_categories=config.get("danbooru_new_tag_categories", [0, 3, 4]),
+                    initial_dynamic_tags=_initial_dynamic_tags,
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

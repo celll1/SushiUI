@@ -148,6 +148,7 @@ class DanbooruSampleBuffer:
         cooc_expand_enable: bool = False,
         cooc_min_count: int = 50,
         cooc_categories: Optional[List[int]] = None,
+        initial_dynamic_tags: Optional[List[str]] = None,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -194,8 +195,14 @@ class DanbooruSampleBuffer:
         # downloading a new tag's posts even after it has been added to the
         # vocabulary (the surveyor drops it from its approved set on add, but
         # the freshly-grown head still needs positive samples).
-        self._dynamic_tags: List[str] = []
-        self._dynamic_seen: Set[str] = set()
+        #
+        # On resume the previously-expanded tags are already in the vocabulary,
+        # so the surveyor would NOT re-discover them — they would silently stop
+        # being collected. ``initial_dynamic_tags`` re-seeds the list from a
+        # persisted snapshot so collection (and thus learning) of expanded tags
+        # continues across resumes regardless of vocab membership.
+        self._dynamic_tags: List[str] = [t for t in (initial_dynamic_tags or []) if t]
+        self._dynamic_seen: Set[str] = {normalize_tag(t) for t in self._dynamic_tags}
 
         # Low-F1 queries: existing-vocab Danbooru tag names (underscored) fed by
         # the trainer's deficiency provider (worst per-tag F1).  Like dynamic
@@ -338,6 +345,13 @@ class DanbooruSampleBuffer:
                 "top_low_f1_tags":         [{"tag": t, "count": c} for t, c in top_low_f1_tags],
                 "recent_posts":            list(self._recent_posts),
             }
+
+    def snapshot_dynamic_tags(self) -> List[str]:
+        """Return a copy of the dynamic (new-tag) query list for persistence, so
+        the surveyor-discovered tags can be re-seeded on resume (see
+        ``initial_dynamic_tags``)."""
+        with self._cycle_lock:
+            return list(self._dynamic_tags)
 
     # ------------------------------------------------------------------
     # Worker thread

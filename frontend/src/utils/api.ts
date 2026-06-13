@@ -2015,6 +2015,12 @@ export interface TrainingRunCreateRequest {
   danbooru_aug_buffer_size?: number | null;
   danbooru_aug_include_rating_tag?: boolean;
   danbooru_aug_max_caption_tags?: number;
+  danbooru_aug_shuffle_tags?: boolean;
+  danbooru_aug_shuffle_keep_first_n?: number;
+  danbooru_aug_tag_dropout_rate?: number;
+  danbooru_aug_tag_dropout_keep_first_n?: number;
+  danbooru_aug_caption_dropout_rate?: number;
+  danbooru_aug_keep_tokens?: number;
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
   num_optimizer_groups?: number;

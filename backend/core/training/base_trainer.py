@@ -8051,6 +8051,7 @@ class BaseTrainer(ABC):
         self._danbooru_inj_batch_size = 0
         self._danbooru_inj_interval = 0
         self._danbooru_metrics_path = None
+        self._danbooru_caption_config = None
         try:
             if bool(self.config.get("danbooru_aug_enable", False)):
                 if latent_encoding_mode not in ("swap_onthefly", "onthefly_gpu"):
@@ -8135,6 +8136,25 @@ class BaseTrainer(ABC):
                     self._danbooru_metrics_path = os.path.join(
                         str(self.output_dir), "danbooru_metrics.json"
                     )
+                    # Dedicated caption-processing config for injected samples
+                    # (separate from per-dataset caption_processing). Consumed by
+                    # process_caption_with_tag_data() at splice time, per-epoch.
+                    self._danbooru_caption_config = {
+                        "caption_dropout_rate": float(self.config.get("danbooru_aug_caption_dropout_rate", 0.0)),
+                        "keep_tokens": int(self.config.get("danbooru_aug_keep_tokens", 0)),
+                        "shuffle_tokens": bool(self.config.get("danbooru_aug_shuffle_tags", False)),
+                        "shuffle_per_epoch": True,
+                        "shuffle_keep_first_n": int(self.config.get("danbooru_aug_shuffle_keep_first_n", 0)),
+                        "shuffle_tag_groups": ["General", "Character", "Copyright", "Artist", "Meta"],
+                        "shuffle_groups_together": False,
+                        "exclude_person_count_from_shuffle": True,
+                        "tag_dropout_rate": float(self.config.get("danbooru_aug_tag_dropout_rate", 0.0)),
+                        "tag_dropout_per_epoch": True,
+                        "tag_dropout_keep_first_n": int(self.config.get("danbooru_aug_tag_dropout_keep_first_n", 0)),
+                        "tag_dropout_category_rates": {},
+                        "tag_dropout_exclude_person_count": True,
+                        "category_order": ["Rating", "General", "Character", "Copyright", "Artist", "Meta"],
+                    }
                     self._danbooru_collector = DanbooruImageCollector(
                         static_queries=_static,
                         deficiency_queries=_defic_queries,
@@ -8347,7 +8367,9 @@ class BaseTrainer(ABC):
                         self._danbooru_collector.reset_download_cycle()
                     except Exception:
                         pass
+                    from core.training.caption_processor import process_caption_with_tag_data
                     _inj_n = self._danbooru_inj_batch_size
+                    _cap_cfg = self._danbooru_caption_config or {}
                     _pseudo_ds = datasets[0] if datasets else None
                     _spliced = []
                     _injected = 0
@@ -8358,9 +8380,18 @@ class BaseTrainer(ABC):
                             if _items:
                                 _danb_batch = []
                                 for _ri in _items:
+                                    _ipath = f"danbooru://{_ri.post_id}"
+                                    # Build the caption per-epoch with the dedicated
+                                    # shuffle/dropout config (seeded by path+epoch).
+                                    try:
+                                        _cap = process_caption_with_tag_data(
+                                            _ri.tag_data, epoch, _ipath, _cap_cfg
+                                        )
+                                    except Exception:
+                                        _cap = ", ".join(t["tag"] for t in _ri.tag_data)
                                     _danb_batch.append(({
-                                        "image_path": f"danbooru://{_ri.post_id}",
-                                        "caption": _ri.caption,
+                                        "image_path": _ipath,
+                                        "caption": _cap,
                                         "width": _ri.bucket_w,
                                         "height": _ri.bucket_h,
                                         "_danbooru_image_bytes": _ri.image_bytes,

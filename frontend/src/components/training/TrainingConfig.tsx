@@ -173,6 +173,12 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   danbooru_aug_buffer_size: null,
   danbooru_aug_include_rating_tag: false,
   danbooru_aug_max_caption_tags: 0,
+  danbooru_aug_shuffle_tags: false,
+  danbooru_aug_shuffle_keep_first_n: 0,
+  danbooru_aug_tag_dropout_rate: 0.0,
+  danbooru_aug_tag_dropout_keep_first_n: 0,
+  danbooru_aug_caption_dropout_rate: 0.0,
+  danbooru_aug_keep_tokens: 0,
   blocks_to_swap: 0,
   use_pinned_memory: false,
   num_optimizer_groups: 0,
@@ -694,6 +700,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       danbooru_aug_buffer_size: params.danbooru_aug_buffer_size,
       danbooru_aug_include_rating_tag: params.danbooru_aug_include_rating_tag,
       danbooru_aug_max_caption_tags: params.danbooru_aug_max_caption_tags,
+      danbooru_aug_shuffle_tags: params.danbooru_aug_shuffle_tags,
+      danbooru_aug_shuffle_keep_first_n: params.danbooru_aug_shuffle_keep_first_n,
+      danbooru_aug_tag_dropout_rate: params.danbooru_aug_tag_dropout_rate,
+      danbooru_aug_tag_dropout_keep_first_n: params.danbooru_aug_tag_dropout_keep_first_n,
+      danbooru_aug_caption_dropout_rate: params.danbooru_aug_caption_dropout_rate,
+      danbooru_aug_keep_tokens: params.danbooru_aug_keep_tokens,
       priority_training: priorityEnabled && priorityText.trim() ? {
         entries: priorityText.trim().split("\n").map(line => line.trim()).filter(Boolean),
         multiplier: priorityMultiplier,
@@ -826,6 +838,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_max_posts_per_query", "danbooru_aug_api_interval",
       "danbooru_aug_dl_speed_kbps", "danbooru_aug_buffer_size",
       "danbooru_aug_include_rating_tag", "danbooru_aug_max_caption_tags",
+      "danbooru_aug_shuffle_tags", "danbooru_aug_shuffle_keep_first_n",
+      "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
+      "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
       "blocks_to_swap", "use_pinned_memory", "num_optimizer_groups",
       "multi_noise_timesteps", "multi_noise_mode", "trajectory_blend_alpha",
       "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
@@ -3909,6 +3924,34 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 />
                 <span className="text-xs text-gray-300">Include rating word in caption (general/sensitive/…)</span>
               </label>
+
+              {/* Caption tag shuffle / dropout (dedicated — independent of the
+                  per-dataset caption processing). */}
+              <div className="border-t border-gray-700 pt-3 mt-1 space-y-3">
+                <p className="text-xs text-gray-400">
+                  Caption tag shuffle / dropout for injected samples (separate from per-dataset caption processing)
+                </p>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!params.danbooru_aug_shuffle_tags}
+                    onChange={(e) => updateParam("danbooru_aug_shuffle_tags", e.target.checked)}
+                  />
+                  <span className="text-xs text-gray-300">Shuffle tags within each category (per-epoch)</span>
+                </label>
+                <div className="grid grid-cols-2 gap-3">
+                  <NumField label="Shuffle keep first N" value={params.danbooru_aug_shuffle_keep_first_n}
+                    onChange={(v) => updateParam("danbooru_aug_shuffle_keep_first_n", v)} step={1} />
+                  <NumField label="Keep tokens (token dropout)" value={params.danbooru_aug_keep_tokens}
+                    onChange={(v) => updateParam("danbooru_aug_keep_tokens", v)} step={1} />
+                  <NumField label="Tag dropout rate (0-1)" value={params.danbooru_aug_tag_dropout_rate}
+                    onChange={(v) => updateParam("danbooru_aug_tag_dropout_rate", v)} step={0.05} />
+                  <NumField label="Tag dropout keep first N" value={params.danbooru_aug_tag_dropout_keep_first_n}
+                    onChange={(v) => updateParam("danbooru_aug_tag_dropout_keep_first_n", v)} step={1} />
+                  <NumField label="Caption dropout rate (0-1)" value={params.danbooru_aug_caption_dropout_rate}
+                    onChange={(v) => updateParam("danbooru_aug_caption_dropout_rate", v)} step={0.05} />
+                </div>
+              </div>
             </div>
           )}
         </div>

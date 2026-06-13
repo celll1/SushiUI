@@ -770,34 +770,57 @@ class TaggerTrainer:
               f"num_tags={self.vocabulary.num_tags}, device={device})...")
         self._emit("phase", {"phase": "initializing", "message": "Building model..."})
         # FlashAttention-2 for the encoder self-attention (opt-in per run).
-        # FA2 cannot run in fp32 — it only engages under fp16/bf16 autocast — so
-        # fall back to SDPA when mixed precision is disabled.
+        # Three guards before we commit to FA2, each falling back to SDPA:
+        #   1. dtype  — FA2 only engages under fp16/bf16 autocast (not fp32).
+        #   2. avail. — flash-attn must be installed/usable in this environment.
+        #   3. build  — if the FA2 model build still fails, retry with SDPA.
         _use_fa2 = bool(cfg.get("use_flash_attention", False))
         _mp_str = str(cfg.get("mixed_precision", "bf16")).lower()
-        if _use_fa2 and _mp_str not in ("bf16", "fp16"):
-            print(f"[TaggerTrainer] FlashAttention-2 requested but mixed_precision={_mp_str} "
-                  f"(FA2 needs bf16/fp16) — falling back to SDPA")
-            _attn_impl = "sdpa"
-        elif _use_fa2:
-            _attn_impl = "flash_attention_2"
-            print(f"[TaggerTrainer] Using FlashAttention-2 for encoder self-attention "
-                  f"(mixed_precision={_mp_str})")
-        else:
-            _attn_impl = "sdpa"
-        model = build_tagger_model(
-            training_method=cfg.get("training_method", "lora"),
-            num_tags=self.vocabulary.num_tags,
-            vision_encoder_path=cfg["vision_encoder_path"],
-            lora_rank=cfg.get("lora_rank", 32),
-            lora_alpha=float(cfg.get("lora_alpha", 16.0)),
-            cls_dim=cfg.get("cls_dim") or None,
-            hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
-            init_head_from=cfg.get("init_head_from") or None,
-            new_vocab=self.vocabulary.tag_to_idx,
-            repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
-            is_naflex=cfg.get("is_naflex", True),
-            attn_implementation=_attn_impl,
-        )
+        _attn_impl = "sdpa"
+        if _use_fa2:
+            if _mp_str not in ("bf16", "fp16"):
+                print(f"[TaggerTrainer] FlashAttention-2 requested but mixed_precision={_mp_str} "
+                      f"(FA2 needs bf16/fp16) — falling back to SDPA")
+            else:
+                try:
+                    from transformers.utils import is_flash_attn_2_available
+                    _fa2_ok = bool(is_flash_attn_2_available())
+                except Exception:
+                    _fa2_ok = False
+                if _fa2_ok:
+                    _attn_impl = "flash_attention_2"
+                    print(f"[TaggerTrainer] Using FlashAttention-2 for encoder self-attention "
+                          f"(mixed_precision={_mp_str})")
+                else:
+                    print("[TaggerTrainer] FlashAttention-2 requested but not available "
+                          "(flash-attn not installed or unsupported here) — falling back to SDPA")
+
+        def _build_model(_attn: str):
+            return build_tagger_model(
+                training_method=cfg.get("training_method", "lora"),
+                num_tags=self.vocabulary.num_tags,
+                vision_encoder_path=cfg["vision_encoder_path"],
+                lora_rank=cfg.get("lora_rank", 32),
+                lora_alpha=float(cfg.get("lora_alpha", 16.0)),
+                cls_dim=cfg.get("cls_dim") or None,
+                hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
+                init_head_from=cfg.get("init_head_from") or None,
+                new_vocab=self.vocabulary.tag_to_idx,
+                repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
+                is_naflex=cfg.get("is_naflex", True),
+                attn_implementation=_attn,
+            )
+
+        try:
+            model = _build_model(_attn_impl)
+        except Exception as _be:
+            if _attn_impl == "flash_attention_2":
+                print(f"[TaggerTrainer] FlashAttention-2 model build failed "
+                      f"({type(_be).__name__}: {str(_be)[:140]}) — retrying with SDPA")
+                _attn_impl = "sdpa"
+                model = _build_model(_attn_impl)
+            else:
+                raise
         trainable_count = sum(p.numel() for p in model.parameters() if p.requires_grad)
         total_count     = sum(p.numel() for p in model.parameters())
         print(f"[TaggerTrainer] Model built: {trainable_count:,} trainable / {total_count:,} total parameters")

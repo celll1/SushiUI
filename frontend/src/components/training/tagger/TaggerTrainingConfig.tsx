@@ -90,6 +90,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_new_tag_min_count: 200,
   danbooru_new_tag_lookback_days: 90,
   danbooru_new_tag_categories: [0, 3, 4],
+  danbooru_new_tag_min_count_by_cat: {} as Record<string, number>,
   danbooru_new_tag_survey_interval: 3600,
   danbooru_query_weight_static: 1.0,
   danbooru_query_weight_new_tag: 1.0,
@@ -100,6 +101,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_low_f1_min_posts: 50,
   danbooru_cooc_expand_enable: false,
   danbooru_cooc_min_count: 50,
+  danbooru_cooc_categories: [0, 3, 4],
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -179,6 +181,7 @@ export default function TaggerTrainingConfig({
         danbooru_new_tag_min_count: (editRun.config?.danbooru_new_tag_min_count as number) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count,
         danbooru_new_tag_lookback_days: (editRun.config?.danbooru_new_tag_lookback_days as number) ?? DEFAULT_CONFIG.danbooru_new_tag_lookback_days,
         danbooru_new_tag_categories: (editRun.config?.danbooru_new_tag_categories as number[]) ?? DEFAULT_CONFIG.danbooru_new_tag_categories,
+        danbooru_new_tag_min_count_by_cat: (editRun.config?.danbooru_new_tag_min_count_by_cat as Record<string, number>) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count_by_cat,
         danbooru_new_tag_survey_interval: (editRun.config?.danbooru_new_tag_survey_interval as number) ?? DEFAULT_CONFIG.danbooru_new_tag_survey_interval,
         danbooru_query_weight_static: (editRun.config?.danbooru_query_weight_static as number) ?? DEFAULT_CONFIG.danbooru_query_weight_static,
         danbooru_query_weight_new_tag: (editRun.config?.danbooru_query_weight_new_tag as number) ?? DEFAULT_CONFIG.danbooru_query_weight_new_tag,
@@ -189,6 +192,7 @@ export default function TaggerTrainingConfig({
         danbooru_low_f1_min_posts: (editRun.config?.danbooru_low_f1_min_posts as number) ?? DEFAULT_CONFIG.danbooru_low_f1_min_posts,
         danbooru_cooc_expand_enable: (editRun.config?.danbooru_cooc_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_expand_enable,
         danbooru_cooc_min_count: (editRun.config?.danbooru_cooc_min_count as number) ?? DEFAULT_CONFIG.danbooru_cooc_min_count,
+        danbooru_cooc_categories: (editRun.config?.danbooru_cooc_categories as number[]) ?? DEFAULT_CONFIG.danbooru_cooc_categories,
       }
     : DEFAULT_CONFIG;
 
@@ -1294,6 +1298,49 @@ export default function TaggerTrainingConfig({
                       </div>
                     </div>
 
+                    {/* Per-category min post count overrides */}
+                    {(config.danbooru_new_tag_categories ?? [0, 3, 4]).length > 0 && (
+                      <div className="flex items-start gap-3">
+                        <label className="text-xs text-gray-400 w-48 pt-1">Per-category min count</label>
+                        <div className="flex flex-col gap-2">
+                          <p className="text-xs text-gray-500">
+                            Override the shared min post count per category (blank = use the shared value).
+                            Copyright post counts dwarf individual characters, so a higher copyright bar
+                            keeps it from over-dominating the discovered tags.
+                          </p>
+                          {[
+                            { code: 0, label: "General" },
+                            { code: 4, label: "Character" },
+                            { code: 3, label: "Copyright" },
+                            { code: 1, label: "Artist" },
+                            { code: 5, label: "Meta" },
+                          ]
+                            .filter(({ code }) => (config.danbooru_new_tag_categories ?? [0, 3, 4]).includes(code))
+                            .map(({ code, label }) => {
+                              const map = config.danbooru_new_tag_min_count_by_cat ?? {};
+                              return (
+                                <div key={code} className="flex items-center gap-3">
+                                  <label className="text-xs text-gray-400 w-24">{label}</label>
+                                  <input
+                                    type="number" min={1}
+                                    value={map[String(code)] ?? ""}
+                                    placeholder={String(config.danbooru_new_tag_min_count ?? 200)}
+                                    onChange={(e) => {
+                                      const next: Record<string, number> = { ...(config.danbooru_new_tag_min_count_by_cat ?? {}) };
+                                      const v = parseInt(e.target.value);
+                                      if (Number.isFinite(v) && v > 0) next[String(code)] = v;
+                                      else delete next[String(code)];
+                                      setField("danbooru_new_tag_min_count_by_cat", next);
+                                    }}
+                                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                                  />
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Co-occurrence discovery (created-at independent) */}
                     <div className="pt-2 border-t border-gray-700/50">
                       <label className="flex items-center gap-3 cursor-pointer">
@@ -1310,9 +1357,10 @@ export default function TaggerTrainingConfig({
                       {config.danbooru_cooc_expand_enable && (
                         <div className="mt-2 ml-7 space-y-2">
                           <p className="text-xs text-gray-500">
-                            Adds tags that co-occur in collected posts at least N times, filtered to the
-                            Tag categories above. Unlike the surveyor it ignores creation date, so it also
-                            catches older tags missing from your vocabulary (e.g. a new character&apos;s copyright).
+                            Adds tags that co-occur in collected posts at least N times, filtered to its own
+                            categories below (independent of the surveyor&apos;s). Unlike the surveyor it ignores
+                            creation date, so it also catches older tags missing from your vocabulary (e.g. a
+                            new character&apos;s copyright — added even if Copyright is off in the surveyor above).
                           </p>
                           <div className="flex items-center gap-3">
                             <label className="text-xs text-gray-400 w-48">Min co-occurrence count</label>
@@ -1323,6 +1371,37 @@ export default function TaggerTrainingConfig({
                               className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                             />
                             <span className="text-xs text-gray-500">Times a tag must appear before it is added.</span>
+                          </div>
+                          <div className="flex items-start gap-3">
+                            <label className="text-xs text-gray-400 w-48 pt-1">Categories</label>
+                            <div className="flex flex-wrap gap-3">
+                              {[
+                                { code: 0, label: "General" },
+                                { code: 4, label: "Character" },
+                                { code: 3, label: "Copyright" },
+                                { code: 1, label: "Artist" },
+                                { code: 5, label: "Meta" },
+                              ].map(({ code, label }) => {
+                                const cats = config.danbooru_cooc_categories ?? [0, 3, 4];
+                                return (
+                                  <label key={code} className="flex items-center gap-1.5 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={cats.includes(code)}
+                                      onChange={(e) => {
+                                        const cur = config.danbooru_cooc_categories ?? [0, 3, 4];
+                                        const next = e.target.checked
+                                          ? [...cur, code].sort((a, b) => a - b)
+                                          : cur.filter((c) => c !== code);
+                                        setField("danbooru_cooc_categories", next);
+                                      }}
+                                      className="w-3.5 h-3.5 rounded accent-blue-500"
+                                    />
+                                    <span className="text-xs text-gray-300">{label}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
                           </div>
                         </div>
                       )}

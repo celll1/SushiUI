@@ -62,12 +62,19 @@ class DanbooruTagSurveyor:
         survey_interval: float = 3600.0,
         api_interval: float = 1.4,
         dl_speed_kbps: int = 500,
+        min_count_by_cat: Optional[Dict] = None,
     ) -> None:
         self._vocabulary      = vocabulary
         self._categories      = categories if categories is not None else [
             _CAT_GENERAL, _CAT_COPYRIGHT, _CAT_CHARACTER
         ]
         self._min_count       = min_count
+        # Per-category post_count threshold overrides. Copyright tags carry every
+        # post of every character in the series, so their post_count dwarfs
+        # individual characters — a single shared min_count over-favours
+        # copyright. This lets each category use its own threshold. JSON keys may
+        # be str, so look up both int and str forms.
+        self._min_count_by_cat = dict(min_count_by_cat or {})
         self._lookback_days   = lookback_days
         self._survey_interval = survey_interval
 
@@ -131,6 +138,16 @@ class DanbooruTagSurveyor:
                 time.sleep(min(10.0, self._survey_interval - elapsed))
                 elapsed += 10.0
 
+    def _min_for(self, category: int) -> int:
+        """Per-category post_count threshold (falls back to the shared value)."""
+        for k in (category, str(category)):
+            if k in self._min_count_by_cat:
+                try:
+                    return int(self._min_count_by_cat[k])
+                except (TypeError, ValueError):
+                    break
+        return self._min_count
+
     def _run_survey(self) -> None:
         cutoff = (
             datetime.date.today() - datetime.timedelta(days=self._lookback_days)
@@ -139,11 +156,12 @@ class DanbooruTagSurveyor:
         new_approved: Set[str] = set()
 
         for category in self._categories:
+            _cat_min = self._min_for(category)
             page = 1
             while True:
                 tags = self._client.fetch_tags(
                     created_after=cutoff,
-                    min_count=self._min_count,
+                    min_count=_cat_min,
                     category=category,
                     page=page,
                 )
@@ -165,9 +183,12 @@ class DanbooruTagSurveyor:
                 cat_label = ",".join(
                     _CAT_NAME.get(c, str(c)) for c in self._categories
                 )
+                _min_desc = ", ".join(
+                    f"{_CAT_NAME.get(c, str(c))}={self._min_for(c)}" for c in self._categories
+                )
                 print(
                     f"[DanbooruSurveyor] {len(added_now)} new approved tag(s) "
-                    f"(categories={cat_label}, min_count={self._min_count}, "
+                    f"(min_count[{_min_desc}], "
                     f"lookback={self._lookback_days}d). "
                     f"Total approved: {len(self._approved)}"
                 )

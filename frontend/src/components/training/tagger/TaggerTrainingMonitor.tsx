@@ -1034,8 +1034,10 @@ export default function TaggerTrainingMonitor({
                   danbooru_low_f1_threshold: "Low-F1 threshold",
                   danbooru_low_f1_top_k: "Low-F1 top-K",
                   danbooru_low_f1_min_posts: "Low-F1 min posts",
+                  danbooru_new_tag_min_count_by_cat: "Per-cat min count",
                   danbooru_cooc_expand_enable: "Co-occur discovery",
                   danbooru_cooc_min_count: "Co-occur min count",
+                  danbooru_cooc_categories: "Co-occur categories",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -1059,24 +1061,26 @@ export default function TaggerTrainingMonitor({
                   "danbooru_tags", "danbooru_injection_interval", "danbooru_injection_batch_size_ratio",
                   "danbooru_min_score", "danbooru_max_posts_per_query", "danbooru_api_interval",
                   "danbooru_dl_speed_kbps", "danbooru_buffer_size", "danbooru_vocab_expand",
-                  "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
+                  "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
+                  "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
                   "danbooru_new_tag_survey_interval",
                   "danbooru_query_weight_static", "danbooru_query_weight_new_tag", "danbooru_query_weight_low_f1",
                   "danbooru_low_f1_enable", "danbooru_low_f1_threshold", "danbooru_low_f1_top_k",
                   "danbooru_low_f1_min_posts",
-                  "danbooru_cooc_expand_enable", "danbooru_cooc_min_count",
+                  "danbooru_cooc_expand_enable", "danbooru_cooc_min_count", "danbooru_cooc_categories",
                 ]);
                 const DANBOORU_VOCAB_KEYS = new Set([
-                  "danbooru_new_tag_min_count", "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
+                  "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
+                  "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
                   "danbooru_new_tag_survey_interval",
-                  "danbooru_cooc_expand_enable", "danbooru_cooc_min_count",
+                  "danbooru_cooc_expand_enable", "danbooru_cooc_min_count", "danbooru_cooc_categories",
                 ]);
                 // Low-F1 sub-parameters only meaningful when low-F1 collection is on.
                 const DANBOORU_LOW_F1_KEYS = new Set([
                   "danbooru_low_f1_threshold", "danbooru_low_f1_top_k", "danbooru_low_f1_min_posts",
                 ]);
-                // Co-occurrence min count only meaningful when co-occur discovery is on.
-                const DANBOORU_COOC_KEYS = new Set(["danbooru_cooc_min_count"]);
+                // Co-occurrence sub-parameters only meaningful when co-occur discovery is on.
+                const DANBOORU_COOC_KEYS = new Set(["danbooru_cooc_min_count", "danbooru_cooc_categories"]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
                     key,
@@ -1088,6 +1092,9 @@ export default function TaggerTrainingMonitor({
                   }))
                   .filter(({ key, value }) => {
                     if (value === undefined || value === null || value === "") return false;
+                    // Hide empty plain-object values (e.g. an empty per-category map).
+                    if (typeof value === "object" && !Array.isArray(value)
+                        && Object.keys(value as Record<string, unknown>).length === 0) return false;
                     if (LORA_ONLY_KEYS.has(key) && !isLora) return false;
                     if (ASL_ONLY_KEYS.has(key) && lossFn !== "asl") return false;
                     if (CS_ASL_KEYS.has(key) && !["cs_asl", "h_cs_asl", "la_s_asl"].includes(lossFn)) return false;
@@ -1104,7 +1111,9 @@ export default function TaggerTrainingMonitor({
                     {entries.map(({ key, label, value }) => {
                       const display = Array.isArray(value)
                         ? value.join(", ") || "—"
-                        : String(value);
+                        : (typeof value === "object" && value !== null)
+                          ? Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k}:${v}`).join(", ") || "—"
+                          : String(value);
                       return (
                         <div key={key} className="flex gap-1 min-w-0">
                           <span className="text-gray-500 shrink-0">{label}:</span>

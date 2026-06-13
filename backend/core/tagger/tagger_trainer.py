@@ -2163,6 +2163,7 @@ def run_tagger_training(
                         vocabulary=vocabulary,
                         categories=config.get("danbooru_new_tag_categories", [0, 3, 4]),
                         min_count=config.get("danbooru_new_tag_min_count", 200),
+                        min_count_by_cat=config.get("danbooru_new_tag_min_count_by_cat", {}),
                         lookback_days=config.get("danbooru_new_tag_lookback_days", 90),
                         survey_interval=float(config.get("danbooru_new_tag_survey_interval", 3600)),
                         api_interval=config.get("danbooru_api_interval", 1.4),
@@ -2266,7 +2267,7 @@ def run_tagger_training(
                     # is on (it feeds the same expander/head-growth path).
                     cooc_expand_enable=bool(config.get("danbooru_cooc_expand_enable", False)) and _vocab_expand_on,
                     cooc_min_count=config.get("danbooru_cooc_min_count", 50),
-                    cooc_categories=config.get("danbooru_new_tag_categories", [0, 3, 4]),
+                    cooc_categories=config.get("danbooru_cooc_categories", [0, 3, 4]),
                     initial_dynamic_tags=_initial_dynamic_tags,
                 )
                 _danbooru_buffer.start()

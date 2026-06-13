@@ -2651,6 +2651,7 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_buffer_size?: number | null;
   danbooru_vocab_expand?: boolean;
   danbooru_new_tag_min_count?: number;
+  danbooru_new_tag_min_count_by_cat?: Record<string, number>;
   danbooru_new_tag_lookback_days?: number;
   danbooru_new_tag_categories?: number[];
   danbooru_new_tag_survey_interval?: number;
@@ -2666,6 +2667,7 @@ export interface TaggerTrainingRunCreateRequest {
   // Co-occurrence vocab discovery
   danbooru_cooc_expand_enable?: boolean;
   danbooru_cooc_min_count?: number;
+  danbooru_cooc_categories?: number[];
 }
 
 export interface TaggerTrainingMetric {

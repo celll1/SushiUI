@@ -13,7 +13,7 @@ interface Props {
  *  augmentation is disabled (no metrics file present). */
 export default function DanbooruMetricsPanel({ runId, active }: Props) {
   const [data, setData] = useState<DanbooruAugmentationMetrics | null>(null);
-  const [tab, setTab] = useState<"top" | "new" | "lowf1" | "recent">("top");
+  const [tab, setTab] = useState<"top" | "new" | "lowf1" | "cooc" | "recent">("top");
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +49,12 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
     (data.low_f1_tags_count ?? 0) > 0 ||
     (data.total_low_f1_collected ?? 0) > 0 ||
     lowF1Tags.length > 0;
+
+  const coocTags = data.cooc_proposed_tags ?? [];
+  const hasCooc =
+    (data.total_cooc_proposed ?? 0) > 0 ||
+    (data.cooc_pending_count ?? 0) > 0 ||
+    coocTags.length > 0;
 
   return (
     <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-3">
@@ -117,6 +123,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         {hasLowF1 && (
           <TabBtn label="Low-F1 tags" active={tab === "lowf1"} onClick={() => setTab("lowf1")} />
         )}
+        {hasCooc && (
+          <TabBtn label="Co-occur tags" active={tab === "cooc"} onClick={() => setTab("cooc")} />
+        )}
         <TabBtn label="Recent posts" active={tab === "recent"} onClick={() => setTab("recent")} />
       </div>
 
@@ -174,6 +183,31 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
           ))}
           {lowF1Tags.length === 0 && (
             <p className="text-xs text-gray-500 italic">No low-F1 samples collected yet.</p>
+          )}
+        </div>
+      )}
+
+      {/* Co-occurrence tags — vocab-absent tags that co-occurred frequently
+          enough across collected posts to be promoted into the vocab head.
+          Unlike new/low-F1 tags these are not actively queried (no per-tag
+          collection count), so we list names only, most-recently promoted
+          first (bounded to the latest 200). */}
+      {tab === "cooc" && (
+        <div className="max-h-60 overflow-y-auto pr-1">
+          {coocTags.length > 0 ? (
+            <div className="flex flex-wrap gap-1">
+              {coocTags.map((t) => (
+                <span
+                  key={t}
+                  className="px-1.5 py-0.5 rounded bg-purple-900/50 border border-purple-700 text-purple-200 text-xs truncate max-w-[12rem]"
+                  title={t}
+                >
+                  {t}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500 italic">No co-occurrence tags promoted yet.</p>
           )}
         </div>
       )}

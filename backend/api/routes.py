@@ -5977,6 +5977,12 @@ class TrainingRunCreateRequest(BaseModel):
     danbooru_aug_buffer_size: Optional[int] = TRAINING_DEFAULTS["danbooru_aug_buffer_size"]
     danbooru_aug_include_rating_tag: bool = TRAINING_DEFAULTS["danbooru_aug_include_rating_tag"]
     danbooru_aug_max_caption_tags: int = TRAINING_DEFAULTS["danbooru_aug_max_caption_tags"]
+    danbooru_aug_shuffle_tags: bool = TRAINING_DEFAULTS["danbooru_aug_shuffle_tags"]
+    danbooru_aug_shuffle_keep_first_n: int = TRAINING_DEFAULTS["danbooru_aug_shuffle_keep_first_n"]
+    danbooru_aug_tag_dropout_rate: float = TRAINING_DEFAULTS["danbooru_aug_tag_dropout_rate"]
+    danbooru_aug_tag_dropout_keep_first_n: int = TRAINING_DEFAULTS["danbooru_aug_tag_dropout_keep_first_n"]
+    danbooru_aug_caption_dropout_rate: float = TRAINING_DEFAULTS["danbooru_aug_caption_dropout_rate"]
+    danbooru_aug_keep_tokens: int = TRAINING_DEFAULTS["danbooru_aug_keep_tokens"]
 
     # Precision and dtype settings (VRAM optimization)
     weight_dtype: str = "fp16"  # fp16, fp32, bf16, fp8_e4m3fn, fp8_e5m2

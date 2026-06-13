@@ -65,6 +65,16 @@ _CAPTION_CATEGORY_FIELDS: Tuple[Tuple[int, str], ...] = (
     (_CAT_META, "tag_string_meta"),
 )
 
+# Danbooru category code → dataset-convention category NAME (matches the names
+# used in tag_data / caption_config so per-category shuffle/dropout lines up).
+_CATEGORY_CODE_TO_NAME: Dict[int, str] = {
+    _CAT_GENERAL: "General",
+    _CAT_ARTIST: "Artist",
+    _CAT_COPYRIGHT: "Copyright",
+    _CAT_CHARACTER: "Character",
+    _CAT_META: "Meta",
+}
+
 _ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 
 
@@ -137,15 +147,20 @@ class DatasetTagFrequencyAnalyzer:
 class _ReadyItem:
     """One collected image ready for injection.  Holds the COMPRESSED image
     bytes (not a decoded PIL) so the buffer stays bounded to a few MB/image;
-    the training loop decodes lazily, one at a time, at encode time."""
+    the training loop decodes lazily, one at a time, at encode time.
 
-    __slots__ = ("post_id", "image_bytes", "caption", "bucket_w", "bucket_h", "tags")
+    ``tag_data`` is the per-category tag list (``[{"tag","category"}]``); the
+    final caption string is built per-epoch in the training loop so the same
+    shuffle / dropout the dataset uses can be applied.  ``tags`` is the flat
+    name list kept only for metrics display."""
 
-    def __init__(self, post_id: int, image_bytes: bytes, caption: str,
+    __slots__ = ("post_id", "image_bytes", "tag_data", "bucket_w", "bucket_h", "tags")
+
+    def __init__(self, post_id: int, image_bytes: bytes, tag_data: List[Dict[str, str]],
                  bucket_w: int, bucket_h: int, tags: List[str]) -> None:
         self.post_id = post_id
         self.image_bytes = image_bytes
-        self.caption = caption
+        self.tag_data = tag_data
         self.bucket_w = bucket_w
         self.bucket_h = bucket_h
         self.tags = tags
@@ -172,7 +187,6 @@ class DanbooruImageCollector:
         dl_speed_kbps: int = 500,
         buffer_size: int = 64,
         include_rating_tag: bool = False,
-        caption_separator: str = ", ",
         max_caption_tags: int = 0,
     ) -> None:
         self._static_queries = [q.strip() for q in static_queries if q.strip()]
@@ -184,7 +198,6 @@ class DanbooruImageCollector:
         self._max_posts_per_query = max(1, int(max_posts_per_query))
         self._buffer_size = max(1, int(buffer_size))
         self._include_rating_tag = bool(include_rating_tag)
-        self._caption_separator = caption_separator
         self._max_caption_tags = max(0, int(max_caption_tags))
 
         self._client = DanbooruClient(api_interval=api_interval, dl_speed_kbps=dl_speed_kbps)
@@ -429,11 +442,11 @@ class DanbooruImageCollector:
             return None
 
         bucket_w, bucket_h = self._assign_bucket(int(w), int(h))
-        caption, tags = self._build_caption(post)
+        tag_data, tags = self._build_tag_data(post)
         return _ReadyItem(
             post_id=int(post.get("id")),
             image_bytes=img_bytes,
-            caption=caption,
+            tag_data=tag_data,
             bucket_w=bucket_w,
             bucket_h=bucket_h,
             tags=tags,
@@ -456,19 +469,29 @@ class DanbooruImageCollector:
                 best = (bw, bh)
         return best
 
-    def _build_caption(self, post: dict) -> Tuple[str, List[str]]:
-        """Construct a caption string from the post's per-category tag fields,
-        plus the flat tag list (for metrics)."""
-        ordered: List[str] = []
+    def _build_tag_data(self, post: dict) -> Tuple[List[Dict[str, str]], List[str]]:
+        """Build the per-category tag_data list ([{"tag","category"}]) from the
+        post's tag_string_<category> fields, plus the flat name list (metrics).
+
+        Category names match the dataset convention (General/Character/
+        Copyright/Artist/Meta/Rating) so the training loop can run the same
+        per-category shuffle / dropout via process_caption_with_tag_data().
+        """
+        tag_data: List[Dict[str, str]] = []
+        flat: List[str] = []
         if self._include_rating_tag:
             rating_short = post.get("rating")
             if rating_short in _RATING_MAP:
-                ordered.append(_RATING_MAP[rating_short])
-        for _cat, field in _CAPTION_CATEGORY_FIELDS:
-            raw = post.get(field) or ""
-            for tok in raw.split():
-                ordered.append(tok.replace("_", " "))
-        if self._max_caption_tags > 0 and len(ordered) > self._max_caption_tags:
-            ordered = ordered[: self._max_caption_tags]
-        caption = self._caption_separator.join(ordered)
-        return caption, ordered
+                _r = _RATING_MAP[rating_short]
+                tag_data.append({"tag": _r, "category": "Rating"})
+                flat.append(_r)
+        for cat_code, field in _CAPTION_CATEGORY_FIELDS:
+            cname = _CATEGORY_CODE_TO_NAME.get(cat_code, "General")
+            for tok in (post.get(field) or "").split():
+                t = tok.replace("_", " ")
+                tag_data.append({"tag": t, "category": cname})
+                flat.append(t)
+        if self._max_caption_tags > 0 and len(tag_data) > self._max_caption_tags:
+            tag_data = tag_data[: self._max_caption_tags]
+            flat = flat[: self._max_caption_tags]
+        return tag_data, flat

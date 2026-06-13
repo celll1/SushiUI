@@ -304,6 +304,16 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Caption construction from the post's per-category tag fields.
     "danbooru_aug_include_rating_tag": False,    # prepend rating word (general/sensitive/...)
     "danbooru_aug_max_caption_tags": 0,          # 0 = keep all tags
+    # Caption tag shuffle / dropout for injected samples. SEPARATE from the
+    # per-dataset caption_processing (datasets vary per run by user intent).
+    # Applied per-epoch via the same processor the datasets use. All default
+    # off = fixed category order, no shuffle/dropout.
+    "danbooru_aug_shuffle_tags": False,          # shuffle tags within each category
+    "danbooru_aug_shuffle_keep_first_n": 0,      # keep first N tags fixed (no shuffle)
+    "danbooru_aug_tag_dropout_rate": 0.0,        # per-tag dropout probability (0-1)
+    "danbooru_aug_tag_dropout_keep_first_n": 0,  # keep first N tags fixed (no dropout)
+    "danbooru_aug_caption_dropout_rate": 0.0,    # probability to drop the whole caption (0-1)
+    "danbooru_aug_keep_tokens": 0,               # first N tokens immune to token dropout
 }
 
 # ---------------------------------------------------------------------------

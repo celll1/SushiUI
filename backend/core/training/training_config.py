@@ -190,6 +190,12 @@ def _build_train_section(
     train["danbooru_aug_buffer_size"] = p.get("danbooru_aug_buffer_size", None)
     train["danbooru_aug_include_rating_tag"] = p.get("danbooru_aug_include_rating_tag", False)
     train["danbooru_aug_max_caption_tags"] = p.get("danbooru_aug_max_caption_tags", 0)
+    train["danbooru_aug_shuffle_tags"] = p.get("danbooru_aug_shuffle_tags", False)
+    train["danbooru_aug_shuffle_keep_first_n"] = p.get("danbooru_aug_shuffle_keep_first_n", 0)
+    train["danbooru_aug_tag_dropout_rate"] = p.get("danbooru_aug_tag_dropout_rate", 0.0)
+    train["danbooru_aug_tag_dropout_keep_first_n"] = p.get("danbooru_aug_tag_dropout_keep_first_n", 0)
+    train["danbooru_aug_caption_dropout_rate"] = p.get("danbooru_aug_caption_dropout_rate", 0.0)
+    train["danbooru_aug_keep_tokens"] = p.get("danbooru_aug_keep_tokens", 0)
 
     # Reference images / Vision encoder
     if include_reference_images:

@@ -2655,6 +2655,7 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_new_tag_lookback_days?: number;
   danbooru_new_tag_categories?: number[];
   danbooru_new_tag_survey_interval?: number;
+  danbooru_max_dynamic_tags?: number;
   // Collection-path weights (weighted selection among available paths)
   danbooru_query_weight_static?: number;
   danbooru_query_weight_new_tag?: number;

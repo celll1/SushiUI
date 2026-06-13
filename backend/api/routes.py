@@ -8297,6 +8297,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_new_tag_lookback_days: int = 90
     danbooru_new_tag_categories: List[int] = [0, 3, 4]
     danbooru_new_tag_survey_interval: int = 3600
+    danbooru_max_dynamic_tags: int = 0
     # Collection-path weights (weighted selection among available paths)
     danbooru_query_weight_static: float = 1.0
     danbooru_query_weight_new_tag: float = 1.0

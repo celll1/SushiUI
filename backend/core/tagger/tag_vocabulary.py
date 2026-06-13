@@ -25,7 +25,14 @@ QUALITY_TAG_GROUPS: Dict[str, List[str]] = {
 }
 
 # Rating tags
-RATING_TAGS: List[str] = ["rating:general", "rating:sensitive", "rating:questionable", "rating:explicit"]
+#
+# IMPORTANT: these must match the *actual* tokens used in the training
+# vocabulary and emitted by the Danbooru client (``_RATING_MAP``), which are
+# the bare words ``general/sensitive/questionable/explicit`` (NO ``rating:``
+# prefix). Using the prefixed form here leaves ``rating_indices`` empty, which
+# silently disables rating loss-masking: samples without any rating annotation
+# would then train all four rating tags as negatives (false negatives).
+RATING_TAGS: List[str] = ["general", "sensitive", "questionable", "explicit"]
 
 
 def normalize_tag(tag: str) -> str:

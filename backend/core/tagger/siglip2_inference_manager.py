@@ -54,8 +54,47 @@ def _split_onnx_for_webgpu(onnx_path: str, max_bytes: int = 1_900_000_000) -> Op
     See https://github.com/onnx/onnx/discussions/5407
     """
     import onnx_ir as ir
+    import onnx as _onnx_lib
+    from onnx_ir.passes.common import LiftConstantsToInitializersPass
 
-    model = ir.load(onnx_path)
+    # Each split part's frontier inputs are *intermediate* tensors of the full
+    # graph.  ONNX Runtime / onnxruntime-web require type+shape on every graph
+    # input, which intermediate values lack unless shape inference has populated
+    # value_info.  Run it file-based (infer_shapes_path handles >2GB + external
+    # data without the in-memory 2GB protobuf limit); it writes a temp model
+    # next to the source that still references the original ``.data`` file.
+    _src_dir  = os.path.dirname(os.path.abspath(onnx_path)) or "."
+    _inferred = os.path.join(_src_dir, f".{os.path.basename(onnx_path)}.inferred.onnx")
+    _load_path = onnx_path
+    try:
+        _onnx_lib.shape_inference.infer_shapes_path(onnx_path, _inferred)
+        _load_path = _inferred
+    except Exception as _e:
+        print(f"[SigLIP2Manager] split: shape inference failed ({_e}); proceeding "
+              f"without value_info (parts may lack input type info)")
+
+    model = ir.load(_load_path)
+    # The IR holds the full graph structure in memory and reads tensor *data*
+    # lazily from the original ``.data`` file (referenced by relative location),
+    # so the temporary inferred ``.onnx`` is no longer needed.
+    if _load_path == _inferred:
+        try:
+            os.remove(_inferred)
+        except OSError:
+            pass
+
+    # Constant nodes carry their tensor in a *node attribute*, not in
+    # graph.initializer.  ir.save() only relocates graph initializers into each
+    # part's external-data file, so a Constant whose tensor was externalised in
+    # the source model (e.g. the folded position-embedding) would keep a stale
+    # reference to the original full-model ``.data`` file — yielding an offset
+    # far past the part's own ``.data`` size and an unreadable tensor in WASM.
+    # Lift every Constant to a graph initializer first (size_limit=0 → lift all,
+    # including the externalised ones) so all weights are relocated uniformly.
+    # This also fixes the greedy partition's byte accounting, which previously
+    # ignored Constant-node tensors entirely (they have no initializer inputs).
+    model = LiftConstantsToInitializersPass(size_limit=0)(model).model
+
     graph = model.graph
     graph.sort()  # topological order
     nodes = list(graph)

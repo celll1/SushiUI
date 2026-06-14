@@ -3043,6 +3043,8 @@ class SigLIP2ExportONNXRequest(BaseModel):
     # Also emit a WebGPU-loadable split version (sub-models each under ~2GB).
     also_split: bool = False
     split_max_bytes: int = 1_900_000_000
+    # Name the output "model.onnx" (+ model_*.json) instead of the checkpoint stem.
+    use_model_stem: bool = False
 
 
 class SigLIP2ExtractEncoderRequest(BaseModel):
@@ -3378,6 +3380,7 @@ async def siglip2_export_onnx(request: SigLIP2ExportONNXRequest):
             strip_unknown_tags=request.strip_unknown_tags,
             also_split=request.also_split,
             split_max_bytes=request.split_max_bytes,
+            use_model_stem=request.use_model_stem,
         )
         return {"saved_path": onnx_path, "vocab_path": vocab_path}
     except Exception as e:

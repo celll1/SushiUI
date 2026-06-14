@@ -19,6 +19,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
   const [maxPatches,     setMaxPatches]     = useState(256);
   const [stripUnknown,   setStripUnknown]   = useState(false);
   const [alsoSplit,      setAlsoSplit]      = useState(false);
+  const [useModelStem,   setUseModelStem]   = useState(false);
   const [merging,        setMerging]        = useState(false);
   const [exporting,      setExporting]      = useState(false);
   const [mergeResult,    setMergeResult]    = useState<string | null>(null);
@@ -56,7 +57,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
     setOnnxError(null);
     setOnnxResult(null);
     try {
-      const result = await exportSigLIP2ONNX(onnxOutput, maxPatches, stripUnknown, alsoSplit);
+      const result = await exportSigLIP2ONNX(onnxOutput, maxPatches, stripUnknown, alsoSplit, useModelStem);
       setOnnxResult({ onnx: result.saved_path, vocab: result.vocab_path });
     } catch (e: any) {
       setOnnxError(e?.response?.data?.detail ?? e?.message ?? "Export failed");
@@ -165,6 +166,18 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
           />
           <span className="text-xs text-gray-300">
             Also export WebGPU split version (sub-models under 2GB, in <code>_split_files/</code>)
+          </span>
+        </label>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={useModelStem}
+            onChange={(e) => setUseModelStem(e.target.checked)}
+            disabled={!modelLoaded}
+            className="w-3.5 h-3.5 accent-teal-500"
+          />
+          <span className="text-xs text-gray-300">
+            Name output <code>model.onnx</code> (+ <code>model_*.json</code>) instead of the checkpoint stem
           </span>
         </label>
         {onnxError && (

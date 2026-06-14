@@ -1301,8 +1301,8 @@ export const mergeSigLIP2LoRA = async (output_path: string) => {
   return response.data as { saved_path: string };
 };
 
-export const exportSigLIP2ONNX = async (output_path: string, max_num_patches: number = 256, strip_unknown_tags: boolean = false, also_split: boolean = false) => {
-  const response = await api.post("/tagger/siglip2/export-onnx", { output_path, max_num_patches, strip_unknown_tags, also_split });
+export const exportSigLIP2ONNX = async (output_path: string, max_num_patches: number = 256, strip_unknown_tags: boolean = false, also_split: boolean = false, use_model_stem: boolean = false) => {
+  const response = await api.post("/tagger/siglip2/export-onnx", { output_path, max_num_patches, strip_unknown_tags, also_split, use_model_stem });
   return response.data as { saved_path: string; vocab_path: string };
 };
 

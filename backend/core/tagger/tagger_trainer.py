@@ -43,7 +43,7 @@ from .siglip2_tagger_model import (
     _inherit_head,
     build_tagger_model,
 )
-from .tag_vocabulary import TagVocabulary
+from .tag_vocabulary import TagVocabulary, normalize_tag
 from .tagger_dataset import TaggerDataset, tagger_collate_fn
 from .tagger_loss import AsymmetricLossOptimized, CSASL, HCSASL, LASASL, FWBBCE
 
@@ -2210,14 +2210,52 @@ def run_tagger_training(
                     )
                     _surveyor.start()
 
+                # Cumulative set of augmentation-expanded tags (surveyor + cooc),
+                # persisted so they can be re-added to the vocab on resume — the
+                # vocab is rebuilt from the dataset on resume, so without this
+                # their learned head rows would be dropped every time. Loaded
+                # here so the set accumulates across resumes.
+                _expanded_tags_path = os.path.join(output_dir, "danbooru_expanded_tags.json")
+                _expanded_accum: set = set()
+                try:
+                    if os.path.isfile(_expanded_tags_path):
+                        with open(_expanded_tags_path, "r", encoding="utf-8") as _ef:
+                            _el = json.load(_ef)
+                        _expanded_accum = set(_el if isinstance(_el, list) else _el.keys())
+                except Exception:
+                    _expanded_accum = set()
+
+                def _save_expanded_tags() -> None:
+                    try:
+                        _tmp = _expanded_tags_path + ".tmp"
+                        with open(_tmp, "w", encoding="utf-8") as _wf:
+                            json.dump(sorted(_expanded_accum), _wf, ensure_ascii=False)
+                        os.replace(_tmp, _expanded_tags_path)
+                    except Exception as _se:
+                        print(f"[TaggerTraining] expanded-tags save error: {_se}")
+
                 def _expansion_callback(new_tags: List[str]) -> None:
                     # model/optimizer live in trainer.train()'s scope; reach them
                     # via the trainer instance (assigned below, before train()
                     # runs, so the closure resolves them at call time).
+                    # Record which tags are genuinely NEW (not already present)
+                    # so the cross-resume preservation set stays precise — tags
+                    # that were already in the vocab (e.g. dataset tags re-proposed
+                    # by co-occurrence) must NOT enter it, or deprecated dataset
+                    # tags would wrongly survive resume.
+                    _norms = [normalize_tag(t) for t in new_tags]
+                    _were_present = {t for t in _norms if t in vocabulary.tag_to_idx}
                     n = expand_vocab_and_head(
                         new_tags, vocabulary, trainer.model, trainer.optimizer
                     )
                     if n > 0:
+                        _newly = [
+                            t for t in _norms
+                            if t not in _were_present and t in vocabulary.tag_to_idx
+                        ]
+                        if _newly:
+                            _expanded_accum.update(_newly)
+                            _save_expanded_tags()
                         _new_size = vocabulary.num_tags
                         # Grow the other in-train per-tag structures so they stay
                         # aligned with the expanded head/labels (otherwise the
@@ -2431,6 +2469,45 @@ def run_tagger_training(
             else:
                 print(f"[TaggerTraining] WARNING: no vocabulary file found for {resume_ckpt_name}; "
                       f"head alignment will be unable to detect mapping shifts (positional copy only)")
+
+        # Preserve augmentation-expanded tags across resume.
+        # build_from_dataset_ids() above rebuilds the vocab from the dataset
+        # captions only, so Danbooru-augmentation-expanded tags (which are not in
+        # any dataset caption) would be dropped — and their learned head rows lost
+        # — on every resume. Re-add ONLY those tags, tracked in
+        # danbooru_expanded_tags.json. Tags genuinely removed from the dataset
+        # (deprecated / aliased away) are NOT in that set, so they are still
+        # dropped, preserving the intended head-cleanup behaviour. _inherit_head
+        # then copies the surviving head rows for the re-added tags by tag name.
+        if resume_ckpt_name is not None and old_vocabulary is not None and output_dir:
+            _exp_path = os.path.join(output_dir, "danbooru_expanded_tags.json")
+            if os.path.isfile(_exp_path):
+                try:
+                    with open(_exp_path, "r", encoding="utf-8") as _ef:
+                        _exp_loaded = json.load(_ef)
+                    _exp_set = set(_exp_loaded if isinstance(_exp_loaded, list) else _exp_loaded.keys())
+                    # Only re-add tags the checkpoint actually had (so a head row
+                    # exists to inherit) AND that the rebuilt dataset vocab lacks.
+                    _to_add = sorted(
+                        t for t in _exp_set
+                        if t in old_vocabulary.tag_to_idx and t not in vocabulary.tag_to_idx
+                    )
+                    if _to_add:
+                        _by_cat: Dict[str, List[str]] = {}
+                        for _t in _to_add:
+                            _c = old_vocabulary.tag_to_category.get(_t, "General")
+                            _by_cat.setdefault(_c, []).append(_t)
+                        _added_total = 0
+                        for _c in sorted(_by_cat):
+                            _added_total += len(vocabulary.add_tags(_by_cat[_c], category=_c))
+                        print(f"[TaggerTraining] Preserved {_added_total} augmentation-expanded "
+                              f"tag(s) across resume (vocab now {vocabulary.num_tags}); "
+                              f"deprecated dataset tags still dropped")
+                    else:
+                        print(f"[TaggerTraining] Expanded-tags file present ({len(_exp_set)} tags) "
+                              f"but none needed re-adding (already in dataset vocab)")
+                except Exception as _xe:
+                    print(f"[TaggerTraining] WARNING: could not restore expanded tags: {_xe}")
 
         # Run trainer
         trainer = TaggerTrainer(

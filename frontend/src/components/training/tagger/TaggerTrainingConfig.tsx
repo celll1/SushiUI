@@ -104,6 +104,9 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_cooc_expand_enable: false,
   danbooru_cooc_min_count: 50,
   danbooru_cooc_categories: [0, 3, 4],
+  danbooru_query_weight_cooc: 0.1,
+  danbooru_cooc_collect_per_epoch: 50,
+  danbooru_cooc_order_random: true,
 };
 
 type ConfigState = Omit<TaggerTrainingRunCreateRequest, "dataset_configs">;
@@ -197,6 +200,9 @@ export default function TaggerTrainingConfig({
         danbooru_cooc_expand_enable: (editRun.config?.danbooru_cooc_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_expand_enable,
         danbooru_cooc_min_count: (editRun.config?.danbooru_cooc_min_count as number) ?? DEFAULT_CONFIG.danbooru_cooc_min_count,
         danbooru_cooc_categories: (editRun.config?.danbooru_cooc_categories as number[]) ?? DEFAULT_CONFIG.danbooru_cooc_categories,
+        danbooru_query_weight_cooc: (editRun.config?.danbooru_query_weight_cooc as number) ?? DEFAULT_CONFIG.danbooru_query_weight_cooc,
+        danbooru_cooc_collect_per_epoch: (editRun.config?.danbooru_cooc_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_cooc_collect_per_epoch,
+        danbooru_cooc_order_random: (editRun.config?.danbooru_cooc_order_random as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_order_random,
       }
     : DEFAULT_CONFIG;
 
@@ -262,6 +268,7 @@ export default function TaggerTrainingConfig({
         // (preserved) UI value, so the backend never selects an inactive path.
         danbooru_query_weight_new_tag: config.danbooru_vocab_expand ? config.danbooru_query_weight_new_tag : 0,
         danbooru_query_weight_low_f1: config.danbooru_low_f1_enable ? config.danbooru_query_weight_low_f1 : 0,
+        danbooru_query_weight_cooc: config.danbooru_cooc_expand_enable ? config.danbooru_query_weight_cooc : 0,
       };
       const run = isEditMode
         ? await updateTaggerTrainingRun(editRun.run_id, payload)
@@ -1431,6 +1438,42 @@ export default function TaggerTrainingConfig({
                                 );
                               })}
                             </div>
+                          </div>
+                          {/* Active collection of promoted cooc tags */}
+                          <div className="pt-2 border-t border-gray-700/50 space-y-2">
+                            <p className="text-xs text-gray-500">
+                              Active collection: keep collecting promoted cooc tags across epochs
+                              (order:random, lightly), so they get trained — not just expanded.
+                            </p>
+                            <div className="flex items-center gap-3">
+                              <label className="text-xs text-gray-400 w-48">Active weight</label>
+                              <input
+                                type="number" min={0} step={0.05}
+                                value={config.danbooru_query_weight_cooc ?? 0.1}
+                                onChange={(e) => setField("danbooru_query_weight_cooc", parseFloat(e.target.value) || 0)}
+                                className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                              />
+                              <span className="text-xs text-gray-500">vs new-tag 1.0. 0 = expand vocab only (no active collection).</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <label className="text-xs text-gray-400 w-48">Collect per epoch (per tag)</label>
+                              <input
+                                type="number" min={0}
+                                value={config.danbooru_cooc_collect_per_epoch ?? 50}
+                                onChange={(e) => setField("danbooru_cooc_collect_per_epoch", parseInt(e.target.value) || 0)}
+                                className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                              />
+                              <span className="text-xs text-gray-500">Balanced quota: max images per cooc tag per epoch.</span>
+                            </div>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={config.danbooru_cooc_order_random ?? true}
+                                onChange={(e) => setField("danbooru_cooc_order_random", e.target.checked)}
+                                className="w-3.5 h-3.5 rounded accent-blue-500"
+                              />
+                              <span className="text-xs text-gray-300">order:random (diverse sampling; weakens spurious companion co-occurrence)</span>
+                            </label>
                           </div>
                         </div>
                       )}

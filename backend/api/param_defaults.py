@@ -453,4 +453,12 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     # surveyor's categories, so a character-only surveyor net still lets the
     # accompanying copyright/general tags be added when they co-occur.
     "danbooru_cooc_categories": [0, 3, 4],
+    # Co-occurrence ACTIVE collection: once a tag is promoted by cooc, also
+    # collect it directly (order:random) so it trains across epochs — but only
+    # lightly. A low weight + small per-epoch quota keeps it balanced and avoids
+    # over-reinforcing the companion co-occurrence. weight 0 disables it (cooc
+    # then only expands the vocab, as before).
+    "danbooru_query_weight_cooc": 0.1,       # weighted-path weight (vs new_tag 1.0)
+    "danbooru_cooc_collect_per_epoch": 50,   # per-tag per-epoch collection quota
+    "danbooru_cooc_order_random": True,      # query with order:random for diversity
 }

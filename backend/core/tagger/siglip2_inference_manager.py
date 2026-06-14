@@ -36,6 +36,119 @@ def get_siglip2_inference_manager() -> "SigLIP2InferenceManager":
 
 
 # ---------------------------------------------------------------------------
+# Helper: split a >2GB ONNX model into WebGPU-loadable sequential parts
+# ---------------------------------------------------------------------------
+
+def _split_onnx_for_webgpu(onnx_path: str, max_bytes: int = 1_900_000_000) -> Optional[str]:
+    """Split a (possibly >2GB) ONNX model into sequential sub-models whose
+    per-part weight size stays under *max_bytes*, so each part loads under the
+    WebGPU / onnxruntime-web ~2GB limit.  The parts run in order — each part's
+    named outputs are fed as inputs to the next.
+
+    Writes ``<stem>_split/part{i}.onnx`` (+ ``part{i}.onnx.data``) and a
+    ``manifest.json`` describing the chain, next to the source model.  Returns
+    the split directory, or None if no split was needed / possible.
+
+    Uses onnx_ir.convenience.extract, which bypasses the 2GB protobuf limit that
+    onnx.utils.extract_model / onnx.save_model hit on large models.
+    See https://github.com/onnx/onnx/discussions/5407
+    """
+    import onnx_ir as ir
+
+    model = ir.load(onnx_path)
+    graph = model.graph
+    graph.sort()  # topological order
+    nodes = list(graph)
+
+    def _init_bytes(node) -> int:
+        total = 0
+        for inp in node.inputs:
+            if inp is not None and inp.is_initializer() and inp.const_value is not None:
+                total += inp.const_value.nbytes
+        return total
+
+    total_bytes = sum(_init_bytes(n) for n in nodes)
+    if total_bytes <= max_bytes:
+        print(f"[SigLIP2Manager] split: weights {total_bytes/1e9:.2f}GB <= "
+              f"{max_bytes/1e9:.2f}GB threshold; no split needed")
+        return None
+
+    # Greedy: accumulate nodes (topo order) until adding the next node's
+    # initializer bytes would exceed the threshold, then cut.
+    segments: List[List[Any]] = []
+    cur: List[Any] = []
+    cur_b = 0
+    for n in nodes:
+        nb = _init_bytes(n)
+        if cur and cur_b + nb > max_bytes:
+            segments.append(cur)
+            cur, cur_b = [], 0
+        cur.append(n)
+        cur_b += nb
+    if cur:
+        segments.append(cur)
+    if len(segments) < 2:
+        print("[SigLIP2Manager] split: could not partition into >=2 parts (a single "
+              "node's weights exceed the threshold); skipping")
+        return None
+
+    graph_out_names = {v.name for v in graph.outputs}
+    out_dir = os.path.splitext(onnx_path)[0] + "_split"
+    os.makedirs(out_dir, exist_ok=True)
+
+    manifest_parts: List[Dict[str, Any]] = []
+    for i, seg in enumerate(segments):
+        seg_ids = {id(n) for n in seg}
+        later_ids = {id(n) for s in segments[i + 1:] for n in s}
+        # Segment inputs: non-initializer values consumed by the segment whose
+        # producer is outside the segment (graph inputs or an earlier segment).
+        seg_inputs: List[str] = []
+        seen_in: set = set()
+        for n in seg:
+            for inp in n.inputs:
+                if inp is None or inp.is_initializer():
+                    continue
+                prod = inp.producer()
+                if (prod is None or id(prod) not in seg_ids) and inp.name not in seen_in:
+                    seg_inputs.append(inp.name)
+                    seen_in.add(inp.name)
+        # Segment outputs: values produced by the segment that are graph outputs
+        # or consumed by a later segment (the boundary / frontier).
+        seg_outputs: List[str] = []
+        seen_out: set = set()
+        for n in seg:
+            for ov in n.outputs:
+                if ov is None:
+                    continue
+                used_later = any(id(u[0]) in later_ids for u in ov.uses())
+                if (ov.name in graph_out_names or used_later) and ov.name not in seen_out:
+                    seg_outputs.append(ov.name)
+                    seen_out.add(ov.name)
+        sub_graph = ir.convenience.extract(graph, inputs=seg_inputs, outputs=seg_outputs)
+        sub_model = ir.Model(sub_graph, ir_version=model.ir_version)
+        try:
+            sub_model.opset_imports.update(dict(model.opset_imports))
+        except Exception:
+            pass
+        part_name = f"part{i}.onnx"
+        ir.save(sub_model, os.path.join(out_dir, part_name), external_data=part_name + ".data")
+        manifest_parts.append({"file": part_name, "inputs": seg_inputs, "outputs": seg_outputs})
+        print(f"[SigLIP2Manager] split part {i}: {len(seg)} nodes | in={seg_inputs} out={seg_outputs}")
+
+    manifest = {
+        "format": "split-onnx-sequential",
+        "note": "Run parts in order; feed each part's named outputs as inputs to the next.",
+        "model_inputs": [v.name for v in graph.inputs],
+        "final_outputs": [v.name for v in graph.outputs],
+        "parts": manifest_parts,
+    }
+    with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
+    print(f"[SigLIP2Manager] split: {len(segments)} parts → {out_dir}")
+    return out_dir
+
+
+# ---------------------------------------------------------------------------
 # Helper: peek at safetensors keys without loading weights
 # ---------------------------------------------------------------------------
 
@@ -828,6 +941,8 @@ class SigLIP2InferenceManager:
         output_path: str,
         max_num_patches: int = 256,
         strip_unknown_tags: bool = False,
+        also_split: bool = False,
+        split_max_bytes: int = 1_900_000_000,
     ) -> Tuple[str, str]:
         """Export the model to ONNX format.
 
@@ -836,6 +951,11 @@ class SigLIP2InferenceManager:
 
         strip_unknown_tags: if True, remove head rows for Unknown-category tags
         before export and write a filtered vocabulary alongside the ONNX file.
+
+        also_split: if True, additionally write a WebGPU-loadable split version
+        (sequential sub-models each under split_max_bytes) to
+        ``<stem>_split/`` with a manifest.json — for onnxruntime-web/WebGPU which
+        cannot load models over ~2GB.
 
         Returns (onnx_path, vocab_path).
         """
@@ -1057,6 +1177,23 @@ class SigLIP2InferenceManager:
         print(f"[SigLIP2Manager] ONNX exported → {output_path}")
         print(f"[SigLIP2Manager] Vocabulary  → {vocab_out}")
         print(f"[SigLIP2Manager] Metadata    → {_onnx_meta_path}")
+
+        # Optionally also emit a WebGPU-loadable split version (sub-models each
+        # under the ~2GB limit). The vocabulary + metadata are copied into the
+        # split directory so it is a self-contained package.
+        if also_split:
+            try:
+                _split_dir = _split_onnx_for_webgpu(output_path, max_bytes=int(split_max_bytes))
+                if _split_dir:
+                    for _f in (vocab_out, _onnx_meta_path):
+                        try:
+                            shutil.copy2(_f, os.path.join(_split_dir, os.path.basename(_f)))
+                        except Exception:
+                            pass
+                    print(f"[SigLIP2Manager] Split (WebGPU) → {_split_dir}")
+            except Exception as _se:
+                print(f"[SigLIP2Manager] WARNING: split export failed: {_se}")
+
         return output_path, vocab_out
 
     # ------------------------------------------------------------------

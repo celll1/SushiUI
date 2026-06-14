@@ -90,11 +90,13 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
-      {/* Co-occurrence vocab-discovery stats — only when active */}
-      {((data.total_cooc_proposed ?? 0) > 0 || (data.cooc_pending_count ?? 0) > 0) && (
-        <div className="grid grid-cols-2 gap-2 text-xs">
+      {/* Co-occurrence vocab-discovery + active-collection stats — only when active */}
+      {((data.total_cooc_proposed ?? 0) > 0 || (data.cooc_pending_count ?? 0) > 0 || (data.cooc_active_count ?? 0) > 0) && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
           <Stat label="Co-occur added" value={(data.total_cooc_proposed ?? 0).toLocaleString()} />
           <Stat label="Co-occur pending" value={(data.cooc_pending_count ?? 0).toLocaleString()} />
+          <Stat label="Co-occur active" value={(data.cooc_active_count ?? 0).toLocaleString()} />
+          <Stat label="Co-occur posts" value={(data.total_cooc_collected ?? 0).toLocaleString()} />
         </div>
       )}
 

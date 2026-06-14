@@ -150,6 +150,10 @@ class DanbooruSampleBuffer:
         cooc_categories: Optional[List[int]] = None,
         initial_dynamic_tags: Optional[Any] = None,
         max_dynamic_tags: int = 0,
+        weight_cooc: float = 0.1,
+        cooc_collect_per_epoch: int = 50,
+        cooc_order_random: bool = True,
+        initial_cooc_active_tags: Optional[List[str]] = None,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -184,6 +188,22 @@ class DanbooruSampleBuffer:
         self._weight_static    = max(0.0, float(weight_static))
         self._weight_new_tag   = max(0.0, float(weight_new_tag))
         self._weight_low_f1    = max(0.0, float(weight_low_f1))
+        # Co-occurrence ACTIVE collection: once a tag is promoted by cooc, also
+        # collect it directly (its own posts, order:random for diversity) up to a
+        # balanced per-epoch quota so it gets trained across epochs — but only
+        # lightly (low weight), since collecting a cooc copyright/general tag from
+        # its own posts inevitably re-presents its companions; a small quota +
+        # random sampling avoids over-reinforcing that co-occurrence.
+        self._weight_cooc      = max(0.0, float(weight_cooc))
+        self._cooc_collect_per_epoch = max(0, int(cooc_collect_per_epoch))
+        self._cooc_order_random = bool(cooc_order_random)
+        self._cooc_active_collect = self._weight_cooc > 0 and self._cooc_collect_per_epoch > 0
+        # Denormalized cooc tags to actively collect (seeded from a persisted
+        # snapshot on resume so collection continues across resumes).
+        self._cooc_active_tags: List[str] = [t for t in (initial_cooc_active_tags or []) if t]
+        self._cooc_active_seen: Set[str] = {normalize_tag(t) for t in self._cooc_active_tags}
+        # Per-tag collected count this epoch (under _cycle_lock); reset each epoch.
+        self._cooc_collected: Dict[str, int] = {}
         # A low-F1 tag is only collected when Danbooru can supply at least this
         # many posts for it (page-1 fetch count); otherwise it is marked
         # unavailable and skipped (genuinely rare tags we cannot augment).
@@ -258,6 +278,8 @@ class DanbooruSampleBuffer:
         self._dynamic_tag_freq: Dict[str, int] = {}
         # Per-targeted-low-F1-tag collected sample count (same keying as above).
         self._low_f1_tag_freq: Dict[str, int] = {}
+        # Per-cooc-tag actively-collected sample count.
+        self._cooc_tag_freq: Dict[str, int] = {}
         self._recent_posts: collections.deque = collections.deque(maxlen=100)
         self._total_collected = 0
         self._total_injected_batches = 0
@@ -265,6 +287,7 @@ class DanbooruSampleBuffer:
         self._total_dynamic_collected = 0
         self._total_low_f1_collected = 0
         self._total_cooc_proposed = 0   # unknown co-occurring tags handed to the expander
+        self._total_cooc_collected = 0  # samples actively collected for cooc tags
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -290,6 +313,7 @@ class DanbooruSampleBuffer:
         with self._cycle_lock:
             self._downloaded_ids.clear()
             self._exhausted_tags.clear()
+            self._cooc_collected.clear()   # reset per-tag cooc quota for the new epoch
             self._cycle_gen += 1
 
     # ------------------------------------------------------------------
@@ -340,6 +364,7 @@ class DanbooruSampleBuffer:
             dynamic_tags_count = len(self._dynamic_tags)
             low_f1_tags_count = len(self._low_f1_tags)
             low_f1_unavailable_count = len(self._low_f1_unavailable)
+            cooc_active_count = len(self._cooc_active_tags)
         with self._cooc_lock:
             cooc_pending_count = len(self._cooc_counts)
             cooc_promoted_count = len(self._cooc_proposed)
@@ -349,6 +374,7 @@ class DanbooruSampleBuffer:
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
             top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
             top_low_f1_tags = sorted(self._low_f1_tag_freq.items(), key=lambda x: -x[1])[:100]
+            top_cooc_tags = sorted(self._cooc_tag_freq.items(), key=lambda x: -x[1])[:100]
             return {
                 "total_collected":         self._total_collected,
                 "total_injected_batches":  self._total_injected_batches,
@@ -367,6 +393,10 @@ class DanbooruSampleBuffer:
                 "cooc_promoted_count":     cooc_promoted_count,
                 "total_cooc_proposed":     self._total_cooc_proposed,
                 "cooc_proposed_tags":      cooc_proposed_tags,
+                "cooc_active_count":       cooc_active_count,
+                "total_cooc_collected":    self._total_cooc_collected,
+                "cooc_unique_tags_collected": len(self._cooc_tag_freq),
+                "top_cooc_tags":           [{"tag": t, "count": c} for t, c in top_cooc_tags],
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "top_dynamic_tags":        [{"tag": t, "count": c} for t, c in top_dynamic_tags],
                 "top_low_f1_tags":         [{"tag": t, "count": c} for t, c in top_low_f1_tags],
@@ -379,6 +409,13 @@ class DanbooruSampleBuffer:
         ``initial_dynamic_tags``)."""
         with self._cycle_lock:
             return {t: self._dynamic_last_used.get(t, 0.0) for t in self._dynamic_tags}
+
+    def snapshot_cooc_active_tags(self) -> List[str]:
+        """Return the cooc active-collection query list, so it can be re-seeded
+        on resume (see ``initial_cooc_active_tags``) and active collection of
+        co-occurrence-promoted tags continues across resumes."""
+        with self._cycle_lock:
+            return list(self._cooc_active_tags)
 
     # ------------------------------------------------------------------
     # Worker thread
@@ -466,18 +503,19 @@ class DanbooruSampleBuffer:
             self._low_f1_tags = dq_list
 
     def _next_query(
-        self, static_idx: int, dyn_idx: int, lowf1_idx: int
+        self, static_idx: int, dyn_idx: int, lowf1_idx: int, cooc_idx: int
     ) -> Optional[Tuple[str, str]]:
         """Choose the next query via weighted random path selection.
 
         Returns ``(query_string, kind)`` where ``kind`` is one of
-        ``"static"`` / ``"new_tag"`` / ``"low_f1"``, or ``None`` when nothing is
-        available this epoch (worker idles until reset_download_cycle()).
+        ``"static"`` / ``"new_tag"`` / ``"low_f1"`` / ``"cooc"``, or ``None`` when
+        nothing is available this epoch (worker idles until reset_download_cycle()).
 
         Each path contributes its configured weight only when it has at least
         one available query; weights are renormalized over the available paths.
         Dynamic/low-F1 tags already exhausted this epoch (and, for low-F1, tags
-        below the Danbooru availability threshold) are excluded.
+        below the Danbooru availability threshold) are excluded.  Cooc tags that
+        have hit their per-epoch quota are excluded.
         """
         with self._cycle_lock:
             active_dyn = [t for t in self._dynamic_tags if t not in self._exhausted_tags]
@@ -485,6 +523,11 @@ class DanbooruSampleBuffer:
                 t for t in self._low_f1_tags
                 if t not in self._exhausted_tags and t not in self._low_f1_unavailable
             ]
+            active_cooc = [
+                t for t in self._cooc_active_tags
+                if t not in self._exhausted_tags
+                and self._cooc_collected.get(t, 0) < self._cooc_collect_per_epoch
+            ] if self._cooc_active_collect else []
 
         paths: List[Tuple[str, float]] = []
         if self._tag_queries and self._weight_static > 0:
@@ -493,6 +536,8 @@ class DanbooruSampleBuffer:
             paths.append(("new_tag", self._weight_new_tag))
         if active_lowf1 and self._weight_low_f1 > 0:
             paths.append(("low_f1", self._weight_low_f1))
+        if active_cooc and self._weight_cooc > 0:
+            paths.append(("cooc", self._weight_cooc))
         if not paths:
             return None
 
@@ -511,17 +556,20 @@ class DanbooruSampleBuffer:
             return self._translate_query(raw), "static"
         if chosen == "new_tag":
             return active_dyn[dyn_idx % len(active_dyn)], "new_tag"
+        if chosen == "cooc":
+            return active_cooc[cooc_idx % len(active_cooc)], "cooc"
         return active_lowf1[lowf1_idx % len(active_lowf1)], "low_f1"
 
     def _worker(self) -> None:
         static_idx = 0
         dyn_idx = 0
         lowf1_idx = 0
+        cooc_idx = 0
         while not self._stop.is_set():
             self._refresh_dynamic_tags()
             self._refresh_low_f1_tags()
 
-            choice = self._next_query(static_idx, dyn_idx, lowf1_idx)
+            choice = self._next_query(static_idx, dyn_idx, lowf1_idx, cooc_idx)
             if choice is None:
                 # Nothing to fetch: all feeds empty/exhausted for this epoch.
                 # Idle until reset_download_cycle() or new targets arrive.
@@ -533,12 +581,15 @@ class DanbooruSampleBuffer:
                 dyn_idx += 1
             elif kind == "low_f1":
                 lowf1_idx += 1
+            elif kind == "cooc":
+                cooc_idx += 1
             else:
                 static_idx += 1
 
-            # new_tag and low_f1 are per-epoch "collected" paths: dedup post_ids
-            # and exhaust the tag once fully collected. static is unbounded.
-            is_collected = kind in ("new_tag", "low_f1")
+            # new_tag / low_f1 / cooc are per-epoch "collected" paths: dedup
+            # post_ids and exhaust the tag once fully collected (cooc also exhausts
+            # when it hits its per-epoch quota). static is unbounded.
+            is_collected = kind in ("new_tag", "low_f1", "cooc")
 
             # Snapshot the epoch generation: exhaustion decisions computed below
             # must only apply to THIS epoch. If reset_download_cycle() runs (epoch
@@ -549,7 +600,14 @@ class DanbooruSampleBuffer:
                 start_gen = self._cycle_gen
 
             try:
-                posts = self._client.fetch_posts(query, page=1, min_score=self._min_score)
+                # Cooc active collection queries the tag's own posts with
+                # order:random so each visit (and each epoch) samples a different,
+                # diverse slice — not just the original co-occurrence context —
+                # which weakens spurious companion co-occurrence.
+                _fetch_query = query
+                if kind == "cooc" and self._cooc_order_random:
+                    _fetch_query = f"{query} order:random"
+                posts = self._client.fetch_posts(_fetch_query, page=1, min_score=self._min_score)
 
                 # Low-F1 availability gate: only augment tags Danbooru can supply
                 # >= low_f1_min_posts for. Reuses the page-1 fetch (no extra API
@@ -604,12 +662,23 @@ class DanbooruSampleBuffer:
                             if kind == "new_tag":
                                 # Refresh LRU recency: this tag is still productive.
                                 self._dynamic_last_used[query] = time.time()
+                            elif kind == "cooc":
+                                # Per-epoch quota: once reached, exhaust the tag
+                                # for the rest of this epoch (balanced collection).
+                                _cc = self._cooc_collected.get(query, 0) + 1
+                                self._cooc_collected[query] = _cc
+                                if self._cooc_collect_per_epoch > 0 and _cc >= self._cooc_collect_per_epoch:
+                                    self._exhausted_tags.add(query)
                         _nt = normalize_tag(query) if query else ""
                         with self._metrics_lock:
                             if kind == "new_tag":
                                 self._total_dynamic_collected += 1
                                 if _nt:
                                     self._dynamic_tag_freq[_nt] = self._dynamic_tag_freq.get(_nt, 0) + 1
+                            elif kind == "cooc":
+                                self._total_cooc_collected += 1
+                                if _nt:
+                                    self._cooc_tag_freq[_nt] = self._cooc_tag_freq.get(_nt, 0) + 1
                             else:  # low_f1
                                 self._total_low_f1_collected += 1
                                 if _nt:
@@ -658,6 +727,17 @@ class DanbooruSampleBuffer:
             self._expander.propose(to_propose)
             with self._metrics_lock:
                 self._total_cooc_proposed += len(to_propose)
+            # Register promoted cooc tags for ACTIVE collection (so they get
+            # trained across epochs, not just from incidental co-occurrence).
+            if self._cooc_active_collect:
+                with self._cycle_lock:
+                    for _norm in to_propose:
+                        if _norm in self._cooc_active_seen:
+                            continue
+                        _dq = self._denormalize_tag(_norm)
+                        if _dq:
+                            self._cooc_active_tags.append(_dq)
+                            self._cooc_active_seen.add(_norm)
 
     def _process_post(self, post: dict) -> Optional[Tuple]:
         result = self._client.download_inmemory(post)

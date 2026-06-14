@@ -1449,6 +1449,17 @@ class TaggerTrainer:
                                 os.replace(_dtmp, _dp)
                             except Exception:
                                 pass
+                        # Persist the cooc active-collection list (same rationale).
+                        if hasattr(_db_buf, "snapshot_cooc_active_tags"):
+                            try:
+                                _ct = _db_buf.snapshot_cooc_active_tags()
+                                _cp = os.path.join(self.output_dir, "danbooru_cooc_active_tags.json")
+                                _ctmp = _cp + ".tmp"
+                                with open(_ctmp, "w", encoding="utf-8") as _cf:
+                                    json.dump(_ct, _cf, ensure_ascii=False)
+                                os.replace(_ctmp, _cp)
+                            except Exception:
+                                pass
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
@@ -2323,6 +2334,22 @@ def run_tagger_training(
                 except Exception as _dte:
                     print(f"[TaggerTraining] Could not restore dynamic tag list: {_dte}")
 
+                # Restore the cooc active-collection list so co-occurrence-promoted
+                # tags keep being actively collected (order:random, quota-bounded)
+                # across resume.
+                _initial_cooc_active: Any = None
+                try:
+                    _ct_path = os.path.join(output_dir, "danbooru_cooc_active_tags.json")
+                    if os.path.isfile(_ct_path):
+                        with open(_ct_path, "r", encoding="utf-8") as _cf:
+                            _cl = json.load(_cf)
+                        if isinstance(_cl, list) and len(_cl) > 0:
+                            _initial_cooc_active = _cl
+                            print(f"[TaggerTraining] Restored {len(_cl)} cooc active-collection "
+                                  f"queries for continued collection across resume")
+                except Exception as _cte:
+                    print(f"[TaggerTraining] Could not restore cooc active tag list: {_cte}")
+
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_tag_queries,
                     vocabulary=vocabulary,
@@ -2349,6 +2376,12 @@ def run_tagger_training(
                     cooc_categories=config.get("danbooru_cooc_categories", [0, 3, 4]),
                     initial_dynamic_tags=_initial_dynamic_tags,
                     max_dynamic_tags=config.get("danbooru_max_dynamic_tags", 0),
+                    # Cooc ACTIVE collection (only meaningful with cooc expansion on).
+                    weight_cooc=(config.get("danbooru_query_weight_cooc", 0.1) if
+                                 (bool(config.get("danbooru_cooc_expand_enable", False)) and _vocab_expand_on) else 0.0),
+                    cooc_collect_per_epoch=config.get("danbooru_cooc_collect_per_epoch", 50),
+                    cooc_order_random=bool(config.get("danbooru_cooc_order_random", True)),
+                    initial_cooc_active_tags=_initial_cooc_active,
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

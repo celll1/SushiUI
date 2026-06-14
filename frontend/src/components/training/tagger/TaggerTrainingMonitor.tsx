@@ -1049,6 +1049,9 @@ export default function TaggerTrainingMonitor({
                   danbooru_cooc_expand_enable: "Co-occur discovery",
                   danbooru_cooc_min_count: "Co-occur min count",
                   danbooru_cooc_categories: "Co-occur categories",
+                  danbooru_query_weight_cooc: "Weight: co-occur",
+                  danbooru_cooc_collect_per_epoch: "Co-occur collect/epoch",
+                  danbooru_cooc_order_random: "Co-occur order:random",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -1079,6 +1082,7 @@ export default function TaggerTrainingMonitor({
                   "danbooru_low_f1_enable", "danbooru_low_f1_threshold", "danbooru_low_f1_top_k",
                   "danbooru_low_f1_min_posts",
                   "danbooru_cooc_expand_enable", "danbooru_cooc_min_count", "danbooru_cooc_categories",
+                  "danbooru_query_weight_cooc", "danbooru_cooc_collect_per_epoch", "danbooru_cooc_order_random",
                 ]);
                 const DANBOORU_VOCAB_KEYS = new Set([
                   "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
@@ -1091,7 +1095,8 @@ export default function TaggerTrainingMonitor({
                   "danbooru_low_f1_threshold", "danbooru_low_f1_top_k", "danbooru_low_f1_min_posts",
                 ]);
                 // Co-occurrence sub-parameters only meaningful when co-occur discovery is on.
-                const DANBOORU_COOC_KEYS = new Set(["danbooru_cooc_min_count", "danbooru_cooc_categories"]);
+                const DANBOORU_COOC_KEYS = new Set(["danbooru_cooc_min_count", "danbooru_cooc_categories",
+                  "danbooru_query_weight_cooc", "danbooru_cooc_collect_per_epoch", "danbooru_cooc_order_random"]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
                     key,

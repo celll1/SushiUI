@@ -2694,6 +2694,9 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_cooc_expand_enable?: boolean;
   danbooru_cooc_min_count?: number;
   danbooru_cooc_categories?: number[];
+  danbooru_query_weight_cooc?: number;
+  danbooru_cooc_collect_per_epoch?: number;
+  danbooru_cooc_order_random?: boolean;
 }
 
 export interface TaggerTrainingMetric {
@@ -2793,6 +2796,10 @@ export interface DanbooruAugmentationMetrics {
   cooc_promoted_count?: number;
   total_cooc_proposed?: number;
   cooc_proposed_tags?: string[];
+  cooc_active_count?: number;
+  total_cooc_collected?: number;
+  cooc_unique_tags_collected?: number;
+  top_cooc_tags?: DanbooruTopTag[];
   top_tags?: DanbooruTopTag[];
   top_dynamic_tags?: DanbooruTopTag[];
   top_low_f1_tags?: DanbooruTopTag[];

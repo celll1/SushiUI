@@ -8392,6 +8392,9 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_cooc_expand_enable: bool = False
     danbooru_cooc_min_count: int = 50
     danbooru_cooc_categories: List[int] = [0, 3, 4]
+    danbooru_query_weight_cooc: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_cooc"]
+    danbooru_cooc_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_collect_per_epoch"]
+    danbooru_cooc_order_random: bool = TAGGER_TRAINING_DEFAULTS["danbooru_cooc_order_random"]
     # save_tag_metrics / hard_rate (passed through to trainer)
     save_tag_metrics: bool = True
     hard_rate_lo: float = 0.25

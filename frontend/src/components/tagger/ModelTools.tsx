@@ -164,7 +164,7 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
             className="w-3.5 h-3.5 accent-teal-500"
           />
           <span className="text-xs text-gray-300">
-            Also export WebGPU split version (sub-models under 2GB, in <code>_split/</code>)
+            Also export WebGPU split version (sub-models under 2GB, in <code>_split_files/</code>)
           </span>
         </label>
         {onnxError && (

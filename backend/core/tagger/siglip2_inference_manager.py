@@ -45,7 +45,7 @@ def _split_onnx_for_webgpu(onnx_path: str, max_bytes: int = 1_900_000_000) -> Op
     WebGPU / onnxruntime-web ~2GB limit.  The parts run in order — each part's
     named outputs are fed as inputs to the next.
 
-    Writes ``<stem>_split/part{i}.onnx`` (+ ``part{i}.onnx.data``) and a
+    Writes ``<stem>_split_files/part{i}.onnx`` (+ ``part{i}.onnx.data``) and a
     ``manifest.json`` describing the chain, next to the source model.  Returns
     the split directory, or None if no split was needed / possible.
 
@@ -93,7 +93,7 @@ def _split_onnx_for_webgpu(onnx_path: str, max_bytes: int = 1_900_000_000) -> Op
         return None
 
     graph_out_names = {v.name for v in graph.outputs}
-    out_dir = os.path.splitext(onnx_path)[0] + "_split"
+    out_dir = os.path.splitext(onnx_path)[0] + "_split_files"
     os.makedirs(out_dir, exist_ok=True)
 
     manifest_parts: List[Dict[str, Any]] = []
@@ -954,8 +954,8 @@ class SigLIP2InferenceManager:
 
         also_split: if True, additionally write a WebGPU-loadable split version
         (sequential sub-models each under split_max_bytes) to
-        ``<stem>_split/`` with a manifest.json — for onnxruntime-web/WebGPU which
-        cannot load models over ~2GB.
+        ``<stem>_split_files/`` with a manifest.json — for onnxruntime-web/WebGPU
+        which cannot load models over ~2GB.
 
         Returns (onnx_path, vocab_path).
         """
@@ -1179,17 +1179,14 @@ class SigLIP2InferenceManager:
         print(f"[SigLIP2Manager] Metadata    → {_onnx_meta_path}")
 
         # Optionally also emit a WebGPU-loadable split version (sub-models each
-        # under the ~2GB limit). The vocabulary + metadata are copied into the
-        # split directory so it is a self-contained package.
+        # under the ~2GB limit).  Splitting only re-partitions the graph — it
+        # does not change the vocabulary or metadata, so those are NOT copied
+        # into the split dir; consumers read them from the parent model dir
+        # (<stem>_vocabulary.json / <stem>_metadata.json) alongside the split dir.
         if also_split:
             try:
                 _split_dir = _split_onnx_for_webgpu(output_path, max_bytes=int(split_max_bytes))
                 if _split_dir:
-                    for _f in (vocab_out, _onnx_meta_path):
-                        try:
-                            shutil.copy2(_f, os.path.join(_split_dir, os.path.basename(_f)))
-                        except Exception:
-                            pass
                     print(f"[SigLIP2Manager] Split (WebGPU) → {_split_dir}")
             except Exception as _se:
                 print(f"[SigLIP2Manager] WARNING: split export failed: {_se}")

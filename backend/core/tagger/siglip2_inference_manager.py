@@ -943,6 +943,7 @@ class SigLIP2InferenceManager:
         strip_unknown_tags: bool = False,
         also_split: bool = False,
         split_max_bytes: int = 1_900_000_000,
+        use_model_stem: bool = False,
     ) -> Tuple[str, str]:
         """Export the model to ONNX format.
 
@@ -951,6 +952,11 @@ class SigLIP2InferenceManager:
 
         strip_unknown_tags: if True, remove head rows for Unknown-category tags
         before export and write a filtered vocabulary alongside the ONNX file.
+
+        use_model_stem: if True, name the output "model.onnx" (and companion
+        files model_vocabulary.json / model_metadata.json / …) in the resolved
+        output directory, instead of inheriting the source checkpoint's stem —
+        the standard single-name layout for deployment.
 
         also_split: if True, additionally write a WebGPU-loadable split version
         (sequential sub-models each under split_max_bytes) to
@@ -978,6 +984,13 @@ class SigLIP2InferenceManager:
                 os.path.dirname(self.checkpoint_path), "onnx", f"{ckpt_stem}.onnx"
             )
             print(f"[SigLIP2Manager] output_path not specified; saving ONNX to {output_path}")
+        # Optionally force the output stem to "model" (standard deployment name),
+        # keeping the resolved directory. All companion files (vocabulary,
+        # metadata, npz, split dir) derive from this stem automatically.
+        if use_model_stem:
+            _dir = os.path.dirname(output_path) or "."
+            output_path = os.path.join(_dir, "model.onnx")
+            print(f"[SigLIP2Manager] use_model_stem: output stem forced to 'model' → {output_path}")
         os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
         # If LoRA: build an export model from the already-loaded base + LoRA.

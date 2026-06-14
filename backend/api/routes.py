@@ -3040,6 +3040,9 @@ class SigLIP2ExportONNXRequest(BaseModel):
     output_path: str
     max_num_patches: int = 256
     strip_unknown_tags: bool = False
+    # Also emit a WebGPU-loadable split version (sub-models each under ~2GB).
+    also_split: bool = False
+    split_max_bytes: int = 1_900_000_000
 
 
 class SigLIP2ExtractEncoderRequest(BaseModel):
@@ -3373,6 +3376,8 @@ async def siglip2_export_onnx(request: SigLIP2ExportONNXRequest):
             output_path=request.output_path,
             max_num_patches=request.max_num_patches,
             strip_unknown_tags=request.strip_unknown_tags,
+            also_split=request.also_split,
+            split_max_bytes=request.split_max_bytes,
         )
         return {"saved_path": onnx_path, "vocab_path": vocab_path}
     except Exception as e:

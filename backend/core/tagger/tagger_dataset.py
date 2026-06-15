@@ -45,6 +45,7 @@ class TaggerDataset(Dataset):
         processor: AutoProcessor,
         caption_types: Optional[List[str]] = None,
         alias_resolver=None,
+        comma_resolver=None,
         quality_masking_mode: str = "intra_group",
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> None:
@@ -58,6 +59,10 @@ class TaggerDataset(Dataset):
         caption_types  : restrict to these caption_type values (None = all tags-format)
         alias_resolver : optional TagAliasResolver; when provided, deprecated
                          tags are resolved to canonical form during label construction
+        comma_resolver : optional CommaTagResolver; when provided, comma-split tag
+                         fragments are re-merged / aliased into comma-free canonical
+                         tags per caption. MUST be the same resolver used to build
+                         the vocabulary, or labels will not match vocab indices.
         quality_masking_mode : how to build loss_mask for Quality tags when at
                          least one Quality tag is present on a sample.
                          - "intra_group" (default, tagutl-style): the labelled
@@ -77,6 +82,7 @@ class TaggerDataset(Dataset):
         self.processor = processor
         self.num_tags = vocabulary.num_tags
         self._alias_resolver = alias_resolver
+        self._comma_resolver = comma_resolver
         if quality_masking_mode not in ("intra_group", "cross_group"):
             print(f"[TaggerDataset] Unknown quality_masking_mode={quality_masking_mode!r}, "
                   f"falling back to 'intra_group'")
@@ -222,9 +228,21 @@ class TaggerDataset(Dataset):
                 pass
         if not raw_tags and caption.content:
             raw_tags = [t.strip() for t in caption.content.split(",") if t.strip()]
+        # Normalize first (order preserved) so the comma resolver matches the
+        # same forms the vocabulary builder used.
+        norm_tokens = [t for t in (normalize_tag(t) for t in raw_tags) if t]
+        # Re-merge / alias comma-split fragments into comma-free canonical tags.
+        if self._comma_resolver is not None:
+            norm_tokens = self._comma_resolver.resolve(norm_tokens)
         if self._alias_resolver:
-            return [self._alias_resolver.resolve(t) for t in raw_tags]
-        return [normalize_tag(t) for t in raw_tags]
+            # Deprecated-alias per token, but never alias a comma-tag canonical.
+            return [
+                t if (self._comma_resolver is not None
+                      and self._comma_resolver.category_of(t) is not None)
+                else self._alias_resolver.resolve(t)
+                for t in norm_tokens
+            ]
+        return norm_tokens
 
     # ------------------------------------------------------------------
     # Dataset interface

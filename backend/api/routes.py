@@ -9111,6 +9111,11 @@ def preview_tagger_vocabulary(
     # supplement so the previewed "Unknown" count matches what training produces.
     taglist_cache.initialize(settings.root_dir, enable_gelbooru=bool(use_gelbooru_categories))
 
+    # Same comma-split fragment re-merge the vocabulary builder applies, so the
+    # preview's tag/category counts match the real vocabulary.
+    from core.tagger.comma_tag_resolver import CommaTagResolver
+    comma_resolver = CommaTagResolver.build_from_category_map(taglist_cache._category_map)
+
     # Fetch only the columns we need — avoids loading full ORM objects for large datasets
     rows = (
         datasets_db.query(DatasetCaption.tag_data, DatasetCaption.content)
@@ -9124,32 +9129,39 @@ def preview_tagger_vocabulary(
 
     tag_counts: dict = defaultdict(int)
     tag_categories: dict = {}
-    lookup_needed: list = []
 
     for tag_data_json, content in rows:
+        # Build the per-caption ordered (token, source-category) list, then
+        # re-merge comma-split fragments before counting.
+        ordered: list = []  # (normalized_token, source_category_or___lookup__)
         if tag_data_json:
             try:
                 items = _json.loads(tag_data_json) if isinstance(tag_data_json, str) else tag_data_json
                 if isinstance(items, list):
                     for item in items:
                         if isinstance(item, dict) and "tag" in item:
-                            norm = normalize_tag(item["tag"])
-                            tag_counts[norm] += 1
-                            if norm not in tag_categories:
-                                tag_categories[norm] = item.get("category", "General")
-                    continue
+                            nt = normalize_tag(item["tag"])
+                            if nt:
+                                ordered.append((nt, item.get("category", "General")))
             except Exception:
-                pass
-        # Fallback: parse content, resolve categories later
-        if content:
+                ordered = []
+        if not ordered and content:
             for t in content.split(","):
-                t = t.strip()
-                if t:
-                    norm = normalize_tag(t)
-                    tag_counts[norm] += 1
-                    if norm not in tag_categories:
-                        tag_categories[norm] = "__lookup__"
-                        lookup_needed.append(norm)
+                nt = normalize_tag(t.strip())
+                if nt:
+                    ordered.append((nt, "__lookup__"))
+
+        if not ordered:
+            continue
+
+        src_cat = {nt: cat for nt, cat in ordered}
+        canon_tokens = comma_resolver.resolve([nt for nt, _ in ordered])
+        for nt in canon_tokens:
+            comma_cat = comma_resolver.category_of(nt)
+            cat = comma_cat if comma_cat is not None else src_cat.get(nt, "General")
+            tag_counts[nt] += 1
+            if nt not in tag_categories:
+                tag_categories[nt] = cat
 
     # Batch-resolve any __lookup__ sentinels AND pre-existing "Unknown" tags
     # (tag_data built before a tag entered the taglist). Mirrors the training-time

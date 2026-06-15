@@ -66,6 +66,12 @@ class TaglistCache:
         self._root_dir: Optional[str] = None
         self._gelbooru_enabled: bool = False
         self._gelbooru_loaded: bool = False
+        # Deprecated-tag alias table (danbooru_key -> canonical danbooru_key,
+        # underscore form). Used as a last-resort fallback in category lookups so
+        # a deprecated tag (e.g. "hand_on_hip") resolves to its canonical form's
+        # category ("hand_on_own_hip" -> General) instead of "Unknown".
+        self._aliases: Dict[str, str] = {}
+        self._aliases_loaded: bool = False
         self._initialized = True
 
     def initialize(self, root_dir: str, enable_gelbooru: bool = False):
@@ -84,6 +90,41 @@ class TaglistCache:
         if enable_gelbooru and not self._gelbooru_loaded:
             self._gelbooru_enabled = True
             self._load_gelbooru_supplement()
+
+        # Load the deprecated-tag alias table once (optional, graceful if absent).
+        if not self._aliases_loaded:
+            self._load_aliases()
+
+    def _load_aliases(self) -> None:
+        """Load tagother/tag_aliases.json (danbooru_key -> canonical danbooru_key).
+
+        Optional: absence is not an error. Keys/values are the danbooru underscore
+        form; lookups normalise to that form before consulting the table.
+        """
+        self._aliases_loaded = True
+        if not self._root_dir:
+            return
+        path = os.path.join(self._root_dir, "tagother", "tag_aliases.json")
+        if not os.path.exists(path):
+            print(f"[TaglistCache] Alias table not found: {path} (skipping, optional)")
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                self._aliases = json.load(f)
+            print(f"[TaglistCache] Loaded {len(self._aliases)} tag aliases")
+        except Exception as e:
+            print(f"[TaglistCache] Error loading alias table: {e}")
+            self._aliases = {}
+
+    def _alias_canonical_category(self, normalized: str) -> Optional[str]:
+        """If ``normalized`` (space form) is a deprecated alias, return the
+        category of its canonical tag, else None."""
+        if not self._aliases:
+            return None
+        canonical = self._aliases.get(normalized.replace(" ", "_"))
+        if not canonical:
+            return None
+        return self._category_map.get(self._normalize_tag(canonical))
 
     def _normalize_tag(self, tag: str) -> str:
         """
@@ -326,7 +367,12 @@ class TaglistCache:
         self.reload_if_needed()
 
         normalized = self._normalize_tag(tag)
-        return self._category_map.get(normalized, "Unknown")
+        category = self._category_map.get(normalized)
+        if category is not None:
+            return category
+        # Last resort: deprecated-alias → canonical category.
+        alias_cat = self._alias_canonical_category(normalized)
+        return alias_cat if alias_cat is not None else "Unknown"
 
     def get_categories_batch(self, tags: List[str]) -> Dict[str, str]:
         """
@@ -347,7 +393,11 @@ class TaglistCache:
         result = {}
         for tag in tags:
             normalized = self._normalize_tag(tag)
-            result[tag] = self._category_map.get(normalized, "Unknown")
+            category = self._category_map.get(normalized)
+            if category is None:
+                # Last resort: deprecated-alias → canonical category.
+                category = self._alias_canonical_category(normalized) or "Unknown"
+            result[tag] = category
 
         return result
 

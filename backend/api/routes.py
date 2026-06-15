@@ -4203,6 +4203,10 @@ async def compute_tag_statistics(dataset_id: int, db: Session, send_progress: bo
     import json as _json
 
     print(f"[Dataset] Computing tag statistics for dataset {dataset_id}...")
+    # Ensure category resolution uses the Gelbooru supplement + alias fallback
+    # (graceful when taglist_gel/ is absent). The gelbooru load is a one-time
+    # latch on the shared cache, so this is cheap on repeat calls.
+    taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
 
     # Count total items
     total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
@@ -4436,8 +4440,10 @@ async def scan_dataset(
     from utils.taglist_loader import load_all_tags
     from utils.caption_detector import classify_field, scan_json_fields
     print(f"[Dataset Scan] Loading taglist for format detection...")
-    taglist = load_all_tags(settings.root_dir)
-    taglist_cache.initialize(settings.root_dir)
+    # Gelbooru supplement + alias table improve both format detection (match rate)
+    # and category resolution; graceful when taglist_gel/ is absent.
+    taglist = load_all_tags(settings.root_dir, include_gelbooru=True)
+    taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
     print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
 
     def _build_tag_data_json(content: str) -> str:

@@ -4807,22 +4807,28 @@ async def scan_dataset(
                                     # Determine caption_type based on detected format
                                     detected_caption_type = "tags" if is_tags_format else "natural_language"
 
-                                    # Check if caption of this type already exists
+                                    # A .txt sidecar yields exactly ONE caption whose type ('tags' or
+                                    # 'natural_language') depends on detection. Find it regardless of its
+                                    # CURRENT stored type so a re-detection that flips the type — e.g. a
+                                    # fixed detector now recognising a sidecar as tags, or a repaired
+                                    # sidecar — MIGRATES the same row instead of leaving a stale
+                                    # natural_language row and adding a duplicate tags row.
                                     existing_cap = db.query(DatasetCaption).filter(
                                         DatasetCaption.item_id == item_id_for_captions,
-                                        DatasetCaption.caption_type == detected_caption_type
+                                        DatasetCaption.source == "file",
+                                        DatasetCaption.caption_type.in_(["tags", "natural_language"]),
                                     ).first()
 
                                     if existing_cap:
-                                        # Update existing
+                                        # Update existing (migrating caption_type if it changed)
+                                        existing_cap.caption_type = detected_caption_type
                                         existing_cap.content = content
                                         existing_cap.field_category = field_category
                                         existing_cap.is_tags_format = is_tags_format
                                         existing_cap.tag_match_rate = match_rate
                                         existing_cap.source = "file"
                                         existing_cap.source_field = detected_caption_type
-                                        if is_tags_format:
-                                            existing_cap.tag_data = _build_tag_data_json(content)
+                                        existing_cap.tag_data = _build_tag_data_json(content) if is_tags_format else None
                                         existing_cap.updated_at = datetime.utcnow()
                                         captions_updated += 1
                                     else:

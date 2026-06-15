@@ -8373,6 +8373,14 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     train_f1_buffer_batches:                 int   = 16
     # Online Danbooru augmentation
     enable_danbooru_augmentation: bool = False
+    # Query mode (first-class collection mode; see param_defaults.py)
+    danbooru_query_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_query_enable"]
+    danbooru_query_expand_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_query_expand_enable"]
+    danbooru_query_new_tag_min_count: int = TAGGER_TRAINING_DEFAULTS["danbooru_query_new_tag_min_count"]
+    danbooru_query_resolve_top_k: int = TAGGER_TRAINING_DEFAULTS["danbooru_query_resolve_top_k"]
+    danbooru_query_max_expanded_tags: int = TAGGER_TRAINING_DEFAULTS["danbooru_query_max_expanded_tags"]
+    danbooru_query_expand_categories: List[int] = TAGGER_TRAINING_DEFAULTS["danbooru_query_expand_categories"]
+    danbooru_query_resolve_interval: int = TAGGER_TRAINING_DEFAULTS["danbooru_query_resolve_interval"]
     danbooru_tags: Optional[str] = None        # newline-separated; use !tag or -tag to exclude
     danbooru_injection_interval: int = 4       # interrupt-batch every N base steps
     danbooru_injection_batch_size_ratio: float = 1.0  # 1.0=B, 0.5=B/2, etc.

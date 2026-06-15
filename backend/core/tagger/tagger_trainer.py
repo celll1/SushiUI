@@ -1469,6 +1469,18 @@ class TaggerTrainer:
                                 os.replace(_ctmp, _cp)
                             except Exception:
                                 pass
+                        # Persist the resolved Query collection pool (per-tag
+                        # collection of query-resolved tags continues across resume).
+                        if hasattr(_db_buf, "snapshot_query_tags"):
+                            try:
+                                _qt = _db_buf.snapshot_query_tags()
+                                _qp = os.path.join(self.output_dir, "danbooru_query_tags.json")
+                                _qtmp = _qp + ".tmp"
+                                with open(_qtmp, "w", encoding="utf-8") as _qf:
+                                    json.dump(_qt, _qf, ensure_ascii=False)
+                                os.replace(_qtmp, _qp)
+                            except Exception:
+                                pass
 
                 # Step-based checkpoint (model + state + optimizer + vocab)
                 if save_every_n_steps > 0 and global_step % save_every_n_steps == 0:
@@ -2204,13 +2216,21 @@ def run_tagger_training(
                 for t in (config.get("danbooru_tags") or "").splitlines()
                 if t.strip()
             ]
-            # Augmentation runs when there are static queries OR vocab expansion
+            # Query is now a first-class, independently toggleable mode: static
+            # queries only run when danbooru_query_enable is on (default True for
+            # backward compat). When danbooru_query_expand_enable is also on, the
+            # queries' tag tokens / wildcards are resolved to concrete tags and
+            # collected per-tag (+ vocab expansion).
+            _query_on = bool(config.get("danbooru_query_enable", True))
+            _query_expand_on = bool(config.get("danbooru_query_expand_enable", False))
+            _active_queries = _tag_queries if _query_on else []
+            # Augmentation runs when there are active queries OR vocab expansion
             # OR low-F1 deficiency collection is enabled (the surveyor / trainer
             # then drive dynamic queries on their own, so static queries are
             # optional in those modes).
             _vocab_expand_on = config.get("danbooru_vocab_expand", False)
             _low_f1_on = config.get("danbooru_low_f1_enable", False)
-            if _tag_queries or _vocab_expand_on or _low_f1_on:
+            if _active_queries or _vocab_expand_on or _low_f1_on:
                 from .danbooru_sampler import DanbooruSampleBuffer, MixedDataLoader as _MixedDL
                 from .danbooru_vocab_expander import VocabExpander, expand_vocab_and_head
 
@@ -2376,8 +2396,24 @@ def run_tagger_training(
                 except Exception as _cte:
                     print(f"[TaggerTraining] Could not restore cooc active tag list: {_cte}")
 
+                # Restore the resolved Query collection pool so per-tag collection
+                # of query-resolved tags continues across resume without re-hitting
+                # the tags API. {tag: last_used} (current) or [tag, ...] (legacy).
+                _initial_query_tags: Any = None
+                try:
+                    _qt_path = os.path.join(output_dir, "danbooru_query_tags.json")
+                    if os.path.isfile(_qt_path):
+                        with open(_qt_path, "r", encoding="utf-8") as _qf:
+                            _ql = json.load(_qf)
+                        if isinstance(_ql, (dict, list)) and len(_ql) > 0:
+                            _initial_query_tags = _ql
+                            print(f"[TaggerTraining] Restored {len(_ql)} resolved query tag(s) "
+                                  f"for continued per-tag collection across resume")
+                except Exception as _qte:
+                    print(f"[TaggerTraining] Could not restore query tag list: {_qte}")
+
                 _danbooru_buffer = DanbooruSampleBuffer(
-                    tag_queries=_tag_queries,
+                    tag_queries=_active_queries,
                     vocabulary=vocabulary,
                     processor=processor,
                     is_naflex=_is_naflex,
@@ -2408,6 +2444,14 @@ def run_tagger_training(
                     cooc_collect_per_epoch=config.get("danbooru_cooc_collect_per_epoch", 50),
                     cooc_order_random=bool(config.get("danbooru_cooc_order_random", True)),
                     initial_cooc_active_tags=_initial_cooc_active,
+                    # Query mode (per-tag collection + resolution-based expansion).
+                    query_expand=_query_expand_on,
+                    query_min_count=config.get("danbooru_query_new_tag_min_count", 200),
+                    query_categories=config.get("danbooru_query_expand_categories", [0, 3, 4]),
+                    query_top_k=config.get("danbooru_query_resolve_top_k", 50),
+                    query_max_expanded=config.get("danbooru_query_max_expanded_tags", 0),
+                    query_resolve_interval=float(config.get("danbooru_query_resolve_interval", 3600)),
+                    initial_query_tags=_initial_query_tags,
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(
@@ -2416,19 +2460,27 @@ def run_tagger_training(
                     injection_interval=_inj_interval,
                     injection_batch_size=_inj_batch_size,
                     expander=_expander,
-                    expansion_callback=_expansion_callback if config.get("danbooru_vocab_expand", False) else None,
+                    # Head-growth path is needed by surveyor vocab-expansion AND
+                    # query-mode resolution-based expansion.
+                    expansion_callback=_expansion_callback if (_vocab_expand_on or _query_expand_on) else None,
                     vocabulary=vocabulary,
                     quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
                     alias_resolver=alias_resolver,
                 )
                 print(
-                    f"[TaggerTraining] Danbooru augmentation: {len(_tag_queries)} static quer"
-                    f"{'y' if len(_tag_queries) == 1 else 'ies'}, "
+                    f"[TaggerTraining] Danbooru augmentation: {len(_active_queries)} quer"
+                    f"{'y' if len(_active_queries) == 1 else 'ies'} "
+                    f"(query_mode={'on' if _query_on else 'off'}), "
                     f"interrupt-batch every {_inj_interval} steps "
                     f"(size={_inj_batch_size}), buffer={_buffer_size}, "
-                    f"weights(static={config.get('danbooru_query_weight_static', 1.0)}, "
+                    f"weights(query={config.get('danbooru_query_weight_static', 1.0)}, "
                     f"new_tag={config.get('danbooru_query_weight_new_tag', 1.0)}, "
                     f"low_f1={config.get('danbooru_query_weight_low_f1', 1.0)})"
+                    + (f", query_expand=on (min_count={config.get('danbooru_query_new_tag_min_count', 200)}, "
+                       f"top_k={config.get('danbooru_query_resolve_top_k', 50)}, "
+                       f"max={config.get('danbooru_query_max_expanded_tags', 0)}, "
+                       f"categories={config.get('danbooru_query_expand_categories', [0, 3, 4])})"
+                       if _query_expand_on else "")
                     + (f", vocab_expand=on (min_count={config.get('danbooru_new_tag_min_count', 200)})"
                        if _vocab_expand_on else "")
                     + (f", low_f1=on (threshold={config.get('danbooru_low_f1_threshold', 0.5)}, "

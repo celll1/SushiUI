@@ -2669,6 +2669,14 @@ export interface TaggerTrainingRunCreateRequest {
   train_f1_buffer_batches?: number;
   // Online Danbooru augmentation
   enable_danbooru_augmentation?: boolean;
+  // Query mode (first-class collection mode)
+  danbooru_query_enable?: boolean;
+  danbooru_query_expand_enable?: boolean;
+  danbooru_query_new_tag_min_count?: number;
+  danbooru_query_resolve_top_k?: number;
+  danbooru_query_max_expanded_tags?: number;
+  danbooru_query_expand_categories?: number[];
+  danbooru_query_resolve_interval?: number;
   danbooru_tags?: string;
   danbooru_injection_interval?: number;
   danbooru_injection_batch_size_ratio?: number;
@@ -2806,6 +2814,14 @@ export interface DanbooruAugmentationMetrics {
   top_tags?: DanbooruTopTag[];
   top_dynamic_tags?: DanbooruTopTag[];
   top_low_f1_tags?: DanbooruTopTag[];
+  // Query mode (per-tag resolved collection + legacy per-string static)
+  query_tags_count?: number;
+  query_expanded_count?: number;
+  total_query_collected?: number;
+  query_unique_tags_collected?: number;
+  top_query_tags?: DanbooruTopTag[];
+  total_static_collected?: number;
+  top_static_queries?: DanbooruTopTag[];
   recent_posts?: DanbooruRecentPost[];
   error?: string;
 }

@@ -202,6 +202,74 @@ class DanbooruClient:
 
         return data
 
+    def fetch_tags_by_name(
+        self,
+        name_matches: str,
+        min_count: int = 0,
+        limit: int = 200,
+        page: int = 1,
+    ) -> List[dict]:
+        """Resolve a tag name pattern (wildcards allowed) to concrete tags.
+
+        Uses the Danbooru tags API ``search[name_matches]`` which accepts ``*``
+        wildcards (e.g. ``"blue_*"``). Ordered by post_count descending so page 1
+        already contains the most significant matches. Category is NOT filtered
+        server-side (the caller filters by its eligible-category set), so a single
+        request covers all categories for the pattern.
+
+        Parameters
+        ----------
+        name_matches : tag name or wildcard pattern (underscore form, e.g. "blue_*")
+        min_count    : minimum post_count threshold (server-side)
+        limit        : max results per page (Danbooru caps at 1000; default 200)
+        page         : 1-based page index
+
+        Returns
+        -------
+        List of tag dicts with keys ``name``, ``post_count``, ``category``.
+        Empty list on any error or rate-limit response.
+        """
+        self._wait_for_api_rate()
+
+        import urllib.parse as _url
+        _pat = _url.quote(name_matches, safe="*")
+        url = (
+            f"https://danbooru.donmai.us/tags.json"
+            f"?search[name_matches]={_pat}"
+            f"&search[post_count]={max(0, int(min_count))}.."
+            f"&search[order]=count"
+            f"&limit={int(limit)}&page={int(page)}"
+        )
+        headers = {"User-Agent": _USER_AGENT}
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+        except requests.exceptions.RequestException as exc:
+            print(f"[DanbooruClient] fetch_tags_by_name network error: {exc}")
+            return []
+
+        if response.status_code in (429, 503):
+            print(
+                f"[DanbooruClient] fetch_tags_by_name rate-limited (HTTP {response.status_code}). "
+                "Waiting 10 s."
+            )
+            time.sleep(10.0)
+            return []
+
+        if response.status_code != 200:
+            print(f"[DanbooruClient] fetch_tags_by_name HTTP {response.status_code} for {url!r}")
+            return []
+
+        try:
+            data = response.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(f"[DanbooruClient] fetch_tags_by_name JSON decode error: {exc}")
+            return []
+
+        if not isinstance(data, list):
+            return []
+
+        return data
+
     def download_inmemory(
         self, post: dict
     ) -> Optional[Tuple[bytes, str, List[str]]]:

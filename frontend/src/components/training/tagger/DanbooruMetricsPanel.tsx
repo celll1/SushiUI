@@ -13,7 +13,7 @@ interface Props {
  *  augmentation is disabled (no metrics file present). */
 export default function DanbooruMetricsPanel({ runId, active }: Props) {
   const [data, setData] = useState<DanbooruAugmentationMetrics | null>(null);
-  const [tab, setTab] = useState<"top" | "new" | "lowf1" | "cooc" | "recent">("top");
+  const [tab, setTab] = useState<"top" | "queries" | "new" | "lowf1" | "cooc" | "recent">("top");
 
   useEffect(() => {
     let cancelled = false;
@@ -56,6 +56,18 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
     (data.cooc_pending_count ?? 0) > 0 ||
     coocTags.length > 0;
 
+  // Query mode: per-tag resolved collection (expand) and/or per-string static.
+  const queryTags = data.top_query_tags ?? [];
+  const staticQueries = data.top_static_queries ?? [];
+  const queryMax = queryTags.reduce((m, t) => Math.max(m, t.count), 0) || 1;
+  const staticMax = staticQueries.reduce((m, t) => Math.max(m, t.count), 0) || 1;
+  const hasQuery =
+    (data.query_tags_count ?? 0) > 0 ||
+    (data.total_query_collected ?? 0) > 0 ||
+    (data.total_static_collected ?? 0) > 0 ||
+    queryTags.length > 0 ||
+    staticQueries.length > 0;
+
   return (
     <div className="bg-gray-900 border border-gray-700 rounded p-3 space-y-3">
       <div className="flex items-center justify-between">
@@ -77,6 +89,16 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
           <Stat label="New tags targeted" value={(data.dynamic_tags_count ?? 0).toLocaleString()} />
           <Stat label="New tags collected" value={(data.dynamic_unique_tags_collected ?? 0).toLocaleString()} />
           <Stat label="New-tag posts" value={(data.total_dynamic_collected ?? 0).toLocaleString()} />
+        </div>
+      )}
+
+      {/* Query mode stats — per-tag resolved collection + vocab expansion */}
+      {hasQuery && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <Stat label="Query tags (pool)" value={(data.query_tags_count ?? 0).toLocaleString()} />
+          <Stat label="Expanded via query" value={(data.query_expanded_count ?? 0).toLocaleString()} />
+          <Stat label="Query posts (per-tag)" value={(data.total_query_collected ?? 0).toLocaleString()} />
+          <Stat label="Static posts (per-query)" value={(data.total_static_collected ?? 0).toLocaleString()} />
         </div>
       )}
 
@@ -119,6 +141,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
       {/* Tabs */}
       <div className="flex gap-1 border-b border-gray-700 text-xs">
         <TabBtn label="Top tags" active={tab === "top"} onClick={() => setTab("top")} />
+        {hasQuery && (
+          <TabBtn label="Queries" active={tab === "queries"} onClick={() => setTab("queries")} />
+        )}
         {hasNewTags && (
           <TabBtn label="New tags" active={tab === "new"} onClick={() => setTab("new")} />
         )}
@@ -145,6 +170,45 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
           ))}
           {(data.top_tags ?? []).length === 0 && (
             <p className="text-xs text-gray-500 italic">No tags collected yet.</p>
+          )}
+        </div>
+      )}
+
+      {/* Queries — per-resolved-tag collection (expand mode) and/or per-query-string
+          collection (legacy static). Shows which query-focused tags/queries
+          augmentation is actually gathering, like New-tag / Low-F1. */}
+      {tab === "queries" && (
+        <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+          {queryTags.length > 0 && (
+            <div className="space-y-0.5">
+              <p className="text-xs text-gray-400 font-semibold">Resolved tags (per-tag)</p>
+              {queryTags.slice(0, 50).map((t) => (
+                <div key={`q-${t.tag}`} className="flex items-center gap-2 text-xs">
+                  <span className="w-40 truncate text-gray-200" title={t.tag}>{t.tag}</span>
+                  <div className="flex-1 h-2 bg-gray-800 rounded overflow-hidden">
+                    <div className="h-full bg-purple-500" style={{ width: `${(t.count / queryMax) * 100}%` }} />
+                  </div>
+                  <span className="w-10 text-right text-gray-500 font-mono">{t.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {staticQueries.length > 0 && (
+            <div className="space-y-0.5">
+              <p className="text-xs text-gray-400 font-semibold">Query strings (per-query)</p>
+              {staticQueries.slice(0, 50).map((t) => (
+                <div key={`s-${t.tag}`} className="flex items-center gap-2 text-xs">
+                  <span className="w-40 truncate text-gray-200" title={t.tag}>{t.tag}</span>
+                  <div className="flex-1 h-2 bg-gray-800 rounded overflow-hidden">
+                    <div className="h-full bg-indigo-500" style={{ width: `${(t.count / staticMax) * 100}%` }} />
+                  </div>
+                  <span className="w-10 text-right text-gray-500 font-mono">{t.count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {queryTags.length === 0 && staticQueries.length === 0 && (
+            <p className="text-xs text-gray-500 italic">No query samples collected yet.</p>
           )}
         </div>
       )}

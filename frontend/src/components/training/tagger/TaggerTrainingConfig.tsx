@@ -80,6 +80,13 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   train_f1_buffer_batches: 16,
   // Online Danbooru augmentation
   enable_danbooru_augmentation: false,
+  danbooru_query_enable: true,
+  danbooru_query_expand_enable: false,
+  danbooru_query_new_tag_min_count: 200,
+  danbooru_query_resolve_top_k: 50,
+  danbooru_query_max_expanded_tags: 0,
+  danbooru_query_expand_categories: [0, 3, 4],
+  danbooru_query_resolve_interval: 3600,
   danbooru_tags: "",
   danbooru_injection_interval: 4,
   danbooru_injection_batch_size_ratio: 1.0,
@@ -177,6 +184,13 @@ export default function TaggerTrainingConfig({
         train_f1_buffer_batches: (editRun.config?.train_f1_buffer_batches as number) ?? DEFAULT_CONFIG.train_f1_buffer_batches,
         // Online Danbooru augmentation
         enable_danbooru_augmentation: (editRun.config?.enable_danbooru_augmentation as boolean) ?? DEFAULT_CONFIG.enable_danbooru_augmentation,
+        danbooru_query_enable: (editRun.config?.danbooru_query_enable as boolean) ?? DEFAULT_CONFIG.danbooru_query_enable,
+        danbooru_query_expand_enable: (editRun.config?.danbooru_query_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_query_expand_enable,
+        danbooru_query_new_tag_min_count: (editRun.config?.danbooru_query_new_tag_min_count as number) ?? DEFAULT_CONFIG.danbooru_query_new_tag_min_count,
+        danbooru_query_resolve_top_k: (editRun.config?.danbooru_query_resolve_top_k as number) ?? DEFAULT_CONFIG.danbooru_query_resolve_top_k,
+        danbooru_query_max_expanded_tags: (editRun.config?.danbooru_query_max_expanded_tags as number) ?? DEFAULT_CONFIG.danbooru_query_max_expanded_tags,
+        danbooru_query_expand_categories: (editRun.config?.danbooru_query_expand_categories as number[]) ?? DEFAULT_CONFIG.danbooru_query_expand_categories,
+        danbooru_query_resolve_interval: (editRun.config?.danbooru_query_resolve_interval as number) ?? DEFAULT_CONFIG.danbooru_query_resolve_interval,
         danbooru_tags: (editRun.config?.danbooru_tags as string) ?? DEFAULT_CONFIG.danbooru_tags,
         danbooru_injection_interval: (editRun.config?.danbooru_injection_interval as number) ?? DEFAULT_CONFIG.danbooru_injection_interval,
         danbooru_injection_batch_size_ratio: (editRun.config?.danbooru_injection_batch_size_ratio as number) ?? DEFAULT_CONFIG.danbooru_injection_batch_size_ratio,
@@ -268,6 +282,7 @@ export default function TaggerTrainingConfig({
         dataset_configs: datasetConfigs,
         // A disabled collection path contributes weight 0 regardless of the
         // (preserved) UI value, so the backend never selects an inactive path.
+        danbooru_query_weight_static: config.danbooru_query_enable ? config.danbooru_query_weight_static : 0,
         danbooru_query_weight_new_tag: config.danbooru_vocab_expand ? config.danbooru_query_weight_new_tag : 0,
         danbooru_query_weight_low_f1: config.danbooru_low_f1_enable ? config.danbooru_query_weight_low_f1 : 0,
         danbooru_query_weight_cooc: config.danbooru_cooc_expand_enable ? config.danbooru_query_weight_cooc : 0,
@@ -1187,6 +1202,85 @@ export default function TaggerTrainingConfig({
                 </p>
               </div>
 
+              {/* Query mode (first-class collection mode) */}
+              <div className="p-3 bg-gray-800/50 border border-gray-700 rounded space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={config.danbooru_query_enable ?? true}
+                    onChange={(e) => setField("danbooru_query_enable", e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+                  />
+                  <span className="text-sm text-gray-300">Query mode</span>
+                  <span className="text-xs text-gray-500">(collect via the queries above; uses the Query weight below)</span>
+                </label>
+
+                {config.danbooru_query_enable && (
+                  <div className="pl-6 space-y-2">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={!!config.danbooru_query_expand_enable}
+                        onChange={(e) => setField("danbooru_query_expand_enable", e.target.checked)}
+                        className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+                      />
+                      <span className="text-sm text-gray-300">Expand vocabulary from queries</span>
+                      <span className="text-xs text-gray-500">(resolve query tags/wildcards → add new tags, collect per-tag)</span>
+                    </label>
+
+                    {config.danbooru_query_expand_enable && (
+                      <div className="pl-6 grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Min post_count</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={config.danbooru_query_new_tag_min_count ?? 200}
+                            onChange={(e) => setField("danbooru_query_new_tag_min_count", parseInt(e.target.value) || 0)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Top-K per query (0=∞)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={config.danbooru_query_resolve_top_k ?? 50}
+                            onChange={(e) => setField("danbooru_query_resolve_top_k", parseInt(e.target.value) || 0)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Max expanded (run, 0=∞)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={config.danbooru_query_max_expanded_tags ?? 0}
+                            onChange={(e) => setField("danbooru_query_max_expanded_tags", parseInt(e.target.value) || 0)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Re-resolve interval (s)</label>
+                          <input
+                            type="number"
+                            min={60}
+                            value={config.danbooru_query_resolve_interval ?? 3600}
+                            onChange={(e) => setField("danbooru_query_resolve_interval", parseInt(e.target.value) || 3600)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
+                        <div className="col-span-2 text-xs text-gray-500">
+                          Resolved tags are collected PER-TAG within the Query pool (bounded by the Query
+                          weight), so a wildcard that resolves to N tags contributes N collection units —
+                          not one. Eligible categories: General / Copyright / Character.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-48">Injection interval (base steps)</label>
                 <input
@@ -1562,14 +1656,15 @@ export default function TaggerTrainingConfig({
                   path (New-tag / Low-F1 unchecked above) is forced to weight 0.
                 </p>
                 <div className="flex items-center gap-3">
-                  <label className="text-xs text-gray-400 w-48">Static weight</label>
+                  <label className="text-xs text-gray-400 w-48">Query weight</label>
                   <input
                     type="number" min={0} step={0.1}
-                    value={config.danbooru_query_weight_static ?? 1.0}
+                    disabled={!config.danbooru_query_enable}
+                    value={config.danbooru_query_enable ? (config.danbooru_query_weight_static ?? 1.0) : 0}
                     onChange={(e) => setField("danbooru_query_weight_static", parseFloat(e.target.value) || 0)}
-                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-40"
                   />
-                  <span className="text-xs text-gray-500">User static queries.</span>
+                  <span className="text-xs text-gray-500">User queries (per-tag when Expand is on, else per-string).</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">New-tag weight</label>

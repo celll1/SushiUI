@@ -2012,6 +2012,7 @@ def run_tagger_training(
             excluded_categories=excl_cats,
             ban_tags=ban_tags,
             alias_resolver=alias_resolver,
+            use_gelbooru_categories=bool(config.get("vocab_use_gelbooru_categories", True)),
             progress_callback=_vocab_progress,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")

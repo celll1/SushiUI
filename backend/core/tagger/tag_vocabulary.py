@@ -94,6 +94,7 @@ class TagVocabulary:
         excluded_categories: Optional[List[str]] = None,
         ban_tags: Optional[List[str]] = None,
         alias_resolver=None,
+        use_gelbooru_categories: bool = True,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> "TagVocabulary":
         """Build vocabulary by scanning DatasetCaption rows for given dataset IDs.
@@ -108,6 +109,11 @@ class TagVocabulary:
                               (e.g. ["some tag", "prefix_*", "bad*"])
         alias_resolver      : optional TagAliasResolver; when provided, deprecated
                               tags are resolved to canonical form before counting
+        use_gelbooru_categories : when True, also resolve "Unknown" tag categories
+                              against the Gelbooru taglist supplement (taglist_gel/)
+                              in addition to the Danbooru taglist. Danbooru always
+                              takes precedence; Gelbooru only fills tags Danbooru
+                              does not know, reducing the count of "Unknown" tags.
         """
         from database.models import DatasetItem, DatasetCaption
 
@@ -165,6 +171,18 @@ class TagVocabulary:
         if lookup_tags:
             try:
                 from utils.taglist_cache import taglist_cache
+                # Optionally enable the Gelbooru taglist supplement so that tags
+                # absent from the local Danbooru taglist still get a category
+                # (Danbooru takes precedence; Gelbooru only fills the gaps).
+                # initialize() is idempotent: Danbooru categories are mtime-gated
+                # and the Gelbooru supplement is a one-time latch, so re-calling
+                # it here is cheap and safe.
+                if use_gelbooru_categories:
+                    try:
+                        from config import settings as _settings
+                        taglist_cache.initialize(_settings.root_dir, enable_gelbooru=True)
+                    except Exception as _e:
+                        print(f"[TagVocabulary] Could not enable Gelbooru category supplement: {_e}")
                 resolved = taglist_cache.get_categories_batch(lookup_tags)
                 for norm_tag in lookup_tags:
                     original = tag_categories[norm_tag]

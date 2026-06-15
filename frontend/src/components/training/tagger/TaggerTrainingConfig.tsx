@@ -33,6 +33,7 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   epochs: 10,
   batch_size: 32,
   vocab_min_count: 10,
+  vocab_use_gelbooru_categories: true,
   num_workers: 4,
   num_workers_override: null as number | null,
   save_every_n_steps: 500,
@@ -134,6 +135,7 @@ export default function TaggerTrainingConfig({
         epochs: (editRun.config?.epochs as number) ?? DEFAULT_CONFIG.epochs,
         batch_size: (editRun.config?.batch_size as number) ?? DEFAULT_CONFIG.batch_size,
         vocab_min_count: (editRun.config?.vocab_min_count as number) ?? DEFAULT_CONFIG.vocab_min_count,
+        vocab_use_gelbooru_categories: (editRun.config?.vocab_use_gelbooru_categories as boolean) ?? DEFAULT_CONFIG.vocab_use_gelbooru_categories,
         num_workers: (editRun.config?.num_workers as number) ?? DEFAULT_CONFIG.num_workers,
         num_workers_override: (editRun.config?.num_workers_override as number | null) ?? DEFAULT_CONFIG.num_workers_override,
         save_every_n_steps: (editRun.config?.save_every_n_steps as number) ?? DEFAULT_CONFIG.save_every_n_steps,
@@ -477,6 +479,20 @@ export default function TaggerTrainingConfig({
               />
               <span className="text-sm text-gray-300">Resolve tag aliases</span>
               <span className="text-xs text-gray-500">(maps deprecated tags to canonical form via tagother/tag_aliases.json)</span>
+            </label>
+          </div>
+
+          {/* Gelbooru category supplement */}
+          <div>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={config.vocab_use_gelbooru_categories ?? true}
+                onChange={(e) => setField("vocab_use_gelbooru_categories", e.target.checked)}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+              />
+              <span className="text-sm text-gray-300">Use Gelbooru categories</span>
+              <span className="text-xs text-gray-500">(resolves Unknown tag categories via taglist_gel/ when not found in the Danbooru taglist; Danbooru takes precedence)</span>
             </label>
           </div>
           <div>

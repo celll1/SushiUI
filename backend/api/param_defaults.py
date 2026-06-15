@@ -360,6 +360,13 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "val_fixed_size": None,
     "save_best_only": False,
     "vocab_min_count": 10,
+    # When building the vocabulary, resolve tag categories that are absent from
+    # the local Danbooru taglist (taglist/) against the Gelbooru supplement
+    # (taglist_gel/). Danbooru always takes precedence; Gelbooru only fills tags
+    # Danbooru does not know, so enabling this is non-destructive and simply
+    # reduces the number of "Unknown" category tags. Requires the taglist_gel/
+    # directory to exist (silently skipped if absent).
+    "vocab_use_gelbooru_categories": True,
     "excluded_categories": [],
     "ban_tags": "",
     "use_tag_aliases": False,

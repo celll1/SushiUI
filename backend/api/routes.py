@@ -8339,6 +8339,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     val_fixed_size: Optional[int] = None
     save_best_only: bool = False
     vocab_min_count: int = 10
+    vocab_use_gelbooru_categories: bool = TAGGER_TRAINING_DEFAULTS["vocab_use_gelbooru_categories"]
     output_dir: Optional[str] = None
     excluded_categories: Optional[List[str]] = None
     ban_tags: Optional[str] = None
@@ -9079,6 +9080,7 @@ def preview_tagger_vocabulary(
     dataset_ids: str,
     excluded_categories: Optional[str] = None,
     ban_tags: Optional[str] = None,
+    use_gelbooru_categories: bool = TAGGER_TRAINING_DEFAULTS["vocab_use_gelbooru_categories"],
     datasets_db: Session = Depends(get_datasets_db),
 ):
     """Preview tag vocabulary for given dataset IDs (comma-separated).
@@ -9087,9 +9089,12 @@ def preview_tagger_vocabulary(
 
     Parameters
     ----------
-    dataset_ids         : comma-separated dataset IDs
-    excluded_categories : comma-separated category names to exclude
-    ban_tags            : newline or comma-separated tag patterns (fnmatch wildcards)
+    dataset_ids             : comma-separated dataset IDs
+    excluded_categories     : comma-separated category names to exclude
+    ban_tags                : newline or comma-separated tag patterns (fnmatch wildcards)
+    use_gelbooru_categories : when True, resolve categories absent from the
+                              Danbooru taglist against the Gelbooru supplement
+                              (matches the training-time vocabulary builder).
     """
     import json as _json
     import fnmatch
@@ -9102,7 +9107,9 @@ def preview_tagger_vocabulary(
     excl_cats = {c.strip() for c in excluded_categories.split(",") if c.strip()} if excluded_categories else set()
     ban_list  = [t.strip() for t in (ban_tags or "").replace(",", "\n").splitlines() if t.strip()]
 
-    taglist_cache.initialize(settings.root_dir)
+    # Mirror the training-time builder: optionally enable the Gelbooru taglist
+    # supplement so the previewed "Unknown" count matches what training produces.
+    taglist_cache.initialize(settings.root_dir, enable_gelbooru=bool(use_gelbooru_categories))
 
     # Fetch only the columns we need — avoids loading full ORM objects for large datasets
     rows = (
@@ -9144,12 +9151,23 @@ def preview_tagger_vocabulary(
                         tag_categories[norm] = "__lookup__"
                         lookup_needed.append(norm)
 
-    # Batch-resolve any __lookup__ sentinels
-    if lookup_needed:
-        resolved = taglist_cache.get_categories_batch(list(set(lookup_needed)))
-        for norm_tag in lookup_needed:
-            if tag_categories.get(norm_tag) == "__lookup__":
-                tag_categories[norm_tag] = resolved.get(norm_tag, "General")
+    # Batch-resolve any __lookup__ sentinels AND pre-existing "Unknown" tags
+    # (tag_data built before a tag entered the taglist). Mirrors the training-time
+    # builder so the preview's category breakdown matches the real vocabulary.
+    resolve_targets = list({
+        t for t, c in tag_categories.items() if c in ("__lookup__", "Unknown")
+    })
+    if resolve_targets:
+        resolved = taglist_cache.get_categories_batch(resolve_targets)
+        for norm_tag in resolve_targets:
+            original = tag_categories.get(norm_tag)
+            found = resolved.get(norm_tag)
+            if found:
+                tag_categories[norm_tag] = found
+            elif original == "__lookup__":
+                # Sentinel with no taglist hit → default to General (as before).
+                tag_categories[norm_tag] = "General"
+            # else: keep "Unknown" if the taglist doesn't know it either.
 
     # Apply filters
     if excl_cats:

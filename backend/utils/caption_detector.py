@@ -127,6 +127,23 @@ def detect_caption_format(content: str, taglist: set) -> Tuple[bool, float]:
     if len(tokens) < 3:
         return (False, 0.0)
 
+    # Tag match rate (PRIMARY signal): computed up front so a clearly
+    # tag-formatted sidecar is not flipped to natural language by a stray token
+    # (cosplayer handle, new/gelbooru tag) or a tag containing punctuation
+    # (e.g. "steins;gate"). A high match rate over many comma-separated tokens is
+    # a strong tags signal and is trusted directly, ahead of the structural
+    # heuristics below.
+    def _tok_matches(tok: str) -> bool:
+        n = tok.lower().strip()
+        return bool(n) and (
+            n in taglist
+            or n.replace('_', ' ') in taglist
+            or n.replace(' ', '_') in taglist
+        )
+    _primary_rate = sum(1 for t in tokens if _tok_matches(t)) / len(tokens)
+    if _primary_rate >= 0.70:
+        return (True, _primary_rate)
+
     # Heuristic 2: Tokens contain multiple words (natural language, not tags)
     # Tags can have 2-3 words (e.g., "long hair"), but not full sentences
     multi_word_tokens = [t for t in tokens if len(t.split()) > 3]
@@ -237,16 +254,15 @@ def has_sentence_pattern(text: str) -> bool:
     if re.search(r'\.\s+[A-Z]', text):
         return True
 
-    # Check for semicolon usage (common in descriptive captions, rare in tags).
-    # Exception: Danbooru emote tags like ";d", ";t", ";p", ";q" are single
-    # comma-separated tokens containing only punctuation + one letter.
+    # Check for semicolon usage in PROSE (rare in tags). A semicolon inside a
+    # single-word comma token is a valid Danbooru tag, NOT prose:
+    #   - emote tags like ";d", ";t", ";p", ";q"
+    #   - copyright/title tags like "steins;gate", "robotics;notes", "chaos;head"
+    # Only count a multi-word token containing a semicolon as a prose signal.
     if ';' in text:
         tokens_local = [t.strip() for t in text.split(',')]
-        non_emote_semis = [
-            t for t in tokens_local
-            if ';' in t and not re.match(r'^[;:><oO0\-\^\+\*~\.!?x\|pPdDqQtTvVwW]+$', t)
-        ]
-        if non_emote_semis:
+        prose_semis = [t for t in tokens_local if ';' in t and len(t.split()) > 1]
+        if prose_semis:
             return True
 
     return False

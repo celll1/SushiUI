@@ -1242,6 +1242,13 @@ export default function TaggerTrainingConfig({
                   onChange={(e) => setField("danbooru_max_posts_per_query", parseInt(e.target.value) || 200)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
+                <span className="text-xs text-gray-500">
+                  Cap on posts fetched per single Danbooru search (page 1). Per <strong>resolved tag</strong>
+                  when Query Expand is on (wildcards are expanded at resolution, then each tag is searched
+                  individually); per <strong>query string</strong> (whole wildcard) when off. The per-mode
+                  "Posts/tag/epoch" caps below are the cumulative per-tag limit across an epoch — effective
+                  per-tag ≈ min of the two.
+                </span>
               </div>
 
               <div className="flex items-center gap-3">

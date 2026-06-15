@@ -419,6 +419,22 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "hard_rate_hi": 0.75,
     # Online Danbooru augmentation
     "enable_danbooru_augmentation": False,
+    # ---- Query mode (first-class collection mode) ----
+    # The static user-query path is now an independent, toggleable mode on equal
+    # footing with vocab-expansion (surveyor) and low-F1. When query_expand is on,
+    # the queries' tag tokens / wildcards are resolved via the Danbooru tags API
+    # (name_matches) into concrete tags: vocab-absent ones are added to the
+    # vocabulary, and ALL resolved tags are collected PER-TAG (round-robin within
+    # the Query pool, bounded by danbooru_query_weight_static) so a wildcard that
+    # resolves to N tags contributes N collection units — not one. With
+    # query_expand off, the path keeps the legacy per-query-string image collection.
+    "danbooru_query_enable": True,          # default on for backward compat; now independently toggleable
+    "danbooru_query_expand_enable": False,  # resolve query tags -> per-tag collection + vocab expansion
+    "danbooru_query_new_tag_min_count": 200,   # post_count floor for adding a resolved tag (main guard)
+    "danbooru_query_resolve_top_k": 50,        # per-query cap on resolved tags (0 = unlimited)
+    "danbooru_query_max_expanded_tags": 0,     # run-wide cap on NEW tags added via query (0 = unlimited)
+    "danbooru_query_expand_categories": [0, 3, 4],  # eligible categories (general/copyright/character)
+    "danbooru_query_resolve_interval": 3600,   # seconds between wildcard re-resolutions (API throttle)
     "danbooru_tags": "",              # newline-separated queries (use !tag or -tag to exclude)
     "danbooru_injection_interval": 4, # interrupt-batch every N base steps
     "danbooru_injection_batch_size_ratio": 1.0,  # 1.0 = full batch, 0.5 = half, etc.

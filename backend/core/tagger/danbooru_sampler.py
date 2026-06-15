@@ -154,6 +154,13 @@ class DanbooruSampleBuffer:
         cooc_collect_per_epoch: int = 50,
         cooc_order_random: bool = True,
         initial_cooc_active_tags: Optional[List[str]] = None,
+        query_expand: bool = False,
+        query_min_count: int = 200,
+        query_categories: Optional[List[int]] = None,
+        query_top_k: int = 50,
+        query_max_expanded: int = 0,
+        query_resolve_interval: float = 3600.0,
+        initial_query_tags: Optional[Any] = None,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -256,6 +263,50 @@ class DanbooruSampleBuffer:
         self._low_f1_tags: List[str] = []
         self._low_f1_unavailable: Set[str] = set()   # below min_posts (persistent)
 
+        # Query mode: per-tag collection pool for tags resolved from the user's
+        # queries (name_matches). Symmetric to the surveyor's dynamic list but
+        # discovered by query resolution rather than recency. When query_expand
+        # is on, the Query path collects these PER-TAG (round-robin, bounded by
+        # weight_static) so a wildcard resolving to N tags contributes N
+        # collection units — not one. Persisted to danbooru_query_tags.json and
+        # re-seeded on resume.
+        self._query_expand = bool(query_expand)
+        # Build the query resolver with the buffer's own rate-limited client so
+        # resolution and post collection share a single Danbooru API budget.
+        self._resolver = None
+        if self._query_expand:
+            try:
+                from .danbooru_query_resolver import QueryResolver
+                self._resolver = QueryResolver(
+                    client=self._client,
+                    min_count=int(query_min_count),
+                    categories=(query_categories if query_categories is not None else [0, 3, 4]),
+                    top_k=int(query_top_k),
+                )
+            except Exception as _qre:
+                print(f"[DanbooruSampler] QueryResolver init failed: {_qre}")
+                self._resolver = None
+        self._query_max_expanded = int(query_max_expanded)
+        self._query_resolve_interval = max(0.0, float(query_resolve_interval))
+        self._last_query_resolve = 0.0   # 0 → resolve on first worker pass
+        _qseed = initial_query_tags or []
+        self._query_last_used: Dict[str, float] = {}
+        if isinstance(_qseed, dict):
+            self._query_tags: List[str] = [t for t in _qseed.keys() if t]
+            for t in self._query_tags:
+                try:
+                    self._query_last_used[t] = float(_qseed[t])
+                except (TypeError, ValueError):
+                    self._query_last_used[t] = time.time()
+        else:
+            self._query_tags = [t for t in _qseed if t]
+            _nowq = time.time()
+            for t in self._query_tags:
+                self._query_last_used[t] = _nowq
+        self._query_seen: Set[str] = {normalize_tag(t) for t in self._query_tags}
+        # Cumulative NEW tags added to the vocab via query resolution (run-wide cap).
+        self._expanded_via_query: Set[str] = set()
+
         # Per-epoch download cycle (memory-free dedup; only post_ids stored).
         # Within one epoch each dynamic tag is collected at most once, mirroring
         # how the base dataset reads each image exactly once per epoch.  A tag
@@ -280,6 +331,10 @@ class DanbooruSampleBuffer:
         self._low_f1_tag_freq: Dict[str, int] = {}
         # Per-cooc-tag actively-collected sample count.
         self._cooc_tag_freq: Dict[str, int] = {}
+        # Query mode: per-resolved-tag collected count (expand mode, per-tag path)
+        # and per-query-string collected count (legacy per-string static path).
+        self._query_tag_freq: Dict[str, int] = {}
+        self._static_query_freq: Dict[str, int] = {}
         self._recent_posts: collections.deque = collections.deque(maxlen=100)
         self._total_collected = 0
         self._total_injected_batches = 0
@@ -288,6 +343,8 @@ class DanbooruSampleBuffer:
         self._total_low_f1_collected = 0
         self._total_cooc_proposed = 0   # unknown co-occurring tags handed to the expander
         self._total_cooc_collected = 0  # samples actively collected for cooc tags
+        self._total_query_collected = 0   # per-tag collected for resolved query tags
+        self._total_static_collected = 0  # per-string collected for legacy static queries
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -365,6 +422,8 @@ class DanbooruSampleBuffer:
             low_f1_tags_count = len(self._low_f1_tags)
             low_f1_unavailable_count = len(self._low_f1_unavailable)
             cooc_active_count = len(self._cooc_active_tags)
+            query_tags_count = len(self._query_tags)
+            query_expanded_count = len(self._expanded_via_query)
         with self._cooc_lock:
             cooc_pending_count = len(self._cooc_counts)
             cooc_promoted_count = len(self._cooc_proposed)
@@ -375,6 +434,8 @@ class DanbooruSampleBuffer:
             top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
             top_low_f1_tags = sorted(self._low_f1_tag_freq.items(), key=lambda x: -x[1])[:100]
             top_cooc_tags = sorted(self._cooc_tag_freq.items(), key=lambda x: -x[1])[:100]
+            top_query_tags = sorted(self._query_tag_freq.items(), key=lambda x: -x[1])[:100]
+            top_static_queries = sorted(self._static_query_freq.items(), key=lambda x: -x[1])[:100]
             return {
                 "total_collected":         self._total_collected,
                 "total_injected_batches":  self._total_injected_batches,
@@ -400,6 +461,14 @@ class DanbooruSampleBuffer:
                 "top_tags":                [{"tag": t, "count": c} for t, c in top_tags],
                 "top_dynamic_tags":        [{"tag": t, "count": c} for t, c in top_dynamic_tags],
                 "top_low_f1_tags":         [{"tag": t, "count": c} for t, c in top_low_f1_tags],
+                # Query mode (per-tag, expand) + legacy per-string static counts.
+                "query_tags_count":        query_tags_count,
+                "query_expanded_count":    query_expanded_count,
+                "total_query_collected":   self._total_query_collected,
+                "query_unique_tags_collected": len(self._query_tag_freq),
+                "top_query_tags":          [{"tag": t, "count": c} for t, c in top_query_tags],
+                "total_static_collected":  self._total_static_collected,
+                "top_static_queries":      [{"tag": t, "count": c} for t, c in top_static_queries],
                 "recent_posts":            list(self._recent_posts),
             }
 
@@ -416,6 +485,14 @@ class DanbooruSampleBuffer:
         co-occurrence-promoted tags continues across resumes."""
         with self._cycle_lock:
             return list(self._cooc_active_tags)
+
+    def snapshot_query_tags(self) -> Dict[str, float]:
+        """Return ``{tag: last_used}`` for the resolved Query collection pool, so
+        it (and its recency) can be re-seeded on resume (see
+        ``initial_query_tags``). Lets per-tag collection of query-resolved tags
+        continue across resumes without re-hitting the tags API."""
+        with self._cycle_lock:
+            return {t: self._query_last_used.get(t, 0.0) for t in self._query_tags}
 
     # ------------------------------------------------------------------
     # Worker thread
@@ -483,6 +560,61 @@ class DanbooruSampleBuffer:
             self._dynamic_seen.discard(normalize_tag(victim))
             self._exhausted_tags.discard(victim)
 
+    def _refresh_query_tags(self) -> None:
+        """Resolve the user's queries to concrete tags (throttled) and add them
+        to the per-tag Query collection pool; vocab-absent tags are also proposed
+        to the expander. No-op unless query_expand is on with a resolver.
+
+        Makes Danbooru tags-API calls (rate-limited by the client), gated to once
+        per ``query_resolve_interval`` so it does not starve post collection.
+        """
+        if not self._query_expand or self._resolver is None or not self._tag_queries:
+            return
+        now = time.time()
+        if self._last_query_resolve != 0.0 and \
+                (now - self._last_query_resolve) < self._query_resolve_interval:
+            return
+        self._last_query_resolve = now
+
+        known = set(self._vocabulary.tag_to_idx.keys())
+        n_pool = 0
+        new_for_vocab: Set[str] = set()
+        for raw_query in self._tag_queries:
+            if self._stop.is_set():
+                return
+            try:
+                resolved = self._resolver.resolve_query(raw_query)
+            except Exception as exc:
+                print(f"[DanbooruSampler] query resolve error for {raw_query!r}: {exc}")
+                continue
+            for norm, _count, _cat in resolved:
+                if norm in self._query_seen:
+                    continue
+                is_new = norm not in known
+                # Run-wide cap applies ONLY to NEW vocab tags (existing tags added
+                # for per-tag collection do not count against the expansion budget).
+                if is_new and self._query_max_expanded > 0 and \
+                        len(self._expanded_via_query) >= self._query_max_expanded:
+                    continue
+                dq = self._denormalize_tag(norm)
+                if not dq:
+                    continue
+                self._query_seen.add(norm)
+                with self._cycle_lock:
+                    self._query_tags.append(dq)
+                    self._query_last_used[dq] = now
+                n_pool += 1
+                if is_new:
+                    new_for_vocab.add(norm)
+                    self._expanded_via_query.add(norm)
+        if new_for_vocab and self._expander is not None:
+            self._expander.propose(new_for_vocab)
+        if n_pool or new_for_vocab:
+            print(f"[DanbooruSampler] Query resolution: +{n_pool} pool tag(s), "
+                  f"{len(new_for_vocab)} new to vocab "
+                  f"(query pool={len(self._query_tags)}, "
+                  f"expanded-via-query={len(self._expanded_via_query)})")
+
     def _refresh_low_f1_tags(self) -> None:
         """Sync the low-F1 query list to the deficiency provider's current set.
 
@@ -503,19 +635,24 @@ class DanbooruSampleBuffer:
             self._low_f1_tags = dq_list
 
     def _next_query(
-        self, static_idx: int, dyn_idx: int, lowf1_idx: int, cooc_idx: int
+        self, static_idx: int, dyn_idx: int, lowf1_idx: int, cooc_idx: int, query_idx: int
     ) -> Optional[Tuple[str, str]]:
         """Choose the next query via weighted random path selection.
 
         Returns ``(query_string, kind)`` where ``kind`` is one of
-        ``"static"`` / ``"new_tag"`` / ``"low_f1"`` / ``"cooc"``, or ``None`` when
-        nothing is available this epoch (worker idles until reset_download_cycle()).
+        ``"static"`` / ``"query"`` / ``"new_tag"`` / ``"low_f1"`` / ``"cooc"``, or
+        ``None`` when nothing is available this epoch (worker idles until
+        reset_download_cycle()).
 
-        Each path contributes its configured weight only when it has at least
-        one available query; weights are renormalized over the available paths.
-        Dynamic/low-F1 tags already exhausted this epoch (and, for low-F1, tags
-        below the Danbooru availability threshold) are excluded.  Cooc tags that
-        have hit their per-epoch quota are excluded.
+        The Query path uses weight ``_weight_static``. When ``query_expand`` is on
+        it collects the resolved tags PER-TAG from ``_query_tags`` (kind="query",
+        per-epoch deduped) so a wildcard that resolved to N tags contributes N
+        collection units. When off it collects the raw queries PER-STRING
+        (kind="static", unbounded), preserving the legacy behaviour and the
+        full per-query metatag semantics.
+
+        Each path contributes its weight only when it has at least one available
+        item; weights are renormalized over the available paths.
         """
         with self._cycle_lock:
             active_dyn = [t for t in self._dynamic_tags if t not in self._exhausted_tags]
@@ -528,10 +665,17 @@ class DanbooruSampleBuffer:
                 if t not in self._exhausted_tags
                 and self._cooc_collected.get(t, 0) < self._cooc_collect_per_epoch
             ] if self._cooc_active_collect else []
+            active_query = [
+                t for t in self._query_tags if t not in self._exhausted_tags
+            ] if self._query_expand else []
 
         paths: List[Tuple[str, float]] = []
-        if self._tag_queries and self._weight_static > 0:
-            paths.append(("static", self._weight_static))
+        if self._weight_static > 0:
+            if self._query_expand:
+                if active_query:
+                    paths.append(("query", self._weight_static))
+            elif self._tag_queries:
+                paths.append(("static", self._weight_static))
         if active_dyn and self._weight_new_tag > 0:
             paths.append(("new_tag", self._weight_new_tag))
         if active_lowf1 and self._weight_low_f1 > 0:
@@ -554,6 +698,8 @@ class DanbooruSampleBuffer:
         if chosen == "static":
             raw = self._tag_queries[static_idx % len(self._tag_queries)]
             return self._translate_query(raw), "static"
+        if chosen == "query":
+            return active_query[query_idx % len(active_query)], "query"
         if chosen == "new_tag":
             return active_dyn[dyn_idx % len(active_dyn)], "new_tag"
         if chosen == "cooc":
@@ -565,11 +711,13 @@ class DanbooruSampleBuffer:
         dyn_idx = 0
         lowf1_idx = 0
         cooc_idx = 0
+        query_idx = 0
         while not self._stop.is_set():
             self._refresh_dynamic_tags()
             self._refresh_low_f1_tags()
+            self._refresh_query_tags()
 
-            choice = self._next_query(static_idx, dyn_idx, lowf1_idx, cooc_idx)
+            choice = self._next_query(static_idx, dyn_idx, lowf1_idx, cooc_idx, query_idx)
             if choice is None:
                 # Nothing to fetch: all feeds empty/exhausted for this epoch.
                 # Idle until reset_download_cycle() or new targets arrive.
@@ -583,13 +731,15 @@ class DanbooruSampleBuffer:
                 lowf1_idx += 1
             elif kind == "cooc":
                 cooc_idx += 1
+            elif kind == "query":
+                query_idx += 1
             else:
                 static_idx += 1
 
-            # new_tag / low_f1 / cooc are per-epoch "collected" paths: dedup
+            # new_tag / low_f1 / cooc / query are per-epoch "collected" paths: dedup
             # post_ids and exhaust the tag once fully collected (cooc also exhausts
-            # when it hits its per-epoch quota). static is unbounded.
-            is_collected = kind in ("new_tag", "low_f1", "cooc")
+            # when it hits its per-epoch quota). static (per-string) is unbounded.
+            is_collected = kind in ("new_tag", "low_f1", "cooc", "query")
 
             # Snapshot the epoch generation: exhaustion decisions computed below
             # must only apply to THIS epoch. If reset_download_cycle() runs (epoch
@@ -662,6 +812,9 @@ class DanbooruSampleBuffer:
                             if kind == "new_tag":
                                 # Refresh LRU recency: this tag is still productive.
                                 self._dynamic_last_used[query] = time.time()
+                            elif kind == "query":
+                                # Refresh recency so the resume snapshot reflects use.
+                                self._query_last_used[query] = time.time()
                             elif kind == "cooc":
                                 # Per-epoch quota: once reached, exhaust the tag
                                 # for the rest of this epoch (balanced collection).
@@ -675,6 +828,10 @@ class DanbooruSampleBuffer:
                                 self._total_dynamic_collected += 1
                                 if _nt:
                                     self._dynamic_tag_freq[_nt] = self._dynamic_tag_freq.get(_nt, 0) + 1
+                            elif kind == "query":
+                                self._total_query_collected += 1
+                                if _nt:
+                                    self._query_tag_freq[_nt] = self._query_tag_freq.get(_nt, 0) + 1
                             elif kind == "cooc":
                                 self._total_cooc_collected += 1
                                 if _nt:
@@ -683,6 +840,12 @@ class DanbooruSampleBuffer:
                                 self._total_low_f1_collected += 1
                                 if _nt:
                                     self._low_f1_tag_freq[_nt] = self._low_f1_tag_freq.get(_nt, 0) + 1
+                    elif kind == "static":
+                        # Legacy per-query-string collection (query_expand off):
+                        # count posts per query string for the UI "Queries" view.
+                        with self._metrics_lock:
+                            self._total_static_collected += 1
+                            self._static_query_freq[query] = self._static_query_freq.get(query, 0) + 1
 
                 # A collected tag is exhausted for this epoch once every post it
                 # returned was already collected (pure dedup pass). Decode errors

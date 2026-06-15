@@ -42,7 +42,7 @@ qmap monotonicity; left as a future enhancement.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -90,6 +90,7 @@ def _migrate_one_param_state(
     new_shape: Tuple[int, ...],
     old_tag_to_idx: Dict[str, int],
     new_tag_to_idx: Dict[str, int],
+    lineage: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, int]:
     """In-place migration of one parameter's optimizer state.
 
@@ -158,6 +159,14 @@ def _migrate_one_param_state(
                 if new_idx >= new_num_tags:
                     continue
                 old_idx = old_tag_to_idx.get(tag)
+                # Lineage fallback (tail-priority): a renamed / comma-merged tag
+                # inherits its predecessor's momentum when there is no exact match.
+                if (old_idx is None or old_idx >= old_first_dim) and lineage is not None:
+                    for predecessor in lineage.get(tag, ()):
+                        pi = old_tag_to_idx.get(predecessor)
+                        if pi is not None and pi < old_first_dim:
+                            old_idx = pi
+                            break
                 if old_idx is None or old_idx >= old_first_dim:
                     continue
                 new_t[new_idx] = val[old_idx]
@@ -176,6 +185,7 @@ def migrate_head_optimizer_state(
     head_bias: Optional[torch.nn.Parameter],
     old_tag_to_idx: Dict[str, int],
     new_tag_to_idx: Dict[str, int],
+    lineage: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """Rewrite the head's per-parameter state in ``saved_state`` so it
     matches the new optimizer's parameter shape.
@@ -227,6 +237,7 @@ def migrate_head_optimizer_state(
             tuple(head_weight.shape),
             old_tag_to_idx,
             new_tag_to_idx,
+            lineage=lineage,
         )
 
     if (
@@ -239,6 +250,7 @@ def migrate_head_optimizer_state(
             tuple(head_bias.shape),
             old_tag_to_idx,
             new_tag_to_idx,
+            lineage=lineage,
         )
 
     return summary

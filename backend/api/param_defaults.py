@@ -477,6 +477,21 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     # Per-tag per-epoch collection cap for low-F1 tags (0 = unlimited). Same
     # rationale/semantics as danbooru_query_collect_per_epoch.
     "danbooru_low_f1_collect_per_epoch": 0,
+    # Train-count deficiency collection: rebalances under-exposed tags using the
+    # cumulative per-tag training-exposure count (TagMetricsAccumulator.tag_count).
+    # A tag is "under-exposed" when its actual cumulative count is well below what
+    # its CURRENT per-epoch rate implies for the elapsed epochs — i.e. it joined
+    # late or its image set grew mid-run. Catches the "new character went viral
+    # and was added mid-training" case; complementary to low-F1 (performance) and
+    # distinct from genuinely-rare-but-stable tags. Requires training-F1 metrics
+    # cadence OR this flag for tag_count to keep accumulating.
+    "danbooru_train_count_enable": False,
+    "danbooru_train_count_top_k": 500,           # cap on number of worst-deficit tags targeted
+    "danbooru_train_count_min_deficit_ratio": 0.3,  # target tags >= this fraction under-exposed
+    "danbooru_train_count_min_per_epoch": 10,    # ignore tags with fewer exposures/epoch (noise floor)
+    "danbooru_train_count_min_posts": 50,        # min Danbooru page-1 posts to include a tag (availability)
+    "danbooru_train_count_collect_per_epoch": 0, # per-tag per-epoch collection cap (0 = unlimited)
+    "danbooru_query_weight_train_count": 1.0,    # weighted-path weight for the train-count path
     # Co-occurrence vocab discovery: add vocab-absent tags that appear in
     # collected posts >= cooc_min_count times (category from the post fields,
     # filtered to danbooru_new_tag_categories). Created-at independent, so it

@@ -108,10 +108,17 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_query_weight_static: 1.0,
   danbooru_query_weight_new_tag: 1.0,
   danbooru_query_weight_low_f1: 1.0,
+  danbooru_query_weight_train_count: 1.0,
   danbooru_low_f1_enable: false,
   danbooru_low_f1_threshold: 0.5,
   danbooru_low_f1_top_k: 500,
   danbooru_low_f1_min_posts: 50,
+  danbooru_train_count_enable: false,
+  danbooru_train_count_top_k: 500,
+  danbooru_train_count_min_deficit_ratio: 0.3,
+  danbooru_train_count_min_per_epoch: 10,
+  danbooru_train_count_min_posts: 50,
+  danbooru_train_count_collect_per_epoch: 0,
   danbooru_cooc_expand_enable: false,
   danbooru_cooc_min_count: 50,
   danbooru_cooc_categories: [0, 3, 4],
@@ -215,10 +222,17 @@ export default function TaggerTrainingConfig({
         danbooru_query_weight_static: (editRun.config?.danbooru_query_weight_static as number) ?? DEFAULT_CONFIG.danbooru_query_weight_static,
         danbooru_query_weight_new_tag: (editRun.config?.danbooru_query_weight_new_tag as number) ?? DEFAULT_CONFIG.danbooru_query_weight_new_tag,
         danbooru_query_weight_low_f1: (editRun.config?.danbooru_query_weight_low_f1 as number) ?? DEFAULT_CONFIG.danbooru_query_weight_low_f1,
+        danbooru_query_weight_train_count: (editRun.config?.danbooru_query_weight_train_count as number) ?? DEFAULT_CONFIG.danbooru_query_weight_train_count,
         danbooru_low_f1_enable: (editRun.config?.danbooru_low_f1_enable as boolean) ?? DEFAULT_CONFIG.danbooru_low_f1_enable,
         danbooru_low_f1_threshold: (editRun.config?.danbooru_low_f1_threshold as number) ?? DEFAULT_CONFIG.danbooru_low_f1_threshold,
         danbooru_low_f1_top_k: (editRun.config?.danbooru_low_f1_top_k as number) ?? DEFAULT_CONFIG.danbooru_low_f1_top_k,
         danbooru_low_f1_min_posts: (editRun.config?.danbooru_low_f1_min_posts as number) ?? DEFAULT_CONFIG.danbooru_low_f1_min_posts,
+        danbooru_train_count_enable: (editRun.config?.danbooru_train_count_enable as boolean) ?? DEFAULT_CONFIG.danbooru_train_count_enable,
+        danbooru_train_count_top_k: (editRun.config?.danbooru_train_count_top_k as number) ?? DEFAULT_CONFIG.danbooru_train_count_top_k,
+        danbooru_train_count_min_deficit_ratio: (editRun.config?.danbooru_train_count_min_deficit_ratio as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_deficit_ratio,
+        danbooru_train_count_min_per_epoch: (editRun.config?.danbooru_train_count_min_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_per_epoch,
+        danbooru_train_count_min_posts: (editRun.config?.danbooru_train_count_min_posts as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_posts,
+        danbooru_train_count_collect_per_epoch: (editRun.config?.danbooru_train_count_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_train_count_collect_per_epoch,
         danbooru_cooc_expand_enable: (editRun.config?.danbooru_cooc_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_expand_enable,
         danbooru_cooc_min_count: (editRun.config?.danbooru_cooc_min_count as number) ?? DEFAULT_CONFIG.danbooru_cooc_min_count,
         danbooru_cooc_categories: (editRun.config?.danbooru_cooc_categories as number[]) ?? DEFAULT_CONFIG.danbooru_cooc_categories,
@@ -291,6 +305,7 @@ export default function TaggerTrainingConfig({
         danbooru_query_weight_static: config.danbooru_query_enable ? config.danbooru_query_weight_static : 0,
         danbooru_query_weight_new_tag: config.danbooru_vocab_expand ? config.danbooru_query_weight_new_tag : 0,
         danbooru_query_weight_low_f1: config.danbooru_low_f1_enable ? config.danbooru_query_weight_low_f1 : 0,
+        danbooru_query_weight_train_count: config.danbooru_train_count_enable ? config.danbooru_query_weight_train_count : 0,
         danbooru_query_weight_cooc: config.danbooru_cooc_expand_enable ? config.danbooru_query_weight_cooc : 0,
       };
       const run = isEditMode
@@ -1699,6 +1714,85 @@ export default function TaggerTrainingConfig({
                 )}
               </div>
 
+              {/* Train-count deficiency collection */}
+              <div className="pt-2 border-t border-gray-700">
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!config.danbooru_train_count_enable}
+                    onChange={(e) => setField("danbooru_train_count_enable", e.target.checked)}
+                    className="w-4 h-4 rounded"
+                  />
+                  <span className="text-sm text-gray-300">
+                    Train-count Deficiency Collection (rebalance under-exposed tags by cumulative training count)
+                  </span>
+                </label>
+
+                {config.danbooru_train_count_enable && (
+                  <div className="pl-6 space-y-2 mt-2">
+                    <p className="text-xs text-gray-500">
+                      Targets tags whose cumulative training-exposure count is well below what their
+                      <em> current</em> per-epoch rate implies — i.e. characters/tags added or grown
+                      mid-run (e.g. a newly viral character). Genuinely-rare-but-stable tags are excluded
+                      (the Low-F1 path covers those). Activates after ≥2 completed epochs. Keeps the
+                      per-tag count accumulating even if training-F1 metrics are off.
+                    </p>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Min deficit ratio</label>
+                      <input
+                        type="number" min={0} max={1} step={0.05}
+                        value={config.danbooru_train_count_min_deficit_ratio ?? 0.3}
+                        onChange={(e) => setField("danbooru_train_count_min_deficit_ratio", parseFloat(e.target.value) || 0)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">Target tags ≥ this fraction under-exposed (0–1).</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Top-K targeted</label>
+                      <input
+                        type="number" min={1}
+                        value={config.danbooru_train_count_top_k ?? 500}
+                        onChange={(e) => setField("danbooru_train_count_top_k", parseInt(e.target.value) || 1)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">Cap on number of worst-deficit tags collected.</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Min exposures/epoch</label>
+                      <input
+                        type="number" min={1}
+                        value={config.danbooru_train_count_min_per_epoch ?? 10}
+                        onChange={(e) => setField("danbooru_train_count_min_per_epoch", parseInt(e.target.value) || 1)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">Noise floor: ignore tags with fewer positives/epoch.</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Min Danbooru posts</label>
+                      <input
+                        type="number" min={1} max={200} step={10}
+                        value={config.danbooru_train_count_min_posts ?? 50}
+                        onChange={(e) => setField("danbooru_train_count_min_posts", parseInt(e.target.value) || 1)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">Skip tags with fewer page-1 posts than this (≤200).</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Posts/tag/epoch (0=∞)</label>
+                      <input
+                        type="number" min={0}
+                        value={config.danbooru_train_count_collect_per_epoch ?? 0}
+                        onChange={(e) => setField("danbooru_train_count_collect_per_epoch", parseInt(e.target.value) || 0)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">
+                        Per-tag per-epoch collection cap. Reset each epoch.
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               {/* Collection path weights (last: balances the enabled paths above) */}
               <div className="pt-2 border-t border-gray-700 space-y-2">
                 <div className="text-sm text-gray-300">Collection Path Weights</div>
@@ -1739,6 +1833,17 @@ export default function TaggerTrainingConfig({
                     className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <span className="text-xs text-gray-500">Deficiency collection (0 unless Low-F1 is enabled).</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="text-xs text-gray-400 w-48">Train-count weight</label>
+                  <input
+                    type="number" min={0} step={0.1}
+                    disabled={!config.danbooru_train_count_enable}
+                    value={config.danbooru_train_count_enable ? (config.danbooru_query_weight_train_count ?? 1.0) : 0}
+                    onChange={(e) => setField("danbooru_query_weight_train_count", parseFloat(e.target.value) || 0)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  />
+                  <span className="text-xs text-gray-500">Exposure balancing (0 unless Train-count is enabled).</span>
                 </div>
               </div>
             </div>

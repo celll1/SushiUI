@@ -78,6 +78,20 @@ class TagMetricsAccumulator:
         self.tag_count = np.zeros(vocab_size, dtype=np.int32)
         self.total_images_all: int = 0  # denominator for global_freq
 
+        # ── Train-count deficit tracking (exposure-balancing augmentation) ──
+        # tag_count_epoch_start: snapshot of tag_count at the last epoch boundary.
+        # last_epoch_delta:      tag_count gained over the last completed epoch
+        #                        (≈ the tag's *current* per-epoch exposure rate).
+        # epochs_elapsed:        number of completed epochs (cumulative, restored).
+        # Deficit for a tag = max(0, last_epoch_delta * epochs_elapsed - tag_count):
+        # a tag present since epoch 1 at a steady rate has deficit≈0, while a
+        # late-joined / newly-grown tag has a positive deficit (under-exposed
+        # relative to its current rate). Genuinely-rare-but-stable tags also have
+        # deficit≈0 (handled by the low-F1 path instead).
+        self.tag_count_epoch_start = np.zeros(vocab_size, dtype=np.int32)
+        self.last_epoch_delta = np.zeros(vocab_size, dtype=np.int32)
+        self.epochs_elapsed: int = 0
+
     # ------------------------------------------------------------------
     # Update (called every training batch)
     # ------------------------------------------------------------------
@@ -149,6 +163,12 @@ class TagMetricsAccumulator:
         self.pos_hist_cur[:] = 0
         self.total_hist_cur[:] = 0
         self.total_images_cur = 0
+
+        # ── Train-count deficit: finalize the completed epoch's exposure delta ──
+        # (tag_count keeps accumulating; we snapshot the per-epoch gain here.)
+        self.last_epoch_delta = (self.tag_count - self.tag_count_epoch_start).astype(np.int32)
+        np.copyto(self.tag_count_epoch_start, self.tag_count)
+        self.epochs_elapsed += 1
 
     # ------------------------------------------------------------------
     # Metrics computation
@@ -306,6 +326,12 @@ class TagMetricsAccumulator:
         self.tag_count = np.concatenate(
             [self.tag_count, np.zeros(pad, dtype=self.tag_count.dtype)]
         )
+        self.tag_count_epoch_start = np.concatenate(
+            [self.tag_count_epoch_start, np.zeros(pad, dtype=self.tag_count_epoch_start.dtype)]
+        )
+        self.last_epoch_delta = np.concatenate(
+            [self.last_epoch_delta, np.zeros(pad, dtype=self.last_epoch_delta.dtype)]
+        )
         self.vocab_size = new_vocab_size
 
     # ------------------------------------------------------------------
@@ -344,6 +370,46 @@ class TagMetricsAccumulator:
         if idx.size == 0:
             return []
         order = np.argsort(best_f1[idx])  # ascending: worst F1 first
+        return idx[order][:top_k].astype(int).tolist()
+
+    def deficient_train_count_indices(
+        self,
+        top_k: int,
+        min_deficit_ratio: float = 0.3,
+        min_per_epoch: int = 10,
+    ) -> List[int]:
+        """Return vocab indices of tags under-exposed relative to their current rate.
+
+        For each tag, ``expected = last_epoch_delta * epochs_elapsed`` is what its
+        cumulative ``tag_count`` would be had it been present (at its current
+        per-epoch exposure rate) since epoch 1. The deficit is
+        ``max(0, expected - tag_count)`` and the deficit *ratio* is
+        ``deficit / expected`` (fraction under-exposed). A tag qualifies when:
+
+          - it has a meaningful current rate (``last_epoch_delta >= min_per_epoch``
+            — filters noise from tags with a handful of exposures), and
+          - ``deficit_ratio >= min_deficit_ratio``.
+
+        This targets late-joined / newly-grown tags (positive deficit) while
+        excluding genuinely-rare-but-stable tags (deficit≈0; the low-F1 path
+        covers those). Returns indices sorted by deficit descending, capped at
+        ``top_k``. Empty until at least 2 epochs have completed (need a stable
+        per-epoch rate and a non-trivial expected baseline).
+        """
+        if top_k <= 0 or self.epochs_elapsed < 2:
+            return []
+        delta = self.last_epoch_delta.astype(np.float64)
+        tc = self.tag_count.astype(np.float64)
+        expected = delta * float(self.epochs_elapsed)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            deficit = np.maximum(0.0, expected - tc)
+            deficit_ratio = np.where(expected > 0, deficit / expected, 0.0)
+        eligible = (self.last_epoch_delta >= int(min_per_epoch)) & \
+                   (deficit_ratio >= float(min_deficit_ratio))
+        idx = np.where(eligible)[0]
+        if idx.size == 0:
+            return []
+        order = np.argsort(deficit[idx])[::-1]  # descending: largest deficit first
         return idx[order][:top_k].astype(int).tolist()
 
     # ------------------------------------------------------------------
@@ -476,6 +542,10 @@ class TagMetricsAccumulator:
             "calib_eps":           np.array([calib_eps],             dtype=np.float32),
             "calib_prior_strength": np.array([calib_prior_strength], dtype=np.float32),
             "tag_count":           self.tag_count,
+            # Train-count deficit tracking (cumulative across resumes)
+            "tag_count_epoch_start": self.tag_count_epoch_start,
+            "last_epoch_delta":    self.last_epoch_delta,
+            "epochs_elapsed":      np.array([self.epochs_elapsed], dtype=np.int64),
             "total_images":        np.array([total_images],          dtype=np.int64),
             "total_images_all":    np.array([self.total_images_all], dtype=np.int64),
             "n_bins":              np.array([self.n_bins],  dtype=np.int32),
@@ -551,6 +621,21 @@ class TagMetricsAccumulator:
             if "tag_count" in data.files:
                 tc = data["tag_count"].astype(np.int32)
                 self.tag_count[:min(len(tc), self.vocab_size)] = tc[:min(len(tc), self.vocab_size)]
+
+            # Train-count deficit tracking (cumulative across resumes)
+            if "tag_count_epoch_start" in data.files:
+                _ts = data["tag_count_epoch_start"].astype(np.int32)
+                self.tag_count_epoch_start[:min(len(_ts), self.vocab_size)] = _ts[:min(len(_ts), self.vocab_size)]
+            else:
+                # Older checkpoint: seed snapshot to current tag_count so the next
+                # completed epoch yields a sane (non-inflated) delta.
+                np.copyto(self.tag_count_epoch_start, self.tag_count)
+            if "last_epoch_delta" in data.files:
+                _ld = data["last_epoch_delta"].astype(np.int32)
+                self.last_epoch_delta[:min(len(_ld), self.vocab_size)] = _ld[:min(len(_ld), self.vocab_size)]
+            if "epochs_elapsed" in data.files:
+                _ee = data["epochs_elapsed"]
+                self.epochs_elapsed = int(_ee.item() if _ee.ndim == 0 else _ee[0])
 
             # total_images_all: all-epoch image count
             if "total_images_all" in data.files:

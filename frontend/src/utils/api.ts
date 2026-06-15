@@ -2700,11 +2700,19 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_query_weight_static?: number;
   danbooru_query_weight_new_tag?: number;
   danbooru_query_weight_low_f1?: number;
+  danbooru_query_weight_train_count?: number;
   // Low-F1 deficiency collection (existing vocab tags with low per-tag F1)
   danbooru_low_f1_enable?: boolean;
   danbooru_low_f1_threshold?: number;
   danbooru_low_f1_top_k?: number;
   danbooru_low_f1_min_posts?: number;
+  // Train-count deficiency collection (exposure balancing)
+  danbooru_train_count_enable?: boolean;
+  danbooru_train_count_top_k?: number;
+  danbooru_train_count_min_deficit_ratio?: number;
+  danbooru_train_count_min_per_epoch?: number;
+  danbooru_train_count_min_posts?: number;
+  danbooru_train_count_collect_per_epoch?: number;
   // Co-occurrence vocab discovery
   danbooru_cooc_expand_enable?: boolean;
   danbooru_cooc_min_count?: number;
@@ -2826,6 +2834,12 @@ export interface DanbooruAugmentationMetrics {
   top_query_tags?: DanbooruTopTag[];
   total_static_collected?: number;
   top_static_queries?: DanbooruTopTag[];
+  // Train-count deficiency path (exposure balancing)
+  train_count_tags_count?: number;
+  train_count_unavailable_count?: number;
+  total_train_count_collected?: number;
+  train_count_unique_tags_collected?: number;
+  top_train_count_tags?: DanbooruTopTag[];
   recent_posts?: DanbooruRecentPost[];
   error?: string;
 }

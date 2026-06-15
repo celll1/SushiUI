@@ -8384,6 +8384,14 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_query_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_query_collect_per_epoch"]
     danbooru_new_tag_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_new_tag_collect_per_epoch"]
     danbooru_low_f1_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_low_f1_collect_per_epoch"]
+    # Train-count deficiency collection (exposure balancing)
+    danbooru_train_count_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_enable"]
+    danbooru_train_count_top_k: int = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_top_k"]
+    danbooru_train_count_min_deficit_ratio: float = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_min_deficit_ratio"]
+    danbooru_train_count_min_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_min_per_epoch"]
+    danbooru_train_count_min_posts: int = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_min_posts"]
+    danbooru_train_count_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_collect_per_epoch"]
+    danbooru_query_weight_train_count: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_train_count"]
     danbooru_tags: Optional[str] = None        # newline-separated; use !tag or -tag to exclude
     danbooru_injection_interval: int = 4       # interrupt-batch every N base steps
     danbooru_injection_batch_size_ratio: float = 1.0  # 1.0=B, 0.5=B/2, etc.

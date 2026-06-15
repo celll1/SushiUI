@@ -1209,20 +1209,21 @@ export default function TaggerTrainingConfig({
               </div>
 
               {/* Query mode (first-class collection mode) */}
-              <div className="p-3 bg-gray-800/50 border border-gray-700 rounded space-y-2">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
+              <div className="pt-2 border-t border-gray-700">
+                <label className="flex items-center gap-3 cursor-pointer">
                   <input
                     type="checkbox"
                     checked={config.danbooru_query_enable ?? true}
                     onChange={(e) => setField("danbooru_query_enable", e.target.checked)}
-                    className="w-4 h-4 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-0"
+                    className="w-4 h-4 rounded"
                   />
-                  <span className="text-sm text-gray-300">Query mode</span>
-                  <span className="text-xs text-gray-500">(collect via the queries above; uses the Query weight below)</span>
+                  <span className="text-sm text-gray-300">
+                    Query mode (collect via the queries above; uses the Query weight below)
+                  </span>
                 </label>
 
                 {config.danbooru_query_enable && (
-                  <div className="pl-6 space-y-2">
+                  <div className="pl-6 space-y-2 mt-2">
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"

@@ -95,6 +95,7 @@ class TagVocabulary:
         ban_tags: Optional[List[str]] = None,
         alias_resolver=None,
         use_gelbooru_categories: bool = True,
+        comma_resolver=None,
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> "TagVocabulary":
         """Build vocabulary by scanning DatasetCaption rows for given dataset IDs.
@@ -114,6 +115,11 @@ class TagVocabulary:
                               in addition to the Danbooru taglist. Danbooru always
                               takes precedence; Gelbooru only fills tags Danbooru
                               does not know, reducing the count of "Unknown" tags.
+        comma_resolver      : optional CommaTagResolver. When provided, comma-split
+                              tag fragments are re-merged / aliased into a single
+                              comma-free canonical tag per caption (order-aware
+                              re-merge, then tail-fragment alias). See
+                              core/tagger/comma_tag_resolver.py.
         """
         from database.models import DatasetItem, DatasetCaption
 
@@ -149,8 +155,30 @@ class TagVocabulary:
         _last_emit = 0.0
         for _i, caption in enumerate(_base_q.yield_per(5000)):
             tags_with_cats = _parse_caption_tags(caption)
+            # Normalize tokens preserving order; remember each token's source
+            # category for the non-comma path below.
+            norm_tokens: List[str] = []
+            src_cat: Dict[str, str] = {}
             for tag, category in tags_with_cats:
-                norm = alias_resolver.resolve(tag) if alias_resolver else normalize_tag(tag)
+                nt = normalize_tag(tag)
+                if not nt:
+                    continue
+                norm_tokens.append(nt)
+                src_cat.setdefault(nt, category)
+            # Re-merge / alias comma-split fragments into comma-free canonical
+            # tags (order-aware). Must run BEFORE deprecated-alias resolution so
+            # comma-tag parts are matched in their original form.
+            if comma_resolver is not None:
+                norm_tokens = comma_resolver.resolve(norm_tokens)
+            for nt in norm_tokens:
+                comma_cat = comma_resolver.category_of(nt) if comma_resolver else None
+                if comma_cat is not None:
+                    # Canonical comma-free tag: authoritative category, not aliased.
+                    norm = nt
+                    category = comma_cat
+                else:
+                    norm = alias_resolver.resolve(nt) if alias_resolver else nt
+                    category = src_cat.get(nt, "General")
                 tag_counts[norm] += 1
                 if norm not in tag_categories:
                     tag_categories[norm] = category

@@ -2005,6 +2005,20 @@ def run_tagger_training(
                     "step": done, "total": total, "message": message,
                 })
 
+        # Build the comma-tag resolver once and share it between the vocabulary
+        # builder and the dataset so labels match vocab indices. Comma-containing
+        # tags (mostly Gelbooru titles) get re-merged into a single comma-free
+        # canonical tag instead of breaking into Unknown fragments.
+        use_gel = bool(config.get("vocab_use_gelbooru_categories", True))
+        from core.tagger.comma_tag_resolver import CommaTagResolver
+        try:
+            from config import settings as _settings
+            _root_dir = _settings.root_dir
+        except Exception:
+            _root_dir = os.path.join(output_dir, "..", "..")
+        comma_resolver = CommaTagResolver.build_from_taglist_cache(_root_dir, use_gelbooru=use_gel)
+        print(f"[TaggerTraining] Comma-tag resolver: {len(comma_resolver)} comma-containing tags")
+
         vocabulary = TagVocabulary.build_from_dataset_ids(
             dataset_ids=dataset_ids,
             datasets_db=datasets_db,
@@ -2012,7 +2026,8 @@ def run_tagger_training(
             excluded_categories=excl_cats,
             ban_tags=ban_tags,
             alias_resolver=alias_resolver,
-            use_gelbooru_categories=bool(config.get("vocab_use_gelbooru_categories", True)),
+            use_gelbooru_categories=use_gel,
+            comma_resolver=comma_resolver,
             progress_callback=_vocab_progress,
         )
         print(f"[TaggerTraining] Vocabulary: {vocabulary.num_tags} tags")
@@ -2120,6 +2135,7 @@ def run_tagger_training(
             datasets_db=datasets_db,
             processor=processor,
             alias_resolver=alias_resolver,
+            comma_resolver=comma_resolver,
             quality_masking_mode=config.get("quality_masking_mode", "intra_group"),
             progress_callback=_ds_progress,
         )

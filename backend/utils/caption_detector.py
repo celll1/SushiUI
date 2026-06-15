@@ -49,7 +49,8 @@ def is_metadata_field(field_name: str, content: str) -> bool:
         'metrics', 'stats', 'count', 'id', 'url', 'link',
         'created', 'updated', 'modified', 'published',
         'retweet', 'like', 'impression', 'view', 'follow',
-        'user', 'username', 'userid', 'source', 'origin'
+        'user', 'username', 'userid', 'source', 'origin',
+        'filename', 'fname',  # image.filename etc. — a path, not a caption
     ]
 
     field_lower = field_name.lower()
@@ -85,6 +86,14 @@ def is_metadata_field(field_name: str, content: str) -> bool:
 
     # URLs
     if content_stripped.startswith(('http://', 'https://', 'www.')):
+        return True
+
+    # Filenames (a single token ending in a file extension, no spaces/commas) —
+    # e.g. "HA4lEqBaIAAV8cm.jpg". A filename is a path, not a training caption.
+    if re.match(
+        r'^[^\s,]+\.(jpe?g|png|webp|gif|bmp|tiff?|avif|json|txt|mp4|webm|mov)$',
+        content_stripped, re.IGNORECASE,
+    ):
         return True
 
     # Very short strings (likely IDs, not captions)

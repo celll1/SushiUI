@@ -518,6 +518,7 @@ def _load_optimizer_state(
     model: Optional[Any] = None,
     old_tag_to_idx: Optional[Dict[str, int]] = None,
     new_tag_to_idx: Optional[Dict[str, int]] = None,
+    lineage: Optional[Dict[str, List[str]]] = None,
 ) -> bool:
     """Load optimizer state dict from ``<name>_optimizer.pt``.
 
@@ -567,6 +568,7 @@ def _load_optimizer_state(
                 head_bias=head_bias,
                 old_tag_to_idx=old_tag_to_idx,
                 new_tag_to_idx=new_tag_to_idx,
+                lineage=lineage,
             )
             _mode = summary.get("weight", {}).get("mode", "?")
             if _mode == "reset_8bit":
@@ -715,6 +717,7 @@ class TaggerTrainer:
         output_dir: str,
         progress_callback: Optional[Callable] = None,
         old_vocabulary: Optional[TagVocabulary] = None,
+        vocab_lineage: Optional[Dict[str, List[str]]] = None,
     ) -> None:
         self.run_id = run_id
         self.config = config
@@ -722,6 +725,9 @@ class TaggerTrainer:
         self.output_dir = output_dir
         self.callback = progress_callback
         self.old_vocabulary = old_vocabulary
+        # new_tag -> [old_predecessor, ...] for head / optimizer-state inheritance
+        # across vocab renames (alias) and merges (comma re-join). See vocab_lineage.py.
+        self.vocab_lineage = vocab_lineage or {}
         self._stop_requested = False
         self._stop_event = threading.Event()
         # GPU coordinator pause / resume signalling.  Created here so the
@@ -806,6 +812,7 @@ class TaggerTrainer:
                 hidden_proj_dim=cfg.get("hidden_proj_dim") or None,
                 init_head_from=cfg.get("init_head_from") or None,
                 new_vocab=self.vocabulary.tag_to_idx,
+                lineage=self.vocab_lineage,
                 repo_id=cfg.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID),
                 is_naflex=cfg.get("is_naflex", True),
                 attn_implementation=_attn,
@@ -868,6 +875,7 @@ class TaggerTrainer:
                         new_num_tags=self.vocabulary.num_tags,
                         new_vocab=_new_tag_to_idx,
                         old_tag_to_idx=_old_tag_to_idx,
+                        lineage=self.vocab_lineage,
                     )
                     # LoRA weights are vocab-independent — copy them separately
                     if isinstance(model, SigLIP2TaggerLoRAModel):
@@ -1152,6 +1160,7 @@ class TaggerTrainer:
                         if self.old_vocabulary is not None else None
                     ),
                     new_tag_to_idx=self.vocabulary.tag_to_idx,
+                    lineage=self.vocab_lineage,
                 )
                 if loaded:
                     print(f"[TaggerTrainer] Optimizer state restored from {resume_ckpt_name}")
@@ -2559,6 +2568,24 @@ def run_tagger_training(
                 except Exception as _xe:
                     print(f"[TaggerTraining] WARNING: could not restore expanded tags: {_xe}")
 
+        # Build the vocab lineage so renamed (alias) / merged (comma re-join) tags
+        # inherit their predecessor's head row + optimizer momentum across a vocab
+        # change, instead of being zero-initialized. Only meaningful when an old
+        # vocabulary exists (resume / init_head_from). Built AFTER the expanded-tag
+        # re-add above so new_tag_to_idx is final.
+        vocab_lineage: Dict[str, List[str]] = {}
+        if old_vocabulary is not None:
+            from core.tagger.vocab_lineage import build_vocab_lineage
+            vocab_lineage = build_vocab_lineage(
+                old_tag_to_idx=old_vocabulary.tag_to_idx,
+                new_tag_to_idx=vocabulary.tag_to_idx,
+                alias_resolver=alias_resolver,
+                comma_resolver=comma_resolver,
+            )
+            if vocab_lineage:
+                print(f"[TaggerTraining] Vocab lineage: {len(vocab_lineage)} renamed/merged "
+                      f"tag(s) will inherit head weights from predecessors")
+
         # Run trainer
         trainer = TaggerTrainer(
             run_id=run_id,
@@ -2567,6 +2594,7 @@ def run_tagger_training(
             output_dir=output_dir,
             progress_callback=progress_callback,
             old_vocabulary=old_vocabulary,
+            vocab_lineage=vocab_lineage,
         )
         # Expose trainer reference so the API can call trainer.stop()
         if trainer_holder is not None:

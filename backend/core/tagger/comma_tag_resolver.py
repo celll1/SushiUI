@@ -63,6 +63,10 @@ class CommaTagResolver:
         self._tail: Dict[str, Tuple[str, str]] = {}
         # canonical comma-free form -> category
         self._canonical_cat: Dict[str, str] = {}
+        # canonical comma-free form -> the normalized constituent parts
+        # (the comma-split fragments). Used for vocab-lineage / head-weight
+        # inheritance: a merged canonical can inherit from its old fragments.
+        self._canonical_parts: Dict[str, List[str]] = {}
 
     def __len__(self) -> int:
         return len(self._canonical_cat)
@@ -101,6 +105,7 @@ class CommaTagResolver:
 
             r._by_first[parts[0]].append((parts, canonical, category))
             r._canonical_cat[canonical] = category
+            r._canonical_parts[canonical] = parts
             tail_owners[parts[-1]].add(canonical)
 
         # Longest-match first so "a, b, c" wins over "a, b".
@@ -144,6 +149,15 @@ class CommaTagResolver:
     def category_of(self, canonical: str) -> Optional[str]:
         """Category for a canonical comma-free tag, or None if not a comma-tag."""
         return self._canonical_cat.get(canonical)
+
+    def canonical_parts(self) -> Dict[str, List[str]]:
+        """Map each canonical comma-free tag to its normalized constituent parts
+        (the comma-split fragments, in original order: ``[head, ..., tail]``).
+
+        Used to build the vocab lineage so a merged canonical can inherit head
+        weights from its old fragment tags.
+        """
+        return dict(self._canonical_parts)
 
     def resolve(self, tokens: List[str]) -> List[str]:
         """Resolve an ordered list of normalized tokens to canonical tokens.

@@ -888,6 +888,7 @@ def _inherit_head(
     new_num_tags: int,
     new_vocab: Optional[Dict[str, int]] = None,
     old_tag_to_idx: Optional[Dict[str, int]] = None,
+    lineage: Optional[Dict[str, List[str]]] = None,
 ) -> None:
     """Copy head weights from *checkpoint_path* into *model* using tag-name alignment.
 
@@ -902,6 +903,14 @@ def _inherit_head(
     dropped — the new head rows for those positions remain zero-initialized.
     Tags present in the new vocabulary but absent from the old one are
     zero-initialized (new tags to learn from scratch).
+
+    Lineage (rename / comma-merge inheritance)
+    ------------------------------------------
+    *lineage* (``new_tag -> [old_predecessor, ...]``, most-specific first) lets a
+    new tag whose name has no exact old match inherit a predecessor's row: an
+    alias-renamed tag inherits from its deprecated form, and a comma-merged
+    canonical inherits from its old fragment (tail-priority — the first listed
+    predecessor that exists in the old vocab is used). See vocab_lineage.py.
 
     Hidden dim change (cls_dim)
     ---------------------------
@@ -966,21 +975,37 @@ def _inherit_head(
         print(f"[TaggerModel] Using vocabulary from {os.path.basename(vocab_path)} for head alignment")
 
     if _old_tag_to_idx is not None and new_vocab is not None:
-        # For each tag in the new vocabulary, copy the row from the old head if it existed
+        inherited = 0  # rows recovered via lineage (rename / comma-merge)
+
+        def _resolve_old_idx(tag: str) -> Optional[int]:
+            """Exact-name match first, then lineage predecessors (tail-priority)."""
+            oi = _old_tag_to_idx.get(tag)
+            if oi is not None and oi < src_w.shape[0]:
+                return oi
+            if lineage is not None:
+                for predecessor in lineage.get(tag, ()):
+                    pi = _old_tag_to_idx.get(predecessor)
+                    if pi is not None and pi < src_w.shape[0]:
+                        return pi
+            return None
+
+        # For each tag in the new vocabulary, copy the row from the old head if it
+        # existed (by name), else inherit from a lineage predecessor.
         for tag, new_idx in new_vocab.items():
-            old_idx = _old_tag_to_idx.get(tag)
+            exact = _old_tag_to_idx.get(tag)
+            old_idx = _resolve_old_idx(tag)
             if old_idx is None:
                 skipped += 1
-                continue  # new tag — stays zero-initialized
-            if old_idx >= src_w.shape[0]:
-                skipped += 1
-                continue  # shouldn't happen, but guard anyway
+                continue  # genuinely new tag — stays zero-initialized
             new_head.weight.data[new_idx, :min_hidden] = src_w[old_idx, :min_hidden]
             new_head.bias.data[new_idx]                = src_b[old_idx]
             copied += 1
+            if exact is None or exact >= src_w.shape[0]:
+                inherited += 1  # recovered via lineage, not an exact-name match
         old_size = len(_old_tag_to_idx)
+        _lin = f", {inherited} via lineage (rename/merge)" if inherited else ""
         print(f"[TaggerModel] Head inherited via tag-name alignment: "
-              f"{copied} tags copied, {skipped} new/missing tags zero-initialized "
+              f"{copied} tags copied{_lin}, {skipped} new/missing tags zero-initialized "
               f"(checkpoint head: {src_w.shape[0]}, old vocab: {old_size}, new vocab: {new_num_tags})")
     else:
         # Fallback: positional copy — safe only when vocab order is unchanged
@@ -1082,6 +1107,7 @@ def build_tagger_model(
     hidden_proj_dim: Optional[int] = None,
     init_head_from: Optional[str] = None,
     new_vocab: Optional[Dict[str, int]] = None,
+    lineage: Optional[Dict[str, List[str]]] = None,
     repo_id: str = SIGLIP2_DEFAULT_REPO_ID,
     is_naflex: bool = True,
     attn_implementation: str = "sdpa",
@@ -1109,6 +1135,10 @@ def build_tagger_model(
                           present in the new vocabulary are simply dropped (not an error).
     new_vocab           : new tag→idx mapping (TagVocabulary.tag_to_idx) required for
                           tag-name alignment; falls back to positional copy if None.
+    lineage             : optional ``new_tag -> [old_predecessor, ...]`` map (from
+                          vocab_lineage.build_vocab_lineage) so renamed / comma-merged
+                          tags inherit a predecessor's head row when there is no
+                          exact-name match.
     """
     print(f"[TaggerModel] Loading vision encoder from: {vision_encoder_path}")
     vision_encoder = _load_vision_encoder(
@@ -1152,7 +1182,7 @@ def build_tagger_model(
             print(f"[TaggerModel] Auto-inheriting head from merged checkpoint: {vision_encoder_path}")
 
     if _effective_head_src:
-        _inherit_head(model, _effective_head_src, num_tags, new_vocab=new_vocab)
+        _inherit_head(model, _effective_head_src, num_tags, new_vocab=new_vocab, lineage=lineage)
         _inherit_custom_pooler(model, _effective_head_src)
 
     return model

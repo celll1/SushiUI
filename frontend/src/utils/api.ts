@@ -2647,6 +2647,9 @@ export interface TaggerTrainingRunCreateRequest {
   weight_decay?: number;
   loss_clip?: number;
   vocab_min_count?: number;
+  // Resolve "Unknown" tag categories against the Gelbooru taglist supplement
+  // (taglist_gel/) in addition to Danbooru. Danbooru takes precedence.
+  vocab_use_gelbooru_categories?: boolean;
   cls_dim?: number;
   hidden_proj_dim?: number;
   init_head_from?: string;
@@ -2862,10 +2865,12 @@ export const getTaggerVocabularyPreview = async (
   datasetIds: number[],
   excludedCategories: string[] = [],
   banTags: string = "",
+  useGelbooruCategories: boolean = true,
 ): Promise<TaggerVocabularyPreview> => {
   const params: Record<string, string> = { dataset_ids: datasetIds.join(",") };
   if (excludedCategories.length > 0) params.excluded_categories = excludedCategories.join(",");
   if (banTags.trim()) params.ban_tags = banTags;
+  params.use_gelbooru_categories = String(useGelbooruCategories);
   const response = await api.get("/tagger-training/vocabulary-preview", { params });
   return response.data;
 };

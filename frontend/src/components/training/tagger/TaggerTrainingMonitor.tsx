@@ -1004,6 +1004,7 @@ export default function TaggerTrainingMonitor({
                   gradient_checkpointing: "Grad ckpt",
                   validate_every: "Validate / epochs",
                   vocab_min_count: "Min tag count",
+                  vocab_use_gelbooru_categories: "Gelbooru categories",
                   val_split_mode: "Val split mode",
                   val_split: "Val split (%)",
                   val_fixed_size: "Val size (fixed)",

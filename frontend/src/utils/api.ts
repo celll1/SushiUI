@@ -2677,6 +2677,10 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_query_max_expanded_tags?: number;
   danbooru_query_expand_categories?: number[];
   danbooru_query_resolve_interval?: number;
+  // Per-tag per-epoch collection caps (0 = unlimited)
+  danbooru_query_collect_per_epoch?: number;
+  danbooru_new_tag_collect_per_epoch?: number;
+  danbooru_low_f1_collect_per_epoch?: number;
   danbooru_tags?: string;
   danbooru_injection_interval?: number;
   danbooru_injection_batch_size_ratio?: number;

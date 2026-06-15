@@ -1053,6 +1053,38 @@ export default function TaggerTrainingMonitor({
                   danbooru_query_weight_cooc: "Weight: co-occur",
                   danbooru_cooc_collect_per_epoch: "Co-occur collect/epoch",
                   danbooru_cooc_order_random: "Co-occur order:random",
+                  // Query mode (first-class collection mode)
+                  danbooru_query_enable: "Query mode",
+                  danbooru_query_expand_enable: "Query → vocab expand",
+                  danbooru_query_new_tag_min_count: "Query expand min count",
+                  danbooru_query_resolve_top_k: "Query resolve top-K",
+                  danbooru_query_max_expanded_tags: "Query max expanded",
+                  danbooru_query_expand_categories: "Query expand categories",
+                  danbooru_query_resolve_interval: "Query resolve interval (s)",
+                  // Per-tag per-epoch collection caps
+                  danbooru_query_collect_per_epoch: "Query collect/epoch",
+                  danbooru_new_tag_collect_per_epoch: "New-tag collect/epoch",
+                  danbooru_low_f1_collect_per_epoch: "Low-F1 collect/epoch",
+                  // Train-count deficiency (exposure balancing)
+                  danbooru_train_count_enable: "Train-count deficiency",
+                  danbooru_query_weight_train_count: "Weight: train-count",
+                  danbooru_train_count_top_k: "Train-count top-K",
+                  danbooru_train_count_min_deficit_ratio: "Train-count min deficit",
+                  danbooru_train_count_min_per_epoch: "Train-count min/epoch",
+                  danbooru_train_count_min_posts: "Train-count min posts",
+                  danbooru_train_count_collect_per_epoch: "Train-count collect/epoch",
+                  // Training-F1 metrics + misc (previously unlabeled)
+                  quality_masking_mode: "Quality masking",
+                  save_base_model: "Save base model",
+                  save_best_only: "Save best only",
+                  save_tag_metrics: "Save tag metrics",
+                  train_f1_eval_every_n_steps: "Train-F1 eval / N steps",
+                  train_f1_threshold_search_every_n_steps: "Train-F1 search / N steps",
+                  train_f1_initial_threshold: "Train-F1 init threshold",
+                  train_f1_buffer_batches: "Train-F1 buffer batches",
+                  hard_rate_lo: "Hard rate lo",
+                  hard_rate_hi: "Hard rate hi",
+                  rescan_before_training: "Rescan before training",
                 };
                 const cfg = run.config as Record<string, unknown>;
                 const lossFn = String(cfg.loss_function ?? "asl");
@@ -1072,6 +1104,8 @@ export default function TaggerTrainingMonitor({
                 const vocabExpandOn = Boolean(cfg.danbooru_vocab_expand);
                 const lowF1On = Boolean(cfg.danbooru_low_f1_enable);
                 const coocOn = Boolean(cfg.danbooru_cooc_expand_enable);
+                const queryExpandOn = Boolean(cfg.danbooru_query_expand_enable);
+                const trainCountOn = Boolean(cfg.danbooru_train_count_enable);
                 const DANBOORU_DETAIL_KEYS = new Set([
                   "danbooru_tags", "danbooru_injection_interval", "danbooru_injection_batch_size_ratio",
                   "danbooru_min_score", "danbooru_max_posts_per_query", "danbooru_api_interval",
@@ -1084,27 +1118,55 @@ export default function TaggerTrainingMonitor({
                   "danbooru_low_f1_min_posts",
                   "danbooru_cooc_expand_enable", "danbooru_cooc_min_count", "danbooru_cooc_categories",
                   "danbooru_query_weight_cooc", "danbooru_cooc_collect_per_epoch", "danbooru_cooc_order_random",
+                  // Query mode
+                  "danbooru_query_enable", "danbooru_query_expand_enable",
+                  "danbooru_query_new_tag_min_count", "danbooru_query_resolve_top_k",
+                  "danbooru_query_max_expanded_tags", "danbooru_query_expand_categories",
+                  "danbooru_query_resolve_interval", "danbooru_query_collect_per_epoch",
+                  "danbooru_new_tag_collect_per_epoch", "danbooru_low_f1_collect_per_epoch",
+                  // Train-count deficiency
+                  "danbooru_train_count_enable", "danbooru_query_weight_train_count",
+                  "danbooru_train_count_top_k", "danbooru_train_count_min_deficit_ratio",
+                  "danbooru_train_count_min_per_epoch", "danbooru_train_count_min_posts",
+                  "danbooru_train_count_collect_per_epoch",
                 ]);
                 const DANBOORU_VOCAB_KEYS = new Set([
                   "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
                   "danbooru_new_tag_lookback_days", "danbooru_new_tag_categories",
                   "danbooru_new_tag_survey_interval", "danbooru_max_dynamic_tags",
+                  "danbooru_new_tag_collect_per_epoch",
                   "danbooru_cooc_expand_enable", "danbooru_cooc_min_count", "danbooru_cooc_categories",
                 ]);
                 // Low-F1 sub-parameters only meaningful when low-F1 collection is on.
                 const DANBOORU_LOW_F1_KEYS = new Set([
                   "danbooru_low_f1_threshold", "danbooru_low_f1_top_k", "danbooru_low_f1_min_posts",
+                  "danbooru_low_f1_collect_per_epoch",
                 ]);
                 // Co-occurrence sub-parameters only meaningful when co-occur discovery is on.
                 const DANBOORU_COOC_KEYS = new Set(["danbooru_cooc_min_count", "danbooru_cooc_categories",
                   "danbooru_query_weight_cooc", "danbooru_cooc_collect_per_epoch", "danbooru_cooc_order_random"]);
+                // Query-expand sub-parameters only meaningful when query → vocab expand is on.
+                const DANBOORU_QUERY_EXPAND_KEYS = new Set([
+                  "danbooru_query_new_tag_min_count", "danbooru_query_resolve_top_k",
+                  "danbooru_query_max_expanded_tags", "danbooru_query_expand_categories",
+                  "danbooru_query_resolve_interval", "danbooru_query_collect_per_epoch",
+                ]);
+                // Train-count sub-parameters only meaningful when the path is on.
+                const DANBOORU_TRAIN_COUNT_KEYS = new Set([
+                  "danbooru_query_weight_train_count", "danbooru_train_count_top_k",
+                  "danbooru_train_count_min_deficit_ratio", "danbooru_train_count_min_per_epoch",
+                  "danbooru_train_count_min_posts", "danbooru_train_count_collect_per_epoch",
+                ]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
                     key,
                     label,
                     value:
                       key === "loss_function" ? (cfg[key] ?? "asl")
-                      : (key === "enable_danbooru_augmentation" || key === "danbooru_low_f1_enable" || key === "danbooru_cooc_expand_enable") ? Boolean(cfg[key])
+                      : (key === "enable_danbooru_augmentation" || key === "danbooru_low_f1_enable"
+                         || key === "danbooru_cooc_expand_enable" || key === "danbooru_query_enable"
+                         || key === "danbooru_query_expand_enable" || key === "danbooru_train_count_enable")
+                        ? Boolean(cfg[key])
                       : cfg[key],
                   }))
                   .filter(({ key, value }) => {
@@ -1121,6 +1183,8 @@ export default function TaggerTrainingMonitor({
                     if (DANBOORU_VOCAB_KEYS.has(key) && !vocabExpandOn) return false;
                     if (DANBOORU_LOW_F1_KEYS.has(key) && !lowF1On) return false;
                     if (DANBOORU_COOC_KEYS.has(key) && !coocOn) return false;
+                    if (DANBOORU_QUERY_EXPAND_KEYS.has(key) && !queryExpandOn) return false;
+                    if (DANBOORU_TRAIN_COUNT_KEYS.has(key) && !trainCountOn) return false;
                     return true;
                   });
                 return (

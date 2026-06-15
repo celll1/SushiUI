@@ -435,6 +435,11 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_query_max_expanded_tags": 0,     # run-wide cap on NEW tags added via query (0 = unlimited)
     "danbooru_query_expand_categories": [0, 3, 4],  # eligible categories (general/copyright/character)
     "danbooru_query_resolve_interval": 3600,   # seconds between wildcard re-resolutions (API throttle)
+    # Per-tag per-epoch collection cap (0 = unlimited). Bounds how many posts a
+    # single resolved query tag contributes each epoch so a high-post_count tag
+    # does not monopolise the injected batches. Reset each epoch (re-collection
+    # next epoch is NOT blocked). Mirrors danbooru_cooc_collect_per_epoch.
+    "danbooru_query_collect_per_epoch": 0,
     "danbooru_tags": "",              # newline-separated queries (use !tag or -tag to exclude)
     "danbooru_injection_interval": 4, # interrupt-batch every N base steps
     "danbooru_injection_batch_size_ratio": 1.0,  # 1.0 = full batch, 0.5 = half, etc.
@@ -445,6 +450,9 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_buffer_size": None,     # None → auto (2 × batch_size)
     "danbooru_vocab_expand": False,
     "danbooru_new_tag_min_count": 200,
+    # Per-tag per-epoch collection cap for surveyor-discovered new tags (0 =
+    # unlimited). Same rationale/semantics as danbooru_query_collect_per_epoch.
+    "danbooru_new_tag_collect_per_epoch": 0,
     # Per-category post_count threshold overrides for the surveyor (category code
     # → min). Empty = use danbooru_new_tag_min_count for all. Lets copyright use a
     # higher bar than character (copyright post counts dwarf individual chars).
@@ -466,6 +474,9 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_low_f1_threshold": 0.5,  # tags with valid F1 below this are targeted (NaN excluded)
     "danbooru_low_f1_top_k": 500,      # cap on number of worst-F1 tags targeted
     "danbooru_low_f1_min_posts": 50,   # min Danbooru page-1 posts to include a tag (else skipped)
+    # Per-tag per-epoch collection cap for low-F1 tags (0 = unlimited). Same
+    # rationale/semantics as danbooru_query_collect_per_epoch.
+    "danbooru_low_f1_collect_per_epoch": 0,
     # Co-occurrence vocab discovery: add vocab-absent tags that appear in
     # collected posts >= cooc_min_count times (category from the post fields,
     # filtered to danbooru_new_tag_categories). Created-at independent, so it

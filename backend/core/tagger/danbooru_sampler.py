@@ -161,6 +161,9 @@ class DanbooruSampleBuffer:
         query_max_expanded: int = 0,
         query_resolve_interval: float = 3600.0,
         initial_query_tags: Optional[Any] = None,
+        query_collect_per_epoch: int = 0,
+        new_tag_collect_per_epoch: int = 0,
+        low_f1_collect_per_epoch: int = 0,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -306,6 +309,15 @@ class DanbooruSampleBuffer:
         self._query_seen: Set[str] = {normalize_tag(t) for t in self._query_tags}
         # Cumulative NEW tags added to the vocab via query resolution (run-wide cap).
         self._expanded_via_query: Set[str] = set()
+        # Per-tag per-epoch collection caps (0 = unlimited) for the query /
+        # new_tag / low_f1 paths. Bounds how many posts a single high-post_count
+        # tag contributes per epoch so it does not monopolise the injected
+        # batches. _collect_count is the shared per-tag counter (reset each epoch);
+        # cooc keeps its own counter (_cooc_collected).
+        self._query_collect_per_epoch = max(0, int(query_collect_per_epoch))
+        self._new_tag_collect_per_epoch = max(0, int(new_tag_collect_per_epoch))
+        self._low_f1_collect_per_epoch = max(0, int(low_f1_collect_per_epoch))
+        self._collect_count: Dict[str, int] = {}
 
         # Per-epoch download cycle (memory-free dedup; only post_ids stored).
         # Within one epoch each dynamic tag is collected at most once, mirroring
@@ -371,6 +383,7 @@ class DanbooruSampleBuffer:
             self._downloaded_ids.clear()
             self._exhausted_tags.clear()
             self._cooc_collected.clear()   # reset per-tag cooc quota for the new epoch
+            self._collect_count.clear()    # reset per-tag query/new_tag/low_f1 quota
             self._cycle_gen += 1
 
     # ------------------------------------------------------------------
@@ -741,6 +754,17 @@ class DanbooruSampleBuffer:
             # when it hits its per-epoch quota). static (per-string) is unbounded.
             is_collected = kind in ("new_tag", "low_f1", "cooc", "query")
 
+            # Per-tag per-epoch collection cap (0 = unlimited). cooc uses its own
+            # quota (_cooc_collected); the others share _collect_count.
+            if kind == "query":
+                _per_tag_cap = self._query_collect_per_epoch
+            elif kind == "new_tag":
+                _per_tag_cap = self._new_tag_collect_per_epoch
+            elif kind == "low_f1":
+                _per_tag_cap = self._low_f1_collect_per_epoch
+            else:
+                _per_tag_cap = 0
+
             # Snapshot the epoch generation: exhaustion decisions computed below
             # must only apply to THIS epoch. If reset_download_cycle() runs (epoch
             # boundary) before we mark a tag exhausted, the generation changes and
@@ -791,6 +815,15 @@ class DanbooruSampleBuffer:
                 for post in posts:
                     if self._stop.is_set():
                         return
+                    # Per-tag per-epoch cap: stop this visit once the tag has hit
+                    # its quota and exhaust it for the rest of the epoch (next epoch
+                    # re-collects from scratch after reset_download_cycle()).
+                    if _per_tag_cap > 0:
+                        with self._cycle_lock:
+                            if self._collect_count.get(query, 0) >= _per_tag_cap:
+                                if self._cycle_gen == start_gen:
+                                    self._exhausted_tags.add(query)
+                                break
                     pid = int(post.get("id", 0) or 0)
                     if is_collected:
                         with self._cycle_lock:
@@ -821,6 +854,12 @@ class DanbooruSampleBuffer:
                                 _cc = self._cooc_collected.get(query, 0) + 1
                                 self._cooc_collected[query] = _cc
                                 if self._cooc_collect_per_epoch > 0 and _cc >= self._cooc_collect_per_epoch:
+                                    self._exhausted_tags.add(query)
+                            # Per-tag per-epoch cap for query / new_tag / low_f1.
+                            if _per_tag_cap > 0 and kind in ("new_tag", "low_f1", "query"):
+                                _pc = self._collect_count.get(query, 0) + 1
+                                self._collect_count[query] = _pc
+                                if _pc >= _per_tag_cap:
                                     self._exhausted_tags.add(query)
                         _nt = normalize_tag(query) if query else ""
                         with self._metrics_lock:

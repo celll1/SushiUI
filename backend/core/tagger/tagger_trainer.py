@@ -2452,6 +2452,10 @@ def run_tagger_training(
                     query_max_expanded=config.get("danbooru_query_max_expanded_tags", 0),
                     query_resolve_interval=float(config.get("danbooru_query_resolve_interval", 3600)),
                     initial_query_tags=_initial_query_tags,
+                    # Per-tag per-epoch collection caps (0 = unlimited).
+                    query_collect_per_epoch=config.get("danbooru_query_collect_per_epoch", 0),
+                    new_tag_collect_per_epoch=config.get("danbooru_new_tag_collect_per_epoch", 0),
+                    low_f1_collect_per_epoch=config.get("danbooru_low_f1_collect_per_epoch", 0),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

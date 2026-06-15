@@ -87,6 +87,9 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_query_max_expanded_tags: 0,
   danbooru_query_expand_categories: [0, 3, 4],
   danbooru_query_resolve_interval: 3600,
+  danbooru_query_collect_per_epoch: 0,
+  danbooru_new_tag_collect_per_epoch: 0,
+  danbooru_low_f1_collect_per_epoch: 0,
   danbooru_tags: "",
   danbooru_injection_interval: 4,
   danbooru_injection_batch_size_ratio: 1.0,
@@ -191,6 +194,9 @@ export default function TaggerTrainingConfig({
         danbooru_query_max_expanded_tags: (editRun.config?.danbooru_query_max_expanded_tags as number) ?? DEFAULT_CONFIG.danbooru_query_max_expanded_tags,
         danbooru_query_expand_categories: (editRun.config?.danbooru_query_expand_categories as number[]) ?? DEFAULT_CONFIG.danbooru_query_expand_categories,
         danbooru_query_resolve_interval: (editRun.config?.danbooru_query_resolve_interval as number) ?? DEFAULT_CONFIG.danbooru_query_resolve_interval,
+        danbooru_query_collect_per_epoch: (editRun.config?.danbooru_query_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_query_collect_per_epoch,
+        danbooru_new_tag_collect_per_epoch: (editRun.config?.danbooru_new_tag_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_new_tag_collect_per_epoch,
+        danbooru_low_f1_collect_per_epoch: (editRun.config?.danbooru_low_f1_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_low_f1_collect_per_epoch,
         danbooru_tags: (editRun.config?.danbooru_tags as string) ?? DEFAULT_CONFIG.danbooru_tags,
         danbooru_injection_interval: (editRun.config?.danbooru_injection_interval as number) ?? DEFAULT_CONFIG.danbooru_injection_interval,
         danbooru_injection_batch_size_ratio: (editRun.config?.danbooru_injection_batch_size_ratio as number) ?? DEFAULT_CONFIG.danbooru_injection_batch_size_ratio,
@@ -1270,6 +1276,16 @@ export default function TaggerTrainingConfig({
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Posts/tag/epoch (0=∞)</label>
+                          <input
+                            type="number"
+                            min={0}
+                            value={config.danbooru_query_collect_per_epoch ?? 0}
+                            onChange={(e) => setField("danbooru_query_collect_per_epoch", parseInt(e.target.value) || 0)}
+                            className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                          />
+                        </div>
                         <div className="col-span-2 text-xs text-gray-500">
                           Resolved tags are collected PER-TAG within the Query pool (bounded by the Query
                           weight), so a wildcard that resolves to N tags contributes N collection units —
@@ -1407,6 +1423,20 @@ export default function TaggerTrainingConfig({
                       <span className="text-xs text-gray-500">
                         LRU cap on the persisted new-tag collection list (0 = unlimited). Evicts the
                         least-recently-collected tag; a regressed tag is re-collected by Low-F1.
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Posts/tag/epoch (0=∞)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={config.danbooru_new_tag_collect_per_epoch ?? 0}
+                        onChange={(e) => setField("danbooru_new_tag_collect_per_epoch", parseInt(e.target.value) || 0)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">
+                        Per-tag per-epoch collection cap so a high-post_count new tag does not
+                        monopolise the injected batches. Reset each epoch.
                       </span>
                     </div>
 
@@ -1642,6 +1672,19 @@ export default function TaggerTrainingConfig({
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Skip tags with fewer page-1 posts than this (≤200).</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <label className="text-xs text-gray-400 w-48">Posts/tag/epoch (0=∞)</label>
+                      <input
+                        type="number" min={0}
+                        value={config.danbooru_low_f1_collect_per_epoch ?? 0}
+                        onChange={(e) => setField("danbooru_low_f1_collect_per_epoch", parseInt(e.target.value) || 0)}
+                        className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <span className="text-xs text-gray-500">
+                        Per-tag per-epoch collection cap so a high-post_count low-F1 tag does not
+                        monopolise the injected batches. Reset each epoch.
+                      </span>
                     </div>
                   </div>
                 )}

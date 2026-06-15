@@ -1190,25 +1190,77 @@ export default function TaggerTrainingConfig({
                 processes while this is running.
               </div>
 
-              <div>
-                <label className="block text-xs text-gray-400 mb-1">Tag Queries (one per line)</label>
-                <textarea
-                  rows={4}
-                  value={config.danbooru_tags ?? ""}
-                  onChange={(e) => setField("danbooru_tags", e.target.value)}
-                  placeholder={"1girl score:>50\n1boy score:>30\nsolo -monochrome score:>20"}
-                  className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 resize-y"
+              {/* General augmentation pipeline settings (apply to all modes) */}
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Injection interval (base steps)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={64}
+                  value={config.danbooru_injection_interval ?? 4}
+                  onChange={(e) => setField("danbooru_injection_interval", parseInt(e.target.value) || 4)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
-                <p className="text-xs text-gray-500 mt-1">
-                  Danbooru tag search queries. Space-separated terms are ANDed.
-                  Prefix a tag with <code>!</code> or <code>-</code> to exclude
-                  (e.g. <code>solo !furry</code>). Use a negative-style query line to
-                  collect posts that are deliberately outside your target tag set —
-                  this improves robustness against false positives.
-                </p>
+                <span className="text-xs text-gray-500">
+                  Interrupt-batch every N base steps. LR scheduler & global_step do not advance
+                  on injection batches (resume-safe).
+                </span>
               </div>
 
-              {/* Query mode (first-class collection mode) */}
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Injection batch size ratio</label>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={1.0}
+                  step={0.05}
+                  value={config.danbooru_injection_batch_size_ratio ?? 1.0}
+                  onChange={(e) => setField("danbooru_injection_batch_size_ratio", parseFloat(e.target.value) || 1.0)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+                <span className="text-xs text-gray-500">1.0 = full batch (B), 0.5 = B/2.</span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Min post score</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={config.danbooru_min_score ?? 0}
+                  onChange={(e) => setField("danbooru_min_score", parseInt(e.target.value) || 0)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Max posts per query</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={config.danbooru_max_posts_per_query ?? 200}
+                  onChange={(e) => setField("danbooru_max_posts_per_query", parseInt(e.target.value) || 200)}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-gray-400 w-48">Buffer size (samples)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={512}
+                  value={config.danbooru_buffer_size ?? 0}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value);
+                    setField("danbooru_buffer_size", Number.isFinite(v) && v > 0 ? v : null);
+                  }}
+                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                />
+                <span className="text-xs text-gray-500">0 = auto (2 × batch_size).</span>
+              </div>
+
+              {/* Query mode (first-class collection mode; owns the Tag Queries) */}
               <div className="pt-2 border-t border-gray-700">
                 <label className="flex items-center gap-3 cursor-pointer">
                   <input
@@ -1218,12 +1270,30 @@ export default function TaggerTrainingConfig({
                     className="w-4 h-4 rounded"
                   />
                   <span className="text-sm text-gray-300">
-                    Query mode (collect via the queries above; uses the Query weight below)
+                    Query mode (collect via the Danbooru queries below; uses the Query weight at the bottom)
                   </span>
                 </label>
 
                 {config.danbooru_query_enable && (
                   <div className="pl-6 space-y-2 mt-2">
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Tag Queries (one per line)</label>
+                      <textarea
+                        rows={4}
+                        value={config.danbooru_tags ?? ""}
+                        onChange={(e) => setField("danbooru_tags", e.target.value)}
+                        placeholder={"1girl score:>50\n1boy score:>30\nsolo -monochrome score:>20"}
+                        className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500 resize-y"
+                      />
+                      <p className="text-xs text-gray-500 mt-1">
+                        Danbooru tag search queries. Space-separated terms are ANDed.
+                        Prefix a tag with <code>!</code> or <code>-</code> to exclude
+                        (e.g. <code>solo !furry</code>). Use a negative-style query line to
+                        collect posts that are deliberately outside your target tag set —
+                        this improves robustness against false positives.
+                      </p>
+                    </div>
+
                     <label className="flex items-center gap-2 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -1296,75 +1366,6 @@ export default function TaggerTrainingConfig({
                     )}
                   </div>
                 )}
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-400 w-48">Injection interval (base steps)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={64}
-                  value={config.danbooru_injection_interval ?? 4}
-                  onChange={(e) => setField("danbooru_injection_interval", parseInt(e.target.value) || 4)}
-                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-                <span className="text-xs text-gray-500">
-                  Interrupt-batch every N base steps. LR scheduler & global_step do not advance
-                  on injection batches (resume-safe).
-                </span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-400 w-48">Injection batch size ratio</label>
-                <input
-                  type="number"
-                  min={0.1}
-                  max={1.0}
-                  step={0.05}
-                  value={config.danbooru_injection_batch_size_ratio ?? 1.0}
-                  onChange={(e) => setField("danbooru_injection_batch_size_ratio", parseFloat(e.target.value) || 1.0)}
-                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-                <span className="text-xs text-gray-500">1.0 = full batch (B), 0.5 = B/2.</span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-400 w-48">Min post score</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={config.danbooru_min_score ?? 0}
-                  onChange={(e) => setField("danbooru_min_score", parseInt(e.target.value) || 0)}
-                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-400 w-48">Max posts per query</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={1000}
-                  value={config.danbooru_max_posts_per_query ?? 200}
-                  onChange={(e) => setField("danbooru_max_posts_per_query", parseInt(e.target.value) || 200)}
-                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-3">
-                <label className="text-xs text-gray-400 w-48">Buffer size (samples)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={512}
-                  value={config.danbooru_buffer_size ?? 0}
-                  onChange={(e) => {
-                    const v = parseInt(e.target.value);
-                    setField("danbooru_buffer_size", Number.isFinite(v) && v > 0 ? v : null);
-                  }}
-                  className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
-                />
-                <span className="text-xs text-gray-500">0 = auto (2 × batch_size).</span>
               </div>
 
               {/* Vocab Expansion */}

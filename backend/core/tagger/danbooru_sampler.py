@@ -164,6 +164,10 @@ class DanbooruSampleBuffer:
         query_collect_per_epoch: int = 0,
         new_tag_collect_per_epoch: int = 0,
         low_f1_collect_per_epoch: int = 0,
+        train_count_provider: Any = None,
+        weight_train_count: float = 1.0,
+        train_count_min_posts: int = 50,
+        train_count_collect_per_epoch: int = 0,
     ) -> None:
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
@@ -317,7 +321,17 @@ class DanbooruSampleBuffer:
         self._query_collect_per_epoch = max(0, int(query_collect_per_epoch))
         self._new_tag_collect_per_epoch = max(0, int(new_tag_collect_per_epoch))
         self._low_f1_collect_per_epoch = max(0, int(low_f1_collect_per_epoch))
+        self._train_count_collect_per_epoch = max(0, int(train_count_collect_per_epoch))
         self._collect_count: Dict[str, int] = {}
+
+        # Train-count deficiency path: under-exposed tags (low cumulative training
+        # count relative to their current per-epoch rate) fed by the trainer.
+        # Structurally identical to the low-F1 path (separate provider + weight).
+        self._train_count_provider = train_count_provider
+        self._weight_train_count = max(0.0, float(weight_train_count))
+        self._train_count_min_posts = int(train_count_min_posts)
+        self._train_count_tags: List[str] = []
+        self._train_count_unavailable: Set[str] = set()   # below min_posts (persistent)
 
         # Per-epoch download cycle (memory-free dedup; only post_ids stored).
         # Within one epoch each dynamic tag is collected at most once, mirroring
@@ -347,6 +361,8 @@ class DanbooruSampleBuffer:
         # and per-query-string collected count (legacy per-string static path).
         self._query_tag_freq: Dict[str, int] = {}
         self._static_query_freq: Dict[str, int] = {}
+        # Per-train-count-deficient-tag collected sample count.
+        self._train_count_tag_freq: Dict[str, int] = {}
         self._recent_posts: collections.deque = collections.deque(maxlen=100)
         self._total_collected = 0
         self._total_injected_batches = 0
@@ -357,6 +373,7 @@ class DanbooruSampleBuffer:
         self._total_cooc_collected = 0  # samples actively collected for cooc tags
         self._total_query_collected = 0   # per-tag collected for resolved query tags
         self._total_static_collected = 0  # per-string collected for legacy static queries
+        self._total_train_count_collected = 0  # collected for train-count-deficient tags
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -437,6 +454,8 @@ class DanbooruSampleBuffer:
             cooc_active_count = len(self._cooc_active_tags)
             query_tags_count = len(self._query_tags)
             query_expanded_count = len(self._expanded_via_query)
+            train_count_tags_count = len(self._train_count_tags)
+            train_count_unavailable_count = len(self._train_count_unavailable)
         with self._cooc_lock:
             cooc_pending_count = len(self._cooc_counts)
             cooc_promoted_count = len(self._cooc_proposed)
@@ -449,6 +468,7 @@ class DanbooruSampleBuffer:
             top_cooc_tags = sorted(self._cooc_tag_freq.items(), key=lambda x: -x[1])[:100]
             top_query_tags = sorted(self._query_tag_freq.items(), key=lambda x: -x[1])[:100]
             top_static_queries = sorted(self._static_query_freq.items(), key=lambda x: -x[1])[:100]
+            top_train_count_tags = sorted(self._train_count_tag_freq.items(), key=lambda x: -x[1])[:100]
             return {
                 "total_collected":         self._total_collected,
                 "total_injected_batches":  self._total_injected_batches,
@@ -482,6 +502,12 @@ class DanbooruSampleBuffer:
                 "top_query_tags":          [{"tag": t, "count": c} for t, c in top_query_tags],
                 "total_static_collected":  self._total_static_collected,
                 "top_static_queries":      [{"tag": t, "count": c} for t, c in top_static_queries],
+                # Train-count deficiency path
+                "train_count_tags_count":  train_count_tags_count,
+                "train_count_unavailable_count": train_count_unavailable_count,
+                "total_train_count_collected": self._total_train_count_collected,
+                "train_count_unique_tags_collected": len(self._train_count_tag_freq),
+                "top_train_count_tags":    [{"tag": t, "count": c} for t, c in top_train_count_tags],
                 "recent_posts":            list(self._recent_posts),
             }
 
@@ -647,15 +673,33 @@ class DanbooruSampleBuffer:
         with self._cycle_lock:
             self._low_f1_tags = dq_list
 
+    def _refresh_train_count_tags(self) -> None:
+        """Sync the train-count query list to its deficiency provider's set.
+
+        Same lifecycle as low-F1: targets are *rebuilt* each refresh so a tag
+        that has caught up (dropped by the trainer) stops being collected.
+        Availability (_train_count_unavailable) persists across rebuilds.
+        """
+        if self._train_count_provider is None:
+            return
+        try:
+            targets = self._train_count_provider.get_targets()
+        except Exception:
+            return
+        dq_list = [dq for dq in (self._denormalize_tag(n) for n in targets) if dq]
+        with self._cycle_lock:
+            self._train_count_tags = dq_list
+
     def _next_query(
-        self, static_idx: int, dyn_idx: int, lowf1_idx: int, cooc_idx: int, query_idx: int
+        self, static_idx: int, dyn_idx: int, lowf1_idx: int, cooc_idx: int,
+        query_idx: int, traincount_idx: int,
     ) -> Optional[Tuple[str, str]]:
         """Choose the next query via weighted random path selection.
 
         Returns ``(query_string, kind)`` where ``kind`` is one of
-        ``"static"`` / ``"query"`` / ``"new_tag"`` / ``"low_f1"`` / ``"cooc"``, or
-        ``None`` when nothing is available this epoch (worker idles until
-        reset_download_cycle()).
+        ``"static"`` / ``"query"`` / ``"new_tag"`` / ``"low_f1"`` / ``"cooc"`` /
+        ``"train_count"``, or ``None`` when nothing is available this epoch (worker
+        idles until reset_download_cycle()).
 
         The Query path uses weight ``_weight_static``. When ``query_expand`` is on
         it collects the resolved tags PER-TAG from ``_query_tags`` (kind="query",
@@ -681,6 +725,10 @@ class DanbooruSampleBuffer:
             active_query = [
                 t for t in self._query_tags if t not in self._exhausted_tags
             ] if self._query_expand else []
+            active_traincount = [
+                t for t in self._train_count_tags
+                if t not in self._exhausted_tags and t not in self._train_count_unavailable
+            ]
 
         paths: List[Tuple[str, float]] = []
         if self._weight_static > 0:
@@ -695,6 +743,8 @@ class DanbooruSampleBuffer:
             paths.append(("low_f1", self._weight_low_f1))
         if active_cooc and self._weight_cooc > 0:
             paths.append(("cooc", self._weight_cooc))
+        if active_traincount and self._weight_train_count > 0:
+            paths.append(("train_count", self._weight_train_count))
         if not paths:
             return None
 
@@ -717,6 +767,8 @@ class DanbooruSampleBuffer:
             return active_dyn[dyn_idx % len(active_dyn)], "new_tag"
         if chosen == "cooc":
             return active_cooc[cooc_idx % len(active_cooc)], "cooc"
+        if chosen == "train_count":
+            return active_traincount[traincount_idx % len(active_traincount)], "train_count"
         return active_lowf1[lowf1_idx % len(active_lowf1)], "low_f1"
 
     def _worker(self) -> None:
@@ -725,12 +777,15 @@ class DanbooruSampleBuffer:
         lowf1_idx = 0
         cooc_idx = 0
         query_idx = 0
+        traincount_idx = 0
         while not self._stop.is_set():
             self._refresh_dynamic_tags()
             self._refresh_low_f1_tags()
+            self._refresh_train_count_tags()
             self._refresh_query_tags()
 
-            choice = self._next_query(static_idx, dyn_idx, lowf1_idx, cooc_idx, query_idx)
+            choice = self._next_query(static_idx, dyn_idx, lowf1_idx, cooc_idx,
+                                      query_idx, traincount_idx)
             if choice is None:
                 # Nothing to fetch: all feeds empty/exhausted for this epoch.
                 # Idle until reset_download_cycle() or new targets arrive.
@@ -746,13 +801,15 @@ class DanbooruSampleBuffer:
                 cooc_idx += 1
             elif kind == "query":
                 query_idx += 1
+            elif kind == "train_count":
+                traincount_idx += 1
             else:
                 static_idx += 1
 
-            # new_tag / low_f1 / cooc / query are per-epoch "collected" paths: dedup
-            # post_ids and exhaust the tag once fully collected (cooc also exhausts
-            # when it hits its per-epoch quota). static (per-string) is unbounded.
-            is_collected = kind in ("new_tag", "low_f1", "cooc", "query")
+            # new_tag / low_f1 / cooc / query / train_count are per-epoch "collected"
+            # paths: dedup post_ids and exhaust the tag once fully collected (cooc
+            # also exhausts on its per-epoch quota). static (per-string) is unbounded.
+            is_collected = kind in ("new_tag", "low_f1", "cooc", "query", "train_count")
 
             # Per-tag per-epoch collection cap (0 = unlimited). cooc uses its own
             # quota (_cooc_collected); the others share _collect_count.
@@ -762,6 +819,8 @@ class DanbooruSampleBuffer:
                 _per_tag_cap = self._new_tag_collect_per_epoch
             elif kind == "low_f1":
                 _per_tag_cap = self._low_f1_collect_per_epoch
+            elif kind == "train_count":
+                _per_tag_cap = self._train_count_collect_per_epoch
             else:
                 _per_tag_cap = 0
 
@@ -794,6 +853,12 @@ class DanbooruSampleBuffer:
                 if kind == "low_f1" and 0 < len(posts) < self._low_f1_min_posts:
                     with self._cycle_lock:
                         self._low_f1_unavailable.add(query)
+                    time.sleep(0.3)
+                    continue
+                # Train-count availability gate (same rationale as low-F1).
+                if kind == "train_count" and 0 < len(posts) < self._train_count_min_posts:
+                    with self._cycle_lock:
+                        self._train_count_unavailable.add(query)
                     time.sleep(0.3)
                     continue
 
@@ -875,6 +940,10 @@ class DanbooruSampleBuffer:
                                 self._total_cooc_collected += 1
                                 if _nt:
                                     self._cooc_tag_freq[_nt] = self._cooc_tag_freq.get(_nt, 0) + 1
+                            elif kind == "train_count":
+                                self._total_train_count_collected += 1
+                                if _nt:
+                                    self._train_count_tag_freq[_nt] = self._train_count_tag_freq.get(_nt, 0) + 1
                             else:  # low_f1
                                 self._total_low_f1_collected += 1
                                 if _nt:

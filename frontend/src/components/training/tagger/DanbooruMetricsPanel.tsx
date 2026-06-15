@@ -13,7 +13,7 @@ interface Props {
  *  augmentation is disabled (no metrics file present). */
 export default function DanbooruMetricsPanel({ runId, active }: Props) {
   const [data, setData] = useState<DanbooruAugmentationMetrics | null>(null);
-  const [tab, setTab] = useState<"top" | "queries" | "new" | "lowf1" | "cooc" | "recent">("top");
+  const [tab, setTab] = useState<"top" | "queries" | "new" | "lowf1" | "traincount" | "cooc" | "recent">("top");
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +49,13 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
     (data.low_f1_tags_count ?? 0) > 0 ||
     (data.total_low_f1_collected ?? 0) > 0 ||
     lowF1Tags.length > 0;
+
+  const trainCountTags = data.top_train_count_tags ?? [];
+  const trainCountMax = trainCountTags.reduce((m, t) => Math.max(m, t.count), 0) || 1;
+  const hasTrainCount =
+    (data.train_count_tags_count ?? 0) > 0 ||
+    (data.total_train_count_collected ?? 0) > 0 ||
+    trainCountTags.length > 0;
 
   const coocTags = data.cooc_proposed_tags ?? [];
   const hasCooc =
@@ -112,6 +119,16 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         </div>
       )}
 
+      {/* Train-count deficiency (exposure balancing) stats — only when active */}
+      {hasTrainCount && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <Stat label="Train-count targeted" value={(data.train_count_tags_count ?? 0).toLocaleString()} />
+          <Stat label="Train-count collected" value={(data.train_count_unique_tags_collected ?? 0).toLocaleString()} />
+          <Stat label="Train-count posts" value={(data.total_train_count_collected ?? 0).toLocaleString()} />
+          <Stat label="Unavailable" value={(data.train_count_unavailable_count ?? 0).toLocaleString()} />
+        </div>
+      )}
+
       {/* Co-occurrence vocab-discovery + active-collection stats — only when active */}
       {((data.total_cooc_proposed ?? 0) > 0 || (data.cooc_pending_count ?? 0) > 0 || (data.cooc_active_count ?? 0) > 0) && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
@@ -149,6 +166,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         )}
         {hasLowF1 && (
           <TabBtn label="Low-F1 tags" active={tab === "lowf1"} onClick={() => setTab("lowf1")} />
+        )}
+        {hasTrainCount && (
+          <TabBtn label="Train-count tags" active={tab === "traincount"} onClick={() => setTab("traincount")} />
         )}
         {hasCooc && (
           <TabBtn label="Co-occur tags" active={tab === "cooc"} onClick={() => setTab("cooc")} />
@@ -249,6 +269,25 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
           ))}
           {lowF1Tags.length === 0 && (
             <p className="text-xs text-gray-500 italic">No low-F1 samples collected yet.</p>
+          )}
+        </div>
+      )}
+
+      {/* Train-count tags — under-exposed tags (low cumulative training count
+          vs current per-epoch rate) being rebalanced. Per-tag collected counts. */}
+      {tab === "traincount" && (
+        <div className="max-h-60 overflow-y-auto space-y-0.5 pr-1">
+          {trainCountTags.slice(0, 50).map((t) => (
+            <div key={t.tag} className="flex items-center gap-2 text-xs">
+              <span className="w-40 truncate text-gray-200" title={t.tag}>{t.tag}</span>
+              <div className="flex-1 h-2 bg-gray-800 rounded overflow-hidden">
+                <div className="h-full bg-teal-500" style={{ width: `${(t.count / trainCountMax) * 100}%` }} />
+              </div>
+              <span className="w-10 text-right text-gray-500 font-mono">{t.count}</span>
+            </div>
+          ))}
+          {trainCountTags.length === 0 && (
+            <p className="text-xs text-gray-500 italic">No train-count samples collected yet (needs ≥2 epochs).</p>
           )}
         </div>
       )}

@@ -1072,6 +1072,9 @@ class TaggerTrainer:
         # Training F1 rolling buffer
         _n2_eval      = int(cfg.get("train_f1_eval_every_n_steps", 100))
         _n1_search    = int(cfg.get("train_f1_threshold_search_every_n_steps", 500))
+        # Train-count deficiency augmentation: needs tag_count to keep
+        # accumulating even when training-F1 metrics are disabled.
+        _train_count_on = bool(cfg.get("danbooru_train_count_enable", False))
         _buf_size     = max(int(cfg.get("train_f1_buffer_batches", 16)), 1)
         _f1_threshold = float(cfg.get("train_f1_initial_threshold", 0.35))
         _train_f1_buffer: deque = deque(maxlen=_buf_size)
@@ -1353,8 +1356,9 @@ class TaggerTrainer:
                         scaler.update()
                     continue
 
-                # Capture sigmoid probs for training F1 rolling buffer (fp16, CPU)
-                if _n2_eval > 0:
+                # Capture sigmoid probs for training F1 rolling buffer (fp16, CPU).
+                # Also needed when train-count augmentation is on (tag_count update).
+                if _n2_eval > 0 or _train_count_on:
                     _step_probs  = torch.sigmoid(logits.detach()).to(torch.float16).cpu()
                     _step_labels = labels.detach().bool().cpu()
 
@@ -1391,9 +1395,11 @@ class TaggerTrainer:
                 epoch_loss       += loss_val
                 batches_processed += 1
 
-                # Append to training F1 rolling buffer
+                # Append to training F1 rolling buffer (F1 only); accumulate
+                # tag_count whenever F1 metrics OR train-count augmentation is on.
                 if _n2_eval > 0:
                     _train_f1_buffer.append((_step_probs, _step_labels))
+                if _n2_eval > 0 or _train_count_on:
                     _tag_metrics_acc.update(_step_probs.float(), _step_labels.float())
 
                 # ----- GPU-coordinator pause check (batch boundary) ----------
@@ -1721,8 +1727,30 @@ class TaggerTrainer:
             )
             _save_optimizer_state(optimizer, self.output_dir, "latest")
 
-            # Rotate epoch histograms: prev ← cur, cur ← zero
+            # Rotate epoch histograms: prev ← cur, cur ← zero. This also finalizes
+            # the per-epoch exposure delta used by train-count deficiency.
             _tag_metrics_acc.rotate_epoch()
+
+            # Refresh train-count deficiency targets (under-exposed tags) for the
+            # Danbooru sampler. Deficit is epoch-granular, so refresh once per
+            # epoch after rotation. Empty until >= 2 epochs have completed.
+            if _train_count_on:
+                _tc_buf = getattr(train_loader, "_buffer", None)
+                _tc_provider = getattr(_tc_buf, "_train_count_provider", None)
+                if _tc_provider is not None:
+                    try:
+                        _tc_idxs = _tag_metrics_acc.deficient_train_count_indices(
+                            top_k=int(cfg.get("danbooru_train_count_top_k", 500)),
+                            min_deficit_ratio=float(cfg.get("danbooru_train_count_min_deficit_ratio", 0.3)),
+                            min_per_epoch=int(cfg.get("danbooru_train_count_min_per_epoch", 10)),
+                        )
+                        _tc_names = [self.vocabulary.idx_to_tag.get(i, "") for i in _tc_idxs]
+                        _tc_provider.set_targets([n for n in _tc_names if n])
+                        if _tc_names:
+                            print(f"[TaggerTrainer] Train-count deficiency: {len(_tc_names)} "
+                                  f"under-exposed tag(s) targeted (epoch {epoch + 1})")
+                    except Exception as _tce:
+                        print(f"[TaggerTrainer] Train-count target refresh error: {_tce}")
 
             epoch_summary = {
                 "epoch": epoch,
@@ -2210,6 +2238,7 @@ def run_tagger_training(
         _expander = None
         _surveyor = None
         _deficiency_provider = None
+        _train_count_provider = None
         if config.get("enable_danbooru_augmentation", False):
             _tag_queries = [
                 t.strip()
@@ -2230,11 +2259,16 @@ def run_tagger_training(
             # optional in those modes).
             _vocab_expand_on = config.get("danbooru_vocab_expand", False)
             _low_f1_on = config.get("danbooru_low_f1_enable", False)
-            if _active_queries or _vocab_expand_on or _low_f1_on:
+            _train_count_on = bool(config.get("danbooru_train_count_enable", False))
+            if _active_queries or _vocab_expand_on or _low_f1_on or _train_count_on:
                 from .danbooru_sampler import DanbooruSampleBuffer, MixedDataLoader as _MixedDL
                 from .danbooru_vocab_expander import VocabExpander, expand_vocab_and_head
 
                 _expander = VocabExpander()
+
+                if _train_count_on:
+                    from .danbooru_deficiency_provider import DanbooruDeficiencyProvider
+                    _train_count_provider = DanbooruDeficiencyProvider()
 
                 if _low_f1_on:
                     from .danbooru_deficiency_provider import DanbooruDeficiencyProvider
@@ -2456,6 +2490,12 @@ def run_tagger_training(
                     query_collect_per_epoch=config.get("danbooru_query_collect_per_epoch", 0),
                     new_tag_collect_per_epoch=config.get("danbooru_new_tag_collect_per_epoch", 0),
                     low_f1_collect_per_epoch=config.get("danbooru_low_f1_collect_per_epoch", 0),
+                    # Train-count deficiency path (exposure balancing).
+                    train_count_provider=_train_count_provider,
+                    weight_train_count=(config.get("danbooru_query_weight_train_count", 1.0)
+                                        if _train_count_on else 0.0),
+                    train_count_min_posts=config.get("danbooru_train_count_min_posts", 50),
+                    train_count_collect_per_epoch=config.get("danbooru_train_count_collect_per_epoch", 0),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(
@@ -2479,7 +2519,8 @@ def run_tagger_training(
                     f"(size={_inj_batch_size}), buffer={_buffer_size}, "
                     f"weights(query={config.get('danbooru_query_weight_static', 1.0)}, "
                     f"new_tag={config.get('danbooru_query_weight_new_tag', 1.0)}, "
-                    f"low_f1={config.get('danbooru_query_weight_low_f1', 1.0)})"
+                    f"low_f1={config.get('danbooru_query_weight_low_f1', 1.0)}, "
+                    f"train_count={config.get('danbooru_query_weight_train_count', 1.0)})"
                     + (f", query_expand=on (min_count={config.get('danbooru_query_new_tag_min_count', 200)}, "
                        f"top_k={config.get('danbooru_query_resolve_top_k', 50)}, "
                        f"max={config.get('danbooru_query_max_expanded_tags', 0)}, "
@@ -2494,6 +2535,10 @@ def run_tagger_training(
                     + (f", cooc_expand=on (min_count={config.get('danbooru_cooc_min_count', 50)}, "
                        f"categories={config.get('danbooru_new_tag_categories', [0, 3, 4])})"
                        if (config.get('danbooru_cooc_expand_enable', False) and _vocab_expand_on) else "")
+                    + (f", train_count=on (deficit_ratio>={config.get('danbooru_train_count_min_deficit_ratio', 0.3)}, "
+                       f"top_k={config.get('danbooru_train_count_top_k', 500)}, "
+                       f"min_per_epoch={config.get('danbooru_train_count_min_per_epoch', 10)})"
+                       if _train_count_on else "")
                 )
                 if config.get("danbooru_cooc_expand_enable", False) and not _vocab_expand_on:
                     print("[TaggerTraining] WARNING: danbooru_cooc_expand_enable=True but "

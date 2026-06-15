@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional, Dict, Any, Callable
+from typing import List, Optional, Dict, Any, Callable, Tuple
 from pydantic import BaseModel
 from datetime import datetime
 from pathlib import Path
@@ -3886,18 +3886,40 @@ class DatasetCreateRequest(BaseModel):
     recursive: bool = True
     read_exif: bool = False
 
-def update_dataset_statistics(dataset: Dataset, db: Session):
-    """Update dataset statistics by counting items and captions"""
-    item_ids_subq = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset.id)
-    total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
-    total_captions = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(item_ids_subq)
-    ).count()
-    # Count items that have at least one tags-format caption
-    total_tags = db.query(DatasetCaption).filter(
+def _dataset_caption_item_counts(db: Session, dataset_id: int) -> Tuple[int, int]:
+    """Return ``(items_with_tags, items_with_nl_captions)`` for a dataset.
+
+    Both are DISTINCT image counts, not raw caption-row counts:
+      - items_with_tags: images that have a danbooru-tags caption (is_tags_format).
+      - items_with_nl_captions: images that have a natural-language caption — a
+        TRAINING, non-tags, non-empty caption. Metadata fields (filenames,
+        source.*, timestamps, urls) are excluded via field_category, so this is
+        the number of images with an actual written caption, not metadata.
+    """
+    item_ids_subq = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+    items_with_tags = db.query(DatasetCaption.item_id).filter(
         DatasetCaption.item_id.in_(item_ids_subq),
-        DatasetCaption.is_tags_format == True
-    ).count()
+        DatasetCaption.is_tags_format == True,
+    ).distinct().count()
+    items_with_nl = db.query(DatasetCaption.item_id).filter(
+        DatasetCaption.item_id.in_(item_ids_subq),
+        DatasetCaption.is_tags_format == False,
+        DatasetCaption.field_category == "training",
+        DatasetCaption.content.isnot(None),
+        func.trim(DatasetCaption.content) != "",
+    ).distinct().count()
+    return items_with_tags, items_with_nl
+
+
+def update_dataset_statistics(dataset: Dataset, db: Session):
+    """Update dataset statistics by counting items and captions.
+
+    ``total_tags`` = images with danbooru tags; ``total_captions`` = images with
+    a natural-language caption (metadata fields excluded). See
+    _dataset_caption_item_counts.
+    """
+    total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
+    total_tags, total_captions = _dataset_caption_item_counts(db, dataset.id)
 
     # Only update if values changed (avoid unnecessary writes)
     if (dataset.total_items != total_items
@@ -3973,14 +3995,11 @@ async def create_dataset(request: DatasetCreateRequest, db: Session = Depends(ge
         # Calculate statistics by counting existing items/captions
         # (User may have already added items manually or from previous scan)
         total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset.id).count()
-        total_captions = db.query(DatasetCaption).filter(
-            DatasetCaption.item_id.in_(
-                db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset.id)
-            )
-        ).count()
+        total_tags, total_captions = _dataset_caption_item_counts(db, dataset.id)
 
         dataset.total_items = total_items
         dataset.total_captions = total_captions
+        dataset.total_tags = total_tags
         db.commit()
         db.refresh(dataset)
 
@@ -5098,16 +5117,11 @@ async def scan_dataset(
                     if ct in ("tags", "natural_language"):
                         c.caption_type = majority_type_name
 
-    # Update dataset statistics (count all items in DB, not just newly added)
-    item_ids_subq = db.query(DatasetItem.id).filter(DatasetItem.dataset_id == dataset_id)
+    # Update dataset statistics (count all items in DB, not just newly added).
+    # total_tags = images with danbooru tags; total_captions = images with a
+    # natural-language caption (metadata excluded). See _dataset_caption_item_counts.
     dataset.total_items = db.query(DatasetItem).filter(DatasetItem.dataset_id == dataset_id).count()
-    dataset.total_captions = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(item_ids_subq)
-    ).count()
-    dataset.total_tags = db.query(DatasetCaption).filter(
-        DatasetCaption.item_id.in_(item_ids_subq),
-        DatasetCaption.is_tags_format == True
-    ).count()
+    dataset.total_tags, dataset.total_captions = _dataset_caption_item_counts(db, dataset_id)
     dataset.tag_statistics = tag_statistics
     dataset.last_scanned_at = datetime.utcnow()
 

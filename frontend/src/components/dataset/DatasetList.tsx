@@ -125,7 +125,7 @@ export default function DatasetList({ selectedDatasetId, onSelectDataset }: Data
                   <div className="text-[10px] text-gray-300 space-y-0.5 ml-5">
                     <p className="truncate">{dataset.path}</p>
                     <p>
-                      {dataset.total_items} items • {dataset.total_captions} captions
+                      {dataset.total_items} items • {dataset.total_tags} tagged • {dataset.total_captions} captioned
                     </p>
                   </div>
                 </button>

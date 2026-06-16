@@ -171,7 +171,19 @@ class DanbooruSampleBuffer:
         quality_tag_enable: bool = False,
         quality_tag_thresholds: str = "",
         quality_tag_attach_negative: bool = False,
+        initial_epoch_progress: Optional[Dict[str, Any]] = None,
     ) -> None:
+        # Per-epoch collection progress restored across a mid-epoch resume.
+        # {"epoch": int, "collect_count": {tag: int}, "exhausted_tags": [tag]}.
+        # Applied by reset_download_cycle() only when its epoch matches, so a
+        # mid-epoch resume continues collection instead of restarting it from the
+        # top of the list. Consumed (one-shot) on the first reset_download_cycle().
+        self._pending_epoch_progress: Optional[Dict[str, Any]] = (
+            initial_epoch_progress
+            if isinstance(initial_epoch_progress, dict)
+            and initial_epoch_progress.get("epoch") is not None
+            else None
+        )
         # Score-based quality tag: append a quality tag derived from the post's
         # Danbooru score to the collected tag set. It becomes a positive label
         # only for tiers present in the vocabulary (others are ignored).
@@ -402,14 +414,37 @@ class DanbooruSampleBuffer:
         if self._thread is not None:
             self._thread.join(timeout=5)
 
-    def reset_download_cycle(self) -> None:
+    def reset_download_cycle(self, epoch: Optional[int] = None) -> None:
         """Begin a new collection cycle (called at each epoch boundary).
 
         Clears the per-epoch downloaded-id and exhausted-tag sets so that every
         discovered new tag is collected once again in the new epoch — matching
         the base dataset, which re-reads each image once per epoch.
+
+        On the FIRST call after a mid-epoch resume, if ``epoch`` matches the
+        persisted per-epoch progress, the collected-this-epoch state
+        (``_collect_count`` + ``_exhausted_tags``) is restored INSTEAD of cleared,
+        so already-collected tags are not re-collected within the resumed epoch.
+        ``_downloaded_ids`` is not persisted (lightweight), so a few posts may be
+        re-downloaded for not-yet-exhausted tags. Subsequent calls clear normally.
         """
         with self._cycle_lock:
+            _pending = self._pending_epoch_progress
+            self._pending_epoch_progress = None  # one-shot: consumed on first reset
+            if (_pending is not None and epoch is not None
+                    and _pending.get("epoch") == epoch):
+                self._collect_count = {
+                    str(k): int(v)
+                    for k, v in (_pending.get("collect_count") or {}).items()
+                }
+                self._exhausted_tags = {t for t in (_pending.get("exhausted_tags") or []) if t}
+                self._downloaded_ids.clear()   # not persisted: allow same-post re-DL
+                self._cooc_collected.clear()
+                self._cycle_gen += 1
+                print(f"[DanbooruSampler] Resumed epoch {epoch} collection progress: "
+                      f"{len(self._exhausted_tags)} exhausted tag(s), "
+                      f"{len(self._collect_count)} tag(s) with per-epoch count")
+                return
             self._downloaded_ids.clear()
             self._exhausted_tags.clear()
             self._cooc_collected.clear()   # reset per-tag cooc quota for the new epoch
@@ -530,6 +565,17 @@ class DanbooruSampleBuffer:
         ``initial_dynamic_tags``)."""
         with self._cycle_lock:
             return {t: self._dynamic_last_used.get(t, 0.0) for t in self._dynamic_tags}
+
+    def snapshot_epoch_progress(self) -> Dict[str, Any]:
+        """Return the per-epoch collection progress (``collect_count`` +
+        ``exhausted_tags``) so a mid-epoch resume can continue without
+        re-collecting already-collected tags. The caller tags it with the current
+        epoch index before persisting (see ``initial_epoch_progress``)."""
+        with self._cycle_lock:
+            return {
+                "collect_count": dict(self._collect_count),
+                "exhausted_tags": sorted(self._exhausted_tags),
+            }
 
     def snapshot_cooc_active_tags(self) -> List[str]:
         """Return the cooc active-collection query list, so it can be re-seeded
@@ -1158,6 +1204,15 @@ class MixedDataLoader:
         self._vocabulary          = vocabulary
         self._quality_masking     = quality_masking_mode
         self._alias_resolver      = alias_resolver
+        # Current epoch index, set by the trainer before each epoch's iteration so
+        # __iter__ can pass it to the buffer for mid-epoch-resume progress matching.
+        self._current_epoch: Optional[int] = None
+
+    def set_epoch(self, epoch: int) -> None:
+        """Record the epoch index so the next __iter__ passes it to the buffer's
+        reset_download_cycle() (used to match a restored per-epoch collection
+        progress on a mid-epoch resume)."""
+        self._current_epoch = int(epoch)
 
     # Proxy attributes used by the trainer
     @property
@@ -1185,7 +1240,7 @@ class MixedDataLoader:
         the resumed epoch would run on the bare base loader and Danbooru
         injection would silently stop until the next epoch boundary.
         """
-        return MixedDataLoader(
+        _re = MixedDataLoader(
             new_base_loader,
             buffer=self._buffer,
             injection_interval=self._injection_interval,
@@ -1196,6 +1251,8 @@ class MixedDataLoader:
             quality_masking_mode=self._quality_masking,
             alias_resolver=self._alias_resolver,
         )
+        _re._current_epoch = self._current_epoch
+        return _re
 
     def _build_injection_batch(self) -> Optional[Tuple]:
         """Drain a full Danbooru batch, build labels, and collate. None if
@@ -1217,9 +1274,11 @@ class MixedDataLoader:
 
     def __iter__(self):
         # New epoch: let the buffer collect each new tag once again this epoch
-        # (mirrors the base dataset re-reading every image per epoch).
+        # (mirrors the base dataset re-reading every image per epoch). Pass the
+        # epoch so the buffer can restore a mid-epoch-resume collection progress
+        # when it matches (otherwise it clears for a fresh cycle).
         if hasattr(self._buffer, "reset_download_cycle"):
-            self._buffer.reset_download_cycle()
+            self._buffer.reset_download_cycle(self._current_epoch)
         base_step = 0
         for batch in self.base_loader:
             if batch is None:

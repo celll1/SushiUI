@@ -1299,6 +1299,12 @@ class TaggerTrainer:
                 _loader_for_epoch = train_loader
                 _batch_idx_offset = 0
 
+            # Tell the mixed loader which epoch this is so the Danbooru buffer can
+            # restore a matching per-epoch collection progress on a mid-epoch
+            # resume (continue collection instead of restarting from the top).
+            if hasattr(_loader_for_epoch, "set_epoch"):
+                _loader_for_epoch.set_epoch(epoch)
+
             loader_iter = (
                 _prefetch_loader(_loader_for_epoch, self._stop_event) if _loader_for_epoch.num_workers == 0
                 else iter(_loader_for_epoch)
@@ -1485,6 +1491,21 @@ class TaggerTrainer:
                                 with open(_qtmp, "w", encoding="utf-8") as _qf:
                                     json.dump(_qt, _qf, ensure_ascii=False)
                                 os.replace(_qtmp, _qp)
+                            except Exception:
+                                pass
+                        # Persist per-epoch collection progress (collect_count +
+                        # exhausted_tags) tagged with the current epoch, so a
+                        # mid-epoch resume INTO THE SAME epoch continues collection
+                        # rather than re-collecting already-collected tags.
+                        if hasattr(_db_buf, "snapshot_epoch_progress"):
+                            try:
+                                _ep = _db_buf.snapshot_epoch_progress()
+                                _ep["epoch"] = epoch
+                                _epp = os.path.join(self.output_dir, "danbooru_epoch_progress.json")
+                                _eptmp = _epp + ".tmp"
+                                with open(_eptmp, "w", encoding="utf-8") as _epf:
+                                    json.dump(_ep, _epf, ensure_ascii=False)
+                                os.replace(_eptmp, _epp)
                             except Exception:
                                 pass
 
@@ -2446,6 +2467,26 @@ def run_tagger_training(
                 except Exception as _qte:
                     print(f"[TaggerTraining] Could not restore query tag list: {_qte}")
 
+                # Restore per-epoch collection progress for a mid-epoch resume.
+                # Only loaded when actually resuming (avoids applying a stale file
+                # on a fresh run that reuses an output_dir). The buffer applies it
+                # only if the resumed epoch matches the persisted epoch, so a
+                # cross-epoch resume still starts the new epoch's collection clean.
+                _initial_epoch_progress: Any = None
+                if resume_from_checkpoint:
+                    try:
+                        _epp_path = os.path.join(output_dir, "danbooru_epoch_progress.json")
+                        if os.path.isfile(_epp_path):
+                            with open(_epp_path, "r", encoding="utf-8") as _epf:
+                                _epl = json.load(_epf)
+                            if isinstance(_epl, dict) and _epl.get("epoch") is not None:
+                                _initial_epoch_progress = _epl
+                                print(f"[TaggerTraining] Loaded epoch {_epl.get('epoch')} collection "
+                                      f"progress ({len(_epl.get('exhausted_tags') or [])} exhausted "
+                                      f"tag(s)) for potential mid-epoch resume")
+                    except Exception as _eppe:
+                        print(f"[TaggerTraining] Could not restore epoch progress: {_eppe}")
+
                 _danbooru_buffer = DanbooruSampleBuffer(
                     tag_queries=_active_queries,
                     vocabulary=vocabulary,
@@ -2500,6 +2541,8 @@ def run_tagger_training(
                     quality_tag_enable=bool(config.get("danbooru_quality_tag_enable", False)),
                     quality_tag_thresholds=str(config.get("danbooru_quality_tag_thresholds", "") or ""),
                     quality_tag_attach_negative=bool(config.get("danbooru_quality_tag_attach_negative", False)),
+                    # Mid-epoch resume: continue collection from where it stopped.
+                    initial_epoch_progress=_initial_epoch_progress,
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

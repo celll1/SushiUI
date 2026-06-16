@@ -27,7 +27,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import List, Literal, Optional, Protocol
+from typing import Callable, List, Literal, Optional, Protocol
 
 import torch
 
@@ -121,6 +121,10 @@ class GPUCoordinator:
         # Non-empty either while actively generating OR during grace period.
         self._currently_paused: List[TrainerHandle] = []
         self._resume_timer: Optional[threading.Timer] = None
+        # Callbacks invoked once the GPU is handed back to training (grace-period
+        # end). Used to free GPU resources held only for the generation/inference
+        # window — e.g. unload the tagger inference model loaded during training.
+        self._resume_callbacks: List[Callable[[], None]] = []
 
     # -- registration ----------------------------------------------------
 
@@ -142,6 +146,20 @@ class GPUCoordinator:
                     self._resume_timer.cancel()
                     self._resume_timer = None
             print(f"[GPUCoordinator] Unregistered trainer: {h.trainer_label()}")
+
+    def register_resume_callback(self, fn: Callable[[], None]) -> None:
+        """Register a callback fired after paused trainers resume at grace-period
+        end (i.e. the GPU has been handed back to training following a generation
+        or inference window).
+
+        Use it to release GPU memory that was only needed during that window —
+        e.g. unload the SigLIP2 tagger inference model so it stops occupying VRAM
+        once training continues. Callbacks must be cheap and exception-safe; any
+        exception is caught and logged so one bad callback cannot block resume.
+        """
+        with self._lock:
+            if fn not in self._resume_callbacks:
+                self._resume_callbacks.append(fn)
 
     def is_paused(self) -> bool:
         with self._lock:
@@ -274,10 +292,27 @@ class GPUCoordinator:
                 self._resume_timer = None
                 to_resume = list(self._currently_paused)
                 self._currently_paused.clear()
+                callbacks = list(self._resume_callbacks)
             if to_resume:
                 labels = [h.trainer_label() for h in to_resume]
                 print(f"[GPUCoordinator] Grace period expired — resuming {labels}")
+                # Free generation/inference-only GPU resources BEFORE restoring the
+                # trainer so the reclaimed VRAM is available to it (e.g. unload the
+                # tagger inference model loaded during training).
+                for cb in callbacks:
+                    try:
+                        cb()
+                    except Exception as e:   # noqa: BLE001 — never block resume
+                        print(f"[GPUCoordinator] resume callback error: {e}")
                 self._end_pause_cycle(to_resume, timeout=30.0)
+                # Release any reserved-but-unused blocks left by the offload/restore
+                # round-trip and the (now-unloaded) inference model, so nvidia-smi
+                # reflects the trainer's real footprint rather than the peak.
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
         t = threading.Timer(self._resume_grace_sec, _fire)
         t.daemon = True

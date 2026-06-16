@@ -2995,6 +2995,34 @@ async def unload_tagger_model():
 from core.tagger.siglip2_inference_manager import get_siglip2_inference_manager
 from core.tagger.tag_metrics_accumulator import TagMetricsAccumulator
 
+
+def _siglip2_unload_on_training_resume() -> None:
+    """Free the SigLIP2 inference model when training resumes after a generation/
+    inference grace period.
+
+    A tagger inference model loaded during training (for vocabulary / calibration
+    setup, or as the fallback when use_training_model is off) would otherwise keep
+    occupying VRAM after the GPU is handed back to training — the actual forward
+    pass uses the live training model, so the loaded inference copy is no longer
+    needed once we return to training. Registered with the GPU coordinator so it
+    fires exactly at that hand-back point.
+    """
+    try:
+        mgr = get_siglip2_inference_manager()
+        if getattr(mgr, "model", None) is not None or getattr(mgr, "onnx_session", None) is not None:
+            mgr.unload()  # moves to CPU, drops the model, and empty_caches
+            print("[SigLIP2] Inference model unloaded on training resume (VRAM returned to training)")
+    except Exception as _e:   # noqa: BLE001 — never block training resume
+        print(f"[SigLIP2] resume-unload skipped: {_e}")
+
+
+try:
+    from core.gpu_coordinator import gpu_coordinator as _gpu_coordinator
+    _gpu_coordinator.register_resume_callback(_siglip2_unload_on_training_resume)
+except Exception as _e:   # noqa: BLE001
+    print(f"[SigLIP2] could not register resume-unload callback: {_e}")
+
+
 class SigLIP2LoadRequest(BaseModel):
     checkpoint_path: str
     vision_encoder_path: str = ""

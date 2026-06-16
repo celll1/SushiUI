@@ -4909,6 +4909,7 @@ async def scan_dataset(
                 # Process captions (TXT/JSON files) — for both new and updated items
                 # Use item_id_for_captions (set above for both new and existing items)
                 _t_caps = time.time()
+                _jr = _sjf = _ups = 0.0  # json-read / scan_json_fields / upsert sub-times
                 for caption_path in caption_files:
                     try:
                         _, ext = os.path.splitext(caption_path)
@@ -4969,20 +4970,26 @@ async def scan_dataset(
                             # JSON file: Recursively scan all fields
                             import json
 
+                            _ts = time.time()
                             with open(caption_path, 'r', encoding='utf-8') as f:
                                 json_data = json.load(f)
+                            _jr += time.time() - _ts
 
                             # Scan all fields. Every field (the single tags field
                             # AND the non-tags fields) is upserted by caption_type,
                             # so a rescan UPDATES each row in place instead of
                             # re-adding non-tags fields (which previously duplicated
                             # them on every scan).
+                            _ts = time.time()
                             caption_results = scan_json_fields(json_data, taglist)
+                            _sjf += time.time() - _ts
+                            _ts = time.time()
                             for result in caption_results:
                                 if _upsert_caption(item_id_for_captions, result):
                                     captions_found += 1
                                 else:
                                     captions_updated += 1
+                            _ups += time.time() - _ts
 
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
@@ -5049,7 +5056,8 @@ async def scan_dataset(
                 _item_ms = (time.time() - _t_item) * 1000
                 if _item_ms > 200:
                     _has_json = any(str(c).lower().endswith(".json") for c in caption_files)
-                    print(f"[Dataset Scan][SLOW] {_item_ms:.0f}ms (captions {_caps_ms:.0f}ms) "
+                    print(f"[Dataset Scan][SLOW] {_item_ms:.0f}ms (captions {_caps_ms:.0f}ms = "
+                          f"jsonRead {_jr*1000:.0f} + scanFields {_sjf*1000:.0f} + upsert {_ups*1000:.0f}) "
                           f"json={_has_json} ncaps={len(caption_files)} {os.path.basename(image_path)}")
 
             except Exception as e:

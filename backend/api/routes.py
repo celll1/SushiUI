@@ -4532,6 +4532,30 @@ async def scan_dataset(
     if read_exif_enabled:
         print(f"[Dataset Scan] read_exif enabled (fields={exif_caption_fields or 'default set'})")
 
+    # Per-field-bucket scan counters (added/updated this run), so the progress &
+    # result are intuitive instead of conflating images with caption rows. The
+    # two training fields are reported on their own; everything else (image.*,
+    # source.*, savedAt, exif.*, suffix fields) is aggregated as "other".
+    #   tags = the danbooru-tags field;  caption = the natural-language field.
+    _fstats = {"tags_add": 0, "tags_upd": 0, "cap_add": 0, "cap_upd": 0,
+               "other_add": 0, "other_upd": 0}
+
+    def _fbucket(caption_type: str) -> str:
+        if caption_type == "tags":
+            return "tags"
+        if caption_type in ("natural_language", "caption"):
+            return "cap"
+        return "other"
+
+    def _fstat_bump(caption_type: str, added: bool) -> None:
+        _fstats[f"{_fbucket(caption_type)}_{'add' if added else 'upd'}"] += 1
+
+    def _fstat_msg() -> str:
+        """Compact per-field summary (+N new / ~N updated) for progress lines."""
+        return (f"tags +{_fstats['tags_add']}/~{_fstats['tags_upd']} | "
+                f"caption +{_fstats['cap_add']}/~{_fstats['cap_upd']} | "
+                f"other +{_fstats['other_add']}/~{_fstats['other_upd']}")
+
     def _build_tag_data_json(content: str) -> str:
         """Build tag_data JSON string from comma-separated tag content."""
         import json as _json
@@ -4568,6 +4592,7 @@ async def scan_dataset(
             existing.source_field = result["source_field"]
             existing.tag_data = _tag_data
             existing.updated_at = datetime.utcnow()
+            _fstat_bump(ctype, added=False)
             return False
         db.add(DatasetCaption(
             item_id=item_id_local,
@@ -4580,6 +4605,7 @@ async def scan_dataset(
             source="file",
             source_field=result["source_field"],
         ))
+        _fstat_bump(ctype, added=True)
         return True
 
     # Pre-scan with 2-pass scanner: detect suffix captions + count images in one pass
@@ -4841,7 +4867,7 @@ async def scan_dataset(
                             manager.send_progress_sync(
                                 files_processed,
                                 total_steps,
-                                f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
+                                f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
                             )
                         continue
 
@@ -4852,7 +4878,7 @@ async def scan_dataset(
                         manager.send_progress_sync(
                             files_processed,
                             total_steps,
-                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
+                            f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
                         )
                 else:
                     # New image — open it ONCE for dimensions, then register.
@@ -4869,7 +4895,7 @@ async def scan_dataset(
                             manager.send_progress_sync(
                                 files_processed,
                                 total_steps,
-                                f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                                f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
                             )
                         continue
 
@@ -4903,7 +4929,7 @@ async def scan_dataset(
                         manager.send_progress_sync(
                             files_processed,
                             total_steps,
-                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
+                            f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
                         )
 
                 # Process captions (TXT/JSON files) — for both new and updated items
@@ -4960,6 +4986,7 @@ async def scan_dataset(
                                         _btd += time.time() - _ts
                                         existing_cap.updated_at = datetime.utcnow()
                                         captions_updated += 1
+                                        _fstat_bump(detected_caption_type, added=False)
                                     else:
                                         # Create new
                                         _ts = time.time()
@@ -4978,6 +5005,7 @@ async def scan_dataset(
                                         )
                                         db.add(caption)
                                         captions_found += 1
+                                        _fstat_bump(detected_caption_type, added=True)
 
                         elif ext_lower == '.json':
                             # JSON file: Recursively scan all fields
@@ -5034,6 +5062,8 @@ async def scan_dataset(
                                         if is_tags_format:
                                             existing_cap.tag_data = _build_tag_data_json(content)
                                         existing_cap.updated_at = datetime.utcnow()
+                                        captions_updated += 1
+                                        _fstat_bump(suffix, added=False)
                                     else:
                                         caption = DatasetCaption(
                                             item_id=item_id_for_captions,
@@ -5048,6 +5078,7 @@ async def scan_dataset(
                                         )
                                         db.add(caption)
                                         captions_found += 1
+                                        _fstat_bump(suffix, added=True)
                         except Exception as e:
                             print(f"[Dataset Scan] Failed to read suffix caption {suffix_path}: {e}")
                 _sfx += time.time() - _ts
@@ -5236,11 +5267,13 @@ async def scan_dataset(
         print(f"[Dataset Scan] Computing tag statistics...")
         tag_statistics = await compute_tag_statistics(dataset_id, db, send_progress=True, total_steps=total_steps, current_step=total_images)
 
-    # Send final completion progress
+    # Send final completion progress (per-field breakdown; image-with-field totals
+    # are returned in the response's field_summary).
     manager.send_progress_sync(
         total_steps,
         total_steps,
-        f"Scan complete: {items_found} new, {captions_updated} updated, {items_purged} purged, {len(tag_statistics)} unique tags"
+        f"Scan complete: {items_found} new images, {items_purged} purged | "
+        f"{_fstat_msg()} | {len(tag_statistics)} unique tags"
     )
 
     # Normalize is_tags_format by majority vote per caption_type
@@ -5286,11 +5319,26 @@ async def scan_dataset(
     db.commit()
     db.refresh(dataset)
 
+    # Per-field scan summary. The two training fields (tags / caption) report
+    # updated this run, how many images currently HAVE that field, and the total
+    # image count; "other" aggregates the metadata fields (image.*, source.*,
+    # exif.*, …). total_tags/total_captions = images-with-that-field (see
+    # _dataset_caption_item_counts).
+    field_summary = {
+        "total_images": dataset.total_items,
+        "tags":    {"added": _fstats["tags_add"],  "updated": _fstats["tags_upd"],
+                    "images_with": dataset.total_tags},
+        "caption": {"added": _fstats["cap_add"],   "updated": _fstats["cap_upd"],
+                    "images_with": dataset.total_captions},
+        "other":   {"added": _fstats["other_add"], "updated": _fstats["other_upd"]},
+    }
+
     response = {
         "items_found": items_found,
         "captions_found": captions_found,
         "captions_updated": captions_updated,
         "items_purged": items_purged,
+        "field_summary": field_summary,
         "dataset": dataset.to_dict(),
     }
 

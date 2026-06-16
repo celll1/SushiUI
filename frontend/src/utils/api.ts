@@ -1733,9 +1733,25 @@ export interface StructureDetectionResult {
   };
 }
 
+export interface ScanFieldStat {
+  added: number;
+  updated: number;
+  images_with?: number;
+}
+
+export interface ScanFieldSummary {
+  total_images: number;
+  tags: ScanFieldStat;
+  caption: ScanFieldStat;
+  other: ScanFieldStat;
+}
+
 export interface DatasetScanResponse {
   items_found: number;
   captions_found: number;
+  captions_updated?: number;
+  items_purged?: number;
+  field_summary?: ScanFieldSummary;
   dataset: Dataset;
   structure_detection?: StructureDetectionResult;
 }

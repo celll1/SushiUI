@@ -119,6 +119,9 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_train_count_min_per_epoch: 10,
   danbooru_train_count_min_posts: 50,
   danbooru_train_count_collect_per_epoch: 0,
+  danbooru_quality_tag_enable: false,
+  danbooru_quality_tag_thresholds: "",
+  danbooru_quality_tag_attach_negative: false,
   danbooru_cooc_expand_enable: false,
   danbooru_cooc_min_count: 50,
   danbooru_cooc_categories: [0, 3, 4],
@@ -233,6 +236,9 @@ export default function TaggerTrainingConfig({
         danbooru_train_count_min_per_epoch: (editRun.config?.danbooru_train_count_min_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_per_epoch,
         danbooru_train_count_min_posts: (editRun.config?.danbooru_train_count_min_posts as number) ?? DEFAULT_CONFIG.danbooru_train_count_min_posts,
         danbooru_train_count_collect_per_epoch: (editRun.config?.danbooru_train_count_collect_per_epoch as number) ?? DEFAULT_CONFIG.danbooru_train_count_collect_per_epoch,
+        danbooru_quality_tag_enable: (editRun.config?.danbooru_quality_tag_enable as boolean) ?? DEFAULT_CONFIG.danbooru_quality_tag_enable,
+        danbooru_quality_tag_thresholds: (editRun.config?.danbooru_quality_tag_thresholds as string) ?? DEFAULT_CONFIG.danbooru_quality_tag_thresholds,
+        danbooru_quality_tag_attach_negative: (editRun.config?.danbooru_quality_tag_attach_negative as boolean) ?? DEFAULT_CONFIG.danbooru_quality_tag_attach_negative,
         danbooru_cooc_expand_enable: (editRun.config?.danbooru_cooc_expand_enable as boolean) ?? DEFAULT_CONFIG.danbooru_cooc_expand_enable,
         danbooru_cooc_min_count: (editRun.config?.danbooru_cooc_min_count as number) ?? DEFAULT_CONFIG.danbooru_cooc_min_count,
         danbooru_cooc_categories: (editRun.config?.danbooru_cooc_categories as number[]) ?? DEFAULT_CONFIG.danbooru_cooc_categories,
@@ -1788,6 +1794,46 @@ export default function TaggerTrainingConfig({
                       <span className="text-xs text-gray-500">
                         Per-tag per-epoch collection cap. Reset each epoch.
                       </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Score-based quality tag (applies to every collected post) */}
+              <div className="pt-2 border-t border-gray-700 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!config.danbooru_quality_tag_enable}
+                    onChange={(e) => setField("danbooru_quality_tag_enable", e.target.checked)}
+                  />
+                  <span className="text-sm text-gray-300">Add quality tag from Danbooru score</span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Derive a quality tag from each collected post&apos;s Danbooru score and add it to the
+                  label set. It trains only for tiers present in the vocabulary (others are ignored).
+                </p>
+                {config.danbooru_quality_tag_enable && (
+                  <div className="space-y-2 pl-4">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!config.danbooru_quality_tag_attach_negative}
+                        onChange={(e) => setField("danbooru_quality_tag_attach_negative", e.target.checked)}
+                      />
+                      <span className="text-xs text-gray-300">Also attach low/worst-quality tiers</span>
+                    </label>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        Thresholds — one &quot;&lt;min_score&gt; &lt;tag&gt;&quot; per line (empty = Animagine XL 3.0 default)
+                      </label>
+                      <textarea
+                        value={config.danbooru_quality_tag_thresholds ?? ""}
+                        onChange={(e) => setField("danbooru_quality_tag_thresholds", e.target.value)}
+                        rows={4}
+                        placeholder={"151 masterpiece\n100 best quality\n75 high quality\n25 medium quality\n0 normal quality\n-5 low quality\n-1000000 worst quality"}
+                        className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-xs font-mono text-white focus:outline-none focus:border-blue-500"
+                      />
                     </div>
                   </div>
                 )}

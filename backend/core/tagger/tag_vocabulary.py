@@ -20,7 +20,7 @@ CATEGORY_ORDER: List[str] = [
 
 # Quality tag groups (same as tagutl/lora.py)
 QUALITY_TAG_GROUPS: Dict[str, List[str]] = {
-    "high_quality_group": ["best quality", "high quality", "normal quality", "medium quality"],
+    "high_quality_group": ["masterpiece", "best quality", "high quality", "normal quality", "medium quality"],
     "low_quality_group":  ["low quality", "bad quality", "worst quality"],
 }
 

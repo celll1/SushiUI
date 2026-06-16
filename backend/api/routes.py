@@ -6023,6 +6023,9 @@ class TrainingRunCreateRequest(BaseModel):
     danbooru_aug_buffer_size: Optional[int] = TRAINING_DEFAULTS["danbooru_aug_buffer_size"]
     danbooru_aug_include_rating_tag: bool = TRAINING_DEFAULTS["danbooru_aug_include_rating_tag"]
     danbooru_aug_max_caption_tags: int = TRAINING_DEFAULTS["danbooru_aug_max_caption_tags"]
+    danbooru_quality_tag_enable: bool = TRAINING_DEFAULTS["danbooru_quality_tag_enable"]
+    danbooru_quality_tag_thresholds: str = TRAINING_DEFAULTS["danbooru_quality_tag_thresholds"]
+    danbooru_quality_tag_attach_negative: bool = TRAINING_DEFAULTS["danbooru_quality_tag_attach_negative"]
     danbooru_aug_shuffle_tags: bool = TRAINING_DEFAULTS["danbooru_aug_shuffle_tags"]
     danbooru_aug_shuffle_keep_first_n: int = TRAINING_DEFAULTS["danbooru_aug_shuffle_keep_first_n"]
     danbooru_aug_tag_dropout_rate: float = TRAINING_DEFAULTS["danbooru_aug_tag_dropout_rate"]
@@ -8418,6 +8421,9 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_train_count_min_posts: int = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_min_posts"]
     danbooru_train_count_collect_per_epoch: int = TAGGER_TRAINING_DEFAULTS["danbooru_train_count_collect_per_epoch"]
     danbooru_query_weight_train_count: float = TAGGER_TRAINING_DEFAULTS["danbooru_query_weight_train_count"]
+    danbooru_quality_tag_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_quality_tag_enable"]
+    danbooru_quality_tag_thresholds: str = TAGGER_TRAINING_DEFAULTS["danbooru_quality_tag_thresholds"]
+    danbooru_quality_tag_attach_negative: bool = TAGGER_TRAINING_DEFAULTS["danbooru_quality_tag_attach_negative"]
     danbooru_tags: Optional[str] = None        # newline-separated; use !tag or -tag to exclude
     danbooru_injection_interval: int = 4       # interrupt-batch every N base steps
     danbooru_injection_batch_size_ratio: float = 1.0  # 1.0=B, 0.5=B/2, etc.

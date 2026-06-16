@@ -1082,6 +1082,10 @@ export default function TaggerTrainingMonitor({
                   danbooru_train_count_min_per_epoch: "Train-count min/epoch",
                   danbooru_train_count_min_posts: "Train-count min posts",
                   danbooru_train_count_collect_per_epoch: "Train-count collect/epoch",
+                  // Score-based quality tag
+                  danbooru_quality_tag_enable: "Quality tag from score",
+                  danbooru_quality_tag_thresholds: "Quality thresholds",
+                  danbooru_quality_tag_attach_negative: "Quality attach negative",
                   // Training-F1 metrics + misc (previously unlabeled)
                   quality_masking_mode: "Quality masking",
                   save_base_model: "Save base model",
@@ -1115,6 +1119,7 @@ export default function TaggerTrainingMonitor({
                 const coocOn = Boolean(cfg.danbooru_cooc_expand_enable);
                 const queryExpandOn = Boolean(cfg.danbooru_query_expand_enable);
                 const trainCountOn = Boolean(cfg.danbooru_train_count_enable);
+                const qualityTagOn = Boolean(cfg.danbooru_quality_tag_enable);
                 const DANBOORU_DETAIL_KEYS = new Set([
                   "danbooru_tags", "danbooru_injection_interval", "danbooru_injection_batch_size_ratio",
                   "danbooru_min_score", "danbooru_max_posts_per_query", "danbooru_api_interval",
@@ -1138,6 +1143,9 @@ export default function TaggerTrainingMonitor({
                   "danbooru_train_count_top_k", "danbooru_train_count_min_deficit_ratio",
                   "danbooru_train_count_min_per_epoch", "danbooru_train_count_min_posts",
                   "danbooru_train_count_collect_per_epoch",
+                  // Score-based quality tag
+                  "danbooru_quality_tag_enable", "danbooru_quality_tag_thresholds",
+                  "danbooru_quality_tag_attach_negative",
                 ]);
                 const DANBOORU_VOCAB_KEYS = new Set([
                   "danbooru_new_tag_min_count", "danbooru_new_tag_min_count_by_cat",
@@ -1165,6 +1173,10 @@ export default function TaggerTrainingMonitor({
                   "danbooru_query_weight_train_count", "danbooru_train_count_top_k",
                   "danbooru_train_count_min_deficit_ratio", "danbooru_train_count_min_per_epoch",
                   "danbooru_train_count_min_posts", "danbooru_train_count_collect_per_epoch",
+                ]);
+                // Quality-tag sub-parameters only meaningful when the quality tag is on.
+                const DANBOORU_QUALITY_KEYS = new Set([
+                  "danbooru_quality_tag_thresholds", "danbooru_quality_tag_attach_negative",
                 ]);
                 const entries = Object.entries(CONFIG_LABELS)
                   .map(([key, label]) => ({
@@ -1194,6 +1206,7 @@ export default function TaggerTrainingMonitor({
                     if (DANBOORU_COOC_KEYS.has(key) && !coocOn) return false;
                     if (DANBOORU_QUERY_EXPAND_KEYS.has(key) && !queryExpandOn) return false;
                     if (DANBOORU_TRAIN_COUNT_KEYS.has(key) && !trainCountOn) return false;
+                    if (DANBOORU_QUALITY_KEYS.has(key) && !qualityTagOn) return false;
                     return true;
                   });
                 return (

@@ -2496,6 +2496,10 @@ def run_tagger_training(
                                         if _train_count_on else 0.0),
                     train_count_min_posts=config.get("danbooru_train_count_min_posts", 50),
                     train_count_collect_per_epoch=config.get("danbooru_train_count_collect_per_epoch", 0),
+                    # Score-based quality tag (label derived from post score).
+                    quality_tag_enable=bool(config.get("danbooru_quality_tag_enable", False)),
+                    quality_tag_thresholds=str(config.get("danbooru_quality_tag_thresholds", "") or ""),
+                    quality_tag_attach_negative=bool(config.get("danbooru_quality_tag_attach_negative", False)),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

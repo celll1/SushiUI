@@ -392,7 +392,13 @@ class DatasetCaption(DatasetBase):
 
     # Metadata
     language = Column(String, nullable=True)
-    source = Column(String, default="manual", index=True)
+    # NOTE: no index on `source` — it is effectively single-valued ("file" for
+    # every scanned caption), so an index on it is non-selective. Worse, without
+    # table stats SQLite would pick that useless index for queries like
+    # (item_id=? AND source=? AND caption_type IN (...)), turning a ~11-row
+    # item_id lookup into a full 4M-row scan (~6s/query). Filter on item_id (which
+    # IS indexed) instead.
+    source = Column(String, default="manual")
     source_field = Column(String, nullable=True)
     confidence = Column(Float, nullable=True)
 

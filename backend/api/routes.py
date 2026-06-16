@@ -4911,6 +4911,7 @@ async def scan_dataset(
                 _t_caps = time.time()
                 _jr = _sjf = _ups = 0.0  # json-read / scan_json_fields / upsert sub-times
                 _cf = _btd = _sfx = _exif = 0.0  # classify / build_tag_data / suffix / exif
+                _txr = _txq = 0.0  # .txt file read / .txt migration query
                 for caption_path in caption_files:
                     try:
                         _, ext = os.path.splitext(caption_path)
@@ -4919,7 +4920,9 @@ async def scan_dataset(
                         if ext_lower == '.txt':
                             # TXT file: Read content and detect format
                             with open(caption_path, 'r', encoding='utf-8') as f:
+                                _ts = time.time()
                                 content = f.read().strip()
+                                _txr += time.time() - _ts
                                 if content:
                                     # Detect format
                                     _ts = time.time()
@@ -4935,11 +4938,13 @@ async def scan_dataset(
                                     # fixed detector now recognising a sidecar as tags, or a repaired
                                     # sidecar — MIGRATES the same row instead of leaving a stale
                                     # natural_language row and adding a duplicate tags row.
+                                    _ts = time.time()
                                     existing_cap = db.query(DatasetCaption).filter(
                                         DatasetCaption.item_id == item_id_for_captions,
                                         DatasetCaption.source == "file",
                                         DatasetCaption.caption_type.in_(["tags", "natural_language"]),
                                     ).first()
+                                    _txq += time.time() - _ts
 
                                     if existing_cap:
                                         # Update existing (migrating caption_type if it changed)
@@ -5070,7 +5075,8 @@ async def scan_dataset(
                     _has_json = any(str(c).lower().endswith(".json") for c in caption_files)
                     print(f"[Dataset Scan][SLOW] {_item_ms:.0f}ms (caps {_caps_ms:.0f} = "
                           f"jsonRead {_jr*1000:.0f} + scanFields {_sjf*1000:.0f} + upsert {_ups*1000:.0f} + "
-                          f"classify {_cf*1000:.0f} + buildTagData {_btd*1000:.0f} + suffix {_sfx*1000:.0f} + "
+                          f"classify {_cf*1000:.0f} + buildTagData {_btd*1000:.0f} + txtRead {_txr*1000:.0f} + "
+                          f"txtQuery {_txq*1000:.0f} + suffix {_sfx*1000:.0f} + "
                           f"exif {_exif*1000:.0f}) json={_has_json} ncaps={len(caption_files)} {os.path.basename(image_path)}")
 
             except Exception as e:

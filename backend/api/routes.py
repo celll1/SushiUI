@@ -4910,6 +4910,7 @@ async def scan_dataset(
                 # Use item_id_for_captions (set above for both new and existing items)
                 _t_caps = time.time()
                 _jr = _sjf = _ups = 0.0  # json-read / scan_json_fields / upsert sub-times
+                _cf = _btd = _sfx = _exif = 0.0  # classify / build_tag_data / suffix / exif
                 for caption_path in caption_files:
                     try:
                         _, ext = os.path.splitext(caption_path)
@@ -4921,7 +4922,9 @@ async def scan_dataset(
                                 content = f.read().strip()
                                 if content:
                                     # Detect format
+                                    _ts = time.time()
                                     field_category, is_tags_format, match_rate = classify_field("tags", content, taglist)
+                                    _cf += time.time() - _ts
 
                                     # Determine caption_type based on detected format
                                     detected_caption_type = "tags" if is_tags_format else "natural_language"
@@ -4947,11 +4950,16 @@ async def scan_dataset(
                                         existing_cap.tag_match_rate = match_rate
                                         existing_cap.source = "file"
                                         existing_cap.source_field = detected_caption_type
+                                        _ts = time.time()
                                         existing_cap.tag_data = _build_tag_data_json(content) if is_tags_format else None
+                                        _btd += time.time() - _ts
                                         existing_cap.updated_at = datetime.utcnow()
                                         captions_updated += 1
                                     else:
                                         # Create new
+                                        _ts = time.time()
+                                        _td_new = _build_tag_data_json(content) if is_tags_format else None
+                                        _btd += time.time() - _ts
                                         caption = DatasetCaption(
                                             item_id=item_id_for_captions,
                                             caption_type=detected_caption_type,
@@ -4959,7 +4967,7 @@ async def scan_dataset(
                                             field_category=field_category,
                                             is_tags_format=is_tags_format,
                                             tag_match_rate=match_rate,
-                                            tag_data=_build_tag_data_json(content) if is_tags_format else None,
+                                            tag_data=_td_new,
                                             source="file",
                                             source_field=detected_caption_type
                                         )
@@ -4995,6 +5003,7 @@ async def scan_dataset(
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
 
                 # Process suffix-based caption files detected by 2-pass scanner
+                _ts = time.time()
                 if base_name in suffix_captions_by_stem:
                     for suffix, suffix_path in suffix_captions_by_stem[base_name]:
                         try:
@@ -5036,10 +5045,12 @@ async def scan_dataset(
                                         captions_found += 1
                         except Exception as e:
                             print(f"[Dataset Scan] Failed to read suffix caption {suffix_path}: {e}")
+                _sfx += time.time() - _ts
 
                 # Process EXIF-embedded captions (when read_exif is enabled). Each
                 # field is namespaced exif.<TagName> and upserted by caption_type,
                 # so the main tags/natural_language rows are never affected.
+                _ts = time.time()
                 if read_exif_enabled:
                     try:
                         for result in read_exif_captions(image_path, taglist, exif_caption_fields):
@@ -5049,6 +5060,7 @@ async def scan_dataset(
                                 captions_updated += 1
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read EXIF captions for {image_path}: {e}")
+                _exif += time.time() - _ts
 
                 # Per-item timing probe: surface which items (and which phase) stall
                 # in the live backend, since every phase is fast in isolation.
@@ -5056,9 +5068,10 @@ async def scan_dataset(
                 _item_ms = (time.time() - _t_item) * 1000
                 if _item_ms > 200:
                     _has_json = any(str(c).lower().endswith(".json") for c in caption_files)
-                    print(f"[Dataset Scan][SLOW] {_item_ms:.0f}ms (captions {_caps_ms:.0f}ms = "
-                          f"jsonRead {_jr*1000:.0f} + scanFields {_sjf*1000:.0f} + upsert {_ups*1000:.0f}) "
-                          f"json={_has_json} ncaps={len(caption_files)} {os.path.basename(image_path)}")
+                    print(f"[Dataset Scan][SLOW] {_item_ms:.0f}ms (caps {_caps_ms:.0f} = "
+                          f"jsonRead {_jr*1000:.0f} + scanFields {_sjf*1000:.0f} + upsert {_ups*1000:.0f} + "
+                          f"classify {_cf*1000:.0f} + buildTagData {_btd*1000:.0f} + suffix {_sfx*1000:.0f} + "
+                          f"exif {_exif*1000:.0f}) json={_has_json} ncaps={len(caption_files)} {os.path.basename(image_path)}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")

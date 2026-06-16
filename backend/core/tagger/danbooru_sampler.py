@@ -238,8 +238,22 @@ class DanbooruSampleBuffer:
         self._cooc_order_random = bool(cooc_order_random)
         self._cooc_active_collect = self._weight_cooc > 0 and self._cooc_collect_per_epoch > 0
         # Denormalized cooc tags to actively collect (seeded from a persisted
-        # snapshot on resume so collection continues across resumes).
-        self._cooc_active_tags: List[str] = [t for t in (initial_cooc_active_tags or []) if t]
+        # snapshot on resume so collection continues across resumes). Accepts
+        # both {tag: last_used} (current) and [tag, ...] (legacy) so the LRU
+        # recency survives resume, mirroring the dynamic/query pools.
+        _cseed = initial_cooc_active_tags or []
+        self._cooc_last_used: Dict[str, float] = {}
+        if isinstance(_cseed, dict):
+            self._cooc_active_tags: List[str] = [t for t in _cseed.keys() if t]
+            for t in self._cooc_active_tags:
+                try:
+                    self._cooc_last_used[t] = float(_cseed[t])
+                except (TypeError, ValueError):
+                    self._cooc_last_used[t] = 0.0
+        else:  # list (fresh run or legacy snapshot format)
+            self._cooc_active_tags = [t for t in _cseed if t]
+            for t in self._cooc_active_tags:
+                self._cooc_last_used[t] = 0.0  # never collected yet → collect first
         self._cooc_active_seen: Set[str] = {normalize_tag(t) for t in self._cooc_active_tags}
         # Per-tag collected count this epoch (under _cycle_lock); reset each epoch.
         self._cooc_collected: Dict[str, int] = {}
@@ -577,12 +591,13 @@ class DanbooruSampleBuffer:
                 "exhausted_tags": sorted(self._exhausted_tags),
             }
 
-    def snapshot_cooc_active_tags(self) -> List[str]:
-        """Return the cooc active-collection query list, so it can be re-seeded
-        on resume (see ``initial_cooc_active_tags``) and active collection of
-        co-occurrence-promoted tags continues across resumes."""
+    def snapshot_cooc_active_tags(self) -> Dict[str, float]:
+        """Return ``{tag: last_used}`` for the cooc active-collection list, so it
+        (and its LRU recency) can be re-seeded on resume (see
+        ``initial_cooc_active_tags``) and active collection of
+        co-occurrence-promoted tags continues evenly across resumes."""
         with self._cycle_lock:
-            return list(self._cooc_active_tags)
+            return {t: self._cooc_last_used.get(t, 0.0) for t in self._cooc_active_tags}
 
     def snapshot_query_tags(self) -> Dict[str, float]:
         """Return ``{tag: last_used}`` for the resolved Query collection pool, so
@@ -817,15 +832,23 @@ class DanbooruSampleBuffer:
                 chosen = name
                 break
 
+        # Tag selection WITHIN a path:
+        #   new_tag / query / cooc  -> LRU: pick the least-recently-collected tag
+        #     (smallest last_used) so collection spreads evenly instead of always
+        #     starting from the top of the list. last_used is updated on each
+        #     collection and persisted across resume, so the balance is preserved.
+        #   low_f1 / train_count    -> keep list order (the list is sorted worst-
+        #     first by F1 / deficit, so "from the top" is the intended priority).
+        #   static                  -> round-robin over the raw user queries.
         if chosen == "static":
             raw = self._tag_queries[static_idx % len(self._tag_queries)]
             return self._translate_query(raw), "static"
         if chosen == "query":
-            return active_query[query_idx % len(active_query)], "query"
+            return min(active_query, key=lambda t: self._query_last_used.get(t, 0.0)), "query"
         if chosen == "new_tag":
-            return active_dyn[dyn_idx % len(active_dyn)], "new_tag"
+            return min(active_dyn, key=lambda t: self._dynamic_last_used.get(t, 0.0)), "new_tag"
         if chosen == "cooc":
-            return active_cooc[cooc_idx % len(active_cooc)], "cooc"
+            return min(active_cooc, key=lambda t: self._cooc_last_used.get(t, 0.0)), "cooc"
         if chosen == "train_count":
             return active_traincount[traincount_idx % len(active_traincount)], "train_count"
         return active_lowf1[lowf1_idx % len(active_lowf1)], "low_f1"
@@ -973,6 +996,9 @@ class DanbooruSampleBuffer:
                                 # Refresh recency so the resume snapshot reflects use.
                                 self._query_last_used[query] = time.time()
                             elif kind == "cooc":
+                                # Refresh LRU recency so cooc collection spreads
+                                # evenly (and the resume snapshot reflects use).
+                                self._cooc_last_used[query] = time.time()
                                 # Per-epoch quota: once reached, exhaust the tag
                                 # for the rest of this epoch (balanced collection).
                                 _cc = self._cooc_collected.get(query, 0) + 1
@@ -1068,6 +1094,7 @@ class DanbooruSampleBuffer:
                         if _dq:
                             self._cooc_active_tags.append(_dq)
                             self._cooc_active_seen.add(_norm)
+                            self._cooc_last_used[_dq] = 0.0  # not collected yet → collect first
 
     def _process_post(self, post: dict) -> Optional[Tuple]:
         result = self._client.download_inmemory(post)

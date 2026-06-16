@@ -1555,6 +1555,7 @@ export interface Dataset {
   description?: string;
   recursive: boolean;
   read_exif: boolean;
+  exif_caption_fields?: string[] | null;
   caption_processing?: CaptionProcessingConfig;
   reference_suffixes?: string[];
   target_suffixes?: string[];
@@ -1620,6 +1621,17 @@ export const updateDatasetSuffixConfig = async (
   }
 ): Promise<Dataset> => {
   const response = await api.patch(`/datasets/${id}/suffix-config`, config);
+  return response.data;
+};
+
+export const updateDatasetExifConfig = async (
+  id: number,
+  config: {
+    read_exif?: boolean;
+    exif_caption_fields?: string[];
+  }
+): Promise<Dataset> => {
+  const response = await api.patch(`/datasets/${id}/exif-config`, config);
   return response.data;
 };
 

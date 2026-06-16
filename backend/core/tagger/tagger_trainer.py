@@ -2444,7 +2444,9 @@ def run_tagger_training(
                     if os.path.isfile(_ct_path):
                         with open(_ct_path, "r", encoding="utf-8") as _cf:
                             _cl = json.load(_cf)
-                        if isinstance(_cl, list) and len(_cl) > 0:
+                        # {tag: last_used} (current) or [tag, ...] (legacy) — the
+                        # buffer accepts both; the dict form preserves LRU recency.
+                        if isinstance(_cl, (dict, list)) and len(_cl) > 0:
                             _initial_cooc_active = _cl
                             print(f"[TaggerTraining] Restored {len(_cl)} cooc active-collection "
                                   f"queries for continued collection across resume")

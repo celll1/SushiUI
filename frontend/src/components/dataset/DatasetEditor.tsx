@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Scan, Save } from "lucide-react";
-import { getDataset, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig } from "@/utils/api";
+import { getDataset, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig, ScanFieldSummary } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
 import { wsClient } from "@/utils/websocket";
@@ -18,6 +18,7 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
   const [scanProgress, setScanProgress] = useState<number>(0);
   const [dataset, setDataset] = useState<any>(null);
   const [scanMessage, setScanMessage] = useState<string | null>(null);
+  const [scanSummary, setScanSummary] = useState<ScanFieldSummary | null>(null);
   const [activeTab, setActiveTab] = useState<"viewer" | "caption-processing">("viewer");
   const [captionConfig, setCaptionConfig] = useState<CaptionProcessingConfig>({});
   const [savingConfig, setSavingConfig] = useState(false);
@@ -80,11 +81,12 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
       const result = await scanDataset(datasetId);
       setDataset(result.dataset);
       setScanProgress(100);
-      setScanMessage(`Scan complete: ${result.items_found} items, ${result.captions_found} captions found`);
+      setScanSummary(result.field_summary || null);
+      setScanMessage(`Scan complete: ${result.items_found} new image(s)`);
       setTimeout(() => {
         setScanMessage(null);
         setScanProgress(0);
-      }, 5000);
+      }, 8000);
     } catch (err) {
       console.error("Failed to scan dataset:", err);
       setScanMessage("Scan failed. Please check console for details.");
@@ -229,6 +231,30 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
             : "bg-red-900/20 border border-red-500 text-red-400"
         }`}>
           {scanMessage}
+        </div>
+      )}
+
+      {/* Per-field scan summary */}
+      {!scanning && scanSummary && (
+        <div className="mx-4 mt-2 bg-gray-900 rounded p-3 border border-gray-700 text-xs space-y-1">
+          <div className="text-gray-300 font-medium">
+            Scan summary · {scanSummary.total_images} images
+          </div>
+          {(["tags", "caption"] as const).map((k) => (
+            <div key={k} className="flex flex-wrap gap-x-2 text-gray-400">
+              <span className="text-gray-200 capitalize w-16 shrink-0">{k}</span>
+              <span>{scanSummary[k].updated} updated</span>
+              <span>· {scanSummary[k].added} new</span>
+              <span>
+                ·{" "}
+                <span className="text-gray-200">{scanSummary[k].images_with ?? 0}</span>
+                /{scanSummary.total_images} images have {k}
+              </span>
+            </div>
+          ))}
+          <div className="text-gray-500">
+            Other fields: {scanSummary.other.updated} updated · {scanSummary.other.added} new
+          </div>
         </div>
       )}
 

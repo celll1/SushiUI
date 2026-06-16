@@ -173,6 +173,9 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   danbooru_aug_buffer_size: null,
   danbooru_aug_include_rating_tag: false,
   danbooru_aug_max_caption_tags: 0,
+  danbooru_quality_tag_enable: false,
+  danbooru_quality_tag_thresholds: "",
+  danbooru_quality_tag_attach_negative: false,
   danbooru_aug_shuffle_tags: false,
   danbooru_aug_shuffle_keep_first_n: 0,
   danbooru_aug_tag_dropout_rate: 0.0,
@@ -700,6 +703,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       danbooru_aug_buffer_size: params.danbooru_aug_buffer_size,
       danbooru_aug_include_rating_tag: params.danbooru_aug_include_rating_tag,
       danbooru_aug_max_caption_tags: params.danbooru_aug_max_caption_tags,
+      danbooru_quality_tag_enable: params.danbooru_quality_tag_enable,
+      danbooru_quality_tag_thresholds: params.danbooru_quality_tag_thresholds,
+      danbooru_quality_tag_attach_negative: params.danbooru_quality_tag_attach_negative,
       danbooru_aug_shuffle_tags: params.danbooru_aug_shuffle_tags,
       danbooru_aug_shuffle_keep_first_n: params.danbooru_aug_shuffle_keep_first_n,
       danbooru_aug_tag_dropout_rate: params.danbooru_aug_tag_dropout_rate,
@@ -838,6 +844,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_max_posts_per_query", "danbooru_aug_api_interval",
       "danbooru_aug_dl_speed_kbps", "danbooru_aug_buffer_size",
       "danbooru_aug_include_rating_tag", "danbooru_aug_max_caption_tags",
+      "danbooru_quality_tag_enable", "danbooru_quality_tag_thresholds",
+      "danbooru_quality_tag_attach_negative",
       "danbooru_aug_shuffle_tags", "danbooru_aug_shuffle_keep_first_n",
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
@@ -3924,6 +3932,42 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 />
                 <span className="text-xs text-gray-300">Include rating word in caption (general/sensitive/…)</span>
               </label>
+
+              {/* Score-based quality tag */}
+              <div className="border-t border-gray-700 pt-3 mt-1 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!params.danbooru_quality_tag_enable}
+                    onChange={(e) => updateParam("danbooru_quality_tag_enable", e.target.checked)}
+                  />
+                  <span className="text-xs text-gray-300">Add quality tag from Danbooru score</span>
+                </label>
+                {params.danbooru_quality_tag_enable && (
+                  <div className="space-y-2 pl-6">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={!!params.danbooru_quality_tag_attach_negative}
+                        onChange={(e) => updateParam("danbooru_quality_tag_attach_negative", e.target.checked)}
+                      />
+                      <span className="text-xs text-gray-300">Also attach low/worst-quality tiers</span>
+                    </label>
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        Thresholds — one <code>&lt;min_score&gt; &lt;tag&gt;</code> per line (empty = Animagine XL 3.0 default)
+                      </label>
+                      <textarea
+                        value={params.danbooru_quality_tag_thresholds ?? ""}
+                        onChange={(e) => updateParam("danbooru_quality_tag_thresholds", e.target.value)}
+                        rows={4}
+                        placeholder={"151 masterpiece\n100 best quality\n75 high quality\n25 medium quality\n0 normal quality\n-5 low quality\n-1000000 worst quality"}
+                        className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-xs font-mono focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Caption tag shuffle / dropout (dedicated — independent of the
                   per-dataset caption processing). */}

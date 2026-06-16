@@ -168,7 +168,20 @@ class DanbooruSampleBuffer:
         weight_train_count: float = 1.0,
         train_count_min_posts: int = 50,
         train_count_collect_per_epoch: int = 0,
+        quality_tag_enable: bool = False,
+        quality_tag_thresholds: str = "",
+        quality_tag_attach_negative: bool = False,
     ) -> None:
+        # Score-based quality tag: append a quality tag derived from the post's
+        # Danbooru score to the collected tag set. It becomes a positive label
+        # only for tiers present in the vocabulary (others are ignored).
+        self._quality_tag_enable = bool(quality_tag_enable)
+        self._quality_tag_attach_negative = bool(quality_tag_attach_negative)
+        if self._quality_tag_enable:
+            from .quality_score import parse_quality_thresholds
+            self._quality_thresholds = parse_quality_thresholds(quality_tag_thresholds or "")
+        else:
+            self._quality_thresholds = None
         self._tag_queries      = list(tag_queries)
         self._vocabulary       = vocabulary
         self._processor        = processor
@@ -1015,6 +1028,19 @@ class DanbooruSampleBuffer:
         if result is None:
             return None
         img_bytes, _ext, raw_tags = result
+
+        # Score-based quality tag: derive from the post's Danbooru score and add
+        # to raw_tags. It contributes to the label only when present in the vocab
+        # (label assembly already filters tags to vocab indices).
+        if self._quality_tag_enable:
+            from .quality_score import score_to_quality_tag
+            _qtag = score_to_quality_tag(
+                post.get("score"),
+                thresholds=self._quality_thresholds,
+                attach_negative=self._quality_tag_attach_negative,
+            )
+            if _qtag:
+                raw_tags = list(raw_tags) + [_qtag]
 
         # Decode image
         try:

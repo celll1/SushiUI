@@ -2015,6 +2015,9 @@ export interface TrainingRunCreateRequest {
   danbooru_aug_buffer_size?: number | null;
   danbooru_aug_include_rating_tag?: boolean;
   danbooru_aug_max_caption_tags?: number;
+  danbooru_quality_tag_enable?: boolean;
+  danbooru_quality_tag_thresholds?: string;
+  danbooru_quality_tag_attach_negative?: boolean;
   danbooru_aug_shuffle_tags?: boolean;
   danbooru_aug_shuffle_keep_first_n?: number;
   danbooru_aug_tag_dropout_rate?: number;
@@ -2713,6 +2716,10 @@ export interface TaggerTrainingRunCreateRequest {
   danbooru_train_count_min_per_epoch?: number;
   danbooru_train_count_min_posts?: number;
   danbooru_train_count_collect_per_epoch?: number;
+  // Score-based quality tag (label derived from post score)
+  danbooru_quality_tag_enable?: boolean;
+  danbooru_quality_tag_thresholds?: string;
+  danbooru_quality_tag_attach_negative?: boolean;
   // Co-occurrence vocab discovery
   danbooru_cooc_expand_enable?: boolean;
   danbooru_cooc_min_count?: number;

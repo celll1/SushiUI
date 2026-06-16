@@ -8232,6 +8232,9 @@ class BaseTrainer(ABC):
                         buffer_size=int(_bs),
                         include_rating_tag=bool(self.config.get("danbooru_aug_include_rating_tag", False)),
                         max_caption_tags=int(self.config.get("danbooru_aug_max_caption_tags", 0)),
+                        quality_tag_enable=bool(self.config.get("danbooru_quality_tag_enable", False)),
+                        quality_tag_thresholds=str(self.config.get("danbooru_quality_tag_thresholds", "") or ""),
+                        quality_tag_attach_negative=bool(self.config.get("danbooru_quality_tag_attach_negative", False)),
                     )
                     self._danbooru_collector.start()
                     print(f"{self.log_prefix} [DanbooruAug] Enabled: "

@@ -304,6 +304,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Caption construction from the post's per-category tag fields.
     "danbooru_aug_include_rating_tag": False,    # prepend rating word (general/sensitive/...)
     "danbooru_aug_max_caption_tags": 0,          # 0 = keep all tags
+    # Score-based quality tag (attach a quality tag derived from the post's
+    # Danbooru score). Default thresholds follow the Animagine XL 3.0 convention;
+    # override via danbooru_quality_tag_thresholds ("<min_score> <tag>" per line).
+    "danbooru_quality_tag_enable": False,
+    "danbooru_quality_tag_thresholds": "",       # "" = built-in Animagine XL 3.0 default
+    "danbooru_quality_tag_attach_negative": False,  # also attach low/worst-quality tiers
     # Caption tag shuffle / dropout for injected samples. SEPARATE from the
     # per-dataset caption_processing (datasets vary per run by user intent).
     # Applied per-epoch via the same processor the datasets use. All default
@@ -492,6 +498,13 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_train_count_min_posts": 50,        # min Danbooru page-1 posts to include a tag (availability)
     "danbooru_train_count_collect_per_epoch": 0, # per-tag per-epoch collection cap (0 = unlimited)
     "danbooru_query_weight_train_count": 1.0,    # weighted-path weight for the train-count path
+    # Score-based quality tag (attach a quality tag derived from the post's
+    # Danbooru score to the label set; only trains tiers present in the vocab).
+    # Default thresholds follow the Animagine XL 3.0 convention; override via
+    # danbooru_quality_tag_thresholds ("<min_score> <tag>" per line).
+    "danbooru_quality_tag_enable": False,
+    "danbooru_quality_tag_thresholds": "",       # "" = built-in Animagine XL 3.0 default
+    "danbooru_quality_tag_attach_negative": False,  # also attach low/worst-quality tiers
     # Co-occurrence vocab discovery: add vocab-absent tags that appear in
     # collected posts >= cooc_min_count times (category from the post fields,
     # filtered to danbooru_new_tag_categories). Created-at independent, so it

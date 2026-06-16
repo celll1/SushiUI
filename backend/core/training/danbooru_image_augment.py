@@ -188,6 +188,9 @@ class DanbooruImageCollector:
         buffer_size: int = 64,
         include_rating_tag: bool = False,
         max_caption_tags: int = 0,
+        quality_tag_enable: bool = False,
+        quality_tag_thresholds: str = "",
+        quality_tag_attach_negative: bool = False,
     ) -> None:
         self._static_queries = [q.strip() for q in static_queries if q.strip()]
         self._deficiency_queries = [q.strip() for q in (deficiency_queries or []) if q.strip()]
@@ -199,6 +202,14 @@ class DanbooruImageCollector:
         self._buffer_size = max(1, int(buffer_size))
         self._include_rating_tag = bool(include_rating_tag)
         self._max_caption_tags = max(0, int(max_caption_tags))
+        # Score-based quality tag (appended to the injected caption when enabled).
+        self._quality_tag_enable = bool(quality_tag_enable)
+        self._quality_tag_attach_negative = bool(quality_tag_attach_negative)
+        if self._quality_tag_enable:
+            from core.tagger.quality_score import parse_quality_thresholds
+            self._quality_thresholds = parse_quality_thresholds(quality_tag_thresholds or "")
+        else:
+            self._quality_thresholds = None
 
         self._client = DanbooruClient(api_interval=api_interval, dl_speed_kbps=dl_speed_kbps)
 
@@ -494,4 +505,17 @@ class DanbooruImageCollector:
         if self._max_caption_tags > 0 and len(tag_data) > self._max_caption_tags:
             tag_data = tag_data[: self._max_caption_tags]
             flat = flat[: self._max_caption_tags]
+        # Score-based quality tag (added AFTER truncation so it is never dropped;
+        # category "Quality" sits outside the shuffle/dropout category_order, so it
+        # stays stable at the caption end — the Animagine XL convention).
+        if self._quality_tag_enable:
+            from core.tagger.quality_score import score_to_quality_tag
+            qtag = score_to_quality_tag(
+                post.get("score"),
+                thresholds=self._quality_thresholds,
+                attach_negative=self._quality_tag_attach_negative,
+            )
+            if qtag:
+                tag_data.append({"tag": qtag, "category": "Quality"})
+                flat.append(qtag)
         return tag_data, flat

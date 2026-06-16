@@ -186,6 +186,7 @@ export default function TaggerTrainingMonitor({
   const [scatterData, setScatterData] = useState<FpFnScatterData | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [configOpen, setConfigOpen] = useState(false);  // Configuration panel collapsed by default
   const [error, setError] = useState<string | null>(null);
   // Short-window rate (last ~20 samples, ~30s of WS step events).  Used
   // as the primary iter/s display and the basis for the ETA estimate.
@@ -967,9 +968,17 @@ export default function TaggerTrainingMonitor({
               active={run.status === "running" || run.status === "starting"}
             />
 
-            {/* Configuration */}
+            {/* Configuration (collapsible — grows long with all the augmentation params) */}
             <div>
-              <div className="text-sm font-medium text-gray-300 mb-2">Configuration</div>
+              <button
+                type="button"
+                onClick={() => setConfigOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-sm font-medium text-gray-300 mb-2 hover:text-gray-100"
+              >
+                <span className="text-gray-500 text-[10px] w-3">{configOpen ? "▼" : "▶"}</span>
+                Configuration
+              </button>
+              {configOpen && (<>
               <div className="text-xs text-gray-400 bg-gray-800 rounded p-3 space-y-1">
                 <div className="flex gap-1 min-w-0">
                   <span className="text-gray-500 shrink-0">Vision encoder:</span>
@@ -1205,6 +1214,7 @@ export default function TaggerTrainingMonitor({
                   </div>
                 );
               })()}
+              </>)}
             </div>
 
             {/* Threshold F1 Curve */}

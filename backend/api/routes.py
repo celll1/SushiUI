@@ -5044,6 +5044,21 @@ async def scan_dataset(
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")
 
+            # Periodic commit: flush accumulated changes and let SQLAlchemy release
+            # them. With autoflush off and a single end-of-scan commit, every
+            # touched caption ORM object stays pinned (dirty objects are strong-refs
+            # in the unit of work) for the whole scan — so the session grows to
+            # tens of thousands of objects and per-item cost climbs (measured ~4x
+            # slower, with the growth ~11x faster for JSON sidecars that yield
+            # ~11 caption rows per image). Committing in batches keeps the working
+            # set bounded and per-item cost flat. Partial progress is committed,
+            # which also matches the cancel/skip-commits-partial behaviour.
+            if files_processed > 0 and files_processed % 300 == 0:
+                try:
+                    db.commit()
+                except Exception as _ce:
+                    print(f"[Dataset Scan] Periodic commit failed: {_ce}")
+
     # Run scan in thread pool to avoid blocking event loop (enables WebSocket progress updates)
     # SQLite is configured with check_same_thread=False, so cross-thread access is safe
     import asyncio

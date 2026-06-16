@@ -4795,6 +4795,7 @@ async def scan_dataset(
             # Use first image as primary
             image_path = main_images[0]
 
+            _t_item = time.time()
             try:
                 # --- Path-based dedup (replaces SHA256 hash + per-item DB query) ---
                 # Decide existing-vs-new BEFORE opening the image so unchanged
@@ -4907,6 +4908,7 @@ async def scan_dataset(
 
                 # Process captions (TXT/JSON files) — for both new and updated items
                 # Use item_id_for_captions (set above for both new and existing items)
+                _t_caps = time.time()
                 for caption_path in caption_files:
                     try:
                         _, ext = os.path.splitext(caption_path)
@@ -5040,6 +5042,15 @@ async def scan_dataset(
                                 captions_updated += 1
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read EXIF captions for {image_path}: {e}")
+
+                # Per-item timing probe: surface which items (and which phase) stall
+                # in the live backend, since every phase is fast in isolation.
+                _caps_ms = (time.time() - _t_caps) * 1000
+                _item_ms = (time.time() - _t_item) * 1000
+                if _item_ms > 200:
+                    _has_json = any(str(c).lower().endswith(".json") for c in caption_files)
+                    print(f"[Dataset Scan][SLOW] {_item_ms:.0f}ms (captions {_caps_ms:.0f}ms) "
+                          f"json={_has_json} ncaps={len(caption_files)} {os.path.basename(image_path)}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")

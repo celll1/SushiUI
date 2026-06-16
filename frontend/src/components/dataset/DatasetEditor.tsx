@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Scan, Save } from "lucide-react";
-import { getDataset, scanDataset, updateCaptionProcessing, CaptionProcessingConfig } from "@/utils/api";
+import { getDataset, scanDataset, updateCaptionProcessing, updateDatasetExifConfig, CaptionProcessingConfig } from "@/utils/api";
 import DatasetViewer from "./DatasetViewer";
 import CaptionProcessingSettings from "../datasets/CaptionProcessingSettings";
 import { wsClient } from "@/utils/websocket";
@@ -99,6 +99,20 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
     // TODO: Implement save
   };
 
+  const [savingExif, setSavingExif] = useState(false);
+  const handleToggleReadExif = async () => {
+    if (!dataset) return;
+    setSavingExif(true);
+    try {
+      const updated = await updateDatasetExifConfig(datasetId, { read_exif: !dataset.read_exif });
+      setDataset(updated);
+    } catch (err) {
+      console.error("Failed to update read_exif:", err);
+    } finally {
+      setSavingExif(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="bg-gray-800 rounded-lg p-6">
@@ -124,7 +138,22 @@ export default function DatasetEditor({ datasetId, onClose }: DatasetEditorProps
             <h2 className="text-base font-semibold">{dataset.name}</h2>
             <span className="text-xs text-gray-400">{dataset.total_items} items</span>
           </div>
-          <div className="flex space-x-2">
+          <div className="flex items-center space-x-2">
+            {activeTab === "viewer" && (
+              <label
+                className="flex items-center space-x-1.5 text-xs text-gray-300 cursor-pointer select-none"
+                title="Read caption fields embedded in image EXIF metadata on the next scan"
+              >
+                <input
+                  type="checkbox"
+                  checked={!!dataset.read_exif}
+                  disabled={savingExif || scanning}
+                  onChange={handleToggleReadExif}
+                  className="cursor-pointer disabled:opacity-50"
+                />
+                <span>Read EXIF</span>
+              </label>
+            )}
             {activeTab === "viewer" && (
               <button
                 onClick={handleScan}

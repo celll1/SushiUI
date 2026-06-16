@@ -428,3 +428,117 @@ def _scan_json_fields_internal(json_data: Dict[str, Any], taglist: set, prefix: 
         })
 
     return (results, found_tags_field)
+
+
+# EXIF tags that commonly carry human/tool-written captions. Used when a dataset
+# enables read_exif without specifying its own exif_caption_fields.
+_DEFAULT_EXIF_CAPTION_FIELDS = [
+    "ImageDescription", "UserComment",
+    "XPComment", "XPKeywords", "XPSubject", "XPTitle",
+    "Artist",
+]
+
+
+def _decode_exif_value(name: str, val: Any) -> str:
+    """Decode a raw EXIF tag value to text.
+
+    Handles plain ``str``, Windows ``XP*`` UTF-16LE byte arrays, and the
+    ``UserComment`` 8-byte character-code prefix. Returns ``""`` when the value
+    cannot be decoded to meaningful text.
+    """
+    if isinstance(val, str):
+        return val.replace("\x00", "").strip()
+    if isinstance(val, (tuple, list)):
+        # XP* tags sometimes arrive as a tuple of byte values.
+        try:
+            val = bytes(b & 0xFF for b in val)
+        except (TypeError, ValueError):
+            return ""
+    if isinstance(val, bytes):
+        if name.startswith("XP"):
+            try:
+                return val.decode("utf-16-le").replace("\x00", "").strip()
+            except (UnicodeDecodeError, ValueError):
+                pass
+        if name == "UserComment":
+            code, body = val[:8], val[8:]
+            try:
+                if code.startswith(b"UNICODE"):
+                    return body.decode("utf-16", "ignore").replace("\x00", "").strip()
+                if code.startswith(b"ASCII"):
+                    return body.decode("ascii", "ignore").replace("\x00", "").strip()
+            except (UnicodeDecodeError, ValueError):
+                pass
+            try:
+                return body.decode("utf-8", "ignore").replace("\x00", "").strip()
+            except (UnicodeDecodeError, ValueError):
+                return ""
+        for _enc in ("utf-8", "latin-1"):
+            try:
+                return val.decode(_enc, "ignore").replace("\x00", "").strip()
+            except (UnicodeDecodeError, ValueError):
+                continue
+        return ""
+    return str(val).strip()
+
+
+def read_exif_captions(image_path: str, taglist: set,
+                       exif_fields: List[str] = None) -> List[Dict[str, Any]]:
+    """Extract text captions embedded in an image's EXIF metadata.
+
+    Returns the same result shape as :func:`scan_json_fields`, with each
+    caption_type namespaced as ``exif.<TagName>`` so EXIF-derived captions never
+    collide with the JSON/TXT sidecar fields (in particular the single ``tags``
+    field is left untouched).
+
+    Args:
+        image_path: path to the image.
+        taglist: known-tag set for tags-vs-natural-language detection.
+        exif_fields: optional list of EXIF tag names to read; when falsy a
+            default set of caption-bearing fields is used.
+    """
+    from PIL import Image, ExifTags
+
+    wanted = set(exif_fields) if exif_fields else set(_DEFAULT_EXIF_CAPTION_FIELDS)
+    results: List[Dict[str, Any]] = []
+
+    try:
+        with Image.open(image_path) as im:
+            exif = im.getexif()
+            try:
+                exif_ifd = exif.get_ifd(ExifTags.IFD.Exif)
+            except (AttributeError, KeyError, ValueError):
+                exif_ifd = {}
+    except Exception:
+        return results
+
+    if not exif and not exif_ifd:
+        return results
+
+    id_to_name = ExifTags.TAGS
+    merged: Dict[str, Any] = {}
+    # Main IFD first, then the Exif sub-IFD (where UserComment lives) without
+    # overwriting a name already taken from the main IFD.
+    for tid, value in dict(exif).items():
+        merged[id_to_name.get(tid, str(tid))] = value
+    for tid, value in dict(exif_ifd).items():
+        merged.setdefault(id_to_name.get(tid, str(tid)), value)
+
+    for name, value in merged.items():
+        if name not in wanted:
+            continue
+        text = _decode_exif_value(name, value)
+        if not text:
+            continue
+        ctype = f"exif.{name}"
+        field_category, is_tags_format, match_rate = classify_field(ctype, text, taglist)
+        results.append({
+            "caption_type": ctype,
+            "content": text,
+            "field_category": field_category,
+            "is_tags_format": is_tags_format,
+            "tag_match_rate": match_rate,
+            "source_field": ctype,
+        })
+
+    return results

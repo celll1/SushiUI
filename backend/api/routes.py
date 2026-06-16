@@ -4096,6 +4096,38 @@ async def update_dataset_suffix_config(
     return dataset.to_dict()
 
 
+class DatasetExifConfigUpdateRequest(BaseModel):
+    read_exif: Optional[bool] = None
+    exif_caption_fields: Optional[List[str]] = None
+
+
+@router.patch("/datasets/{dataset_id}/exif-config")
+async def update_dataset_exif_config(
+    dataset_id: int,
+    request: DatasetExifConfigUpdateRequest,
+    db: Session = Depends(get_datasets_db)
+):
+    """Toggle EXIF-caption reading for a dataset (applied on the next scan).
+
+    When read_exif is on, the scan extracts embedded EXIF caption fields per
+    image (namespaced exif.<TagName>). exif_caption_fields optionally restricts
+    which EXIF tags are read; an empty list / null uses a default caption-field set.
+    """
+    dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+
+    if request.read_exif is not None:
+        dataset.read_exif = request.read_exif
+    if request.exif_caption_fields is not None:
+        # Empty list → clear (use the default field set on scan).
+        dataset.exif_caption_fields = request.exif_caption_fields or None
+
+    db.commit()
+    db.refresh(dataset)
+    return dataset.to_dict()
+
+
 # ============================================================
 # Caption Processing Presets API
 # ============================================================
@@ -4485,13 +4517,20 @@ async def scan_dataset(
 
     # Load taglist for caption format detection (once at start)
     from utils.taglist_loader import load_all_tags
-    from utils.caption_detector import classify_field, scan_json_fields
+    from utils.caption_detector import classify_field, scan_json_fields, read_exif_captions
     print(f"[Dataset Scan] Loading taglist for format detection...")
     # Gelbooru supplement + alias table improve both format detection (match rate)
     # and category resolution; graceful when taglist_gel/ is absent.
     taglist = load_all_tags(settings.root_dir, include_gelbooru=True)
     taglist_cache.initialize(settings.root_dir, enable_gelbooru=True)
     print(f"[Dataset Scan] Loaded {len(taglist)} tags for format detection")
+
+    # Read-EXIF option: when enabled, embedded EXIF caption fields are extracted
+    # per image (namespaced exif.<TagName>) alongside the TXT/JSON sidecars.
+    read_exif_enabled = bool(getattr(dataset, "read_exif", False))
+    exif_caption_fields = getattr(dataset, "exif_caption_fields", None) or None
+    if read_exif_enabled:
+        print(f"[Dataset Scan] read_exif enabled (fields={exif_caption_fields or 'default set'})")
 
     def _build_tag_data_json(content: str) -> str:
         """Build tag_data JSON string from comma-separated tag content."""
@@ -4504,6 +4543,44 @@ async def scan_dataset(
             [{"tag": t, "category": cats.get(t, "Unknown")} for t in tags],
             ensure_ascii=False,
         )
+
+    def _upsert_caption(item_id_local: int, result: dict) -> bool:
+        """Insert or update a caption row keyed by (item_id, caption_type).
+
+        Unifies JSON / EXIF field handling so a non-tags field (image.filename,
+        source.*, exif.*, …) is UPDATED in place instead of being re-added on
+        every rescan (which previously duplicated those rows). Returns True when a
+        new row was added, False when an existing row was updated.
+        """
+        ctype = result["caption_type"]
+        _is_tags = result["is_tags_format"]
+        _tag_data = _build_tag_data_json(result["content"]) if _is_tags else None
+        existing = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item_id_local,
+            DatasetCaption.caption_type == ctype,
+        ).first()
+        if existing:
+            existing.content = result["content"]
+            existing.field_category = result["field_category"]
+            existing.is_tags_format = _is_tags
+            existing.tag_match_rate = result["tag_match_rate"]
+            existing.source = "file"
+            existing.source_field = result["source_field"]
+            existing.tag_data = _tag_data
+            existing.updated_at = datetime.utcnow()
+            return False
+        db.add(DatasetCaption(
+            item_id=item_id_local,
+            caption_type=ctype,
+            content=result["content"],
+            field_category=result["field_category"],
+            is_tags_format=_is_tags,
+            tag_match_rate=result["tag_match_rate"],
+            tag_data=_tag_data,
+            source="file",
+            source_field=result["source_field"],
+        ))
+        return True
 
     # Pre-scan with 2-pass scanner: detect suffix captions + count images in one pass
     from utils.dataset_scanner import scan_directory_structure
@@ -4719,27 +4796,10 @@ async def scan_dataset(
             image_path = main_images[0]
 
             try:
-                # Read image metadata (with warning suppression for corrupt EXIF)
-                try:
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", UserWarning)
-                        with Image.open(image_path) as img:
-                            width, height = img.size
-                except Exception as img_error:
-                    # Skip images that can't be opened (corrupt, unsupported format, etc.)
-                    print(f"[Dataset Scan] Skipping corrupt/unsupported image {image_path}: {img_error}")
-                    files_processed += 1
-                    if files_processed % 10 == 0 or total_images < 100:
-                        manager.send_progress_sync(
-                            files_processed,
-                            total_steps,
-                            f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
-                        )
-                    continue
-
-                file_size = os.path.getsize(image_path)
-
                 # --- Path-based dedup (replaces SHA256 hash + per-item DB query) ---
+                # Decide existing-vs-new BEFORE opening the image so unchanged
+                # existing items skip the PIL open entirely — their dimensions are
+                # already stored. Only NEW images need to be opened for width/height.
                 existing_item_id = existing_paths.get(image_path)
                 if existing_item_id is not None:
                     # Image already registered — mark as seen (for purge logic)
@@ -4764,9 +4824,18 @@ async def scan_dataset(
                                     break
                             except OSError:
                                 pass
+                    # With read_exif on, a newer image file can itself carry updated
+                    # embedded captions — treat a newer image mtime as an update.
+                    if not any_caption_updated and read_exif_enabled:
+                        try:
+                            if os.path.getmtime(image_path) > last_scanned_ts:
+                                any_caption_updated = True
+                        except OSError:
+                            pass
 
                     if not any_caption_updated:
-                        # No changes — skip entirely
+                        # No changes — skip entirely (no Image.open: dimensions are
+                        # already stored on the existing item).
                         if files_processed % 10 == 0 or total_images < 100:
                             manager.send_progress_sync(
                                 files_processed,
@@ -4775,9 +4844,9 @@ async def scan_dataset(
                             )
                         continue
 
-                    # Caption files updated — re-process captions for this existing item
+                    # Captions updated — re-process for this existing item. No
+                    # Image.open needed (dimensions already in DB).
                     item_id_for_captions = existing_item_id
-                    # (fall through to caption processing below)
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(
                             files_processed,
@@ -4785,7 +4854,26 @@ async def scan_dataset(
                             f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new, {captions_updated} updated"
                         )
                 else:
-                    # New image — register it
+                    # New image — open it ONCE for dimensions, then register.
+                    try:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            with Image.open(image_path) as img:
+                                width, height = img.size
+                    except Exception as img_error:
+                        # Skip images that can't be opened (corrupt, unsupported, etc.)
+                        print(f"[Dataset Scan] Skipping corrupt/unsupported image {image_path}: {img_error}")
+                        files_processed += 1
+                        if files_processed % 10 == 0 or total_images < 100:
+                            manager.send_progress_sync(
+                                files_processed,
+                                total_steps,
+                                f"Scanning: {files_processed}/{total_images} images | Found: {items_found} new items, {captions_found} captions"
+                            )
+                        continue
+
+                    file_size = os.path.getsize(image_path)
+
                     # Build related_images for reference mode
                     related_images_data = {}
                     if use_reference_mode and reference_images:
@@ -4882,47 +4970,17 @@ async def scan_dataset(
                             with open(caption_path, 'r', encoding='utf-8') as f:
                                 json_data = json.load(f)
 
-                            # Scan all fields
+                            # Scan all fields. Every field (the single tags field
+                            # AND the non-tags fields) is upserted by caption_type,
+                            # so a rescan UPDATES each row in place instead of
+                            # re-adding non-tags fields (which previously duplicated
+                            # them on every scan).
                             caption_results = scan_json_fields(json_data, taglist)
-
                             for result in caption_results:
-                                caption_type = result["caption_type"]
-
-                                # Enforce single tags field per item
-                                if caption_type == "tags":
-                                    existing_tags = db.query(DatasetCaption).filter(
-                                        DatasetCaption.item_id == item_id_for_captions,
-                                        DatasetCaption.caption_type == "tags"
-                                    ).first()
-
-                                    if existing_tags:
-                                        # Update existing tags field
-                                        existing_tags.content = result["content"]
-                                        existing_tags.field_category = result["field_category"]
-                                        existing_tags.is_tags_format = result["is_tags_format"]
-                                        existing_tags.tag_match_rate = result["tag_match_rate"]
-                                        existing_tags.source = "file"
-                                        existing_tags.source_field = result["source_field"]
-                                        if result["is_tags_format"]:
-                                            existing_tags.tag_data = _build_tag_data_json(result["content"])
-                                        existing_tags.updated_at = datetime.utcnow()
-                                        continue  # Skip adding new caption
-
-                                # Create new caption (for non-tags fields or first tags field)
-                                _is_tags = result["is_tags_format"]
-                                caption = DatasetCaption(
-                                    item_id=item_id_for_captions,
-                                    caption_type=caption_type,
-                                    content=result["content"],
-                                    field_category=result["field_category"],
-                                    is_tags_format=_is_tags,
-                                    tag_match_rate=result["tag_match_rate"],
-                                    tag_data=_build_tag_data_json(result["content"]) if _is_tags else None,
-                                    source="file",
-                                    source_field=result["source_field"]
-                                )
-                                db.add(caption)
-                                captions_found += 1
+                                if _upsert_caption(item_id_for_captions, result):
+                                    captions_found += 1
+                                else:
+                                    captions_updated += 1
 
                     except Exception as e:
                         print(f"[Dataset Scan] Failed to read caption {caption_path}: {e}")
@@ -4969,6 +5027,19 @@ async def scan_dataset(
                                         captions_found += 1
                         except Exception as e:
                             print(f"[Dataset Scan] Failed to read suffix caption {suffix_path}: {e}")
+
+                # Process EXIF-embedded captions (when read_exif is enabled). Each
+                # field is namespaced exif.<TagName> and upserted by caption_type,
+                # so the main tags/natural_language rows are never affected.
+                if read_exif_enabled:
+                    try:
+                        for result in read_exif_captions(image_path, taglist, exif_caption_fields):
+                            if _upsert_caption(item_id_for_captions, result):
+                                captions_found += 1
+                            else:
+                                captions_updated += 1
+                    except Exception as e:
+                        print(f"[Dataset Scan] Failed to read EXIF captions for {image_path}: {e}")
 
             except Exception as e:
                 print(f"[Dataset Scan] Failed to process image {image_path}: {e}")

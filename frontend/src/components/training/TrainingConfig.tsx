@@ -170,6 +170,11 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   danbooru_aug_max_posts_per_query: 200,
   danbooru_aug_api_interval: 1.4,
   danbooru_aug_dl_speed_kbps: 500,
+  danbooru_speed_check_enable: true,
+  danbooru_speed_degraded_kbps: 250,
+  danbooru_speed_min_slow_streak: 8,
+  danbooru_speed_min_slow_seconds: 90,
+  danbooru_speed_cooldown_seconds: 3600,
   danbooru_aug_buffer_size: null,
   danbooru_aug_include_rating_tag: false,
   danbooru_aug_max_caption_tags: 0,
@@ -700,6 +705,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       danbooru_aug_max_posts_per_query: params.danbooru_aug_max_posts_per_query,
       danbooru_aug_api_interval: params.danbooru_aug_api_interval,
       danbooru_aug_dl_speed_kbps: params.danbooru_aug_dl_speed_kbps,
+      danbooru_speed_check_enable: params.danbooru_speed_check_enable,
+      danbooru_speed_degraded_kbps: params.danbooru_speed_degraded_kbps,
+      danbooru_speed_min_slow_streak: params.danbooru_speed_min_slow_streak,
+      danbooru_speed_min_slow_seconds: params.danbooru_speed_min_slow_seconds,
+      danbooru_speed_cooldown_seconds: params.danbooru_speed_cooldown_seconds,
       danbooru_aug_buffer_size: params.danbooru_aug_buffer_size,
       danbooru_aug_include_rating_tag: params.danbooru_aug_include_rating_tag,
       danbooru_aug_max_caption_tags: params.danbooru_aug_max_caption_tags,
@@ -842,7 +852,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_weight_deficiency", "danbooru_aug_injection_interval",
       "danbooru_aug_injection_ratio", "danbooru_aug_min_score",
       "danbooru_aug_max_posts_per_query", "danbooru_aug_api_interval",
-      "danbooru_aug_dl_speed_kbps", "danbooru_aug_buffer_size",
+      "danbooru_aug_dl_speed_kbps",
+      "danbooru_speed_check_enable", "danbooru_speed_degraded_kbps",
+      "danbooru_speed_min_slow_streak", "danbooru_speed_min_slow_seconds",
+      "danbooru_speed_cooldown_seconds",
+      "danbooru_aug_buffer_size",
       "danbooru_aug_include_rating_tag", "danbooru_aug_max_caption_tags",
       "danbooru_quality_tag_enable", "danbooru_quality_tag_thresholds",
       "danbooru_quality_tag_attach_negative",
@@ -3922,6 +3936,35 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </div>
                 <NumField label="Max caption tags (0=all)" value={params.danbooru_aug_max_caption_tags}
                   onChange={(v) => updateParam("danbooru_aug_max_caption_tags", v)} step={1} />
+              </div>
+
+              {/* Download-speed safety (throttle/ban avoidance) */}
+              <div className="border-t border-gray-700 pt-3 mt-1 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!params.danbooru_speed_check_enable}
+                    onChange={(e) => updateParam("danbooru_speed_check_enable", e.target.checked)}
+                  />
+                  <span className="text-sm text-gray-300">Download-speed safety (throttle/ban avoidance)</span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Pause collection when download speed stays degraded (Danbooru often throttles before a
+                  hard ban). Robust to transient dips — a sustained slow streak is required. Live speed and
+                  manual resume are in the metrics panel.
+                </p>
+                {params.danbooru_speed_check_enable && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <NumField label="Degraded below (KB/s)" value={params.danbooru_speed_degraded_kbps}
+                      onChange={(v) => updateParam("danbooru_speed_degraded_kbps", v)} step={1} />
+                    <NumField label="Slow streak to trip" value={params.danbooru_speed_min_slow_streak}
+                      onChange={(v) => updateParam("danbooru_speed_min_slow_streak", v)} step={1} />
+                    <NumField label="Sustained at least (s)" value={params.danbooru_speed_min_slow_seconds}
+                      onChange={(v) => updateParam("danbooru_speed_min_slow_seconds", v)} step={1} />
+                    <NumField label="Cooldown (s)" value={params.danbooru_speed_cooldown_seconds}
+                      onChange={(v) => updateParam("danbooru_speed_cooldown_seconds", v)} step={1} />
+                  </div>
+                )}
               </div>
 
               <label className="flex items-center gap-2 cursor-pointer">

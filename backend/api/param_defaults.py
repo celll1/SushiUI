@@ -300,6 +300,14 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_aug_max_posts_per_query": 200,
     "danbooru_aug_api_interval": 1.4,            # Danbooru TOS rate limit (seconds)
     "danbooru_aug_dl_speed_kbps": 500,
+    # Download-speed safety: detect sustained throttling (Danbooru throttles before
+    # a ban) and pause collection. Robust to transient dips (needs a slow streak
+    # AND sustained duration before tripping). Manual resume from the UI.
+    "danbooru_speed_check_enable": True,
+    "danbooru_speed_degraded_kbps": 250,         # below this = "slow" sample
+    "danbooru_speed_min_slow_streak": 8,         # consecutive slow downloads to trip
+    "danbooru_speed_min_slow_seconds": 90,       # ...sustained at least this long
+    "danbooru_speed_cooldown_seconds": 3600,     # pause duration on trip
     "danbooru_aug_buffer_size": None,            # None -> auto (max(32, 16 x batch_size))
     # Caption construction from the post's per-category tag fields.
     "danbooru_aug_include_rating_tag": False,    # prepend rating word (general/sensitive/...)
@@ -453,6 +461,13 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "danbooru_max_posts_per_query": 200,
     "danbooru_api_interval": 1.4,
     "danbooru_dl_speed_kbps": 500,
+    # Download-speed safety (throttle/ban avoidance): pause collection on sustained
+    # slowdown; robust to transient dips; manual resume from the UI.
+    "danbooru_speed_check_enable": True,
+    "danbooru_speed_degraded_kbps": 250,
+    "danbooru_speed_min_slow_streak": 8,
+    "danbooru_speed_min_slow_seconds": 90,
+    "danbooru_speed_cooldown_seconds": 3600,
     "danbooru_buffer_size": None,     # None → auto (2 × batch_size)
     "danbooru_vocab_expand": False,
     "danbooru_new_tag_min_count": 200,

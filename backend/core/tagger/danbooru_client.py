@@ -76,6 +76,16 @@ class DanbooruClient:
                 time.sleep(self._api_interval - elapsed)
             DanbooruClient._global_last_call = time.monotonic()
 
+    @staticmethod
+    def _record_download_timeout() -> None:
+        """Feed a timed-out/failed download to the speed monitor (a throttle
+        commonly shows up as stalls/timeouts before a hard ban)."""
+        try:
+            from .download_speed_monitor import get_speed_monitor
+            get_speed_monitor().record(0, 0.0, timed_out=True)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -300,10 +310,13 @@ class DanbooruClient:
             response = requests.get(file_url, headers=headers, timeout=60, stream=True)
             response.raise_for_status()
 
-            # Bandwidth-limited streaming download
+            # Bandwidth-limited streaming download. Track the throttle sleep
+            # separately so the speed monitor sees the *actual* network speed
+            # (bytes / non-sleeping time), not the artificially-capped rate.
             chunks: List[bytes] = []
             total_bytes = 0
             start_time = time.monotonic()
+            sleep_total = 0.0
 
             for chunk in response.iter_content(chunk_size=65536):
                 if not chunk:
@@ -315,15 +328,27 @@ class DanbooruClient:
                     elapsed = time.monotonic() - start_time
                     expected = total_bytes / self._dl_speed_bytes_per_sec
                     if expected > elapsed:
-                        time.sleep(expected - elapsed)
+                        _s = expected - elapsed
+                        time.sleep(_s)
+                        sleep_total += _s
 
             img_bytes = b"".join(chunks)
 
+            # Feed the actual network speed (excludes the throttle sleep above).
+            try:
+                from .download_speed_monitor import get_speed_monitor
+                _net = (time.monotonic() - start_time) - sleep_total
+                get_speed_monitor().record(total_bytes, _net)
+            except Exception:
+                pass
+
         except requests.exceptions.ChunkedEncodingError as exc:
             print(f"[DanbooruClient] Truncated response for post {post_id}: {exc}")
+            self._record_download_timeout()
             return None
         except requests.exceptions.RequestException as exc:
             print(f"[DanbooruClient] Download error for post {post_id}: {exc}")
+            self._record_download_timeout()
             return None
         except Exception as exc:
             print(f"[DanbooruClient] Unexpected error downloading post {post_id}: {exc}")

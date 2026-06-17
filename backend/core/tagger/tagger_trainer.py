@@ -2545,6 +2545,17 @@ def run_tagger_training(
                     quality_tag_attach_negative=bool(config.get("danbooru_quality_tag_attach_negative", False)),
                     # Mid-epoch resume: continue collection from where it stopped.
                     initial_epoch_progress=_initial_epoch_progress,
+                    # Manual-resume control channel (danbooru_control.json here).
+                    control_dir=output_dir,
+                )
+                # Configure the download-speed safety monitor (throttle/ban guard).
+                from .download_speed_monitor import get_speed_monitor
+                get_speed_monitor().configure(
+                    enabled=bool(config.get("danbooru_speed_check_enable", True)),
+                    degraded_kbps=int(config.get("danbooru_speed_degraded_kbps", 250)),
+                    min_slow_streak=int(config.get("danbooru_speed_min_slow_streak", 8)),
+                    min_slow_seconds=float(config.get("danbooru_speed_min_slow_seconds", 90)),
+                    cooldown_seconds=float(config.get("danbooru_speed_cooldown_seconds", 3600)),
                 )
                 _danbooru_buffer.start()
                 train_loader = _MixedDL(

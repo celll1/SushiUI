@@ -6220,6 +6220,11 @@ class TrainingRunCreateRequest(BaseModel):
     danbooru_aug_max_posts_per_query: int = TRAINING_DEFAULTS["danbooru_aug_max_posts_per_query"]
     danbooru_aug_api_interval: float = TRAINING_DEFAULTS["danbooru_aug_api_interval"]
     danbooru_aug_dl_speed_kbps: int = TRAINING_DEFAULTS["danbooru_aug_dl_speed_kbps"]
+    danbooru_speed_check_enable: bool = TRAINING_DEFAULTS["danbooru_speed_check_enable"]
+    danbooru_speed_degraded_kbps: int = TRAINING_DEFAULTS["danbooru_speed_degraded_kbps"]
+    danbooru_speed_min_slow_streak: int = TRAINING_DEFAULTS["danbooru_speed_min_slow_streak"]
+    danbooru_speed_min_slow_seconds: int = TRAINING_DEFAULTS["danbooru_speed_min_slow_seconds"]
+    danbooru_speed_cooldown_seconds: int = TRAINING_DEFAULTS["danbooru_speed_cooldown_seconds"]
     danbooru_aug_buffer_size: Optional[int] = TRAINING_DEFAULTS["danbooru_aug_buffer_size"]
     danbooru_aug_include_rating_tag: bool = TRAINING_DEFAULTS["danbooru_aug_include_rating_tag"]
     danbooru_aug_max_caption_tags: int = TRAINING_DEFAULTS["danbooru_aug_max_caption_tags"]
@@ -6583,6 +6588,34 @@ async def get_training_danbooru_metrics(run_id: int, db: Session = Depends(get_t
         return data
     except Exception as e:
         return {"enabled": False, "error": str(e)}
+
+
+def _write_danbooru_resume(output_dir: str) -> None:
+    """Write the manual-resume control file the collection worker polls
+    ({output_dir}/danbooru_control.json). Atomic (tmp -> replace) so the worker
+    never reads a half-written file. Works for both the in-process tagger and the
+    image-gen subprocess."""
+    import time as _time
+    ctl = {"resume_requested_at": _time.time()}
+    path = os.path.join(output_dir, "danbooru_control.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(ctl, f)
+    os.replace(tmp, path)
+
+
+@router.post("/training/runs/{run_id}/danbooru/resume")
+async def resume_training_danbooru(run_id: int, db: Session = Depends(get_training_db)):
+    """Manually resume Danbooru collection after a speed-degradation cooldown
+    (image-generation run). Clears the active cooldown on the trainer's next poll."""
+    run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Training run not found")
+    if not run.output_dir or not os.path.isdir(run.output_dir):
+        raise HTTPException(status_code=400, detail="Run output dir unavailable")
+    _write_danbooru_resume(run.output_dir)
+    return {"success": True}
+
 
 # YAML field locations for fields that don't live in process_config.train with the same name.
 # Format: field_name -> (section_path, [yaml_key])  yaml_key defaults to field_name.
@@ -8631,6 +8664,11 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     danbooru_max_posts_per_query: int = 200
     danbooru_api_interval: float = 1.4
     danbooru_dl_speed_kbps: int = 500
+    danbooru_speed_check_enable: bool = TAGGER_TRAINING_DEFAULTS["danbooru_speed_check_enable"]
+    danbooru_speed_degraded_kbps: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_degraded_kbps"]
+    danbooru_speed_min_slow_streak: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_min_slow_streak"]
+    danbooru_speed_min_slow_seconds: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_min_slow_seconds"]
+    danbooru_speed_cooldown_seconds: int = TAGGER_TRAINING_DEFAULTS["danbooru_speed_cooldown_seconds"]
     danbooru_buffer_size: Optional[int] = None  # None → auto (2 × batch_size)
     danbooru_vocab_expand: bool = False
     danbooru_new_tag_min_count: int = 200
@@ -9261,6 +9299,19 @@ def get_tagger_danbooru_metrics(
         return data
     except Exception as e:
         return {"enabled": False, "error": str(e)}
+
+
+@router.post("/tagger-training/runs/{run_id}/danbooru/resume")
+def resume_tagger_danbooru(run_id: str, training_db: Session = Depends(get_training_db)):
+    """Manually resume Danbooru collection after a speed-degradation cooldown
+    (tagger run). Clears the active cooldown on the worker's next poll."""
+    run = training_db.query(TaggerTrainingRun).filter(TaggerTrainingRun.run_id == run_id).first()
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not run.output_dir or not os.path.isdir(run.output_dir):
+        raise HTTPException(status_code=400, detail="Run output dir unavailable")
+    _write_danbooru_resume(run.output_dir)
+    return {"success": True}
 
 
 @router.get("/tagger-training/runs/{run_id}/metrics")

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getTaggerDanbooruMetrics, DanbooruAugmentationMetrics } from "@/utils/api";
+import { getTaggerDanbooruMetrics, resumeTaggerDanbooru, DanbooruAugmentationMetrics } from "@/utils/api";
+import DanbooruSpeedStatus from "../DanbooruSpeedStatus";
 
 interface Props {
   runId: string;
@@ -81,6 +82,9 @@ export default function DanbooruMetricsPanel({ runId, active }: Props) {
         <h3 className="text-sm font-semibold text-gray-200">Danbooru Augmentation</h3>
         <span className="text-xs text-gray-500">refreshed every 3s</span>
       </div>
+
+      {/* Download-speed safety (throttle detection + cooldown + manual resume) */}
+      <DanbooruSpeedStatus data={data} onResume={() => resumeTaggerDanbooru(runId)} />
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">

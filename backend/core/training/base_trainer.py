@@ -8235,6 +8235,16 @@ class BaseTrainer(ABC):
                         quality_tag_enable=bool(self.config.get("danbooru_quality_tag_enable", False)),
                         quality_tag_thresholds=str(self.config.get("danbooru_quality_tag_thresholds", "") or ""),
                         quality_tag_attach_negative=bool(self.config.get("danbooru_quality_tag_attach_negative", False)),
+                        control_dir=str(self.output_dir),
+                    )
+                    # Configure the download-speed safety monitor (throttle/ban guard).
+                    from core.tagger.download_speed_monitor import get_speed_monitor
+                    get_speed_monitor().configure(
+                        enabled=bool(self.config.get("danbooru_speed_check_enable", True)),
+                        degraded_kbps=int(self.config.get("danbooru_speed_degraded_kbps", 250)),
+                        min_slow_streak=int(self.config.get("danbooru_speed_min_slow_streak", 8)),
+                        min_slow_seconds=float(self.config.get("danbooru_speed_min_slow_seconds", 90)),
+                        cooldown_seconds=float(self.config.get("danbooru_speed_cooldown_seconds", 3600)),
                     )
                     self._danbooru_collector.start()
                     print(f"{self.log_prefix} [DanbooruAug] Enabled: "

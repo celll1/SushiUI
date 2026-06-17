@@ -2040,6 +2040,11 @@ export interface TrainingRunCreateRequest {
   danbooru_aug_max_posts_per_query?: number;
   danbooru_aug_api_interval?: number;
   danbooru_aug_dl_speed_kbps?: number;
+  danbooru_speed_check_enable?: boolean;
+  danbooru_speed_degraded_kbps?: number;
+  danbooru_speed_min_slow_streak?: number;
+  danbooru_speed_min_slow_seconds?: number;
+  danbooru_speed_cooldown_seconds?: number;
   danbooru_aug_buffer_size?: number | null;
   danbooru_aug_include_rating_tag?: boolean;
   danbooru_aug_max_caption_tags?: number;
@@ -2876,6 +2881,15 @@ export interface DanbooruAugmentationMetrics {
   train_count_unique_tags_collected?: number;
   top_train_count_tags?: DanbooruTopTag[];
   recent_posts?: DanbooruRecentPost[];
+  // Download-speed safety (throttle/ban avoidance)
+  dl_speed_check_enabled?: boolean;
+  dl_speed_current_kbps?: number;
+  dl_speed_avg_kbps?: number;
+  dl_cooldown_active?: boolean;
+  dl_cooldown_remaining_sec?: number;
+  dl_slow_streak?: number;
+  dl_cooldown_count?: number;
+  dl_cooldown_reason?: string;
   error?: string;
 }
 
@@ -2883,6 +2897,11 @@ export const getTaggerDanbooruMetrics = async (
   runId: string,
 ): Promise<DanbooruAugmentationMetrics> => {
   const response = await api.get(`/tagger-training/runs/${runId}/danbooru-metrics`);
+  return response.data;
+};
+
+export const resumeTaggerDanbooru = async (runId: string): Promise<{ success: boolean }> => {
+  const response = await api.post(`/tagger-training/runs/${runId}/danbooru/resume`);
   return response.data;
 };
 
@@ -2909,6 +2928,15 @@ export interface DanbooruImageAugMetrics {
   bucket_distribution?: Record<string, number>;
   top_tags?: DanbooruTopTag[];
   recent_posts?: DanbooruImageAugRecentPost[];
+  // Download-speed safety (throttle/ban avoidance)
+  dl_speed_check_enabled?: boolean;
+  dl_speed_current_kbps?: number;
+  dl_speed_avg_kbps?: number;
+  dl_cooldown_active?: boolean;
+  dl_cooldown_remaining_sec?: number;
+  dl_slow_streak?: number;
+  dl_cooldown_count?: number;
+  dl_cooldown_reason?: string;
   error?: string;
 }
 
@@ -2916,6 +2944,11 @@ export const getTrainingDanbooruMetrics = async (
   runId: number,
 ): Promise<DanbooruImageAugMetrics> => {
   const response = await api.get(`/training/runs/${runId}/danbooru-metrics`);
+  return response.data;
+};
+
+export const resumeTrainingDanbooru = async (runId: number): Promise<{ success: boolean }> => {
+  const response = await api.post(`/training/runs/${runId}/danbooru/resume`);
   return response.data;
 };
 

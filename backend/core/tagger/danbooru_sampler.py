@@ -172,7 +172,12 @@ class DanbooruSampleBuffer:
         quality_tag_thresholds: str = "",
         quality_tag_attach_negative: bool = False,
         initial_epoch_progress: Optional[Dict[str, Any]] = None,
+        control_dir: Optional[str] = None,
     ) -> None:
+        # Directory holding danbooru_control.json (manual resume channel). Usually
+        # the run output_dir. None disables the cross-process resume check.
+        self._control_dir = control_dir
+        self._control_seen_mtime = 0.0
         # Per-epoch collection progress restored across a mid-epoch resume.
         # {"epoch": int, "collect_count": {tag: int}, "exhausted_tags": [tag]}.
         # Applied by reset_download_cycle() only when its epoch matches, so a
@@ -507,6 +512,8 @@ class DanbooruSampleBuffer:
 
     def get_metrics(self) -> Dict[str, Any]:
         """Return a snapshot of collection metrics (thread-safe)."""
+        from .download_speed_monitor import get_speed_monitor
+        _speed_metrics = get_speed_monitor().metrics()
         # _dynamic_tags is mutated by the worker under _cycle_lock; read its
         # length under the same lock rather than racing the worker's append.
         with self._cycle_lock:
@@ -571,6 +578,7 @@ class DanbooruSampleBuffer:
                 "train_count_unique_tags_collected": len(self._train_count_tag_freq),
                 "top_train_count_tags":    [{"tag": t, "count": c} for t, c in top_train_count_tags],
                 "recent_posts":            list(self._recent_posts),
+                **_speed_metrics,
             }
 
     def snapshot_dynamic_tags(self) -> Dict[str, float]:
@@ -853,6 +861,30 @@ class DanbooruSampleBuffer:
             return active_traincount[traincount_idx % len(active_traincount)], "train_count"
         return active_lowf1[lowf1_idx % len(active_lowf1)], "low_f1"
 
+    def _check_resume_control(self, monitor) -> None:
+        """Honor a manual resume request written to the run's control file.
+
+        ``{control_dir}/danbooru_control.json`` carries ``resume_requested_at``;
+        a value newer than the last one we saw clears the active cooldown. This
+        is the cross-process channel the API endpoint uses (works for both the
+        in-process tagger and the subprocess image-gen trainer)."""
+        if not self._control_dir:
+            return
+        try:
+            path = os.path.join(self._control_dir, "danbooru_control.json")
+            if not os.path.isfile(path):
+                return
+            mt = os.path.getmtime(path)
+            if mt <= self._control_seen_mtime:
+                return
+            self._control_seen_mtime = mt
+            with open(path, "r", encoding="utf-8") as f:
+                ctl = json.load(f)
+            if ctl.get("resume_requested_at"):
+                monitor.request_resume()
+        except Exception:
+            pass
+
     def _worker(self) -> None:
         static_idx = 0
         dyn_idx = 0
@@ -860,7 +892,18 @@ class DanbooruSampleBuffer:
         cooc_idx = 0
         query_idx = 0
         traincount_idx = 0
+        from .download_speed_monitor import get_speed_monitor
+        _speed_mon = get_speed_monitor()
         while not self._stop.is_set():
+            # Speed-degradation cooldown: a sustained download slowdown (Danbooru
+            # throttling before a ban) pauses ALL collection — no API calls, no
+            # downloads — until it expires or a manual resume arrives.
+            if _speed_mon.is_in_cooldown():
+                self._check_resume_control(_speed_mon)
+                if _speed_mon.is_in_cooldown():
+                    time.sleep(5.0)
+                    continue
+
             self._refresh_dynamic_tags()
             self._refresh_low_f1_tags()
             self._refresh_train_count_tags()

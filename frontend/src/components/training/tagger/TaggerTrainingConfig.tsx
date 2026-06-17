@@ -97,6 +97,11 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   danbooru_max_posts_per_query: 200,
   danbooru_api_interval: 1.4,
   danbooru_dl_speed_kbps: 500,
+  danbooru_speed_check_enable: true,
+  danbooru_speed_degraded_kbps: 250,
+  danbooru_speed_min_slow_streak: 8,
+  danbooru_speed_min_slow_seconds: 90,
+  danbooru_speed_cooldown_seconds: 3600,
   danbooru_buffer_size: null,
   danbooru_vocab_expand: false,
   danbooru_new_tag_min_count: 200,
@@ -214,6 +219,11 @@ export default function TaggerTrainingConfig({
         danbooru_max_posts_per_query: (editRun.config?.danbooru_max_posts_per_query as number) ?? DEFAULT_CONFIG.danbooru_max_posts_per_query,
         danbooru_api_interval: (editRun.config?.danbooru_api_interval as number) ?? DEFAULT_CONFIG.danbooru_api_interval,
         danbooru_dl_speed_kbps: (editRun.config?.danbooru_dl_speed_kbps as number) ?? DEFAULT_CONFIG.danbooru_dl_speed_kbps,
+        danbooru_speed_check_enable: (editRun.config?.danbooru_speed_check_enable as boolean) ?? DEFAULT_CONFIG.danbooru_speed_check_enable,
+        danbooru_speed_degraded_kbps: (editRun.config?.danbooru_speed_degraded_kbps as number) ?? DEFAULT_CONFIG.danbooru_speed_degraded_kbps,
+        danbooru_speed_min_slow_streak: (editRun.config?.danbooru_speed_min_slow_streak as number) ?? DEFAULT_CONFIG.danbooru_speed_min_slow_streak,
+        danbooru_speed_min_slow_seconds: (editRun.config?.danbooru_speed_min_slow_seconds as number) ?? DEFAULT_CONFIG.danbooru_speed_min_slow_seconds,
+        danbooru_speed_cooldown_seconds: (editRun.config?.danbooru_speed_cooldown_seconds as number) ?? DEFAULT_CONFIG.danbooru_speed_cooldown_seconds,
         danbooru_buffer_size: (editRun.config?.danbooru_buffer_size as number | null) ?? DEFAULT_CONFIG.danbooru_buffer_size,
         danbooru_vocab_expand: (editRun.config?.danbooru_vocab_expand as boolean) ?? DEFAULT_CONFIG.danbooru_vocab_expand,
         danbooru_new_tag_min_count: (editRun.config?.danbooru_new_tag_min_count as number) ?? DEFAULT_CONFIG.danbooru_new_tag_min_count,
@@ -1270,6 +1280,43 @@ export default function TaggerTrainingConfig({
                   "Posts/tag/epoch" caps below are the cumulative per-tag limit across an epoch — effective
                   per-tag ≈ min of the two.
                 </span>
+              </div>
+
+              {/* Download-speed safety (throttle/ban avoidance) */}
+              <div className="pt-2 border-t border-gray-700 space-y-2">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={!!config.danbooru_speed_check_enable}
+                    onChange={(e) => setField("danbooru_speed_check_enable", e.target.checked)}
+                  />
+                  <span className="text-sm text-gray-300">Download-speed safety (throttle/ban avoidance)</span>
+                </label>
+                <p className="text-xs text-gray-500">
+                  Pause Danbooru collection when download speed stays degraded (Danbooru often throttles
+                  bandwidth before a hard ban). Robust to transient dips — a sustained slow streak is
+                  required before pausing. Live speed + manual resume are in the metrics panel.
+                </p>
+                {config.danbooru_speed_check_enable && (
+                  <div className="space-y-2 pl-4">
+                    {([
+                      ["Degraded below (KB/s)", "danbooru_speed_degraded_kbps", 250],
+                      ["Slow streak to trip", "danbooru_speed_min_slow_streak", 8],
+                      ["Sustained at least (s)", "danbooru_speed_min_slow_seconds", 90],
+                      ["Cooldown (s)", "danbooru_speed_cooldown_seconds", 3600],
+                    ] as const).map(([label, key, def]) => (
+                      <div key={key} className="flex items-center gap-3">
+                        <label className="text-xs text-gray-400 w-48">{label}</label>
+                        <input
+                          type="number" min={0}
+                          value={(config[key] as number) ?? def}
+                          onChange={(e) => setField(key, parseInt(e.target.value) || def)}
+                          className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center gap-3">

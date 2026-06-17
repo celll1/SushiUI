@@ -35,7 +35,9 @@ The two query paths:
 from __future__ import annotations
 
 import io
+import json
 import math
+import os
 import queue
 import random
 import threading
@@ -191,7 +193,11 @@ class DanbooruImageCollector:
         quality_tag_enable: bool = False,
         quality_tag_thresholds: str = "",
         quality_tag_attach_negative: bool = False,
+        control_dir: Optional[str] = None,
     ) -> None:
+        # Manual-resume control channel ({control_dir}/danbooru_control.json).
+        self._control_dir = control_dir
+        self._control_seen_mtime = 0.0
         self._static_queries = [q.strip() for q in static_queries if q.strip()]
         self._deficiency_queries = [q.strip() for q in (deficiency_queries or []) if q.strip()]
         self._bucket_resolutions = list(bucket_resolutions) or [(1024, 1024)]
@@ -298,6 +304,8 @@ class DanbooruImageCollector:
         return items
 
     def get_metrics(self) -> Dict[str, Any]:
+        from core.tagger.download_speed_monitor import get_speed_monitor
+        _speed_metrics = get_speed_monitor().metrics()
         with self._lock:
             buffer_current = self._ready_count
             bucket_dist = {k: len(v) for k, v in self._buckets.items()}
@@ -317,6 +325,7 @@ class DanbooruImageCollector:
                 "bucket_distribution": bucket_dist,
                 "top_tags": [{"tag": t, "count": c} for t, c in top_tags],
                 "recent_posts": list(self._recent_posts),
+                **_speed_metrics,
             }
 
     # ------------------------------------------------------------------
@@ -353,8 +362,40 @@ class DanbooruImageCollector:
             return None
         return random.choice(avail)
 
+    def _check_resume_control(self, monitor) -> None:
+        """Honor a manual resume written to ``{control_dir}/danbooru_control.json``
+        (cross-process channel used by the API resume endpoint)."""
+        if not self._control_dir:
+            return
+        try:
+            path = os.path.join(self._control_dir, "danbooru_control.json")
+            if not os.path.isfile(path):
+                return
+            mt = os.path.getmtime(path)
+            if mt <= self._control_seen_mtime:
+                return
+            self._control_seen_mtime = mt
+            with open(path, "r", encoding="utf-8") as f:
+                ctl = json.load(f)
+            if ctl.get("resume_requested_at"):
+                monitor.request_resume()
+        except Exception:
+            pass
+
     def _worker(self) -> None:
+        from core.tagger.download_speed_monitor import get_speed_monitor
+        _speed_mon = get_speed_monitor()
         while not self._stop.is_set():
+            # Speed-degradation cooldown (Danbooru throttle/ban avoidance): pause
+            # all collection until it expires or a manual resume arrives via the
+            # control file. Training continues on the local dataset meanwhile.
+            if _speed_mon.is_in_cooldown():
+                self._check_resume_control(_speed_mon)
+                if _speed_mon.is_in_cooldown():
+                    if self._stop.wait(5.0):
+                        break
+                    continue
+
             # Back off when the buffer is full — keep memory bounded.
             with self._lock:
                 full = self._ready_count >= self._buffer_size

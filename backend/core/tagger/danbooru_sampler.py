@@ -407,6 +407,15 @@ class DanbooruSampleBuffer:
         self._static_query_freq: Dict[str, int] = {}
         # Per-train-count-deficient-tag collected sample count.
         self._train_count_tag_freq: Dict[str, int] = {}
+        # Last-collected order per target tag (monotonic seq), so the UI target
+        # lists can be sorted "most recently collected first" instead of by count.
+        self._collect_seq = 0
+        self._dynamic_order: Dict[str, int] = {}
+        self._low_f1_order: Dict[str, int] = {}
+        self._cooc_order: Dict[str, int] = {}
+        self._query_order: Dict[str, int] = {}
+        self._static_order: Dict[str, int] = {}
+        self._train_count_order: Dict[str, int] = {}
         self._recent_posts: collections.deque = collections.deque(maxlen=100)
         self._total_collected = 0
         self._total_injected_batches = 0
@@ -531,13 +540,23 @@ class DanbooruSampleBuffer:
             # Most-recently promoted first; bounded snapshot for the UI.
             cooc_proposed_tags = list(reversed(self._cooc_promoted_order))
         with self._metrics_lock:
+            # "Top tags" stays count-ranked (overall collected-tag frequency).
             top_tags = sorted(self._tag_freq.items(), key=lambda x: -x[1])[:100]
-            top_dynamic_tags = sorted(self._dynamic_tag_freq.items(), key=lambda x: -x[1])[:100]
-            top_low_f1_tags = sorted(self._low_f1_tag_freq.items(), key=lambda x: -x[1])[:100]
-            top_cooc_tags = sorted(self._cooc_tag_freq.items(), key=lambda x: -x[1])[:100]
-            top_query_tags = sorted(self._query_tag_freq.items(), key=lambda x: -x[1])[:100]
-            top_static_queries = sorted(self._static_query_freq.items(), key=lambda x: -x[1])[:100]
-            top_train_count_tags = sorted(self._train_count_tag_freq.items(), key=lambda x: -x[1])[:100]
+            # Target-collection lists are ordered MOST-RECENTLY-COLLECTED FIRST
+            # (by collection sequence) so freshly-collected targets surface at the
+            # top instead of being buried under high-count older ones.
+            top_dynamic_tags = sorted(self._dynamic_tag_freq.items(),
+                                      key=lambda x: -self._dynamic_order.get(x[0], 0))[:100]
+            top_low_f1_tags = sorted(self._low_f1_tag_freq.items(),
+                                     key=lambda x: -self._low_f1_order.get(x[0], 0))[:100]
+            top_cooc_tags = sorted(self._cooc_tag_freq.items(),
+                                   key=lambda x: -self._cooc_order.get(x[0], 0))[:100]
+            top_query_tags = sorted(self._query_tag_freq.items(),
+                                    key=lambda x: -self._query_order.get(x[0], 0))[:100]
+            top_static_queries = sorted(self._static_query_freq.items(),
+                                        key=lambda x: -self._static_order.get(x[0], 0))[:100]
+            top_train_count_tags = sorted(self._train_count_tag_freq.items(),
+                                          key=lambda x: -self._train_count_order.get(x[0], 0))[:100]
             return {
                 "total_collected":         self._total_collected,
                 "total_injected_batches":  self._total_injected_batches,
@@ -1056,32 +1075,40 @@ class DanbooruSampleBuffer:
                                     self._exhausted_tags.add(query)
                         _nt = normalize_tag(query) if query else ""
                         with self._metrics_lock:
+                            self._collect_seq += 1
                             if kind == "new_tag":
                                 self._total_dynamic_collected += 1
                                 if _nt:
                                     self._dynamic_tag_freq[_nt] = self._dynamic_tag_freq.get(_nt, 0) + 1
+                                    self._dynamic_order[_nt] = self._collect_seq
                             elif kind == "query":
                                 self._total_query_collected += 1
                                 if _nt:
                                     self._query_tag_freq[_nt] = self._query_tag_freq.get(_nt, 0) + 1
+                                    self._query_order[_nt] = self._collect_seq
                             elif kind == "cooc":
                                 self._total_cooc_collected += 1
                                 if _nt:
                                     self._cooc_tag_freq[_nt] = self._cooc_tag_freq.get(_nt, 0) + 1
+                                    self._cooc_order[_nt] = self._collect_seq
                             elif kind == "train_count":
                                 self._total_train_count_collected += 1
                                 if _nt:
                                     self._train_count_tag_freq[_nt] = self._train_count_tag_freq.get(_nt, 0) + 1
+                                    self._train_count_order[_nt] = self._collect_seq
                             else:  # low_f1
                                 self._total_low_f1_collected += 1
                                 if _nt:
                                     self._low_f1_tag_freq[_nt] = self._low_f1_tag_freq.get(_nt, 0) + 1
+                                    self._low_f1_order[_nt] = self._collect_seq
                     elif kind == "static":
                         # Legacy per-query-string collection (query_expand off):
                         # count posts per query string for the UI "Queries" view.
                         with self._metrics_lock:
+                            self._collect_seq += 1
                             self._total_static_collected += 1
                             self._static_query_freq[query] = self._static_query_freq.get(query, 0) + 1
+                            self._static_order[query] = self._collect_seq
 
                 # A collected tag is exhausted for this epoch once every post it
                 # returned was already collected (pure dedup pass). Decode errors

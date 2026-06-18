@@ -81,16 +81,28 @@ def load_ideogram4_text_encoder(
     config = AutoConfig.from_pretrained(text_encoder_dir, trust_remote_code=True)
 
     # Instantiate the architecture from config so the non-persistent buffers
-    # (rotary caches) are computed. Init under the compute dtype to keep the
-    # transient CPU allocation at ~1x model size instead of the float32 default.
+    # (rotary caches) are computed. Skip the (very slow for an 8B model) random
+    # weight initialization — every param is overwritten by the FP8 load below.
+    # Init under the compute dtype to keep the transient CPU allocation at ~1x
+    # model size instead of the float32 default.
+    try:
+        from transformers.initialization import no_init_weights
+    except Exception:  # pragma: no cover - fallback for other transformers versions
+        from contextlib import nullcontext
+        def no_init_weights():
+            return nullcontext()
+
+    print("[Ideogram4TE] Building architecture (no_init_weights)...")
     default_dtype = torch.get_default_dtype()
     torch.set_default_dtype(torch_dtype)
     try:
-        model = AutoModel.from_config(config, trust_remote_code=True)
+        with no_init_weights():
+            model = AutoModel.from_config(config, trust_remote_code=True)
     finally:
         torch.set_default_dtype(default_dtype)
 
     state_dict_path = os.path.join(text_encoder_dir, "model.safetensors")
+    print("[Ideogram4TE] Reading FP8 state dict from disk...")
     state_dict = load_file(state_dict_path)
 
     if not is_fp8_state_dict(state_dict):

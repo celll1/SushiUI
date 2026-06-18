@@ -124,7 +124,7 @@ class TAESDManager:
                 self.taesd.to(self.device)
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -142,7 +142,9 @@ class TAESDManager:
         decode_start_time = time.time()
 
         # Lens: 128-ch patchified flat-sequence latent (AutoencoderKLFlux2)
-        if is_lens:
+        if is_lens or is_ideogram4:
+            # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent + 16px grid
+            # with Lens, so the same flat-sequence preview decoder applies.
             return self._decode_lens_latent_preview(latent, image_width, image_height)
 
         # Anima: 16ch Qwen-Image latent, no compatible TAE; use latent-direct preview

@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -284,6 +284,27 @@ class ModelLoader:
                         tcfg = json.load(f)
                     if "LensTransformer2DModel" in tcfg.get("architectures", []):
                         return "lens"
+                except Exception:
+                    pass
+
+            # Ideogram 4 detection (diffusers directory: Ideogram4Pipeline / Ideogram4Transformer2DModel)
+            if os.path.exists(model_index_path):
+                try:
+                    with open(model_index_path, "r") as f:
+                        idx = json.load(f)
+                    if idx.get("_class_name") == "Ideogram4Pipeline":
+                        return "ideogram4"
+                except Exception:
+                    pass
+            if os.path.exists(transformer_config_path):
+                try:
+                    with open(transformer_config_path, "r") as f:
+                        tcfg = json.load(f)
+                    # Ideogram4 single-stream DiT: unique mrope_section + llm_features_dim config keys.
+                    if tcfg.get("_class_name") == "Ideogram4Transformer2DModel" or (
+                        "mrope_section" in tcfg and "llm_features_dim" in tcfg
+                    ):
+                        return "ideogram4"
                 except Exception:
                     pass
 
@@ -1373,6 +1394,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Lens (diffusers directory)")
             return ModelLoader.load_lens_from_path(model_path, torch.bfloat16)
 
+        # Ideogram 4 diffusers directory (dual-branch DiT + Qwen3-VL + AutoencoderKLFlux2)
+        if model_type == "ideogram4":
+            print(f"[ModelLoader] Loading as Ideogram 4 (diffusers directory)")
+            return ModelLoader.load_ideogram4_from_path(model_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -1600,3 +1626,15 @@ class ModelLoader:
         """
         from core.models.lens.lens_loader import load_lens_components
         return load_lens_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_ideogram4_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load Ideogram 4 from a local diffusers directory.
+
+        Returns a component dict consumed by PipelineManager.load_model().
+        """
+        from core.models.ideogram4.ideogram4_loader import load_ideogram4_components
+        return load_ideogram4_components(model_path=path, torch_dtype=torch_dtype)

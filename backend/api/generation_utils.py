@@ -78,6 +78,7 @@ def create_progress_callback_factory(
     is_flux2: bool = False,
     is_anima: bool = False,
     is_lens: bool = False,
+    is_ideogram4: bool = False,
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
@@ -154,6 +155,7 @@ def create_progress_callback_factory(
                     is_flux2=is_flux2,
                     is_anima=is_anima,
                     is_lens=is_lens,
+                    is_ideogram4=is_ideogram4,
                     image_width=image_width,
                     image_height=image_height
                 )

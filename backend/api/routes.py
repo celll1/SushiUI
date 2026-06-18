@@ -206,6 +206,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "zimage": 14.0,
     "flux":  18.0,
     "flux2": 24.0,
+    "ideogram4": 26.0,  # two 9.3B fp8 transformers (cond + uncond) resident during denoise
     "unknown": 14.0,   # safe default
 }
 
@@ -451,6 +452,9 @@ async def generate_txt2img(
         # Lens shares the same AutoencoderKLFlux2 / 32ch latent format as FLUX.2
         is_lens = pipeline_manager.current_model_info and \
                   pipeline_manager.current_model_info.get("type") == "lens"
+        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
+        is_ideogram4 = pipeline_manager.current_model_info and \
+                       pipeline_manager.current_model_info.get("type") == "ideogram4"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -463,6 +467,7 @@ async def generate_txt2img(
             is_flux2,
             is_anima,
             is_lens=is_lens,
+            is_ideogram4=is_ideogram4,
             image_width=params.get("width"),
             image_height=params.get("height"),
             # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
@@ -470,7 +475,7 @@ async def generate_txt2img(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1130,6 +1135,9 @@ async def generate_img2img(
                    pipeline_manager.current_model_info.get("type") == "anima"
         is_lens = pipeline_manager.current_model_info and \
                   pipeline_manager.current_model_info.get("type") == "lens"
+        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
+        is_ideogram4 = pipeline_manager.current_model_info and \
+                       pipeline_manager.current_model_info.get("type") == "ideogram4"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1142,6 +1150,7 @@ async def generate_img2img(
             is_flux2,
             is_anima,
             is_lens=is_lens,
+            is_ideogram4=is_ideogram4,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
@@ -1151,7 +1160,7 @@ async def generate_img2img(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1493,6 +1502,9 @@ async def generate_inpaint(
                    pipeline_manager.current_model_info.get("type") == "anima"
         is_lens = pipeline_manager.current_model_info and \
                   pipeline_manager.current_model_info.get("type") == "lens"
+        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
+        is_ideogram4 = pipeline_manager.current_model_info and \
+                       pipeline_manager.current_model_info.get("type") == "ideogram4"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1505,6 +1517,7 @@ async def generate_inpaint(
             is_flux2,
             is_anima,
             is_lens=is_lens,
+            is_ideogram4=is_ideogram4,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
@@ -1514,7 +1527,7 @@ async def generate_inpaint(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4)
         )
@@ -1902,7 +1915,8 @@ async def get_samplers():
             pipeline_manager.is_zimage_model or
             pipeline_manager.is_flux2_model or
             pipeline_manager.is_anima_model or
-            pipeline_manager.is_lens_model
+            pipeline_manager.is_lens_model or
+            pipeline_manager.is_ideogram4_model
         )
 
         if is_flow_matching:

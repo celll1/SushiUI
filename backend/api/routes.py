@@ -3129,24 +3129,32 @@ async def siglip2_predict(request: SigLIP2PredictRequest):
             handle = gpu_coordinator.get_active_tagger_handle()
             if handle is not None:
                 _SIGLIP2_TRAIN_FALLBACK_LOGGED = False  # available again → re-arm the log
-                # Calibration for training model: borrow table from inference manager
-                # if it is loaded and use_calibration was requested.
-                _calib_table = None
-                _n_bins      = 100
-                if request.use_calibration:
-                    _mgr = get_siglip2_inference_manager()
-                    if _mgr.tag_metrics is not None:
-                        _calib_table = _mgr.tag_metrics.get("calibration_table")
-                        _nb = _mgr.tag_metrics.get("n_bins", 100)
-                        _n_bins = int(_nb) if hasattr(_nb, "__int__") else 100
+                # Borrow per-tag thresholds / calibration table / OOD reference
+                # from the loaded inference checkpoint so the training-model path
+                # supports per-tag inference and OOD detection identically to the
+                # inference model. Metrics are keyed by tag name, so a training
+                # head that has expanded beyond the checkpoint's vocab stays
+                # correct (new tags fall back to the global threshold).
+                import functools
+                _assist = get_siglip2_inference_manager().build_training_assist(
+                    want_per_tag=request.use_per_tag_threshold,
+                    want_calibration=request.use_calibration,
+                    want_ood=request.use_ood_detection,
+                )
+                _predict = functools.partial(
+                    handle.predict, image_bytes, request.threshold,
+                    assist=_assist,
+                    use_per_tag_threshold=request.use_per_tag_threshold,
+                    min_best_thr=request.min_best_thr,
+                    min_best_f1=request.min_best_f1,
+                    use_ood_detection=request.use_ood_detection,
+                    use_calibration=request.use_calibration,
+                )
 
                 # Training model is on CUDA — use it directly (it shares the GPU
                 # with the coordinator's grace period, no need for generation_slot).
                 try:
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None, handle.predict, image_bytes, request.threshold,
-                        _calib_table, _n_bins,
-                    )
+                    result = await asyncio.get_event_loop().run_in_executor(None, _predict)
                     return result
                 except RuntimeError as _e:
                     # Model was offloaded between can_predict() and predict() — fall through

@@ -20,6 +20,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 
+from core.tagger.tag_selection import (
+    select_tags,
+    ood_threshold_scale,
+    calibration_table_to_name_map,
+)
+
 
 # ---------------------------------------------------------------------------
 # Singleton accessor
@@ -747,60 +753,45 @@ class SigLIP2InferenceManager:
         if rating_items:
             rating_top  = max(rating_items,  key=lambda x: x["prob"])
 
-        # Threshold-filtered tags (exclude Quality / Rating from the main list)
-        # Filtering always uses raw_prob; display prob is in the "prob" field.
-        # OOD dynamic threshold scale factor (0 = in-dist, 1 = fully OOD).
-        # Only computed when OOD detection is active and distance is available.
-        _ood_t: float = 0.0
-        if ood_distance is not None and self.ood_ref is not None:
-            _p50 = float(self.ood_ref["p50"])
-            _p95 = float(self.ood_ref["p95"])
-            # Ramp: 0 for dist <= p95 (images in the in-dist tail get no penalty),
-            # rising to 1 at dist = p95 + 2*(p95-p50).  This avoids penalising
-            # borderline in-dist images (p50 < dist <= p95, the top-5% tail).
-            _tail = max(_p95 - _p50, 1e-6)
-            _ood_t = max(0.0, min(1.0, (ood_distance - _p95) / (2.0 * _tail)))
+        # Threshold-filtered tags (exclude Quality / Rating from the main list).
+        # Shared with the training-model path (tag_selection.select_tags) so both
+        # produce identical results. OOD dynamic threshold scale factor
+        # (0 = in-dist, 1 = fully OOD) is only non-zero when OOD detection is
+        # active and a distance is available.
+        _ood_t = (
+            ood_threshold_scale(ood_distance,
+                                float(self.ood_ref["p50"]),
+                                float(self.ood_ref["p95"]))
+            if (ood_distance is not None and self.ood_ref is not None) else 0.0
+        )
 
-        _used_best_thr = False
-        if use_per_tag_threshold and self.tag_metrics is not None:
-            import math
+        _use_ptt = bool(use_per_tag_threshold and self.tag_metrics is not None)
+        _get_metrics = None
+        if _use_ptt:
             _bthr = self.tag_metrics.get("best_thr")
             _bf1  = self.tag_metrics.get("best_f1")
             _npos = self.tag_metrics.get("n_pos")
-            filtered = []
-            for it in all_items:
-                if it["category"] in ("Quality", "Rating"):
-                    continue
-                _idx = tag_to_idx.get(it["tag"])
-                thr_t = threshold  # fallback
-                if (
-                    _idx is not None
-                    and _bthr is not None
-                    and _npos is not None
-                    and int(_npos[_idx]) >= min_samples_for_per_tag
-                    and not math.isnan(float(_bthr[_idx]))
-                ):
-                    raw_thr = float(_bthr[_idx])
-                    # Skip tag entirely if best_f1 is below minimum (unreliable detector)
-                    if _bf1 is not None and not math.isnan(float(_bf1[_idx])):
-                        if float(_bf1[_idx]) < min_best_f1:
-                            continue
-                    # Clamp best_thr to minimum to suppress noise-level FPs
-                    thr_t = max(raw_thr, min_best_thr)
-                # OOD dynamic threshold: raise threshold for Character/Copyright
-                # proportionally to how far the image is from the training distribution.
-                if _ood_t > 0.0 and it["category"] in ("Character", "Copyright"):
-                    thr_t = thr_t + _ood_t * (0.85 - thr_t)
-                if it["raw_prob"] >= thr_t:
-                    filtered.append(it)
-            _used_best_thr = True
-        else:
-            filtered = [
-                it for it in all_items
-                if it["raw_prob"] >= threshold
-                and it["category"] not in ("Quality", "Rating")
-            ]
-        filtered.sort(key=lambda x: x["prob"], reverse=True)
+
+            def _get_metrics(tag, _bthr=_bthr, _bf1=_bf1, _npos=_npos, _t2i=tag_to_idx):
+                _idx = _t2i.get(tag)
+                if _idx is None:
+                    return None
+                return (
+                    float(_bthr[_idx]) if _bthr is not None else None,
+                    float(_bf1[_idx])  if _bf1  is not None else None,
+                    float(_npos[_idx]) if _npos is not None else None,
+                )
+
+        filtered, _used_best_thr = select_tags(
+            all_items,
+            threshold=threshold,
+            use_per_tag_threshold=_use_ptt,
+            get_metrics=_get_metrics,
+            min_best_thr=min_best_thr,
+            min_best_f1=min_best_f1,
+            min_samples_for_per_tag=min_samples_for_per_tag,
+            ood_t=_ood_t,
+        )
 
         return {
             "tags":             filtered,
@@ -1334,6 +1325,54 @@ class SigLIP2InferenceManager:
         import numpy as np
         diff = emb.astype(np.float64) - self.ood_ref["mu"]
         return float(np.sqrt(max(0.0, diff @ self.ood_ref["cov_inv"] @ diff)))
+
+    def build_training_assist(
+        self,
+        *,
+        want_per_tag: bool,
+        want_calibration: bool,
+        want_ood: bool,
+    ) -> Dict[str, Any]:
+        """Vocab-agnostic metrics bundle for the live-training-model path.
+
+        ``TaggerTrainerHandle.predict`` borrows the inference checkpoint's
+        per-tag thresholds, calibration table and OOD reference so the
+        "Use training model" toggle supports per-tag inference and OOD exactly
+        like the loaded inference model. Metrics are keyed by tag NAME (not
+        index) so they stay correct even when the training head has expanded
+        beyond the inference checkpoint's vocabulary — newly-added tags simply
+        have no entry and fall back to the global threshold.
+        """
+        import numpy as np
+        name_metrics: Optional[Dict[str, Any]] = None
+        name_calibration: Optional[Dict[str, Any]] = None
+        n_bins = 100
+        if self.tag_metrics is not None and self.vocabulary is not None:
+            idx_to_tag = self.vocabulary.get("idx_to_tag", {})
+            if want_per_tag:
+                _bthr = self.tag_metrics.get("best_thr")
+                _bf1  = self.tag_metrics.get("best_f1")
+                _npos = self.tag_metrics.get("n_pos")
+                name_metrics = {
+                    tag: (
+                        float(_bthr[idx]) if _bthr is not None else None,
+                        float(_bf1[idx])  if _bf1  is not None else None,
+                        float(_npos[idx]) if _npos is not None else None,
+                    )
+                    for idx, tag in idx_to_tag.items()
+                }
+            if want_calibration:
+                _nb = self.tag_metrics.get("n_bins", 100)
+                n_bins = int(_nb) if np.ndim(_nb) == 0 else int(_nb[0])
+                name_calibration = calibration_table_to_name_map(
+                    self.tag_metrics.get("calibration_table"), idx_to_tag,
+                )
+        return {
+            "name_metrics":     name_metrics,
+            "name_calibration": name_calibration,
+            "n_bins":           n_bins,
+            "ood_ref":          self.ood_ref if want_ood else None,
+        }
 
     def build_ood_reference(
         self,

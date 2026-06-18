@@ -396,13 +396,20 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         # Block-diagonal mask from segment ids: tokens only attend within their segment. Shared by every block.
         attention_mask = (segment_ids.unsqueeze(2) == segment_ids.unsqueeze(1)).unsqueeze(1)
 
-        for block in self.layers:
+        # Optional block-swap offloader (set by pipeline.py for VRAM optimization):
+        # streams each block's weights between CPU and GPU around its forward.
+        offloader = getattr(self, "_block_offloader", None)
+        for block_idx, block in enumerate(self.layers):
+            if offloader is not None:
+                offloader.wait_for_block(block_idx)
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(
                     block, hidden_states, attention_mask, image_rotary_emb, adaln_input
                 )
             else:
                 hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input)
+            if offloader is not None:
+                offloader.submit_move_blocks_forward(block_idx)
 
         output = self.final_layer(hidden_states, conditioning=adaln_input)
 

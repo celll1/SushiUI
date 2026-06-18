@@ -7563,21 +7563,101 @@ class DiffusionPipelineManager:
         cond["neg_llm_features"] = cond["neg_llm_features"].to(dtype)
         return cond
 
-    def _ideogram4_stage_transformers(self, device: str):
-        self._ideogram4_move("transformer", device)
-        self._ideogram4_move("unconditional_transformer", device)
+    def _ideogram4_setup_block_swap(self, transformer, blocks_to_swap: int,
+                                    use_pinned_memory: bool, device: str):
+        """Attach a block-swap offloader to one Ideogram 4 transformer.
+
+        The transformer starts on CPU; the offloader keeps the first
+        (num_layers - blocks_to_swap) blocks resident on GPU and streams the rest
+        per forward. Non-block (auxiliary) modules are moved to GPU here since the
+        shared offloader only auto-moves Z-Image-named aux modules.
+        """
+        from core.memory_management import create_block_offloader_for_model
+
+        # Auxiliary modules (everything except the swappable block list) stay on GPU.
+        for name, child in transformer.named_children():
+            if name != "layers":
+                child.to(device)
+        for p in transformer.parameters(recurse=False):
+            if p.device.type != "cuda":
+                p.data = p.data.to(device)
+        for b in transformer.buffers(recurse=False):
+            if b.device.type != "cuda":
+                b.data = b.data.to(device)
+
+        offloader = create_block_offloader_for_model(
+            transformer=transformer,
+            blocks_to_swap=blocks_to_swap,
+            device=torch.device(device),
+            target_dtype=torch.bfloat16,
+            use_pinned_memory=use_pinned_memory,
+        )
+        transformer._block_offloader = offloader
+        offloader.prepare_block_devices_before_forward()
+        return offloader
+
+    def _ideogram4_stage_transformers(self, device: str, params: Optional[Dict[str, Any]] = None):
+        """Place both transformers on GPU for the denoise loop.
+
+        With block swap enabled, each transformer streams its blocks (per-model
+        offloader) instead of being fully resident, roughly halving the resident
+        footprint of the two 9.3B FP8 transformers at the cost of CPU<->GPU traffic.
+        """
+        params = params or {}
+        enable_block_swap = bool(params.get("enable_block_swap", False))
+        num_layers = len(self.ideogram4_components["transformer"].layers)
+        blocks_to_swap = int(params.get("blocks_to_swap", 20))
+        blocks_to_swap = max(0, min(blocks_to_swap, num_layers - 1))
+        use_pinned_memory = bool(params.get("use_pinned_memory", False))
+
+        self._ideogram4_offloaders = []
+        if enable_block_swap and blocks_to_swap > 0:
+            print(f"[Ideogram4] Block swap enabled: {blocks_to_swap}/{num_layers} blocks per transformer "
+                  f"(pinned_memory={use_pinned_memory})")
+            for comp_name in ("transformer", "unconditional_transformer"):
+                t = self.ideogram4_components[comp_name]
+                off = self._ideogram4_setup_block_swap(t, blocks_to_swap, use_pinned_memory, device)
+                self._ideogram4_offloaders.append((comp_name, off))
+        else:
+            self._ideogram4_move("transformer", device)
+            self._ideogram4_move("unconditional_transformer", device)
         return (
             self.ideogram4_components["transformer"],
             self.ideogram4_components["unconditional_transformer"],
         )
 
     def _ideogram4_unstage_transformers(self):
+        # Tear down any block-swap offloaders, then return both transformers to CPU.
+        offloaders = getattr(self, "_ideogram4_offloaders", [])
+        for comp_name, off in offloaders:
+            t = self.ideogram4_components.get(comp_name)
+            if t is not None and hasattr(t, "_block_offloader"):
+                try:
+                    delattr(t, "_block_offloader")
+                except Exception:
+                    pass
+            cleanup = getattr(off, "cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+        self._ideogram4_offloaders = []
         self._ideogram4_move("transformer", "cpu")
         self._ideogram4_move("unconditional_transformer", "cpu")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     def _ideogram4_cleanup(self):
+        # Strip any leftover block-swap offloaders (e.g. if setup raised mid-way).
+        for _comp in ("transformer", "unconditional_transformer"):
+            t = (self.ideogram4_components or {}).get(_comp)
+            if t is not None and hasattr(t, "_block_offloader"):
+                try:
+                    delattr(t, "_block_offloader")
+                except Exception:
+                    pass
+        self._ideogram4_offloaders = []
         for _comp in ("text_encoder", "transformer", "unconditional_transformer", "vae"):
             try:
                 self._ideogram4_move(_comp, "cpu")
@@ -7615,7 +7695,7 @@ class DiffusionPipelineManager:
             )
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
-            transformer, uncond_transformer = self._ideogram4_stage_transformers(device)
+            transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             try:
                 latents = denoise_loop(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -7681,7 +7761,7 @@ class DiffusionPipelineManager:
                 torch.cuda.empty_cache()
 
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
-            transformer, uncond_transformer = self._ideogram4_stage_transformers(device)
+            transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             try:
                 latents = denoise_loop_img2img(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -7762,7 +7842,7 @@ class DiffusionPipelineManager:
             )
 
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
-            transformer, uncond_transformer = self._ideogram4_stage_transformers(device)
+            transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             try:
                 latents = denoise_loop_inpaint(
                     transformer=transformer, unconditional_transformer=uncond_transformer,

@@ -166,6 +166,8 @@ def _get_text_encoder_hidden_states(
     pos_2d: torch.Tensor,
 ) -> List[torch.Tensor]:
     """Run the Qwen3-VL decoder layers, returning hidden states at each activation layer."""
+    import inspect
+
     from transformers.masking_utils import create_causal_mask
 
     language_model = text_encoder.language_model
@@ -176,13 +178,22 @@ def _get_text_encoder_hidden_states(
     text_position_ids = position_ids_4d[0]
     mrope_position_ids = position_ids_4d[1:]
 
-    causal_mask = create_causal_mask(
-        config=language_model.config,
-        inputs_embeds=inputs_embeds,
-        attention_mask=attention_mask,
-        past_key_values=None,
-        position_ids=text_position_ids,
-    )
+    # create_causal_mask's signature differs across transformers versions
+    # (`input_embeds` vs `inputs_embeds`, and a required `cache_position` in 5.x).
+    mask_params = inspect.signature(create_causal_mask).parameters
+    emb_key = "input_embeds" if "input_embeds" in mask_params else "inputs_embeds"
+    mask_kwargs = {
+        "config": language_model.config,
+        emb_key: inputs_embeds,
+        "attention_mask": attention_mask,
+        "past_key_values": None,
+        "position_ids": text_position_ids,
+    }
+    if "cache_position" in mask_params:
+        mask_kwargs["cache_position"] = torch.arange(
+            inputs_embeds.shape[1], device=inputs_embeds.device
+        )
+    causal_mask = create_causal_mask(**mask_kwargs)
     position_embeddings = language_model.rotary_emb(inputs_embeds, mrope_position_ids)
 
     tap_set = set(QWEN3_VL_ACTIVATION_LAYERS)

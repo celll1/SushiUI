@@ -291,30 +291,17 @@ export default function ModelLoader({ onStatusChange }: ModelLoaderProps) {
         />
       </div>
 
-      {/* LoRA params */}
+      {/* LoRA params — auto-detected from the checkpoint, not user-entered */}
       {modelType === "lora" && (
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className={labelCls}>LoRA Rank</label>
-            <input
-              type="number"
-              min={1}
-              value={loraRank}
-              onChange={(e) => setLoraRank(parseInt(e.target.value) || 32)}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>LoRA Alpha</label>
-            <input
-              type="number"
-              min={0.1}
-              step={0.5}
-              value={loraAlpha}
-              onChange={(e) => setLoraAlpha(parseFloat(e.target.value) || 16)}
-              className={inputCls}
-            />
-          </div>
+        <div className="text-xs text-gray-500 bg-gray-800/50 rounded px-2 py-1.5">
+          {metaStatus === "found" ? (
+            <>LoRA rank <span className="text-gray-300 font-mono">{loraRank}</span> · alpha{" "}
+              <span className="text-gray-300 font-mono">{loraAlpha}</span>{" "}
+              <span className="text-gray-600">(from metadata)</span></>
+          ) : (
+            <>Rank / alpha are auto-detected from the checkpoint on load (metadata, or
+              the weight shapes; alpha falls back to rank/2).</>
+          )}
         </div>
       )}
 

@@ -803,8 +803,30 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             if num_tags is None:
                 raise ValueError("num_tags must be provided or present in metadata")
 
-        lora_rank  = metadata.get("lora_rank",  lora_rank)
-        lora_alpha = metadata.get("lora_alpha", lora_alpha)
+        saved = load_file(checkpoint_path)
+
+        # Resolve LoRA rank / alpha so callers (e.g. the inference UI) never have
+        # to supply them. Priority:
+        #   rank:  metadata > inferred from saved lora_A shape > passed-in default
+        #   alpha: metadata > rank/2 fallback (the conventional scale=0.5)
+        # SushiUI checkpoints always carry metadata; foreign LoRAs are read from
+        # the weight shapes. The injected rank MUST match the saved tensors or the
+        # copy_ below raises, so inference here is what makes loading robust.
+        if "lora_rank" in metadata:
+            lora_rank = int(metadata["lora_rank"])
+        else:
+            _first_A = next((v for k, v in saved.items() if k.endswith(".lora_A")), None)
+            if _first_A is not None:
+                lora_rank = int(_first_A.shape[1])  # lora_A: [in_features, rank]
+                print(f"[SigLIP2TaggerLoRAModel] lora_rank not in metadata; "
+                      f"inferred {lora_rank} from weight shapes")
+        if "lora_alpha" in metadata:
+            lora_alpha = float(metadata["lora_alpha"])
+        else:
+            lora_alpha = float(lora_rank) / 2.0
+            print(f"[SigLIP2TaggerLoRAModel] lora_alpha not in metadata; "
+                  f"defaulting to rank/2 = {lora_alpha}")
+
         repo_id    = metadata.get("vision_encoder_repo", SIGLIP2_DEFAULT_REPO_ID)
         is_naflex  = metadata.get("is_naflex", True)
 
@@ -817,7 +839,6 @@ class SigLIP2TaggerLoRAModel(nn.Module):
             is_naflex=is_naflex,
         )
 
-        saved = load_file(checkpoint_path)
         model.head.weight.data.copy_(saved["head.weight"])
         model.head.bias.data.copy_(saved["head.bias"])
 

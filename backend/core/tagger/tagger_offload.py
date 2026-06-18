@@ -247,17 +247,32 @@ class TaggerTrainerHandle:
         self,
         image_bytes: bytes,
         threshold: float,
-        calibration_table: "Optional[np.ndarray]" = None,
-        n_bins: int = 100,
+        *,
+        assist: "Optional[dict]" = None,
+        use_per_tag_threshold: bool = False,
+        min_best_thr: float = 0.30,
+        min_best_f1: float = 0.05,
+        min_samples_for_per_tag: int = 5,
+        use_ood_detection: bool = False,
+        use_calibration: bool = False,
     ) -> dict:
         """Run inference with the training model (eval mode, no_grad).
 
-        Returns the same dict shape as SigLIP2InferenceManager.predict():
-          { "tags": [...], "scores": {tag: score}, "source": "training_model",
-            "calibrated": bool }
+        Returns the same dict shape as ``SigLIP2InferenceManager.predict()`` —
+        including ``used_best_thr``, ``ood_distance``, ``has_calibration`` and
+        per-tag ``raw_prob`` / ``cal_prob`` — so the "Use training model" toggle
+        supports per-tag thresholds and OOD detection identically to the loaded
+        inference model.
 
-        When calibration_table [V, K] is provided, sigmoid probs are replaced
-        with calibrated posteriors before threshold filtering.
+        *assist* is the vocab-agnostic metrics bundle produced by
+        ``SigLIP2InferenceManager.build_training_assist()`` (name-keyed per-tag
+        metrics, name-keyed calibration table, n_bins, OOD reference). All
+        lookups are by tag NAME so they apply correctly even when the live
+        training head has expanded beyond the inference checkpoint's vocabulary.
+
+        Note: the OOD reference embedding space is the inference checkpoint's;
+        the live training model's pooled embeddings drift from it as training
+        progresses, so the training-model OOD distance is approximate.
 
         Raises RuntimeError if the model is not on CUDA (offloaded).
         """
@@ -266,10 +281,15 @@ class TaggerTrainerHandle:
                                "(not attached or currently offloaded to CPU/disk)")
 
         import io
-        import numpy as np
         from PIL import Image as PILImage
+        from core.tagger.tag_selection import (
+            select_tags, ood_threshold_scale, mahalanobis,
+            apply_calibration_by_name,
+        )
 
-        vocab = self._vocabulary
+        vocab    = self._vocabulary
+        _assist  = assist or {}
+        _ood_ref = _assist.get("ood_ref") if use_ood_detection else None
 
         pil_img = PILImage.open(io.BytesIO(image_bytes)).convert("RGB")
         inputs = self._processor(images=[pil_img], return_tensors="pt")
@@ -277,53 +297,96 @@ class TaggerTrainerHandle:
         inputs = {k: v.to(device) for k, v in inputs.items()
                   if isinstance(v, torch.Tensor)}
 
+        # OOD: capture the CLS embedding (classification-head input) via a
+        # transient forward_pre_hook, mirroring the inference manager's hook.
+        _cap: dict = {}
+        _hook = None
+        if _ood_ref is not None and hasattr(self._model, "head"):
+            def _capture_cls_emb(module, args):
+                e = args[0].detach().float().cpu()
+                if e.dim() > 1:
+                    e = e[0]
+                _cap["emb"] = e.numpy()
+            _hook = self._model.head.register_forward_pre_hook(_capture_cls_emb)
+
         self._model.eval()
-        with torch.no_grad():
-            logits = self._model(**inputs)  # [1, V]
-            probs = torch.sigmoid(logits[0]).cpu().float().numpy()  # [V]
+        try:
+            with torch.no_grad():
+                logits = self._model(**inputs)  # [1, V]
+                probs = torch.sigmoid(logits[0]).cpu().float().numpy()  # [V]
+        finally:
+            if _hook is not None:
+                _hook.remove()
 
-        # Apply calibration table if provided
-        calibrated = False
-        if calibration_table is not None:
-            try:
-                bin_idx = np.clip(
-                    (probs * n_bins).astype(np.int32), 0, n_bins - 1
-                )
-                cal = calibration_table[np.arange(len(probs)), bin_idx].astype(np.float32)
-                nan_mask = np.isnan(cal)
-                if nan_mask.any():
-                    cal[nan_mask] = probs[nan_mask]
-                probs = cal
-                calibrated = True
-            except Exception:
-                pass  # fall back to raw probs silently
+        idx_to_tag = vocab.idx_to_tag
+        tag_to_cat = vocab.tag_to_category
 
-        filtered = []
-        quality_items = []
-        rating_items  = []
-        for idx, score in enumerate(probs):
-            tag = vocab.idx_to_tag.get(idx)
+        # Calibration (name-keyed so a vocab-expanded head stays aligned).
+        cal_probs = apply_calibration_by_name(
+            probs, idx_to_tag, _assist.get("name_calibration"),
+            int(_assist.get("n_bins", 100)),
+        )
+        raw_probs = probs
+        _calibrated = False
+        if cal_probs is not None and use_calibration:
+            raw_probs = cal_probs
+            _calibrated = True
+
+        # Build the full item list (Quality/Rating handled separately below).
+        all_items = []
+        for i in range(len(raw_probs)):
+            tag = idx_to_tag.get(i)
             if tag is None:
                 continue
-            score_f = float(score)
-            category = vocab.tag_to_category.get(tag, "General")
-            if category == "Quality":
-                quality_items.append({"tag": tag, "prob": score_f, "category": category})
-            elif category == "Rating":
-                rating_items.append({"tag": tag, "prob": score_f, "category": category})
-            elif score_f >= threshold:
-                filtered.append({"tag": tag, "prob": score_f, "category": category})
+            category = tag_to_cat.get(tag, "General")
+            item = {
+                "tag":      tag,
+                "prob":     float(raw_probs[i]),
+                "raw_prob": float(raw_probs[i]),
+                "category": category,
+            }
+            if cal_probs is not None:
+                item["cal_prob"] = float(cal_probs[i])
+            all_items.append(item)
 
-        filtered.sort(key=lambda x: x["prob"], reverse=True)
+        quality_items = [it for it in all_items if it["category"] == "Quality"]
+        rating_items  = [it for it in all_items if it["category"] == "Rating"]
         quality_top = max(quality_items, key=lambda x: x["prob"]) if quality_items else None
         rating_top  = max(rating_items,  key=lambda x: x["prob"]) if rating_items  else None
 
+        # OOD distance + dynamic threshold scale.
+        ood_distance = None
+        if _ood_ref is not None and "emb" in _cap:
+            ood_distance = mahalanobis(_cap["emb"], _ood_ref["mu"], _ood_ref["cov_inv"])
+        ood_t = (
+            ood_threshold_scale(ood_distance, float(_ood_ref["p50"]), float(_ood_ref["p95"]))
+            if (ood_distance is not None and _ood_ref is not None) else 0.0
+        )
+
+        _name_metrics = _assist.get("name_metrics")
+        _use_ptt = bool(use_per_tag_threshold and _name_metrics)
+        _get_metrics = (lambda tag: _name_metrics.get(tag)) if _use_ptt else None
+
+        filtered, used_best_thr = select_tags(
+            all_items,
+            threshold=threshold,
+            use_per_tag_threshold=_use_ptt,
+            get_metrics=_get_metrics,
+            min_best_thr=min_best_thr,
+            min_best_f1=min_best_f1,
+            min_samples_for_per_tag=min_samples_for_per_tag,
+            ood_t=ood_t,
+        )
+
         return {
-            "tags":          filtered,
-            "quality_top":   quality_top,
-            "rating_top":    rating_top,
-            "num_predicted": len(filtered),
-            "source":        "training_model",
-            "run_id":        self.run_id,
-            "calibrated":    calibrated,
+            "tags":            filtered,
+            "quality_top":     quality_top,
+            "rating_top":      rating_top,
+            "num_predicted":   len(filtered),
+            "source":          "training_model",
+            "run_id":          self.run_id,
+            "calibrated":      _calibrated,
+            "has_calibration": cal_probs is not None,
+            "used_best_thr":   used_best_thr,
+            "ood_distance":    ood_distance,
         }

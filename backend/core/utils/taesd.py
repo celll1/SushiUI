@@ -142,9 +142,12 @@ class TAESDManager:
         decode_start_time = time.time()
 
         # Lens: 128-ch patchified flat-sequence latent (AutoencoderKLFlux2)
-        if is_lens or is_ideogram4:
-            # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent + 16px grid
-            # with Lens, so the same flat-sequence preview decoder applies.
+        if is_ideogram4:
+            # Same AutoencoderKLFlux2 latent space as Lens, but the 128 channels are
+            # packed in a different order (p1, p2, channel) — use the matching decoder.
+            return self._decode_ideogram4_latent_preview(latent, image_width, image_height)
+
+        if is_lens:
             return self._decode_lens_latent_preview(latent, image_width, image_height)
 
         # Anima: 16ch Qwen-Image latent, no compatible TAE; use latent-direct preview
@@ -288,6 +291,58 @@ class TAESDManager:
                 return preview
         except Exception as e:
             self._log_decode_error("Lens", e)
+            return None
+
+    def _decode_ideogram4_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+        """Decode Ideogram 4 flat-sequence latent [B, N, 128] to preview image.
+
+        Ideogram 4 shares the AutoencoderKLFlux2 latent space with Lens but packs
+        the 128 channels in a different order: Lens is [channel=32, p1, p2] while
+        Ideogram 4 is [p1, p2, channel=32] (matches ideogram4 vae_decode /
+        the reference unpatchify). Using the Lens order produces grid-striped
+        previews, so unpatchify here mirrors the Ideogram 4 layout.
+        """
+        try:
+            with torch.no_grad():
+                latent = latent.cpu().to(torch.float32)
+
+                if latent.ndim != 3:
+                    return None
+
+                batch_size, num_tokens, channels = latent.shape
+                if channels != 128:
+                    return None
+
+                # Ideogram 4 uses a 16px grid (VAE 8x * 2x2 patch); divide-by-16.
+                if image_width is not None and image_height is not None:
+                    latent_h = (round(image_height / 16))
+                    latent_w = (round(image_width / 16))
+                    if latent_h * latent_w != num_tokens:
+                        latent_h, latent_w = self._find_best_factors(num_tokens)
+                else:
+                    latent_h, latent_w = self._find_best_factors(num_tokens)
+
+                # [B, N, 128] -> [B, 32, lh*2, lw*2] with 128 ordered (p1, p2, channel).
+                # Mirrors ideogram4 vae_decode: view(B, gh, gw, p, p, c).permute(0,5,1,3,2,4).
+                z = latent.view(batch_size, latent_h, latent_w, 2, 2, 32)
+                z = z.permute(0, 5, 1, 3, 2, 4)
+                z = z.reshape(batch_size, 32, latent_h * 2, latent_w * 2)
+
+                rgb_factors = torch.tensor(self._FLUX2_LATENT_RGB_FACTORS, dtype=z.dtype)
+                rgb_bias = torch.tensor(self._FLUX2_LATENT_RGB_BIAS, dtype=z.dtype)
+                rgb = torch.einsum('bchw,cn->bnhw', z, rgb_factors) + rgb_bias.view(1, 3, 1, 1)
+                rgb = rgb[0]
+                rgb = (rgb.clamp(-1.0, 1.0) + 1.0) / 2.0
+                rgb_np = (rgb.permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
+
+                preview = Image.fromarray(rgb_np, mode='RGB')
+                preview = preview.resize(
+                    (preview.width * 8, preview.height * 8),
+                    Image.Resampling.BILINEAR,
+                )
+                return preview
+        except Exception as e:
+            self._log_decode_error("Ideogram4", e)
             return None
 
     def _decode_flux2_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:

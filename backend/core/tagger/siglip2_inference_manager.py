@@ -215,6 +215,51 @@ def _read_metadata(checkpoint_path: str) -> dict:
     return {}
 
 
+def _filter_tag_metrics_npz(
+    src_path: str,
+    dst_path: str,
+    keep_indices: "list[int]",
+    orig_vocab_size: int,
+) -> bool:
+    """Write a copy of a ``_tag_metrics.npz`` with its per-tag arrays reindexed.
+
+    Used when ONNX export strips Unknown-category heads: every array whose first
+    axis spans the (original) vocabulary — ``best_thr``, ``best_f1``, ``n_pos``,
+    ``calibration_table`` [V, K], the histograms, ``tag_names``, etc. — is gathered
+    by *keep_indices* so it stays aligned with the filtered head and vocabulary.
+    Scalar / metadata entries (``n_bins``, ``calib_method``, …) are copied as-is.
+
+    Returns True on success; False (caller falls back to a verbatim copy) when the
+    saved arrays don't span *orig_vocab_size* — e.g. the metrics file predates a
+    vocabulary growth — since reindexing then can't be done safely.
+    """
+    import numpy as np
+    try:
+        data = np.load(src_path, allow_pickle=True)
+        keep = np.asarray(keep_indices, dtype=np.int64)
+        # Confirm the file's per-tag arrays really span orig_vocab_size before
+        # reindexing. Probe a known per-tag key (best_thr, else tag_count).
+        probe = None
+        for _k in ("best_thr", "tag_count", "n_pos"):
+            if _k in data.files:
+                probe = data[_k]
+                break
+        if probe is None or getattr(probe, "shape", (None,))[0] != orig_vocab_size:
+            return False
+        out: dict = {}
+        for k in data.files:
+            arr = data[k]
+            if isinstance(arr, np.ndarray) and arr.ndim >= 1 and arr.shape[0] == orig_vocab_size:
+                out[k] = arr[keep]
+            else:
+                out[k] = arr
+        np.savez_compressed(dst_path, **out)
+        return True
+    except Exception as _e:
+        print(f"[SigLIP2Manager] _filter_tag_metrics_npz failed: {_e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Manager class
 # ---------------------------------------------------------------------------
@@ -1070,6 +1115,11 @@ class SigLIP2InferenceManager:
         # Builds a new head with only non-Unknown rows and writes a filtered
         # vocabulary alongside the ONNX file.
         export_vocab_data: Optional[dict] = None  # None → use self.vocab_path as-is
+        # When Unknown heads are stripped, the per-tag _tag_metrics.npz arrays
+        # must be reindexed the same way (else best_thr/calibration point at the
+        # wrong tag). Captured here for the companion-file step further below.
+        _strip_keep_indices: Optional[list] = None
+        _strip_orig_num_tags: int = num_tags
         if strip_unknown_tags and self.vocabulary is not None:
             tag_to_idx: dict = self.vocabulary.get("tag_to_idx", {})
             tag_to_cat: dict = self.vocabulary.get("tag_to_category", {})
@@ -1086,6 +1136,7 @@ class SigLIP2InferenceManager:
                 new_head.bias.data   = export_model.head.bias.data[_keep]
                 export_model.head = new_head
                 num_tags = len(keep_indices)
+                _strip_keep_indices = keep_indices  # reindex _tag_metrics.npz to match
                 print(f"[SigLIP2Manager] strip_unknown_tags: removed {removed} Unknown heads → {num_tags} tags remain")
                 # Build filtered vocabulary dict for output
                 old_to_new = {old_idx: new_idx for new_idx, old_idx in enumerate(keep_indices)}
@@ -1212,8 +1263,23 @@ class SigLIP2InferenceManager:
         _ckpt_base  = os.path.splitext(os.path.basename(self.checkpoint_path))[0]
         for _suffix in ("_ood_ref.npz", "_tag_metrics.npz"):
             _src = os.path.join(_ckpt_dir, _ckpt_base + _suffix)
-            if os.path.isfile(_src):
-                _dst = _onnx_stem + _suffix
+            if not os.path.isfile(_src):
+                continue
+            _dst = _onnx_stem + _suffix
+            # _tag_metrics.npz is per-tag indexed; if Unknown heads were stripped
+            # its arrays must be reindexed by keep_indices to stay aligned with the
+            # filtered head/vocabulary. _ood_ref.npz lives in CLS-embedding space
+            # (not tag-indexed), so it is always copied verbatim.
+            if _suffix == "_tag_metrics.npz" and _strip_keep_indices is not None:
+                if _filter_tag_metrics_npz(_src, _dst, _strip_keep_indices, _strip_orig_num_tags):
+                    print(f"[SigLIP2Manager] Reindexed {os.path.basename(_src)} "
+                          f"({_strip_orig_num_tags}→{len(_strip_keep_indices)} tags) → {_dst}")
+                else:
+                    shutil.copy2(_src, _dst)
+                    print(f"[SigLIP2Manager] WARNING: could not reindex "
+                          f"{os.path.basename(_src)} (vocab-size mismatch); copied verbatim "
+                          f"— per-tag thresholds may be misaligned with the stripped model")
+            else:
                 shutil.copy2(_src, _dst)
                 print(f"[SigLIP2Manager] Copied {os.path.basename(_src)} → {_dst}")
 

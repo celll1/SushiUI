@@ -1051,14 +1051,31 @@ class SigLIP2InferenceManager:
             SigLIP2TaggerModel,
         )
 
-        # If empty, fall back to an "onnx" subdirectory alongside the checkpoint.
+        # Resolve output_path. Accepted forms:
+        #   - empty            → {checkpoint_dir}/onnx/{stem}.onnx  (default)
+        #   - a directory      → {dir}/{stem}.onnx                  (e.g. "onnx",
+        #                        "exports/v2", or an absolute dir). Anything that
+        #                        does not end in ".onnx" is treated as a directory.
+        #   - a ".onnx" path   → used as the full file path.
+        # Relative values (dir or file) are resolved against the checkpoint's
+        # directory, so a bare name like "onnx" lands beside the checkpoint.
         output_path = output_path.strip().strip('"').strip("'")
+        ckpt_dir  = os.path.dirname(self.checkpoint_path)
+        ckpt_stem = os.path.splitext(os.path.basename(self.checkpoint_path))[0]
         if not output_path:
-            ckpt_stem = os.path.splitext(os.path.basename(self.checkpoint_path))[0]
-            output_path = os.path.join(
-                os.path.dirname(self.checkpoint_path), "onnx", f"{ckpt_stem}.onnx"
-            )
+            output_path = os.path.join(ckpt_dir, "onnx", f"{ckpt_stem}.onnx")
             print(f"[SigLIP2Manager] output_path not specified; saving ONNX to {output_path}")
+        else:
+            if not output_path.lower().endswith(".onnx"):
+                # Directory form: resolve relative names against the checkpoint
+                # dir, then place {stem}.onnx inside it.
+                _dir = output_path if os.path.isabs(output_path) \
+                    else os.path.join(ckpt_dir, output_path)
+                output_path = os.path.join(_dir, f"{ckpt_stem}.onnx")
+                print(f"[SigLIP2Manager] output_path is a directory; saving ONNX to {output_path}")
+            elif not os.path.isabs(output_path):
+                # Full file path given as a relative path → resolve against ckpt dir.
+                output_path = os.path.join(ckpt_dir, output_path)
         # Optionally force the output stem to "model" (standard deployment name),
         # keeping the resolved directory. All companion files (vocabulary,
         # metadata, npz, split dir) derive from this stem automatically.

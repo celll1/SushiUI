@@ -123,15 +123,18 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
           <p className={disabledNote}>Already an ONNX model</p>
         )}
         <div>
-          <label className={labelCls}>Output Path (.onnx) <span className="text-gray-600">— optional</span></label>
+          <label className={labelCls}>Output Path or Directory <span className="text-gray-600">— optional</span></label>
           <input
             type="text"
             value={onnxOutput}
             onChange={(e) => setOnnxOutput(e.target.value)}
-            placeholder="Auto: {checkpoint_dir}/onnx/{name}.onnx"
+            placeholder={'Dir name (e.g. "onnx") or full .onnx path — empty: {checkpoint_dir}/onnx/{name}.onnx'}
             disabled={!modelLoaded}
             className={inputCls}
           />
+          <p className="text-[10px] text-gray-600 mt-0.5">
+            A name without <code>.onnx</code> is treated as a directory (relative to the checkpoint); <code>{'{name}'}.onnx</code> is written inside it.
+          </p>
         </div>
         <div>
           <label className={labelCls}>Max Num Patches</label>

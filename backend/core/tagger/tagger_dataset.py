@@ -101,6 +101,14 @@ class TaggerDataset(Dataset):
         # DataLoader worker processes (num_workers>0, Windows spawn) and a local
         # closure is unpicklable ("Can't pickle local object ..._ds_progress").
         self._build_samples(dataset_ids, datasets_db, caption_types, progress_callback)
+        # The alias/comma resolvers are used ONLY during _build_samples (tag
+        # canonicalisation); __getitem__ never touches them. Drop them so they are
+        # not pickled into every DataLoader worker (Windows uses spawn, which
+        # copies the whole dataset object per worker). The comma resolver in
+        # particular is built from the full ~1.9M-tag category map, so keeping it
+        # would waste roughly its size x num_workers of RAM for nothing.
+        self._alias_resolver = None
+        self._comma_resolver = None
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -120,6 +128,14 @@ class TaggerDataset(Dataset):
         # channel is not flooded while loading multi-million-item datasets.
         _last_emit = [0.0]
         n_datasets = len(dataset_ids)
+
+        # Tag-string dedup pool. Tags repeat massively across samples (e.g. "1girl"
+        # is on millions of images); without dedup each occurrence is a separate
+        # str object, bloating _samples and — critically on Windows spawn — making
+        # the per-worker pickle huge. Interning to one object per unique tag value
+        # collapses millions of tag strings down to the few-hundred-thousand unique
+        # ones (pickle also stores each shared object once).
+        _tag_pool: Dict[str, str] = {}
 
         def _emit(done: int, total: int, label: str, force: bool = False) -> None:
             if progress_callback is None:
@@ -213,7 +229,11 @@ class TaggerDataset(Dataset):
                 for caption in item_captions:
                     tags.extend(self._extract_tags(caption))
                 if tags:
-                    self._samples.append((item_path_map[item_id], tags))
+                    # Intern each tag to the shared pool object (dedup across all
+                    # samples) before storing — see _tag_pool note above.
+                    self._samples.append(
+                        (item_path_map[item_id], [_tag_pool.setdefault(t, t) for t in tags])
+                    )
 
             print(f"[TaggerDataset]   {len(self._samples)} samples so far")
 

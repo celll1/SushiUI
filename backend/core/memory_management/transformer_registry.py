@@ -36,6 +36,8 @@ def detect_transformer_architecture(transformer: nn.Module) -> str:
             layer_class_name = first_layer.__class__.__name__
             if "ZImage" in layer_class_name:
                 return "zimage"
+            elif "Ideogram4" in layer_class_name:
+                return "ideogram4"
             elif "Flux" in layer_class_name:
                 return "flux"
             elif "SD3" in layer_class_name:

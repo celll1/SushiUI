@@ -204,10 +204,24 @@ class TransformerBlockOffloader:
             if self.cuda_available and sync_event is not None:
                 torch.cuda.current_stream().wait_event(sync_event)
         else:
-            # No pending transfer - check if block weights are on CPU and move them synchronously
+            # No pending transfer - check if block weights are on CPU and move them synchronously.
+            # Detect via a representative Linear weight (which is what weighs_to_device moves)
+            # rather than the first parameter: for weight-only-FP8 models the Linear weight is a
+            # buffer and the only parameters are GPU-resident norms, so a param-device check would
+            # never trip. Falls back to the first parameter for plain models with no Linear weight.
             block = self.blocks[block_idx]
-            first_param = next(block.parameters(), None)
-            if first_param is not None and first_param.device.type == "cpu":
+            weight_device = None
+            for module in block.modules():
+                if (
+                    module.__class__.__name__.endswith("Linear")
+                    and getattr(module, "weight", None) is not None
+                ):
+                    weight_device = module.weight.data.device
+                    break
+            if weight_device is None:
+                first_param = next(block.parameters(), None)
+                weight_device = first_param.device if first_param is not None else self.device
+            if weight_device.type == "cpu":
                 # Block weights are on CPU - move to GPU synchronously
                 print(f"[BlockOffloader DEBUG] Block {block_idx} weights on CPU, moving to GPU synchronously...")
                 weighs_to_device(block, self.device)

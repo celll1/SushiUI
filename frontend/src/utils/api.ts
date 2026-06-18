@@ -192,6 +192,7 @@ export interface GenerationParams {
   tipo_config?: any;  // TIPO configuration object
   // Preview mode
   preview_predicted_x0?: boolean;  // Show predicted x0 instead of current latent in preview
+  preview_decoder?: string;  // Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
   // Z-Image specific
   max_sequence_length?: number;
   // Block Swap (Z-Image Transformer offloading)
@@ -350,6 +351,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
 
   // Preview mode (predicted x0)
   formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
+  formData.append("preview_decoder", String(paramsWithImages.preview_decoder ?? "matrix"));
 
   // Block Swap (Z-Image Transformer offloading)
   formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
@@ -620,6 +622,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 
   // Preview mode (predicted x0)
   formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
+  formData.append("preview_decoder", String(paramsWithImages.preview_decoder ?? "matrix"));
 
   // FLUX.2 Image Edit / Vision Encoder (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
@@ -735,6 +738,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
 
   // Preview mode (predicted x0)
   formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
+  formData.append("preview_decoder", String(paramsWithImages.preview_decoder ?? "matrix"));
 
   // FLUX.2 Image Edit / Vision Encoder (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {

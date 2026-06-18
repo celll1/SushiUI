@@ -85,7 +85,8 @@ def create_progress_callback_factory(
     image_height: Optional[int] = None,
     preview_predicted_x0: bool = False,
     preview_enabled: bool = True,
-    preview_interval: int = 1
+    preview_interval: int = 1,
+    preview_decoder: str = "matrix"
 ) -> Callable:
     """
     WebSocketプログレスコールバックを生成
@@ -157,7 +158,8 @@ def create_progress_callback_factory(
                     is_lens=is_lens,
                     is_ideogram4=is_ideogram4,
                     image_width=image_width,
-                    image_height=image_height
+                    image_height=image_height,
+                    preview_decoder=preview_decoder
                 )
                 if preview_pil:
                     buffered = BytesIO()

@@ -13,6 +13,7 @@ class TAESDManager:
         self.taesd = None
         self.taesd_xl = None
         self.taef1 = None  # For Z-Image (FLUX-based)
+        self.taef2 = None  # For FLUX.2 / Lens / Ideogram 4 (AutoencoderKLFlux2 latent)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         # Decode-error rate limiter: full traceback once per `tag`, then
         # collapse repeats to a counted one-liner so a broken preview path
@@ -41,7 +42,7 @@ class TAESDManager:
     def offload_to_cpu(self):
         """Move all loaded TAESD models to CPU to free VRAM."""
         moved = False
-        for name in ('taesd', 'taesd_xl', 'taef1'):
+        for name in ('taesd', 'taesd_xl', 'taef1', 'taef2'):
             model = getattr(self, name, None)
             if model is not None:
                 model.to("cpu")
@@ -124,7 +125,89 @@ class TAESDManager:
                 self.taesd.to(self.device)
             return self.taesd
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+    def load_taef2(self):
+        """Load the TAEF2 decoder for FLUX.2-VAE-latent models (FLUX.2 / Lens / Ideogram 4)."""
+        if self.taef2 is None:
+            print("Loading TAEF2 for FLUX.2-VAE preview...")
+            try:
+                from core.utils.taef2_decoder import TAEF2Decoder
+                model = TAEF2Decoder.from_hub("madebyollin/taef2")
+                model = model.to(
+                    torch.bfloat16 if self.device == "cuda" else torch.float32
+                )
+                model.eval()
+                self.taef2 = model
+                print("TAEF2 loaded successfully")
+            except Exception as e:
+                print(f"Failed to load TAEF2: {e}")
+                self.taef2 = None
+        if self.taef2 is not None:
+            self.taef2.to(self.device)
+        return self.taef2
+
+    def _unpack_fluxvae_to_32ch(
+        self, latent: torch.Tensor, model_type: str,
+        image_width: Optional[int], image_height: Optional[int],
+    ) -> Optional[torch.Tensor]:
+        """Unpack an AutoencoderKLFlux2 packed latent to (1, 32, H/8, W/8) spatial.
+
+        FLUX.2 and Lens pack the 128 channels as (channel, p1, p2); Ideogram 4 packs
+        them as (p1, p2, channel). Handles flat-sequence [B, N, 128] input and, for
+        FLUX.2, already-spatial [B, 128, h, w] / [B, 32, h, w] inputs.
+        """
+        latent = latent.cpu().to(torch.float32)
+
+        if latent.ndim == 3:
+            b, num_tokens, channels = latent.shape
+            if channels != 128:
+                return None
+            if image_width is not None and image_height is not None:
+                lh = image_height // 16
+                lw = image_width // 16
+                if lh * lw != num_tokens:
+                    lh, lw = self._find_best_factors(num_tokens)
+            else:
+                lh, lw = self._find_best_factors(num_tokens)
+
+            if model_type == "ideogram4":
+                # 128 = (p1, p2, channel)
+                z = latent.view(b, lh, lw, 2, 2, 32).permute(0, 5, 1, 3, 2, 4)
+                return z.reshape(b, 32, lh * 2, lw * 2)
+            # FLUX.2 / Lens: 128 = (channel, p1, p2)
+            z = latent.permute(0, 2, 1).reshape(b, 128, lh, lw)
+            z = z.reshape(b, 32, 2, 2, lh, lw).permute(0, 1, 4, 2, 5, 3)
+            return z.reshape(b, 32, lh * 2, lw * 2)
+
+        if latent.ndim == 4:
+            b, c, h, w = latent.shape
+            if c == 32:
+                return latent
+            if c >= 128:
+                z = latent.reshape(b, c // 4, 2, 2, h, w).permute(0, 1, 4, 2, 5, 3)
+                return z.reshape(b, c // 4, h * 2, w * 2)
+        return None
+
+    def _decode_taef2_preview(
+        self, latent: torch.Tensor, model_type: str,
+        image_width: Optional[int], image_height: Optional[int],
+    ) -> Optional[Image.Image]:
+        """Decode a FLUX.2-VAE packed latent to a preview via the TAEF2 decoder."""
+        try:
+            taef2 = self.load_taef2()
+            if taef2 is None:
+                return None
+            z = self._unpack_fluxvae_to_32ch(latent, model_type, image_width, image_height)
+            if z is None:
+                return None
+            with torch.no_grad():
+                rgb = taef2.decode(z)[0]  # (3, H, W) in [0, 1]
+            rgb_np = (rgb.permute(1, 2, 0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+            return Image.fromarray(rgb_np, mode="RGB")
+        except Exception as e:
+            self._log_decode_error("TAEF2", e)
+            return None
+
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -140,6 +223,16 @@ class TAESDManager:
         """
         import time
         decode_start_time = time.time()
+
+        # Optional TAEF2 decoder for AutoencoderKLFlux2-latent models (FLUX.2 / Lens /
+        # Ideogram 4). Higher fidelity than the linear "matrix" projection; opt-in
+        # via preview_decoder. Falls through to the matrix path if it returns None.
+        if preview_decoder == "taef2" and (is_flux2 or is_lens or is_ideogram4):
+            model_type = "ideogram4" if is_ideogram4 else ("lens" if is_lens else "flux2")
+            taef2_preview = self._decode_taef2_preview(latent, model_type, image_width, image_height)
+            if taef2_preview is not None:
+                return taef2_preview
+            # else: fall through to the matrix preview below
 
         # Lens: 128-ch patchified flat-sequence latent (AutoencoderKLFlux2)
         if is_ideogram4:

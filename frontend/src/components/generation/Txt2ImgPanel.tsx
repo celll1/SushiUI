@@ -62,6 +62,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   cpu_text_encoding: false,
   use_torch_compile: false,
   preview_predicted_x0: false,
+  preview_decoder: "matrix",
   use_tipo: false,
   enable_block_swap: false,
   blocks_to_swap: 20,
@@ -1126,6 +1127,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
+        preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
       };
 
       // Use custom settings or inherit from main
@@ -2683,6 +2685,23 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               <label htmlFor="preview_predicted_x0" className="text-sm text-gray-300">
                 Preview Predicted x0
               </label>
+            </div>
+
+            {/* Live-preview decoder (FLUX.2 / Lens / Ideogram 4 — AutoencoderKLFlux2 latent) */}
+            <div className="flex items-center gap-2">
+              <label htmlFor="preview_decoder" className="text-sm text-gray-300">
+                Preview Decoder
+              </label>
+              <select
+                id="preview_decoder"
+                value={params.preview_decoder || "matrix"}
+                onChange={(e) => setParams({ ...params, preview_decoder: e.target.value })}
+                className="bg-gray-700 text-gray-200 text-sm rounded px-2 py-1"
+                title="FLUX.2 / Lens / Ideogram 4 のライブプレビュー方式。matrix=線形変換（軽量）、TAEF2=tiny decoder（高精度）"
+              >
+                <option value="matrix">Matrix (linear, light)</option>
+                <option value="taef2">TAEF2 (FLUX.2 VAE)</option>
+              </select>
             </div>
 
             {/* Use training model toggle (only enabled when an LoRA/Full-FT

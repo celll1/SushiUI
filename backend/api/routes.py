@@ -258,6 +258,7 @@ async def generate_txt2img(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
+    preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(20),
     use_pinned_memory: bool = Form(False),
@@ -392,6 +393,7 @@ async def generate_txt2img(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
 
@@ -477,7 +479,8 @@ async def generate_txt2img(
             # via the API still wins.
             preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4),
             preview_enabled=params.get("preview_enabled", True),
-            preview_interval=params.get("preview_interval", 4)
+            preview_interval=params.get("preview_interval", 4),
+            preview_decoder=params.get("preview_decoder", "matrix")
         )
 
         # Create step callback for LoRA step range if needed
@@ -961,6 +964,7 @@ async def generate_img2img(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
+    preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     image: UploadFile = File(...),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
@@ -1100,6 +1104,7 @@ async def generate_img2img(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
@@ -1162,7 +1167,8 @@ async def generate_img2img(
             # via the API still wins.
             preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4),
             preview_enabled=params.get("preview_enabled", True),
-            preview_interval=params.get("preview_interval", 4)
+            preview_interval=params.get("preview_interval", 4),
+            preview_decoder=params.get("preview_decoder", "matrix")
         )
 
         # Create step callback for LoRA step range if needed
@@ -1309,6 +1315,7 @@ async def generate_inpaint(
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
+    preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
@@ -1467,6 +1474,7 @@ async def generate_inpaint(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
@@ -1529,7 +1537,8 @@ async def generate_inpaint(
             # via the API still wins.
             preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4),
             preview_enabled=params.get("preview_enabled", True),
-            preview_interval=params.get("preview_interval", 4)
+            preview_interval=params.get("preview_interval", 4),
+            preview_decoder=params.get("preview_decoder", "matrix")
         )
 
         # Create step callback for LoRA step range if needed

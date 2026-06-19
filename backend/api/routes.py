@@ -8609,6 +8609,8 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     batch_size: int = 32
     num_workers: int = 4
     num_workers_override: Optional[int] = None
+    tag_refresh_enable: bool = TAGGER_TRAINING_DEFAULTS["tag_refresh_enable"]
+    tag_refresh_interval_seconds: int = TAGGER_TRAINING_DEFAULTS["tag_refresh_interval_seconds"]
     save_every_n_steps: int = 500
     save_every_n_epochs: int = 0
     keep_last_n_checkpoints: int = 3

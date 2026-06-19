@@ -348,6 +348,11 @@ TAGGER_TRAINING_DEFAULTS: Dict[str, Any] = {
     "batch_size": 32,
     "num_workers": 4,
     "num_workers_override": None,
+    # Live tag-refresh: pick up tag edits made in the UI during training without
+    # restarting. Detection runs on a background thread and workers apply changes
+    # via a generation-gated mmap, so iteration speed is unaffected.
+    "tag_refresh_enable": False,
+    "tag_refresh_interval_seconds": 60,
     "save_every_n_steps": 500,
     "save_every_n_epochs": 0,
     "keep_last_n_checkpoints": 3,

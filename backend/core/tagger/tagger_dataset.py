@@ -12,6 +12,7 @@ import os
 import time
 from typing import Callable, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
@@ -24,6 +25,40 @@ from .tag_vocabulary import (
     TagVocabulary,
     normalize_tag,
 )
+
+
+def resolve_caption_tags(
+    tag_data, content, comma_resolver, alias_resolver
+) -> List[str]:
+    """Turn a caption's raw ``tag_data`` / ``content`` into canonical tags.
+
+    Shared by ``TaggerDataset._extract_tags`` (dataset build) and the live
+    tag-refresh detector so a tag edited mid-training canonicalises exactly the
+    same way it did at build time. ``tag_data`` (JSON list of ``{"tag": ...}``)
+    takes precedence over the comma-separated ``content`` string.
+    """
+    raw_tags: List[str] = []
+    if tag_data:
+        try:
+            raw = json.loads(tag_data) if isinstance(tag_data, str) else tag_data
+            if isinstance(raw, list):
+                raw_tags = [r["tag"] for r in raw if isinstance(r, dict) and "tag" in r]
+        except (json.JSONDecodeError, TypeError):
+            pass
+    if not raw_tags and content:
+        raw_tags = [t.strip() for t in content.split(",") if t.strip()]
+    # Normalize first (order preserved) so the comma resolver matches the same
+    # forms the vocabulary builder used.
+    norm_tokens = [t for t in (normalize_tag(t) for t in raw_tags) if t]
+    if comma_resolver is not None:
+        norm_tokens = comma_resolver.resolve(norm_tokens)
+    if alias_resolver:
+        return [
+            t if (comma_resolver is not None and comma_resolver.category_of(t) is not None)
+            else alias_resolver.resolve(t)
+            for t in norm_tokens
+        ]
+    return norm_tokens
 
 
 class TaggerDataset(Dataset):
@@ -96,6 +131,19 @@ class TaggerDataset(Dataset):
         print(f"[TaggerDataset] Processor mode: {'NaFlex' if self.is_naflex else 'standard (fixed resolution)'}")
 
         self._samples: List[Tuple[str, List[str]]] = []  # (image_path, [tag, ...])
+        # item_id aligned to _samples (sample idx -> item_id). Built during
+        # _build_samples; used ONLY by the live tag-refresh detector in the main
+        # process. Stripped from the worker pickle (see __getstate__) since
+        # __getitem__ never needs it.
+        self._item_ids: Optional["np.ndarray"] = None
+        self._item_ids_list: List[int] = []
+        # Live tag-refresh (Option B). Paths/flag are set by the trainer after
+        # construction (before the first DataLoader spawn) and DO travel into the
+        # worker pickle; the reader/mmap below are worker-local and rebuilt there.
+        self._refresh_enabled: bool = False
+        self._refresh_gen_path: Optional[str] = None
+        self._refresh_payload_path: Optional[str] = None
+        self._refresh_reader = None  # core.tagger.tag_refresh.TagRefreshReader (worker-local)
         # NOTE: progress_callback is a (closure) callable used only during
         # construction — do NOT store it on self. The dataset is pickled to
         # DataLoader worker processes (num_workers>0, Windows spawn) and a local
@@ -234,35 +282,19 @@ class TaggerDataset(Dataset):
                     self._samples.append(
                         (item_path_map[item_id], [_tag_pool.setdefault(t, t) for t in tags])
                     )
+                    self._item_ids_list.append(item_id)
 
             print(f"[TaggerDataset]   {len(self._samples)} samples so far")
 
+        # Finalise the sample-idx -> item_id map for the live tag-refresh detector.
+        self._item_ids = np.asarray(self._item_ids_list, dtype=np.int64)
+        self._item_ids_list = []  # free the Python list; numpy array is the source
+
     def _extract_tags(self, caption) -> List[str]:
-        raw_tags: List[str] = []
-        if caption.tag_data:
-            try:
-                raw = json.loads(caption.tag_data) if isinstance(caption.tag_data, str) else caption.tag_data
-                if isinstance(raw, list):
-                    raw_tags = [r["tag"] for r in raw if isinstance(r, dict) and "tag" in r]
-            except (json.JSONDecodeError, TypeError):
-                pass
-        if not raw_tags and caption.content:
-            raw_tags = [t.strip() for t in caption.content.split(",") if t.strip()]
-        # Normalize first (order preserved) so the comma resolver matches the
-        # same forms the vocabulary builder used.
-        norm_tokens = [t for t in (normalize_tag(t) for t in raw_tags) if t]
-        # Re-merge / alias comma-split fragments into comma-free canonical tags.
-        if self._comma_resolver is not None:
-            norm_tokens = self._comma_resolver.resolve(norm_tokens)
-        if self._alias_resolver:
-            # Deprecated-alias per token, but never alias a comma-tag canonical.
-            return [
-                t if (self._comma_resolver is not None
-                      and self._comma_resolver.category_of(t) is not None)
-                else self._alias_resolver.resolve(t)
-                for t in norm_tokens
-            ]
-        return norm_tokens
+        return resolve_caption_tags(
+            caption.tag_data, caption.content,
+            self._comma_resolver, self._alias_resolver,
+        )
 
     # ------------------------------------------------------------------
     # Dataset interface
@@ -271,8 +303,43 @@ class TaggerDataset(Dataset):
     def __len__(self) -> int:
         return len(self._samples)
 
+    # ------------------------------------------------------------------
+    # Worker pickle: drop main-process-only / unpicklable / worker-rebuilt
+    # fields so each spawned worker stays small and rebuilds its own reader.
+    # ------------------------------------------------------------------
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_item_ids", None)        # detector-only (main process)
+        state.pop("_item_ids_list", None)
+        state["_refresh_reader"] = None     # rebuilt lazily in the worker
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._item_ids = None
+        self._item_ids_list = []
+        self._refresh_reader = None
+
+    def _apply_tag_refresh(self, idx: int, tags: List[str]) -> List[str]:
+        """Return live-edited tags for *idx* when a refresh override exists.
+
+        Steady-state cost is one mmap memory read + one dict lookup (the reader
+        only re-reads the override payload when the detector bumps its generation
+        counter). Runs in the DataLoader worker, ahead of the GPU via prefetch, so
+        it does not affect iteration time.
+        """
+        reader = self._refresh_reader
+        if reader is None:
+            from core.tagger.tag_refresh import TagRefreshReader
+            reader = TagRefreshReader(self._refresh_gen_path, self._refresh_payload_path)
+            self._refresh_reader = reader
+        ov = reader.override(idx)
+        return ov if ov is not None else tags
+
     def __getitem__(self, idx: int):
         image_path, tags = self._samples[idx]
+        if self._refresh_enabled and self._refresh_gen_path:
+            tags = self._apply_tag_refresh(idx, tags)
         try:
             image = _load_image(image_path)
             inputs = self.processor(images=[image], return_tensors="pt")

@@ -36,6 +36,8 @@ const DEFAULT_CONFIG: Omit<TaggerTrainingRunCreateRequest, "dataset_configs"> = 
   vocab_use_gelbooru_categories: true,
   num_workers: 4,
   num_workers_override: null as number | null,
+  tag_refresh_enable: false,
+  tag_refresh_interval_seconds: 60,
   save_every_n_steps: 500,
   save_every_n_epochs: 0,
   keep_last_n_checkpoints: 3,
@@ -163,6 +165,8 @@ export default function TaggerTrainingConfig({
         vocab_use_gelbooru_categories: (editRun.config?.vocab_use_gelbooru_categories as boolean) ?? DEFAULT_CONFIG.vocab_use_gelbooru_categories,
         num_workers: (editRun.config?.num_workers as number) ?? DEFAULT_CONFIG.num_workers,
         num_workers_override: (editRun.config?.num_workers_override as number | null) ?? DEFAULT_CONFIG.num_workers_override,
+        tag_refresh_enable: (editRun.config?.tag_refresh_enable as boolean) ?? DEFAULT_CONFIG.tag_refresh_enable,
+        tag_refresh_interval_seconds: (editRun.config?.tag_refresh_interval_seconds as number) ?? DEFAULT_CONFIG.tag_refresh_interval_seconds,
         save_every_n_steps: (editRun.config?.save_every_n_steps as number) ?? DEFAULT_CONFIG.save_every_n_steps,
         save_every_n_epochs: (editRun.config?.save_every_n_epochs as number) ?? DEFAULT_CONFIG.save_every_n_epochs,
         keep_last_n_checkpoints: (editRun.config?.keep_last_n_checkpoints as number) ?? DEFAULT_CONFIG.keep_last_n_checkpoints,
@@ -820,6 +824,33 @@ export default function TaggerTrainingConfig({
                 }}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
+            </div>
+            <div className="col-span-2 border border-gray-700 rounded p-2 space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={config.tag_refresh_enable}
+                  onChange={(e) => setField("tag_refresh_enable", e.target.checked)}
+                  className="w-4 h-4 rounded accent-blue-500"
+                />
+                <span className="text-sm text-gray-300">Live tag refresh</span>
+                <span className="text-[10px] text-gray-500">
+                  学習中のタグ編集を再起動なしで反映（iter速度に影響なし）
+                </span>
+              </label>
+              {config.tag_refresh_enable && (
+                <div className="flex items-center gap-2 pl-6">
+                  <label className="text-[11px] text-gray-400">Poll interval (s)</label>
+                  <input
+                    type="number"
+                    min={5}
+                    max={3600}
+                    value={config.tag_refresh_interval_seconds}
+                    onChange={(e) => setField("tag_refresh_interval_seconds", parseInt(e.target.value) || 60)}
+                    className="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">

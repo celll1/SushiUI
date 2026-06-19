@@ -2256,6 +2256,7 @@ def run_tagger_training(
         # Online Danbooru augmentation (optional)
         # ------------------------------------------------------------------
         _danbooru_buffer = None
+        _tag_refresh_detector = None
         _expander = None
         _surveyor = None
         _deficiency_provider = None
@@ -2770,6 +2771,36 @@ def run_tagger_training(
                 "resume_ckpt_name": resume_ckpt_name,
             })
 
+        # ------------------------------------------------------------------
+        # Live tag-refresh (optional): pick up tag edits made in the UI during
+        # training without slowing the iteration. Detection runs on a background
+        # thread; workers apply overrides via a generation-gated mmap (see
+        # core/tagger/tag_refresh.py). Must be wired before train() spawns the
+        # first DataLoader workers so the file paths travel into the worker pickle.
+        # ------------------------------------------------------------------
+        if config.get("tag_refresh_enable", False):
+            try:
+                from core.tagger.tag_refresh import TagRefreshStore, TagRefreshDetector
+                from database import datasets_db_path as _ds_db_path
+                _tr_store = TagRefreshStore(output_dir)
+                full_ds._refresh_gen_path     = _tr_store.gen_path
+                full_ds._refresh_payload_path = _tr_store.payload_path
+                full_ds._refresh_enabled      = True
+                _tag_refresh_detector = TagRefreshDetector(
+                    db_path=_ds_db_path,
+                    dataset_ids=dataset_ids,
+                    item_ids=full_ds._item_ids,
+                    caption_types=None,  # matches the dataset build (all tags-format)
+                    comma_resolver=comma_resolver,
+                    alias_resolver=alias_resolver,
+                    store=_tr_store,
+                    interval=float(config.get("tag_refresh_interval_seconds", 60)),
+                )
+                _tag_refresh_detector.start()
+            except Exception as _e:
+                print(f"[TagRefresh] disabled (setup failed): {_e}")
+                _tag_refresh_detector = None
+
         try:
             return trainer.train(
                 train_loader, val_loader, processor,
@@ -2790,6 +2821,14 @@ def run_tagger_training(
 
     finally:
         import gc as _gc
+        # Stop the live tag-refresh detector thread if it was started.
+        try:
+            if _tag_refresh_detector is not None:
+                _tag_refresh_detector.stop()
+        except NameError:
+            pass
+        except Exception as _e:
+            print(f"[TaggerTraining] tag-refresh detector stop error: {_e}")
         # Stop the Danbooru background fetch thread if it was started.
         try:
             if _danbooru_buffer is not None:

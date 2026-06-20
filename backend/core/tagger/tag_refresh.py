@@ -244,7 +244,35 @@ class TagRefreshDetector:
         pos = np.nonzero(mask)[0]
         return {int(ids[p]): int(p) for p in pos}
 
+    def _ensure_index(self) -> None:
+        """Create an index on dataset_captions.updated_at if it is missing.
+
+        The poll filters on ``updated_at``, which is otherwise unindexed — so each
+        time the change-gate trips it would full-scan the (potentially multi-
+        million-row) dataset_captions table. ``updated_at`` is a high-cardinality
+        timestamp, so an index turns ``updated_at > ?`` into a cheap range seek
+        with no risk of the low-cardinality index pathology. Built once in the
+        background thread, so it never blocks training startup.
+        """
+        try:
+            con = sqlite3.connect(self.db_path, timeout=30.0)
+            try:
+                con.execute("PRAGMA busy_timeout=30000")
+                con.execute(
+                    "CREATE INDEX IF NOT EXISTS ix_dataset_captions_updated_at "
+                    "ON dataset_captions(updated_at)"
+                )
+                con.commit()
+            finally:
+                con.close()
+            print("[TagRefresh] ensured index ix_dataset_captions_updated_at")
+        except Exception as e:
+            print(f"[TagRefresh] index ensure skipped ({e}); "
+                  f"updated_at scans will be full table scans")
+
     def _run(self) -> None:
+        # One-time: make the per-poll updated_at filter cheap on large datasets.
+        self._ensure_index()
         while not self._stop.wait(self.interval):
             try:
                 self._poll_once()

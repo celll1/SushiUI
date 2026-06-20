@@ -34,6 +34,7 @@ from .adapters import (
     FLUX2LoRAAdapter,
     AnimaLoRAAdapter,
     LensLoRAAdapter,
+    Ideogram4LoRAAdapter,
 )
 
 
@@ -102,6 +103,8 @@ class LoRATrainer(BaseTrainer):
             self.setup_anima_block_swap()
         if hasattr(self, "setup_lens_block_swap"):
             self.setup_lens_block_swap()
+        if hasattr(self, "setup_ideogram4_block_swap"):
+            self.setup_ideogram4_block_swap()
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
@@ -133,6 +136,16 @@ class LoRATrainer(BaseTrainer):
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
             )
             print(f"{self.log_prefix} Using LensLoRAAdapter (scope={scope})")
+        elif self.is_ideogram4:
+            from core.models.ideogram4.ideogram4_lora import parse_scope_csv
+            scope_csv = (getattr(self, "ideogram4_lora_scope", "")
+                          or self.config.get("ideogram4_lora_scope", "")
+                          or "attn,mlp")
+            scope = parse_scope_csv(scope_csv)
+            self.adapter = Ideogram4LoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using Ideogram4LoRAAdapter (scope={scope})")
         elif self.is_anima:
             # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
             # (attention + mlp + llm_adapter, no AdaLN modulation).

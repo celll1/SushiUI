@@ -891,6 +891,7 @@ class BaseTrainer(ABC):
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
+        self.is_ideogram4 = (model_type == "ideogram4")
         self.is_sdxl = False
 
         if self.is_zimage:
@@ -904,6 +905,8 @@ class BaseTrainer(ABC):
             self._load_anima_components()
         elif self.is_lens:
             self._load_lens_components()
+        elif self.is_ideogram4:
+            self._load_ideogram4_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -1282,6 +1285,113 @@ class BaseTrainer(ABC):
         self.layer_offload_conductor.register_hooks()
         print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Lens")
 
+    def _load_ideogram4_components(self):
+        """Load Ideogram 4 components for LoRA training (conditional branch by default).
+
+        The fp8 transformer (Fp8Linear) is loaded frozen; LoRA wraps it. The
+        unconditional transformer is loaded only when `ideogram4_train_uncond` is set.
+        """
+        print(f"{self.log_prefix} Detected Ideogram 4 model")
+        print(f"{self.log_prefix} Loading Ideogram 4 components from {self.model_path}")
+
+        self.ideogram4_train_uncond = bool(self.config.get("ideogram4_train_uncond", False))
+        self.ideogram4_uncond_loss_weight = float(self.config.get("ideogram4_uncond_loss_weight", 1.0))
+
+        from core.models.ideogram4.ideogram4_loader import load_ideogram4_components
+        components = load_ideogram4_components(
+            model_path=self.model_path,
+            torch_dtype=self.weight_dtype,
+            load_unconditional=self.ideogram4_train_uncond,
+        )
+
+        self.transformer = components["transformer"]
+        self.transformer_original = self.transformer
+        self.transformer_uncond = components.get("unconditional_transformer")
+        self.vae = components["vae"]
+        self.text_encoder = components["text_encoder"]
+        self.tokenizer = components["tokenizer"]
+        self.scheduler = components["scheduler"]
+
+        # Single-stream DiT: no dual TE / no U-Net.
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.t5_tokenizer = None
+        self.unet = None
+        self.noise_scheduler = self.scheduler
+
+        self.vae = self.vae.to(dtype=self.vae_dtype)
+
+        # Gradient checkpointing.
+        for t in (self.transformer, self.transformer_uncond):
+            if t is not None and hasattr(t, "enable_gradient_checkpointing"):
+                try:
+                    t.enable_gradient_checkpointing()
+                except Exception as e:
+                    print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
+        print(f"{self.log_prefix} Gradient checkpointing enabled for Ideogram 4 transformer(s)")
+
+        # Freeze everything; LoRA adapter wraps the fp8 base (already weight-only-fp8).
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+        if self.transformer_uncond is not None:
+            self.transformer_uncond.requires_grad_(False)
+
+        # Block-swap deferred until after adapter setup.
+        self.layer_offload_conductor = None
+        if self.blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
+                  f"deferred until adapter setup completes")
+
+        print(f"{self.log_prefix} Moving Ideogram 4 transformer to {self.device}")
+        self.transformer.to(self.device)
+        if self.transformer_uncond is not None:
+            self.transformer_uncond.to(self.device)
+
+        print(f"{self.log_prefix} Ideogram 4 model loaded successfully")
+
+    def setup_ideogram4_block_swap(self):
+        """Initialise LayerOffloadConductor for the Ideogram 4 transformer(s), AFTER adapter setup."""
+        if not self.is_ideogram4:
+            return
+        if self.blocks_to_swap <= 0:
+            return
+        if getattr(self, "layer_offload_conductor", None) is not None:
+            return
+        if not hasattr(self.transformer, "layers"):
+            raise ValueError("Ideogram 4 transformer must expose `.layers` for block swap")
+
+        from core.memory_management import LayerOffloadConductor
+        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
+              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
+        self.layer_offload_conductor = LayerOffloadConductor(
+            layers=self.transformer.layers,
+            blocks_to_swap=self.blocks_to_swap,
+            device=self.device,
+            use_pinned_memory=self.use_pinned_memory,
+            cpu_buffer_size_mb=8192,
+            activation_buffer_size_mb=4096,
+            enable_prefetch=True,
+            enable_activation_offload=False,
+        )
+        self.transformer._layer_offload_conductor = self.layer_offload_conductor
+        self.layer_offload_conductor.register_hooks()
+        # Optional: a second conductor for the unconditional transformer when trained.
+        if getattr(self, "transformer_uncond", None) is not None and getattr(self, "ideogram4_train_uncond", False):
+            self.layer_offload_conductor_uncond = LayerOffloadConductor(
+                layers=self.transformer_uncond.layers,
+                blocks_to_swap=self.blocks_to_swap,
+                device=self.device,
+                use_pinned_memory=self.use_pinned_memory,
+                cpu_buffer_size_mb=8192,
+                activation_buffer_size_mb=4096,
+                enable_prefetch=True,
+                enable_activation_offload=False,
+            )
+            self.transformer_uncond._layer_offload_conductor = self.layer_offload_conductor_uncond
+            self.layer_offload_conductor_uncond.register_hooks()
+        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Ideogram 4")
+
     # DEUS support removed - architecture no longer maintained
     # def _load_deus_components(self):
     #     """Load DEUS model components.
@@ -1542,6 +1652,7 @@ class BaseTrainer(ABC):
         self.is_flux2 = (model_type == "flux2")
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
+        self.is_ideogram4 = (model_type == "ideogram4")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -3427,6 +3538,20 @@ class BaseTrainer(ABC):
         stacked = torch.stack(cond_features, dim=0).unsqueeze(0)  # [1, num_layers, L, D]
         return stacked, cond_mask
 
+    def encode_prompt_ideogram4(self, prompt: str, max_length: int = 512):
+        """Encode prompt for Ideogram 4: 13-layer Qwen3-VL hidden states.
+
+        Returns (stacked [1, 13, L, 4096], mask [L]) — same contract as
+        encode_prompt_lens so the caching/batching path produces
+        [B, 13, L, 4096] / [B, L]. The 13 layers are concatenated to the
+        53248-dim conditioning inside train_step_ideogram4.
+        """
+        from core.models.ideogram4.ideogram4_pipeline_ops import encode_text_layers
+        stacked, mask = encode_text_layers(
+            self.text_encoder, self.tokenizer, prompt, max_sequence_length=max_length,
+        )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
+        return stacked.unsqueeze(0).detach(), mask.detach()
+
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
         Unified caption encoding for all architectures.
@@ -3445,6 +3570,8 @@ class BaseTrainer(ABC):
             return self.encode_prompt_zimage(caption)
         elif self.is_lens:
             return self.encode_prompt_lens(caption)
+        elif self.is_ideogram4:
+            return self.encode_prompt_ideogram4(caption)
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the
@@ -3571,7 +3698,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -3580,7 +3707,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -3763,6 +3890,14 @@ class BaseTrainer(ABC):
                 # BN normalise, and rearrange to flat-sequence (1, N, 128).
                 from core.models.lens.lens_pipeline_ops import vae_encode as _lens_vae_encode
                 latents = _lens_vae_encode(
+                    self.vae, image, height=height, width=width,
+                    device=vae_device, dtype=self.vae_dtype,
+                )
+            elif self.is_ideogram4:
+                # Ideogram 4 VAE (AutoencoderKLFlux2): same flat-sequence latent
+                # (1, N, 128) — BN normalise + 2x2 patchify, shared with Lens space.
+                from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode as _ig4_vae_encode
+                latents = _ig4_vae_encode(
                     self.vae, image, height=height, width=width,
                     device=vae_device, dtype=self.vae_dtype,
                 )
@@ -4123,6 +4258,18 @@ class BaseTrainer(ABC):
             # mnt_attention_mask:  [B, L] encoder mask
             _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
             loss, pred_loss, recon_loss = self.train_step_lens(
+                latents=mnt_latents,
+                encoder_features=mnt_text_embeddings,
+                encoder_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
+                latent_h=_lh,
+                latent_w=_lw,
+            )
+        elif self.is_ideogram4:
+            # mnt_text_embeddings: [B, 13, L, 4096]; mnt_attention_mask: [B, L]
+            _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
+            loss, pred_loss, recon_loss = self.train_step_ideogram4(
                 latents=mnt_latents,
                 encoder_features=mnt_text_embeddings,
                 encoder_mask=mnt_attention_mask,
@@ -5345,6 +5492,131 @@ class BaseTrainer(ABC):
 
         del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
         return loss, pred_loss_value, recon_loss_value
+
+    def train_step_ideogram4(
+        self,
+        latents: torch.Tensor,
+        encoder_features: torch.Tensor,
+        encoder_mask: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
+        profile_vram: bool = False,
+        latent_h: Optional[int] = None,
+        latent_w: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """Single Ideogram 4 training step (flow-matching, velocity prediction).
+
+        Conventions derived from the inference path (which calls
+        `scheduler.step(-v)`):
+          x_sigma   = (1 - sigma) * x0 + sigma * noise   (sigma=1 -> noise)
+          v_target  = x0 - noise                         (transformer output sign)
+          timestep  = 1 - sigma                          (model time in [0, 1])
+        These satisfy pred_x0 = x_sigma + sigma * v = x0.
+
+        Args:
+            latents:          Packed image latents [B, N, 128].
+            encoder_features: 13-layer Qwen3-VL features [B, 13, L, 4096].
+            encoder_mask:     Text token mask [B, L].
+            latent_h/latent_w: latent grid (height//16, width//16).
+        """
+        from core.models.ideogram4.ideogram4_pipeline_ops import (
+            concat_layer_features, build_training_conditioning,
+        )
+
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        encoder_features = encoder_features.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        encoder_mask = encoder_mask.to(device=self.device, non_blocking=True)
+
+        B, N, _ = latents.shape
+        if latent_h is not None and latent_w is not None:
+            if latent_h * latent_w != N:
+                raise ValueError(
+                    f"[train_step_ideogram4] latent_h={latent_h}*latent_w={latent_w} != N={N}"
+                )
+        else:
+            side = int(N ** 0.5)
+            if side * side != N:
+                raise ValueError(
+                    f"[train_step_ideogram4] non-square latent (N={N}); pass latent_h/latent_w"
+                )
+            latent_h = latent_w = side
+
+        if timesteps is None:
+            if self.timestep_sampler is not None:
+                timesteps = self.timestep_sampler.sample(B, self.device)
+            else:
+                timesteps = torch.rand(B, device=self.device)
+        sigma = timesteps.to(self.training_dtype)
+        sigma_v = sigma.view(-1, 1, 1)
+
+        noise = torch.randn_like(latents)
+        noisy = (1.0 - sigma_v) * latents + sigma_v * noise  # sigma=1 -> noise
+        v_target = latents - noise                            # x0 - noise
+        t_model = (1.0 - sigma).to(self.training_dtype)        # model time [0,1]
+
+        # Build packed conditioning (text + image positions/indicator/segment).
+        text_features = concat_layer_features(encoder_features)  # [B, L, 53248]
+        cond = build_training_conditioning(text_features, encoder_mask, latent_h, latent_w)
+        max_text = cond["max_text_tokens"]
+
+        t_dtype = self.transformer.dtype
+        text_z = torch.zeros(B, max_text, latents.shape[-1], dtype=noisy.dtype, device=self.device)
+        pos_z = torch.cat([text_z, noisy], dim=1).to(t_dtype)
+        llm_features = cond["llm_features"].to(t_dtype)
+
+        def _cond_forward():
+            return self.transformer(
+                hidden_states=pos_z,
+                timestep=t_model.to(t_dtype),
+                encoder_hidden_states=llm_features,
+                position_ids=cond["position_ids"],
+                segment_ids=cond["segment_ids"],
+                indicator=cond["indicator"],
+                return_dict=False,
+            )[0]
+
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                out = _cond_forward()
+        else:
+            out = _cond_forward()
+        v_pred = out[:, max_text:].float()
+        loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+
+        # Optional auxiliary unconditional branch (image-only, zeroed text).
+        if getattr(self, "ideogram4_train_uncond", False) and getattr(self, "transformer_uncond", None) is not None:
+            uncond = self.transformer_uncond
+            u_dtype = uncond.dtype
+            neg_llm = torch.zeros(
+                B, N, llm_features.shape[-1], dtype=u_dtype, device=self.device
+            )
+            neg_pos = cond["position_ids"][:, max_text:]
+            neg_seg = cond["segment_ids"][:, max_text:]
+            neg_ind = cond["indicator"][:, max_text:]
+            neg_hidden = noisy.to(u_dtype)
+
+            def _uncond_forward():
+                return uncond(
+                    hidden_states=neg_hidden,
+                    timestep=t_model.to(u_dtype),
+                    encoder_hidden_states=neg_llm,
+                    position_ids=neg_pos,
+                    segment_ids=neg_seg,
+                    indicator=neg_ind,
+                    return_dict=False,
+                )[0]
+
+            if self.mixed_precision:
+                with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                    neg_out = _uncond_forward()
+            else:
+                neg_out = _uncond_forward()
+            uncond_loss = torch.nn.functional.mse_loss(neg_out.float(), v_target.float(), reduction="mean")
+            loss = loss + float(getattr(self, "ideogram4_uncond_loss_weight", 1.0)) * uncond_loss
+
+        pred_loss_value = loss.item()
+        loss.backward()
+        del noise, noisy, v_pred, v_target, pos_z, llm_features
+        return loss, pred_loss_value, 0.0
 
     def train_step_flux2(
         self,
@@ -7270,7 +7542,7 @@ class BaseTrainer(ABC):
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                     # Check auxiliary data file (architecture-specific)
-                    if self.is_zimage or self.is_lens:
+                    if self.is_zimage or self.is_lens or self.is_ideogram4:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -7309,7 +7581,7 @@ class BaseTrainer(ABC):
                             torch.save(embeds_cpu, embeds_path)
 
                             # Save auxiliary data (architecture-specific)
-                            if (self.is_zimage or self.is_lens) and auxiliary_cpu is not None:
+                            if (self.is_zimage or self.is_lens or self.is_ideogram4) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
@@ -7373,7 +7645,7 @@ class BaseTrainer(ABC):
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
         # Check architecture-specific auxiliary file
-        if self.is_zimage or self.is_lens:
+        if self.is_zimage or self.is_lens or self.is_ideogram4:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -8970,8 +9242,8 @@ class BaseTrainer(ABC):
                                 latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
 
                             # Validate latent shape.
-                            # Lens latents are [1, N, 128] (3D flat sequence); skip the 4D check.
-                            if not self.is_lens:
+                            # Lens / Ideogram4 latents are [1, N, 128] (3D flat sequence); skip the 4D check.
+                            if not (self.is_lens or self.is_ideogram4):
                                 expected_latent_height = height // 8
                                 expected_latent_width = width // 8
                                 if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
@@ -9351,7 +9623,7 @@ class BaseTrainer(ABC):
                             if self.is_zimage:
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
-                            elif self.is_lens:
+                            elif self.is_lens or self.is_ideogram4:
                                 # encoder_mask per sample: [L] → stacked to [B, L]
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
@@ -9441,7 +9713,7 @@ class BaseTrainer(ABC):
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
-                        if self.is_lens and width and height:
+                        if (self.is_lens or self.is_ideogram4) and width and height:
                             batch_lens_latent_shape = (height // 16, width // 16)
 
                         try:

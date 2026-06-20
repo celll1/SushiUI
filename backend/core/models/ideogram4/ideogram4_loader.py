@@ -143,6 +143,7 @@ def _build_ideogram4_transformer(
 def load_ideogram4_components(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,
+    load_unconditional: bool = True,
 ) -> dict:
     """Load Ideogram 4 components from a local diffusers directory.
 
@@ -150,12 +151,15 @@ def load_ideogram4_components(
         {
             "type": "ideogram4",
             "transformer": Ideogram4Transformer2DModel,
-            "unconditional_transformer": Ideogram4Transformer2DModel,
+            "unconditional_transformer": Ideogram4Transformer2DModel | None,
             "text_encoder": Qwen3VLModel,
             "tokenizer": PreTrainedTokenizer,
             "vae": AutoencoderKLFlux2,
             "scheduler": FlowMatchEulerDiscreteScheduler,
         }
+
+    `load_unconditional=False` skips the unconditional transformer (used by
+    LoRA training of the conditional branch only, to save ~9 GB).
     """
     from diffusers import AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler
     from transformers import AutoTokenizer
@@ -165,10 +169,14 @@ def load_ideogram4_components(
     print("[Ideogram4Loader] Loading transformer (conditional)...")
     transformer = _build_ideogram4_transformer(model_path, "transformer", torch_dtype)
 
-    print("[Ideogram4Loader] Loading unconditional_transformer (asymmetric-CFG branch)...")
-    unconditional_transformer = _build_ideogram4_transformer(
-        model_path, "unconditional_transformer", torch_dtype
-    )
+    unconditional_transformer = None
+    if load_unconditional:
+        print("[Ideogram4Loader] Loading unconditional_transformer (asymmetric-CFG branch)...")
+        unconditional_transformer = _build_ideogram4_transformer(
+            model_path, "unconditional_transformer", torch_dtype
+        )
+    else:
+        print("[Ideogram4Loader] Skipping unconditional_transformer (not requested)")
 
     print("[Ideogram4Loader] Loading text encoder (Qwen3-VL)...")
     text_encoder = load_ideogram4_text_encoder(model_path, torch_dtype=torch_dtype, device="cpu")

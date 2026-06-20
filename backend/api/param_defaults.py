@@ -248,6 +248,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # Lens full-parameter LR multipliers per stream.
     "lens_img_lr_factor": 1.0,
     "lens_txt_lr_factor": 1.0,
+    # Ideogram 4 (flow-matching DiT) LoRA: target scope and options.
+    # scope tokens: attn (to_q/to_k/to_v/to_out), mlp (feed_forward), mod (adaln).
+    "ideogram4_lora_scope": "attn,mlp",
+    # Also LoRA-train the unconditional transformer (asymmetric-CFG branch) with an
+    # auxiliary image-only loss. Default False (train the conditional branch only).
+    "ideogram4_train_uncond": False,
+    "ideogram4_uncond_loss_weight": 1.0,
+    # LoRA learning-rate multiplier (applied to unet_lr).
+    "ideogram4_lr_factor": 1.0,
     # If False, llm_adapter is dropped from the scope regardless of the
     # csv above. Defaults to True so the LLM Adapter is fine-tuned along
     # with the DiT blocks (Phase C user request).

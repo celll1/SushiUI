@@ -170,6 +170,12 @@ def _build_train_section(
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)
 
+    # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
+    train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")
+    train["ideogram4_train_uncond"] = p.get("ideogram4_train_uncond", False)
+    train["ideogram4_uncond_loss_weight"] = p.get("ideogram4_uncond_loss_weight", 1.0)
+    train["ideogram4_lr_factor"] = p.get("ideogram4_lr_factor", 1.0)
+
     # ---- Online Danbooru augmentation (image-generation) ----
     # Read unconditionally; ignored when danbooru_aug_enable is False.
     # SSoT: api/param_defaults.TRAINING_DEFAULTS.

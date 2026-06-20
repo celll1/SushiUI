@@ -1218,6 +1218,11 @@ def main():
                 print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+            # Ideogram 4 (flow-matching DiT, fp8 base) is trained in bf16.
+            if 'ideogram4' in run.base_model_path.lower() or 'ideogram-4' in run.base_model_path.lower():
+                print("[TrainRunner] Ideogram 4 model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
@@ -1623,6 +1628,11 @@ def main():
                 print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+            # Ideogram 4 (flow-matching DiT, fp8 base) is trained in bf16.
+            if 'ideogram4' in run.base_model_path.lower() or 'ideogram-4' in run.base_model_path.lower():
+                print("[TrainRunner] Ideogram 4 model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)
@@ -1994,6 +2004,11 @@ def main():
             # whenever the model path or arch metadata says so.
             if 'anima' in run.base_model_path.lower():
                 print("[TrainRunner] Anima model detected: forcing training_dtype=bf16 for numerical stability")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+            # Ideogram 4 (flow-matching DiT, fp8 base) is trained in bf16.
+            if 'ideogram4' in run.base_model_path.lower() or 'ideogram-4' in run.base_model_path.lower():
+                print("[TrainRunner] Ideogram 4 model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 

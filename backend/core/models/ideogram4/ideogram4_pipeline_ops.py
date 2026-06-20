@@ -215,6 +215,106 @@ def _get_text_encoder_hidden_states(
 
 
 @torch.no_grad()
+def encode_text_layers(text_encoder, tokenizer, prompt: str, max_sequence_length: int = 512):
+    """Encode one caption to the 13-layer Qwen3-VL hidden states for training cache.
+
+    Returns (stacked [13, n_text, 4096] float32 CPU, mask [n_text] bool CPU). The
+    13 layers are concatenated to the 53248-dim conditioning in train_step (matching
+    the inference `encode_prompt` ordering). Text encoder must be on its device.
+    """
+    messages = [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+    text = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    toks = tokenizer(text, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
+    n = int(toks.shape[0])
+    if n > max_sequence_length:
+        toks = toks[-max_sequence_length:]
+        n = max_sequence_length
+    te_device = text_encoder.device
+    token_ids = toks.unsqueeze(0).to(te_device)
+    attention_mask = torch.ones(1, n, dtype=torch.long, device=te_device)
+    pos = torch.arange(n, device=te_device).unsqueeze(0)
+    selected = _get_text_encoder_hidden_states(text_encoder, token_ids, attention_mask, pos)
+    stacked = torch.stack([s[0] for s in selected], dim=0)  # [13, n, 4096]
+    return stacked.float().cpu(), torch.ones(n, dtype=torch.bool)
+
+
+def concat_layer_features(encoder_features: torch.Tensor) -> torch.Tensor:
+    """Concatenate batched 13-layer features [B, 13, L, 4096] -> [B, L, 53248].
+
+    Matches the inference `encode_prompt` ordering (stack then permute/reshape so
+    the 13 layer values are interleaved per channel).
+    """
+    B, num_layers, L, D = encoder_features.shape
+    return encoder_features.permute(0, 2, 3, 1).reshape(B, L, D * num_layers)
+
+
+def build_training_conditioning(
+    text_features: torch.Tensor,
+    text_mask: torch.Tensor,
+    grid_h: int,
+    grid_w: int,
+) -> Dict[str, Any]:
+    """Build the packed conditional inputs for a training batch.
+
+    Mirrors `encode_prompt` packing but for batched, pre-encoded text features
+    (concatenated 13-layer Qwen3-VL hidden states). Real text tokens (text_mask==1)
+    get sequential positions and the LLM-token indicator; padding is masked out via
+    indicator (0) and segment id (-1). Image tokens are appended after the text
+    region with the image-grid positions.
+
+    Args:
+        text_features: (B, L, llm_features_dim) concatenated text hidden states.
+        text_mask:     (B, L) 1 for real text tokens, 0 for padding.
+        grid_h, grid_w: latent grid (height//16, width//16).
+
+    Returns dict consumable by the transformer denoise forward (cond branch):
+        llm_features, position_ids, segment_ids, indicator, max_text_tokens.
+    """
+    device = text_features.device
+    B, L, _ = text_features.shape
+    num_image = grid_h * grid_w
+    total = L + num_image
+    mask_long = text_mask.to(device=device, dtype=torch.long)
+
+    # Image position ids (t=0, h, w) offset to stay disjoint from text positions.
+    h_idx = torch.arange(grid_h, device=device).view(-1, 1).expand(grid_h, grid_w).reshape(-1)
+    w_idx = torch.arange(grid_w, device=device).view(1, -1).expand(grid_h, grid_w).reshape(-1)
+    t_idx = torch.zeros_like(h_idx)
+    image_pos = torch.stack([t_idx, h_idx, w_idx], dim=1) + IMAGE_POSITION_OFFSET  # (num_image, 3)
+
+    position_ids = torch.zeros(B, total, 3, dtype=torch.long, device=device)
+    segment_ids = torch.full((B, total), SEQUENCE_PADDING_INDICATOR, dtype=torch.long, device=device)
+    indicator = torch.zeros(B, total, dtype=torch.long, device=device)
+
+    # Text region: sequential position per real token (cumsum-1 over the mask).
+    text_pos = (mask_long.cumsum(dim=1) - 1).clamp(min=0)  # (B, L)
+    position_ids[:, :L, 0] = text_pos
+    position_ids[:, :L, 1] = text_pos
+    position_ids[:, :L, 2] = text_pos
+    real_text = mask_long.bool()
+    indicator[:, :L][real_text] = LLM_TOKEN_INDICATOR
+    segment_ids[:, :L][real_text] = 1
+
+    # Image region.
+    position_ids[:, L:] = image_pos.unsqueeze(0).expand(B, -1, -1)
+    indicator[:, L:] = OUTPUT_IMAGE_INDICATOR
+    segment_ids[:, L:] = 1
+
+    image_feature_padding = torch.zeros(
+        B, num_image, text_features.shape[-1], dtype=text_features.dtype, device=device
+    )
+    llm_features = torch.cat([text_features, image_feature_padding], dim=1)
+
+    return {
+        "llm_features": llm_features,
+        "position_ids": position_ids,
+        "segment_ids": segment_ids,
+        "indicator": indicator,
+        "max_text_tokens": L,
+    }
+
+
+@torch.no_grad()
 def encode_prompt(
     text_encoder,
     tokenizer,

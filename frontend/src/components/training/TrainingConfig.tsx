@@ -534,6 +534,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "lens";
   };
 
+  const isIdeogram4Model = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "ideogram4";
+  };
+
   const getModelArchitecture = (modelPath: string): string | undefined => {
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture;
@@ -2986,10 +2991,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
                   Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                   {isAnimaModel(baseModelPath) && '(Not supported for Anima)'}
                   {isLensModel(baseModelPath) && '(Not supported for Lens)'}
@@ -3609,6 +3614,96 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </div>
                   </div>
                 )}
+              </>
+            )}
+
+            {/* Ideogram 4 (flow-matching DiT) LoRA options */}
+            {isIdeogram4Model(baseModelPath) && params.training_method === "lora" && (
+              <>
+                {(() => {
+                  const scopeCsv: string = (params.ideogram4_lora_scope ?? "attn,mlp");
+                  const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
+                  const toggle = (tok: string) => {
+                    const next = new Set(scopeSet);
+                    if (next.has(tok)) next.delete(tok); else next.add(tok);
+                    const ordered = ["attn", "mlp", "mod"].filter((t) => next.has(t));
+                    updateParam("ideogram4_lora_scope", ordered.join(","));
+                  };
+                  return (
+                    <div>
+                      <label className="block text-xs text-gray-300 mb-1">
+                        LoRA Scope (Ideogram 4 DiT module families)
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                          ["attn", "Attention (Q/K/V/Out)"],
+                          ["mlp", "MLP (SwiGLU)"],
+                          ["mod", "AdaLN modulation"],
+                        ].map(([tok, label]) => (
+                          <label key={tok} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={scopeSet.has(tok)}
+                              onChange={() => toggle(tok)}
+                              className="w-3.5 h-3.5"
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Default: attn + mlp. AdaLN modulation is off by default.
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                <div className="flex items-center space-x-2">
+                  <input
+                    type="checkbox"
+                    id="ideogram4-train-uncond"
+                    checked={!!params.ideogram4_train_uncond}
+                    onChange={(e) => updateParam("ideogram4_train_uncond", e.target.checked)}
+                    className="w-4 h-4"
+                  />
+                  <label htmlFor="ideogram4-train-uncond" className="text-xs text-gray-300 cursor-pointer">
+                    Also train unconditional transformer (asymmetric-CFG branch)
+                  </label>
+                </div>
+
+                {params.ideogram4_train_uncond && (
+                  <div>
+                    <label htmlFor="ideogram4-uncond-loss-weight" className="block text-xs text-gray-300 mb-1">
+                      Unconditional loss weight
+                    </label>
+                    <input
+                      type="number"
+                      id="ideogram4-uncond-loss-weight"
+                      value={params.ideogram4_uncond_loss_weight ?? 1.0}
+                      onChange={(e) => updateParam("ideogram4_uncond_loss_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("ideogram4_uncond_loss_weight", 1.0); }}
+                      min={0}
+                      step={0.1}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label htmlFor="ideogram4-lr-factor" className="block text-xs text-gray-300 mb-1">
+                    LoRA LR ×
+                  </label>
+                  <input
+                    type="number"
+                    id="ideogram4-lr-factor"
+                    value={params.ideogram4_lr_factor ?? 1.0}
+                    onChange={(e) => updateParam("ideogram4_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("ideogram4_lr_factor", 1.0); }}
+                    min={0}
+                    step={0.1}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                  />
+                </div>
               </>
             )}
 

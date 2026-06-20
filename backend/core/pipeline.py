@@ -6549,6 +6549,83 @@ class DiffusionPipelineManager:
         print(f"[Lens LoRA] Unloaded {restored} LoRA wrappers")
         return restored
 
+    def _load_lora_ideogram4(self, lora_configs: List[Dict]) -> int:
+        """Wrap Ideogram 4 transformer Linear/Fp8Linear modules with LoRA adapters.
+
+        Applies the conditional-branch LoRA to `transformer`; if the checkpoint
+        also carries unconditional-branch keys (lora_uncond_*) and the
+        unconditional transformer is loaded, those are applied to it too.
+        Must be called after the transformer(s) are staged on GPU.
+        """
+        from core.models.ideogram4.ideogram4_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        )
+        from core.extensions.lora_manager import lora_manager
+
+        if not lora_configs or not self.ideogram4_components:
+            return 0
+
+        transformer = self.ideogram4_components["transformer"]
+        uncond = self.ideogram4_components.get("unconditional_transformer")
+        if not hasattr(self, "_ideogram4_lora_orig"):
+            self._ideogram4_lora_orig: Dict[str, torch.nn.Module] = {}
+            self._ideogram4_lora_keys: set = set()
+            self._ideogram4_lora_orig_uncond: Dict[str, torch.nn.Module] = {}
+            self._ideogram4_lora_keys_uncond: set = set()
+
+        total = 0
+        for i, cfg in enumerate(lora_configs):
+            lora_path = cfg.get("path", "")
+            strength = float(cfg.get("strength", 1.0))
+            resolved = lora_manager._resolve_lora_path(lora_path)
+            if resolved is None:
+                print(f"[Ideogram4 LoRA] WARNING: file not found: {lora_path}")
+                continue
+            try:
+                raw, fmt = load_lora_safetensors(str(resolved))
+                grouped = normalise_lora_state_dict(raw, branch="cond")
+                applied = apply_lora_group(
+                    transformer, grouped, strength,
+                    self._ideogram4_lora_orig, self._ideogram4_lora_keys,
+                )
+                print(f"[Ideogram4 LoRA] {i+1}/{len(lora_configs)}: {lora_path} "
+                      f"format={fmt} cond_modules={len(grouped)} wrapped={applied} strength={strength}")
+                total += applied
+
+                if uncond is not None:
+                    grouped_u = normalise_lora_state_dict(raw, branch="uncond")
+                    if grouped_u:
+                        applied_u = apply_lora_group(
+                            uncond, grouped_u, strength,
+                            self._ideogram4_lora_orig_uncond, self._ideogram4_lora_keys_uncond,
+                        )
+                        print(f"[Ideogram4 LoRA]   uncond wrapped {applied_u} module(s)")
+                        total += applied_u
+            except Exception as e:
+                print(f"[Ideogram4 LoRA] ERROR loading {lora_path}: {e}")
+                import traceback; traceback.print_exc()
+        return total
+
+    def _unload_lora_ideogram4(self) -> int:
+        """Restore every Ideogram 4 transformer Linear to its pre-LoRA original."""
+        from core.models.ideogram4.ideogram4_lora import restore_originals
+        if not self.ideogram4_components:
+            return 0
+        restored = 0
+        if getattr(self, "_ideogram4_lora_keys", None):
+            restored += restore_originals(
+                self.ideogram4_components["transformer"],
+                self._ideogram4_lora_orig, self._ideogram4_lora_keys,
+            )
+        uncond = self.ideogram4_components.get("unconditional_transformer")
+        if uncond is not None and getattr(self, "_ideogram4_lora_keys_uncond", None):
+            restored += restore_originals(
+                uncond, self._ideogram4_lora_orig_uncond, self._ideogram4_lora_keys_uncond,
+            )
+        if restored:
+            print(f"[Ideogram4 LoRA] Unloaded {restored} LoRA wrappers")
+        return restored
+
     @staticmethod
     def _lens_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
         """Collect Advanced-CFG knobs for Lens generation.
@@ -7696,6 +7773,7 @@ class DiffusionPipelineManager:
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             try:
                 latents = denoise_loop(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -7706,6 +7784,8 @@ class DiffusionPipelineManager:
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                 )
             finally:
+                if applied_lora:
+                    self._unload_lora_ideogram4()
                 self._ideogram4_unstage_transformers()
             del cond
 
@@ -7762,6 +7842,7 @@ class DiffusionPipelineManager:
 
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             try:
                 latents = denoise_loop_img2img(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -7773,6 +7854,8 @@ class DiffusionPipelineManager:
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                 )
             finally:
+                if applied_lora:
+                    self._unload_lora_ideogram4()
                 self._ideogram4_unstage_transformers()
             del cond, init_latents
 
@@ -7843,6 +7926,7 @@ class DiffusionPipelineManager:
 
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             try:
                 latents = denoise_loop_inpaint(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -7854,6 +7938,8 @@ class DiffusionPipelineManager:
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                 )
             finally:
+                if applied_lora:
+                    self._unload_lora_ideogram4()
                 self._ideogram4_unstage_transformers()
             del cond, init_latents, mask_latent
 

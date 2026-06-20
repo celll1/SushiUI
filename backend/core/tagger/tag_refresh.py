@@ -201,10 +201,20 @@ class TagRefreshDetector:
         self._id_to_idx: Optional[Dict[int, int]] = None
 
     def _safe_mtime(self) -> float:
-        try:
-            return os.path.getmtime(self.db_path)
-        except OSError:
-            return 0.0
+        # datasets.db runs in WAL mode: edits land in datasets.db-wal and the
+        # main file's mtime does NOT advance until a checkpoint. Gating on the
+        # main file alone would miss (or badly delay) edits, so take the newest
+        # mtime across the db and its -wal / -shm sidecars. Still just a few
+        # cheap stat() syscalls.
+        newest = 0.0
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                m = os.path.getmtime(self.db_path + suffix)
+                if m > newest:
+                    newest = m
+            except OSError:
+                pass
+        return newest
 
     def start(self) -> None:
         if self._thread is not None:

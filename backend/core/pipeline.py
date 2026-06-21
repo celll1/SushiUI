@@ -8064,6 +8064,8 @@ class DiffusionPipelineManager:
             print(f"[MiniT2I] Resolution aligned: {req_w}x{req_h} -> {width}x{height}")
         cfg = self.minit2i_components["transformer"].mmjit_config
         scheduler = self.minit2i_components["scheduler"]
+        vae_type = self.minit2i_components.get("vae_type", "none")
+        vsf = int(self.minit2i_components.get("vae_scale_factor", 8))
         return {
             "seed": seed,
             "prompt": params.get("prompt", ""),
@@ -8074,7 +8076,28 @@ class DiffusionPipelineManager:
             "prompt_length": int(cfg.prompt_length),
             "width": width,
             "height": height,
+            # Latent-space fields (vae_type != "none"): work in [1, C, H/vsf, W/vsf].
+            "vae_type": vae_type,
+            "is_latent": vae_type != "none",
+            "channels": int(cfg.in_channels),
+            "noise_scale": float(getattr(cfg, "noise_scale", 2.0)),
+            "vae_scale_factor": vsf,
+            "latent_h": height // vsf,
+            "latent_w": width // vsf,
         }
+
+    def _minit2i_decode(self, x, cfg):
+        """Pixel: tensor_to_image. Latent: move VAE to GPU, decode, VAE back to CPU."""
+        from core.models.minit2i.minit2i_pipeline_ops import tensor_to_image, vae_decode_latent
+        if not cfg["is_latent"]:
+            return tensor_to_image(x)
+        vae = self._minit2i_move("vae", self.device)
+        try:
+            return vae_decode_latent(vae, x)
+        finally:
+            self._minit2i_move("vae", "cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     @torch.no_grad()
     def _minit2i_encode(self, prompt, negative_prompt, prompt_length, device, dtype):
@@ -8154,7 +8177,7 @@ class DiffusionPipelineManager:
             self._unload_lora_minit2i()
         except Exception:
             pass
-        for _c in ("text_encoder", "transformer"):
+        for _c in ("text_encoder", "transformer", "vae"):
             try:
                 self._minit2i_move(_c, "cpu")
             except Exception:
@@ -8176,16 +8199,26 @@ class DiffusionPipelineManager:
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             try:
-                x = denoise_loop(
-                    transformer, text, mask, cfg["height"], cfg["width"],
-                    cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
-                    device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
-                    progress_callback=progress_callback,
-                )
+                if cfg["is_latent"]:
+                    # work in latent space: [1, C, H/vsf, W/vsf]
+                    x = denoise_loop(
+                        transformer, text, mask, cfg["latent_h"], cfg["latent_w"],
+                        cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
+                        device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
+                        progress_callback=progress_callback,
+                        channels=cfg["channels"], noise_scale=cfg["noise_scale"], clamp_output=False,
+                    )
+                else:
+                    x = denoise_loop(
+                        transformer, text, mask, cfg["height"], cfg["width"],
+                        cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
+                        device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
+                        progress_callback=progress_callback,
+                    )
             finally:
                 if applied_lora:
                     self._unload_lora_minit2i()
-            image = tensor_to_image(x)
+            image = self._minit2i_decode(x, cfg)
             print("[MiniT2I] txt2img completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -8199,7 +8232,7 @@ class DiffusionPipelineManager:
         if not self.minit2i_components:
             raise RuntimeError("MiniT2I components not loaded.")
         from core.models.minit2i.minit2i_pipeline_ops import (
-            denoise_loop_img2img, image_to_tensor, tensor_to_image,
+            denoise_loop_img2img, image_to_tensor, vae_encode_image,
         )
         print("[MiniT2I] Starting img2img generation")
         device = self.device
@@ -8209,7 +8242,12 @@ class DiffusionPipelineManager:
         try:
             text, mask, neg_text, neg_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
-            init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
+            if cfg["is_latent"]:
+                vae = self._minit2i_move("vae", device)
+                init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
+                self._minit2i_move("vae", "cpu")
+            else:
+                init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             try:
@@ -8218,11 +8256,12 @@ class DiffusionPipelineManager:
                     cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                     device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                     progress_callback=progress_callback,
+                    noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
                 )
             finally:
                 if applied_lora:
                     self._unload_lora_minit2i()
-            image = tensor_to_image(x)
+            image = self._minit2i_decode(x, cfg)
             print("[MiniT2I] img2img completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -8236,7 +8275,7 @@ class DiffusionPipelineManager:
         if not self.minit2i_components:
             raise RuntimeError("MiniT2I components not loaded.")
         from core.models.minit2i.minit2i_pipeline_ops import (
-            denoise_loop_inpaint, image_to_tensor, tensor_to_image, prepare_mask,
+            denoise_loop_inpaint, image_to_tensor, vae_encode_image, prepare_mask,
         )
         print("[MiniT2I] Starting inpaint generation (repaint)")
         device = self.device
@@ -8246,8 +8285,15 @@ class DiffusionPipelineManager:
         try:
             text, mask, neg_text, neg_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
-            init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
-            mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
+            if cfg["is_latent"]:
+                vae = self._minit2i_move("vae", device)
+                init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
+                self._minit2i_move("vae", "cpu")
+                # mask at latent resolution (1=regenerate, 0=keep)
+                mask_latent = prepare_mask(mask_image, cfg["latent_h"], cfg["latent_w"], device, dtype)
+            else:
+                init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
+                mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             try:
@@ -8256,11 +8302,12 @@ class DiffusionPipelineManager:
                     cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                     device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                     progress_callback=progress_callback,
+                    noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
                 )
             finally:
                 if applied_lora:
                     self._unload_lora_minit2i()
-            image = tensor_to_image(x)
+            image = self._minit2i_decode(x, cfg)
             print("[MiniT2I] inpaint completed")
             return image, cfg["seed"], 0
         except Exception as e:

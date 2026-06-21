@@ -207,7 +207,7 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -224,7 +224,15 @@ class TAESDManager:
         import time
         decode_start_time = time.time()
 
-        # MiniT2I: pixel-space, the "latent" is already an RGB [-1,1] image [B,3,H,W].
+        # MiniT2I latent variants: route the preview to the matching tiny decoder
+        # (sdxl-VAE -> TAESD-XL 4ch, flux1-VAE -> TAEF1 16ch). The normalized latent
+        # is close enough to the VAE's scaled latent for a preview.
+        if is_minit2i and minit2i_vae_type == "sdxl":
+            is_sdxl = True; is_minit2i = False
+        elif is_minit2i and minit2i_vae_type == "flux1":
+            is_zimage = True; is_minit2i = False
+
+        # MiniT2I pixel-space: the "latent" is already an RGB [-1,1] image [B,3,H,W].
         if is_minit2i:
             try:
                 with torch.no_grad():

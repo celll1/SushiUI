@@ -80,6 +80,7 @@ def create_progress_callback_factory(
     is_lens: bool = False,
     is_ideogram4: bool = False,
     is_minit2i: bool = False,
+    minit2i_vae_type: str = "none",
     img2img_fix_steps: Optional[bool] = None,
     steps: Optional[int] = None,
     image_width: Optional[int] = None,
@@ -159,6 +160,7 @@ def create_progress_callback_factory(
                     is_lens=is_lens,
                     is_ideogram4=is_ideogram4,
                     is_minit2i=is_minit2i,
+                    minit2i_vae_type=minit2i_vae_type,
                     image_width=image_width,
                     image_height=image_height,
                     preview_decoder=preview_decoder

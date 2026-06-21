@@ -59,11 +59,36 @@ def tensor_to_image(x: torch.Tensor) -> Image.Image:
     return Image.fromarray(arr)
 
 
-def prepare_noise(height, width, device, dtype, seed: Optional[int] = None) -> torch.Tensor:
+def prepare_noise(height, width, device, dtype, seed: Optional[int] = None,
+                  channels: int = 3, noise_scale: float = NOISE_SCALE) -> torch.Tensor:
+    """Random start tensor [1, channels, height, width] * noise_scale.
+
+    Pixel space: channels=3, noise_scale=2 (default), height/width = image dims.
+    Latent space: channels=VAE latent channels, noise_scale=1, height/width = latent
+    dims (image // vae_scale_factor).
+    """
     gen = None
     if seed is not None and seed >= 0:
         gen = torch.Generator(device=device).manual_seed(seed)
-    return torch.randn(1, 3, height, width, generator=gen, device=device, dtype=dtype) * NOISE_SCALE
+    return torch.randn(1, channels, height, width, generator=gen, device=device, dtype=dtype) * noise_scale
+
+
+@torch.no_grad()
+def vae_encode_image(vae, image: Image.Image, height: int, width: int, device, dtype) -> torch.Tensor:
+    """PIL -> normalized VAE latent [1, C, H/8, W/8] (for latent-space MiniT2I)."""
+    from .minit2i_vae import normalize_latent
+    px = image_to_tensor(image, height, width, device, dtype)  # [1,3,H,W] in [-1,1]
+    sample = vae.encode(px).latent_dist.sample()
+    return normalize_latent(sample, vae)
+
+
+@torch.no_grad()
+def vae_decode_latent(vae, latent: torch.Tensor) -> Image.Image:
+    """Normalized VAE latent [1, C, h, w] -> PIL image."""
+    from .minit2i_vae import denormalize_latent
+    sample = denormalize_latent(latent.to(vae.dtype), vae)
+    img = vae.decode(sample).sample  # [1,3,H,W] in ~[-1,1]
+    return tensor_to_image(img.float())
 
 
 @torch.no_grad()
@@ -90,9 +115,12 @@ def _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale
 
 @torch.no_grad()
 def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-               start_idx=0, progress_callback=None, mask_latent=None, init_image=None, fixed_noise=None):
-    """Shared Euler loop from ts[start_idx] -> 1. Returns final [-1,1] RGB.
+               start_idx=0, progress_callback=None, mask_latent=None, init_image=None, fixed_noise=None,
+               clamp_output=True):
+    """Shared Euler loop from ts[start_idx] -> 1.
 
+    Returns the final tensor. clamp_output=True clamps to [-1,1] (pixel RGB);
+    latent-space callers pass clamp_output=False (latents are not bounded to [-1,1]).
     If mask_latent/init_image/fixed_noise are given (inpaint), the kept region is
     pinned to the noised init each step.
     """
@@ -112,34 +140,44 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             x = mask_latent * x + (1.0 - mask_latent) * known
         if progress_callback is not None:
             progress_callback(j, total, x.detach(), None, pred_x0.detach())
-    return x.clamp(-1, 1)
+    return x.clamp(-1, 1) if clamp_output else x
 
 
 @torch.no_grad()
 def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cfg_scale,
                  cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
-                 progress_callback=None):
-    """txt2img: start from pure noise, integrate t:0->1."""
-    x = prepare_noise(height, width, device, dtype, seed)
+                 progress_callback=None, channels: int = 3, noise_scale: float = NOISE_SCALE,
+                 clamp_output: bool = True):
+    """txt2img: start from pure noise, integrate t:0->1.
+
+    Pixel: channels=3, noise_scale=2, height/width = image dims, clamp_output=True.
+    Latent: channels=C, noise_scale=1, height/width = latent dims, clamp_output=False.
+    """
+    x = prepare_noise(height, width, device, dtype, seed, channels=channels, noise_scale=noise_scale)
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device, dtype=dtype)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                      progress_callback=progress_callback)
+                      progress_callback=progress_callback, clamp_output=clamp_output)
 
 
 @torch.no_grad()
 def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask, num_inference_steps,
                          cfg_scale, cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
-                         progress_callback=None):
-    """img2img (SDEdit): start at t_start = 1 - strength with the noised init."""
+                         progress_callback=None, noise_scale: float = NOISE_SCALE, clamp_output: bool = True):
+    """img2img (SDEdit): start at t_start = 1 - strength with the noised init.
+
+    init_image is the working tensor: pixel RGB [1,3,H,W] or (latent) a normalized
+    VAE latent [1,C,h,w]. channels/noise scale follow init_image / noise_scale.
+    """
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device, dtype=dtype)
     t_start = max(0.0, min(1.0, 1.0 - float(denoising_strength)))
     start_idx = int((ts <= t_start).sum().item()) - 1
     start_idx = max(0, min(start_idx, num_inference_steps - 1))
-    noise = prepare_noise(init_image.shape[-2], init_image.shape[-1], device, dtype, seed)
+    noise = prepare_noise(init_image.shape[-2], init_image.shape[-1], device, dtype, seed,
+                          channels=init_image.shape[1], noise_scale=noise_scale)
     ti = ts[start_idx]
     x = init_image.to(dtype) * ti + noise * (1.0 - ti)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                      start_idx=start_idx, progress_callback=progress_callback)
+                      start_idx=start_idx, progress_callback=progress_callback, clamp_output=clamp_output)
 
 
 def prepare_mask(mask_image: Image.Image, height, width, device, dtype) -> torch.Tensor:
@@ -152,16 +190,23 @@ def prepare_mask(mask_image: Image.Image, height, width, device, dtype) -> torch
 @torch.no_grad()
 def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strength, text, mask,
                          num_inference_steps, cfg_scale, cfg_interval, device, dtype, seed=None,
-                         neg_text=None, neg_mask=None, progress_callback=None):
-    """inpaint (repaint): keep non-masked pixels pinned to the noised init each step."""
+                         neg_text=None, neg_mask=None, progress_callback=None,
+                         noise_scale: float = NOISE_SCALE, clamp_output: bool = True):
+    """inpaint (repaint): keep non-masked pixels pinned to the noised init each step.
+
+    init_image is the working tensor (pixel RGB or normalized VAE latent); mask_latent
+    must be at the same spatial resolution (1 = regenerate, 0 = keep).
+    """
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device, dtype=dtype)
     t_start = max(0.0, min(1.0, 1.0 - float(denoising_strength)))
     start_idx = int((ts <= t_start).sum().item()) - 1
     start_idx = max(0, min(start_idx, num_inference_steps - 1))
-    fixed_noise = prepare_noise(init_image.shape[-2], init_image.shape[-1], device, dtype, seed)
+    fixed_noise = prepare_noise(init_image.shape[-2], init_image.shape[-1], device, dtype, seed,
+                                channels=init_image.shape[1], noise_scale=noise_scale)
     ti = ts[start_idx]
     init_image = init_image.to(dtype)
     x = init_image * ti + fixed_noise * (1.0 - ti)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       start_idx=start_idx, progress_callback=progress_callback,
-                      mask_latent=mask_latent, init_image=init_image, fixed_noise=fixed_noise)
+                      mask_latent=mask_latent, init_image=init_image, fixed_noise=fixed_noise,
+                      clamp_output=clamp_output)

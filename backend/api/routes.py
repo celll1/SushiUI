@@ -460,6 +460,7 @@ async def generate_txt2img(
                        pipeline_manager.current_model_info.get("type") == "ideogram4"
         is_minit2i = pipeline_manager.current_model_info and \
                      pipeline_manager.current_model_info.get("type") == "minit2i"
+        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -474,6 +475,7 @@ async def generate_txt2img(
             is_lens=is_lens,
             is_ideogram4=is_ideogram4,
             is_minit2i=is_minit2i,
+            minit2i_vae_type=minit2i_vae_type,
             image_width=params.get("width"),
             image_height=params.get("height"),
             # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
@@ -1149,6 +1151,7 @@ async def generate_img2img(
                        pipeline_manager.current_model_info.get("type") == "ideogram4"
         is_minit2i = pipeline_manager.current_model_info and \
                      pipeline_manager.current_model_info.get("type") == "minit2i"
+        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1522,6 +1525,7 @@ async def generate_inpaint(
                        pipeline_manager.current_model_info.get("type") == "ideogram4"
         is_minit2i = pipeline_manager.current_model_info and \
                      pipeline_manager.current_model_info.get("type") == "minit2i"
+        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(

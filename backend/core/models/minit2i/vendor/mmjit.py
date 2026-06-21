@@ -167,8 +167,12 @@ class PlainTextTransformerBlock(nn.Module):
         q, k, v = qkv[:, :, 0], qkv[:, :, 1], qkv[:, :, 2]
         q = self.rope(self.q_norm(q))
         k = self.rope(self.k_norm(k))
-        attn = torch.einsum("bqhd,bkhd->bhqk", q, k) * (self.head_dim ** -0.5)
-        out = torch.einsum("bhqk,bkhd->bqhd", attn.softmax(dim=-1), v).reshape(b, length, -1)
+        # Memory-efficient attention (flash / mem-efficient SDPA) instead of an
+        # explicit [B,heads,L,L] score matrix — O(L) memory, needed for high-res
+        # pixel-space sequences. Mathematically equivalent (default 1/sqrt(d) scale).
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        ).transpose(1, 2).reshape(b, length, -1)
         txt = txt + self.attn_proj(out)
         txt = txt + self.mlp(self.norm2(txt))
         return txt
@@ -210,8 +214,12 @@ class DoubleStreamDiTBlock(nn.Module):
         q = self.rope(torch.cat([q_t, q_i], dim=1), txt_len=lt, grid_h=grid_h, grid_w=grid_w)
         k = self.rope(torch.cat([k_t, k_i], dim=1), txt_len=lt, grid_h=grid_h, grid_w=grid_w)
         v = torch.cat([v_t, v_i], dim=1)
-        attn = torch.einsum("bqhd,bkhd->bhqk", q, k) * (self.head_dim ** -0.5)
-        out = torch.einsum("bhqk,bkhd->bqhd", attn.softmax(dim=-1), v)
+        # Memory-efficient attention (flash / mem-efficient SDPA) over the joint
+        # [text + image] sequence — avoids the O(L²) score matrix that OOMs at
+        # high-res pixel-space. Mathematically equivalent (default 1/sqrt(d) scale).
+        out = F.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        ).transpose(1, 2).contiguous()  # [b, seq, heads, hd]
         x = x + self.img_attn_proj(out[:, lt:].reshape(b, li, -1))
         txt = txt + self.txt_attn_proj(out[:, :lt].reshape(b, lt, -1))
         x = x + self.img_mlp(self.img_norm2(x))

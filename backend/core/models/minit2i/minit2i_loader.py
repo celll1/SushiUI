@@ -20,23 +20,113 @@ from .vendor import MiniT2IMMJiTModel, MiniT2IFlowMatchScheduler
 from .vendor.single_file import load_single_file, detect_variant_from_state_dict
 
 
+def _looks_like_flan_t5(d: str) -> bool:
+    """A directory is a FLAN-T5 checkpoint if it has a config.json + tokenizer."""
+    if not os.path.isdir(d):
+        return False
+    if not os.path.isfile(os.path.join(d, "config.json")):
+        return False
+    return any(os.path.isfile(os.path.join(d, t))
+               for t in ("spiece.model", "tokenizer.json", "tokenizer_config.json"))
+
+
 def _resolve_flan_t5(model_path: str, flan_t5_path: str | None) -> str:
-    """Resolve the FLAN-T5-Large location (local dir preferred, else hub id)."""
-    candidates = []
-    if flan_t5_path:
-        candidates.append(flan_t5_path)
+    """Resolve the FLAN-T5-Large location (local dir preferred, else hub id).
+
+    Walks up several ancestors of the model and probes common sibling names so a
+    variant dir (e.g. <root>/MiniT2I/minit2i-b-16) finds <root>/flan-t5-large two
+    levels up. Falls back to the HF hub id if nothing local is found.
+    """
+    if flan_t5_path and os.path.isdir(flan_t5_path):
+        return flan_t5_path
+    names = ("flan-t5-large", "flan-t5", "flan_t5_large", "text_encoder")
     base = os.path.dirname(model_path.rstrip("/\\")) if os.path.isfile(model_path) else model_path
-    # common local layouts under M:\model\minit2i\
-    parent = os.path.dirname(base.rstrip("/\\"))
-    candidates += [
-        os.path.join(base, "flan-t5-large"),
-        os.path.join(parent, "flan-t5-large"),
-        os.path.join(parent, "flan-t5-large", "flan-t5-large"),
-    ]
-    for c in candidates:
-        if c and os.path.isdir(c):
-            return c
+    base = base.rstrip("/\\")
+    # Probe base and up to 4 ancestor levels for any of the sibling names.
+    cur = base
+    for _ in range(5):
+        for nm in names:
+            cand = os.path.join(cur, nm)
+            if _looks_like_flan_t5(cand):
+                return cand
+            # one extra nesting level (e.g. flan-t5-large/flan-t5-large)
+            cand2 = os.path.join(cand, nm)
+            if _looks_like_flan_t5(cand2):
+                return cand2
+        nxt = os.path.dirname(cur)
+        if nxt == cur:
+            break
+        cur = nxt
     return "google/flan-t5-large"  # hub fallback
+
+
+def _is_minit2i_variant_dir(d: str) -> bool:
+    """True if d is a MiniT2I variant diffusers dir (has transformer/config.json marker)."""
+    cfg_path = os.path.join(d, "transformer", "config.json")
+    if not os.path.isfile(cfg_path):
+        return False
+    try:
+        import json
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            tcfg = json.load(f)
+    except Exception:
+        return False
+    return (tcfg.get("_class_name") == "MiniT2IMMJiTModel"
+            or ("depth_double" in tcfg and "pca_channels" in tcfg))
+
+
+def find_minit2i_variant_dirs(path: str, max_depth: int = 2) -> list:
+    """Find MiniT2I variant dirs at `path` or within `max_depth` levels below it.
+
+    Handles: a variant dir itself, a repo root (<root>/MiniT2I containing
+    minit2i-b-16 / minit2i-l-16), and a container (<root> with MiniT2I/ inside).
+    Returns absolute paths, de-duplicated, sorted.
+    """
+    found = set()
+    if not os.path.isdir(path):
+        return []
+
+    def _walk(d: str, depth: int):
+        if _is_minit2i_variant_dir(d):
+            found.add(os.path.abspath(d))
+            return  # a variant dir has no nested variants
+        if depth >= max_depth:
+            return
+        try:
+            entries = sorted(os.listdir(d))
+        except OSError:
+            return
+        for name in entries:
+            sub = os.path.join(d, name)
+            if os.path.isdir(sub):
+                _walk(sub, depth + 1)
+
+    _walk(path, 0)
+    return sorted(found)
+
+
+def resolve_minit2i_model_dir(path: str) -> str:
+    """Resolve a user-supplied directory to a single MiniT2I variant dir.
+
+    If `path` is already a variant dir, return it. Otherwise search inside; with
+    exactly one variant return it, with several raise a clear error listing them.
+    """
+    if _is_minit2i_variant_dir(path):
+        return path
+    variants = find_minit2i_variant_dirs(path)
+    if len(variants) == 1:
+        print(f"[MiniT2ILoader] Resolved '{path}' -> variant dir '{variants[0]}'")
+        return variants[0]
+    if len(variants) > 1:
+        listing = "\n  ".join(variants)
+        raise ValueError(
+            f"Multiple MiniT2I variants found under '{path}'. Select a specific "
+            f"variant directory (B/16 and L/16 are separate models):\n  {listing}"
+        )
+    raise ValueError(
+        f"No MiniT2I variant found under '{path}'. Point at the variant directory "
+        f"that contains 'transformer/' and 'scheduler/' (e.g. .../minit2i-b-16)."
+    )
 
 
 def _load_flan_t5(location: str, torch_dtype: torch.dtype):
@@ -88,6 +178,12 @@ def load_minit2i_components(
             tokenizer, text_encoder = _load_flan_t5(flan_loc, text_encoder_dtype)
     else:
         print(f"[MiniT2ILoader] Loading diffusers directory: {model_path}")
+        # Accept a variant dir, a repo root (.../MiniT2I) or a container
+        # (.../minit2i with MiniT2I/ inside); resolve to one variant dir.
+        flan_search_root = model_path
+        if os.path.isdir(model_path) and not os.path.isdir(os.path.join(model_path, "transformer")):
+            resolved_dir = resolve_minit2i_model_dir(model_path)
+            model_path = resolved_dir
         transformer_dir = os.path.join(model_path, "transformer")
         if not os.path.isdir(transformer_dir):
             transformer_dir = model_path  # allow pointing directly at the transformer dir
@@ -100,7 +196,11 @@ def load_minit2i_components(
         else:
             scheduler = MiniT2IFlowMatchScheduler()
 
+        # Resolve FLAN-T5 from the originally-supplied root too (the local
+        # flan-t5-large often sits a couple of levels above the variant dir).
         flan_loc = _resolve_flan_t5(model_path, flan_t5_path)
+        if flan_loc == "google/flan-t5-large" and flan_search_root != model_path:
+            flan_loc = _resolve_flan_t5(flan_search_root, flan_t5_path)
         tokenizer, text_encoder = _load_flan_t5(flan_loc, text_encoder_dtype)
 
     transformer.eval()

@@ -53,6 +53,42 @@ class ModelLoader:
             traceback.print_exc()
 
     @staticmethod
+    def _dir_contains_minit2i(model_path: str, max_depth: int = 2) -> bool:
+        """True if a MiniT2I variant dir exists at model_path or within max_depth.
+
+        A variant dir has transformer/config.json with the MiniT2I marker. This lets
+        detection accept a repo root (.../MiniT2I) or container (.../minit2i) that holds
+        minit2i-b-16 / minit2i-l-16 so the loader can resolve it. JSON-only (no torch).
+        """
+        def _is_variant(d: str) -> bool:
+            cfg = os.path.join(d, "transformer", "config.json")
+            if not os.path.isfile(cfg):
+                return False
+            try:
+                with open(cfg, "r", encoding="utf-8") as f:
+                    tcfg = json.load(f)
+            except Exception:
+                return False
+            return (tcfg.get("_class_name") == "MiniT2IMMJiTModel"
+                    or ("depth_double" in tcfg and "pca_channels" in tcfg))
+
+        def _walk(d: str, depth: int) -> bool:
+            if _is_variant(d):
+                return True
+            if depth >= max_depth:
+                return False
+            try:
+                for name in os.listdir(d):
+                    sub = os.path.join(d, name)
+                    if os.path.isdir(sub) and _walk(sub, depth + 1):
+                        return True
+            except OSError:
+                return False
+            return False
+
+        return _walk(model_path, 0)
+
+    @staticmethod
     def detect_prediction_config(model_path: str, model_type: str) -> Dict[str, str]:
         """Detect prediction configuration from model metadata and state dict
 
@@ -320,6 +356,12 @@ class ModelLoader:
                         return "minit2i"
                 except Exception:
                     pass
+
+            # MiniT2I repo root (.../MiniT2I with MiniT2IPipeline model_index) or a
+            # container (.../minit2i with MiniT2I/ inside): detect by scanning for a
+            # variant dir within 2 levels so the loader can resolve it to a variant.
+            if os.path.isdir(model_path) and ModelLoader._dir_contains_minit2i(model_path):
+                return "minit2i"
 
         # Anima detection (split-files layout or single DiT safetensors)
         try:

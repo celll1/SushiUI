@@ -4131,6 +4131,9 @@ class DiffusionPipelineManager:
         # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
         # We normalize progress to user-requested num_inference_steps for UI consistency
         for i, t in enumerate(timesteps):
+            if self.cancel_requested:
+                print("[Z-Image] Generation cancelled by user")
+                raise RuntimeError("Generation cancelled by user")
             # Skip last step if t=0 (flow matching termination)
             if t == 0 and i == len(timesteps) - 1:
                 print(f"[Z-Image] Step {i+1}/{len(timesteps)} | t={t.item():.2f} | Skipping last step (flow matching termination)")

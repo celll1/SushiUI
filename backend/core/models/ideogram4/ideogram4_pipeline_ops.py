@@ -607,10 +607,12 @@ def _run_loop(
     mask_latent: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Shared dual-branch flow-matching loop (txt2img / img2img / inpaint)."""
+    from core.inference.cancellation import raise_if_cancelled
     total_steps = len(timesteps)
     batch = latents.shape[0]
 
     for i, t in enumerate(timesteps):
+        raise_if_cancelled()
         sigma_t = t.item() / num_train_timesteps
         t_model = (1.0 - (t.float() / num_train_timesteps)).expand(batch).to(transformer.dtype)
 

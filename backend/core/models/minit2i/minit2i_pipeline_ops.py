@@ -96,9 +96,11 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
     If mask_latent/init_image/fixed_noise are given (inpaint), the kept region is
     pinned to the noised init each step.
     """
+    from core.inference.cancellation import raise_if_cancelled
     n = len(ts) - 1
     total = n - start_idx
     for j, i in enumerate(range(start_idx, n)):
+        raise_if_cancelled()
         t0 = ts[i]
         t1 = ts[i + 1]
         t = t0.expand(1).to(x.dtype)

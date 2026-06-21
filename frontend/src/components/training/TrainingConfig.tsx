@@ -3011,14 +3011,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) || isMiniT2IModel(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) || isMiniT2IModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
                   Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                   {isAnimaModel(baseModelPath) && '(Not supported for Anima)'}
                   {isLensModel(baseModelPath) && '(Not supported for Lens)'}
-                  {isMiniT2IModel(baseModelPath) && '(Not yet supported for MiniT2I)'}
+                  {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
                 </label>
               </div>
 
@@ -3801,6 +3801,44 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
                 </div>
+
+                {/* TE (FLAN-T5) LoRA scope — shown when Train Text Encoder is on */}
+                {trainTextEncoder && (() => {
+                  const teScopeCsv: string = (params.minit2i_te_lora_scope ?? "attn,ff");
+                  const teScopeSet = new Set(teScopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
+                  const toggleTe = (tok: string) => {
+                    const next = new Set(teScopeSet);
+                    if (next.has(tok)) next.delete(tok); else next.add(tok);
+                    const ordered = ["attn", "ff"].filter((t) => next.has(t));
+                    updateParam("minit2i_te_lora_scope", ordered.join(","));
+                  };
+                  return (
+                    <div>
+                      <label className="block text-xs text-gray-300 mb-1">
+                        TE LoRA Scope (FLAN-T5)
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                          ["attn", "Attention (q/k/v/o)"],
+                          ["ff", "FeedForward (wi/wo)"],
+                        ].map(([tok, label]) => (
+                          <label key={tok} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={teScopeSet.has(tok)}
+                              onChange={() => toggleTe(tok)}
+                              className="w-3.5 h-3.5"
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Applied to FLAN-T5 when Train Text Encoder is enabled. Default: attn + ff.
+                      </p>
+                    </div>
+                  );
+                })()}
               </>
             )}
 

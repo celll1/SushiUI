@@ -72,6 +72,17 @@ class LoRALinearLayer(nn.Module):
         self.lora_down.to(device=device, dtype=lora_dtype)
         self.lora_up.to(device=device, dtype=lora_dtype)
 
+    @property
+    def weight(self):
+        """Expose the wrapped Linear's weight so callers that introspect
+        `.weight` (e.g. T5's DenseGatedActDense dtype check) keep working when a
+        Linear is wrapped. Read-only delegate; not a trained parameter here."""
+        return self.original_module.weight
+
+    @property
+    def bias(self):
+        return getattr(self.original_module, "bias", None)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with LoRA adaptation.

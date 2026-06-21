@@ -178,6 +178,7 @@ def _build_train_section(
 
     # ---- MiniT2I (pixel-space MM-JiT) — other archs ignore. ----
     train["minit2i_lora_scope"] = p.get("minit2i_lora_scope", "attn,mlp,txt_embed")
+    train["minit2i_te_lora_scope"] = p.get("minit2i_te_lora_scope", "attn,ff")
     train["minit2i_label_drop_rate"] = p.get("minit2i_label_drop_rate", 0.1)
     train["minit2i_lr_factor"] = p.get("minit2i_lr_factor", 1.0)
     train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")

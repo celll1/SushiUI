@@ -1442,6 +1442,14 @@ class BaseTrainer(ABC):
         self.text_encoder.requires_grad_(False)
         self.transformer.requires_grad_(False)
 
+        # Keep the transformer in train() mode for the whole run: MM-JiT gates
+        # gradient checkpointing on `self.training`, and it has no dropout/BN so
+        # train mode has no other effect. Without this, checkpointing would only
+        # activate after the first sample (its finally restores train mode), and a
+        # run with samples disabled would store ALL activations -> high-res OOM.
+        # The frozen FLAN-T5 stays in eval() (it has dropout) — loader set it.
+        self.transformer.train()
+
         # Block-swap deferred until after adapter setup.
         self.layer_offload_conductor = None
         if self.blocks_to_swap > 0:
@@ -9263,6 +9271,27 @@ class BaseTrainer(ABC):
                     # Reset fused optimizer groups counters (start of each step)
                     if self.fused_optimizer_groups is not None:
                         self.fused_optimizer_groups.reset_counters()
+
+                    # Aspect-ratio bucketing produces many distinct tensor shapes
+                    # (this dataset has ~140 buckets). Each new shape reserves fresh
+                    # CUDA blocks the allocator can't reuse for other shapes, so
+                    # reserved VRAM grows monotonically across buckets and on Windows
+                    # spills into shared memory (catastrophic slowdown). Release cached
+                    # blocks when the bucket changes so reserved memory tracks the
+                    # current shape rather than the union of every shape seen.
+                    try:
+                        _bfirst = batch[0][0] if (batch and isinstance(batch[0], tuple)) else (batch[0] if batch else None)
+                        if isinstance(_bfirst, dict):
+                            _bhw = (
+                                _bfirst.get("bucket_width") or _bfirst.get("width"),
+                                _bfirst.get("bucket_height") or _bfirst.get("height"),
+                            )
+                            if _bhw != getattr(self, "_prev_bucket_hw", None):
+                                if torch.cuda.is_available():
+                                    torch.cuda.empty_cache()
+                                self._prev_bucket_hw = _bhw
+                    except Exception:
+                        pass
 
                     # Check for stop flag (user-requested stop from frontend)
                     stop_flag_file = self.output_dir / ".stop_training"

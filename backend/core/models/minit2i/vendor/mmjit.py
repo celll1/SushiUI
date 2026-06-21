@@ -20,6 +20,30 @@ import torch.nn.functional as F
 import torch.utils.checkpoint
 
 
+def mem_efficient_sdpa(q, k, v):
+    """scaled_dot_product_attention with a head_dim that is always SDPA-fast.
+
+    q/k/v: [B, H, N, D]. The flash and memory-efficient SDPA backends require the
+    head dim to be a multiple of 8; otherwise SDPA silently falls back to the math
+    backend, which materialises the [B, H, N, N] score matrix (O(N^2) VRAM). The
+    l16 variant uses head_dim=52, so at high token counts this alone costs tens of
+    GB. Zero-padding D up to the next multiple of 8 leaves QK^T and the value mix
+    unchanged (the padded lanes contribute 0), so passing the original-D scale
+    makes the result numerically identical while keeping the O(N) fast path. b16
+    (D=64) needs no padding and hits the fast path directly.
+    """
+    d = q.shape[-1]
+    pad = (-d) % 8
+    if pad:
+        scale = d ** -0.5
+        q = F.pad(q, (0, pad))
+        k = F.pad(k, (0, pad))
+        v = F.pad(v, (0, pad))
+        out = F.scaled_dot_product_attention(q, k, v, scale=scale)
+        return out[..., :d]
+    return F.scaled_dot_product_attention(q, k, v)
+
+
 def rotate_half(x):
     x1, x2 = x.reshape(*x.shape[:-1], 2, -1).unbind(dim=-2)
     return torch.cat((-x2, x1), dim=-1)
@@ -169,8 +193,9 @@ class PlainTextTransformerBlock(nn.Module):
         k = self.rope(self.k_norm(k))
         # Memory-efficient attention (flash / mem-efficient SDPA) instead of an
         # explicit [B,heads,L,L] score matrix — O(L) memory, needed for high-res
-        # pixel-space sequences. Mathematically equivalent (default 1/sqrt(d) scale).
-        out = F.scaled_dot_product_attention(
+        # sequences. head_dim is padded to a multiple of 8 so SDPA never falls
+        # back to the O(L^2) math backend (mathematically equivalent).
+        out = mem_efficient_sdpa(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2).reshape(b, length, -1)
         txt = txt + self.attn_proj(out)
@@ -216,8 +241,9 @@ class DoubleStreamDiTBlock(nn.Module):
         v = torch.cat([v_t, v_i], dim=1)
         # Memory-efficient attention (flash / mem-efficient SDPA) over the joint
         # [text + image] sequence — avoids the O(L²) score matrix that OOMs at
-        # high-res pixel-space. Mathematically equivalent (default 1/sqrt(d) scale).
-        out = F.scaled_dot_product_attention(
+        # high res. head_dim is padded to a multiple of 8 so SDPA never falls back
+        # to the O(L²) math backend (mathematically equivalent).
+        out = mem_efficient_sdpa(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2).contiguous()  # [b, seq, heads, hd]
         x = x + self.img_attn_proj(out[:, lt:].reshape(b, li, -1))

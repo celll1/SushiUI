@@ -5644,42 +5644,126 @@ async def get_random_caption(
     caption_types: Optional[str] = None,  # Comma-separated caption types to filter
     db: Session = Depends(get_datasets_db)
 ):
-    """Get a random caption from the dataset, optionally filtered by caption type"""
-    import random
+    """Get a random caption from the dataset, processed exactly as training would.
+
+    Mirrors the training caption pipeline (core/training/train_runner.get_dataset_items):
+      1. Resolve the caption types the SAME way: explicit param ->
+         dataset.caption_processing.caption_types -> auto (tags > natural_language).
+      2. Select ONE caption per item by that priority (so e.g. tweet-body / other
+         fields never leak in when "tags" is the training target).
+      3. Apply the dataset's caption processing (normalize / shuffle / dropout /
+         category order) so the preview matches the string actually fed to training,
+         not the raw stored content.
+    """
+    import random as _random
+    from sqlalchemy import func
+    from core.training.caption_processor import (
+        process_caption, process_caption_with_tag_data, get_default_caption_processing_config,
+    )
 
     # Check dataset exists
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
         raise HTTPException(status_code=404, detail="Dataset not found")
 
-    # Build query for captions
-    query = db.query(DatasetCaption).join(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+    caption_config = dataset.caption_processing or get_default_caption_processing_config()
 
-    # Filter by caption types if provided
+    # Resolve which caption types to use (same priority as training).
     if caption_types:
-        types_list = [t.strip() for t in caption_types.split(",")]
-        query = query.filter(DatasetCaption.caption_type.in_(types_list))
+        selected_types = [t.strip() for t in caption_types.split(",") if t.strip()]
+    elif caption_config.get("caption_types"):
+        selected_types = list(caption_config.get("caption_types"))
+    else:
+        selected_types = None  # auto-select per item
 
-    # Get all matching captions
-    captions = query.all()
-
-    if not captions:
+    # Pick a random item that actually has a usable caption of the selected types.
+    cap_q = db.query(DatasetCaption).join(DatasetItem).filter(DatasetItem.dataset_id == dataset_id)
+    if selected_types:
+        cap_q = cap_q.filter(DatasetCaption.caption_type.in_(selected_types))
+    random_row = cap_q.order_by(func.random()).first()
+    if random_row is None:
         raise HTTPException(status_code=404, detail="No captions found in dataset")
 
-    # Select random caption
-    random_caption = random.choice(captions)
+    item = db.query(DatasetItem).filter(DatasetItem.id == random_row.item_id).first()
+
+    # Select the primary caption for this item by priority order (mirrors training,
+    # which uses the first matching type per item — not a random caption row).
+    priority = selected_types if selected_types else ["tags", "natural_language"]
+    primary = None
+    for ct in priority:
+        primary = db.query(DatasetCaption).filter(
+            DatasetCaption.item_id == item.id,
+            DatasetCaption.caption_type == ct,
+        ).first()
+        if primary:
+            break
+    if primary is None and not selected_types:
+        primary = db.query(DatasetCaption).filter(DatasetCaption.item_id == item.id).first()
+    if primary is None:
+        primary = random_row
+
+    raw_caption = primary.content or ""
+    is_tags_format = (
+        primary.is_tags_format
+        if hasattr(primary, "is_tags_format") and primary.is_tags_format is not None
+        else True
+    )
+
+    # Random epoch so repeated previews reflect the per-epoch shuffle/dropout variety.
+    epoch_num = _random.randint(0, 1000)
+
+    if is_tags_format:
+        tag_data = None
+        if getattr(primary, "tag_data", None):
+            import json
+            try:
+                tag_data = json.loads(primary.tag_data)
+            except Exception:
+                tag_data = None
+        if tag_data:
+            processed_caption = process_caption_with_tag_data(
+                tag_data=tag_data,
+                epoch_num=epoch_num,
+                item_path=item.image_path,
+                caption_config=caption_config,
+            )
+        else:
+            processed_caption = process_caption(
+                caption=raw_caption,
+                epoch_num=epoch_num,
+                item_path=item.image_path,
+                normalize_tags=caption_config.get("normalize_tags", True),
+                category_order=caption_config.get("category_order", None),
+                caption_dropout_rate=caption_config.get("caption_dropout_rate", 0.0),
+                token_dropout_rate=caption_config.get("token_dropout_rate", 0.0),
+                keep_tokens=caption_config.get("keep_tokens", 0),
+                shuffle_tokens=caption_config.get("shuffle_tokens", False),
+                shuffle_per_epoch=caption_config.get("shuffle_per_epoch", False),
+                shuffle_keep_first_n=caption_config.get("shuffle_keep_first_n", 0),
+                shuffle_tag_groups=caption_config.get("shuffle_tag_groups", None),
+                shuffle_groups_together=caption_config.get("shuffle_groups_together", False),
+                tag_group_dir=caption_config.get("tag_group_dir", "taglist"),
+                exclude_person_count_from_shuffle=caption_config.get("exclude_person_count_from_shuffle", False),
+                tag_dropout_rate=caption_config.get("tag_dropout_rate", 0.0),
+                tag_dropout_per_epoch=caption_config.get("tag_dropout_per_epoch", False),
+                tag_dropout_keep_first_n=caption_config.get("tag_dropout_keep_first_n", 0),
+                tag_dropout_category_rates=caption_config.get("tag_dropout_category_rates", {}),
+                tag_dropout_exclude_person_count=caption_config.get("tag_dropout_exclude_person_count", False),
+            )
+    else:
+        # Natural language: used as-is by training (no tag processing).
+        processed_caption = raw_caption
 
     # Fetch reference images from the DatasetItem
-    item = db.query(DatasetItem).filter(DatasetItem.id == random_caption.item_id).first()
     reference_images = []
     if item and item.related_images:
         reference_images = item.related_images.get("reference", [])
 
     return {
-        "caption": random_caption.content,
-        "caption_type": random_caption.caption_type,
-        "caption_subtype": random_caption.caption_subtype,
-        "item_id": random_caption.item_id,
+        "caption": processed_caption,
+        "caption_type": primary.caption_type,
+        "caption_subtype": getattr(primary, "caption_subtype", None),
+        "item_id": item.id,
         "reference_images": reference_images,
     }
 

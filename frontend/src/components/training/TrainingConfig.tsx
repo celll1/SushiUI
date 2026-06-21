@@ -551,11 +551,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "minit2i";
   };
 
-  // Latent-space MiniT2I (vae_type sdxl/flux1): full-scratch, Full-FT only (no LoRA).
-  const isLatentMiniT2IModel = (modelPath: string): boolean => {
-    const model = availableModels.find(m => m.path === modelPath);
-    return model?.architecture === "minit2i" && !!model?.vae_type && model.vae_type !== "none";
-  };
 
   const getModelArchitecture = (modelPath: string): string | undefined => {
     const model = availableModels.find(m => m.path === modelPath);
@@ -1041,13 +1036,6 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, trainingMethod]);
 
-  // Latent MiniT2I is from-scratch Full-FT only — force the method off LoRA/ReLoRA.
-  useEffect(() => {
-    if (isLatentMiniT2IModel(baseModelPath) && trainingMethod !== "full_finetune") {
-      setTrainingMethod("full_finetune");
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [baseModelPath, trainingMethod, availableModels]);
 
   // Reset optimizer hyperparameters when optimizer changes
   useEffect(() => {
@@ -1880,22 +1868,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         <div className="break-inside-avoid">
           <label className="block text-sm font-medium mb-2">Training Method</label>
           <div className="flex space-x-4">
-            <label
-              className={`flex items-center space-x-2 ${isLatentMiniT2IModel(baseModelPath) ? 'cursor-not-allowed' : 'cursor-pointer'}`}
-              title={isLatentMiniT2IModel(baseModelPath) ? 'Latent MiniT2I is trained from scratch — Full Fine-tune only (LoRA not applicable).' : undefined}
-            >
+            <label className="flex items-center space-x-2 cursor-pointer">
               <input
                 type="radio"
                 name="training_method"
                 value="lora"
                 checked={trainingMethod === "lora"}
                 onChange={() => setTrainingMethod("lora")}
-                disabled={isLatentMiniT2IModel(baseModelPath)}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className={`text-sm ${isLatentMiniT2IModel(baseModelPath) ? 'text-gray-500' : ''}`}>
-                LoRA{isLatentMiniT2IModel(baseModelPath) ? ' (N/A for latent MiniT2I)' : ' (Recommended)'}
-              </span>
+              <span className="text-sm">LoRA (Recommended)</span>
             </label>
             <label
               className={`flex items-center space-x-2 ${isIdeogram4Model(baseModelPath) ? 'cursor-not-allowed' : 'cursor-pointer'}`}

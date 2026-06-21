@@ -6641,8 +6641,11 @@ async def create_training_run(
         if existing:
             raise HTTPException(status_code=400, detail=f"Training run '{run_name}' already exists")
 
-        # Check if base model exists
-        if not os.path.exists(request.base_model_path):
+        # Check if base model exists. The from-scratch MiniT2I sentinel
+        # ("scratch:minit2i:<variant>:<vae_type>") is not a filesystem path: the
+        # trainer builds a random-initialized model in memory, so skip the check.
+        if not request.base_model_path.startswith("scratch:minit2i:") \
+                and not os.path.exists(request.base_model_path):
             raise HTTPException(status_code=400, detail=f"Base model not found: {request.base_model_path}")
 
         # Create output directory (use training base dir from user settings or default)

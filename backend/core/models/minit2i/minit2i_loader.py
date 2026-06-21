@@ -232,3 +232,43 @@ def load_minit2i_components(
         "vae_type": vae_type,
         "vae_scale_factor": VAE_SCALE_FACTOR,
     }
+
+
+def create_scratch_minit2i(variant: str, vae_type: str, out_dir: str,
+                           dtype: torch.dtype = torch.bfloat16) -> str:
+    """Create a random-initialized MiniT2I diffusers dir for from-scratch Full-FT.
+
+    Writes <out_dir>/transformer (MiniT2IMMJiTModel config + random weights) and
+    <out_dir>/scheduler. The resulting dir is detected as a MiniT2I model and trained
+    via the normal Full-FT flow. VAE weights are NOT written (resolved by vae_type at
+    load). variant in {b16, l16}; vae_type in {none, sdxl, flux1}.
+    """
+    from .vendor.single_file import KNOWN_VARIANTS
+    from .minit2i_vae import vae_latent_channels, VAE_REGISTRY
+
+    if variant not in KNOWN_VARIANTS:
+        raise ValueError(f"Unknown variant '{variant}' (expected {list(KNOWN_VARIANTS)})")
+    if vae_type != "none" and vae_type not in VAE_REGISTRY:
+        raise ValueError(f"Unknown vae_type '{vae_type}' (expected none/{list(VAE_REGISTRY)})")
+
+    base = dict(KNOWN_VARIANTS[variant])
+    if vae_type == "none":
+        in_ch, patch, noise = 3, 16, 2.0
+    else:
+        in_ch, patch, noise = vae_latent_channels(vae_type), 2, 1.0
+
+    print(f"[MiniT2ILoader] Creating scratch MiniT2I variant={variant} vae_type={vae_type} "
+          f"(in_channels={in_ch}, patch_size={patch}) -> {out_dir}")
+    model = MiniT2IMMJiTModel(
+        image_size=512, patch_size=patch, in_channels=in_ch, txt_input_size=1024,
+        hidden_size=base["hidden_size"], txt_hidden_size=base["txt_hidden_size"],
+        cond_vec_size=base["cond_vec_size"], depth_double=base["depth_double"],
+        txt_preamble_depth=2, num_heads=base["num_heads"], head_dim=base["head_dim"],
+        mlp_ratio=base["mlp_ratio"], pca_channels=128, prompt_length=256,
+        vae_type=vae_type, noise_scale=noise,
+    ).to(dtype)
+
+    os.makedirs(out_dir, exist_ok=True)
+    model.save_pretrained(os.path.join(out_dir, "transformer"))
+    MiniT2IFlowMatchScheduler().save_pretrained(os.path.join(out_dir, "scheduler"))
+    return out_dir

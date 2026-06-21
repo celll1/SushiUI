@@ -60,9 +60,21 @@ def detect_variant_from_state_dict(sd: Dict[str, torch.Tensor], prefix: str = ""
     depths = {int(m.group(1)) for k in sd if (m := re.search(rf"{re.escape(prefix)}model\.net\.double_blocks\.(\d+)\.", k))}
     depth_double = (max(depths) + 1) if depths else 0
 
+    # I/O config from the patch embed conv: proj1.weight is [pca, in_channels, patch, patch].
+    # vae_type maps from in_channels (3=pixel, 4=SDXL VAE, 16=FLUX.1 VAE).
+    proj1_key = key("model.net.img_embedder.proj1.weight")
+    in_channels, patch_size, vae_type = 3, 16, "none"
+    if proj1_key in sd:
+        w = sd[proj1_key]
+        in_channels = int(w.shape[1])
+        patch_size = int(w.shape[2])
+        vae_type = {3: "none", 4: "sdxl", 16: "flux1"}.get(in_channels, "none")
+    io_cfg = dict(in_channels=in_channels, patch_size=patch_size, vae_type=vae_type,
+                  noise_scale=2.0 if vae_type == "none" else 1.0)
+
     for name, cfg in KNOWN_VARIANTS.items():
         if cfg["hidden_size"] == hidden_size and cfg["depth_double"] == depth_double:
-            return name, dict(cfg)
+            return name, {**dict(cfg), **io_cfg}
     raise ValueError(
         f"[MiniT2I single-file] unknown variant (hidden_size={hidden_size}, depth_double={depth_double}); "
         f"known: {list(KNOWN_VARIANTS)}"
@@ -145,10 +157,14 @@ def save_single_file(
             _add(f"{TEXT_ENCODER_PREFIX}{k}", v)
 
     cfg = transformer.mmjit_config
+    # Persist the variant-delta keys + the I/O config (in_channels/patch_size/vae_type/
+    # noise_scale) so latent variants reload with the right channels/patch and VAE.
+    cfg_keys = list(KNOWN_VARIANTS[variant].keys()) + ["in_channels", "patch_size", "vae_type", "noise_scale"]
     metadata = {
         "model_type": "minit2i",
         "variant": str(variant),
-        "mmjit_config": json.dumps({k: getattr(cfg, k) for k in KNOWN_VARIANTS[variant].keys()}),
+        "vae_type": str(getattr(cfg, "vae_type", "none")),
+        "mmjit_config": json.dumps({k: getattr(cfg, k) for k in cfg_keys}),
         "has_text_encoder": "1" if text_encoder is not None else "0",
         "format": "pt",
     }

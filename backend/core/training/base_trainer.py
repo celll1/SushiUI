@@ -5833,9 +5833,16 @@ class BaseTrainer(ABC):
         loss = torch.nn.functional.mse_loss(v_pred, target.float(), reduction="mean")
 
         pred_loss_value = loss.item()
+        # Reconstruction loss (monitoring only, no gradients): unweighted MSE of the
+        # predicted clean image (x0) vs the target image. This is a cleaner quality
+        # signal than the (1-t)-reweighted velocity objective used for backward.
+        with torch.no_grad():
+            recon_loss_value = torch.nn.functional.mse_loss(
+                x0_pred.float(), images.float(), reduction="mean"
+            ).item()
         # Backward is performed by _execute_forward_backward; do not backward here.
         del noise, x_t, target, v_pred, x0_pred, denom
-        return loss, pred_loss_value, 0.0
+        return loss, pred_loss_value, recon_loss_value
 
     def train_step_flux2(
         self,

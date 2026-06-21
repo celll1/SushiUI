@@ -70,6 +70,8 @@ class MiniT2IMMJiTModel(ModelMixin, ConfigMixin):
         cfg_channels: int = 3,
         cfg_interval: tuple = (0.0, 1.0),
         llm: str = "google/flan-t5-large",
+        vae_type: str = "none",
+        noise_scale: float = 2.0,
     ):
         super().__init__()
         cfg = MMJiTConfig(
@@ -79,6 +81,7 @@ class MiniT2IMMJiTModel(ModelMixin, ConfigMixin):
             num_heads=num_heads, head_dim=head_dim, mlp_ratio=mlp_ratio, pca_channels=pca_channels,
             prompt_length=prompt_length, n_T=n_T, prediction=prediction, sampler=sampler,
             cfg_channels=cfg_channels, cfg_interval=tuple(cfg_interval), llm=llm,
+            vae_type=vae_type, noise_scale=noise_scale,
         )
         self.model = DiffusionModel(cfg)
         self.gradient_checkpointing = False

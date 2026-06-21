@@ -207,7 +207,7 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -223,6 +223,19 @@ class TAESDManager:
         """
         import time
         decode_start_time = time.time()
+
+        # MiniT2I: pixel-space, the "latent" is already an RGB [-1,1] image [B,3,H,W].
+        if is_minit2i:
+            try:
+                with torch.no_grad():
+                    x = latent.detach().cpu().to(torch.float32).clamp(-1, 1)
+                    if x.ndim != 4 or x.shape[1] != 3:
+                        return None
+                    arr = (x[0] * 127.5 + 128.0).clamp(0, 255).permute(1, 2, 0).to(torch.uint8).numpy()
+                    return Image.fromarray(arr, mode="RGB")
+            except Exception as e:
+                self._log_decode_error("MiniT2I", e)
+                return None
 
         # Optional TAEF2 decoder for AutoencoderKLFlux2-latent models (FLUX.2 / Lens /
         # Ideogram 4). Higher fidelity than the linear "matrix" projection; opt-in

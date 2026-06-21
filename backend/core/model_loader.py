@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -305,6 +305,11 @@ class ModelLoader:
                         "mrope_section" in tcfg and "llm_features_dim" in tcfg
                     ):
                         return "ideogram4"
+                    # MiniT2I MM-JiT (pixel-space): unique config class / keys.
+                    if tcfg.get("_class_name") == "MiniT2IMMJiTModel" or (
+                        "depth_double" in tcfg and "pca_channels" in tcfg
+                    ):
+                        return "minit2i"
                 except Exception:
                     pass
 
@@ -356,6 +361,12 @@ class ModelLoader:
                 with safe_open(model_path, framework="pt", device="cpu") as f:
                     keys = list(f.keys())
                     metadata = f.metadata() or {}
+
+                    # MiniT2I single-file (bundled FLAN-T5 + MM-JiT transformer).
+                    if (metadata.get("model_type", "").lower() == "minit2i"
+                            or any(k.startswith("transformer.model.net.") for k in keys)
+                            or any(k.startswith("model.net.double_blocks.") for k in keys)):
+                        return "minit2i"
 
                     # Priority 1: Check metadata for explicit model_type
                     if "model_type" in metadata:
@@ -1193,6 +1204,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Z-Image (Comfy safetensors format)")
             return ModelLoader.load_zimage_from_comfy_safetensors(file_path, device, torch.bfloat16)
 
+        # MiniT2I single-file (bundled FLAN-T5 + MM-JiT transformer)
+        if model_type == "minit2i":
+            print(f"[ModelLoader] Loading as MiniT2I (single-file)")
+            return ModelLoader.load_minit2i_from_path(file_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Check if VAE is embedded
@@ -1398,6 +1414,11 @@ class ModelLoader:
         if model_type == "ideogram4":
             print(f"[ModelLoader] Loading as Ideogram 4 (diffusers directory)")
             return ModelLoader.load_ideogram4_from_path(model_path, torch.bfloat16)
+
+        # MiniT2I diffusers directory (pixel-space MM-JiT + FLAN-T5, no VAE)
+        if model_type == "minit2i":
+            print(f"[ModelLoader] Loading as MiniT2I (diffusers directory)")
+            return ModelLoader.load_minit2i_from_path(model_path, torch.bfloat16)
 
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
@@ -1638,3 +1659,15 @@ class ModelLoader:
         """
         from core.models.ideogram4.ideogram4_loader import load_ideogram4_components
         return load_ideogram4_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_minit2i_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load MiniT2I from a diffusers directory or a single-file safetensors.
+
+        Returns a component dict consumed by PipelineManager.load_model().
+        """
+        from core.models.minit2i.minit2i_loader import load_minit2i_components
+        return load_minit2i_components(model_path=path, torch_dtype=torch_dtype)

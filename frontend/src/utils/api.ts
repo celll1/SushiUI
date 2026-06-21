@@ -112,6 +112,11 @@ export interface ModelInfo {
   type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i";  // DEUS support removed
   is_v_prediction: boolean;
   model_hash: string;
+  // Model-list entry fields (from GET /models)
+  name?: string;
+  path?: string;
+  architecture?: string;
+  vae_type?: string;  // MiniT2I: "none" (pixel) | "sdxl" | "flux1" (latent)
 }
 
 export interface LoRAConfig {
@@ -800,6 +805,23 @@ export const deleteImage = async (id: number) => {
 
 export const getModels = async () => {
   const response = await api.get("/models");
+  return response.data;
+};
+
+// Create a from-scratch MiniT2I model (latent or pixel) for Full-FT training.
+// variant: "b16" | "l16"; vaeType: "sdxl" | "flux1" | "none" (none = pixel-space).
+export const createScratchMiniT2I = async (
+  variant: string,
+  vaeType: string,
+  name: string,
+  targetDir?: string,
+) => {
+  const response = await api.post("/models/minit2i/create-scratch", {
+    variant,
+    vae_type: vaeType,
+    name,
+    target_dir: targetDir ?? null,
+  });
   return response.data;
 };
 

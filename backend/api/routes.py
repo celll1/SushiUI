@@ -1808,6 +1808,14 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                         else:
                             rel = os.path.relpath(vdir, item_path).replace("\\", "/")
                             vname = f"{item}/{rel}"
+                        # Read vae_type from the transformer config so the frontend can
+                        # tell pixel ("none") from latent (sdxl/flux1: Full-FT only).
+                        vae_type = "none"
+                        try:
+                            with open(os.path.join(vdir, "transformer", "config.json"), "r", encoding="utf-8") as _cf:
+                                vae_type = json.load(_cf).get("vae_type", "none") or "none"
+                        except Exception:
+                            pass
                         models.append({
                             "name": vname,
                             "path": vdir,
@@ -1815,6 +1823,7 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                             "source_type": "diffusers",
                             "source_dir": models_dir,
                             "architecture": "minit2i",
+                            "vae_type": vae_type,
                         })
                     continue
 
@@ -1889,6 +1898,63 @@ async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
                     "architecture": "vision_encoder",
                 })
     return {"vision_encoders": vision_encoders}
+
+
+class CreateScratchMiniT2IRequest(BaseModel):
+    variant: str = "b16"       # "b16" | "l16"
+    vae_type: str = "sdxl"     # "sdxl" | "flux1" | "none" (none = pixel-space)
+    name: str                  # output directory name
+    target_dir: Optional[str] = None  # parent dir; default = first configured models dir
+
+
+@router.post("/models/minit2i/create-scratch")
+async def create_scratch_minit2i_endpoint(
+    request: CreateScratchMiniT2IRequest,
+    db: Session = Depends(get_gallery_db),
+):
+    """Create a random-initialized MiniT2I model for from-scratch Full-FT training.
+
+    Writes a diffusers dir (transformer + scheduler) that is then selectable in the
+    model list and trained via Full-FT. Latent variants (vae_type sdxl/flux1) load
+    their VAE by type at train/inference time (weights not bundled).
+    """
+    from core.models.minit2i.minit2i_loader import create_scratch_minit2i
+    global _models_cache
+
+    name = (request.name or "").strip()
+    if not name or any(sep in name for sep in ("/", "\\", "..")):
+        raise HTTPException(status_code=400, detail="Invalid model name")
+    if request.variant not in ("b16", "l16"):
+        raise HTTPException(status_code=400, detail="variant must be b16 or l16")
+    if request.vae_type not in ("sdxl", "flux1", "none"):
+        raise HTTPException(status_code=400, detail="vae_type must be sdxl, flux1 or none")
+
+    # Resolve target parent dir (must be one of the configured model dirs, or default).
+    settings_record = db.query(UserSettings).first()
+    additional = settings_record.model_dirs if settings_record else []
+    allowed = [settings.models_dir] + list(additional)
+    parent = request.target_dir or settings.models_dir
+    if parent not in allowed:
+        raise HTTPException(status_code=400, detail=f"target_dir must be one of the configured model dirs: {allowed}")
+
+    out_dir = os.path.join(parent, name)
+    if os.path.exists(out_dir):
+        raise HTTPException(status_code=400, detail=f"Path already exists: {out_dir}")
+
+    try:
+        create_scratch_minit2i(request.variant, request.vae_type, out_dir)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create scratch model: {e}")
+
+    _models_cache = None  # invalidate so the new model appears
+    return {
+        "status": "success",
+        "path": out_dir,
+        "name": name,
+        "variant": request.variant,
+        "vae_type": request.vae_type,
+    }
+
 
 @router.post("/models/load")
 async def load_model(

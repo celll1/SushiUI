@@ -1014,6 +1014,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath]);
 
+  // Ideogram 4 does not support Full Fine-tune (fp8 base; VRAM-impractical) —
+  // fall back to LoRA if a full-FT method was carried over from another model/preset.
+  useEffect(() => {
+    if (isIdeogram4Model(baseModelPath) && (trainingMethod === "full_finetune" || trainingMethod === "relora")) {
+      setTrainingMethod("lora");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseModelPath, trainingMethod]);
+
   // Reset optimizer hyperparameters when optimizer changes
   useEffect(() => {
     // Skip during YAML restoration — params are already being restored correctly
@@ -1838,16 +1847,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <span className="text-sm">LoRA (Recommended)</span>
             </label>
-            <label className="flex items-center space-x-2 cursor-pointer">
+            <label
+              className={`flex items-center space-x-2 ${isIdeogram4Model(baseModelPath) ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              title={isIdeogram4Model(baseModelPath) ? 'Ideogram 4 Full Fine-tune is not supported (fp8 base; VRAM-impractical for individuals). Use LoRA.' : undefined}
+            >
               <input
                 type="radio"
                 name="training_method"
                 value="full_finetune"
                 checked={trainingMethod === "full_finetune"}
                 onChange={() => setTrainingMethod("full_finetune")}
+                disabled={isIdeogram4Model(baseModelPath)}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm">Full Fine-tune</span>
+              <span className={`text-sm ${isIdeogram4Model(baseModelPath) ? 'text-gray-500' : ''}`}>
+                Full Fine-tune{isIdeogram4Model(baseModelPath) ? ' (N/A for Ideogram 4)' : ''}
+              </span>
             </label>
             <label className="flex items-center space-x-2 cursor-pointer">
               <input

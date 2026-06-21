@@ -3457,7 +3457,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     Async CPU-offload checkpointing (non-blocking, faster)
                   </label>
                 </div>
-                {params.training_method === "lora" && (
+                {trainingMethod === "lora" && (
                   <div>
                     <label htmlFor="fp8-base-dtype" className="block text-xs text-gray-300 mb-1">
                       FP8 base weights (LoRA only)
@@ -3481,7 +3481,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 )}
 
                 {/* LoRA scope — which DiT module families get LoRA wraps. */}
-                {params.training_method === "lora" && (() => {
+                {trainingMethod === "lora" && (() => {
                   const scopeCsv: string = (params.anima_lora_scope ?? "attention,mlp,llm_adapter");
                   const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
                   const toggle = (tok: string) => {
@@ -3530,7 +3530,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
                 {/* Train LLM Adapter — for Full FT only (LoRA covers this
                     via the scope multi-select above). */}
-                {params.training_method !== "lora" && (
+                {trainingMethod !== "lora" && (
                   <div className="flex items-center space-x-2">
                     <input
                       type="checkbox"
@@ -3546,7 +3546,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 )}
 
                 {/* Per-group LR multipliers — Full FT only. */}
-                {params.training_method !== "lora" && (
+                {trainingMethod !== "lora" && (
                   <div className="grid grid-cols-3 gap-2">
                     <div>
                       <label htmlFor="anima-attn-mlp-lr-factor" className="block text-xs text-gray-300 mb-1">
@@ -3625,7 +3625,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     Async CPU-offload checkpointing (non-blocking, faster)
                   </label>
                 </div>
-                {params.training_method === "lora" && (
+                {trainingMethod === "lora" && (
                   <div>
                     <label htmlFor="lens-fp8-base-dtype" className="block text-xs text-gray-300 mb-1">
                       FP8 base weights (LoRA only)
@@ -3649,7 +3649,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 )}
 
                 {/* LoRA scope — which Lens DiT module families get LoRA wraps. */}
-                {params.training_method === "lora" && (() => {
+                {trainingMethod === "lora" && (() => {
                   const scopeCsv: string = (params.lens_lora_scope ?? "img_attn,txt_attn,img_mlp,txt_mlp");
                   const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
                   const toggle = (tok: string) => {
@@ -3690,7 +3690,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 })()}
 
                 {/* Per-stream LR multipliers — Full FT only. */}
-                {params.training_method !== "lora" && (
+                {trainingMethod !== "lora" && (
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label htmlFor="lens-img-lr-factor" className="block text-xs text-gray-300 mb-1">
@@ -3728,7 +3728,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* Ideogram 4 (flow-matching DiT) LoRA options */}
-            {isIdeogram4Model(baseModelPath) && params.training_method === "lora" && (
+            {isIdeogram4Model(baseModelPath) && trainingMethod === "lora" && (
               <>
                 {(() => {
                   const scopeCsv: string = (params.ideogram4_lora_scope ?? "attn,mlp");
@@ -3818,7 +3818,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             )}
 
             {/* MiniT2I (pixel-space MM-JiT) LoRA options */}
-            {isMiniT2IModel(baseModelPath) && params.training_method === "lora" && (
+            {isMiniT2IModel(baseModelPath) && trainingMethod === "lora" && (
               <>
                 {(() => {
                   const scopeCsv: string = (params.minit2i_lora_scope ?? "attn,mlp,txt_embed");

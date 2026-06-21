@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 from .anima_scheduler import AnimaFlowMatchScheduler, calculate_shift_anima
+from core.inference.cancellation import raise_if_cancelled
 
 
 def _to_device(model, device):
@@ -422,6 +423,7 @@ def sample_txt2img(
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
     for i in range(num_inference_steps):
+        raise_if_cancelled()
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
@@ -509,6 +511,7 @@ def sample_img2img(
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
     for i in range(start_step, num_inference_steps):
+        raise_if_cancelled()
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
@@ -599,6 +602,7 @@ def sample_inpaint(
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
     for i in range(start_step, num_inference_steps):
+        raise_if_cancelled()
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 

@@ -15,6 +15,8 @@ from einops import rearrange
 from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.inference.cancellation import raise_if_cancelled
+
 
 # ---------------------------------------------------------------------------
 # Constants (mirrored from vendor/pipeline.py)
@@ -450,6 +452,7 @@ def denoise_loop(
     img_shapes = [(1, latent_h, latent_w)]
 
     for i, t in enumerate(scheduler.timesteps):
+        raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
         hidden_states = latents.repeat(2, 1, 1)            # [cond, uncond]
 
@@ -513,6 +516,7 @@ def denoise_loop_img2img(
     total_steps = len(timesteps_to_use)
 
     for i, t in enumerate(timesteps_to_use):
+        raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)
         hidden_states = latents.repeat(2, 1, 1)
 
@@ -583,6 +587,7 @@ def denoise_loop_inpaint(
     mask_latent = mask_latent.to(device=init_latents.device, dtype=init_latents.dtype)
 
     for i, t in enumerate(timesteps_to_use):
+        raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)
         hidden_states = latents.repeat(2, 1, 1)
 

@@ -262,6 +262,18 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # with the DiT blocks (Phase C user request).
     "train_llm_adapter": True,
 
+    # ---- MiniT2I (pixel-space MM-JiT, flow matching, x0 prediction) ----
+    # LoRA scope tokens: attn (qkv/attn_proj), mlp (w1/w2/w3), txt_embed
+    # (txt_embedder/pooled_embedder). Enumerated by core/models/minit2i/minit2i_lora.py.
+    "minit2i_lora_scope": "attn,mlp,txt_embed",
+    # CFG label-drop rate: per-sample probability of zeroing the text mask so the
+    # model sees the mask_token (unconditional) — matches the reference label_drop_rate.
+    "minit2i_label_drop_rate": 0.1,
+    # LoRA learning-rate multiplier (applied to unet_lr).
+    "minit2i_lr_factor": 1.0,
+    # Optional override path to FLAN-T5-Large; empty -> resolve next to the model.
+    "minit2i_flan_t5_path": "",
+
     # ---- Anima full-parameter training: per-group LR multipliers ----
     # Applied on top of unet_lr in AnimaFullParameterAdapter. Defaults of
     # 1.0 collapse to a single effective LR; users wanting sd-scripts-style

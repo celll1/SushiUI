@@ -6240,6 +6240,11 @@ class TrainingRunCreateRequest(BaseModel):
     ideogram4_uncond_loss_weight: float = TRAINING_DEFAULTS["ideogram4_uncond_loss_weight"]
     ideogram4_lr_factor: float = TRAINING_DEFAULTS["ideogram4_lr_factor"]
     train_llm_adapter: bool = TRAINING_DEFAULTS["train_llm_adapter"]
+    # MiniT2I (pixel-space MM-JiT) training.
+    minit2i_lora_scope: str = TRAINING_DEFAULTS["minit2i_lora_scope"]
+    minit2i_label_drop_rate: float = TRAINING_DEFAULTS["minit2i_label_drop_rate"]
+    minit2i_lr_factor: float = TRAINING_DEFAULTS["minit2i_lr_factor"]
+    minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
     # Anima full-parameter LR multipliers (each applied on top of unet_lr).
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
     anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]

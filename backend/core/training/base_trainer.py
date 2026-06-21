@@ -892,6 +892,7 @@ class BaseTrainer(ABC):
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
         self.is_ideogram4 = (model_type == "ideogram4")
+        self.is_minit2i = (model_type == "minit2i")
         self.is_sdxl = False
 
         if self.is_zimage:
@@ -907,6 +908,8 @@ class BaseTrainer(ABC):
             self._load_lens_components()
         elif self.is_ideogram4:
             self._load_ideogram4_components()
+        elif self.is_minit2i:
+            self._load_minit2i_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -1391,6 +1394,91 @@ class BaseTrainer(ABC):
             self.transformer_uncond._layer_offload_conductor = self.layer_offload_conductor_uncond
             self.layer_offload_conductor_uncond.register_hooks()
         print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Ideogram 4")
+
+    def _load_minit2i_components(self):
+        """Load MiniT2I (pixel-space MM-JiT) components for training.
+
+        Pixel-space: there is no VAE. The frozen FLAN-T5-Large is the text encoder.
+        The MM-JiT transformer is loaded frozen here; LoRA / full-parameter adapters
+        unfreeze the relevant parameters during setup.
+        """
+        print(f"{self.log_prefix} Detected MiniT2I model")
+        print(f"{self.log_prefix} Loading MiniT2I components from {self.model_path}")
+
+        from core.models.minit2i.minit2i_loader import load_minit2i_components
+        flan_t5_path = self.config.get("minit2i_flan_t5_path") or None
+        components = load_minit2i_components(
+            model_path=self.model_path,
+            torch_dtype=self.weight_dtype,
+            flan_t5_path=flan_t5_path,
+            text_encoder_dtype=self.text_encoder_dtype if hasattr(self, "text_encoder_dtype") else torch.float32,
+        )
+
+        self.transformer = components["transformer"]
+        self.transformer_original = self.transformer
+        self.transformer_uncond = None
+        self.text_encoder = components["text_encoder"]
+        self.tokenizer = components["tokenizer"]
+        self.scheduler = components["scheduler"]
+        self.minit2i_variant = components.get("variant")
+
+        # Pixel-space: no VAE, no second TE, no U-Net.
+        self.vae = None
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.t5_tokenizer = None
+        self.unet = None
+        self.noise_scheduler = self.scheduler
+
+        # Gradient checkpointing on the MM-JiT transformer.
+        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+            try:
+                self.transformer.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for MiniT2I transformer")
+            except Exception as e:
+                print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
+
+        # Freeze everything; adapters unfreeze what they train.
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+        # Block-swap deferred until after adapter setup.
+        self.layer_offload_conductor = None
+        if self.blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
+                  f"deferred until adapter setup completes")
+
+        print(f"{self.log_prefix} Moving MiniT2I transformer to {self.device}")
+        self.transformer.to(self.device)
+
+        print(f"{self.log_prefix} MiniT2I model loaded successfully (variant={self.minit2i_variant})")
+
+    def setup_minit2i_block_swap(self):
+        """Initialise LayerOffloadConductor over the MM-JiT double_blocks, AFTER adapter setup."""
+        if not self.is_minit2i:
+            return
+        if self.blocks_to_swap <= 0:
+            return
+        if getattr(self, "layer_offload_conductor", None) is not None:
+            return
+        double_blocks = self.transformer.model.net.double_blocks
+
+        from core.memory_management import LayerOffloadConductor
+        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
+              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
+        self.layer_offload_conductor = LayerOffloadConductor(
+            layers=double_blocks,
+            blocks_to_swap=self.blocks_to_swap,
+            device=self.device,
+            use_pinned_memory=self.use_pinned_memory,
+            cpu_buffer_size_mb=8192,
+            activation_buffer_size_mb=4096,
+            enable_prefetch=True,
+            enable_activation_offload=False,
+        )
+        self.transformer._layer_offload_conductor = self.layer_offload_conductor
+        self.layer_offload_conductor.register_hooks()
+        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for MiniT2I")
 
     # DEUS support removed - architecture no longer maintained
     # def _load_deus_components(self):
@@ -3552,6 +3640,19 @@ class BaseTrainer(ABC):
         )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
         return stacked.unsqueeze(0).detach(), mask.detach()
 
+    def encode_prompt_minit2i(self, prompt: str):
+        """Encode prompt for MiniT2I: FLAN-T5-Large last_hidden_state + attention mask.
+
+        Returns (embeds [1, L, 1024], mask [1, L]) so the cache/batch path produces
+        [B, L, 1024] / [B, L]. The mask drives mask_token uncond inside the model.
+        """
+        from core.models.minit2i.minit2i_pipeline_ops import encode_prompt as _encode
+        prompt_length = int(self.transformer.mmjit_config.prompt_length)
+        te_device = self.text_encoder.device if hasattr(self.text_encoder, "device") else self.device
+        embeds, mask = _encode(self.text_encoder, self.tokenizer, prompt, prompt_length, te_device)
+        # embeds [1, L, 1024] (batched, cat-able), mask [L] (1D, stack-able -> [B, L])
+        return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
         Unified caption encoding for all architectures.
@@ -3572,6 +3673,8 @@ class BaseTrainer(ABC):
             return self.encode_prompt_lens(caption)
         elif self.is_ideogram4:
             return self.encode_prompt_ideogram4(caption)
+        elif self.is_minit2i:
+            return self.encode_prompt_minit2i(caption)
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the
@@ -3698,7 +3801,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -3707,7 +3810,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -3816,6 +3919,11 @@ class BaseTrainer(ABC):
         image_array = (image_array - 0.5) * 2.0
 
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
+
+        if self.is_minit2i:
+            # Pixel-space: there is no VAE. The "latent" IS the [-1,1] RGB image
+            # [1, 3, H, W]. Stored on CPU in training dtype like every other path.
+            return image_tensor.to(device="cpu", dtype=self.training_dtype)
 
         vae_device = next(self.vae.parameters()).device
         # Match VAE dtype to prevent type mismatch errors
@@ -4277,6 +4385,16 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 latent_h=_lh,
                 latent_w=_lw,
+            )
+        elif self.is_minit2i:
+            # mnt_latents: [B, 3, H, W] in [-1,1] (pixel-space, no VAE)
+            # mnt_text_embeddings: [B, L, 1024]; mnt_attention_mask: [B, L]
+            loss, pred_loss, recon_loss = self.train_step_minit2i(
+                images=mnt_latents,
+                text_embeds=mnt_text_embeddings,
+                attention_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
             )
         elif self.is_flux2:
             # FLUX.2 training with position IDs
@@ -5618,6 +5736,84 @@ class BaseTrainer(ABC):
         del noise, noisy, v_pred, v_target, pos_z, llm_features
         return loss, pred_loss_value, 0.0
 
+    def train_step_minit2i(
+        self,
+        images: torch.Tensor,
+        text_embeds: torch.Tensor,
+        attention_mask: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
+        profile_vram: bool = False,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """Single MiniT2I training step (pixel-space flow matching, x0 prediction).
+
+        Convention (reference mini_t2i/diffusion.py), t in (0,1), t=1 data / t=0 noise:
+            noise = randn_like(images) * noise_scale (2.0)
+            x_t   = images*t + noise*(1-t)
+            x0_pred = model(x_t, t, text, mask)
+            target  = (images - x_t) / clamp(1-t, 0.05)   # ground-truth velocity
+            v_pred  = (x0_pred - x_t) / clamp(1-t, 0.05)
+            loss    = MSE(v_pred, target)                  # == (1-t)-weighted x0-MSE
+        CFG training: with probability label_drop_rate, zero the text mask so the
+        model sees the mask_token (unconditional) for that sample.
+
+        Args:
+            images:         [-1,1] RGB pixel tensor [B, 3, H, W] (the "latent").
+            text_embeds:    FLAN-T5 last_hidden_state [B, L, 1024].
+            attention_mask: text token mask [B, L].
+        """
+        from core.models.minit2i.minit2i_pipeline_ops import NOISE_SCALE
+
+        if profile_vram:
+            print_vram_usage("[train_step_minit2i] Start")
+
+        images = images.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        text_embeds = text_embeds.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        attention_mask = attention_mask.to(device=self.device, non_blocking=True)
+
+        B = images.shape[0]
+
+        # Timesteps: lognorm schedule (t=1 data, t=0 noise), faithful to reference.
+        t = self.scheduler.sample_train_timesteps(B, self.device, dtype=self.training_dtype)
+        t_img = t.view(-1, 1, 1, 1)
+
+        noise = torch.randn_like(images) * NOISE_SCALE
+        x_t = images * t_img + noise * (1.0 - t_img)
+        denom = torch.clamp(1.0 - t_img, min=0.05)
+        target = (images - x_t) / denom  # ground-truth velocity
+
+        # CFG label drop: zero the mask -> mask_token uncond for dropped samples.
+        label_drop_rate = float(self.config.get("minit2i_label_drop_rate", 0.1))
+        mask_eff = attention_mask
+        if label_drop_rate > 0.0:
+            drop = torch.rand(B, device=self.device) < label_drop_rate
+            if drop.any():
+                mask_eff = attention_mask.clone()
+                mask_eff[drop] = 0
+
+        t_dtype = self.transformer.dtype
+
+        def _forward():
+            return self.transformer(
+                x_t.to(t_dtype),
+                t.to(t_dtype),
+                text_embeds.to(t_dtype),
+                mask_eff,
+            )
+
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                x0_pred = _forward()
+        else:
+            x0_pred = _forward()
+
+        v_pred = (x0_pred.float() - x_t.float()) / denom.float()
+        loss = torch.nn.functional.mse_loss(v_pred, target.float(), reduction="mean")
+
+        pred_loss_value = loss.item()
+        loss.backward()
+        del noise, x_t, target, v_pred, x0_pred, denom
+        return loss, pred_loss_value, 0.0
+
     def train_step_flux2(
         self,
         latents: torch.Tensor,
@@ -6725,6 +6921,99 @@ class BaseTrainer(ABC):
         return Image.fromarray(image)
 
     # ============================================================
+    # MiniT2I Sample Generation (pixel-space, no VAE)
+    # ============================================================
+
+    def _generate_sample_minit2i(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 100,
+        guidance_scale: float = 6.0,
+        seed: int = -1,
+        negative_prompt: str = "",
+    ) -> Image.Image:
+        """Generate a sample during MiniT2I training (pixel-space flow matching).
+
+        No VAE: the model output IS the [-1,1] RGB image. Aligns the requested
+        resolution to a multiple of 16 (patch size) like the inference path.
+        """
+        from core.models.minit2i.minit2i_pipeline_ops import (
+            encode_prompt as _mt_encode, denoise_loop as _mt_denoise,
+            tensor_to_image as _mt_to_image, normalize_resolution as _mt_norm,
+        )
+
+        print(f"{self.log_prefix} Generating MiniT2I sample: {prompt[:50]}...")
+        width, height = _mt_norm(width, height)
+
+        self.transformer.eval()
+        self.text_encoder.eval()
+        transformer_device = next(self.transformer.parameters()).device
+        text_encoder_device = next(self.text_encoder.parameters()).device
+        t_dtype = self.transformer.dtype
+        cfg = self.transformer.mmjit_config
+        prompt_length = int(cfg.prompt_length)
+        cfg_interval = tuple(cfg.cfg_interval)
+
+        try:
+            # Offload transformer + optimizer state to CPU during text encoding.
+            self.transformer.to("cpu")
+            optimizer_state_dict = self.optimizer.state_dict()
+            for _pid, state in optimizer_state_dict["state"].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == "cuda":
+                        state[key] = value.cpu()
+            self.optimizer.load_state_dict(optimizer_state_dict)
+            torch.cuda.empty_cache()
+
+            if text_encoder_device != self.device:
+                self.text_encoder.to(self.device)
+            text, mask = _mt_encode(self.text_encoder, self.tokenizer, prompt, prompt_length, self.device)
+            if guidance_scale != 1.0 and negative_prompt:
+                neg_text, neg_mask = _mt_encode(
+                    self.text_encoder, self.tokenizer, negative_prompt, prompt_length, self.device)
+            else:
+                neg_text, neg_mask = None, None
+            if text_encoder_device != self.device:
+                self.text_encoder.to(text_encoder_device)
+            torch.cuda.empty_cache()
+
+            self.transformer.to(transformer_device)
+            torch.cuda.empty_cache()
+
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                x = _mt_denoise(
+                    self.transformer,
+                    text.to(t_dtype), mask,
+                    height, width, num_inference_steps, guidance_scale, cfg_interval,
+                    self.device, t_dtype, seed=seed if seed >= 0 else None,
+                    neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
+                    neg_mask=neg_mask,
+                )
+            image = _mt_to_image(x.float())
+            del text, mask, x
+            if neg_text is not None:
+                del neg_text, neg_mask
+            torch.cuda.empty_cache()
+
+            # Restore optimizer state to GPU.
+            from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+            from .optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+            if not isinstance(self.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
+                optimizer_state_dict = self.optimizer.state_dict()
+                for _pid, state in optimizer_state_dict["state"].items():
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor) and value.device.type == "cpu":
+                            state[key] = value.to(transformer_device)
+                self.optimizer.load_state_dict(optimizer_state_dict)
+            torch.cuda.empty_cache()
+            return image
+
+        finally:
+            self.transformer.train()
+
+    # ============================================================
     # FLUX.2 Sample Generation
     # ============================================================
 
@@ -7359,6 +7648,16 @@ class BaseTrainer(ABC):
         Returns:
             Regenerated latent tensor
         """
+        # MiniT2I: pixel-space, no VAE. The "latent" is just the [-1,1] RGB image,
+        # so encode_image is a cheap CPU op — no model offloading needed.
+        if self.is_minit2i:
+            print(f"{self.log_prefix} [Latent Regeneration] MiniT2I pixel-latent for: {image_path}")
+            image = Image.open(image_path)
+            latent = self.encode_image(image=image, target_width=width, target_height=height)
+            image.close()
+            cache.save_latent(image_path=image_path, width=width, height=height, latents=latent)
+            return latent
+
         print(f"{self.log_prefix} [Latent Regeneration] Offloading models...")
 
         # Save current device states
@@ -7542,7 +7841,7 @@ class BaseTrainer(ABC):
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                     # Check auxiliary data file (architecture-specific)
-                    if self.is_zimage or self.is_lens or self.is_ideogram4:
+                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -7581,7 +7880,7 @@ class BaseTrainer(ABC):
                             torch.save(embeds_cpu, embeds_path)
 
                             # Save auxiliary data (architecture-specific)
-                            if (self.is_zimage or self.is_lens or self.is_ideogram4) and auxiliary_cpu is not None:
+                            if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
@@ -7645,7 +7944,7 @@ class BaseTrainer(ABC):
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
         # Check architecture-specific auxiliary file
-        if self.is_zimage or self.is_lens or self.is_ideogram4:
+        if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -8354,6 +8653,15 @@ class BaseTrainer(ABC):
                     num_inference_steps=sample_steps,
                     guidance_scale=sample_guidance_scale,
                     seed=sample_seed
+                )
+            elif self.is_minit2i:
+                sample = self._generate_sample_minit2i(
+                    prompt=step0_prompt,
+                    width=sample_width,
+                    height=sample_height,
+                    num_inference_steps=sample_steps,
+                    guidance_scale=sample_guidance_scale,
+                    seed=sample_seed,
                 )
             else:
                 sample = self.generate_sample(
@@ -9243,7 +9551,15 @@ class BaseTrainer(ABC):
 
                             # Validate latent shape.
                             # Lens / Ideogram4 latents are [1, N, 128] (3D flat sequence); skip the 4D check.
-                            if not (self.is_lens or self.is_ideogram4):
+                            if self.is_minit2i:
+                                # Pixel-space: "latent" is the [-1,1] RGB image [1, 3, H, W] (full res, no VAE downscale).
+                                if (latent.ndim != 4 or latent.shape[1] != 3
+                                        or latent.shape[2] != height or latent.shape[3] != width):
+                                    print(f"{self.log_prefix} WARNING: MiniT2I pixel-latent shape mismatch for {item['image_path']}")
+                                    print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
+                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            elif not (self.is_lens or self.is_ideogram4):
                                 expected_latent_height = height // 8
                                 expected_latent_width = width // 8
                                 if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
@@ -9481,7 +9797,7 @@ class BaseTrainer(ABC):
                     # These are also reused across MNT iterations
                     attention_mask = None
                     pooled_embeddings = None
-                    if self.is_zimage:
+                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i:
                         attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
@@ -9623,7 +9939,7 @@ class BaseTrainer(ABC):
                             if self.is_zimage:
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
-                            elif self.is_lens or self.is_ideogram4:
+                            elif self.is_lens or self.is_ideogram4 or self.is_minit2i:
                                 # encoder_mask per sample: [L] → stacked to [B, L]
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
@@ -10052,6 +10368,16 @@ class BaseTrainer(ABC):
                                     num_inference_steps=sample_steps,
                                     guidance_scale=sample_guidance_scale,
                                     seed=sample_seed
+                                )
+                            elif self.is_minit2i:
+                                sample = self._generate_sample_minit2i(
+                                    prompt=positive,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    num_inference_steps=sample_steps,
+                                    guidance_scale=sample_guidance_scale,
+                                    seed=sample_seed,
+                                    negative_prompt=prompt_config.get('negative', ''),
                                 )
                             else:
                                 sample = self.generate_sample(

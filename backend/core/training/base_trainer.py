@@ -8337,6 +8337,16 @@ class BaseTrainer(ABC):
                 print(f"  With reference: {ref_stats['with_reference']} images")
                 print(f"  Without reference: {ref_stats['without_reference']} images")
 
+        # MiniT2I is pixel-space (no VAE): the "latent" is just the resized [-1,1]
+        # RGB image, so a disk latent cache would store full-resolution RGB tensors
+        # (~48x a VAE latent) while saving only a trivial resize/normalise. Force
+        # on-the-fly GPU encoding to skip the upfront caching pass and disk usage.
+        if self.is_minit2i and latent_encoding_mode != "onthefly_gpu":
+            print(f"{self.log_prefix} MiniT2I (pixel-space) detected: forcing "
+                  f"latent_encoding_mode='onthefly_gpu' (was '{latent_encoding_mode}') — "
+                  f"no VAE, so disk latent caching is wasteful")
+            latent_encoding_mode = "onthefly_gpu"
+
         # Setup latent caches (mode-dependent)
         latent_caches = None
         print(f"{self.log_prefix} Latent encoding mode: {latent_encoding_mode}")

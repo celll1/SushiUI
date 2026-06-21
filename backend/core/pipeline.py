@@ -62,6 +62,10 @@ class DiffusionPipelineManager:
         self.ideogram4_components: Optional[Dict[str, Any]] = None
         self.is_ideogram4_model: bool = False
 
+        # MiniT2I components (pixel-space MM-JiT + FLAN-T5, NO VAE). Flow matching, x0 pred.
+        self.minit2i_components: Optional[Dict[str, Any]] = None
+        self.is_minit2i_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -101,6 +105,8 @@ class DiffusionPipelineManager:
             return "lens"
         if self.is_ideogram4_model:
             return "ideogram4"
+        if self.is_minit2i_model:
+            return "minit2i"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -236,6 +242,19 @@ class DiffusionPipelineManager:
                     del comp
                 self.ideogram4_components = None
                 self.is_ideogram4_model = False
+
+            # Clean up MiniT2I components
+            if self.minit2i_components is not None:
+                print("[Pipeline] Cleaning up MiniT2I components...")
+                for comp_name, comp in self.minit2i_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        try:
+                            comp.to('cpu')
+                        except Exception:
+                            pass
+                    del comp
+                self.minit2i_components = None
+                self.is_minit2i_model = False
 
             # Force garbage collection
             gc.collect()
@@ -439,6 +458,51 @@ class DiffusionPipelineManager:
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Ideogram 4 model loaded successfully")
+                return
+
+            # Check if MiniT2I (pixel-space MM-JiT, no VAE). Before the generic
+            # Z-Image check (which matches any dict carrying a "transformer" key).
+            if isinstance(model_result, dict) and model_result.get("type") == "minit2i":
+                print("[Pipeline] MiniT2I model detected (component-based dict returned)")
+                self.minit2i_components = model_result
+                self.is_minit2i_model = True
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                for comp_name in ("transformer", "text_encoder"):
+                    comp = self.minit2i_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] MiniT2I components on CPU. Will load to GPU as needed.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "minit2i",
+                    "is_v_prediction": False,  # flow matching, x0 prediction
+                    "model_hash": model_hash,
+                    "variant": self.minit2i_components.get("variant"),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] MiniT2I model loaded successfully")
                 return
 
             # Check if Z-Image
@@ -4976,6 +5040,10 @@ class DiffusionPipelineManager:
         if self.is_ideogram4_model:
             return self._generate_txt2img_ideogram4(params, progress_callback, step_callback)
 
+        # MiniT2I handling (pixel-space MM-JiT)
+        if self.is_minit2i_model:
+            return self._generate_txt2img_minit2i(params, progress_callback, step_callback)
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -5472,6 +5540,9 @@ class DiffusionPipelineManager:
 
         if self.is_ideogram4_model:
             return self._generate_img2img_ideogram4(params, init_image, progress_callback, step_callback)
+
+        if self.is_minit2i_model:
+            return self._generate_img2img_minit2i(params, init_image, progress_callback, step_callback)
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
@@ -6026,6 +6097,10 @@ class DiffusionPipelineManager:
         # Ideogram 4 inpaint (repaint approach)
         if self.is_ideogram4_model:
             return self._generate_inpaint_ideogram4(params, init_image, mask_image, progress_callback, step_callback)
+
+        # MiniT2I inpaint (repaint approach)
+        if self.is_minit2i_model:
+            return self._generate_inpaint_minit2i(params, init_image, mask_image, progress_callback, step_callback)
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:
@@ -7959,6 +8034,225 @@ class DiffusionPipelineManager:
             raise
         finally:
             self._ideogram4_cleanup()
+
+    # ------------------------------------------------------------------
+    # MiniT2I (pixel-space MM-JiT, flow matching, x0 prediction, no VAE)
+    # ------------------------------------------------------------------
+
+    def _minit2i_move(self, component_name: str, target_device: str):
+        comp = self.minit2i_components.get(component_name)
+        if comp is None or not hasattr(comp, "to"):
+            return comp
+        try:
+            comp.to(target_device)
+        except Exception as e:
+            print(f"[MiniT2I] Warning: could not move {component_name} to {target_device}: {e}")
+        return comp
+
+    def _minit2i_common_params(self, params: Dict[str, Any], default_w: int, default_h: int):
+        from core.models.minit2i.minit2i_pipeline_ops import normalize_resolution
+        seed = params.get("seed", -1)
+        if seed == -1:
+            seed = random.randint(0, 2**32 - 1)
+        req_w = int(params.get("width", default_w))
+        req_h = int(params.get("height", default_h))
+        width, height = normalize_resolution(req_w, req_h)
+        if (width, height) != (req_w, req_h):
+            print(f"[MiniT2I] Resolution aligned: {req_w}x{req_h} -> {width}x{height}")
+        cfg = self.minit2i_components["transformer"].mmjit_config
+        scheduler = self.minit2i_components["scheduler"]
+        return {
+            "seed": seed,
+            "prompt": params.get("prompt", ""),
+            "negative_prompt": params.get("negative_prompt", "") or "",
+            "num_inference_steps": int(params.get("steps", scheduler.config.num_inference_steps)),
+            "cfg_scale": float(params.get("cfg_scale", 6.0)),
+            "cfg_interval": tuple(cfg.cfg_interval),
+            "prompt_length": int(cfg.prompt_length),
+            "width": width,
+            "height": height,
+        }
+
+    @torch.no_grad()
+    def _minit2i_encode(self, prompt, negative_prompt, prompt_length, device, dtype):
+        """Encode prompt (+ optional negative) with FLAN-T5, then free TE to CPU."""
+        from core.models.minit2i.minit2i_pipeline_ops import encode_prompt
+        self._minit2i_move("text_encoder", device)
+        te = self.minit2i_components["text_encoder"]
+        tok = self.minit2i_components["tokenizer"]
+        text, mask = encode_prompt(te, tok, prompt, prompt_length, device)
+        neg_text = neg_mask = None
+        if negative_prompt and negative_prompt.strip():
+            neg_text, neg_mask = encode_prompt(te, tok, negative_prompt, prompt_length, device)
+            neg_text = neg_text.to(dtype)
+        self._minit2i_move("text_encoder", "cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return text.to(dtype), mask, neg_text, neg_mask
+
+    def _load_lora_minit2i(self, lora_configs: List[Dict]) -> int:
+        from core.models.minit2i.minit2i_lora import (
+            load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+        )
+        from core.extensions.lora_manager import lora_manager
+        if not lora_configs or not self.minit2i_components:
+            return 0
+        transformer = self.minit2i_components["transformer"]
+        if not hasattr(self, "_minit2i_lora_orig"):
+            self._minit2i_lora_orig: Dict[str, torch.nn.Module] = {}
+            self._minit2i_lora_keys: set = set()
+        total = 0
+        for i, cfg in enumerate(lora_configs):
+            lora_path = cfg.get("path", "")
+            strength = float(cfg.get("strength", 1.0))
+            resolved = lora_manager._resolve_lora_path(lora_path)
+            if resolved is None:
+                print(f"[MiniT2I LoRA] WARNING: file not found: {lora_path}")
+                continue
+            try:
+                raw, fmt = load_lora_safetensors(str(resolved))
+                grouped = normalise_lora_state_dict(raw)
+                applied = apply_lora_group(transformer, grouped, strength,
+                                           self._minit2i_lora_orig, self._minit2i_lora_keys)
+                print(f"[MiniT2I LoRA] {i+1}/{len(lora_configs)}: {lora_path} fmt={fmt} "
+                      f"matched={len(grouped)} wrapped={applied} strength={strength}")
+                total += applied
+            except Exception as e:
+                print(f"[MiniT2I LoRA] ERROR loading {lora_path}: {e}")
+                import traceback; traceback.print_exc()
+        return total
+
+    def _unload_lora_minit2i(self) -> int:
+        from core.models.minit2i.minit2i_lora import restore_originals
+        if not self.minit2i_components or not getattr(self, "_minit2i_lora_keys", None):
+            return 0
+        restored = restore_originals(
+            self.minit2i_components["transformer"], self._minit2i_lora_orig, self._minit2i_lora_keys,
+        )
+        if restored:
+            print(f"[MiniT2I LoRA] Unloaded {restored} LoRA wrappers")
+        return restored
+
+    def _minit2i_cleanup(self):
+        try:
+            self._unload_lora_minit2i()
+        except Exception:
+            pass
+        for _c in ("text_encoder", "transformer"):
+            try:
+                self._minit2i_move(_c, "cpu")
+            except Exception:
+                pass
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def _generate_txt2img_minit2i(self, params, progress_callback=None, step_callback=None) -> tuple:
+        if not self.minit2i_components:
+            raise RuntimeError("MiniT2I components not loaded.")
+        from core.models.minit2i.minit2i_pipeline_ops import denoise_loop, tensor_to_image
+        print("[MiniT2I] Starting txt2img generation")
+        device = self.device
+        dtype = torch.bfloat16
+        cfg = self._minit2i_common_params(params, 512, 512)
+        try:
+            text, mask, neg_text, neg_mask = self._minit2i_encode(
+                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
+            transformer = self._minit2i_move("transformer", device)
+            applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            try:
+                x = denoise_loop(
+                    transformer, text, mask, cfg["height"], cfg["width"],
+                    cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
+                    device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
+                    progress_callback=progress_callback,
+                )
+            finally:
+                if applied_lora:
+                    self._unload_lora_minit2i()
+            image = tensor_to_image(x)
+            print("[MiniT2I] txt2img completed")
+            return image, cfg["seed"], 0
+        except Exception as e:
+            print(f"[MiniT2I] Generation error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+        finally:
+            self._minit2i_cleanup()
+
+    def _generate_img2img_minit2i(self, params, init_image, progress_callback=None, step_callback=None) -> tuple:
+        if not self.minit2i_components:
+            raise RuntimeError("MiniT2I components not loaded.")
+        from core.models.minit2i.minit2i_pipeline_ops import (
+            denoise_loop_img2img, image_to_tensor, tensor_to_image,
+        )
+        print("[MiniT2I] Starting img2img generation")
+        device = self.device
+        dtype = torch.bfloat16
+        cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
+        denoising_strength = float(params.get("denoising_strength", 0.7))
+        try:
+            text, mask, neg_text, neg_mask = self._minit2i_encode(
+                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
+            init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
+            transformer = self._minit2i_move("transformer", device)
+            applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            try:
+                x = denoise_loop_img2img(
+                    transformer, init_t, denoising_strength, text, mask,
+                    cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
+                    device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
+                    progress_callback=progress_callback,
+                )
+            finally:
+                if applied_lora:
+                    self._unload_lora_minit2i()
+            image = tensor_to_image(x)
+            print("[MiniT2I] img2img completed")
+            return image, cfg["seed"], 0
+        except Exception as e:
+            print(f"[MiniT2I] img2img error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+        finally:
+            self._minit2i_cleanup()
+
+    def _generate_inpaint_minit2i(self, params, init_image, mask_image, progress_callback=None, step_callback=None) -> tuple:
+        if not self.minit2i_components:
+            raise RuntimeError("MiniT2I components not loaded.")
+        from core.models.minit2i.minit2i_pipeline_ops import (
+            denoise_loop_inpaint, image_to_tensor, tensor_to_image, prepare_mask,
+        )
+        print("[MiniT2I] Starting inpaint generation (repaint)")
+        device = self.device
+        dtype = torch.bfloat16
+        cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
+        denoising_strength = float(params.get("denoising_strength", 0.8))
+        try:
+            text, mask, neg_text, neg_mask = self._minit2i_encode(
+                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
+            init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
+            mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
+            transformer = self._minit2i_move("transformer", device)
+            applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            try:
+                x = denoise_loop_inpaint(
+                    transformer, init_t, mask_latent, denoising_strength, text, mask,
+                    cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
+                    device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
+                    progress_callback=progress_callback,
+                )
+            finally:
+                if applied_lora:
+                    self._unload_lora_minit2i()
+            image = tensor_to_image(x)
+            print("[MiniT2I] inpaint completed")
+            return image, cfg["seed"], 0
+        except Exception as e:
+            print(f"[MiniT2I] inpaint error: {e}")
+            import traceback; traceback.print_exc()
+            raise
+        finally:
+            self._minit2i_cleanup()
 
     def cancel_generation(self):
         """Request cancellation of current generation"""

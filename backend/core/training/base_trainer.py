@@ -3640,18 +3640,33 @@ class BaseTrainer(ABC):
         )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
         return stacked.unsqueeze(0).detach(), mask.detach()
 
-    def encode_prompt_minit2i(self, prompt: str):
+    def encode_prompt_minit2i(self, prompt: str, requires_grad: bool = False):
         """Encode prompt for MiniT2I: FLAN-T5-Large last_hidden_state + attention mask.
 
-        Returns (embeds [1, L, 1024], mask [1, L]) so the cache/batch path produces
+        Returns (embeds [1, L, 1024], mask [L]) so the cache/batch path produces
         [B, L, 1024] / [B, L]. The mask drives mask_token uncond inside the model.
+
+        requires_grad=False (frozen TE): no_grad encode, detached + moved to CPU for
+        caching. requires_grad=True (TE training): grad-enabled encode kept on the TE
+        device so gradients flow back into FLAN-T5.
         """
-        from core.models.minit2i.minit2i_pipeline_ops import encode_prompt as _encode
         prompt_length = int(self.transformer.mmjit_config.prompt_length)
         te_device = self.text_encoder.device if hasattr(self.text_encoder, "device") else self.device
-        embeds, mask = _encode(self.text_encoder, self.tokenizer, prompt, prompt_length, te_device)
-        # embeds [1, L, 1024] (batched, cat-able), mask [L] (1D, stack-able -> [B, L])
-        return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+
+        if not requires_grad:
+            from core.models.minit2i.minit2i_pipeline_ops import encode_prompt as _encode
+            embeds, mask = _encode(self.text_encoder, self.tokenizer, prompt, prompt_length, te_device)
+            return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+
+        # TE training: grad-enabled forward (no torch.no_grad), keep on GPU.
+        prompts = [prompt] if isinstance(prompt, str) else list(prompt)
+        toks = self.tokenizer(
+            prompts, return_tensors="pt", padding="max_length", truncation=True, max_length=prompt_length,
+        )
+        input_ids = toks.input_ids.to(te_device)
+        attn = toks.attention_mask.to(te_device)
+        embeds = self.text_encoder(input_ids=input_ids, attention_mask=attn).last_hidden_state  # [1, L, 1024]
+        return embeds, attn[0]  # mask [L]
 
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
@@ -3674,7 +3689,7 @@ class BaseTrainer(ABC):
         elif self.is_ideogram4:
             return self.encode_prompt_ideogram4(caption)
         elif self.is_minit2i:
-            return self.encode_prompt_minit2i(caption)
+            return self.encode_prompt_minit2i(caption, requires_grad=requires_grad)
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the
@@ -9952,11 +9967,22 @@ class BaseTrainer(ABC):
 
                             del mnt_text_embeddings_list, mnt_auxiliary_data_list
                         else:
-                            # MNT == 1 or Text Encoder frozen: Use pre-computed embeddings
-                            # Detach to prevent "backward through graph twice" error
-                            mnt_text_embeddings = text_embeddings.detach() if text_embeddings is not None else None
-                            mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
-                            mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
+                            # MNT == 1 or Text Encoder frozen: reuse the pre-computed embeddings.
+                            # When the TE is trainable at MNT==1 the batch-assembly encode (done
+                            # with requires_grad=True for onthefly_gpu) carries a graph we must
+                            # keep — there is a single backward, so gradients can flow back into
+                            # the text encoder. Otherwise detach to allow safe reuse / avoid
+                            # backward-through-graph-twice when MNT>1 with a frozen TE.
+                            keep_te_grad = (text_encoder_trainable and multi_noise_timesteps == 1
+                                            and text_encoding_mode == "onthefly_gpu")
+                            if keep_te_grad:
+                                mnt_text_embeddings = text_embeddings
+                                mnt_attention_mask = attention_mask
+                                mnt_pooled_embeddings = pooled_embeddings
+                            else:
+                                mnt_text_embeddings = text_embeddings.detach() if text_embeddings is not None else None
+                                mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
+                                mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
 
                         # === Vision Encoder: per-item encoding (SD1.5/SDXL only) ===
                         # Each batch item is conditioned on its own reference image only.

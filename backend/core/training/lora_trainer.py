@@ -150,15 +150,19 @@ class LoRATrainer(BaseTrainer):
             )
             print(f"{self.log_prefix} Using Ideogram4LoRAAdapter (scope={scope})")
         elif self.is_minit2i:
-            from core.models.minit2i.minit2i_lora import parse_scope_csv
+            from core.models.minit2i.minit2i_lora import parse_scope_csv, parse_te_scope_csv
             scope_csv = (getattr(self, "minit2i_lora_scope", "")
                           or self.config.get("minit2i_lora_scope", "")
                           or "attn,mlp,txt_embed")
             scope = parse_scope_csv(scope_csv)
+            te_scope_csv = (getattr(self, "minit2i_te_lora_scope", "")
+                             or self.config.get("minit2i_te_lora_scope", "")
+                             or "attn,ff")
+            te_scope = parse_te_scope_csv(te_scope_csv)
             self.adapter = MiniT2ILoRAAdapter(
-                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope, te_scope=te_scope,
             )
-            print(f"{self.log_prefix} Using MiniT2ILoRAAdapter (scope={scope})")
+            print(f"{self.log_prefix} Using MiniT2ILoRAAdapter (scope={scope}, te_scope={te_scope})")
         elif self.is_anima:
             # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
             # (attention + mlp + llm_adapter, no AdaLN modulation).

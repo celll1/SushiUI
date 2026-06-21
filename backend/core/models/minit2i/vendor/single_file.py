@@ -120,13 +120,29 @@ def save_single_file(
     text_encoder: Optional[torch.nn.Module] = None,
     extra_metadata: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Write a MiniT2I single-file (transformer [+ optional FLAN-T5] + metadata)."""
+    """Write a MiniT2I single-file (transformer [+ optional FLAN-T5] + metadata).
+
+    Tied tensors (e.g. FLAN-T5 shares `shared.weight` with `encoder.embed_tokens.weight`)
+    are de-duplicated by storage pointer — safetensors rejects shared memory, and load
+    re-ties them. The dropped key is recorded in metadata for transparency.
+    """
     state: Dict[str, torch.Tensor] = {}
+    seen_ptrs: Dict[int, str] = {}
+    dropped_tied: list = []
+
+    def _add(key: str, v: torch.Tensor):
+        ptr = v.data_ptr()
+        if ptr in seen_ptrs:
+            dropped_tied.append(key)  # tied to seen_ptrs[ptr]; re-tied on load
+            return
+        seen_ptrs[ptr] = key
+        state[key] = v.detach().to("cpu").contiguous()
+
     for k, v in transformer.state_dict().items():
-        state[f"{TRANSFORMER_PREFIX}{k}"] = v.detach().to("cpu").contiguous()
+        _add(f"{TRANSFORMER_PREFIX}{k}", v)
     if text_encoder is not None:
         for k, v in text_encoder.state_dict().items():
-            state[f"{TEXT_ENCODER_PREFIX}{k}"] = v.detach().to("cpu").contiguous()
+            _add(f"{TEXT_ENCODER_PREFIX}{k}", v)
 
     cfg = transformer.mmjit_config
     metadata = {
@@ -136,6 +152,8 @@ def save_single_file(
         "has_text_encoder": "1" if text_encoder is not None else "0",
         "format": "pt",
     }
+    if dropped_tied:
+        metadata["tied_weights_dropped"] = json.dumps(dropped_tied)
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
     save_file(state, path, metadata=metadata)

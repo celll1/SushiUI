@@ -8093,11 +8093,13 @@ class DiffusionPipelineManager:
     def _load_lora_minit2i(self, lora_configs: List[Dict]) -> int:
         from core.models.minit2i.minit2i_lora import (
             load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
+            apply_te_lora_group, TE_NAMESPACE,
         )
         from core.extensions.lora_manager import lora_manager
         if not lora_configs or not self.minit2i_components:
             return 0
         transformer = self.minit2i_components["transformer"]
+        text_encoder = self.minit2i_components.get("text_encoder")
         if not hasattr(self, "_minit2i_lora_orig"):
             self._minit2i_lora_orig: Dict[str, torch.nn.Module] = {}
             self._minit2i_lora_keys: set = set()
@@ -8112,11 +8114,21 @@ class DiffusionPipelineManager:
             try:
                 raw, fmt = load_lora_safetensors(str(resolved))
                 grouped = normalise_lora_state_dict(raw)
+                # Transformer LoRA (lora_unet_) and TE LoRA (lora_te_) auto-route by key.
                 applied = apply_lora_group(transformer, grouped, strength,
                                            self._minit2i_lora_orig, self._minit2i_lora_keys)
+                applied_te = 0
+                has_te_keys = any(k.startswith(TE_NAMESPACE) for k in grouped)
+                if has_te_keys and text_encoder is not None:
+                    applied_te = apply_te_lora_group(text_encoder, grouped, strength,
+                                                     self._minit2i_lora_orig, self._minit2i_lora_keys)
+                elif has_te_keys:
+                    print(f"[MiniT2I LoRA] WARNING: {lora_path} has TE-LoRA keys but no text encoder is loaded; "
+                          f"TE-LoRA skipped")
                 print(f"[MiniT2I LoRA] {i+1}/{len(lora_configs)}: {lora_path} fmt={fmt} "
-                      f"matched={len(grouped)} wrapped={applied} strength={strength}")
-                total += applied
+                      f"matched={len(grouped)} wrapped(transformer)={applied} wrapped(te)={applied_te} "
+                      f"strength={strength}")
+                total += applied + applied_te
             except Exception as e:
                 print(f"[MiniT2I LoRA] ERROR loading {lora_path}: {e}")
                 import traceback; traceback.print_exc()
@@ -8128,6 +8140,7 @@ class DiffusionPipelineManager:
             return 0
         restored = restore_originals(
             self.minit2i_components["transformer"], self._minit2i_lora_orig, self._minit2i_lora_keys,
+            text_encoder=self.minit2i_components.get("text_encoder"),
         )
         if restored:
             print(f"[MiniT2I LoRA] Unloaded {restored} LoRA wrappers")

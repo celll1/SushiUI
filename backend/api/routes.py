@@ -6242,6 +6242,7 @@ class TrainingRunCreateRequest(BaseModel):
     train_llm_adapter: bool = TRAINING_DEFAULTS["train_llm_adapter"]
     # MiniT2I (pixel-space MM-JiT) training.
     minit2i_lora_scope: str = TRAINING_DEFAULTS["minit2i_lora_scope"]
+    minit2i_te_lora_scope: str = TRAINING_DEFAULTS["minit2i_te_lora_scope"]
     minit2i_label_drop_rate: float = TRAINING_DEFAULTS["minit2i_label_drop_rate"]
     minit2i_lr_factor: float = TRAINING_DEFAULTS["minit2i_lr_factor"]
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]

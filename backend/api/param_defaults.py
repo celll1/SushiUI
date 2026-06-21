@@ -266,6 +266,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # LoRA scope tokens: attn (qkv/attn_proj), mlp (w1/w2/w3), txt_embed
     # (txt_embedder/pooled_embedder). Enumerated by core/models/minit2i/minit2i_lora.py.
     "minit2i_lora_scope": "attn,mlp,txt_embed",
+    # FLAN-T5 (text encoder) LoRA scope when train_text_encoder is set with LoRA:
+    # attn (SelfAttention q/k/v/o), ff (DenseReluDense wi/wi_0/wi_1/wo).
+    "minit2i_te_lora_scope": "attn,ff",
     # CFG label-drop rate: per-sample probability of zeroing the text mask so the
     # model sees the mask_token (unconditional) — matches the reference label_drop_rate.
     "minit2i_label_drop_rate": 0.1,

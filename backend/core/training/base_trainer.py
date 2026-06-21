@@ -5621,8 +5621,8 @@ class BaseTrainer(ABC):
         pred_loss_value = mse_loss.item()
         recon_loss_value = 0.0
 
-        loss.backward()
-
+        # Backward is performed by _execute_forward_backward (single backward per
+        # MNT iteration); do not call loss.backward() here.
         del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
         return loss, pred_loss_value, recon_loss_value
 
@@ -5747,7 +5747,7 @@ class BaseTrainer(ABC):
             loss = loss + float(getattr(self, "ideogram4_uncond_loss_weight", 1.0)) * uncond_loss
 
         pred_loss_value = loss.item()
-        loss.backward()
+        # Backward is performed by _execute_forward_backward; do not backward here.
         del noise, noisy, v_pred, v_target, pos_z, llm_features
         return loss, pred_loss_value, 0.0
 
@@ -5825,7 +5825,7 @@ class BaseTrainer(ABC):
         loss = torch.nn.functional.mse_loss(v_pred, target.float(), reduction="mean")
 
         pred_loss_value = loss.item()
-        loss.backward()
+        # Backward is performed by _execute_forward_backward; do not backward here.
         del noise, x_t, target, v_pred, x0_pred, denom
         return loss, pred_loss_value, 0.0
 

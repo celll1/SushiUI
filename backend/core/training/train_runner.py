@@ -74,6 +74,22 @@ class TeeOutput:
         if self.file:
             self.file.flush()
 
+    def isatty(self):
+        # Teed output is captured/logged, never an interactive terminal — return
+        # False so libraries (e.g. transformers' loading report) don't emit ANSI
+        # colour codes into the log file.
+        return False
+
+    def __getattr__(self, name):
+        # Delegate any other stdout attribute probes (fileno, encoding, buffer,
+        # ...) to the underlying console so TeeOutput is a drop-in stdout.
+        # __getattr__ only fires for attributes not set on the instance, so
+        # write/flush/isatty are unaffected. Guard the own attrs to avoid
+        # infinite recursion before __init__ sets them.
+        if name in ("console", "file"):
+            raise AttributeError(name)
+        return getattr(self.console, name)
+
 
 class TrainingLogger:
     """

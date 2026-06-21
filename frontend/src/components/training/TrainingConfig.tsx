@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, createScratchMiniT2I } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -307,12 +307,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [trainingMethod, setTrainingMethod] = useState<"lora" | "relora" | "full_finetune" | "controlnet">("lora");
   const [baseModelPath, setBaseModelPath] = useState("");
 
-  // Create-scratch MiniT2I (latent / pixel) form
-  const [showScratchForm, setShowScratchForm] = useState(false);
+  // From-scratch MiniT2I (in-memory; no init model written to disk). When enabled,
+  // baseModelPath is set to the sentinel "scratch:minit2i:<variant>:<vae_type>" and
+  // the trainer builds a random-initialized model for Full Fine-tune.
+  const [fromScratchMiniT2I, setFromScratchMiniT2I] = useState(false);
   const [scratchVariant, setScratchVariant] = useState("b16");
   const [scratchVaeType, setScratchVaeType] = useState("sdxl");
-  const [scratchName, setScratchName] = useState("");
-  const [scratchCreating, setScratchCreating] = useState(false);
 
   // ControlNet parameters
   // ControlNet parameters (Phase 3l: migrated to params)
@@ -547,12 +547,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   };
 
   const isMiniT2IModel = (modelPath: string): boolean => {
+    if (modelPath.startsWith("scratch:minit2i:")) return true;
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture === "minit2i";
   };
 
 
   const getModelArchitecture = (modelPath: string): string | undefined => {
+    if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
     const model = availableModels.find(m => m.path === modelPath);
     return model?.architecture;
   };
@@ -777,7 +779,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const applyParamsToState = useCallback((incoming: any) => {
     // --- UI-only / non-params states ---
     if (incoming.run_name) setRunName(incoming.run_name);
-    if (incoming.base_model_path !== undefined) setBaseModelPath(incoming.base_model_path || "");
+    if (incoming.base_model_path !== undefined) {
+      const bmp = incoming.base_model_path || "";
+      setBaseModelPath(bmp);
+      // Reflect a from-scratch MiniT2I sentinel back into the checkbox/selectors.
+      if (bmp.startsWith("scratch:minit2i:")) {
+        const parts = bmp.slice("scratch:minit2i:".length).split(":");
+        if (parts[0]) setScratchVariant(parts[0]);
+        setScratchVaeType(parts[1] || "none");
+        setFromScratchMiniT2I(true);
+      } else {
+        setFromScratchMiniT2I(false);
+      }
+    }
     if (incoming.training_method) setTrainingMethod(incoming.training_method);
     if (incoming.dataset_configs) setDatasetConfigs(incoming.dataset_configs);
 
@@ -1090,23 +1104,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
   };
 
-  const handleCreateScratchMiniT2I = async () => {
-    const name = scratchName.trim();
-    if (!name) { setError("Enter a name for the new MiniT2I model"); return; }
-    setScratchCreating(true);
-    try {
-      const res = await createScratchMiniT2I(scratchVariant, scratchVaeType, name);
-      await loadModels();
-      if (res?.path) setBaseModelPath(res.path);
-      setShowScratchForm(false);
-      setScratchName("");
-    } catch (err: any) {
-      console.error("Failed to create scratch MiniT2I:", err);
-      setError(err?.response?.data?.detail || "Failed to create scratch MiniT2I model");
-    } finally {
-      setScratchCreating(false);
+  // Keep the base-model sentinel in sync with the from-scratch selectors. The
+  // trainer parses "scratch:minit2i:<variant>:<vae_type>" and builds a random model
+  // in memory (no init model on disk). From-scratch is Full Fine-tune only.
+  useEffect(() => {
+    if (fromScratchMiniT2I) {
+      setBaseModelPath(`scratch:minit2i:${scratchVariant}:${scratchVaeType}`);
+      setTrainingMethod("full_finetune");
+    } else if (baseModelPath.startsWith("scratch:minit2i:")) {
+      setBaseModelPath("");
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromScratchMiniT2I, scratchVariant, scratchVaeType]);
 
   const loadModels = async () => {
     const startTime = performance.now();
@@ -1875,9 +1884,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value="lora"
                 checked={trainingMethod === "lora"}
                 onChange={() => setTrainingMethod("lora")}
+                disabled={fromScratchMiniT2I}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm">LoRA (Recommended)</span>
+              <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>LoRA (Recommended)</span>
             </label>
             <label
               className={`flex items-center space-x-2 ${isIdeogram4Model(baseModelPath) ? 'cursor-not-allowed' : 'cursor-pointer'}`}
@@ -1903,9 +1913,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value="controlnet"
                 checked={trainingMethod === "controlnet"}
                 onChange={() => setTrainingMethod("controlnet")}
+                disabled={fromScratchMiniT2I}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm">ControlNet (SD1.5/SDXL)</span>
+              <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>ControlNet (SD1.5/SDXL)</span>
             </label>
             <label className="flex items-center space-x-2 cursor-pointer">
               <input
@@ -1914,9 +1925,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 value="relora"
                 checked={trainingMethod === "relora"}
                 onChange={() => setTrainingMethod("relora")}
+                disabled={fromScratchMiniT2I}
                 className="text-blue-600 focus:ring-blue-500"
               />
-              <span className="text-sm">ReLoRA (Periodic Merge + Reinit)</span>
+              <span className={`text-sm ${fromScratchMiniT2I ? 'text-gray-500' : ''}`}>ReLoRA (Periodic Merge + Reinit)</span>
             </label>
           </div>
         </div>
@@ -1991,8 +2003,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
           <select
             value={baseModelPath}
             onChange={(e) => setBaseModelPath(e.target.value)}
-            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-            required
+            disabled={fromScratchMiniT2I}
+            className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            required={!fromScratchMiniT2I}
           >
             <option value="">Select a model...</option>
             {filteredModels.map((model) => {
@@ -2015,17 +2028,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             <p className="text-xs text-gray-500 mt-1">No models match the selected filters.</p>
           )}
 
-          {/* Create a from-scratch MiniT2I model (latent or pixel) for Full-FT */}
-          <div className="mt-2">
-            <button
-              type="button"
-              onClick={() => setShowScratchForm(v => !v)}
-              className="text-xs text-blue-400 hover:text-blue-300"
-            >
-              {showScratchForm ? "▾ " : "▸ "}Create scratch MiniT2I model
-            </button>
-            {showScratchForm && (
-              <div className="mt-2 p-3 bg-gray-800/60 border border-gray-700 rounded space-y-2">
+          {/* Train a MiniT2I from scratch (in-memory random init; no init model on disk).
+              The trainer builds the model from variant + latent VAE; Full Fine-tune only. */}
+          <div className="mt-2 p-3 bg-gray-800/60 border border-gray-700 rounded space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={fromScratchMiniT2I}
+                onChange={(e) => setFromScratchMiniT2I(e.target.checked)}
+                className="w-3.5 h-3.5"
+              />
+              <span className="text-sm text-gray-300">Train MiniT2I from scratch</span>
+            </label>
+            {fromScratchMiniT2I && (
+              <>
                 <div className="flex gap-2">
                   <div className="flex-1">
                     <label className="block text-xs text-gray-400 mb-1">Variant</label>
@@ -2045,25 +2061,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </select>
                   </div>
                 </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Name (new folder)</label>
-                  <input type="text" value={scratchName} onChange={(e) => setScratchName(e.target.value)}
-                         placeholder="e.g. minit2i-b16-sdxlvae"
-                         className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
-                </div>
                 <p className="text-xs text-gray-500">
-                  Random-initialized; train from scratch with Full Fine-tune. Latent variants
-                  (SDXL/FLUX.1) load the VAE by type at train/inference time.
+                  Random-initialized in memory and trained with Full Fine-tune. Latent variants
+                  (SDXL/FLUX.1) load the VAE by type at train/inference time. Base model:
+                  <span className="font-mono text-gray-400"> scratch:minit2i:{scratchVariant}:{scratchVaeType}</span>
                 </p>
-                <button
-                  type="button"
-                  onClick={handleCreateScratchMiniT2I}
-                  disabled={scratchCreating || !scratchName.trim()}
-                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded text-xs"
-                >
-                  {scratchCreating ? "Creating..." : "Create model"}
-                </button>
-              </div>
+              </>
             )}
           </div>
         </div>

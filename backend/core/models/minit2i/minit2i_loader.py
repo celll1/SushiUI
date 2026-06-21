@@ -160,6 +160,44 @@ def load_minit2i_components(
          vae, vae_type, vae_scale_factor}
     vae is None for pixel-space models (vae_type="none").
     """
+    if is_scratch_spec(model_path):
+        # From-scratch Full-FT: build a random-initialized model in memory (no disk
+        # init model). VAE/FLAN-T5 are resolved by variant/vae_type as usual.
+        scratch_variant, scratch_vae = parse_scratch_spec(model_path)
+        print(f"[MiniT2ILoader] From-scratch spec: variant={scratch_variant} vae_type={scratch_vae}")
+        transformer = build_scratch_minit2i(scratch_variant, scratch_vae, dtype=torch_dtype)
+        variant = scratch_variant
+        scheduler = MiniT2IFlowMatchScheduler()
+        # No path info in the sentinel: probe the local minit2i model tree for FLAN-T5
+        # (sibling of the VAE local dir), then fall back to the hub.
+        flan_loc = _resolve_flan_t5(model_path, flan_t5_path)
+        if flan_loc == "google/flan-t5-large":
+            vae_root = os.environ.get("MINIT2I_VAE_DIR") or r"M:\model\minit2i\vae"
+            flan_loc = _resolve_flan_t5(os.path.dirname(vae_root.rstrip("/\\")), flan_t5_path)
+        tokenizer, text_encoder = _load_flan_t5(flan_loc, text_encoder_dtype)
+
+        transformer.eval()
+        transformer.to("cpu")
+        text_encoder.to("cpu")
+        vae = None
+        vae_type = getattr(transformer.mmjit_config, "vae_type", "none")
+        if is_latent_vae(vae_type):
+            vae = load_minit2i_vae(vae_type, torch_dtype=vae_dtype, local_dir=vae_local_dir)
+            vae.to("cpu")
+        print(f"[MiniT2ILoader] Built scratch MiniT2I variant={variant} vae_type={vae_type} "
+              f"(FLAN-T5 from {flan_loc})")
+        return {
+            "type": "minit2i",
+            "transformer": transformer,
+            "scheduler": scheduler,
+            "text_encoder": text_encoder,
+            "tokenizer": tokenizer,
+            "variant": variant,
+            "vae": vae,
+            "vae_type": vae_type,
+            "vae_scale_factor": VAE_SCALE_FACTOR,
+        }
+
     is_single_file = os.path.isfile(model_path) and model_path.endswith(".safetensors")
 
     if is_single_file:
@@ -234,14 +272,29 @@ def load_minit2i_components(
     }
 
 
-def create_scratch_minit2i(variant: str, vae_type: str, out_dir: str,
-                           dtype: torch.dtype = torch.bfloat16) -> str:
-    """Create a random-initialized MiniT2I diffusers dir for from-scratch Full-FT.
+# Sentinel "base model" for from-scratch training without writing an init model to
+# disk: "scratch:minit2i:<variant>:<vae_type>" (e.g. scratch:minit2i:b16:sdxl).
+SCRATCH_PREFIX = "scratch:minit2i:"
 
-    Writes <out_dir>/transformer (MiniT2IMMJiTModel config + random weights) and
-    <out_dir>/scheduler. The resulting dir is detected as a MiniT2I model and trained
-    via the normal Full-FT flow. VAE weights are NOT written (resolved by vae_type at
-    load). variant in {b16, l16}; vae_type in {none, sdxl, flux1}.
+
+def is_scratch_spec(model_path: str) -> bool:
+    return isinstance(model_path, str) and model_path.startswith(SCRATCH_PREFIX)
+
+
+def parse_scratch_spec(model_path: str):
+    """'scratch:minit2i:b16:sdxl' -> ('b16', 'sdxl'). Defaults vae_type to 'none'."""
+    rest = model_path[len(SCRATCH_PREFIX):]
+    parts = rest.split(":")
+    variant = parts[0] if parts and parts[0] else "b16"
+    vae_type = parts[1] if len(parts) > 1 and parts[1] else "none"
+    return variant, vae_type
+
+
+def build_scratch_minit2i(variant: str, vae_type: str, dtype: torch.dtype = torch.bfloat16):
+    """Build a random-initialized MiniT2IMMJiTModel in memory (no disk write).
+
+    variant in {b16, l16}; vae_type in {none, sdxl, flux1}. Pixel: 3ch/patch16/noise2;
+    latent: VAE channels/patch2/noise1.
     """
     from .vendor.single_file import KNOWN_VARIANTS
     from .minit2i_vae import vae_latent_channels, VAE_REGISTRY
@@ -257,8 +310,8 @@ def create_scratch_minit2i(variant: str, vae_type: str, out_dir: str,
     else:
         in_ch, patch, noise = vae_latent_channels(vae_type), 2, 1.0
 
-    print(f"[MiniT2ILoader] Creating scratch MiniT2I variant={variant} vae_type={vae_type} "
-          f"(in_channels={in_ch}, patch_size={patch}) -> {out_dir}")
+    print(f"[MiniT2ILoader] Building scratch MiniT2I variant={variant} vae_type={vae_type} "
+          f"(in_channels={in_ch}, patch_size={patch})")
     model = MiniT2IMMJiTModel(
         image_size=512, patch_size=patch, in_channels=in_ch, txt_input_size=1024,
         hidden_size=base["hidden_size"], txt_hidden_size=base["txt_hidden_size"],
@@ -267,7 +320,17 @@ def create_scratch_minit2i(variant: str, vae_type: str, out_dir: str,
         mlp_ratio=base["mlp_ratio"], pca_channels=128, prompt_length=256,
         vae_type=vae_type, noise_scale=noise,
     ).to(dtype)
+    return model
 
+
+def create_scratch_minit2i(variant: str, vae_type: str, out_dir: str,
+                           dtype: torch.dtype = torch.bfloat16) -> str:
+    """Persist a random-initialized MiniT2I diffusers dir (transformer + scheduler).
+
+    Optional helper; from-scratch training normally uses the in-memory build path
+    (SCRATCH_PREFIX base model) and does not need a saved init model.
+    """
+    model = build_scratch_minit2i(variant, vae_type, dtype)
     os.makedirs(out_dir, exist_ok=True)
     model.save_pretrained(os.path.join(out_dir, "transformer"))
     MiniT2IFlowMatchScheduler().save_pretrained(os.path.join(out_dir, "scheduler"))

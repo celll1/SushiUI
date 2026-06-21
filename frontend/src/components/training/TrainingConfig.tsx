@@ -1995,11 +1995,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
             required
           >
             <option value="">Select a model...</option>
-            {filteredModels.map((model) => (
-              <option key={model.path} value={model.path}>
-                {model.name} ({model.architecture.toUpperCase()})
-              </option>
-            ))}
+            {filteredModels.map((model) => {
+              // For MiniT2I show the latent format (vae_type) since it is fixed per
+              // model and determines training/inference (pixel vs sdxl/flux1 latent).
+              const label = (model.architecture === "minit2i" && model.vae_type)
+                ? `${model.architecture.toUpperCase()} · ${model.vae_type === "none" ? "pixel" : model.vae_type + " latent"}`
+                : model.architecture.toUpperCase();
+              return (
+                <option key={model.path} value={model.path}>
+                  {model.name} ({label})
+                </option>
+              );
+            })}
           </select>
           {availableModels.length === 0 && (
             <p className="text-xs text-gray-500 mt-1">No models available. Please add models to the models directory.</p>

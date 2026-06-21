@@ -284,34 +284,33 @@ class BucketManager:
                 target_resolution = random.choice(self.base_resolutions)
                 bucket_list = self.bucket_lists[target_resolution]
             else:
-                # "max" mode: Find best bucket across all resolutions
-                # Try each resolution and pick the bucket with minimum cropping
-                best_bucket = None
-                best_resolution = None
-                min_crop_ratio = float("inf")
-
+                # "max" mode: assign the image to the LARGEST base resolution it can
+                # fill WITHOUT upscaling, so high-resolution images train at high
+                # resolution (the previous implementation compared crop ratios, which
+                # are ~equal across resolutions for the same aspect, so the ascending
+                # loop's strict `<` always kept the smallest resolution — every image
+                # collapsed to the 512 bucket regardless of its real size).
+                #
+                # For each base resolution take its best (min-crop) aspect bucket, then
+                # pick the largest resolution whose bucket the image downscales into
+                # (scale <= 1 = no upscaling). If the image is smaller than every bucket
+                # (all would upscale), fall back to the least-upscaling resolution.
+                candidates = []  # (resolution, bucket, scale)
                 for res in self.base_resolutions:
-                    bucket_list = self.bucket_lists[res]
-                    candidate_bucket = get_bucket_for_image_size(width, height, bucket_list, divisibility=self.divisibility)
+                    bl = self.bucket_lists[res]
+                    candidate_bucket = get_bucket_for_image_size(
+                        width, height, bl, divisibility=self.divisibility
+                    )
+                    scale = max(candidate_bucket.width / width,
+                                candidate_bucket.height / height)  # > 1 means upscaling
+                    candidates.append((res, candidate_bucket, scale))
 
-                    # Calculate crop ratio (how much we need to crop relative to original)
-                    scale_w = candidate_bucket.width / width
-                    scale_h = candidate_bucket.height / height
-                    scale = max(scale_w, scale_h)  # Scale to fit
+                fitting = [c for c in candidates if c[2] <= 1.0 + 1e-6]
+                if fitting:
+                    best_resolution, bucket, _ = max(fitting, key=lambda c: c[0])
+                else:
+                    best_resolution, bucket, _ = min(candidates, key=lambda c: c[2])
 
-                    scaled_width = width * scale
-                    scaled_height = height * scale
-
-                    crop_width = scaled_width - candidate_bucket.width
-                    crop_height = scaled_height - candidate_bucket.height
-                    crop_ratio = (crop_width + crop_height) / (width + height)
-
-                    if crop_ratio < min_crop_ratio:
-                        min_crop_ratio = crop_ratio
-                        best_bucket = candidate_bucket
-                        best_resolution = res
-
-                bucket = best_bucket
                 target_resolution = best_resolution
                 bucket_list = None  # Already have the bucket
 

@@ -140,6 +140,14 @@ class ModelLoader:
                     "prediction_target": "velocity",
                     "source": "inferred"
                 }
+            elif model_type == "minit2i":
+                # MiniT2I uses flow matching with x0 (sample) prediction.
+                print(f"[ModelLoader] Inferred prediction config from MiniT2I architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "sample",
+                    "source": "inferred"
+                }
             # DEUS support removed - architecture no longer maintained
             # elif model_type == "deus":
             #     # DEUS uses DDPM with epsilon prediction (same as SDXL base)

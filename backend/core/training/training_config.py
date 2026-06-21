@@ -176,6 +176,12 @@ def _build_train_section(
     train["ideogram4_uncond_loss_weight"] = p.get("ideogram4_uncond_loss_weight", 1.0)
     train["ideogram4_lr_factor"] = p.get("ideogram4_lr_factor", 1.0)
 
+    # ---- MiniT2I (pixel-space MM-JiT) — other archs ignore. ----
+    train["minit2i_lora_scope"] = p.get("minit2i_lora_scope", "attn,mlp,txt_embed")
+    train["minit2i_label_drop_rate"] = p.get("minit2i_label_drop_rate", 0.1)
+    train["minit2i_lr_factor"] = p.get("minit2i_lr_factor", 1.0)
+    train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")
+
     # ---- Online Danbooru augmentation (image-generation) ----
     # Read unconditionally; ignored when danbooru_aug_enable is False.
     # SSoT: api/param_defaults.TRAINING_DEFAULTS.

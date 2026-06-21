@@ -15,6 +15,7 @@ from .flux2_adapter import FLUX2LoRAAdapter, FLUX2FullParameterAdapter
 from .anima_adapter import AnimaLoRAAdapter, AnimaFullParameterAdapter
 from .lens_adapter import LensLoRAAdapter, LensFullParameterAdapter
 from .ideogram4_adapter import Ideogram4LoRAAdapter, Ideogram4FullParameterAdapter
+from .minit2i_adapter import MiniT2ILoRAAdapter, MiniT2IFullParameterAdapter
 from .base_controlnet_adapter import BaseControlNetAdapter
 from .controlnet_sd15_adapter import ControlNetSD15Adapter
 from .controlnet_sdxl_adapter import ControlNetSDXLAdapter

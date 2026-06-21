@@ -87,6 +87,18 @@ class MiniT2IMMJiTModel(ModelMixin, ConfigMixin):
     def mmjit_config(self) -> MMJiTConfig:
         return self.model.cfg
 
+    def enable_gradient_checkpointing(self, *args, **kwargs):
+        self.gradient_checkpointing = True
+        self.model.net.gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self):
+        self.gradient_checkpointing = False
+        self.model.net.gradient_checkpointing = False
+
+    def _set_gradient_checkpointing(self, module=None, value=False, **kwargs):
+        self.gradient_checkpointing = bool(value)
+        self.model.net.gradient_checkpointing = bool(value)
+
     # net(img, t, context, attn_mask) -> predicted x0 (RGB)
     def forward(self, img, t, context, attn_mask):
         return self.model.net(img, t, context, attn_mask)

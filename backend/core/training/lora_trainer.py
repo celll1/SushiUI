@@ -35,6 +35,7 @@ from .adapters import (
     AnimaLoRAAdapter,
     LensLoRAAdapter,
     Ideogram4LoRAAdapter,
+    MiniT2ILoRAAdapter,
 )
 
 
@@ -105,6 +106,8 @@ class LoRATrainer(BaseTrainer):
             self.setup_lens_block_swap()
         if hasattr(self, "setup_ideogram4_block_swap"):
             self.setup_ideogram4_block_swap()
+        if hasattr(self, "setup_minit2i_block_swap"):
+            self.setup_minit2i_block_swap()
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
@@ -146,6 +149,16 @@ class LoRATrainer(BaseTrainer):
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
             )
             print(f"{self.log_prefix} Using Ideogram4LoRAAdapter (scope={scope})")
+        elif self.is_minit2i:
+            from core.models.minit2i.minit2i_lora import parse_scope_csv
+            scope_csv = (getattr(self, "minit2i_lora_scope", "")
+                          or self.config.get("minit2i_lora_scope", "")
+                          or "attn,mlp,txt_embed")
+            scope = parse_scope_csv(scope_csv)
+            self.adapter = MiniT2ILoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using MiniT2ILoRAAdapter (scope={scope})")
         elif self.is_anima:
             # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
             # (attention + mlp + llm_adapter, no AdaLN modulation).

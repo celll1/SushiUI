@@ -34,6 +34,7 @@ from .adapters import (
     FLUX2FullParameterAdapter,
     AnimaFullParameterAdapter,
     LensFullParameterAdapter,
+    MiniT2IFullParameterAdapter,
 )
 
 
@@ -86,6 +87,10 @@ class FullParameterTrainer(BaseTrainer):
             self.setup_anima_block_swap()
         if hasattr(self, "setup_lens_block_swap"):
             self.setup_lens_block_swap()
+        if hasattr(self, "setup_ideogram4_block_swap"):
+            self.setup_ideogram4_block_swap()
+        if hasattr(self, "setup_minit2i_block_swap"):
+            self.setup_minit2i_block_swap()
 
         print(f"{self.log_prefix} Initialized")
         # Note: Vision Encoder training status is determined in train() after VE is loaded
@@ -114,6 +119,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_lens:
             self.adapter = LensFullParameterAdapter(self)
             print(f"{self.log_prefix} Using LensFullParameterAdapter")
+        elif self.is_minit2i:
+            self.adapter = MiniT2IFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using MiniT2IFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

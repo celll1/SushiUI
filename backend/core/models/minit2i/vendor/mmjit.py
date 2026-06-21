@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 
 
 def rotate_half(x):
@@ -296,6 +297,7 @@ class MMJiT(nn.Module):
              for _ in range(cfg.depth_double)]
         )
         self.final_layer = FinalLayer(cfg.hidden_size, cfg.patch_size, cfg.in_channels)
+        self.gradient_checkpointing = False
 
     def unpatchify(self, x, grid_h: int, grid_w: int):
         b = x.shape[0]
@@ -314,13 +316,24 @@ class MMJiT(nn.Module):
         pos = get_2d_sincos_pos_embed(self.cfg.hidden_size, gh, gw, x.device, x.dtype)
         x = x + pos[None]
         t_vec = self.t_embedder(t)
-        txt = self.txt_embedder(context.to(dtype=self.txt_embedder.weight.dtype))
+        # Use a wrapping-agnostic dtype (txt_embedder / pooled_embedder may be
+        # wrapped by a LoRALinearLayer during training, which has no `.weight`).
+        txt_dtype = next(self.txt_embedder.parameters()).dtype
+        pooled_dtype = next(self.pooled_embedder.parameters()).dtype
+        txt = self.txt_embedder(context.to(dtype=txt_dtype))
         pooled_text = context.mean(dim=1)
-        vec = t_vec + self.pooled_embedder(pooled_text.to(dtype=self.pooled_embedder.weight.dtype))
+        vec = t_vec + self.pooled_embedder(pooled_text.to(dtype=pooled_dtype))
+        use_ckpt = self.gradient_checkpointing and self.training and torch.is_grad_enabled()
         for block in self.txt_preamble_blocks:
-            txt = block(txt)
+            if use_ckpt:
+                txt = torch.utils.checkpoint.checkpoint(block, txt, use_reentrant=False)
+            else:
+                txt = block(txt)
         for block in self.double_blocks:
-            x, txt = block(x, txt, vec, gh, gw)
+            if use_ckpt:
+                x, txt = torch.utils.checkpoint.checkpoint(block, x, txt, vec, gh, gw, use_reentrant=False)
+            else:
+                x, txt = block(x, txt, vec, gh, gw)
         combined = torch.cat([txt, x], dim=1)
         out = self.final_layer(combined, vec)
         img_out = out[:, txt.shape[1]:, :]

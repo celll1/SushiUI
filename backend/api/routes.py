@@ -1787,6 +1787,33 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
             architecture = ModelLoader.detect_model_type(item_path)
 
             if os.path.isdir(item_path):
+                # MiniT2I: a repo root / container holds multiple variant dirs
+                # (B/16, L/16) which are separate models — expand each into its own
+                # selectable entry instead of listing the container once.
+                if architecture == "minit2i":
+                    from core.models.minit2i.minit2i_loader import (
+                        find_minit2i_variant_dirs, _is_minit2i_variant_dir,
+                    )
+                    if _is_minit2i_variant_dir(item_path):
+                        variant_dirs = [item_path]
+                    else:
+                        variant_dirs = find_minit2i_variant_dirs(item_path)
+                    for vdir in variant_dirs:
+                        if vdir == item_path:
+                            vname = item
+                        else:
+                            rel = os.path.relpath(vdir, item_path).replace("\\", "/")
+                            vname = f"{item}/{rel}"
+                        models.append({
+                            "name": vname,
+                            "path": vdir,
+                            "type": "diffusers",
+                            "source_type": "diffusers",
+                            "source_dir": models_dir,
+                            "architecture": "minit2i",
+                        })
+                    continue
+
                 # Allow Anima split-files layouts even when there's no model_index.json
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
                 if not is_valid and architecture not in ("anima", "lens"):

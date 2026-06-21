@@ -2884,22 +2884,28 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 </label>
               </div>
 
-              {/* Live-preview decoder (FLUX.2 / Lens / Ideogram 4 — AutoencoderKLFlux2 latent) */}
-              <div className="flex items-center gap-2">
-                <label htmlFor="preview_decoder_img2img" className="text-sm text-gray-300">
-                  Preview Decoder
-                </label>
-                <select
-                  id="preview_decoder_img2img"
-                  value={params.preview_decoder || "matrix"}
-                  onChange={(e) => setParams({ ...params, preview_decoder: e.target.value })}
-                  className="bg-gray-700 text-gray-200 text-sm rounded px-2 py-1"
-                  title="FLUX.2 / Lens / Ideogram 4 のライブプレビュー方式。matrix=線形変換（軽量）、TAEF2=tiny decoder（高精度）"
-                >
-                  <option value="matrix">Matrix (linear, light)</option>
-                  <option value="taef2">TAEF2 (FLUX.2 VAE)</option>
-                </select>
-              </div>
+              {/* Live-preview decoder — only meaningful for AutoencoderKLFlux2-latent
+                  models (FLUX.2 / Lens / Ideogram 4); hidden for architectures that
+                  ignore preview_decoder (SD/SDXL, Z-Image, Anima, MiniT2I). */}
+              {(currentModelInfo?.model_info?.type === "flux2"
+                || currentModelInfo?.model_info?.type === "lens"
+                || currentModelInfo?.model_info?.type === "ideogram4") && (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="preview_decoder_img2img" className="text-sm text-gray-300">
+                    Preview Decoder
+                  </label>
+                  <select
+                    id="preview_decoder_img2img"
+                    value={params.preview_decoder || "matrix"}
+                    onChange={(e) => setParams({ ...params, preview_decoder: e.target.value })}
+                    className="bg-gray-700 text-gray-200 text-sm rounded px-2 py-1"
+                    title="FLUX.2 / Lens / Ideogram 4 のライブプレビュー方式。matrix=線形変換（軽量）、TAEF2=tiny decoder（高精度）"
+                  >
+                    <option value="matrix">Matrix (linear, light)</option>
+                    <option value="taef2">TAEF2 (FLUX.2 VAE)</option>
+                  </select>
+                </div>
+              )}
 
               {/* Use training model toggle (mirrors Txt2ImgPanel) */}
               <div className="flex items-center gap-2"

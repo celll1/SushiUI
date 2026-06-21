@@ -1412,6 +1412,7 @@ class BaseTrainer(ABC):
             torch_dtype=self.weight_dtype,
             flan_t5_path=flan_t5_path,
             text_encoder_dtype=self.text_encoder_dtype if hasattr(self, "text_encoder_dtype") else torch.float32,
+            vae_dtype=self.vae_dtype if hasattr(self, "vae_dtype") else torch.float16,
         )
 
         self.transformer = components["transformer"]
@@ -1422,8 +1423,17 @@ class BaseTrainer(ABC):
         self.scheduler = components["scheduler"]
         self.minit2i_variant = components.get("variant")
 
-        # Pixel-space: no VAE, no second TE, no U-Net.
-        self.vae = None
+        # vae_type "none" = pixel-space (vae=None, RGB-direct "latent"); "sdxl"/"flux1"
+        # = latent-space (a frozen AutoencoderKL encodes images to latents for training).
+        self.minit2i_vae_type = components.get("vae_type", "none")
+        self.minit2i_latent = self.minit2i_vae_type not in (None, "none")
+        self.minit2i_noise_scale = float(getattr(self.transformer.mmjit_config, "noise_scale", 2.0))
+        self.minit2i_vae_scale_factor = int(components.get("vae_scale_factor", 8))
+        self.vae = components.get("vae")  # None for pixel
+        if self.vae is not None:
+            self.vae = self.vae.to(dtype=self.vae_dtype)
+            self.vae.requires_grad_(False)
+            self.vae.eval()
         self.text_encoder_2 = None
         self.tokenizer_2 = None
         self.t5_tokenizer = None
@@ -3943,10 +3953,22 @@ class BaseTrainer(ABC):
 
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
 
-        if self.is_minit2i:
+        if self.is_minit2i and not getattr(self, "minit2i_latent", False):
             # Pixel-space: there is no VAE. The "latent" IS the [-1,1] RGB image
             # [1, 3, H, W]. Stored on CPU in training dtype like every other path.
             return image_tensor.to(device="cpu", dtype=self.training_dtype)
+
+        if self.is_minit2i and getattr(self, "minit2i_latent", False):
+            # Latent-space: VAE-encode the [-1,1] RGB image to a normalized latent
+            # [1, C, H/vsf, W/vsf]. The frozen VAE is moved to GPU for caching by the
+            # latent-cache pre-pass (move_vae_to_gpu).
+            from core.models.minit2i.minit2i_vae import normalize_latent
+            vae_device = next(self.vae.parameters()).device
+            px = image_tensor.to(device=vae_device, dtype=self.vae_dtype)
+            with torch.no_grad():
+                sample = self.vae.encode(px).latent_dist.sample()
+                latent = normalize_latent(sample, self.vae)
+            return latent.to(device="cpu", dtype=self.training_dtype)
 
         vae_device = next(self.vae.parameters()).device
         # Match VAE dtype to prevent type mismatch errors
@@ -5784,7 +5806,9 @@ class BaseTrainer(ABC):
             text_embeds:    FLAN-T5 last_hidden_state [B, L, 1024].
             attention_mask: text token mask [B, L].
         """
-        from core.models.minit2i.minit2i_pipeline_ops import NOISE_SCALE
+        # noise_scale: 2.0 for pixel-space [-1,1] images, 1.0 for unit-variance VAE
+        # latents (from the model config, set per vae_type).
+        noise_scale = float(getattr(self, "minit2i_noise_scale", 2.0))
 
         if profile_vram:
             print_vram_usage("[train_step_minit2i] Start")
@@ -5799,7 +5823,7 @@ class BaseTrainer(ABC):
         t = self.scheduler.sample_train_timesteps(B, self.device, dtype=self.training_dtype)
         t_img = t.view(-1, 1, 1, 1)
 
-        noise = torch.randn_like(images) * NOISE_SCALE
+        noise = torch.randn_like(images) * noise_scale
         x_t = images * t_img + noise * (1.0 - t_img)
         denom = torch.clamp(1.0 - t_img, min=0.05)
         target = (images - x_t) / denom  # ground-truth velocity
@@ -6972,10 +6996,14 @@ class BaseTrainer(ABC):
         from core.models.minit2i.minit2i_pipeline_ops import (
             encode_prompt as _mt_encode, denoise_loop as _mt_denoise,
             tensor_to_image as _mt_to_image, normalize_resolution as _mt_norm,
+            vae_decode_latent as _mt_vae_decode,
         )
 
         print(f"{self.log_prefix} Generating MiniT2I sample: {prompt[:50]}...")
         width, height = _mt_norm(width, height)
+        is_latent = getattr(self, "minit2i_latent", False)
+        vsf = getattr(self, "minit2i_vae_scale_factor", 8)
+        noise_scale = float(getattr(self, "minit2i_noise_scale", 2.0))
 
         self.transformer.eval()
         self.text_encoder.eval()
@@ -7013,15 +7041,29 @@ class BaseTrainer(ABC):
             torch.cuda.empty_cache()
 
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                x = _mt_denoise(
-                    self.transformer,
-                    text.to(t_dtype), mask,
-                    height, width, num_inference_steps, guidance_scale, cfg_interval,
-                    self.device, t_dtype, seed=seed if seed >= 0 else None,
-                    neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
-                    neg_mask=neg_mask,
-                )
-            image = _mt_to_image(x.float())
+                if is_latent:
+                    x = _mt_denoise(
+                        self.transformer, text.to(t_dtype), mask,
+                        height // vsf, width // vsf, num_inference_steps, guidance_scale, cfg_interval,
+                        self.device, t_dtype, seed=seed if seed >= 0 else None,
+                        neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
+                        neg_mask=neg_mask,
+                        channels=int(cfg.in_channels), noise_scale=noise_scale, clamp_output=False,
+                    )
+                else:
+                    x = _mt_denoise(
+                        self.transformer, text.to(t_dtype), mask,
+                        height, width, num_inference_steps, guidance_scale, cfg_interval,
+                        self.device, t_dtype, seed=seed if seed >= 0 else None,
+                        neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
+                        neg_mask=neg_mask,
+                    )
+            if is_latent:
+                self.vae.to(self.device)
+                image = _mt_vae_decode(self.vae, x.float())
+                self.vae.to("cpu")
+            else:
+                image = _mt_to_image(x.float())
             del text, mask, x
             if neg_text is not None:
                 del neg_text, neg_mask
@@ -8356,11 +8398,14 @@ class BaseTrainer(ABC):
         # RGB image, so a disk latent cache would store full-resolution RGB tensors
         # (~48x a VAE latent) while saving only a trivial resize/normalise. Force
         # on-the-fly GPU encoding to skip the upfront caching pass and disk usage.
-        if self.is_minit2i and latent_encoding_mode != "onthefly_gpu":
+        if self.is_minit2i and not getattr(self, "minit2i_latent", False) \
+                and latent_encoding_mode != "onthefly_gpu":
             print(f"{self.log_prefix} MiniT2I (pixel-space) detected: forcing "
                   f"latent_encoding_mode='onthefly_gpu' (was '{latent_encoding_mode}') — "
                   f"no VAE, so disk latent caching is wasteful")
             latent_encoding_mode = "onthefly_gpu"
+        # Latent-space MiniT2I uses small VAE latents -> the normal disk cache is fine
+        # (no override; behaves like SD/Z-Image).
 
         # Setup latent caches (mode-dependent)
         latent_caches = None
@@ -9612,7 +9657,16 @@ class BaseTrainer(ABC):
 
                             # Validate latent shape.
                             # Lens / Ideogram4 latents are [1, N, 128] (3D flat sequence); skip the 4D check.
-                            if self.is_minit2i:
+                            if self.is_minit2i and getattr(self, "minit2i_latent", False):
+                                # Latent-space: VAE latent [1, C, H/vsf, W/vsf].
+                                vsf = getattr(self, "minit2i_vae_scale_factor", 8)
+                                eh, ew = height // vsf, width // vsf
+                                if latent.ndim != 4 or latent.shape[2] != eh or latent.shape[3] != ew:
+                                    print(f"{self.log_prefix} WARNING: MiniT2I latent shape mismatch for {item['image_path']}")
+                                    print(f"{self.log_prefix}   Expected: [1, C, {eh}, {ew}]  Got: {list(latent.shape)}")
+                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            elif self.is_minit2i:
                                 # Pixel-space: "latent" is the [-1,1] RGB image [1, 3, H, W] (full res, no VAE downscale).
                                 if (latent.ndim != 4 or latent.shape[1] != 3
                                         or latent.shape[2] != height or latent.shape[3] != width):

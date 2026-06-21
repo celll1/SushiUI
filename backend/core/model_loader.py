@@ -309,6 +309,11 @@ class ModelLoader:
         - SD1.5/SDXL diffusers and safetensors
         Note: DEUS support has been removed (architecture no longer maintained)
         """
+        # From-scratch MiniT2I sentinel ("scratch:minit2i:<variant>:<vae_type>"):
+        # not a filesystem path — handled by the in-memory build path in the loader.
+        if isinstance(model_path, str) and model_path.startswith("scratch:minit2i:"):
+            return "minit2i"
+
         # Lens detection (microsoft/Lens diffusers directory or HF repo)
         if os.path.isdir(model_path):
             model_index_path = os.path.join(model_path, "model_index.json")

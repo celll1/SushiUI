@@ -18,6 +18,7 @@ import torch
 
 from .vendor import MiniT2IMMJiTModel, MiniT2IFlowMatchScheduler
 from .vendor.single_file import load_single_file, detect_variant_from_state_dict
+from .minit2i_vae import is_latent_vae, load_minit2i_vae, VAE_SCALE_FACTOR
 
 
 def _looks_like_flan_t5(d: str) -> bool:
@@ -149,11 +150,15 @@ def load_minit2i_components(
     torch_dtype: torch.dtype = torch.bfloat16,
     flan_t5_path: str | None = None,
     text_encoder_dtype: torch.dtype = torch.float32,
+    vae_dtype: torch.dtype = torch.float16,
+    vae_local_dir: str | None = None,
 ) -> dict:
     """Load MiniT2I components from a diffusers dir or a single-file safetensors.
 
     Returns a component dict consumed by PipelineManager.load_model():
-        {type:"minit2i", transformer, scheduler, text_encoder, tokenizer, variant}
+        {type:"minit2i", transformer, scheduler, text_encoder, tokenizer, variant,
+         vae, vae_type, vae_scale_factor}
+    vae is None for pixel-space models (vae_type="none").
     """
     is_single_file = os.path.isfile(model_path) and model_path.endswith(".safetensors")
 
@@ -206,7 +211,15 @@ def load_minit2i_components(
     transformer.eval()
     transformer.to("cpu")
     text_encoder.to("cpu")
-    print(f"[MiniT2ILoader] Loaded MiniT2I variant={variant} (FLAN-T5 from {flan_loc})")
+
+    # Latent-space variants (vae_type != "none") also load their VAE. Pixel-space
+    # (vae_type="none") keeps vae=None and decodes RGB directly.
+    vae = None
+    vae_type = getattr(transformer.mmjit_config, "vae_type", "none")
+    if is_latent_vae(vae_type):
+        vae = load_minit2i_vae(vae_type, torch_dtype=vae_dtype, local_dir=vae_local_dir)
+        vae.to("cpu")
+    print(f"[MiniT2ILoader] Loaded MiniT2I variant={variant} vae_type={vae_type} (FLAN-T5 from {flan_loc})")
 
     return {
         "type": "minit2i",
@@ -215,4 +228,7 @@ def load_minit2i_components(
         "text_encoder": text_encoder,
         "tokenizer": tokenizer,
         "variant": variant,
+        "vae": vae,
+        "vae_type": vae_type,
+        "vae_scale_factor": VAE_SCALE_FACTOR,
     }

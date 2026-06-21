@@ -282,6 +282,12 @@ class MMJiTConfig:
     cfg_channels: int = 3
     cfg_interval: tuple = (0.0, 1.0)
     llm: str = "google/flan-t5-large"
+    # Data space: "none" = pixel-space RGB (in_channels=3, patch_size=16); "sdxl" /
+    # "flux1" = VAE-latent space (in_channels = VAE latent channels, patch_size=2).
+    # Only affects the I/O layers (proj1 / FinalLayer); the transformer body is
+    # channel-agnostic. noise_scale defaults to 2.0 for pixel, 1.0 for latent.
+    vae_type: str = "none"
+    noise_scale: float = 2.0
 
 
 class MMJiT(nn.Module):

@@ -727,6 +727,11 @@ class TrainingMetrics(TrainingBase):
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(Integer, ForeignKey("training_runs.id", ondelete="CASCADE"), nullable=False, index=True)
     step = Column(Integer, nullable=False)
+    # Epoch this step belongs to (for epoch-boundary markers in the metrics UI).
+    epoch = Column(Integer, nullable=True)
+    # Distinguishes successive resumes of the same run (0 = initial). Lets the UI
+    # mark resume boundaries (and optionally split curves per resume later).
+    resume_seq = Column(Integer, nullable=False, default=0)
 
     # Metrics
     loss = Column(Float, nullable=True)

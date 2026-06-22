@@ -632,6 +632,11 @@ class BaseTrainer(ABC):
         # Batch DB commits every N steps instead of every step
         self._metrics_buffer = []
         self._metrics_flush_interval = 10  # Flush every 10 steps (configurable)
+        # Epoch / resume-session tags recorded with each metric (for the UI's
+        # epoch-boundary lines and resume markers). resume_seq is recomputed at
+        # run start; _current_epoch is updated in the epoch loop.
+        self._current_epoch = 0
+        self.resume_seq = 0
 
         # Async DB logging with ThreadPoolExecutor
         # DB writes happen in background thread, not blocking training loop
@@ -9039,7 +9044,29 @@ class BaseTrainer(ABC):
             self._danbooru_collector = None
 
         try:
+            # resume_seq: 0 for a fresh run, one past the highest recorded seq when
+            # resuming (this run already has metric rows from a prior session). New
+            # steps continue the global step counter, so (run_id, step) stays unique;
+            # resume_seq only labels which session each row came from.
+            if self.run_id is not None:
+                try:
+                    from database.models import TrainingMetrics
+                    from database import get_training_db
+                    from sqlalchemy import func as _sqlfunc
+                    _db = next(get_training_db())
+                    _max_seq = _db.query(_sqlfunc.max(TrainingMetrics.resume_seq)).filter(
+                        TrainingMetrics.run_id == self.run_id
+                    ).scalar()
+                    _db.close()
+                    self.resume_seq = (int(_max_seq) + 1) if _max_seq is not None else 0
+                except Exception as _e:
+                    print(f"{self.log_prefix} resume_seq detection failed ({_e}); defaulting to 0")
+                    self.resume_seq = 0
+                print(f"{self.log_prefix} Metrics resume_seq = {self.resume_seq}")
+
             for epoch in range(start_epoch, num_epochs):
+                # Recorded with each metric (for epoch-boundary markers in the UI).
+                self._current_epoch = epoch
                 print(f"\n{self.log_prefix} Epoch {epoch + 1}/{num_epochs}")
 
                 # Reload datasets for per-epoch shuffle/dropout
@@ -11055,9 +11082,13 @@ class BaseTrainer(ABC):
             if param_cumulative_drift_ve is not None:
                 existing_entry['param_cumulative_drift_ve'] = param_cumulative_drift_ve
         else:
-            # New step: add to buffer
+            # New step: add to buffer. epoch/resume_seq are run-context attributes
+            # (set in the epoch loop / at run start) rather than per-call args, so
+            # the many existing call sites stay unchanged.
             self._metrics_buffer.append({
                 'step': step,
+                'epoch': getattr(self, '_current_epoch', None),
+                'resume_seq': getattr(self, 'resume_seq', 0),
                 'loss': loss,
                 'recon_loss': recon_loss,
                 'learning_rate': learning_rate,
@@ -11181,6 +11212,8 @@ class BaseTrainer(ABC):
                     metric = TrainingMetrics(
                         run_id=self.run_id,
                         step=m_step,
+                        epoch=metrics.get('epoch'),
+                        resume_seq=metrics.get('resume_seq', 0),
                         loss=m_loss if m_loss is not None else 0.0,
                         recon_loss=m_recon_loss if m_recon_loss is not None else 0.0,
                         learning_rate=m_learning_rate if m_learning_rate is not None else 0.0,
@@ -11223,6 +11256,8 @@ class BaseTrainer(ABC):
                         grad_norm_text_encoder_2=latest.get('grad_norm_text_encoder_2'),
                         grad_norm_unet=latest['grad_norm_unet'],
                         grad_norm_vision_encoder=latest.get('grad_norm_vision_encoder'),
+                        epoch=latest.get('epoch'),
+                        resume_seq=latest.get('resume_seq', 0),
                     )
                 except Exception:
                     pass  # Non-critical

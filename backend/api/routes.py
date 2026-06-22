@@ -8197,6 +8197,8 @@ async def get_training_metrics_db(
                 "param_cumulative_drift_te1": [],
                 "param_cumulative_drift_te2": [],
                 "param_cumulative_drift_ve": [],
+                "epoch_boundaries": [],
+                "resume_markers": [],
             }
 
         # Calculate uniform sample steps
@@ -8253,6 +8255,9 @@ async def get_training_metrics_db(
         for m in metrics:
             point = {
                 "step": m.step,
+                # resume_seq is carried on every point so the chart can later split
+                # curves per resume; epoch markers are precomputed below.
+                "resume_seq": getattr(m, "resume_seq", 0) or 0,
                 "timestamp": m.timestamp.isoformat() if m.timestamp else None
             }
 
@@ -8300,6 +8305,31 @@ async def get_training_metrics_db(
             if is_valid_float(getattr(m, 'param_cumulative_drift_ve', None)):
                 param_cumulative_drift_ve_data.append({**point, "value": m.param_cumulative_drift_ve})
 
+        # Epoch boundaries (last recorded step of each epoch) and resume markers
+        # (first step of each resume_seq > 0), computed from ALL rows (not just the
+        # sampled subset) so the markers are accurate. The UI draws dotted vertical
+        # lines for epochs and a distinct marker for resume boundaries.
+        epoch_rows = db.query(
+            TrainingMetrics.epoch, func.max(TrainingMetrics.step)
+        ).filter(
+            TrainingMetrics.run_id == run_id,
+            TrainingMetrics.epoch.isnot(None),
+        ).group_by(TrainingMetrics.epoch).order_by(TrainingMetrics.epoch.asc()).all()
+        epoch_boundaries = [
+            {"epoch": int(e), "step": int(s)}
+            for e, s in epoch_rows if e is not None and s is not None
+        ]
+
+        resume_rows = db.query(
+            TrainingMetrics.resume_seq, func.min(TrainingMetrics.step)
+        ).filter(
+            TrainingMetrics.run_id == run_id,
+        ).group_by(TrainingMetrics.resume_seq).order_by(TrainingMetrics.resume_seq.asc()).all()
+        resume_markers = [
+            {"resume_seq": int(rs), "step": int(s)}
+            for rs, s in resume_rows if rs and int(rs) > 0 and s is not None
+        ]
+
         return {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
@@ -8318,6 +8348,8 @@ async def get_training_metrics_db(
             "param_cumulative_drift_te1": param_cumulative_drift_te1_data,
             "param_cumulative_drift_te2": param_cumulative_drift_te2_data,
             "param_cumulative_drift_ve": param_cumulative_drift_ve_data,
+            "epoch_boundaries": epoch_boundaries,
+            "resume_markers": resume_markers,
         }
 
     except Exception as e:

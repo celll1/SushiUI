@@ -2306,6 +2306,21 @@ export interface MetricPoint {
   step: number;
   value: number;
   wall_time: number;
+  /** Resume session this point belongs to (0 = initial run). Carried per-point so
+   *  the chart can later split curves per resume; markers use resume_markers below. */
+  resume_seq?: number;
+}
+
+/** Step at which an epoch ended (for dotted vertical boundary lines). */
+export interface EpochBoundary {
+  epoch: number;
+  step: number;
+}
+
+/** First step of a resume session > 0 (for resume boundary markers). */
+export interface ResumeMarker {
+  resume_seq: number;
+  step: number;
 }
 
 export interface TrainingMetrics {
@@ -2326,6 +2341,8 @@ export interface TrainingMetrics {
   param_cumulative_drift_te1?: MetricPoint[];
   param_cumulative_drift_te2?: MetricPoint[];
   param_cumulative_drift_ve?: MetricPoint[];
+  epoch_boundaries?: EpochBoundary[];
+  resume_markers?: ResumeMarker[];
 }
 
 export const getTrainingMetrics = async (

@@ -65,18 +65,26 @@ class ConnectionManager:
         grad_norm_text_encoder_2: float = None,
         grad_norm_unet: float = None,
         grad_norm_vision_encoder: float = None,
+        epoch: int = None,
+        resume_seq: int = 0,
     ):
         """Send training metrics (loss, recon_loss, lr, grad_norm) to all connected clients.
 
         Called from training loop (base_trainer.py) after each step.
         Thread-safe: uses message queue.
+
+        ``epoch`` / ``resume_seq`` let the metrics UI draw epoch-boundary lines and
+        resume markers (resume_seq 0 = initial run).
         """
         data = {
             "type": "training_metrics",
             "run_id": run_id,
             "step": step,
             "loss": loss,
+            "resume_seq": resume_seq,
         }
+        if epoch is not None:
+            data["epoch"] = epoch
         if recon_loss is not None:
             data["recon_loss"] = recon_loss
         if learning_rate is not None:

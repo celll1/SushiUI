@@ -5920,15 +5920,18 @@ class BaseTrainer(ABC):
                 debug_save_path.mkdir(parents=True, exist_ok=True)
                 t_val = float(t[0].item())
                 is_latent = bool(getattr(self, "minit2i_latent", False))
+                # Use the standard debug keys the /debug-latents visualize endpoint
+                # reads (latents=Target, predicted_latent=Predicted t=0), so the UI's
+                # Latent Comparison renders. x0-prediction model, so predicted_latent
+                # is the model's clean estimate and predicted_velocity is the v target.
                 debug_data = {
-                    "images": images[0:1].detach().cpu(),          # target ("latent": RGB for pixel, VAE code for latent)
-                    "noisy": x_t[0:1].detach().cpu(),               # x_t
-                    "predicted_x0": x0_pred[0:1].detach().cpu(),    # model output (clean estimate)
-                    "actual_noise": noise[0:1].detach().cpu(),
-                    "target_velocity": target[0:1].detach().cpu(),
+                    "latents": images[0:1].detach().cpu(),            # Target (original)
+                    "noisy_latents": x_t[0:1].detach().cpu(),         # x_t
+                    "predicted_latent": x0_pred[0:1].detach().cpu(),  # Predicted (t=0)
                     "predicted_velocity": v_pred[0:1].detach().cpu(),
                     "timestep": t_val,
                     "noise_scale": noise_scale,
+                    "model_type": "minit2i",
                     "vae_type": getattr(self, "minit2i_vae_type", "none"),
                     "is_latent": is_latent,
                     "loss": loss.item(),

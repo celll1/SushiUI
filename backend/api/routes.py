@@ -7954,7 +7954,27 @@ async def visualize_debug_latent(
         except Exception:
             pass
 
-    if "latents" in data:
+    # MiniT2I latent variant saves true VAE-decoded RGB previews (webp) alongside
+    # the .pt. Prefer those for the Target/Predicted comparison — far more
+    # meaningful than false-color latent channels. Filenames mirror the .pt:
+    #   latents_t<ts>.pt -> decode_t<ts>_target.webp / decode_t<ts>_pred_x0.webp
+    try:
+        _base = latent_file.name[:-3] if latent_file.name.endswith(".pt") else latent_file.stem  # "latents_t<ts>"
+        _ts_part = _base.replace("latents_t", "")
+        _target_webp = latent_file.parent / f"decode_t{_ts_part}_target.webp"
+        _pred_webp = latent_file.parent / f"decode_t{_ts_part}_pred_x0.webp"
+        def _webp_preview(p):
+            im = Image.open(p).convert("RGB")
+            im.thumbnail((768, 768))  # downscale: debug preview doesn't need full res
+            return image_to_base64(im)
+        if _target_webp.exists():
+            result["latents_image"] = _webp_preview(_target_webp)
+        if _pred_webp.exists():
+            result["predicted_latent_image"] = _webp_preview(_pred_webp)
+    except Exception as _webp_e:
+        print(f"[debug-latents] webp preview load failed: {_webp_e}")
+
+    if "latents" in data and "latents_image" not in result:
         img = latent_to_image(data["latents"], is_flux2=is_flux2)
         result["latents_image"] = image_to_base64(img)
 
@@ -7971,7 +7991,7 @@ async def visualize_debug_latent(
         img = latent_to_image(data["predicted_velocity"], is_flux2=is_flux2)
         result["predicted_velocity_image"] = image_to_base64(img)
 
-    if "predicted_latent" in data:
+    if "predicted_latent" in data and "predicted_latent_image" not in result:
         img = latent_to_image(data["predicted_latent"], is_flux2=is_flux2)
         result["predicted_latent_image"] = image_to_base64(img)
 

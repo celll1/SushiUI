@@ -59,7 +59,7 @@ def _build_train_section(
     train: Dict[str, Any] = {
         "batch_size": p.get("batch_size", 1),
         **({"steps": total_steps} if total_steps else {"epochs": epochs}),
-        "gradient_accumulation_steps": 1,
+        "gradient_accumulation_steps": p.get("gradient_accumulation_steps", 1),
         "train_unet": train_unet,
         "train_text_encoder": train_text_encoder,
         "train_image_encoder": train_image_encoder,

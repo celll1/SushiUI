@@ -2008,6 +2008,7 @@ export interface TrainingRunCreateRequest {
   total_steps?: number;  // Mutually exclusive with epochs
   epochs?: number;  // Mutually exclusive with total_steps
   batch_size?: number;
+  gradient_accumulation_steps?: number;
   learning_rate?: number;
   lr_scheduler?: string;
   lr_warmup_steps?: number;

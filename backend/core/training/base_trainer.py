@@ -1759,6 +1759,7 @@ class BaseTrainer(ABC):
         self.is_anima = (model_type == "anima")
         self.is_lens  = (model_type == "lens")
         self.is_ideogram4 = (model_type == "ideogram4")
+        self.is_minit2i = (model_type == "minit2i")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -1992,6 +1993,19 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} VAE remains on CPU (will move to GPU during sample generation)")
 
             print(f"{self.log_prefix} Z-Image checkpoint loaded successfully as base model")
+
+        elif self.is_minit2i:
+            # MiniT2I checkpoint resume: the saved single-file carries the full
+            # transformer (+ optional FLAN-T5) and its mmjit_config/vae_type in
+            # metadata. Reuse the normal MiniT2I loader by pointing model_path at
+            # the checkpoint — it reconstructs the transformer, resolves the VAE
+            # by vae_type, loads FLAN-T5, sets the scheduler, enables gradient
+            # checkpointing, and moves to device. (Do NOT rebuild from the
+            # scratch:minit2i sentinel — that would discard trained weights.)
+            print(f"{self.log_prefix} Loading MiniT2I checkpoint as base model: {checkpoint_path}")
+            self.model_path = checkpoint_path
+            self._load_minit2i_components()
+            print(f"{self.log_prefix} MiniT2I checkpoint loaded successfully as base model")
 
         else:
             # SD/SDXL checkpoint resume

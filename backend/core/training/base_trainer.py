@@ -4509,11 +4509,19 @@ class BaseTrainer(ABC):
                 alphas_cumprod_cached=alphas_cumprod_cached,
             )
 
-        # Backward pass
+        # Backward pass. With gradient accumulation (optimizer steps every
+        # `_grad_accum_steps` backward passes), scale the loss so the accumulated
+        # gradient is the AVERAGE of the window, not the sum. Without this the
+        # summed gradient grows with the accumulation count and is clipped harder
+        # by max_grad_norm, negating the variance-reduction benefit. accum=1 is a
+        # no-op, so existing (non-accumulating) runs are unchanged. Report the
+        # unscaled loss value below.
+        accum = getattr(self, "_grad_accum_steps", 1) or 1
+        loss_for_backward = (loss / accum) if accum > 1 else loss
         if self.use_grad_scaler:
-            self.grad_scaler.scale(loss).backward()
+            self.grad_scaler.scale(loss_for_backward).backward()
         else:
-            loss.backward()
+            loss_for_backward.backward()
 
         # Extract values before deleting tensors
         loss_value = loss.item()
@@ -4521,7 +4529,7 @@ class BaseTrainer(ABC):
         recon_loss_value = recon_loss.item() if isinstance(recon_loss, torch.Tensor) else recon_loss
 
         # Free computation graph
-        del loss, pred_loss, recon_loss
+        del loss, loss_for_backward, pred_loss, recon_loss
 
         return loss_value, pred_loss_value, recon_loss_value
 
@@ -8322,10 +8330,16 @@ class BaseTrainer(ABC):
         if multi_noise_timesteps > 1:
             print(f"{self.log_prefix} MNT enabled: Each batch will be processed {multi_noise_timesteps} times with different timesteps")
 
-        # Calculate effective gradient accumulation (MNT acts as additional accumulation)
-        effective_gradient_accumulation = gradient_accumulation_steps * multi_noise_timesteps
-        print(f"{self.log_prefix} Gradient accumulation steps: {gradient_accumulation_steps}")
-        print(f"{self.log_prefix} Effective gradient accumulation (with MNT): {effective_gradient_accumulation}")
+        # Gradient accumulation: the optimizer steps every `gradient_accumulation_steps`
+        # backward passes (global_step counts MNT iterations, so the accumulation
+        # window is measured in MNT-iterations — see should_step_optimizer below).
+        # Each backward divides its loss by this so the accumulated gradient is the
+        # window average (used in _execute_forward_backward).
+        self._grad_accum_steps = gradient_accumulation_steps
+        print(f"{self.log_prefix} Gradient accumulation steps: {gradient_accumulation_steps} "
+              f"(optimizer steps every {gradient_accumulation_steps} backward pass(es); "
+              f"with MNT={multi_noise_timesteps}, that is "
+              f"{gradient_accumulation_steps / multi_noise_timesteps:g} batch(es) per step)")
 
         # Calculate total steps and epochs
         total_items = sum(len(dataset.items) for dataset in datasets)

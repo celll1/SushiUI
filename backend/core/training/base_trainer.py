@@ -8449,7 +8449,15 @@ class BaseTrainer(ABC):
 
         # Apply bucketing to datasets
         if bucket_manager:
-            print(f"{self.log_prefix} Assigning images to buckets...")
+            # Bucket assignment is O(N) over every item; for large datasets (millions)
+            # this takes a while with no output, so report progress to console (tqdm)
+            # and the UI (progress_callback).
+            total_bucket_items = sum(len(dataset.items) for dataset in datasets)
+            print(f"{self.log_prefix} Assigning {total_bucket_items} images to buckets...")
+            if progress_callback:
+                progress_callback(phase="bucketing", step=0, total=total_bucket_items)
+            _bucket_pbar = tqdm(total=total_bucket_items, desc="Bucketing", unit="img")
+            _bucket_done = 0
             for dataset in datasets:
                 for item in dataset.items:
                     # For ve_reconstruction_mode items: inject reference_images BEFORE bucketing
@@ -8481,6 +8489,15 @@ class BaseTrainer(ABC):
                     # Update item with bucket dimensions
                     item["width"] = image_info["bucket_width"]
                     item["height"] = image_info["bucket_height"]
+
+                    _bucket_done += 1
+                    _bucket_pbar.update(1)
+                    # Throttle UI updates (every ~2000 items) to avoid flooding.
+                    if progress_callback and _bucket_done % 2000 == 0:
+                        progress_callback(phase="bucketing", step=_bucket_done, total=total_bucket_items)
+            _bucket_pbar.close()
+            if progress_callback:
+                progress_callback(phase="bucketing", step=total_bucket_items, total=total_bucket_items)
 
             # Print bucket statistics
             bucket_counts = bucket_manager.get_bucket_counts()

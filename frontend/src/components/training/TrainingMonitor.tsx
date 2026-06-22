@@ -160,7 +160,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
 
   // Clear scan message once training proper starts
   useEffect(() => {
-    if (currentRun.phase === "training" || currentRun.phase === "latent_cache" || currentRun.phase === "text_encoder_cache") {
+    if (currentRun.phase === "training" || currentRun.phase === "bucketing" || currentRun.phase === "latent_cache" || currentRun.phase === "text_encoder_cache") {
       setScanMessage(null);
       setScanDatasetId(null);
       setScanSkipping(false);
@@ -345,6 +345,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
               <div className="flex justify-between text-xxs sm:text-xs text-gray-400 mb-1">
                 <span>
                   {/* Phase-based display */}
+                  {currentRun.phase === "bucketing" && "Assigning buckets"}
                   {currentRun.phase === "latent_cache" && "Latent Cache"}
                   {currentRun.phase === "text_encoder_cache" && "Text Encoder Cache"}
                   {currentRun.phase === "training" && `Step ${currentRun.current_step} / ${currentRun.total_steps}`}

@@ -819,6 +819,8 @@ def update_training_progress(
         # Update phase detail
         if phase == "initializing":
             run.phase_detail = f"Loading dataset: {step}/{total} items"
+        elif phase == "bucketing":
+            run.phase_detail = f"Assigning buckets: {step}/{total} images"
         elif phase == "latent_cache":
             run.phase_detail = f"Generating latent cache: {step}/{total} items"
         elif phase == "text_encoder_cache":

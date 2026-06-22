@@ -4467,6 +4467,9 @@ class BaseTrainer(ABC):
                 attention_mask=mnt_attention_mask,
                 timesteps=timesteps,
                 profile_vram=self.debug_vram,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
             )
         elif self.is_flux2:
             # FLUX.2 training with position IDs
@@ -5823,6 +5826,9 @@ class BaseTrainer(ABC):
         attention_mask: torch.Tensor,
         timesteps: Optional[torch.Tensor] = None,
         profile_vram: bool = False,
+        debug_save_path: Optional[Path] = None,
+        debug_captions: Optional[List[str]] = None,
+        debug_reference_image_paths: Optional[List[Optional[str]]] = None,
     ) -> Tuple[torch.Tensor, float, float]:
         """Single MiniT2I training step (pixel-space flow matching, x0 prediction).
 
@@ -5899,6 +5905,55 @@ class BaseTrainer(ABC):
             recon_loss_value = torch.nn.functional.mse_loss(
                 x0_pred.float(), images.float(), reduction="mean"
             ).item()
+
+        # Debug save: dump the first sample's tensors (.pt) so the noising / x0
+        # prediction can be inspected offline. For the latent variant ("latent" is
+        # a VAE code) also decode the target and prediction back to RGB PNGs via
+        # the VAE so the encode/decode round-trip is visually verifiable.
+        if debug_save_path is not None:
+            try:
+                debug_save_path.mkdir(parents=True, exist_ok=True)
+                t_val = float(t[0].item())
+                is_latent = bool(getattr(self, "minit2i_latent", False))
+                debug_data = {
+                    "images": images[0:1].detach().cpu(),          # target ("latent": RGB for pixel, VAE code for latent)
+                    "noisy": x_t[0:1].detach().cpu(),               # x_t
+                    "predicted_x0": x0_pred[0:1].detach().cpu(),    # model output (clean estimate)
+                    "actual_noise": noise[0:1].detach().cpu(),
+                    "target_velocity": target[0:1].detach().cpu(),
+                    "predicted_velocity": v_pred[0:1].detach().cpu(),
+                    "timestep": t_val,
+                    "noise_scale": noise_scale,
+                    "vae_type": getattr(self, "minit2i_vae_type", "none"),
+                    "is_latent": is_latent,
+                    "loss": loss.item(),
+                    "recon_loss": recon_loss_value,
+                    "batch_size": B,
+                }
+                if debug_captions:
+                    debug_data["caption"] = debug_captions[0]
+                if debug_reference_image_paths:
+                    first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                    if first_ref:
+                        debug_data["reference_image_path"] = first_ref
+                torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
+
+                if is_latent and getattr(self, "vae", None) is not None:
+                    # Decode the target latent and the predicted x0 to RGB for a
+                    # visual sanity check (VAE tiling keeps this cheap at any res).
+                    from core.models.minit2i.minit2i_vae import denormalize_latent
+                    from PIL import Image as _Image
+                    vae_dev = next(self.vae.parameters()).device
+                    with torch.no_grad():
+                        for name, lat in (("target", images[0:1]), ("pred_x0", x0_pred[0:1])):
+                            z = denormalize_latent(lat.to(device=vae_dev, dtype=self.vae_dtype), self.vae)
+                            img = self.vae.decode(z).sample  # [1,3,H,W] in ~[-1,1]
+                            arr = ((img[0].float().clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)
+                            arr = arr.permute(1, 2, 0).cpu().numpy()
+                            _Image.fromarray(arr).save(debug_save_path / f"decode_t{t_val:.4f}_{name}.png")
+            except Exception as _dbg_e:
+                print(f"{self.log_prefix} [debug_latents] save failed: {_dbg_e}")
+
         # Backward is performed by _execute_forward_backward; do not backward here.
         del noise, x_t, target, v_pred, x0_pred, denom
         return loss, pred_loss_value, recon_loss_value

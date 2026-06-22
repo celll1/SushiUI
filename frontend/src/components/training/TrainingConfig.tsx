@@ -91,6 +91,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // getRequestData() strips one of them based on `useEpochs`.
   epochs: 10,
   batch_size: 4,
+  gradient_accumulation_steps: 1,
   learning_rate: 1e-5,
   lr_scheduler: "constant",
   lr_warmup_steps: 0,
@@ -601,6 +602,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       total_steps: useEpochs ? undefined : params.total_steps,
       epochs: useEpochs ? params.epochs : undefined,
       batch_size: params.batch_size,
+      gradient_accumulation_steps: params.gradient_accumulation_steps,
       learning_rate: parseFloat(localLrText),
       lr_scheduler: params.lr_scheduler,
       lr_warmup_steps: params.lr_warmup_steps,
@@ -866,7 +868,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
       "lora_rank", "lora_alpha", "lora_dtype",
       "total_steps", "epochs",
-      "batch_size", "learning_rate", "lr_scheduler", "lr_warmup_steps", "optimizer",
+      "batch_size", "gradient_accumulation_steps", "learning_rate", "lr_scheduler", "lr_warmup_steps", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
       "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
@@ -1396,6 +1398,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       totalSteps: params.total_steps,
       epochs: params.epochs,
       batchSize: params.batch_size,
+      gradientAccumulationSteps: params.gradient_accumulation_steps,
       learningRate: localLrText,
       lrScheduler: params.lr_scheduler,
       optimizer: params.optimizer,
@@ -1507,6 +1510,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.totalSteps !== undefined) updateParam("total_steps", config.totalSteps);
     if (config.epochs !== undefined) updateParam("epochs", config.epochs);
     if (config.batchSize !== undefined) updateParam("batch_size", config.batchSize);
+    if (config.gradientAccumulationSteps !== undefined) updateParam("gradient_accumulation_steps", config.gradientAccumulationSteps);
     if (config.learningRate !== undefined) {
       const v = parseFloat(config.learningRate);
       if (!isNaN(v)) updateParam("learning_rate", v);
@@ -2387,6 +2391,18 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 min="1"
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Gradient Accumulation Steps</label>
+              <input
+                type="number"
+                value={params.gradient_accumulation_steps ?? 1}
+                onChange={(e) => updateParam("gradient_accumulation_steps", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value)) || parseInt(e.target.value) < 1) updateParam("gradient_accumulation_steps", 1); }}
+                min="1"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">Effective batch = Batch Size × this. Reduces gradient noise without extra VRAM.</p>
             </div>
 
             <div>

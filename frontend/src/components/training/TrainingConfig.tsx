@@ -92,6 +92,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   epochs: 10,
   batch_size: 4,
   gradient_accumulation_steps: 1,
+  max_grad_norm: 1.0,
   learning_rate: 1e-5,
   lr_scheduler: "constant",
   lr_warmup_steps: 0,
@@ -603,6 +604,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       epochs: useEpochs ? params.epochs : undefined,
       batch_size: params.batch_size,
       gradient_accumulation_steps: params.gradient_accumulation_steps,
+      max_grad_norm: params.max_grad_norm,
       learning_rate: parseFloat(localLrText),
       lr_scheduler: params.lr_scheduler,
       lr_warmup_steps: params.lr_warmup_steps,
@@ -868,7 +870,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
       "lora_rank", "lora_alpha", "lora_dtype",
       "total_steps", "epochs",
-      "batch_size", "gradient_accumulation_steps", "learning_rate", "lr_scheduler", "lr_warmup_steps", "optimizer",
+      "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
       "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
@@ -1399,6 +1401,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       epochs: params.epochs,
       batchSize: params.batch_size,
       gradientAccumulationSteps: params.gradient_accumulation_steps,
+      maxGradNorm: params.max_grad_norm,
       learningRate: localLrText,
       lrScheduler: params.lr_scheduler,
       optimizer: params.optimizer,
@@ -1511,6 +1514,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.epochs !== undefined) updateParam("epochs", config.epochs);
     if (config.batchSize !== undefined) updateParam("batch_size", config.batchSize);
     if (config.gradientAccumulationSteps !== undefined) updateParam("gradient_accumulation_steps", config.gradientAccumulationSteps);
+    if (config.maxGradNorm !== undefined) updateParam("max_grad_norm", config.maxGradNorm);
     if (config.learningRate !== undefined) {
       const v = parseFloat(config.learningRate);
       if (!isNaN(v)) updateParam("learning_rate", v);
@@ -2403,6 +2407,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               />
               <p className="text-xs text-gray-500 mt-1">Effective batch = Batch Size × this. Reduces gradient noise without extra VRAM.</p>
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Max Grad Norm</label>
+              <input
+                type="number"
+                step="0.1"
+                value={params.max_grad_norm ?? 1.0}
+                onChange={(e) => updateParam("max_grad_norm", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))} onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("max_grad_norm", 1.0); }}
+                min="0"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">Gradient clipping threshold. 0 disables clipping.</p>
             </div>
 
             <div>

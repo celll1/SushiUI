@@ -6358,6 +6358,7 @@ class TrainingRunCreateRequest(BaseModel):
     epochs: Optional[int] = None  # Mutually exclusive with total_steps
     batch_size: int = 1
     gradient_accumulation_steps: int = TRAINING_DEFAULTS["gradient_accumulation_steps"]
+    max_grad_norm: float = TRAINING_DEFAULTS["max_grad_norm"]
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0  # Linear warmup steps before lr_scheduler kicks in

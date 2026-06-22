@@ -109,6 +109,7 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "epochs": 10,
     "batch_size": 1,
     "gradient_accumulation_steps": 1,
+    "max_grad_norm": 1.0,
     "learning_rate": 1e-4,
     "lr_scheduler": "constant",
     "lr_warmup_steps": 0,

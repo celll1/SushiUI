@@ -1434,6 +1434,19 @@ class BaseTrainer(ABC):
             self.vae = self.vae.to(dtype=self.vae_dtype)
             self.vae.requires_grad_(False)
             self.vae.eval()
+            # High-res latent caching encodes full bucket-resolution images (up to
+            # ~2048px) through the VAE. A single fp32 encode at that size peaks at
+            # tens of GB (early full-res conv stages + the bottleneck spatial
+            # self-attention), independent of the tiny transformer step. Tiled
+            # encode/decode splits the image into overlapping tiles so VAE memory
+            # is bounded by the tile size, not the image size.
+            for _m in ("enable_tiling", "enable_slicing"):
+                if hasattr(self.vae, _m):
+                    try:
+                        getattr(self.vae, _m)()
+                    except Exception as _e:
+                        print(f"{self.log_prefix} VAE {_m} failed: {_e}")
+            print(f"{self.log_prefix} MiniT2I VAE tiling/slicing enabled (bounds high-res encode VRAM)")
         self.text_encoder_2 = None
         self.tokenizer_2 = None
         self.t5_tokenizer = None

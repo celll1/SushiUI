@@ -5950,7 +5950,12 @@ class BaseTrainer(ABC):
                             img = self.vae.decode(z).sample  # [1,3,H,W] in ~[-1,1]
                             arr = ((img[0].float().clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)
                             arr = arr.permute(1, 2, 0).cpu().numpy()
-                            _Image.fromarray(arr).save(debug_save_path / f"decode_t{t_val:.4f}_{name}.png")
+                            # WebP (lossy q80) — debug previews accumulate (every N
+                            # steps x 2 images); far smaller than PNG, fine for visual checks.
+                            _Image.fromarray(arr).save(
+                                debug_save_path / f"decode_t{t_val:.4f}_{name}.webp",
+                                "WEBP", quality=80, method=4,
+                            )
             except Exception as _dbg_e:
                 print(f"{self.log_prefix} [debug_latents] save failed: {_dbg_e}")
 

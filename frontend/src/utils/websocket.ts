@@ -36,6 +36,8 @@ interface TrainingMetrics {
   grad_norm_text_encoder_2?: number;
   grad_norm_unet?: number;
   grad_norm_vision_encoder?: number;
+  epoch?: number;
+  resume_seq?: number;
 }
 
 export interface FpFnScatterData {
@@ -147,6 +149,8 @@ class ProgressClient {
             grad_norm_text_encoder_2: data.grad_norm_text_encoder_2,
             grad_norm_unet: data.grad_norm_unet,
             grad_norm_vision_encoder: data.grad_norm_vision_encoder,
+            epoch: data.epoch,
+            resume_seq: data.resume_seq,
           };
 
           this.trainingMetricsCallbacks.forEach((callback) => {

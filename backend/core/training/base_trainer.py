@@ -2904,6 +2904,26 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} ERROR: All checkpoints failed to load")
         return (False, None)
 
+    def _safe_unlink(self, path, attempts: int = 5, delay: float = 0.6) -> bool:
+        """Delete a file, tolerating transient Windows locks (antivirus / indexer
+        holding a just-written file → PermissionError [Errno 13]). Retries a few
+        times with backoff; a final failure is logged and swallowed (a leftover old
+        checkpoint is harmless — cleanup retries next time). Never raises."""
+        import time as _time
+        for i in range(attempts):
+            try:
+                path.unlink()
+                return True
+            except FileNotFoundError:
+                return True
+            except (PermissionError, OSError) as e:
+                if i < attempts - 1:
+                    _time.sleep(delay * (i + 1))
+                    continue
+                print(f"{self.log_prefix} WARNING: could not delete {path.name} ({e}); leaving it (non-fatal)")
+                return False
+        return False
+
     def _cleanup_old_checkpoints(self, max_step_saves_to_keep: int):
         """
         Delete old checkpoints, keeping only the most recent N checkpoints.
@@ -2944,21 +2964,21 @@ class BaseTrainer(ABC):
             state_json_path = checkpoint_path.parent / f"{checkpoint_path.stem}_state.json"
 
             print(f"{self.log_prefix} Deleting old checkpoint: {checkpoint_path.name}")
-            checkpoint_path.unlink()
+            self._safe_unlink(checkpoint_path)
 
             if optimizer_pt_path.exists():
                 print(f"{self.log_prefix} Deleting old optimizer state: {optimizer_pt_path.name}")
-                optimizer_pt_path.unlink()
+                self._safe_unlink(optimizer_pt_path)
 
             if state_json_path.exists():
                 print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
-                state_json_path.unlink()
+                self._safe_unlink(state_json_path)
 
             # Also delete VE checkpoint for this step if it exists
             ve_pattern = f"*_vision_encoder_step_{step_num:06d}.safetensors"
             for ve_file in checkpoint_path.parent.glob(ve_pattern):
                 print(f"{self.log_prefix} Deleting old VE checkpoint: {ve_file.name}")
-                ve_file.unlink()
+                self._safe_unlink(ve_file)
 
     # ============================================================
     # Optimizer Setup
@@ -10569,24 +10589,34 @@ class BaseTrainer(ABC):
 
                     # Save checkpoint (check against global_step which increments per MNT iteration)
                     if global_step % save_every_n_steps == 0:
-                        # Flush metrics buffer before checkpoint to ensure consistency
-                        if self.run_id is not None:
-                            self._log_metrics_to_db(step=global_step, force_flush=True)
-                        self.save_checkpoint(step=global_step, epoch=epoch)
-                        # Save training state (epoch progress) for mid-epoch resume
-                        self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
-                        # Save optimizer state (momentum, variance, etc.)
-                        self.save_optimizer_state(step=global_step)
-                        # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
-                        if hasattr(self, '_cleanup_old_checkpoints'):
-                            import inspect
-                            sig = inspect.signature(self._cleanup_old_checkpoints)
-                            if len(sig.parameters) == 3:
-                                # LoRATrainer version: (current_step, max_to_keep, save_every)
-                                self._cleanup_old_checkpoints(global_step, max_step_saves_to_keep, save_every_n_steps)
-                            else:
-                                # BaseTrainer/FullParameterTrainer version: (max_step_saves_to_keep)
-                                self._cleanup_old_checkpoints(max_step_saves_to_keep)
+                        # Transient Windows file locks (antivirus / indexer) can raise
+                        # PermissionError mid-save; a single such failure must NOT kill a
+                        # multi-hour run. Treat the periodic save as best-effort: log and
+                        # continue, the next interval will save again. (Disk-full or real
+                        # errors still surface in the log.)
+                        try:
+                            # Flush metrics buffer before checkpoint to ensure consistency
+                            if self.run_id is not None:
+                                self._log_metrics_to_db(step=global_step, force_flush=True)
+                            self.save_checkpoint(step=global_step, epoch=epoch)
+                            # Save training state (epoch progress) for mid-epoch resume
+                            self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
+                            # Save optimizer state (momentum, variance, etc.)
+                            self.save_optimizer_state(step=global_step)
+                            # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
+                            if hasattr(self, '_cleanup_old_checkpoints'):
+                                import inspect
+                                sig = inspect.signature(self._cleanup_old_checkpoints)
+                                if len(sig.parameters) == 3:
+                                    # LoRATrainer version: (current_step, max_to_keep, save_every)
+                                    self._cleanup_old_checkpoints(global_step, max_step_saves_to_keep, save_every_n_steps)
+                                else:
+                                    # BaseTrainer/FullParameterTrainer version: (max_step_saves_to_keep)
+                                    self._cleanup_old_checkpoints(max_step_saves_to_keep)
+                        except (PermissionError, OSError) as _save_err:
+                            print(f"{self.log_prefix} WARNING: checkpoint save at step {global_step} "
+                                  f"failed ({type(_save_err).__name__}: {_save_err}); continuing, "
+                                  f"will retry at next interval")
                         # Clear CUDA cache after checkpoint save to free temporary buffers
                         torch.cuda.empty_cache()
 

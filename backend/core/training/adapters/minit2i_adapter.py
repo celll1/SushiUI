@@ -31,6 +31,18 @@ from core.models.minit2i.minit2i_lora import (
 )
 
 
+def _repa_sidecar_path(checkpoint_path: str) -> str:
+    """REPA projector sidecar path next to a checkpoint (suffix-precise).
+
+    Replaces only a trailing ``.safetensors`` so a directory component containing
+    ``.safetensors`` cannot corrupt the path. Must match the resume loader in
+    base_trainer._setup_repa.
+    """
+    if checkpoint_path.endswith(".safetensors"):
+        return checkpoint_path[: -len(".safetensors")] + ".repa.safetensors"
+    return checkpoint_path + ".repa.safetensors"
+
+
 class MiniT2ILoRAAdapter(BaseLoRAAdapter):
     """LoRA adapter for the MiniT2I MM-JiT transformer (+ optional FLAN-T5 TE LoRA)."""
 
@@ -100,6 +112,16 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
             te_lr = getattr(self.trainer, "text_encoder_lr", None) or getattr(self.trainer, "learning_rate", 1e-4)
             groups.append({"params": te_params, "lr": te_lr})
             print(f"[MiniT2ILoRAAdapter] FLAN-T5 LoRA param group lr={te_lr}")
+        # REPA projector (training-only alignment head). Without this group the
+        # projector would never update and the alignment target would be random,
+        # defeating REPA. Appended last so the param-group order is stable on resume.
+        if getattr(self.trainer, "repa_enable", False) and getattr(self.trainer, "repa_projector", None) is not None:
+            p_params = [p for p in self.trainer.repa_projector.parameters() if p.requires_grad]
+            if p_params:
+                proj_base_lr = getattr(self.trainer, "unet_lr", None) or getattr(self.trainer, "learning_rate", 1e-4)
+                proj_lr = proj_base_lr * float(getattr(self.trainer, "repa_proj_lr_factor", 1.0))
+                print(f"[MiniT2ILoRAAdapter] {sum(p.numel() for p in p_params):,} trainable params (REPA projector), lr={proj_lr}")
+                groups.append({"params": p_params, "lr": proj_lr})
         return groups
 
     def save_checkpoint(self, lora_layers: Dict[str, nn.Module], step: int, epoch: int, output_path: Path):
@@ -126,6 +148,18 @@ class MiniT2ILoRAAdapter(BaseLoRAAdapter):
         }
         save_file(state_dict, str(output_path), metadata=metadata)
         print(f"[MiniT2ILoRAAdapter] Saved LoRA checkpoint ({len(lora_layers)} layers) -> {output_path}")
+
+        # REPA projector (training-only): saved alongside for resume; not in the LoRA file.
+        if getattr(self.trainer, "repa_enable", False) and getattr(self.trainer, "repa_projector", None) is not None:
+            try:
+                from safetensors.torch import save_file as _save_file
+                sib = _repa_sidecar_path(str(output_path))
+                psd = {k: v.detach().cpu().contiguous().float()
+                       for k, v in self.trainer.repa_projector.state_dict().items()}
+                _save_file(psd, sib)
+                print(f"[MiniT2ILoRAAdapter] Saved REPA projector -> {sib}")
+            except Exception as _e:
+                print(f"[MiniT2ILoRAAdapter] WARNING: REPA projector save failed: {_e}")
 
 
 class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
@@ -207,7 +241,7 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
         if getattr(trainer, "repa_enable", False) and getattr(trainer, "repa_projector", None) is not None:
             try:
                 from safetensors.torch import save_file as _save_file
-                sib = str(output_path).replace(".safetensors", ".repa.safetensors")
+                sib = _repa_sidecar_path(str(output_path))
                 sd = {k: v.detach().cpu().contiguous().float()
                       for k, v in trainer.repa_projector.state_dict().items()}
                 _save_file(sd, sib)

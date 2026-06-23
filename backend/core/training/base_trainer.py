@@ -1570,7 +1570,8 @@ class BaseTrainer(ABC):
         try:
             mp = str(getattr(self, "model_path", "") or "")
             if mp.endswith(".safetensors"):
-                sib = mp.replace(".safetensors", ".repa.safetensors")
+                from core.training.adapters.minit2i_adapter import _repa_sidecar_path
+                sib = _repa_sidecar_path(mp)
                 if os.path.isfile(sib):
                     from safetensors.torch import load_file as _load_file
                     self.repa_projector.load_state_dict(_load_file(sib))

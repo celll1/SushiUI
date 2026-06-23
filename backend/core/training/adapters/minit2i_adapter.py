@@ -170,6 +170,15 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
                 te_lr = getattr(trainer, "text_encoder_lr", None) or getattr(trainer, "learning_rate", 1e-5)
                 print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in te_params):,} trainable params (FLAN-T5), lr={te_lr}")
                 groups.append({"params": te_params, "lr": te_lr})
+        # REPA projector (training-only alignment head). Joins the optimizer so it is
+        # updated; appended last so the param-group order is stable across resume.
+        if getattr(trainer, "repa_enable", False) and getattr(trainer, "repa_projector", None) is not None:
+            p_params = [p for p in trainer.repa_projector.parameters() if p.requires_grad]
+            if p_params:
+                proj_base_lr = getattr(trainer, "unet_lr", None) or getattr(trainer, "learning_rate", 1e-5)
+                proj_lr = proj_base_lr * float(getattr(trainer, "repa_proj_lr_factor", 1.0))
+                print(f"[MiniT2IFullParameterAdapter] {sum(p.numel() for p in p_params):,} trainable params (REPA projector), lr={proj_lr}")
+                groups.append({"params": p_params, "lr": proj_lr})
         return groups
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
@@ -192,3 +201,16 @@ class MiniT2IFullParameterAdapter(BaseFullParameterAdapter):
                          extra_metadata={"step": str(step), "epoch": str(epoch)})
         print(f"[MiniT2IFullParameterAdapter] Saved single-file "
               f"({'transformer+FLAN-T5' if text_encoder is not None else 'transformer'}) -> {output_path}")
+
+        # REPA projector (training-only): saved alongside the checkpoint for resume,
+        # NOT embedded in the inference single-file. Sibling name pairs 1:1 with it.
+        if getattr(trainer, "repa_enable", False) and getattr(trainer, "repa_projector", None) is not None:
+            try:
+                from safetensors.torch import save_file as _save_file
+                sib = str(output_path).replace(".safetensors", ".repa.safetensors")
+                sd = {k: v.detach().cpu().contiguous().float()
+                      for k, v in trainer.repa_projector.state_dict().items()}
+                _save_file(sd, sib)
+                print(f"[MiniT2IFullParameterAdapter] Saved REPA projector -> {sib}")
+            except Exception as _e:
+                print(f"[MiniT2IFullParameterAdapter] WARNING: REPA projector save failed: {_e}")

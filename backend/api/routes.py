@@ -6430,6 +6430,15 @@ class TrainingRunCreateRequest(BaseModel):
     minit2i_lr_factor: float = TRAINING_DEFAULTS["minit2i_lr_factor"]
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
     minit2i_scratch_init_from: str = TRAINING_DEFAULTS["minit2i_scratch_init_from"]
+    # REPA (Representation Alignment) — MiniT2I only.
+    repa_enable: bool = TRAINING_DEFAULTS["repa_enable"]
+    repa_encoder_source: str = TRAINING_DEFAULTS["repa_encoder_source"]
+    repa_tagger_model_dir: str = TRAINING_DEFAULTS["repa_tagger_model_dir"]
+    repa_siglip2_repo: str = TRAINING_DEFAULTS["repa_siglip2_repo"]
+    repa_align_depth: int = TRAINING_DEFAULTS["repa_align_depth"]
+    repa_weight: float = TRAINING_DEFAULTS["repa_weight"]
+    repa_proj_lr_factor: float = TRAINING_DEFAULTS["repa_proj_lr_factor"]
+    repa_encoder_resolution: int = TRAINING_DEFAULTS["repa_encoder_resolution"]
     # Anima full-parameter LR multipliers (each applied on top of unet_lr).
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
     anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]
@@ -8252,6 +8261,7 @@ async def get_training_metrics_db(
         # Convert to response format
         loss_data = []
         recon_loss_data = []
+        repa_loss_data = []
         lr_data = []
         grad_norm_data = []
         grad_norm_te_data = []
@@ -8290,6 +8300,9 @@ async def get_training_metrics_db(
 
             if is_valid_float(m.recon_loss):
                 recon_loss_data.append({**point, "value": m.recon_loss})
+
+            if is_valid_float(getattr(m, "repa_loss", None)):
+                repa_loss_data.append({**point, "value": m.repa_loss})
 
             if is_valid_float(m.learning_rate):
                 lr_data.append({**point, "value": m.learning_rate})
@@ -8357,6 +8370,7 @@ async def get_training_metrics_db(
         return {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
+            "repa_loss": repa_loss_data,
             "learning_rate": lr_data,
             "grad_norm": grad_norm_data,
             "grad_norm_text_encoder": grad_norm_te_data,

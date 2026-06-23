@@ -211,7 +211,11 @@ def repa_loss(
     h_dit:   [B, N, hidden]  (DiT image tokens at the aligned block; grad-bearing)
     targets: [B, N, enc_dim] (frozen clean-image features; no grad)
     """
-    proj = projector(h_dit)
+    # Match the projector's dtype: the tap follows the transformer/autocast dtype,
+    # which can differ from the projector when mixed_precision is off and
+    # weight_dtype != training_dtype. Cast keeps the bf16 Linear from erroring.
+    proj_dtype = next(projector.parameters()).dtype
+    proj = projector(h_dit.to(proj_dtype))
     proj = F.normalize(proj.float(), dim=-1)
     tgt = F.normalize(targets.float(), dim=-1)
     cos = (proj * tgt).sum(dim=-1)  # [B, N]

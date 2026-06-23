@@ -5940,15 +5940,14 @@ class BaseTrainer(ABC):
                 debug_save_path.mkdir(parents=True, exist_ok=True)
                 t_val = float(t[0].item())
                 is_latent = bool(getattr(self, "minit2i_latent", False))
-                # Use the standard debug keys the /debug-latents visualize endpoint
-                # reads (latents=Target, predicted_latent=Predicted t=0), so the UI's
-                # Latent Comparison renders. x0-prediction model, so predicted_latent
-                # is the model's clean estimate and predicted_velocity is the v target.
+                will_decode = is_latent and getattr(self, "vae", None) is not None
+                # .pt always carries the scalar metrics (timestep/losses/caption) the
+                # visualize endpoint reads. When we also write decoded webp previews
+                # (latent variant), the heavy latent tensors are NOT stored — the webp
+                # is the display source, so this keeps debug .pt tiny (~1KB vs ~2MB)
+                # over long runs. Pixel / no-VAE runs keep the tensors so the
+                # false-color latent_to_image fallback still works.
                 debug_data = {
-                    "latents": images[0:1].detach().cpu(),            # Target (original)
-                    "noisy_latents": x_t[0:1].detach().cpu(),         # x_t
-                    "predicted_latent": x0_pred[0:1].detach().cpu(),  # Predicted (t=0)
-                    "predicted_velocity": v_pred[0:1].detach().cpu(),
                     "timestep": t_val,
                     "noise_scale": noise_scale,
                     "model_type": "minit2i",
@@ -5958,6 +5957,13 @@ class BaseTrainer(ABC):
                     "recon_loss": recon_loss_value,
                     "batch_size": B,
                 }
+                if not will_decode:
+                    # Standard tensor keys the visualize endpoint false-colors
+                    # (latents=Target, predicted_latent=Predicted t=0).
+                    debug_data["latents"] = images[0:1].detach().cpu()
+                    debug_data["noisy_latents"] = x_t[0:1].detach().cpu()
+                    debug_data["predicted_latent"] = x0_pred[0:1].detach().cpu()
+                    debug_data["predicted_velocity"] = v_pred[0:1].detach().cpu()
                 if debug_captions:
                     debug_data["caption"] = debug_captions[0]
                 if debug_reference_image_paths:
@@ -5966,7 +5972,7 @@ class BaseTrainer(ABC):
                         debug_data["reference_image_path"] = first_ref
                 torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
 
-                if is_latent and getattr(self, "vae", None) is not None:
+                if will_decode:
                     # Decode the noisy x_t, the predicted x0, and the target latent to
                     # RGB for a visual sanity check / 3-way comparison (noisy ⇔
                     # predicted ⇔ target). VAE tiling keeps this cheap at any res.

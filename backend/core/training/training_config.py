@@ -185,6 +185,16 @@ def _build_train_section(
     train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")
     train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")
 
+    # ---- REPA (Representation Alignment) — MiniT2I only. SSoT: param_defaults. ----
+    train["repa_enable"] = p.get("repa_enable", False)
+    train["repa_encoder_source"] = p.get("repa_encoder_source", "tagger")
+    train["repa_tagger_model_dir"] = p.get("repa_tagger_model_dir", "")
+    train["repa_siglip2_repo"] = p.get("repa_siglip2_repo", "google/siglip2-so400m-patch14-384")
+    train["repa_align_depth"] = p.get("repa_align_depth", -1)
+    train["repa_weight"] = p.get("repa_weight", 0.5)
+    train["repa_proj_lr_factor"] = p.get("repa_proj_lr_factor", 1.0)
+    train["repa_encoder_resolution"] = p.get("repa_encoder_resolution", 0)
+
     # ---- Online Danbooru augmentation (image-generation) ----
     # Read unconditionally; ignored when danbooru_aug_enable is False.
     # SSoT: api/param_defaults.TRAINING_DEFAULTS.

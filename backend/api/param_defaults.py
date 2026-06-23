@@ -283,6 +283,27 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # in/out layers copy overlapping channels when patch is unchanged. Empty = off.
     "minit2i_scratch_init_from": "",
 
+    # ---- REPA (Representation Alignment) — MiniT2I only ----
+    # Aligns a DiT intermediate hidden state with frozen clean-image patch features
+    # from a vision encoder (our anime tagger, or off-the-shelf SigLIP2) via a
+    # trainable MLP projector + cosine-similarity loss, to speed up convergence
+    # (Yu et al., ICLR 2025, arXiv:2410.06940). Training-only; not in the saved model.
+    "repa_enable": False,
+    # Encoder source: "tagger" (domain-matched anime SigLIP2) or "siglip2".
+    "repa_encoder_source": "tagger",
+    # Tagger model directory (empty -> auto-pick newest usable under <repo>/tagger_models).
+    "repa_tagger_model_dir": "",
+    # Off-the-shelf SigLIP2 repo (used when repa_encoder_source == "siglip2").
+    "repa_siglip2_repo": "google/siglip2-so400m-patch14-384",
+    # DiT block depth to align (0-based). -1 = auto (depth_double // 3).
+    "repa_align_depth": -1,
+    # Alignment loss weight (lambda) added to the diffusion loss.
+    "repa_weight": 0.5,
+    # Projector LR multiplier (applied to unet_lr).
+    "repa_proj_lr_factor": 1.0,
+    # Encoder input square resolution; 0 = follow the encoder's native image_size.
+    "repa_encoder_resolution": 0,
+
     # ---- Anima full-parameter training: per-group LR multipliers ----
     # Applied on top of unet_lr in AnimaFullParameterAdapter. Defaults of
     # 1.0 collapse to a single effective LR; users wanting sd-scripts-style

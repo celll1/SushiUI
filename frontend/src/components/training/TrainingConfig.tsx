@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, Save, FolderOpen, Trash2 } from "lucide-react";
-import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest } from "@/utils/api";
+import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRun, getModels, DatasetConfigItem, getRandomCaption, getSamplers, getScheduleTypes, listTrainingPresets, createTrainingPreset, deleteTrainingPreset, TrainingPreset, getTrainingRunParams, updateTrainingConfig, getControlNets, SamplePrompt, TrainingRunCreateRequest, listTrainingRuns } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -275,6 +275,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [availableModels, setAvailableModels] = useState<ModelInfo[]>([]);
   const [runName, setRunName] = useState("");
+  // "Copy settings from existing run" (new-run mode only).
+  const [copySourceRuns, setCopySourceRuns] = useState<TrainingRun[]>([]);
+  const [copyingFromRun, setCopyingFromRun] = useState(false);
 
   // Model architecture filters
   const [showSD15, setShowSD15] = useState(true);
@@ -957,6 +960,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   }, []);
 
   // Load training run parameters for edit mode
+  // Copy settings from an existing run into THIS new run (does not set editRunId,
+  // so submit still creates a new run). Reuses the edit-mode restore path; the run
+  // name is cleared so the user names the new run (avoids a duplicate-name error).
+  const handleCopyFromRun = useCallback(async (runId: number) => {
+    if (!runId) return;
+    setCopyingFromRun(true);
+    try {
+      const params = await getTrainingRunParams(runId);
+      dtypeExplicitlySetRef.current = true;
+      restoringFromYAMLRef.current = true;
+      applyParamsToState(params);
+      setRunName("");  // new run needs its own name
+      setTimeout(() => { restoringFromYAMLRef.current = false; }, 0);
+    } catch (err: any) {
+      console.error("[TrainingConfig] Failed to copy settings from run:", err);
+      setError(err?.response?.data?.detail || "Failed to copy settings from run");
+    } finally {
+      setCopyingFromRun(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applyParamsToState]);
+
   const loadTrainingRunParams = useCallback(async (runId: number) => {
     const startTime = performance.now();
     console.log(`[TrainingConfig] Loading parameters for training run ${runId}...`);
@@ -1016,6 +1041,12 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     loadScheduleTypes();
     loadPresets();
     loadControlNets();
+    // New-run mode: load the run list for the "copy settings from" selector.
+    if (!editRunId) {
+      listTrainingRuns()
+        .then((res) => setCopySourceRuns(res.runs || []))
+        .catch((err) => console.error("[TrainingConfig] Failed to list runs for copy:", err));
+    }
   }, [editRunId, loadTrainingRunParams]);
 
   // Auto-configure precision settings when model changes (only if not explicitly set)
@@ -1792,6 +1823,30 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
         )}
 
         <div className="columns-1 lg:columns-2 gap-3 sm:gap-4 space-y-3 sm:space-y-4">
+        {/* Copy settings from an existing run (new-run mode only) */}
+        {!editRunId && copySourceRuns.length > 0 && (
+          <div className="break-inside-avoid">
+            <label className="block text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">
+              Copy settings from existing run{" "}
+              <span className="text-gray-500 text-xxs sm:text-xs font-normal">(optional — fills the form from a previous run)</span>
+            </label>
+            <select
+              defaultValue=""
+              disabled={copyingFromRun}
+              onChange={(e) => { const id = Number(e.target.value); if (id) handleCopyFromRun(id); e.target.value = ""; }}
+              className="w-full px-2.5 sm:px-3 py-1.5 sm:py-2 bg-gray-800 border border-gray-700 rounded text-xs sm:text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            >
+              <option value="">{copyingFromRun ? "Copying…" : "Select a run to copy from…"}</option>
+              {copySourceRuns.map((r) => (
+                <option key={r.id} value={r.id}>
+                  #{r.id} {r.run_name} ({r.training_method || "?"}{r.status ? `, ${r.status}` : ""})
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">Run name and dataset selection should be reviewed after copying.</p>
+          </div>
+        )}
+
         {/* Run Name */}
         <div className="break-inside-avoid">
           <label className="block text-xs sm:text-sm font-medium mb-1.5 sm:mb-2">

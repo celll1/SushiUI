@@ -63,16 +63,33 @@ class TeeOutput:
         self.file = file
 
     def write(self, message):
-        self.console.write(message)
-        self.console.flush()
+        # Console first (primary output to the parent process). Guard it too so a
+        # broken pipe can't crash training.
+        try:
+            self.console.write(message)
+            self.console.flush()
+        except Exception:
+            pass
+        # The log file is secondary: a transient lock (antivirus/indexer, or the
+        # file being opened elsewhere on Windows) must NEVER kill a multi-hour run.
+        # On failure, drop the file handle so we don't keep raising every print().
         if self.file:
-            self.file.write(message)
-            self.file.flush()
+            try:
+                self.file.write(message)
+                self.file.flush()
+            except Exception:
+                self.file = None
 
     def flush(self):
-        self.console.flush()
+        try:
+            self.console.flush()
+        except Exception:
+            pass
         if self.file:
-            self.file.flush()
+            try:
+                self.file.flush()
+            except Exception:
+                self.file = None
 
     def isatty(self):
         # Teed output is captured/logged, never an interactive terminal — return

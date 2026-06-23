@@ -749,72 +749,57 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="space-y-2">
                           <div className="text-xs text-gray-400">Latent Comparison (Goal: Minimize Difference)</div>
 
-                          {/* Comparison Container.
-                              3-way wipe when a decoded noisy image exists (latent runs):
-                              slider 0→noisy, 50→predicted, 100→target. Otherwise the
-                              classic 2-way (target ⇔ predicted) for backward compat. */}
+                          {/* Comparison Container — staged left→right wipe so the yellow
+                              line ALWAYS sits exactly on the image transition.
+                              3-way (latent runs): drag right reveals noisy→predicted→target.
+                                stage 1 [0..50]: base=noisy,     top=predicted (clip [0,wipe])
+                                stage 2 [50..100]: base=predicted, top=target    (clip [0,wipe])
+                              wipe = position of the transition (= the line), 0→100 per stage.
+                              2-way fallback (no noisy): base=target, top=predicted clipped to s. */}
                           {(() => {
-                            const has3 = !!debugVisualization.noisy_latents_image
-                              && !!debugVisualization.predicted_latent_image
-                              && !!debugVisualization.latents_image;
+                            const v = debugVisualization;
+                            const has3 = !!v.noisy_latents_image && !!v.predicted_latent_image && !!v.latents_image;
                             const s = comparisonSlider;
-                            // Width (%) revealed from the left for each upper layer.
-                            const predictedWidth = has3 ? (s <= 50 ? 100 : (100 - s) * 2) : s;
-                            const noisyWidth = has3 ? (s <= 50 ? (50 - s) * 2 : 0) : 0;
+                            const px = (b64?: string) => b64 ? `data:image/png;base64,${b64}` : undefined;
+                            const GREEN = "bg-green-700/80", BLUE = "bg-blue-700/80", PURPLE = "bg-purple-700/80";
+                            let baseSrc: string | undefined, baseLabel = "", baseColor = GREEN;
+                            let topSrc: string | undefined, topLabel = "", topColor = BLUE;
+                            let wipe: number;  // transition position (%) = yellow line
+                            if (has3) {
+                              const stage2 = s > 50;
+                              wipe = stage2 ? (s - 50) * 2 : s * 2;  // 0→100 within each stage
+                              if (stage2) {
+                                baseSrc = px(v.predicted_latent_image); baseLabel = "Predicted"; baseColor = BLUE;
+                                topSrc = px(v.latents_image);           topLabel = "Target";     topColor = GREEN;
+                              } else {
+                                baseSrc = px(v.noisy_latents_image);    baseLabel = "Noisy";     baseColor = PURPLE;
+                                topSrc = px(v.predicted_latent_image);  topLabel = "Predicted";  topColor = BLUE;
+                              }
+                            } else {
+                              wipe = s;
+                              baseSrc = px(v.latents_image);            baseLabel = "Target";    baseColor = GREEN;
+                              topSrc = px(v.predicted_latent_image);    topLabel = "Predicted";  topColor = BLUE;
+                            }
                             return (
                           <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
-                            {/* Base Layer: Target (original) */}
-                            {debugVisualization.latents_image && (
+                            {/* Base layer (right side of the wipe) */}
+                            {baseSrc && (
                               <div className="absolute inset-0">
-                                <img
-                                  src={`data:image/png;base64,${debugVisualization.latents_image}`}
-                                  alt="Latents (Target)"
-                                  className="w-full h-full object-contain"
-                                />
-                                <div className="absolute top-1 right-1 bg-green-700/80 text-white text-xs px-1.5 py-0.5 rounded">
-                                  Target
-                                </div>
+                                <img src={baseSrc} alt={baseLabel} className="w-full h-full object-contain" />
+                                <div className={`absolute top-1 right-1 ${baseColor} text-white text-xs px-1.5 py-0.5 rounded`}>{baseLabel}</div>
                               </div>
                             )}
-
-                            {/* Middle Layer: Predicted (t=0), clipped from the left */}
-                            {debugVisualization.predicted_latent_image && (
-                              <div
-                                className="absolute inset-0"
-                                style={{ clipPath: `inset(0 ${100 - predictedWidth}% 0 0)` }}
-                              >
-                                <img
-                                  src={`data:image/png;base64,${debugVisualization.predicted_latent_image}`}
-                                  alt="Predicted Latent"
-                                  className="w-full h-full object-contain"
-                                />
-                                <div className="absolute top-1 left-1/2 -translate-x-1/2 bg-blue-700/80 text-white text-xs px-1.5 py-0.5 rounded">
-                                  Predicted
-                                </div>
+                            {/* Top layer (left side of the wipe), clipped to [0, wipe] */}
+                            {topSrc && (
+                              <div className="absolute inset-0" style={{ clipPath: `inset(0 ${100 - wipe}% 0 0)` }}>
+                                <img src={topSrc} alt={topLabel} className="w-full h-full object-contain" />
+                                <div className={`absolute top-1 left-1 ${topColor} text-white text-xs px-1.5 py-0.5 rounded`}>{topLabel}</div>
                               </div>
                             )}
-
-                            {/* Top Layer: Noisy (x_t), clipped from the left (3-way only) */}
-                            {has3 && (
-                              <div
-                                className="absolute inset-0"
-                                style={{ clipPath: `inset(0 ${100 - noisyWidth}% 0 0)` }}
-                              >
-                                <img
-                                  src={`data:image/png;base64,${debugVisualization.noisy_latents_image}`}
-                                  alt="Noisy Latent"
-                                  className="w-full h-full object-contain"
-                                />
-                                <div className="absolute top-1 left-1 bg-purple-700/80 text-white text-xs px-1.5 py-0.5 rounded">
-                                  Noisy
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Slider Line */}
+                            {/* Yellow line exactly on the transition */}
                             <div
                               className="absolute top-0 bottom-0 w-0.5 bg-yellow-500 pointer-events-none"
-                              style={{ left: `${comparisonSlider}%` }}
+                              style={{ left: `${wipe}%` }}
                             />
                           </div>
                             );

@@ -736,6 +736,7 @@ class TrainingMetrics(TrainingBase):
     # Metrics
     loss = Column(Float, nullable=True)
     recon_loss = Column(Float, nullable=True)
+    repa_loss = Column(Float, nullable=True)  # REPA alignment loss (MiniT2I only), nullable
     learning_rate = Column(Float, nullable=True)
 
     # Gradient norms
@@ -772,6 +773,7 @@ class TrainingMetrics(TrainingBase):
             "step": self.step,
             "loss": self.loss,
             "recon_loss": self.recon_loss,
+            "repa_loss": self.repa_loss,
             "learning_rate": self.learning_rate,
             "grad_norm": self.grad_norm,
             "grad_norm_text_encoder": self.grad_norm_text_encoder,

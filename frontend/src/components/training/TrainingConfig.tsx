@@ -608,6 +608,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       minit2i_lr_factor: params.minit2i_lr_factor,
       minit2i_flan_t5_path: params.minit2i_flan_t5_path,
       minit2i_scratch_init_from: params.minit2i_scratch_init_from,
+      // REPA (Representation Alignment) — MiniT2I only.
+      repa_enable: params.repa_enable,
+      repa_encoder_source: params.repa_encoder_source,
+      repa_tagger_model_dir: params.repa_tagger_model_dir,
+      repa_siglip2_repo: params.repa_siglip2_repo,
+      repa_align_depth: params.repa_align_depth,
+      repa_weight: params.repa_weight,
+      repa_proj_lr_factor: params.repa_proj_lr_factor,
+      repa_encoder_resolution: params.repa_encoder_resolution,
       total_steps: useEpochs ? undefined : params.total_steps,
       epochs: useEpochs ? params.epochs : undefined,
       batch_size: params.batch_size,
@@ -891,6 +900,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
+      "repa_enable", "repa_encoder_source", "repa_tagger_model_dir", "repa_siglip2_repo",
+      "repa_align_depth", "repa_weight", "repa_proj_lr_factor", "repa_encoder_resolution",
       "danbooru_aug_enable", "danbooru_aug_queries", "danbooru_aug_weight_static",
       "danbooru_aug_deficiency_enable", "danbooru_aug_deficiency_min_count",
       "danbooru_aug_deficiency_top_k", "danbooru_aug_deficiency_manual",
@@ -2156,6 +2167,111 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </>
             )}
           </div>
+
+          {/* REPA (Representation Alignment) — MiniT2I only. Aligns a DiT hidden state
+              with frozen clean-image features to accelerate convergence (arXiv:2410.06940). */}
+          {(isMiniT2IModel(baseModelPath) || fromScratchMiniT2I) && (
+            <div className="mt-2 p-3 bg-gray-800/60 border border-gray-700 rounded space-y-2">
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={!!params.repa_enable}
+                  onChange={(e) => updateParam("repa_enable", e.target.checked)}
+                  className="w-3.5 h-3.5"
+                />
+                <span className="text-sm text-gray-300">REPA (Representation Alignment)</span>
+              </label>
+              {params.repa_enable && (
+                <>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <label className="block text-xs text-gray-400 mb-1">Encoder source</label>
+                      <select
+                        value={params.repa_encoder_source || "tagger"}
+                        onChange={(e) => updateParam("repa_encoder_source", e.target.value)}
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                      >
+                        <option value="tagger">Anime tagger (SigLIP2, domain-matched)</option>
+                        <option value="siglip2">google/siglip2 (off-the-shelf)</option>
+                      </select>
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs text-gray-400 mb-1">Align depth (-1 = auto)</label>
+                      <input
+                        type="number"
+                        value={params.repa_align_depth ?? -1}
+                        onChange={(e) => updateParam("repa_align_depth", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("repa_align_depth", -1); }}
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                      />
+                    </div>
+                  </div>
+                  {(params.repa_encoder_source || "tagger") === "tagger" ? (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">Tagger model dir (empty = auto-pick newest)</label>
+                      <input
+                        type="text"
+                        value={params.repa_tagger_model_dir || ""}
+                        onChange={(e) => updateParam("repa_tagger_model_dir", e.target.value)}
+                        placeholder="tagger_models/<uuid>"
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs font-mono"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-xs text-gray-400 mb-1">SigLIP2 repo</label>
+                      <input
+                        type="text"
+                        value={params.repa_siglip2_repo || ""}
+                        onChange={(e) => updateParam("repa_siglip2_repo", e.target.value)}
+                        placeholder="google/siglip2-so400m-patch14-384"
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs font-mono"
+                      />
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <label className="block text-xs text-gray-400 mb-1">Weight (λ)</label>
+                      <input
+                        type="number"
+                        step="0.05"
+                        value={params.repa_weight ?? 0.5}
+                        onChange={(e) => updateParam("repa_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("repa_weight", 0.5); }}
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs text-gray-400 mb-1">Projector LR factor</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={params.repa_proj_lr_factor ?? 1.0}
+                        onChange={(e) => updateParam("repa_proj_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("repa_proj_lr_factor", 1.0); }}
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs text-gray-400 mb-1">Enc. res (0 = native)</label>
+                      <input
+                        type="number"
+                        value={params.repa_encoder_resolution ?? 0}
+                        onChange={(e) => updateParam("repa_encoder_resolution", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                        onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("repa_encoder_resolution", 0); }}
+                        className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Aligns a DiT hidden state (at the align depth) with frozen clean-image
+                    patch features from the encoder, accelerating convergence (arXiv:2410.06940).
+                    Training-only; the projector is not saved into the model.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Vision Encoder selector — SD/SDXL only, shown below Base Model */}

@@ -481,7 +481,13 @@ export default function SharedMetricChart({
               </g>
             ))}
 
-            {/* Series lines (smoothed) */}
+            {/* Series lines. When smoothing is on, the raw values are drawn faintly
+                behind the smoothed line (so the actual noise is still visible). */}
+            {smoothing > 0 && seriesNonEmpty.map((s) => (
+              <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
+                fill="none" stroke={s.color} strokeWidth={1}
+                strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.22} />
+            ))}
             {seriesNonEmpty.map((s) => {
               const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
               return (

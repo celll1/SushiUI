@@ -29,6 +29,7 @@ interface TrainingMetrics {
   step: number;
   loss: number;
   recon_loss?: number;
+  repa_loss?: number;
   learning_rate?: number;
   grad_norm?: number;
   grad_norm_text_encoder?: number;
@@ -142,6 +143,7 @@ class ProgressClient {
             step: data.step,
             loss: data.loss,
             recon_loss: data.recon_loss,
+            repa_loss: data.repa_loss,
             learning_rate: data.learning_rate,
             grad_norm: data.grad_norm,
             grad_norm_text_encoder: data.grad_norm_text_encoder,

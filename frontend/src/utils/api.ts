@@ -2058,6 +2058,15 @@ export interface TrainingRunCreateRequest {
   minit2i_lr_factor?: number;
   minit2i_flan_t5_path?: string;
   minit2i_scratch_init_from?: string;  // from-scratch: inherit weights from this model
+  // REPA (Representation Alignment) — MiniT2I only
+  repa_enable?: boolean;
+  repa_encoder_source?: string;        // "tagger" | "siglip2"
+  repa_tagger_model_dir?: string;      // tagger model dir (empty = auto-pick)
+  repa_siglip2_repo?: string;          // off-the-shelf SigLIP2 repo
+  repa_align_depth?: number;           // -1 = auto (depth//3)
+  repa_weight?: number;                // alignment loss weight (lambda)
+  repa_proj_lr_factor?: number;        // projector LR multiplier (x unet_lr)
+  repa_encoder_resolution?: number;    // 0 = follow encoder native image_size
   // Online Danbooru augmentation (image-generation training)
   danbooru_aug_enable?: boolean;
   danbooru_aug_queries?: string;
@@ -2331,6 +2340,7 @@ export interface ResumeMarker {
 export interface TrainingMetrics {
   loss: MetricPoint[];
   recon_loss: MetricPoint[];
+  repa_loss?: MetricPoint[];
   learning_rate: MetricPoint[];
   grad_norm: MetricPoint[];
   grad_norm_text_encoder: MetricPoint[];

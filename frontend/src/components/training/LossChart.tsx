@@ -19,6 +19,7 @@ interface LossChartProps {
 export default function LossChart({ runId, isRunning }: LossChartProps) {
   const [lossData, setLossData] = useState<MetricPoint[]>([]);
   const [reconLossData, setReconLossData] = useState<MetricPoint[]>([]);
+  const [repaLossData, setRepaLossData] = useState<MetricPoint[]>([]);
   const [fetchedBoundaries, setFetchedBoundaries] = useState<EpochBoundary[]>([]);
   const [fetchedMarkers, setFetchedMarkers] = useState<ResumeMarker[]>([]);
   const [liveBoundaries, setLiveBoundaries] = useState<EpochBoundary[]>([]);
@@ -37,6 +38,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       const data = await getTrainingMetrics(runId);
       setLossData(data.loss);
       setReconLossData(data.recon_loss || []);
+      setRepaLossData(data.repa_loss || []);
       setFetchedBoundaries(data.epoch_boundaries || []);
       setFetchedMarkers(data.resume_markers || []);
     } catch (err: any) {
@@ -73,6 +75,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       };
       if (m.loss !== undefined && m.loss !== null) setLossData((p) => upsert(p, m.loss));
       if (m.recon_loss !== undefined && m.recon_loss !== null) setReconLossData((p) => upsert(p, m.recon_loss as number));
+      if (m.repa_loss !== undefined && m.repa_loss !== null) setRepaLossData((p) => upsert(p, m.repa_loss as number));
 
       // Live epoch boundary: when epoch increments, the previous epoch ended at its max step.
       if (m.epoch !== undefined && m.epoch !== null) {
@@ -110,10 +113,11 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([resume_seq, step]) => ({ resume_seq, step }));
   }, [fetchedMarkers, liveMarkers]);
 
-  const series = useMemo<ChartSeries[]>(() => [
+  const series = useMemo<ChartSeries[]>(() => ([
     { id: "loss", label: "Loss", color: "#60a5fa", points: lossData },
     { id: "recon", label: "Recon", color: "#34d399", points: reconLossData, dashed: true },
-  ], [lossData, reconLossData]);
+    { id: "repa", label: "REPA", color: "#f59e0b", points: repaLossData, dashed: true },
+  ] as ChartSeries[]).filter((s) => s.points.length > 0), [lossData, reconLossData, repaLossData]);
 
   return (
     <div>

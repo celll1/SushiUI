@@ -58,6 +58,7 @@ class ConnectionManager:
         step: int,
         loss: float,
         recon_loss: float = None,
+        repa_loss: float = None,
         learning_rate: float = None,
         grad_norm: float = None,
         grad_norm_text_encoder: float = None,
@@ -87,6 +88,8 @@ class ConnectionManager:
             data["epoch"] = epoch
         if recon_loss is not None:
             data["recon_loss"] = recon_loss
+        if repa_loss is not None:
+            data["repa_loss"] = repa_loss
         if learning_rate is not None:
             data["learning_rate"] = learning_rate
         if grad_norm is not None:

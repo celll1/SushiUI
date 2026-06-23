@@ -68,10 +68,11 @@ export default function ParamChangeChart({ runId, isRunning }: ParamChangeChartP
 
   useEffect(() => { fetchMetrics(); }, [runId, fetchMetrics]);
 
-  // Poll while running (param metrics are not pushed over SSE).
+  // Auto-refresh while running (param metrics are not pushed over SSE, so polling
+  // is the only live source). Server-decimated; async, non-blocking.
   useEffect(() => {
     if (!isRunning) return;
-    const id = setInterval(fetchMetrics, 15000);
+    const id = setInterval(fetchMetrics, 7000);
     return () => clearInterval(id);
   }, [isRunning, fetchMetrics]);
 

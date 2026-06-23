@@ -49,6 +49,15 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
 
   useEffect(() => { fetchMetrics(); }, [runId, fetchMetrics]);
 
+  // Auto-refresh while running: periodically re-fetch the (server-decimated) view
+  // so the chart updates without pressing Refresh. Async fetch — never blocks the
+  // training process (separate); backend uniform-samples to max_points.
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(fetchMetrics, 7000);
+    return () => clearInterval(id);
+  }, [isRunning, fetchMetrics]);
+
   // Live SSE updates
   useEffect(() => {
     if (!isRunning) return;

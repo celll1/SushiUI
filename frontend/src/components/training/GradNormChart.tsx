@@ -52,6 +52,13 @@ export default function GradNormChart({ runId, isRunning }: GradNormChartProps) 
 
   useEffect(() => { fetchMetrics(); }, [runId, fetchMetrics]);
 
+  // Auto-refresh while running (server-decimated; async, non-blocking).
+  useEffect(() => {
+    if (!isRunning) return;
+    const id = setInterval(fetchMetrics, 7000);
+    return () => clearInterval(id);
+  }, [isRunning, fetchMetrics]);
+
   useEffect(() => {
     if (!isRunning) return;
     wsClient.connect();

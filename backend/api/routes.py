@@ -7963,6 +7963,7 @@ async def visualize_debug_latent(
         _ts_part = _base.replace("latents_t", "")
         _target_webp = latent_file.parent / f"decode_t{_ts_part}_target.webp"
         _pred_webp = latent_file.parent / f"decode_t{_ts_part}_pred_x0.webp"
+        _noisy_webp = latent_file.parent / f"decode_t{_ts_part}_noisy.webp"
         def _webp_preview(p):
             im = Image.open(p).convert("RGB")
             im.thumbnail((768, 768))  # downscale: debug preview doesn't need full res
@@ -7971,6 +7972,8 @@ async def visualize_debug_latent(
             result["latents_image"] = _webp_preview(_target_webp)
         if _pred_webp.exists():
             result["predicted_latent_image"] = _webp_preview(_pred_webp)
+        if _noisy_webp.exists():  # older runs have no noisy webp -> falls back below
+            result["noisy_latents_image"] = _webp_preview(_noisy_webp)
     except Exception as _webp_e:
         print(f"[debug-latents] webp preview load failed: {_webp_e}")
 
@@ -7978,7 +7981,7 @@ async def visualize_debug_latent(
         img = latent_to_image(data["latents"], is_flux2=is_flux2)
         result["latents_image"] = image_to_base64(img)
 
-    if "noisy_latents" in data:
+    if "noisy_latents" in data and "noisy_latents_image" not in result:
         img = latent_to_image(data["noisy_latents"], is_flux2=is_flux2)
         result["noisy_latents_image"] = image_to_base64(img)
 

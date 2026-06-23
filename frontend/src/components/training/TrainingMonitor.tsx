@@ -749,9 +749,21 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                         <div className="space-y-2">
                           <div className="text-xs text-gray-400">Latent Comparison (Goal: Minimize Difference)</div>
 
-                          {/* Comparison Container */}
+                          {/* Comparison Container.
+                              3-way wipe when a decoded noisy image exists (latent runs):
+                              slider 0→noisy, 50→predicted, 100→target. Otherwise the
+                              classic 2-way (target ⇔ predicted) for backward compat. */}
+                          {(() => {
+                            const has3 = !!debugVisualization.noisy_latents_image
+                              && !!debugVisualization.predicted_latent_image
+                              && !!debugVisualization.latents_image;
+                            const s = comparisonSlider;
+                            // Width (%) revealed from the left for each upper layer.
+                            const predictedWidth = has3 ? (s <= 50 ? 100 : (100 - s) * 2) : s;
+                            const noisyWidth = has3 ? (s <= 50 ? (50 - s) * 2 : 0) : 0;
+                            return (
                           <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">
-                            {/* Base Layer: Latents (original/target) */}
+                            {/* Base Layer: Target (original) */}
                             {debugVisualization.latents_image && (
                               <div className="absolute inset-0">
                                 <img
@@ -759,25 +771,42 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                                   alt="Latents (Target)"
                                   className="w-full h-full object-contain"
                                 />
-                                <div className="absolute top-1 left-1 bg-green-700/80 text-white text-xs px-1.5 py-0.5 rounded">
+                                <div className="absolute top-1 right-1 bg-green-700/80 text-white text-xs px-1.5 py-0.5 rounded">
                                   Target
                                 </div>
                               </div>
                             )}
 
-                            {/* Top Layer: Predicted Latents (clipped by slider) */}
+                            {/* Middle Layer: Predicted (t=0), clipped from the left */}
                             {debugVisualization.predicted_latent_image && (
                               <div
                                 className="absolute inset-0"
-                                style={{ clipPath: `inset(0 ${100 - comparisonSlider}% 0 0)` }}
+                                style={{ clipPath: `inset(0 ${100 - predictedWidth}% 0 0)` }}
                               >
                                 <img
                                   src={`data:image/png;base64,${debugVisualization.predicted_latent_image}`}
                                   alt="Predicted Latent"
                                   className="w-full h-full object-contain"
                                 />
-                                <div className="absolute top-1 right-1 bg-blue-700/80 text-white text-xs px-1.5 py-0.5 rounded">
+                                <div className="absolute top-1 left-1/2 -translate-x-1/2 bg-blue-700/80 text-white text-xs px-1.5 py-0.5 rounded">
                                   Predicted
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Top Layer: Noisy (x_t), clipped from the left (3-way only) */}
+                            {has3 && (
+                              <div
+                                className="absolute inset-0"
+                                style={{ clipPath: `inset(0 ${100 - noisyWidth}% 0 0)` }}
+                              >
+                                <img
+                                  src={`data:image/png;base64,${debugVisualization.noisy_latents_image}`}
+                                  alt="Noisy Latent"
+                                  className="w-full h-full object-contain"
+                                />
+                                <div className="absolute top-1 left-1 bg-purple-700/80 text-white text-xs px-1.5 py-0.5 rounded">
+                                  Noisy
                                 </div>
                               </div>
                             )}
@@ -788,6 +817,8 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                               style={{ left: `${comparisonSlider}%` }}
                             />
                           </div>
+                            );
+                          })()}
 
                           {/* Slider Control */}
                           <input
@@ -799,14 +830,25 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             className="w-full"
                           />
                           <div className="flex justify-between text-xs text-gray-500">
-                            <span>Target (Original)</span>
-                            <span>Predicted (t=0)</span>
+                            {debugVisualization.noisy_latents_image ? (
+                              <>
+                                <span>Noisy (t={debugVisualization.timestep})</span>
+                                <span>Predicted (t=0)</span>
+                                <span>Target</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>Target (Original)</span>
+                                <span>Predicted (t=0)</span>
+                              </>
+                            )}
                           </div>
 
                           {/* Additional Debug Images */}
                           <div className="grid grid-cols-2 gap-2 mt-3">
-                            {/* Noisy Latents */}
-                            {debugVisualization.noisy_latents_image && (
+                            {/* Noisy Latents — only as a separate thumbnail when NOT
+                                shown in the 3-way comparison above (backward compat). */}
+                            {debugVisualization.noisy_latents_image && !(debugVisualization.predicted_latent_image && debugVisualization.latents_image) && (
                               <div>
                                 <div className="text-xs text-gray-400 mb-1">Noisy Latents (t={debugVisualization.timestep})</div>
                                 <div className="relative aspect-square bg-gray-800 rounded overflow-hidden">

@@ -5967,13 +5967,14 @@ class BaseTrainer(ABC):
                 torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
 
                 if is_latent and getattr(self, "vae", None) is not None:
-                    # Decode the target latent and the predicted x0 to RGB for a
-                    # visual sanity check (VAE tiling keeps this cheap at any res).
+                    # Decode the noisy x_t, the predicted x0, and the target latent to
+                    # RGB for a visual sanity check / 3-way comparison (noisy ⇔
+                    # predicted ⇔ target). VAE tiling keeps this cheap at any res.
                     from core.models.minit2i.minit2i_vae import denormalize_latent
                     from PIL import Image as _Image
                     vae_dev = next(self.vae.parameters()).device
                     with torch.no_grad():
-                        for name, lat in (("target", images[0:1]), ("pred_x0", x0_pred[0:1])):
+                        for name, lat in (("noisy", x_t[0:1]), ("target", images[0:1]), ("pred_x0", x0_pred[0:1])):
                             z = denormalize_latent(lat.to(device=vae_dev, dtype=self.vae_dtype), self.vae)
                             img = self.vae.decode(z).sample  # [1,3,H,W] in ~[-1,1]
                             arr = ((img[0].float().clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)

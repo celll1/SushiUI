@@ -1490,7 +1490,154 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Moving MiniT2I transformer to {self.device}")
         self.transformer.to(self.device)
 
+        # REPA (representation alignment): load frozen encoder + build the trainable
+        # projector BEFORE adapter/optimizer setup so its params join the optimizer.
+        self._setup_repa()
+
         print(f"{self.log_prefix} MiniT2I model loaded successfully (variant={self.minit2i_variant})")
+
+    def _discover_default_tagger_dir(self) -> str:
+        """Pick a usable tagger model dir under <repo>/tagger_models (newest checkpoint)."""
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[3] / "tagger_models"
+        if not root.is_dir():
+            raise FileNotFoundError(f"[REPA] tagger_models dir not found: {root}")
+        cands = []
+        for d in root.iterdir():
+            if d.is_dir() and (d / "base_model_metadata.json").is_file():
+                sts = list(d.glob("*.safetensors"))
+                if sts:
+                    cands.append((max(p.stat().st_mtime for p in sts), str(d)))
+        if not cands:
+            raise FileNotFoundError(f"[REPA] no usable tagger model under {root}")
+        cands.sort()
+        return cands[-1][1]
+
+    def _setup_repa(self):
+        """Set up REPA for MiniT2I when enabled (frozen encoder + trainable projector).
+
+        The projector must exist before optimizer construction (the adapter adds its
+        params to a group). The DiT tap is armed at the aligned block depth so the
+        forward stashes the grad-connected image hidden state for the alignment loss.
+        """
+        self.repa_enable = bool(self.config.get("repa_enable", False))
+        self._repa_moved = False
+        self._minit2i_last_repa_loss = None
+        if not self.repa_enable:
+            return
+
+        from core.training.repa import load_repa_encoder, RepaProjector
+
+        source = str(self.config.get("repa_encoder_source", "tagger") or "tagger").strip().lower()
+        tagger_dir = str(self.config.get("repa_tagger_model_dir", "") or "").strip()
+        siglip2_repo = str(self.config.get("repa_siglip2_repo", "") or "").strip()
+        if source == "tagger" and not tagger_dir:
+            tagger_dir = self._discover_default_tagger_dir()
+            print(f"{self.log_prefix} [REPA] auto-selected tagger dir: {tagger_dir}")
+
+        repa_dtype = getattr(self, "training_dtype", None) or torch.bfloat16
+        encoder, enc_dim, native = load_repa_encoder(
+            source,
+            tagger_model_dir=tagger_dir,
+            siglip2_repo=siglip2_repo,
+            dtype=repa_dtype,
+            device=self.device,
+        )
+        self.repa_encoder = encoder
+        self.repa_enc_dim = enc_dim
+
+        res_override = int(self.config.get("repa_encoder_resolution", 0) or 0)
+        self.repa_size = res_override if res_override > 0 else (native or 384)
+
+        cfg = self.transformer.mmjit_config
+        hidden = int(cfg.hidden_size)
+        depth = int(cfg.depth_double)
+        align = int(self.config.get("repa_align_depth", -1))
+        if align < 0:
+            align = max(0, depth // 3)
+        align = max(0, min(align, depth - 1))
+        self.repa_align_depth = align
+        self.repa_weight = float(self.config.get("repa_weight", 0.5))
+        self.repa_proj_lr_factor = float(self.config.get("repa_proj_lr_factor", 1.0))
+
+        self.repa_projector = RepaProjector(hidden, enc_dim).to(device=self.device, dtype=repa_dtype)
+        self.repa_projector.train()
+        self.transformer.model.net._repa_tap_depth = align
+        self._repa_moved = True
+
+        # Resume: load a sibling projector saved next to the base checkpoint, if present
+        # (dims must match the current encoder/variant; otherwise keep the fresh head).
+        try:
+            mp = str(getattr(self, "model_path", "") or "")
+            if mp.endswith(".safetensors"):
+                sib = mp.replace(".safetensors", ".repa.safetensors")
+                if os.path.isfile(sib):
+                    from safetensors.torch import load_file as _load_file
+                    self.repa_projector.load_state_dict(_load_file(sib))
+                    print(f"{self.log_prefix} [REPA] resumed projector from {sib}")
+        except Exception as _e:
+            print(f"{self.log_prefix} [REPA] projector resume skipped (using fresh head): {_e}")
+
+        print(f"{self.log_prefix} [REPA] enabled: source={source}, enc_dim={enc_dim}, "
+              f"size={self.repa_size}, align_depth={align}/{depth}, weight={self.repa_weight}, "
+              f"proj_lr_factor={self.repa_proj_lr_factor}")
+
+    def _ensure_repa_on_device(self):
+        """Idempotently ensure the REPA encoder + projector live on the training device."""
+        if getattr(self, "_repa_moved", False):
+            return
+        repa_dtype = getattr(self, "training_dtype", None) or torch.bfloat16
+        if getattr(self, "repa_encoder", None) is not None:
+            self.repa_encoder = self.repa_encoder.to(self.device)
+        if getattr(self, "repa_projector", None) is not None:
+            self.repa_projector = self.repa_projector.to(device=self.device, dtype=repa_dtype)
+        self._repa_moved = True
+
+    def _get_repa_pixels_for_item(self, item) -> Optional[torch.Tensor]:
+        """Load + cache an S x S clean-image tensor [1,3,S,S] in [-1,1] for REPA.
+
+        SigLIP2 normalization is mean=std=0.5 (i.e. [-1,1]); the encoder squishes to
+        a fixed square (aspect handled by interpolating its features to the DiT grid).
+        Returns None on load failure (the affected batch then skips REPA). A bounded
+        in-memory LRU amortizes re-decoding the same images across the swap window.
+        """
+        try:
+            S = int(getattr(self, "repa_size", 384) or 384)
+            key = item.get("image_path")
+            cache = getattr(self, "_repa_pix_cache", None)
+            if cache is None:
+                from collections import OrderedDict
+                cache = self._repa_pix_cache = OrderedDict()
+            if key and key in cache:
+                cache.move_to_end(key)
+                return cache[key]
+
+            _b = item.get("_danbooru_image_bytes")
+            if _b is not None:
+                img = Image.open(BytesIO(_b))
+            elif key:
+                img = Image.open(key)
+            else:
+                return None
+            img = img.convert("RGB").resize((S, S), Image.BICUBIC)
+
+            import numpy as _np
+            arr = _np.asarray(img, dtype=_np.float32) / 255.0  # [S,S,3] in [0,1]
+            t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()  # [1,3,S,S]
+            t = t * 2.0 - 1.0  # -> [-1,1]
+
+            if key:
+                cache[key] = t
+                cache.move_to_end(key)
+                while len(cache) > 4096:
+                    cache.popitem(last=False)
+            return t
+        except Exception as _e:
+            if not getattr(self, "_repa_pix_warned", False):
+                print(f"{self.log_prefix} [REPA] clean-image load failed "
+                      f"(REPA skipped for affected batches): {_e}")
+                self._repa_pix_warned = True
+            return None
 
     def setup_minit2i_block_swap(self):
         """Initialise LayerOffloadConductor over the MM-JiT double_blocks, AFTER adapter setup."""
@@ -4176,6 +4323,7 @@ class BaseTrainer(ABC):
         reference_latents_nested: Optional[list],
         min_split_batch_size: int = 1,
         lens_latent_shape: Optional[Tuple[int, int]] = None,
+        mnt_repa_pixels: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -4220,6 +4368,7 @@ class BaseTrainer(ABC):
                 condition_images_batch=condition_images_batch,
                 reference_latents_nested=reference_latents_nested,
                 lens_latent_shape=lens_latent_shape,
+                mnt_repa_pixels=mnt_repa_pixels,
             )
             return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
 
@@ -4344,6 +4493,7 @@ class BaseTrainer(ABC):
                     reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
                     min_split_batch_size=min_split_batch_size,
                     lens_latent_shape=lens_latent_shape,
+                    mnt_repa_pixels=mnt_repa_pixels[:split_size] if mnt_repa_pixels is not None else None,
                 )
                 first_half_success = not skip1  # skip1=True means this half was skipped
             except Exception as split1_error:
@@ -4374,6 +4524,7 @@ class BaseTrainer(ABC):
                     reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
                     min_split_batch_size=min_split_batch_size,
                     lens_latent_shape=lens_latent_shape,
+                    mnt_repa_pixels=mnt_repa_pixels[split_size:] if mnt_repa_pixels is not None else None,
                 )
                 second_half_success = not skip2  # skip2=True means this half was skipped
             except Exception as split2_error:
@@ -4425,6 +4576,7 @@ class BaseTrainer(ABC):
         condition_images_batch: Optional[torch.Tensor],
         reference_latents_nested: Optional[list],
         lens_latent_shape: Optional[Tuple[int, int]] = None,
+        mnt_repa_pixels: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float]:
         """
         Execute forward pass (train_step_xxx) and backward pass for a batch.
@@ -4498,6 +4650,7 @@ class BaseTrainer(ABC):
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
                 debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
+                repa_pixels=mnt_repa_pixels,
             )
         elif self.is_flux2:
             # FLUX.2 training with position IDs
@@ -5857,6 +6010,7 @@ class BaseTrainer(ABC):
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
         debug_reference_image_paths: Optional[List[Optional[str]]] = None,
+        repa_pixels: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float, float]:
         """Single MiniT2I training step (pixel-space flow matching, x0 prediction).
 
@@ -5933,6 +6087,33 @@ class BaseTrainer(ABC):
             recon_loss_value = torch.nn.functional.mse_loss(
                 x0_pred.float(), images.float(), reduction="mean"
             ).item()
+
+        # REPA (representation alignment): align the DiT image hidden state captured
+        # at the tap depth with frozen clean-image patch features, via the trainable
+        # projector. Added to the backward loss; pred/recon above stay diffusion-only.
+        # The tap (transformer.model.net._repa_tap_out) is grad-connected (it is the
+        # double-block loop output, gradient-checkpoint safe).
+        self._minit2i_last_repa_loss = None
+        if getattr(self, "repa_enable", False) and repa_pixels is not None:
+            self._ensure_repa_on_device()
+            net = self.transformer.model.net
+            tap = getattr(net, "_repa_tap_out", None)
+            if tap is not None:
+                from core.training.repa import encode_repa_targets, repa_loss as _repa_loss_fn
+                patch = int(self.transformer.mmjit_config.patch_size)
+                gh = images.shape[2] // patch
+                gw = images.shape[3] // patch
+                targets = encode_repa_targets(
+                    self.repa_encoder,
+                    repa_pixels.to(device=self.device, dtype=self.training_dtype, non_blocking=True),
+                    gh, gw, self.repa_size,
+                )
+                rloss = _repa_loss_fn(tap, targets, self.repa_projector)
+                loss = loss + self.repa_weight * rloss
+                self._minit2i_last_repa_loss = float(rloss.detach().item())
+                del targets
+            # Release the captured graph reference (avoid retaining the activation graph).
+            net._repa_tap_out = None
 
         # Debug save: dump the first sample's tensors (.pt) so the noising / x0
         # prediction can be inspected offline. For the latent variant ("latent" is
@@ -9767,6 +9948,8 @@ class BaseTrainer(ABC):
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
+                    repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (MiniT2I, parallel to latents_list)
+                    _repa_active = bool(getattr(self, "repa_enable", False)) and self.is_minit2i
 
                     # Flag to track if batch should be skipped due to corrupted image
                     batch_has_corrupted_image = False
@@ -9897,6 +10080,12 @@ class BaseTrainer(ABC):
                                 batch_has_corrupted_image = True
                                 corrupted_image_path = item["image_path"]
                                 break
+
+                        # REPA: clean-image pixels for this item (parallel to latents_list).
+                        # A latent was appended above for this item (corrupted items break
+                        # earlier), so this keeps 1:1 alignment. None -> REPA skipped for batch.
+                        if _repa_active:
+                            repa_pixels_list.append(self._get_repa_pixels_for_item(item))
 
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
@@ -10049,6 +10238,8 @@ class BaseTrainer(ABC):
                                 reference_latents_list = [reference_latents_list[i] for i in valid_indices]
                             if condition_images_list:
                                 condition_images_list = [condition_images_list[i] for i in valid_indices]
+                            if repa_pixels_list:
+                                repa_pixels_list = [repa_pixels_list[i] for i in valid_indices]
 
                     # Skip batch if no valid latents remain
                     if len(latents_list) == 0:
@@ -10057,6 +10248,13 @@ class BaseTrainer(ABC):
 
                     # Create batch tensors (ONCE, reused across MNT iterations)
                     latents = torch.cat(latents_list, dim=0)
+
+                    # REPA clean-image batch [B,3,S,S] (CPU). Requires a pixel for every
+                    # surviving item; if any failed to load, skip REPA for this batch.
+                    repa_pixels_batch = None
+                    if _repa_active and repa_pixels_list and len(repa_pixels_list) == len(latents_list) \
+                            and all(rp is not None for rp in repa_pixels_list):
+                        repa_pixels_batch = torch.cat(repa_pixels_list, dim=0)
 
                     # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
                     # IMPORTANT: Pad embeddings to same sequence length if chunking is used
@@ -10198,6 +10396,8 @@ class BaseTrainer(ABC):
                         # Detach latents to create fresh computation graph for this MNT iteration
                         # This is necessary because backward() frees the graph
                         mnt_latents = latents.detach()
+                        # REPA clean-image pixels are timestep-independent -> same across MNT.
+                        mnt_repa_pixels = repa_pixels_batch
 
                         # Handle text embeddings based on training mode
                         if need_recompute_text_embeddings:
@@ -10352,6 +10552,7 @@ class BaseTrainer(ABC):
                                 reference_latents_nested=reference_latents_nested,
                                 min_split_batch_size=1,
                                 lens_latent_shape=batch_lens_latent_shape,
+                                mnt_repa_pixels=mnt_repa_pixels,
                             )
                         except Exception as batch_error:
                             # Final safety net: if all OOM recovery attempts failed,
@@ -11134,6 +11335,10 @@ class BaseTrainer(ABC):
                 'resume_seq': getattr(self, 'resume_seq', 0),
                 'loss': loss,
                 'recon_loss': recon_loss,
+                # REPA alignment loss (MiniT2I only): a run-context attribute set by
+                # train_step_minit2i, mirroring the epoch/resume_seq pattern above so
+                # the many _log_metrics_to_db call sites stay unchanged. None otherwise.
+                'repa_loss': getattr(self, '_minit2i_last_repa_loss', None),
                 'learning_rate': learning_rate,
                 'grad_norm': grad_norm,
                 'grad_norm_text_encoder': grad_norm_text_encoder,
@@ -11191,6 +11396,7 @@ class BaseTrainer(ABC):
                 m_step = metrics['step']
                 m_loss = metrics['loss']
                 m_recon_loss = metrics['recon_loss']
+                m_repa_loss = metrics.get('repa_loss')
                 m_learning_rate = metrics['learning_rate']
                 m_grad_norm = metrics['grad_norm']
                 m_grad_norm_te = metrics['grad_norm_text_encoder']
@@ -11219,6 +11425,8 @@ class BaseTrainer(ABC):
                         existing.loss = m_loss
                     if m_recon_loss is not None:
                         existing.recon_loss = m_recon_loss
+                    if m_repa_loss is not None:
+                        existing.repa_loss = m_repa_loss
                     if m_learning_rate is not None:
                         existing.learning_rate = m_learning_rate
                     if m_grad_norm is not None:
@@ -11259,6 +11467,7 @@ class BaseTrainer(ABC):
                         resume_seq=metrics.get('resume_seq', 0),
                         loss=m_loss if m_loss is not None else 0.0,
                         recon_loss=m_recon_loss if m_recon_loss is not None else 0.0,
+                        repa_loss=m_repa_loss,
                         learning_rate=m_learning_rate if m_learning_rate is not None else 0.0,
                         grad_norm=m_grad_norm,
                         grad_norm_text_encoder=m_grad_norm_te,
@@ -11292,6 +11501,7 @@ class BaseTrainer(ABC):
                         step=latest['step'],
                         loss=latest['loss'],
                         recon_loss=latest['recon_loss'],
+                        repa_loss=latest.get('repa_loss'),
                         learning_rate=latest['learning_rate'],
                         grad_norm=latest['grad_norm'],
                         grad_norm_text_encoder=latest['grad_norm_text_encoder'],

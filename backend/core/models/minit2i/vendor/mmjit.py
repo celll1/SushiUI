@@ -338,6 +338,13 @@ class MMJiT(nn.Module):
         )
         self.final_layer = FinalLayer(cfg.hidden_size, cfg.patch_size, cfg.in_channels)
         self.gradient_checkpointing = False
+        # REPA tap: when _repa_tap_depth is set (0-based block index), forward()
+        # stashes the grad-connected image hidden state after that double block into
+        # _repa_tap_out for representation-alignment loss. None = disabled (no-op).
+        # Capturing the loop variable (the checkpoint output) is gradient-checkpoint
+        # safe, unlike a forward hook which would see the no-grad recompute tensor.
+        self._repa_tap_depth = None
+        self._repa_tap_out = None
 
     def unpatchify(self, x, grid_h: int, grid_w: int):
         b = x.shape[0]
@@ -369,11 +376,14 @@ class MMJiT(nn.Module):
                 txt = torch.utils.checkpoint.checkpoint(block, txt, use_reentrant=False)
             else:
                 txt = block(txt)
-        for block in self.double_blocks:
+        self._repa_tap_out = None
+        for _depth, block in enumerate(self.double_blocks):
             if use_ckpt:
                 x, txt = torch.utils.checkpoint.checkpoint(block, x, txt, vec, gh, gw, use_reentrant=False)
             else:
                 x, txt = block(x, txt, vec, gh, gw)
+            if self._repa_tap_depth is not None and _depth == self._repa_tap_depth:
+                self._repa_tap_out = x
         combined = torch.cat([txt, x], dim=1)
         out = self.final_layer(combined, vec)
         img_out = out[:, txt.shape[1]:, :]

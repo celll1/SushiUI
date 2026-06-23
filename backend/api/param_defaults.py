@@ -278,6 +278,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "minit2i_lr_factor": 1.0,
     # Optional override path to FLAN-T5-Large; empty -> resolve next to the model.
     "minit2i_flan_t5_path": "",
+    # From-scratch only: inherit compatible weights from an existing MiniT2I model
+    # (same variant) instead of pure random init. Body/proj2/embedders copy fully;
+    # in/out layers copy overlapping channels when patch is unchanged. Empty = off.
+    "minit2i_scratch_init_from": "",
 
     # ---- Anima full-parameter training: per-group LR multipliers ----
     # Applied on top of unet_lr in AnimaFullParameterAdapter. Defaults of

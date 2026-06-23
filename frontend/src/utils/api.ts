@@ -2053,6 +2053,11 @@ export interface TrainingRunCreateRequest {
   text_encoding_swap_interval?: number;
   latent_encoding_mode?: string;
   latent_encoding_swap_interval?: number;
+  // MiniT2I
+  minit2i_label_drop_rate?: number;
+  minit2i_lr_factor?: number;
+  minit2i_flan_t5_path?: string;
+  minit2i_scratch_init_from?: string;  // from-scratch: inherit weights from this model
   // Online Danbooru augmentation (image-generation training)
   danbooru_aug_enable?: boolean;
   danbooru_aug_queries?: string;

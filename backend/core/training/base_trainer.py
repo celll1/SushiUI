@@ -1418,6 +1418,9 @@ class BaseTrainer(ABC):
             flan_t5_path=flan_t5_path,
             text_encoder_dtype=self.text_encoder_dtype if hasattr(self, "text_encoder_dtype") else torch.float32,
             vae_dtype=self.vae_dtype if hasattr(self, "vae_dtype") else torch.float16,
+            # From-scratch only: inherit compatible weights from an existing model
+            # instead of pure random init (ignored for non-scratch model paths).
+            scratch_init_from=(self.config.get("minit2i_scratch_init_from") or None),
         )
 
         self.transformer = components["transformer"]

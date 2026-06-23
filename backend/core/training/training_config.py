@@ -183,6 +183,7 @@ def _build_train_section(
     train["minit2i_label_drop_rate"] = p.get("minit2i_label_drop_rate", 0.1)
     train["minit2i_lr_factor"] = p.get("minit2i_lr_factor", 1.0)
     train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")
+    train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")
 
     # ---- Online Danbooru augmentation (image-generation) ----
     # Read unconditionally; ignored when danbooru_aug_enable is False.

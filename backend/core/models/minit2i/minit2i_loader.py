@@ -152,6 +152,7 @@ def load_minit2i_components(
     text_encoder_dtype: torch.dtype = torch.float32,
     vae_dtype: torch.dtype = torch.float16,
     vae_local_dir: str | None = None,
+    scratch_init_from: str | None = None,
 ) -> dict:
     """Load MiniT2I components from a diffusers dir or a single-file safetensors.
 
@@ -164,8 +165,10 @@ def load_minit2i_components(
         # From-scratch Full-FT: build a random-initialized model in memory (no disk
         # init model). VAE/FLAN-T5 are resolved by variant/vae_type as usual.
         scratch_variant, scratch_vae = parse_scratch_spec(model_path)
-        print(f"[MiniT2ILoader] From-scratch spec: variant={scratch_variant} vae_type={scratch_vae}")
-        transformer = build_scratch_minit2i(scratch_variant, scratch_vae, dtype=torch_dtype)
+        print(f"[MiniT2ILoader] From-scratch spec: variant={scratch_variant} vae_type={scratch_vae}"
+              + (f" (inherit weights from {scratch_init_from})" if scratch_init_from else ""))
+        transformer = build_scratch_minit2i(scratch_variant, scratch_vae, dtype=torch_dtype,
+                                            init_from=scratch_init_from or None)
         variant = scratch_variant
         scheduler = MiniT2IFlowMatchScheduler()
         # No path info in the sentinel: probe the local minit2i model tree for FLAN-T5
@@ -290,11 +293,114 @@ def parse_scratch_spec(model_path: str):
     return variant, vae_type
 
 
-def build_scratch_minit2i(variant: str, vae_type: str, dtype: torch.dtype = torch.bfloat16):
+def _load_source_minit2i_state_dict(path: str) -> dict:
+    """Load the transformer state_dict of an existing MiniT2I model (single-file or
+    diffusers dir) for weight inheritance into a from-scratch build. Keys are the
+    model's canonical state_dict keys (model.net.*)."""
+    if os.path.isfile(path) and path.endswith(".safetensors"):
+        from .vendor.single_file import load_single_file
+        return load_single_file(path, torch_dtype=torch.float32)["transformer"].state_dict()
+    # diffusers dir: resolve to the transformer dir and load via from_pretrained
+    src = path
+    if os.path.isdir(src) and not os.path.isdir(os.path.join(src, "transformer")):
+        src = resolve_minit2i_model_dir(src)
+    tdir = os.path.join(src, "transformer")
+    if not os.path.isdir(tdir):
+        tdir = src
+    return MiniT2IMMJiTModel.from_pretrained(tdir, torch_dtype=torch.float32).state_dict()
+
+
+def _inherit_minit2i_weights(model, source_sd: dict) -> None:
+    """In-place: copy compatible weights from a source MiniT2I state_dict into the
+    (random-initialized) target model. Same variant required for the body to match.
+
+    - name+shape match (body, proj2, embedders, norms): full copy.
+    - img_embedder.proj1 [pca,in,k,k] / final_layer.linear [k^2*c,hidden] (+bias):
+      when patch (kernel k) is unchanged but channel count differs, copy the
+      overlapping channels and keep the rest random (the user's "carry 3ch, init the
+      new ch" case). When patch differs (pixel<->latent), shapes are incompatible →
+      left random.
+    - everything else with no match: left random.
+    """
+    # Determine source & target patch_size so in/out-layer channel surgery is only
+    # attempted when the patch (token geometry) is unchanged. src patch = proj1 conv
+    # kernel; tgt patch from the model config.
+    tgt_patch = int(model.mmjit_config.patch_size)
+    src_proj1 = source_sd.get("model.net.img_embedder.proj1.weight")
+    src_patch = int(src_proj1.shape[2]) if src_proj1 is not None else -1
+
+    tgt_sd = model.state_dict()
+    new_sd = {}
+    full, partial, init = [], [], []
+    for name, tparam in tgt_sd.items():
+        sparam = source_sd.get(name)
+        if sparam is None:
+            new_sd[name] = tparam; init.append(name); continue
+        if sparam.shape == tparam.shape:
+            new_sd[name] = sparam.to(dtype=tparam.dtype); full.append(name); continue
+        merged = _channel_partial_copy(name, sparam, tparam, src_patch, tgt_patch)
+        if merged is not None:
+            new_sd[name] = merged.to(dtype=tparam.dtype); partial.append(name)
+        else:
+            new_sd[name] = tparam; init.append(name)
+    model.load_state_dict(new_sd, strict=True)
+    print(f"[MiniT2ILoader] Weight inheritance: {len(full)} tensors copied, "
+          f"{len(partial)} channel-partial {partial}, {len(init)} re-initialized "
+          f"(src_patch={src_patch}, tgt_patch={tgt_patch})")
+
+
+def _channel_partial_copy(name: str, src: "torch.Tensor", tgt: "torch.Tensor",
+                          src_patch: int, tgt_patch: int):
+    """Return a tensor shaped like tgt with src's overlapping channels copied in,
+    for the channel-dependent in/out layers when ONLY the channel count differs.
+    Requires src_patch == tgt_patch (same token geometry); otherwise the layouts
+    are incompatible (e.g. pixel patch16 <-> latent patch2) and None is returned."""
+    if src_patch != tgt_patch or src_patch <= 0:
+        return None
+    pp = tgt_patch * tgt_patch  # patch² (spatial layout, identical src/tgt)
+
+    # proj1: Conv2d weight [pca, in_ch, k, k] — differ only in in_ch (dim 1).
+    if name.endswith("img_embedder.proj1.weight"):
+        if src.shape[0] != tgt.shape[0] or src.shape[2:] != tgt.shape[2:]:
+            return None
+        out = tgt.clone()
+        n = min(src.shape[1], tgt.shape[1])
+        out[:, :n] = src[:, :n].to(out.dtype)
+        return out
+
+    # final_layer.linear weight [pp*c, hidden] / bias [pp*c] — differ only in c.
+    # Layout is (pp) outer, c inner (unpatchify reshape ...,p,p,c). Partial-copy c.
+    if name.endswith("final_layer.linear.weight") or name.endswith("final_layer.linear.bias"):
+        is_w = name.endswith(".weight")
+        s_rows, t_rows = src.shape[0], tgt.shape[0]
+        if s_rows % pp != 0 or t_rows % pp != 0:
+            return None
+        c_s, c_t = s_rows // pp, t_rows // pp
+        n = min(c_s, c_t)
+        if is_w:
+            hidden = tgt.shape[1]
+            sv = src.reshape(pp, c_s, hidden)
+            out = tgt.clone().reshape(pp, c_t, hidden)
+            out[:, :n, :] = sv[:, :n, :].to(out.dtype)
+            return out.reshape(t_rows, hidden)
+        else:
+            sv = src.reshape(pp, c_s)
+            out = tgt.clone().reshape(pp, c_t)
+            out[:, :n] = sv[:, :n].to(out.dtype)
+            return out.reshape(t_rows)
+    return None
+
+
+def build_scratch_minit2i(variant: str, vae_type: str, dtype: torch.dtype = torch.bfloat16,
+                          init_from: str | None = None):
     """Build a random-initialized MiniT2IMMJiTModel in memory (no disk write).
 
     variant in {b16, l16}; vae_type in {none, sdxl, flux1}. Pixel: 3ch/patch16/noise2;
     latent: VAE channels/patch2/noise1.
+
+    init_from: optional path to an existing MiniT2I model (vanilla pixel or a local
+    model) whose compatible weights are inherited into this build instead of random
+    init (same variant required for the body). See _inherit_minit2i_weights.
     """
     from .vendor.single_file import KNOWN_VARIANTS
     from .minit2i_vae import vae_latent_channels, VAE_REGISTRY
@@ -320,6 +426,15 @@ def build_scratch_minit2i(variant: str, vae_type: str, dtype: torch.dtype = torc
         mlp_ratio=base["mlp_ratio"], pca_channels=128, prompt_length=256,
         vae_type=vae_type, noise_scale=noise,
     ).to(dtype)
+
+    if init_from:
+        try:
+            print(f"[MiniT2ILoader] Inheriting weights from: {init_from}")
+            source_sd = _load_source_minit2i_state_dict(init_from)
+            _inherit_minit2i_weights(model, source_sd)
+        except Exception as e:
+            print(f"[MiniT2ILoader] WARNING: weight inheritance failed ({e}); "
+                  f"continuing from random init")
     return model
 
 

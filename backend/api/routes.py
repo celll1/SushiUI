@@ -6429,6 +6429,7 @@ class TrainingRunCreateRequest(BaseModel):
     minit2i_label_drop_rate: float = TRAINING_DEFAULTS["minit2i_label_drop_rate"]
     minit2i_lr_factor: float = TRAINING_DEFAULTS["minit2i_lr_factor"]
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
+    minit2i_scratch_init_from: str = TRAINING_DEFAULTS["minit2i_scratch_init_from"]
     # Anima full-parameter LR multipliers (each applied on top of unet_lr).
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
     anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]

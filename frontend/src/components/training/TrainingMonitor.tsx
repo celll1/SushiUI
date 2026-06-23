@@ -810,6 +810,7 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                             type="range"
                             min="0"
                             max="100"
+                            step="any"
                             value={comparisonSlider}
                             onChange={(e) => setComparisonSlider(Number(e.target.value))}
                             className="w-full"

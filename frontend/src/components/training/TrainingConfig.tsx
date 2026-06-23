@@ -600,6 +600,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       run_name: runName.trim() || undefined,
       training_method: trainingMethod,
       base_model_path: baseModelPath.trim(),
+      // MiniT2I config (sent so UI values reach the backend, not just defaults).
+      minit2i_label_drop_rate: params.minit2i_label_drop_rate,
+      minit2i_lr_factor: params.minit2i_lr_factor,
+      minit2i_flan_t5_path: params.minit2i_flan_t5_path,
+      minit2i_scratch_init_from: params.minit2i_scratch_init_from,
       total_steps: useEpochs ? undefined : params.total_steps,
       epochs: useEpochs ? params.epochs : undefined,
       batch_size: params.batch_size,
@@ -882,6 +887,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "mixed_precision", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
+      "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
       "danbooru_aug_enable", "danbooru_aug_queries", "danbooru_aug_weight_static",
       "danbooru_aug_deficiency_enable", "danbooru_aug_deficiency_min_count",
       "danbooru_aug_deficiency_top_k", "danbooru_aug_deficiency_manual",
@@ -2068,6 +2074,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <option value="none">None (pixel-space)</option>
                     </select>
                   </div>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Inherit weights from (optional)</label>
+                  <select
+                    value={params.minit2i_scratch_init_from || ""}
+                    onChange={(e) => updateParam("minit2i_scratch_init_from", e.target.value)}
+                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs"
+                  >
+                    <option value="">None (random init)</option>
+                    {availableModels.filter((m) => m.architecture === "minit2i").map((m) => (
+                      <option key={m.path} value={m.path}>{m.name}</option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Same variant only. Transformer body + proj2 + embedders copy fully; the
+                    in/out layers copy overlapping channels when the patch is unchanged
+                    (latent↔latent), else they are re-initialized (pixel→latent).
+                  </p>
                 </div>
                 <p className="text-xs text-gray-500">
                   Random-initialized in memory and trained with Full Fine-tune. Latent variants

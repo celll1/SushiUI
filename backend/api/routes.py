@@ -130,6 +130,10 @@ class GenerationParams(BaseModel):
     prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
     max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
     developer_mode: bool = False  # Enable CFG metrics visualization
+    # SDXL micro-conditioning override (inference): original_size for time_ids.
+    original_size_w: int = 0
+    original_size_h: int = 0
+    original_size_scale: float = 1.0
     # Dynamic CFG scheduling
     cfg_schedule_type: str = "constant"  # constant, linear, quadratic, cosine, snr_based
     cfg_schedule_min: float = 1.0  # Minimum CFG at end of generation
@@ -276,6 +280,9 @@ async def generate_txt2img(
     use_pinned_memory: bool = Form(False),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
+    original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
+    original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
+    original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
@@ -400,6 +407,9 @@ async def generate_txt2img(
             "nag_negative_prompt": nag_negative_prompt,
             "attention_type": attention_type,
             "unet_quantization": unet_quantization,
+            "original_size_w": original_size_w,
+            "original_size_h": original_size_h,
+            "original_size_scale": original_size_scale,
             "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
             "enable_block_swap": enable_block_swap,
@@ -983,6 +993,9 @@ async def generate_img2img(
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
+    original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
+    original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
+    original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
     image: UploadFile = File(...),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     db: Session = Depends(get_gallery_db)
@@ -1115,6 +1128,9 @@ async def generate_img2img(
             "nag_negative_prompt": nag_negative_prompt,
             "attention_type": attention_type,
             "unet_quantization": unet_quantization,
+            "original_size_w": original_size_w,
+            "original_size_h": original_size_h,
+            "original_size_scale": original_size_scale,
             "text_encoder_quantization": text_encoder_quantization,
             "cpu_text_encoding": cpu_text_encoding,
             "use_torch_compile": use_torch_compile,
@@ -1338,6 +1354,9 @@ async def generate_inpaint(
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
+    original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
+    original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
+    original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
@@ -1489,6 +1508,9 @@ async def generate_inpaint(
             "nag_negative_prompt": nag_negative_prompt,
             "attention_type": attention_type,
             "unet_quantization": unet_quantization,
+            "original_size_w": original_size_w,
+            "original_size_h": original_size_h,
+            "original_size_scale": original_size_scale,
             "text_encoder_quantization": text_encoder_quantization,
             "cpu_text_encoding": cpu_text_encoding,
             "use_torch_compile": use_torch_compile,

@@ -388,6 +388,21 @@ def dynamic_thresholding(
     return noise_pred
 
 
+def _resolve_sdxl_original_size(default_h: int, default_w: int,
+                               original_size_w: int = 0, original_size_h: int = 0,
+                               original_size_scale: float = 1.0):
+    """Resolve the SDXL original_size (h, w) for time_ids at inference.
+
+    Explicit width+height override take precedence; otherwise the default (output
+    size, or the input image size for img2img/inpaint) is scaled by original_size_scale.
+    crop_coords_top_left stays (0,0); target_size remains the output size.
+    """
+    if original_size_w and original_size_h and original_size_w > 0 and original_size_h > 0:
+        return int(original_size_h), int(original_size_w)
+    s = float(original_size_scale) if original_size_scale else 1.0
+    return int(round(default_h * s)), int(round(default_w * s))
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -428,6 +443,9 @@ def custom_sampling_loop(
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
     vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
+    original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
+    original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
+    original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -744,7 +762,7 @@ def custom_sampling_loop(
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
-            original_size = (height, width)
+            original_size = _resolve_sdxl_original_size(height, width, original_size_w, original_size_h, original_size_scale)
             crops_coords_top_left = (0, 0)
             target_size = (height, width)
 
@@ -1137,6 +1155,9 @@ def custom_img2img_sampling_loop(
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
     vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
+    original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
+    original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
+    original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1466,7 +1487,7 @@ def custom_img2img_sampling_loop(
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
-            original_size = (original_height, original_width)
+            original_size = _resolve_sdxl_original_size(original_height, original_width, original_size_w, original_size_h, original_size_scale)
             crops_coords_top_left = (0, 0)
             target_size = (original_height, original_width)
 
@@ -1847,6 +1868,9 @@ def custom_inpaint_sampling_loop(
     is_deus: bool = False,  # DEUS model flag - uses 2-Pass CFG instead of batch concatenation
     ref_guide_configs: Optional[List[Dict]] = None,  # Reference Guide configs for latent blending
     vision_encoder=None,  # SigLIP2 VisionEncoderWrapper for VRAM status logging
+    original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
+    original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
+    original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2230,7 +2254,7 @@ def custom_inpaint_sampling_loop(
         added_cond_kwargs = {}
         if is_sdxl:
             # SDXL requires time_ids
-            original_size = (original_height, original_width)
+            original_size = _resolve_sdxl_original_size(original_height, original_width, original_size_w, original_size_h, original_size_scale)
             crops_coords_top_left = (0, 0)
             target_size = (original_height, original_width)
 

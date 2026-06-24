@@ -5460,6 +5460,9 @@ class DiffusionPipelineManager:
                 attention_type=attention_type,
                 ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
                 vision_encoder=getattr(self, 'vision_encoder', None),
+                original_size_w=params.get("original_size_w", 0),
+                original_size_h=params.get("original_size_h", 0),
+                original_size_scale=params.get("original_size_scale", 1.0),
                 **controlnet_kwargs,
             )
 
@@ -6009,6 +6012,9 @@ class DiffusionPipelineManager:
                 attention_type=attention_type,
                 ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
                 vision_encoder=getattr(self, 'vision_encoder', None),
+                original_size_w=params.get("original_size_w", 0),
+                original_size_h=params.get("original_size_h", 0),
+                original_size_scale=params.get("original_size_scale", 1.0),
                 **controlnet_kwargs,
             )
 
@@ -6422,6 +6428,9 @@ class DiffusionPipelineManager:
             attention_type=params.get("attention_type", "normal"),
             ref_guide_configs=ref_guide_configs if ref_guide_configs else None,
             vision_encoder=getattr(self, 'vision_encoder', None),
+            original_size_w=params.get("original_size_w", 0),
+            original_size_h=params.get("original_size_h", 0),
+            original_size_scale=params.get("original_size_scale", 1.0),
             **controlnet_kwargs,
         )
 

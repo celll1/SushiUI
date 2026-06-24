@@ -25,6 +25,25 @@ import math
 
 from .base_adapter import BaseLoRAAdapter, BaseFullParameterAdapter
 from .sd15_adapter import LoRALinearLayer  # Reuse LoRA layer implementation
+
+
+def sushi_modelspec_metadata(trainer) -> Dict[str, str]:
+    """Unified SushiUI prediction metadata for a saved model.
+
+    Records the resolved noise_process / prediction_target so the loader can
+    reproduce the objective (epsilon / v / x / flow) without guessing — read by
+    ModelLoader.detect_prediction_config (modelspec.* has top priority). Resolved
+    "auto" values are skipped (the loader then infers as before). Architecture is
+    tagged for the model browser.
+    """
+    md: Dict[str, str] = {"modelspec.architecture": "stable-diffusion-xl-v1-base"}
+    np = str(getattr(trainer, "noise_process", "") or "").strip().lower()
+    pt = str(getattr(trainer, "prediction_target", "") or "").strip().lower()
+    if np and np != "auto":
+        md["modelspec.noise_process"] = np
+    if pt and pt != "auto":
+        md["modelspec.prediction_type"] = pt
+    return md
 from .state_dict_converter import (
     convert_unet_state_dict_to_original,
     convert_vae_state_dict_to_original,
@@ -242,6 +261,7 @@ class SDXLLoRAAdapter(BaseLoRAAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "sdxl",
+            **sushi_modelspec_metadata(self.trainer),
         }
 
         # Save safetensors
@@ -392,6 +412,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "sdxl",
+            **sushi_modelspec_metadata(self.trainer),
         }
 
         print(f"[SDXLFullParameterAdapter] Saving to {output_path}...")

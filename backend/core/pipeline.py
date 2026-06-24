@@ -666,11 +666,42 @@ class DiffusionPipelineManager:
                 model_hash = get_cached_file_hash(source)
                 print(f"[Pipeline] Model hash: {model_hash[:16]}...")
 
+            model_type_detected = ModelLoader.detect_model_type(source) if source_type != "huggingface" else "unknown"
+
+            # Unified prediction config (SushiUI modelspec.* > v_pred marker > legacy >
+            # architecture inference). Lets the loader know the objective (epsilon / v /
+            # x / flow) the model was trained with, so the right scheduler is selected.
+            noise_process = None
+            prediction_target = None
+            pred_source = None
+            if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                try:
+                    _pc = ModelLoader.detect_prediction_config(source, model_type_detected)
+                    noise_process = _pc.get("noise_process")
+                    prediction_target = _pc.get("prediction_target")
+                    pred_source = _pc.get("source")
+                    # Keep is_v_prediction consistent with the unified config.
+                    if prediction_target == "velocity" and noise_process == "ddpm":
+                        is_v_prediction = True
+                    print(f"[Pipeline] Prediction config: noise_process={noise_process}, "
+                          f"prediction_target={prediction_target} (source={pred_source})")
+                    if noise_process == "flow":
+                        # Flow-matching inference sampling is not yet wired into the custom
+                        # SDXL sampler (which assumes DDPM/v sigmas). Recognized here so the
+                        # model is correctly tagged; a dedicated flow sampler is a follow-up.
+                        print("[Pipeline] WARNING: flow-matching (FM) prediction detected — "
+                              "FM inference sampling is not yet implemented; output may be incorrect.")
+                except Exception as _pc_e:
+                    print(f"[Pipeline] detect_prediction_config failed (using scheduler default): {_pc_e}")
+
             self.current_model_info = {
                 "source_type": source_type,
                 "source": source,
-                "type": ModelLoader.detect_model_type(source) if source_type != "huggingface" else "unknown",
+                "type": model_type_detected,
                 "is_v_prediction": is_v_prediction,
+                "noise_process": noise_process,
+                "prediction_target": prediction_target,
+                "prediction_source": pred_source,
                 "model_hash": model_hash
             }
 

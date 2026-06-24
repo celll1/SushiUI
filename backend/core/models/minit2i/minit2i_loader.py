@@ -153,6 +153,7 @@ def load_minit2i_components(
     vae_dtype: torch.dtype = torch.float16,
     vae_local_dir: str | None = None,
     scratch_init_from: str | None = None,
+    scratch_inherit_final_layer: bool = False,
 ) -> dict:
     """Load MiniT2I components from a diffusers dir or a single-file safetensors.
 
@@ -168,7 +169,8 @@ def load_minit2i_components(
         print(f"[MiniT2ILoader] From-scratch spec: variant={scratch_variant} vae_type={scratch_vae}"
               + (f" (inherit weights from {scratch_init_from})" if scratch_init_from else ""))
         transformer = build_scratch_minit2i(scratch_variant, scratch_vae, dtype=torch_dtype,
-                                            init_from=scratch_init_from or None)
+                                            init_from=scratch_init_from or None,
+                                            inherit_final_layer=scratch_inherit_final_layer)
         variant = scratch_variant
         scheduler = MiniT2IFlowMatchScheduler()
         # No path info in the sentinel: probe the local minit2i model tree for FLAN-T5
@@ -310,15 +312,17 @@ def _load_source_minit2i_state_dict(path: str) -> dict:
     return MiniT2IMMJiTModel.from_pretrained(tdir, torch_dtype=torch.float32).state_dict()
 
 
-def _inherit_minit2i_weights(model, source_sd: dict) -> None:
+def _inherit_minit2i_weights(model, source_sd: dict, inherit_final_layer: bool = False) -> None:
     """In-place: copy compatible weights from a source MiniT2I state_dict into the
     (random-initialized) target model. Same variant required for the body to match.
 
-    - final_layer.linear (output projection): NEVER inherited — always kept at the
-      target's fresh init, even when the source has the same shape. It is the layer
-      that carries the trained output mapping (the monochrome mean-regression
-      collapse); a warm start should transfer the body but relearn this head from
-      scratch. Only the linear is reset; final_layer.norm_final still inherits.
+    - final_layer.linear (output projection): by default NEVER inherited — kept at
+      the target's fresh init even when the source shape matches. It carries the
+      trained output mapping (the monochrome mean-regression collapse); a warm start
+      usually transfers the body but relearns this head from scratch. Set
+      inherit_final_layer=True to also copy it (full copy when the shape matches;
+      left at fresh init when shapes differ — patch/channel changes). norm_final
+      always inherits regardless of this flag.
     - name+shape match (body, proj2, embedders, norms): full copy.
     - img_embedder.proj1 [pca,in,k,k]: when patch (kernel k) is unchanged but channel
       count differs, copy the overlapping channels and keep the rest random (the
@@ -337,10 +341,11 @@ def _inherit_minit2i_weights(model, source_sd: dict) -> None:
     new_sd = {}
     full, partial, init = [], [], []
     for name, tparam in tgt_sd.items():
-        # Output projection is intentionally never inherited (see docstring): always
-        # keep the target's fresh init so the head relearns from scratch on a warm
-        # start. Matches the manual final_layer reset applied to resume checkpoints.
-        if "final_layer.linear" in name:
+        # Output projection: by default kept at fresh init so the head relearns from
+        # scratch on a warm start (see docstring). When inherit_final_layer is set,
+        # fall through and treat it like any other tensor (full copy if shapes match,
+        # else left at fresh init since _channel_partial_copy does not handle it).
+        if "final_layer.linear" in name and not inherit_final_layer:
             new_sd[name] = tparam; init.append(name); continue
         sparam = source_sd.get(name)
         if sparam is None:
@@ -385,7 +390,7 @@ def _channel_partial_copy(name: str, src: "torch.Tensor", tgt: "torch.Tensor",
 
 
 def build_scratch_minit2i(variant: str, vae_type: str, dtype: torch.dtype = torch.bfloat16,
-                          init_from: str | None = None):
+                          init_from: str | None = None, inherit_final_layer: bool = False):
     """Build a random-initialized MiniT2IMMJiTModel in memory (no disk write).
 
     variant in {b16, l16}; vae_type in {none, sdxl, flux1}. Pixel: 3ch/patch16/noise2;
@@ -424,7 +429,7 @@ def build_scratch_minit2i(variant: str, vae_type: str, dtype: torch.dtype = torc
         try:
             print(f"[MiniT2ILoader] Inheriting weights from: {init_from}")
             source_sd = _load_source_minit2i_state_dict(init_from)
-            _inherit_minit2i_weights(model, source_sd)
+            _inherit_minit2i_weights(model, source_sd, inherit_final_layer=inherit_final_layer)
         except Exception as e:
             print(f"[MiniT2ILoader] WARNING: weight inheritance failed ({e}); "
                   f"continuing from random init")

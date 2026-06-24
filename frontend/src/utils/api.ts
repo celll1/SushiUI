@@ -2063,6 +2063,7 @@ export interface TrainingRunCreateRequest {
   minit2i_lr_factor?: number;
   minit2i_flan_t5_path?: string;
   minit2i_scratch_init_from?: string;  // from-scratch: inherit weights from this model
+  minit2i_inherit_final_layer?: boolean;  // from-scratch: also inherit the output head (final_layer.linear)
   // REPA (Representation Alignment) — MiniT2I only
   repa_enable?: boolean;
   repa_encoder_source?: string;        // "tagger" | "siglip2"

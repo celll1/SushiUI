@@ -1421,6 +1421,7 @@ class BaseTrainer(ABC):
             # From-scratch only: inherit compatible weights from an existing model
             # instead of pure random init (ignored for non-scratch model paths).
             scratch_init_from=(self.config.get("minit2i_scratch_init_from") or None),
+            scratch_inherit_final_layer=bool(self.config.get("minit2i_inherit_final_layer", False)),
         )
 
         self.transformer = components["transformer"]

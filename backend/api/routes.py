@@ -6441,6 +6441,7 @@ class TrainingRunCreateRequest(BaseModel):
     minit2i_lr_factor: float = TRAINING_DEFAULTS["minit2i_lr_factor"]
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
     minit2i_scratch_init_from: str = TRAINING_DEFAULTS["minit2i_scratch_init_from"]
+    minit2i_inherit_final_layer: bool = TRAINING_DEFAULTS["minit2i_inherit_final_layer"]
     # REPA (Representation Alignment) — MiniT2I only.
     repa_enable: bool = TRAINING_DEFAULTS["repa_enable"]
     repa_encoder_source: str = TRAINING_DEFAULTS["repa_encoder_source"]

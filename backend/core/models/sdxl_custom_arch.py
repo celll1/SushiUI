@@ -99,3 +99,47 @@ def resize_unet_in_out(unet, in_channels: int, out_channels: Optional[int] = Non
 
     print(f"[SDXLCustomArch] Resized U-Net conv_in->{in_channels}ch, conv_out->{out_channels}ch "
           f"(channel-partial copy; body unchanged)")
+
+
+# CompVis/LDM keys for the two channel-dependent conv layers (the save side uses
+# convert_unet_state_dict_to_original, so a custom SDXL single-file carries these).
+_LDM_CONV_KEYS = {
+    "conv_in.weight": "model.diffusion_model.input_blocks.0.0.weight",
+    "conv_in.bias": "model.diffusion_model.input_blocks.0.0.bias",
+    "conv_out.weight": "model.diffusion_model.out.2.weight",
+    "conv_out.bias": "model.diffusion_model.out.2.bias",
+}
+
+
+def load_custom_convs_from_single_file(unet, file_path: str) -> bool:
+    """Copy the trained conv_in/conv_out from a custom SDXL single-file into `unet`.
+
+    diffusers from_single_file can override in_channels (num_in_channels=) but NOT
+    out_channels, so the file's channel-resized convs are not loaded reliably. After
+    resize_unet_in_out, this assigns both convs directly from the CompVis-format file,
+    guaranteeing the trained weights regardless of from_single_file's behavior.
+    Returns True if both convs were found and loaded.
+    """
+    from safetensors import safe_open
+
+    found = {}
+    with safe_open(file_path, framework="pt") as f:
+        keys = set(f.keys())
+        for diff_k, ldm_k in _LDM_CONV_KEYS.items():
+            if ldm_k in keys:
+                found[diff_k] = f.get_tensor(ldm_k)
+
+    ok = True
+    with torch.no_grad():
+        for name, conv in (("conv_in", unet.conv_in), ("conv_out", unet.conv_out)):
+            wk, bk = f"{name}.weight", f"{name}.bias"
+            if wk in found and tuple(found[wk].shape) == tuple(conv.weight.shape):
+                conv.weight.copy_(found[wk].to(conv.weight.device, conv.weight.dtype))
+            else:
+                ok = False
+            if conv.bias is not None and bk in found:
+                conv.bias.copy_(found[bk].to(conv.bias.device, conv.bias.dtype))
+    print(f"[SDXLCustomArch] Loaded trained conv_in/conv_out from single-file "
+          f"({'ok' if ok else 'partial/missing — left at resize init'})")
+    return ok
+

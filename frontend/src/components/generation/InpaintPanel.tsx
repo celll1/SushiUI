@@ -70,6 +70,10 @@ interface InpaintParams {
   nag_alpha?: number;
   nag_sigma_end?: number;
   nag_negative_prompt?: string;
+  // SDXL micro-conditioning override (inference)
+  original_size_w?: number;
+  original_size_h?: number;
+  original_size_scale?: number;
   // U-Net Quantization
   unet_quantization?: string | null;
   // Text Encoder Quantization (Z-Image only)
@@ -119,6 +123,9 @@ const DEFAULT_PARAMS: InpaintParams = {
   nag_sigma_end: 3.0,
   nag_negative_prompt: "",
   unet_quantization: null,
+  original_size_w: 0,
+  original_size_h: 0,
+  original_size_scale: 1.0,
   text_encoder_quantization: null,
   cpu_text_encoding: false,
   use_torch_compile: false,
@@ -1489,6 +1496,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         inpaint_fill_strength: mainParams.inpaint_fill_strength,
         inpaint_blur_strength: mainParams.inpaint_blur_strength,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
+        original_size_w: mainParams.original_size_w,
+        original_size_h: mainParams.original_size_h,
+        original_size_scale: mainParams.original_size_scale,
         cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
@@ -1564,6 +1574,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
       stepParams.unet_quantization = mainParams.unet_quantization;
+      stepParams.original_size_w = mainParams.original_size_w;
+      stepParams.original_size_h = mainParams.original_size_h;
+      stepParams.original_size_scale = mainParams.original_size_scale;
       stepParams.cpu_text_encoding = mainParams.cpu_text_encoding;
       stepParams.vision_encoder_path = mainParams.vision_encoder_path;
 
@@ -1653,6 +1666,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         nag_sigma_end: nextItem.params.nag_sigma_end,
         nag_negative_prompt: nextItem.params.nag_negative_prompt,
         unet_quantization: nextItem.params.unet_quantization,
+        original_size_w: nextItem.params.original_size_w,
+        original_size_h: nextItem.params.original_size_h,
+        original_size_scale: nextItem.params.original_size_scale,
         attention_type: nextItem.params.attention_type,
         vision_encoder_path: nextItem.params.vision_encoder_path,
       };
@@ -2873,6 +2889,36 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 )}
               </>
             )}
+
+            {/* SDXL micro-conditioning: original_size override (collapsible). */}
+            <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3">
+              <summary className="text-xs text-gray-300 cursor-pointer select-none">
+                Original Size (SDXL micro-conditioning)
+              </summary>
+              <div className="mt-2 grid grid-cols-3 gap-2">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Width (0=auto)</label>
+                  <input type="number" min={0} value={params.original_size_w ?? 0}
+                    onChange={(e) => setParams({ ...params, original_size_w: parseInt(e.target.value) || 0 })}
+                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Height (0=auto)</label>
+                  <input type="number" min={0} value={params.original_size_h ?? 0}
+                    onChange={(e) => setParams({ ...params, original_size_h: parseInt(e.target.value) || 0 })}
+                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Scale</label>
+                  <input type="number" min={0} step={0.05} value={params.original_size_scale ?? 1.0}
+                    onChange={(e) => setParams({ ...params, original_size_scale: parseFloat(e.target.value) || 1.0 })}
+                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
+                </div>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                SDXL only. original_size for time_ids: explicit W/H, else output size × scale.
+              </p>
+            </details>
 
             {/* CPU Text Encoding — applies to all model types */}
             <label className="flex items-center gap-2 cursor-pointer">

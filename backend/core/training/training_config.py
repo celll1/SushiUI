@@ -147,6 +147,18 @@ def _build_train_section(
             train["bucket_strategy"] = p.get("bucket_strategy", "resize")
             train["multi_resolution_mode"] = p.get("multi_resolution_mode", "max")
 
+    # Epoch-dynamic crop augmentation (SDXL only). Emit the switch always; emit details
+    # only when enabled (the trainer falls back to TRAINING_DEFAULTS for absent keys).
+    train["crop_augment_enable"] = p.get("crop_augment_enable", False)
+    if train["crop_augment_enable"]:
+        train["crop_full_image_prob"] = p.get("crop_full_image_prob", 0.7)
+        train["crop_min_area_ratio"] = p.get("crop_min_area_ratio", 0.25)
+        train["crop_min_short_side_px"] = p.get("crop_min_short_side_px", 512)
+        train["crop_scale_range"] = p.get("crop_scale_range") or [0.5, 1.0]
+        train["crop_position_mode"] = p.get("crop_position_mode", "random")
+        train["crop_microcond_mode"] = p.get("crop_microcond_mode", "kohya")
+        train["crop_plan_seed"] = p.get("crop_plan_seed", 0)
+
     # Common training fields
     train["use_flash_attention"] = p.get("use_flash_attention", False)
     train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)

@@ -244,32 +244,27 @@ class BucketManager:
         # Key is (BucketResolution, has_reference) when separate_by_reference=True
         self.buckets: Dict[BucketKey, List[Dict]] = {}
 
-    def assign_image_to_bucket(
+    def select_bucket(
         self,
-        image_path: str,
         width: int,
         height: int,
-        caption: str = "",
         target_resolution: Optional[int] = None,
-        dataset_unique_id: Optional[str] = None,
-        has_reference: bool = False,
-        reference_images: Optional[list] = None,
-    ) -> Tuple[BucketKey, Dict]:
-        """
-        Assign an image to the best bucket.
+        rng: Optional["random.Random"] = None,
+    ) -> BucketResolution:
+        """Select the best bucket for a (width, height) WITHOUT mutating state.
+
+        Pure function form of the resolution/bucket selection used by
+        assign_image_to_bucket. Used by CropPlanner so per-epoch crop sizes can be
+        re-bucketed deterministically.
 
         Args:
-            image_path: Path to image file
-            width: Image width
-            height: Image height
-            caption: Image caption
-            target_resolution: Specific resolution to use (or None for auto)
-            dataset_unique_id: Unique ID for dataset (for cache management)
-            has_reference: Whether this item has reference images (only used if separate_by_reference=True)
+            width, height: Image (or crop) pixel size.
+            target_resolution: Force a specific base resolution (or None for auto).
+            rng: RNG for multi_resolution_mode == "random" (pass a deterministic
+                 random.Random for reproducibility; None uses the global random module).
 
         Returns:
-            Tuple of (bucket_key, image_info)
-            bucket_key is BucketResolution or (BucketResolution, has_reference)
+            BucketResolution
         """
         # Determine which resolution to use
         if target_resolution is not None:
@@ -280,8 +275,9 @@ class BucketManager:
             # Multi-resolution mode
             if self.multi_resolution_mode == "random":
                 # Randomly select from all available resolutions
-                import random
-                target_resolution = random.choice(self.base_resolutions)
+                import random as _random
+                _rng = rng if rng is not None else _random
+                target_resolution = _rng.choice(self.base_resolutions)
                 bucket_list = self.bucket_lists[target_resolution]
             else:
                 # "max" mode: assign the image to the LARGEST base resolution it can
@@ -307,16 +303,50 @@ class BucketManager:
 
                 fitting = [c for c in candidates if c[2] <= 1.0 + 1e-6]
                 if fitting:
-                    best_resolution, bucket, _ = max(fitting, key=lambda c: c[0])
+                    _, bucket, _ = max(fitting, key=lambda c: c[0])
                 else:
-                    best_resolution, bucket, _ = min(candidates, key=lambda c: c[2])
+                    _, bucket, _ = min(candidates, key=lambda c: c[2])
 
-                target_resolution = best_resolution
-                bucket_list = None  # Already have the bucket
+                return bucket
 
-        # Find best bucket if not already determined
-        if bucket_list is not None:
-            bucket = get_bucket_for_image_size(width, height, bucket_list, divisibility=self.divisibility)
+        # Resolution-specific bucket list path
+        return get_bucket_for_image_size(width, height, bucket_list, divisibility=self.divisibility)
+
+    def assign_image_to_bucket(
+        self,
+        image_path: str,
+        width: int,
+        height: int,
+        caption: str = "",
+        target_resolution: Optional[int] = None,
+        dataset_unique_id: Optional[str] = None,
+        has_reference: bool = False,
+        reference_images: Optional[list] = None,
+        forced_bucket: Optional[BucketResolution] = None,
+    ) -> Tuple[BucketKey, Dict]:
+        """
+        Assign an image to the best bucket.
+
+        Args:
+            image_path: Path to image file
+            width: Image width
+            height: Image height
+            caption: Image caption
+            target_resolution: Specific resolution to use (or None for auto)
+            dataset_unique_id: Unique ID for dataset (for cache management)
+            has_reference: Whether this item has reference images (only used if separate_by_reference=True)
+            forced_bucket: Place the item directly into this bucket (skip selection).
+                Used by CropPlanner for per-epoch re-bucketing of a known crop size.
+
+        Returns:
+            Tuple of (bucket_key, image_info)
+            bucket_key is BucketResolution or (BucketResolution, has_reference)
+        """
+        # Pure bucket selection (no state mutation) — shared with CropPlanner.
+        if forced_bucket is not None:
+            bucket = forced_bucket
+        else:
+            bucket = self.select_bucket(width, height, target_resolution=target_resolution)
 
         # Create image info
         image_info = {

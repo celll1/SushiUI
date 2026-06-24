@@ -214,6 +214,10 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "noise_process": "auto",
     "prediction_target": "auto",
     "strict_validation": False,
+    # SDXL micro-conditioning: derive time_ids (original_size / crop_top_left /
+    # target_size) from the real source image + bucketing/crop, instead of the legacy
+    # all-equal-to-latent-size, crop=(0,0). Default on; off restores legacy behavior.
+    "sdxl_micro_conditioning": True,
     # Vision encoder
     "use_reference_images": False,
     "vision_encoder_path": None,

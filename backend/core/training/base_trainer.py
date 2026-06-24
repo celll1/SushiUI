@@ -1641,6 +1641,58 @@ class BaseTrainer(ABC):
                 self._repa_pix_warned = True
             return None
 
+    def _get_original_size_for_item(self, item) -> Tuple[int, int]:
+        """Return the real source image (width, height) for SDXL micro-conditioning.
+
+        Reads only the image header (no full decode) and caches per image_path. Used
+        to compute correct original_size/crop time_ids without changing the latent
+        cache or swap-buffer formats.
+        """
+        key = item.get("image_path")
+        cache = getattr(self, "_origsize_cache", None)
+        if cache is None:
+            from collections import OrderedDict
+            cache = self._origsize_cache = OrderedDict()
+        if key and key in cache:
+            cache.move_to_end(key)
+            return cache[key]
+        _b = item.get("_danbooru_image_bytes")
+        if _b is not None:
+            with Image.open(BytesIO(_b)) as im:
+                wh = im.size  # (w, h) from header
+        elif key:
+            with Image.open(key) as im:
+                wh = im.size
+        else:
+            raise ValueError("no image_path/bytes for original size")
+        if key:
+            cache[key] = wh
+            cache.move_to_end(key)
+            while len(cache) > 8192:
+                cache.popitem(last=False)
+        return wh
+
+    def _recompute_sdxl_micro_cond(self, item, bucket_w: int, bucket_h: int, strategy: str):
+        """Deterministically recompute SDXL time_ids for an item from its real original
+        size + bucket + strategy (used when encode_image did not run for this item, e.g.
+        swap/cache paths). Returns (orig_h, orig_w, crop_top, crop_left, target_h, target_w).
+
+        - resize: crop=(0,0). - crop: center-crop offset in resized space. - random_crop:
+          offset is non-deterministic at consume time -> (0,0) approximation. On any
+          failure, fall back to original=target=bucket (legacy-equivalent but correct target).
+        """
+        try:
+            ow, oh = self._get_original_size_for_item(item)
+            ct = cl = 0
+            if strategy == "crop" and ow > 0 and oh > 0:
+                scale = max(bucket_w / ow, bucket_h / oh)
+                nw, nh = int(ow * scale), int(oh * scale)
+                cl = max(0, (nw - bucket_w) // 2)
+                ct = max(0, (nh - bucket_h) // 2)
+            return (oh, ow, ct, cl, bucket_h, bucket_w)
+        except Exception:
+            return (bucket_h, bucket_w, 0, 0, bucket_h, bucket_w)
+
     def setup_minit2i_block_swap(self):
         """Initialise LayerOffloadConductor over the MM-JiT double_blocks, AFTER adapter setup."""
         if not self.is_minit2i:
@@ -4140,6 +4192,13 @@ class BaseTrainer(ABC):
 
         img_width, img_height = image.size
 
+        # SDXL micro-conditioning capture: the real source size + the crop top-left
+        # (in resized-image space). Set once after the bucket branch below, so it is
+        # available regardless of which model-type return path runs. time_ids order is
+        # [orig_h, orig_w, crop_top, crop_left, target_h, target_w].
+        orig_w, orig_h = img_width, img_height
+        crop_left, crop_top = 0, 0
+
         if img_width * img_height > 5000 * 5000:
             print(f"[encode_image] Resizing large image {img_width}x{img_height} -> {width}x{height}")
 
@@ -4159,6 +4218,7 @@ class BaseTrainer(ABC):
             # Center crop
             left = (new_width - width) // 2
             top = (new_height - height) // 2
+            crop_left, crop_top = left, top
             image = image.crop((left, top, left + width, top + height))
 
         elif bucket_strategy == "random_crop":
@@ -4179,6 +4239,7 @@ class BaseTrainer(ABC):
             max_top = img_height - height
             left = random.randint(0, max_left) if max_left > 0 else 0
             top = random.randint(0, max_top) if max_top > 0 else 0
+            crop_left, crop_top = left, top
             image = image.crop((left, top, left + width, top + height))
 
         else:
@@ -4186,6 +4247,11 @@ class BaseTrainer(ABC):
 
         if image.size != (width, height):
             print(f"[encode_image] ERROR: Final image size {image.size} != target {(width, height)}")
+
+        # SDXL micro-conditioning for this encode: (orig_h, orig_w, crop_top, crop_left,
+        # target_h, target_w). Read by the batch loop right after encode_image() and
+        # carried per-item into the SDXL time_ids (replacing the hardcoded values).
+        self._last_micro_cond = (orig_h, orig_w, crop_top, crop_left, height, width)
 
         # Convert to tensor and normalize
         image_array = np.array(image).astype(np.float32) / 255.0
@@ -4362,6 +4428,7 @@ class BaseTrainer(ABC):
         min_split_batch_size: int = 1,
         lens_latent_shape: Optional[Tuple[int, int]] = None,
         mnt_repa_pixels: Optional[torch.Tensor] = None,
+        mnt_time_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -4407,6 +4474,7 @@ class BaseTrainer(ABC):
                 reference_latents_nested=reference_latents_nested,
                 lens_latent_shape=lens_latent_shape,
                 mnt_repa_pixels=mnt_repa_pixels,
+                mnt_time_ids=mnt_time_ids,
             )
             return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
 
@@ -4532,6 +4600,7 @@ class BaseTrainer(ABC):
                     min_split_batch_size=min_split_batch_size,
                     lens_latent_shape=lens_latent_shape,
                     mnt_repa_pixels=mnt_repa_pixels[:split_size] if mnt_repa_pixels is not None else None,
+                    mnt_time_ids=mnt_time_ids[:split_size] if mnt_time_ids is not None else None,
                 )
                 first_half_success = not skip1  # skip1=True means this half was skipped
             except Exception as split1_error:
@@ -4563,6 +4632,7 @@ class BaseTrainer(ABC):
                     min_split_batch_size=min_split_batch_size,
                     lens_latent_shape=lens_latent_shape,
                     mnt_repa_pixels=mnt_repa_pixels[split_size:] if mnt_repa_pixels is not None else None,
+                    mnt_time_ids=mnt_time_ids[split_size:] if mnt_time_ids is not None else None,
                 )
                 second_half_success = not skip2  # skip2=True means this half was skipped
             except Exception as split2_error:
@@ -4615,6 +4685,7 @@ class BaseTrainer(ABC):
         reference_latents_nested: Optional[list],
         lens_latent_shape: Optional[Tuple[int, int]] = None,
         mnt_repa_pixels: Optional[torch.Tensor] = None,
+        mnt_time_ids: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float]:
         """
         Execute forward pass (train_step_xxx) and backward pass for a batch.
@@ -4726,6 +4797,7 @@ class BaseTrainer(ABC):
                 text_embeddings=mnt_text_embeddings,
                 condition_images=mnt_condition_images,
                 pooled_embeddings=mnt_pooled_embeddings,
+                time_ids=mnt_time_ids,
                 timesteps=timesteps,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
@@ -4736,6 +4808,7 @@ class BaseTrainer(ABC):
                 latents=mnt_latents,
                 text_embeddings=mnt_text_embeddings,
                 pooled_embeddings=mnt_pooled_embeddings,
+                time_ids=mnt_time_ids,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -4777,6 +4850,7 @@ class BaseTrainer(ABC):
         latents: torch.Tensor,
         text_embeddings: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
+        time_ids: Optional[torch.Tensor] = None,
         timesteps: Optional[torch.Tensor] = None,
         debug_save_path: Optional[Path] = None,
         debug_captions: Optional[List[str]] = None,
@@ -4871,19 +4945,21 @@ class BaseTrainer(ABC):
             timesteps=timesteps,
         )
 
-        # Prepare added_cond_kwargs for SDXL
+        # Prepare added_cond_kwargs for SDXL. Per-item time_ids (real original_size /
+        # crop_top_left / target_size from the dataset bucketing) are passed in when
+        # SDXL micro-conditioning is enabled; otherwise fall back to the legacy
+        # all-equal-to-latent-size, crop=(0,0) values.
         added_cond_kwargs = None
         if self.is_sdxl and pooled_embeddings is not None:
-            latent_height, latent_width = latents.shape[2], latents.shape[3]
-            image_height, image_width = latent_height * 8, latent_width * 8
-
-            original_size = (image_height, image_width)
-            crops_coords_top_left = (0, 0)
-            target_size = (image_height, image_width)
-
-            add_time_ids = list(original_size + crops_coords_top_left + target_size)
-            add_time_ids = torch.tensor([add_time_ids], dtype=pooled_embeddings.dtype, device=self.device)
-            add_time_ids = add_time_ids.repeat(batch_size, 1)
+            if time_ids is not None:
+                add_time_ids = time_ids.to(device=self.device, dtype=pooled_embeddings.dtype)
+            else:
+                latent_height, latent_width = latents.shape[2], latents.shape[3]
+                image_height, image_width = latent_height * 8, latent_width * 8
+                add_time_ids = torch.tensor(
+                    [[image_height, image_width, 0, 0, image_height, image_width]],
+                    dtype=pooled_embeddings.dtype, device=self.device,
+                ).repeat(batch_size, 1)
 
             added_cond_kwargs = {
                 "text_embeds": pooled_embeddings,
@@ -5177,6 +5253,7 @@ class BaseTrainer(ABC):
         text_embeddings: torch.Tensor,
         condition_images: torch.Tensor,
         pooled_embeddings: torch.Tensor = None,
+        time_ids: Optional[torch.Tensor] = None,
         timesteps: Optional[torch.Tensor] = None,
         profile_vram: bool = False,
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
@@ -5251,13 +5328,14 @@ class BaseTrainer(ABC):
         # Prepare added_cond_kwargs for SDXL
         added_cond_kwargs = None
         if self.is_sdxl and pooled_embeddings is not None:
-            latent_height, latent_width = latents.shape[2], latents.shape[3]
-            image_height, image_width = latent_height * 8, latent_width * 8
-
-            add_time_ids = torch.tensor([[
-                image_height, image_width, 0, 0, image_height, image_width
-            ]], dtype=pooled_embeddings.dtype, device=self.device)
-            add_time_ids = add_time_ids.repeat(batch_size, 1)
+            if time_ids is not None:
+                add_time_ids = time_ids.to(device=self.device, dtype=pooled_embeddings.dtype)
+            else:
+                latent_height, latent_width = latents.shape[2], latents.shape[3]
+                image_height, image_width = latent_height * 8, latent_width * 8
+                add_time_ids = torch.tensor([[
+                    image_height, image_width, 0, 0, image_height, image_width
+                ]], dtype=pooled_embeddings.dtype, device=self.device).repeat(batch_size, 1)
 
             added_cond_kwargs = {
                 "text_embeds": pooled_embeddings,
@@ -10011,6 +10089,11 @@ class BaseTrainer(ABC):
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
                     repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (MiniT2I, parallel to latents_list)
                     _repa_active = bool(getattr(self, "repa_enable", False)) and self.is_minit2i
+                    # SDXL micro-conditioning: per-item (orig_h,orig_w,crop_top,crop_left,
+                    # target_h,target_w) for time_ids, parallel to latents_list.
+                    micro_cond_list = []
+                    _sdxl_microcond_active = self.is_sdxl and bool(self.config.get("sdxl_micro_conditioning", True))
+                    self._last_micro_cond = None
 
                     # Flag to track if batch should be skipped due to corrupted image
                     batch_has_corrupted_image = False
@@ -10147,6 +10230,18 @@ class BaseTrainer(ABC):
                         # earlier), so this keeps 1:1 alignment. None -> REPA skipped for batch.
                         if _repa_active:
                             repa_pixels_list.append(self._get_repa_pixels_for_item(item))
+
+                        # SDXL micro-conditioning per item: prefer the exact values
+                        # captured by encode_image (onthefly path; exact even for
+                        # random_crop), else recompute deterministically from the real
+                        # original size + bucket + strategy (swap/cache paths). Reset the
+                        # capture so a non-encoding item never reuses a prior item's value.
+                        if _sdxl_microcond_active:
+                            cap = self._last_micro_cond
+                            self._last_micro_cond = None
+                            if cap is None:
+                                cap = self._recompute_sdxl_micro_cond(item, width, height, bucket_strategy)
+                            micro_cond_list.append(cap)
 
                         # Encode caption (mode-specific, architecture-unified)
                         caption = item.get("caption", "")
@@ -10301,6 +10396,8 @@ class BaseTrainer(ABC):
                                 condition_images_list = [condition_images_list[i] for i in valid_indices]
                             if repa_pixels_list:
                                 repa_pixels_list = [repa_pixels_list[i] for i in valid_indices]
+                            if micro_cond_list:
+                                micro_cond_list = [micro_cond_list[i] for i in valid_indices]
 
                     # Skip batch if no valid latents remain
                     if len(latents_list) == 0:
@@ -10316,6 +10413,14 @@ class BaseTrainer(ABC):
                     if _repa_active and repa_pixels_list and len(repa_pixels_list) == len(latents_list) \
                             and all(rp is not None for rp in repa_pixels_list):
                         repa_pixels_batch = torch.cat(repa_pixels_list, dim=0)
+
+                    # SDXL micro-conditioning batch [B,6] (CPU float). Per-item time_ids
+                    # (orig_h,orig_w,crop_top,crop_left,target_h,target_w). None disables
+                    # it for the batch -> train_step falls back to the legacy values.
+                    time_ids_batch = None
+                    if _sdxl_microcond_active and micro_cond_list and len(micro_cond_list) == len(latents_list) \
+                            and all(mc is not None for mc in micro_cond_list):
+                        time_ids_batch = torch.tensor(micro_cond_list, dtype=torch.float32)
 
                     # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
                     # IMPORTANT: Pad embeddings to same sequence length if chunking is used
@@ -10459,6 +10564,8 @@ class BaseTrainer(ABC):
                         mnt_latents = latents.detach()
                         # REPA clean-image pixels are timestep-independent -> same across MNT.
                         mnt_repa_pixels = repa_pixels_batch
+                        # SDXL time_ids are per-item (size/crop), timestep-independent.
+                        mnt_time_ids = time_ids_batch
 
                         # Handle text embeddings based on training mode
                         if need_recompute_text_embeddings:
@@ -10614,6 +10721,7 @@ class BaseTrainer(ABC):
                                 min_split_batch_size=1,
                                 lens_latent_shape=batch_lens_latent_shape,
                                 mnt_repa_pixels=mnt_repa_pixels,
+                                mnt_time_ids=mnt_time_ids,
                             )
                         except Exception as batch_error:
                             # Final safety net: if all OOM recovery attempts failed,

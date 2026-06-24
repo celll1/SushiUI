@@ -70,6 +70,10 @@ def _build_train_section(
         "strict_validation": p.get("strict_validation", False),
         "sdxl_micro_conditioning": p.get("sdxl_micro_conditioning", True),
         "sdxl_vae_type": p.get("sdxl_vae_type", "none"),
+        "sdxl_te_type": p.get("sdxl_te_type", "none"),
+        "sdxl_te_hidden_layer": p.get("sdxl_te_hidden_layer", -2),
+        "sdxl_te_max_len": p.get("sdxl_te_max_len", 256),
+        "sdxl_te_train_encoder": p.get("sdxl_te_train_encoder", False),
         # Optimizer
         "optimizer": p.get("optimizer", "adamw8bit"),
         "lr": lr,

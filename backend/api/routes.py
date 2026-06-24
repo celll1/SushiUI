@@ -6571,6 +6571,10 @@ class TrainingRunCreateRequest(BaseModel):
     strict_validation: bool = False  # Abort training if mismatch detected
     sdxl_micro_conditioning: bool = TRAINING_DEFAULTS["sdxl_micro_conditioning"]
     sdxl_vae_type: str = TRAINING_DEFAULTS["sdxl_vae_type"]
+    sdxl_te_type: str = TRAINING_DEFAULTS["sdxl_te_type"]
+    sdxl_te_hidden_layer: int = TRAINING_DEFAULTS["sdxl_te_hidden_layer"]
+    sdxl_te_max_len: int = TRAINING_DEFAULTS["sdxl_te_max_len"]
+    sdxl_te_train_encoder: bool = TRAINING_DEFAULTS["sdxl_te_train_encoder"]
 
     # Reference image conditioning (FLUX.2 only)
     use_reference_images: bool = False  # Enable reference image latent conditioning during training

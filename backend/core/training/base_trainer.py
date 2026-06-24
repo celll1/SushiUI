@@ -2487,6 +2487,33 @@ class BaseTrainer(ABC):
         except Exception:
             self.vae_latent_channels = 4
 
+        # Custom SDXL Text Encoder (optional): swap CLIP for an alternative encoder
+        # (SigLIP2 text / FLAN-T5 / Qwen3) + trainable adapters bridging to the fixed
+        # U-Net interface (2048 / 1280). The CLIP TEs stay loaded but unused (encode_prompt
+        # branches to the custom path); "none" keeps standard CLIP behavior unchanged.
+        self.sdxl_te_type = "none"
+        if self.is_sdxl:
+            _tet = str(self.config.get("sdxl_te_type", "") or "").strip().lower()
+            if _tet and _tet not in ("none", "clip"):
+                from core.models.sdxl_te_registry import load_sdxl_te
+                from core.models.sdxl_te_adapter import SDXLTEAdapters
+                self.te_max_len = int(self.config.get("sdxl_te_max_len", 256) or 256)
+                self.te_hidden_layer = int(self.config.get("sdxl_te_hidden_layer", -2))
+                self.sdxl_te_train_encoder = bool(self.config.get("sdxl_te_train_encoder", False))
+                _ad_dtype = getattr(self, "training_dtype", None) or self.dtype
+                self.te_custom, self.te_tokenizer, self.te_dim = load_sdxl_te(
+                    _tet, dtype=self.dtype, device=self.device, max_len=self.te_max_len)
+                if self.sdxl_te_train_encoder:
+                    self.te_custom.requires_grad_(True); self.te_custom.train()
+                else:
+                    self.te_custom.requires_grad_(False); self.te_custom.eval()
+                self.te_adapters = SDXLTEAdapters(self.te_dim).to(device=self.device, dtype=_ad_dtype)
+                self.te_adapters.train()
+                self.sdxl_te_type = _tet
+                print(f"{self.log_prefix} [SDXL custom] Text encoder '{_tet}' "
+                      f"(dim={self.te_dim}, max_len={self.te_max_len}, layer={self.te_hidden_layer}, "
+                      f"train_encoder={self.sdxl_te_train_encoder}) + bridge adapters")
+
         # No transformer for SD/SDXL
         self.transformer = None
         self.transformer_original = None
@@ -3593,6 +3620,11 @@ class BaseTrainer(ABC):
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
         """
+        # Custom SDXL Text Encoder: bypass CLIP and use the swapped encoder + bridge
+        # adapters (returns the SDXL (embeddings[B,L,2048], pooled[B,1280]) contract).
+        if self.is_sdxl and getattr(self, "sdxl_te_type", "none") not in ("none", "clip", "", None):
+            return self._encode_prompt_custom_te(prompt, requires_grad)
+
         # DEUS support removed
         # if self.is_deus:
         #     return self._encode_prompt_deus(prompt, requires_grad)
@@ -3615,6 +3647,29 @@ class BaseTrainer(ABC):
     #     ...
     #     """
     #     pass
+
+    def _encode_prompt_custom_te(self, prompt: str, requires_grad: bool = False):
+        """Encode a prompt with the swapped SDXL text encoder + bridge adapters.
+
+        Returns (embeddings[1,L,2048], pooled[1,1280]). The encoder body is frozen by
+        default (run under no_grad); the adapters carry the trainable gradient. When
+        sdxl_te_train_encoder is set, the body is also run with grad.
+        """
+        import contextlib
+        from core.models.sdxl_te_registry import encode_text
+
+        train_body = bool(getattr(self, "sdxl_te_train_encoder", False)) and requires_grad
+        enc_ctx = contextlib.nullcontext() if train_body else torch.no_grad()
+        with enc_ctx:
+            hidden, pooled = encode_text(
+                self.te_custom, self.te_tokenizer, [prompt],
+                max_len=getattr(self, "te_max_len", 256),
+                hidden_layer=getattr(self, "te_hidden_layer", -2),
+                device=self.device,
+            )
+        ad_dtype = next(self.te_adapters.parameters()).dtype
+        enc, pld = self.te_adapters(hidden.to(ad_dtype), pooled.to(ad_dtype))  # [1,L,2048], [1,1280]
+        return enc, pld
 
     def _encode_prompt_simple(self, prompt: str, requires_grad: bool = False):
         """
@@ -8656,6 +8711,16 @@ class BaseTrainer(ABC):
             te2_trainable_tensors = sum(1 for p in self.text_encoder_2.parameters() if p.requires_grad)
             te2_trainable_scalars = sum(p.numel() for p in self.text_encoder_2.parameters() if p.requires_grad)
             text_encoder_trainable = text_encoder_trainable or (te2_trainable_tensors > 0)
+
+        # Custom SDXL TE: CLIP is unused; the trainable bridge is the TE adapters (and
+        # optionally the encoder body). Treat encoding as trainable so embeddings are
+        # recomputed each step (with grad through the adapters) instead of cached.
+        if getattr(self, "sdxl_te_type", "none") not in ("none", "clip", "", None) \
+                and getattr(self, "te_adapters", None) is not None:
+            if any(p.requires_grad for p in self.te_adapters.parameters()) \
+                    or bool(getattr(self, "sdxl_te_train_encoder", False)):
+                text_encoder_trainable = True
+                print(f"{self.log_prefix}   Custom TE adapters trainable -> recompute embeddings each step")
 
         # Log trainable parameter counts (U-Net + Text Encoders)
         unet_obj = getattr(self, 'unet', None) or getattr(self, 'transformer', None)

@@ -50,6 +50,15 @@ def sushi_modelspec_metadata(trainer) -> Dict[str, str]:
         md["sushi.vae_type"] = vae_type
         md["sushi.in_channels"] = str(int(getattr(trainer, "vae_latent_channels", 4) or 4))
         md["modelspec.architecture"] = "sdxl-custom"
+    # Custom text encoder (swapped): record how to rebuild + whether the body is embedded.
+    te_type = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower()
+    if te_type and te_type not in ("none", "clip"):
+        md["sushi.te_type"] = te_type
+        md["sushi.te_hidden_layer"] = str(int(getattr(trainer, "te_hidden_layer", -2)))
+        md["sushi.te_max_len"] = str(int(getattr(trainer, "te_max_len", 256)))
+        md["sushi.te_dim"] = str(int(getattr(trainer, "te_dim", 0) or 0))
+        md["sushi.te_embedded"] = "1" if bool(getattr(trainer, "sdxl_te_train_encoder", False)) else "0"
+        md["modelspec.architecture"] = "sdxl-custom"
     return md
 from .state_dict_converter import (
     convert_unet_state_dict_to_original,
@@ -346,6 +355,21 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
                 if te2_params:
                     params.append({"params": te2_params, "lr": trainer.text_encoder_2_lr})
 
+        # Custom SDXL TE: bridge adapters (always trainable) + optionally the encoder body.
+        if getattr(trainer, "sdxl_te_type", "none") not in ("none", "clip", "", None) \
+                and getattr(trainer, "te_adapters", None) is not None:
+            ad_params = [p for p in trainer.te_adapters.parameters() if p.requires_grad]
+            if ad_params:
+                ad_lr = getattr(trainer, "text_encoder_lr", None) or trainer.unet_lr
+                print(f"[SDXLFullParameterAdapter] {sum(p.numel() for p in ad_params):,} trainable "
+                      f"params (custom-TE bridge adapters), lr={ad_lr}")
+                params.append({"params": ad_params, "lr": ad_lr})
+            if getattr(trainer, "sdxl_te_train_encoder", False) and getattr(trainer, "te_custom", None) is not None:
+                te_params = [p for p in trainer.te_custom.parameters() if p.requires_grad]
+                if te_params:
+                    te_lr = getattr(trainer, "text_encoder_1_lr", None) or getattr(trainer, "text_encoder_lr", None) or trainer.unet_lr
+                    params.append({"params": te_params, "lr": te_lr})
+
         return params
 
     def save_checkpoint(self, step: int, epoch: int, output_path: Path):
@@ -420,6 +444,19 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
                 combined_state_dict["conditioner.embedders.1.model.text_projection"] = (
                     combined_state_dict.pop(tp_key).T.contiguous()
                 )
+
+        # Custom SDXL Text Encoder: always embed the trained bridge adapters; embed the
+        # encoder body only when it was fine-tuned (train_encoder), else it is reloaded
+        # from the registry repo on load.
+        _custom_te = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
+        if _custom_te and getattr(trainer, "te_adapters", None) is not None:
+            print(f"[SDXLFullParameterAdapter] Collecting custom-TE bridge adapters...")
+            for key, value in trainer.te_adapters.state_dict().items():
+                combined_state_dict[f"sushi.te_adapter.{key}"] = value.detach().cpu()
+            if bool(getattr(trainer, "sdxl_te_train_encoder", False)) and getattr(trainer, "te_custom", None) is not None:
+                print(f"[SDXLFullParameterAdapter] Collecting fine-tuned custom-TE encoder body...")
+                for key, value in trainer.te_custom.state_dict().items():
+                    combined_state_dict[f"sushi.te_encoder.{key}"] = value.detach().cpu()
 
         # Save to safetensors with metadata
         metadata = {

@@ -43,6 +43,13 @@ def sushi_modelspec_metadata(trainer) -> Dict[str, str]:
         md["modelspec.noise_process"] = np
     if pt and pt != "auto":
         md["modelspec.prediction_type"] = pt
+    # Custom-arch markers (SushiUI): non-standard VAE / latent channels so the loader
+    # can reconstruct (swap VAE + resize conv) on load. Only written when non-default.
+    vae_type = str(getattr(trainer, "sdxl_vae_type", "") or "").strip().lower()
+    if vae_type and vae_type not in ("none", "sdxl"):
+        md["sushi.vae_type"] = vae_type
+        md["sushi.in_channels"] = str(int(getattr(trainer, "vae_latent_channels", 4) or 4))
+        md["modelspec.architecture"] = "sdxl-custom"
     return md
 from .state_dict_converter import (
     convert_unet_state_dict_to_original,

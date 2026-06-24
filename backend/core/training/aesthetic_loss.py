@@ -177,7 +177,14 @@ class BaseTrainer:
         self.aesthetic_loss_module = None
 
         if aesthetic_loss_weight > 0 and aesthetic_model_path:
-            in_channels = 16 if self.is_zimage else 4  # Z-Image: 16, SD/SDXL: 4
+            # Latent channels from the loaded VAE config (handles SDXL VAE migration to
+            # a high-spec VAE, e.g. FLUX.1 16ch); falls back to the Z-Image/SD-SDXL guess.
+            in_channels = getattr(self, "vae_latent_channels", None)
+            if not in_channels:
+                try:
+                    in_channels = int(self.vae.config.latent_channels)
+                except Exception:
+                    in_channels = 16 if self.is_zimage else 4
             self.aesthetic_loss_module = load_aesthetic_loss(
                 model_path=aesthetic_model_path,
                 architecture=aesthetic_architecture,

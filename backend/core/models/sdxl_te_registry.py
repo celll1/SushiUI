@@ -110,10 +110,26 @@ def load_sdxl_te(
         print(f"[SDXL-TE] Loaded SigLIP2 text tower: {repo} (hidden={hidden_dim}, max_len={max_len})")
         return encoder, tokenizer, hidden_dim
 
-    # flan_t5 / qwen3: same interface, added in a later step.
+    if kind == "t5":
+        # FLAN-T5 encoder (same family as MiniT2I). T5 uses relative position bias (no
+        # learned absolute position embedding), so it handles any length and needs no
+        # pos-emb extension; max_len only controls tokenization (pad/truncate).
+        from transformers import T5EncoderModel
+        encoder = T5EncoderModel.from_pretrained(repo, dtype=torch.float32)
+        tokenizer = AutoTokenizer.from_pretrained(repo)
+        try:
+            encoder.config.output_hidden_states = True
+        except Exception:
+            pass
+        hidden_dim = int(getattr(encoder.config, "d_model", None) or encoder.config.hidden_size)
+        encoder = encoder.to(device=device, dtype=dtype).eval()
+        print(f"[SDXL-TE] Loaded FLAN-T5 encoder: {repo} (hidden={hidden_dim}, max_len={max_len})")
+        return encoder, tokenizer, hidden_dim
+
+    # qwen3: added in the next step.
     raise NotImplementedError(
         f"sdxl_te_type '{te_type}' (kind={kind}) is registered but not yet implemented; "
-        f"SigLIP2 text is available first."
+        f"siglip2_text and flan_t5 are available."
     )
 
 

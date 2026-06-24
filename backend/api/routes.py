@@ -3,7 +3,7 @@ from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from typing import List, Optional, Dict, Any, Callable, Tuple
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from pathlib import Path
 import os
@@ -6431,6 +6431,15 @@ class TrainingRunCreateRequest(BaseModel):
     base_resolutions: Optional[List[int]] = None  # e.g., [512, 768, 1024]
     bucket_strategy: str = "resize"  # "resize", "crop", "random_crop"
     multi_resolution_mode: str = "max"  # "max" or "random"
+    # Epoch-dynamic crop augmentation (SDXL only). See param_defaults / design doc.
+    crop_augment_enable: bool = TRAINING_DEFAULTS["crop_augment_enable"]
+    crop_full_image_prob: float = TRAINING_DEFAULTS["crop_full_image_prob"]
+    crop_min_area_ratio: float = TRAINING_DEFAULTS["crop_min_area_ratio"]
+    crop_min_short_side_px: int = TRAINING_DEFAULTS["crop_min_short_side_px"]
+    crop_scale_range: List[float] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["crop_scale_range"]))
+    crop_position_mode: str = TRAINING_DEFAULTS["crop_position_mode"]
+    crop_microcond_mode: str = TRAINING_DEFAULTS["crop_microcond_mode"]
+    crop_plan_seed: int = TRAINING_DEFAULTS["crop_plan_seed"]
     cache_latents_to_disk: bool = False  # Cache VAE latents and text embeddings to disk (default: False, in-memory cache)
     force_recache: bool = False  # Force regeneration of disk latent cache
     reconstruction_loss_weight: float = 0.0  # Additional reconstruction loss weight (0.0 = disabled)

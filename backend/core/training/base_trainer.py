@@ -2842,6 +2842,9 @@ class BaseTrainer(ABC):
             "random_state": random.getstate(),  # Save Python random state for batch shuffle reproducibility
             # Dataset fingerprint for change detection on resume
             "dataset_fingerprint": getattr(self, '_dataset_fingerprint', None),
+            # Crop-plan fingerprint: a change in crop augmentation params (or num_epochs)
+            # invalidates the saved shuffle/crop reproducibility -> fresh fallback on resume.
+            "crop_plan_fingerprint": getattr(self, '_crop_plan_fingerprint', None),
         }
 
         with open(state_file, 'w') as f:
@@ -4258,7 +4261,9 @@ class BaseTrainer(ABC):
         target_size: int = 512,
         target_width: int = None,
         target_height: int = None,
-        bucket_strategy: str = "crop"
+        bucket_strategy: str = "crop",
+        crop_box: Optional[Tuple[int, int, int, int]] = None,
+        time_ids_override: Optional[Tuple[int, int, int, int, int, int]] = None,
     ) -> torch.Tensor:
         """
         Encode image to latents.
@@ -4272,6 +4277,13 @@ class BaseTrainer(ABC):
                 - "resize": Direct resize (may distort aspect ratio, fastest)
                 - "crop": Aspect ratio preserving resize + center crop (default)
                 - "random_crop": Random crop at original resolution (no downscale, for tiled inference training)
+            crop_box: Optional (cx, cy, cw, ch) in original pixels. When provided (used by
+                the epoch-dynamic CropPlanner), the exact region is cropped from the
+                original then resized to (target_width, target_height), bypassing
+                bucket_strategy. time_ids_override is used verbatim for micro-conditioning.
+            time_ids_override: Optional kohya-style SDXL time_ids
+                (orig_h, orig_w, crop_top, crop_left, target_h, target_w) to record for
+                this encode (paired with crop_box).
 
         Returns:
             Latent tensor
@@ -4293,51 +4305,73 @@ class BaseTrainer(ABC):
         orig_w, orig_h = img_width, img_height
         crop_left, crop_top = 0, 0
 
-        if img_width * img_height > 5000 * 5000:
-            print(f"[encode_image] Resizing large image {img_width}x{img_height} -> {width}x{height}")
+        # Planner-provided time_ids for the crop_box path (None for the strategy path).
+        _microcond_override = None
 
-        # Apply bucketing strategy
-        if bucket_strategy == "resize":
-            # Direct resize (may distort aspect ratio)
-            image = image.resize((width, height), Image.LANCZOS)
+        if crop_box is not None:
+            # Epoch-dynamic crop path (CropPlanner): crop the exact region from the
+            # original and resize to the target bucket, bypassing bucket_strategy. The
+            # micro-conditioning time_ids come from the planner (time_ids_override).
+            cx, cy, cw, ch = crop_box
+            cx = max(0, min(cx, img_width - 1))
+            cy = max(0, min(cy, img_height - 1))
+            cw = max(1, min(cw, img_width - cx))
+            ch = max(1, min(ch, img_height - cy))
+            region = image.crop((cx, cy, cx + cw, cy + ch))
+            if region.size != (width, height):
+                region = region.resize((width, height), Image.LANCZOS)
+            image = region
+            crop_left, crop_top = cx, cy
+            _microcond_override = (
+                tuple(time_ids_override) if time_ids_override is not None
+                else (orig_h, orig_w, cy, cx, height, width)
+            )
+        else:
+            if img_width * img_height > 5000 * 5000:
+                print(f"[encode_image] Resizing large image {img_width}x{img_height} -> {width}x{height}")
 
-        elif bucket_strategy == "crop":
-            # Aspect ratio preserving resize + center crop (default)
-            scale = max(width / img_width, height / img_height)
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
+            # Apply bucketing strategy
+            if bucket_strategy == "resize":
+                # Direct resize (may distort aspect ratio)
+                image = image.resize((width, height), Image.LANCZOS)
 
-            image = image.resize((new_width, new_height), Image.LANCZOS)
-
-            # Center crop
-            left = (new_width - width) // 2
-            top = (new_height - height) // 2
-            crop_left, crop_top = left, top
-            image = image.crop((left, top, left + width, top + height))
-
-        elif bucket_strategy == "random_crop":
-            # Random crop at original resolution (no resize)
-            # Enables model to learn inference on partial regions of large images (for tiled inference)
-            import random
-
-            # If image is smaller than target, resize it first
-            if img_width < width or img_height < height:
+            elif bucket_strategy == "crop":
+                # Aspect ratio preserving resize + center crop (default)
                 scale = max(width / img_width, height / img_height)
                 new_width = int(img_width * scale)
                 new_height = int(img_height * scale)
+
                 image = image.resize((new_width, new_height), Image.LANCZOS)
-                img_width, img_height = new_width, new_height
 
-            # Random crop from original (or upscaled) resolution
-            max_left = img_width - width
-            max_top = img_height - height
-            left = random.randint(0, max_left) if max_left > 0 else 0
-            top = random.randint(0, max_top) if max_top > 0 else 0
-            crop_left, crop_top = left, top
-            image = image.crop((left, top, left + width, top + height))
+                # Center crop
+                left = (new_width - width) // 2
+                top = (new_height - height) // 2
+                crop_left, crop_top = left, top
+                image = image.crop((left, top, left + width, top + height))
 
-        else:
-            raise ValueError(f"Unknown bucket_strategy: {bucket_strategy}. Must be 'resize', 'crop', or 'random_crop'")
+            elif bucket_strategy == "random_crop":
+                # Random crop at original resolution (no resize)
+                # Enables model to learn inference on partial regions of large images (for tiled inference)
+                import random
+
+                # If image is smaller than target, resize it first
+                if img_width < width or img_height < height:
+                    scale = max(width / img_width, height / img_height)
+                    new_width = int(img_width * scale)
+                    new_height = int(img_height * scale)
+                    image = image.resize((new_width, new_height), Image.LANCZOS)
+                    img_width, img_height = new_width, new_height
+
+                # Random crop from original (or upscaled) resolution
+                max_left = img_width - width
+                max_top = img_height - height
+                left = random.randint(0, max_left) if max_left > 0 else 0
+                top = random.randint(0, max_top) if max_top > 0 else 0
+                crop_left, crop_top = left, top
+                image = image.crop((left, top, left + width, top + height))
+
+            else:
+                raise ValueError(f"Unknown bucket_strategy: {bucket_strategy}. Must be 'resize', 'crop', or 'random_crop'")
 
         if image.size != (width, height):
             print(f"[encode_image] ERROR: Final image size {image.size} != target {(width, height)}")
@@ -4345,7 +4379,11 @@ class BaseTrainer(ABC):
         # SDXL micro-conditioning for this encode: (orig_h, orig_w, crop_top, crop_left,
         # target_h, target_w). Read by the batch loop right after encode_image() and
         # carried per-item into the SDXL time_ids (replacing the hardcoded values).
-        self._last_micro_cond = (orig_h, orig_w, crop_top, crop_left, height, width)
+        # crop_box path uses the planner-provided override.
+        self._last_micro_cond = (
+            _microcond_override if _microcond_override is not None
+            else (orig_h, orig_w, crop_top, crop_left, height, width)
+        )
 
         # Convert to tensor and normalize
         image_array = np.array(image).astype(np.float32) / 255.0
@@ -8816,6 +8854,33 @@ class BaseTrainer(ABC):
             bucket_manager = None
             print(f"{self.log_prefix} Bucketing disabled")
 
+        # Epoch-dynamic crop planner (SDXL only). Re-buckets each item per epoch from a
+        # constrained random crop (scale/crop extrapolation). Requires bucketing + SDXL.
+        # When disabled (default), the code path below is unchanged.
+        self.crop_planner = None
+        if bool(self.config.get("crop_augment_enable", False)):
+            if not self.is_sdxl:
+                print(f"{self.log_prefix} crop_augment_enable ignored: only supported for SDXL")
+            elif bucket_manager is None:
+                print(f"{self.log_prefix} crop_augment_enable ignored: requires enable_bucketing")
+            else:
+                from core.training.crop_planner import CropPlanner
+                _cfg = dict(self.config)
+                if int(_cfg.get("crop_plan_seed", 0) or 0) == 0:
+                    _cfg["crop_plan_seed"] = int(self.config.get("seed", 0) or 0)
+                self.crop_planner = CropPlanner(
+                    config=_cfg,
+                    base_resolutions=bucket_manager.base_resolutions,
+                    multi_resolution_mode=bucket_manager.multi_resolution_mode,
+                    divisibility=8,
+                )
+                print(f"{self.log_prefix} Epoch-dynamic crop augmentation ENABLED "
+                      f"(full_prob={self.crop_planner.full_image_prob}, "
+                      f"min_area={self.crop_planner.min_area_ratio}, "
+                      f"min_short={self.crop_planner.min_short_side_px}, "
+                      f"scale={self.crop_planner.scale_min}-{self.crop_planner.scale_max}, "
+                      f"seed={self.crop_planner.seed})")
+
         # Validate MNT parameters
         if multi_noise_timesteps < 1:
             raise ValueError(f"multi_noise_timesteps must be >= 1, got {multi_noise_timesteps}")
@@ -8901,6 +8966,33 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Batches per epoch: {batches_per_epoch}")
         print(f"{self.log_prefix} Steps per epoch (with MNT): {steps_per_epoch}")
         print(f"{self.log_prefix} Total training steps: {actual_total_steps}")
+
+        # Crop augmentation: batch count varies per epoch (per-epoch re-bucketing), so
+        # compute exact per-epoch step offsets up front for accurate total_steps and
+        # resume epoch lookup. Header sizes are read once (cached for the encode pass).
+        self._crop_step_offsets = None
+        self._crop_plan_fingerprint = None
+        if self.crop_planner is not None:
+            _plan_items = []
+            for dataset in datasets:
+                for item in dataset.items:
+                    try:
+                        ow, oh = self._get_original_size_for_item(item)
+                    except Exception:
+                        ow, oh = item.get("width", 1024), item.get("height", 1024)
+                    _plan_items.append((item["image_path"], ow, oh))
+            self.crop_planner.precompute(_plan_items, num_epochs, batch_size)
+            self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
+            self._crop_plan_fingerprint = self.crop_planner.fingerprint(
+                dataset_fingerprint=getattr(self, "_dataset_fingerprint", None),
+                num_epochs=num_epochs,
+            )
+            _crop_total = self._crop_step_offsets[-1]
+            print(f"{self.log_prefix} [crop] Exact per-epoch step accounting: "
+                  f"total_steps {actual_total_steps} -> {_crop_total} "
+                  f"(batches/epoch: {[self.crop_planner.batches_per_epoch(e) for e in range(min(num_epochs, 8))]}"
+                  f"{'...' if num_epochs > 8 else ''})")
+            actual_total_steps = _crop_total
 
         # Update DB with calculated total_steps (for resume correctness)
         if update_total_steps_callback is not None:
@@ -8990,6 +9082,15 @@ class BaseTrainer(ABC):
             latent_encoding_mode = "onthefly_gpu"
         # Latent-space MiniT2I uses small VAE latents -> the normal disk cache is fine
         # (no override; behaves like SD/Z-Image).
+
+        # Crop augmentation requires per-epoch re-encoding with a per-(item,epoch) crop,
+        # which the disk/swap latent caches (keyed by image_path + bucket size) cannot
+        # represent. Force on-the-fly GPU encoding.
+        if self.crop_planner is not None and latent_encoding_mode != "onthefly_gpu":
+            print(f"{self.log_prefix} Crop augmentation: forcing latent_encoding_mode="
+                  f"'onthefly_gpu' (was '{latent_encoding_mode}') — disk/swap latent caches "
+                  f"cannot represent per-epoch crops")
+            latent_encoding_mode = "onthefly_gpu"
 
         # Setup latent caches (mode-dependent)
         latent_caches = None
@@ -9095,8 +9196,12 @@ class BaseTrainer(ABC):
                         if hasattr(self, '_restore_relora_state'):
                             self._restore_relora_state(resume_training_state)
                     else:
-                        # No training state file, fall back to epoch-level resume
-                        start_epoch = global_step // steps_per_epoch
+                        # No training state file, fall back to epoch-level resume.
+                        # Crop augmentation has variable per-epoch step counts -> map via offsets.
+                        if self._crop_step_offsets is not None and self.crop_planner is not None:
+                            start_epoch = self.crop_planner.epoch_for_step(global_step, multi_noise_timesteps)
+                        else:
+                            start_epoch = global_step // steps_per_epoch
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
                     # Fast-forward lr_scheduler to match the checkpoint
@@ -9173,8 +9278,12 @@ class BaseTrainer(ABC):
                         if hasattr(self, '_restore_relora_state'):
                             self._restore_relora_state(resume_training_state)
                     else:
-                        # No training state file, fall back to epoch-level resume
-                        start_epoch = global_step // steps_per_epoch
+                        # No training state file, fall back to epoch-level resume.
+                        # Crop augmentation has variable per-epoch step counts -> map via offsets.
+                        if self._crop_step_offsets is not None and self.crop_planner is not None:
+                            start_epoch = self.crop_planner.epoch_for_step(global_step, multi_noise_timesteps)
+                        else:
+                            start_epoch = global_step // steps_per_epoch
                         print(f"{self.log_prefix} Resuming from step {global_step}, epoch {start_epoch + 1}")
 
                     # Fast-forward lr_scheduler to match the checkpoint
@@ -9563,6 +9672,13 @@ class BaseTrainer(ABC):
                     saved_fingerprint = resume_training_state.get('dataset_fingerprint')
                     dataset_changed = self._check_dataset_fingerprint_changed(saved_fingerprint, self._dataset_fingerprint)
 
+                    # Crop-plan change also invalidates the saved shuffle/crop reproducibility.
+                    saved_crop_fp = resume_training_state.get('crop_plan_fingerprint')
+                    crop_changed = (saved_crop_fp != getattr(self, '_crop_plan_fingerprint', None))
+                    if crop_changed and not dataset_changed:
+                        print(f"{self.log_prefix} WARNING: Crop augmentation params changed since checkpoint!")
+                    dataset_changed = dataset_changed or crop_changed
+
                     if dataset_changed:
                         print(f"{self.log_prefix} WARNING: Dataset has changed since checkpoint was saved!")
                         print(f"{self.log_prefix} Saved shuffle state is invalid - using fresh random state")
@@ -9593,6 +9709,51 @@ class BaseTrainer(ABC):
                     except Exception as e:
                         print(f"{self.log_prefix} WARNING: Failed to load priority training config: {e}")
                         print(f"{self.log_prefix} Continuing with normal training")
+
+                # Epoch-dynamic crop re-bucketing (SDXL crop augmentation). Re-populate
+                # bucket_manager.buckets for THIS epoch from per-(item,epoch) crop specs,
+                # and attach item["_crop_spec"] (read by the encode path). Skipped for
+                # priority training (the priority path builds its own bucket managers);
+                # in that case crop augmentation degrades to full-image bucketing.
+                if self.crop_planner is not None and bucket_manager is not None:
+                    if priority_config and priority_config.entries:
+                        if epoch == start_epoch:
+                            print(f"{self.log_prefix} WARNING: crop augmentation is not applied "
+                                  f"together with priority training (using full-image bucketing)")
+                    else:
+                        from core.training.bucketing import BucketResolution
+                        bucket_manager.buckets = {}
+                        _crop_count = 0
+                        for item, dataset in all_items:
+                            image_path = item["image_path"]
+                            try:
+                                ow, oh = self._get_original_size_for_item(item)
+                            except Exception:
+                                ow, oh = item.get("width", 1024), item.get("height", 1024)
+                            spec = self.crop_planner.spec_for(epoch, image_path, ow, oh)
+                            reference_images = item.get("reference_images", [])
+                            has_reference = len(reference_images) > 0
+                            _, image_info = bucket_manager.assign_image_to_bucket(
+                                image_path=image_path,
+                                width=spec.bucket_w,
+                                height=spec.bucket_h,
+                                caption=item.get("caption", ""),
+                                dataset_unique_id=getattr(dataset, "unique_id", None),
+                                has_reference=has_reference,
+                                reference_images=reference_images if reference_images else None,
+                                forced_bucket=BucketResolution(spec.bucket_w, spec.bucket_h),
+                            )
+                            if item.get("_ve_reconstruction_mode"):
+                                image_info["_ve_reconstruction_mode"] = True
+                            image_info["_crop_spec"] = spec
+                            image_info["width"] = spec.bucket_w
+                            image_info["height"] = spec.bucket_h
+                            if not spec.is_full:
+                                _crop_count += 1
+                        print(f"{self.log_prefix} [crop] Epoch {epoch + 1}: re-bucketed "
+                              f"{len(all_items)} items ({_crop_count} cropped, "
+                              f"{len(all_items) - _crop_count} full); "
+                              f"{len(bucket_manager.get_bucket_counts())} buckets")
 
                 # Create batches
                 if bucket_manager:
@@ -9904,8 +10065,11 @@ class BaseTrainer(ABC):
 
                 # Update total_steps with actual batch count (first epoch only)
                 # This corrects for bucketing overhead (each bucket rounds up batch count)
-                # Works for both new training and resumed training
-                if epoch == start_epoch:
+                # Works for both new training and resumed training.
+                # Skip when crop augmentation is active: batch count varies per epoch, so
+                # the exact total comes from CropPlanner.step_offsets (set above), not from
+                # the first epoch's count.
+                if epoch == start_epoch and self._crop_step_offsets is None:
                     # Calculate actual steps per epoch (before mid-epoch slicing)
                     if bucket_manager:
                         # For bucketing: use the full batch count before resume slicing.
@@ -10316,11 +10480,17 @@ class BaseTrainer(ABC):
                                 else:
                                     image = Image.open(item["image_path"])
                                 image.load()  # Force load to detect truncated images
+                                # Crop augmentation: use the per-(item,epoch) crop_box +
+                                # kohya time_ids from the planner (pixel <-> time_ids
+                                # consistency for both full and cropped cases).
+                                _spec = item.get("_crop_spec")
                                 latent = self.encode_image(
                                     image=image,
                                     target_width=width,
                                     target_height=height,
-                                    bucket_strategy=bucket_strategy
+                                    bucket_strategy=bucket_strategy,
+                                    crop_box=_spec.crop_box if _spec is not None else None,
+                                    time_ids_override=_spec.time_ids if _spec is not None else None,
                                 )
                                 latents_list.append(latent)
                                 if _danb_b is not None:

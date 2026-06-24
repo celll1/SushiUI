@@ -729,6 +729,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       energy_normalize_by_pixels: params.energy_normalize_by_pixels,
       noise_process: params.noise_process,
       prediction_target: params.prediction_target,
+      sdxl_vae_type: params.sdxl_vae_type,
       strict_validation: params.strict_validation,
       controlnet_type: trainingMethod === "controlnet" ? params.controlnet_type : undefined,
       controlnet_pretrained_path: trainingMethod === "controlnet" && params.controlnet_pretrained_path ? params.controlnet_pretrained_path : undefined,
@@ -931,7 +932,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
       "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
       "energy_normalize_by_pixels",
-      "noise_process", "prediction_target", "strict_validation",
+      "noise_process", "prediction_target", "strict_validation", "sdxl_vae_type",
       "controlnet_type", "controlnet_init_from_unet",
       "lllite_conditioning_channels", "lllite_rank",
       "condition_cache_mode",
@@ -3073,6 +3074,25 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     </select>
                     <p className="text-xs text-gray-500 mt-1">
                       What the model predicts during training. Auto-detect uses model&apos;s original configuration.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      SDXL VAE Migration (SDXL only)
+                    </label>
+                    <select
+                      value={params.sdxl_vae_type ?? "none"}
+                      onChange={(e) => updateParam("sdxl_vae_type", e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="none">None (standard SDXL VAE, 4ch)</option>
+                      <option value="flux1">FLUX.1 VAE (16ch)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Swaps the VAE and resizes the U-Net conv_in/out to the new latent
+                      channel count (body kept; in/out re-adapt during training). Produces a
+                      non-standard &quot;sdxl-custom&quot; checkpoint.
                     </p>
                   </div>
 

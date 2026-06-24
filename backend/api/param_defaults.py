@@ -223,6 +223,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # target_size) from the real source image + bucketing/crop, instead of the legacy
     # all-equal-to-latent-size, crop=(0,0). Default on; off restores legacy behavior.
     "sdxl_micro_conditioning": True,
+    # SDXL high-spec VAE migration: swap the VAE + resize U-Net conv_in/out to the new
+    # latent channel count. "none"/"sdxl" = standard 4ch (unchanged). e.g. "flux1" (16ch).
+    "sdxl_vae_type": "none",
     # Vision encoder
     "use_reference_images": False,
     "vision_encoder_path": None,

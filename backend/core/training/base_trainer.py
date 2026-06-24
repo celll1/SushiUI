@@ -2465,6 +2465,28 @@ class BaseTrainer(ABC):
         # Store SDXL flag
         self.is_sdxl = is_sdxl_model
 
+        # SDXL high-spec VAE migration (optional): swap the VAE and resize the U-Net
+        # conv_in/conv_out to the new latent channel count (channel-partial copy; the
+        # transformer body is kept and adapts during training). "none"/"sdxl" keeps the
+        # standard 4ch VAE so existing SDXL runs are unchanged.
+        self.sdxl_vae_type = "sdxl"
+        if self.is_sdxl:
+            _svt = str(self.config.get("sdxl_vae_type", "") or "").strip().lower()
+            if _svt and _svt not in ("none", "sdxl"):
+                from core.models.sdxl_custom_arch import (
+                    load_alt_vae, resize_unet_in_out, vae_latent_channels,
+                )
+                C = vae_latent_channels(_svt)
+                print(f"{self.log_prefix} [SDXL custom] Migrating to '{_svt}' VAE ({C}ch) "
+                      f"+ resizing U-Net conv_in/out")
+                self.vae = load_alt_vae(_svt, torch_dtype=self.vae_dtype)
+                resize_unet_in_out(self.unet, C)
+                self.sdxl_vae_type = _svt
+        try:
+            self.vae_latent_channels = int(self.vae.config.latent_channels)
+        except Exception:
+            self.vae_latent_channels = 4
+
         # No transformer for SD/SDXL
         self.transformer = None
         self.transformer_original = None
@@ -4382,7 +4404,11 @@ class BaseTrainer(ABC):
                     print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
                     print(f"  scaling_factor: {vae_model.config.scaling_factor}")
 
-                latents = latents * vae_model.config.scaling_factor
+                # Normalize via (sample - shift) * scale so a swapped high-spec VAE with
+                # a shift_factor (e.g. FLUX.1 0.1159) is handled; standard SDXL has
+                # shift=0 so this is identical to the previous (* scaling_factor).
+                from core.models.minit2i.minit2i_vae import normalize_latent as _normalize_latent
+                latents = _normalize_latent(latents, vae_model)
 
                 # DEBUG: Log scaled latents
                 if debug_preprocessing:

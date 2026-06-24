@@ -69,6 +69,7 @@ def _build_train_section(
         "prediction_target": p.get("prediction_target", "auto"),
         "strict_validation": p.get("strict_validation", False),
         "sdxl_micro_conditioning": p.get("sdxl_micro_conditioning", True),
+        "sdxl_vae_type": p.get("sdxl_vae_type", "none"),
         # Optimizer
         "optimizer": p.get("optimizer", "adamw8bit"),
         "lr": lr,

@@ -384,13 +384,20 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             for key, value in converted_unet.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save VAE weights: convert diffusers -> CompVis/LDM format
-        if trainer.vae is not None:
+        # Save VAE weights: convert diffusers -> CompVis/LDM format.
+        # Custom high-spec VAE (e.g. FLUX.1 16ch) is NOT embedded — it is referenced by
+        # registry (metadata sushi.vae_type) and reloaded on load; the SDXL VAE converter
+        # assumes the 4ch SDXL VAE structure and would mishandle a different VAE.
+        _custom_vae = str(getattr(trainer, "sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
+        if trainer.vae is not None and not _custom_vae:
             print(f"[SDXLFullParameterAdapter] Collecting VAE weights (diffusers -> CompVis)...")
             vae_state = trainer.vae.state_dict()
             converted_vae = convert_vae_state_dict_to_original(vae_state)
             for key, value in converted_vae.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
+        elif _custom_vae:
+            print(f"[SDXLFullParameterAdapter] Custom VAE ({trainer.sdxl_vae_type}) not embedded "
+                  f"(referenced by metadata sushi.vae_type, reloaded on load).")
 
         # Save Text Encoder 1 weights (CLIP ViT-L, no conversion needed)
         if trainer.train_text_encoder and trainer.text_encoder is not None:

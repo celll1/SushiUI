@@ -1266,6 +1266,25 @@ class ModelLoader:
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
+        # Custom SDXL architecture (SushiUI): non-standard latent VAE (e.g. FLUX.1 16ch).
+        # Read sushi.vae_type / sushi.in_channels so the U-Net conv_in/out and the VAE
+        # are reconstructed after load. Absent => standard SDXL (unchanged path).
+        custom_vae_type = None
+        custom_in_channels = None
+        if model_type == "sdxl":
+            try:
+                from safetensors import safe_open
+                with safe_open(file_path, framework="pt") as _f:
+                    _md = _f.metadata() or {}
+                _vt = (_md.get("sushi.vae_type") or "").strip().lower()
+                if _vt and _vt not in ("none", "sdxl"):
+                    custom_vae_type = _vt
+                    custom_in_channels = int(_md.get("sushi.in_channels", "0") or 0) or None
+                    print(f"[ModelLoader] Custom SDXL arch: vae_type={custom_vae_type}, "
+                          f"in_channels={custom_in_channels}")
+            except Exception as _e:
+                print(f"[ModelLoader] custom-arch metadata read failed (standard load): {_e}")
+
         # Check if VAE is embedded
         print(f"[ModelLoader] Checking if model has embedded VAE...")
         has_vae = ModelLoader.has_embedded_vae(file_path)
@@ -1273,7 +1292,13 @@ class ModelLoader:
 
         # Load external VAE only if not embedded
         external_vae = None
-        if not has_vae:
+        if custom_vae_type:
+            # Custom high-spec VAE is registry-referenced (not embedded); load it here.
+            from core.models.sdxl_custom_arch import load_alt_vae
+            print(f"[ModelLoader] Loading custom registry VAE: {custom_vae_type}")
+            external_vae = load_alt_vae(custom_vae_type, torch_dtype=torch_dtype)
+            has_vae = False
+        elif not has_vae:
             if model_type == "sdxl":
                 vae_repo = "madebyollin/sdxl-vae-fp16-fix"
             else:  # SD1.5
@@ -1302,6 +1327,7 @@ class ModelLoader:
                 if external_vae is not None:
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
+                        num_in_channels=custom_in_channels,
                         torch_dtype=torch_dtype,
                         use_safetensors=True,
                         vae=external_vae,
@@ -1310,6 +1336,7 @@ class ModelLoader:
                     # Use embedded VAE (don't pass vae parameter)
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
+                        num_in_channels=custom_in_channels,
                         torch_dtype=torch_dtype,
                         use_safetensors=True,
                     )
@@ -1327,6 +1354,7 @@ class ModelLoader:
                 if external_vae is not None:
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
+                        num_in_channels=custom_in_channels,
                         torch_dtype=torch.float32,
                         use_safetensors=True,
                         vae=external_vae,
@@ -1335,6 +1363,7 @@ class ModelLoader:
                     # Use embedded VAE (don't pass vae parameter)
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
+                        num_in_channels=custom_in_channels,
                         torch_dtype=torch.float32,
                         use_safetensors=True,
                     )
@@ -1344,6 +1373,24 @@ class ModelLoader:
                     torch_dtype=torch.float32,
                     use_safetensors=True,
                 )
+
+        # Custom SDXL arch: ensure conv_in/conv_out match the custom latent channels and
+        # carry the trained weights (from_single_file overrides in_channels but not
+        # out_channels). num_in_channels above loaded conv_in; resize fixes conv_out, then
+        # both convs are assigned directly from the file for correctness.
+        if custom_vae_type and custom_in_channels and hasattr(pipeline, "unet"):
+            try:
+                from core.models.sdxl_custom_arch import (
+                    resize_unet_in_out, load_custom_convs_from_single_file,
+                )
+                resize_unet_in_out(pipeline.unet, custom_in_channels)
+                load_custom_convs_from_single_file(pipeline.unet, file_path)
+                print(f"[ModelLoader] Custom SDXL reconstructed: {custom_in_channels}ch latents "
+                      f"({custom_vae_type} VAE)")
+            except Exception as _re:
+                print(f"[ModelLoader] ERROR reconstructing custom SDXL: {_re}")
+                import traceback
+                traceback.print_exc()
 
         # Configure scheduler for v-prediction if detected
         if is_v_prediction:

@@ -1095,7 +1095,8 @@ def custom_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
-    latents = latents / pipeline.vae.config.scaling_factor
+    _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
+    latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
@@ -1804,7 +1805,8 @@ def custom_img2img_sampling_loop(
     log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
-    latents = latents / pipeline.vae.config.scaling_factor
+    _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
+    latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
@@ -2575,7 +2577,8 @@ def custom_inpaint_sampling_loop(
     log_device_status("Ready for VAE decode (inpaint)", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
-    latents = latents / pipeline.vae.config.scaling_factor
+    _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
+    latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():

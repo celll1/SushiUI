@@ -2461,6 +2461,71 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 </div>
               )}
             </div>
+
+            {/* SDXL micro-conditioning: original_size override (collapsible, below Width/Height).
+                Sets original_size in SDXL time_ids separately from the output size.
+                Absolute = explicit W/H (both > 0); Scale = output size × scale. */}
+            <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3">
+              <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+                Original Size (SDXL micro-conditioning)
+              </summary>
+              <div className="mt-3 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-gray-400">Source</span>
+                  <div className="flex gap-1">
+                    <Button
+                      onClick={() => setParams({ ...params, original_size_w: params.width, original_size_h: params.height })}
+                      variant={(params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0 ? "primary" : "secondary"}
+                      size="sm"
+                      className="text-xs px-2 py-0.5"
+                    >
+                      Absolute
+                    </Button>
+                    <Button
+                      onClick={() => setParams({ ...params, original_size_w: 0, original_size_h: 0 })}
+                      variant={!((params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0) ? "primary" : "secondary"}
+                      size="sm"
+                      className="text-xs px-2 py-0.5"
+                    >
+                      Scale
+                    </Button>
+                  </div>
+                </div>
+                {(params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Slider
+                      label="Original Width"
+                      min={64}
+                      max={4096}
+                      step={resolutionStep}
+                      value={params.original_size_w || params.width}
+                      onChange={(e) => setParams({ ...params, original_size_w: parseInt(e.target.value) })}
+                    />
+                    <Slider
+                      label="Original Height"
+                      min={64}
+                      max={4096}
+                      step={resolutionStep}
+                      value={params.original_size_h || params.height}
+                      onChange={(e) => setParams({ ...params, original_size_h: parseInt(e.target.value) })}
+                    />
+                  </div>
+                ) : (
+                  <Slider
+                    label={`Scale (${Math.round(params.width * (params.original_size_scale ?? 1.0))}x${Math.round(params.height * (params.original_size_scale ?? 1.0))})`}
+                    min={0.25}
+                    max={4.0}
+                    step={0.05}
+                    value={params.original_size_scale ?? 1.0}
+                    onChange={(e) => setParams({ ...params, original_size_scale: parseFloat(e.target.value) })}
+                  />
+                )}
+                <p className="text-xs text-gray-500">
+                  SDXL only. Sets original_size in time_ids separately from the output size. Absolute uses explicit W/H; Scale uses output size × scale.
+                </p>
+              </div>
+            </details>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Sampler"
@@ -2624,36 +2689,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 )}
               </>
             )}
-
-            {/* SDXL micro-conditioning: original_size override (collapsible). */}
-            <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3">
-              <summary className="text-xs text-gray-300 cursor-pointer select-none">
-                Original Size (SDXL micro-conditioning)
-              </summary>
-              <div className="mt-2 grid grid-cols-3 gap-2">
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Width (0=auto)</label>
-                  <input type="number" min={0} value={params.original_size_w ?? 0}
-                    onChange={(e) => setParams({ ...params, original_size_w: parseInt(e.target.value) || 0 })}
-                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Height (0=auto)</label>
-                  <input type="number" min={0} value={params.original_size_h ?? 0}
-                    onChange={(e) => setParams({ ...params, original_size_h: parseInt(e.target.value) || 0 })}
-                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">Scale</label>
-                  <input type="number" min={0} step={0.05} value={params.original_size_scale ?? 1.0}
-                    onChange={(e) => setParams({ ...params, original_size_scale: parseFloat(e.target.value) || 1.0 })}
-                    className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
-                </div>
-              </div>
-              <p className="text-xs text-gray-500 mt-1">
-                SDXL only. original_size for time_ids: explicit W/H, else output size × scale.
-              </p>
-            </details>
 
             {/* CPU Text Encoding — applies to all model types */}
             <label className="flex items-center gap-2 cursor-pointer">

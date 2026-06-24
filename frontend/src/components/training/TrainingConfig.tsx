@@ -3150,6 +3150,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <option value="none">None (standard CLIP)</option>
                       <option value="siglip2_text">SigLIP2 text tower</option>
                       <option value="flan_t5">FLAN-T5</option>
+                      <option value="qwen3">Qwen3</option>
                     </select>
                     {params.sdxl_te_type && params.sdxl_te_type !== "none" ? (
                       <div className="mt-2 grid grid-cols-2 gap-2">

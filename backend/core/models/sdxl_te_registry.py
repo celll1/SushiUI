@@ -126,10 +126,29 @@ def load_sdxl_te(
         print(f"[SDXL-TE] Loaded FLAN-T5 encoder: {repo} (hidden={hidden_dim}, max_len={max_len})")
         return encoder, tokenizer, hidden_dim
 
-    # qwen3: added in the next step.
+    if kind == "qwen":
+        # Qwen3 decoder-only LLM as a text encoder. RoPE (no learned absolute pos-emb):
+        # any length, no pos-emb extension; max_len controls tokenization. Causal
+        # attention is kept (LLM-as-encoder); pooled = masked mean, hidden = penultimate.
+        from transformers import AutoModel
+        try:
+            encoder = AutoModel.from_pretrained(repo, dtype=torch.float32, trust_remote_code=True)
+        except TypeError:
+            encoder = AutoModel.from_pretrained(repo, dtype=torch.float32)
+        tokenizer = AutoTokenizer.from_pretrained(repo, trust_remote_code=True)
+        if getattr(tokenizer, "pad_token", None) is None and getattr(tokenizer, "eos_token", None) is not None:
+            tokenizer.pad_token = tokenizer.eos_token
+        try:
+            encoder.config.output_hidden_states = True
+        except Exception:
+            pass
+        hidden_dim = int(encoder.config.hidden_size)
+        encoder = encoder.to(device=device, dtype=dtype).eval()
+        print(f"[SDXL-TE] Loaded Qwen3 encoder: {repo} (hidden={hidden_dim}, max_len={max_len})")
+        return encoder, tokenizer, hidden_dim
+
     raise NotImplementedError(
-        f"sdxl_te_type '{te_type}' (kind={kind}) is registered but not yet implemented; "
-        f"siglip2_text and flan_t5 are available."
+        f"sdxl_te_type '{te_type}' (kind={kind}) is registered but not yet implemented."
     )
 
 

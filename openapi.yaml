@@ -45,6 +45,27 @@ tags:
     description: Dataset management, scanning, and structure detection
 
 paths:
+  /schema/timestep-defaults-by-arch:
+    get:
+      summary: Per-architecture default timestep_sampling configs
+      description: |
+        Returns a map of model architecture -> default `timestep_sampling` config.
+        The frontend applies the selected model's entry when the base model changes
+        (user edits win). Most architectures default to uniform; only MiniT2I differs
+        (logit_normal mean=-0.8/std=0.8). The `_default` key is the global fallback.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Map of architecture name to timestep sampling config
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/TimestepSamplingConfig'
+              example:
+                _default: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
+                minit2i: { distribution: logit_normal, mean: -0.8, std: 0.8, min_timestep: 0.0, max_timestep: 1.0 }
   /generate/txt2img:
     post:
       tags: [generation]
@@ -1116,6 +1137,59 @@ components:
       bearerFormat: JWT
 
   schemas:
+    TimestepSamplingConfig:
+      type: object
+      description: |
+        Training timestep sampling distribution. Drawn once per step by the shared
+        TimestepSampler. The sampler emits t in [0,1]; each model interprets the
+        convention (e.g. MiniT2I uses t=1=data, flow models use t=1=noise), so the
+        sign/meaning of `mean` is architecture-dependent.
+      properties:
+        distribution:
+          type: string
+          enum: [uniform, normal, logit_normal, beta, custom]
+          default: uniform
+          description: 'Sampling distribution. "logit_normal" = sigmoid(N(mean,std)) (FLUX/SD3 style).'
+          example: logit_normal
+        min_timestep:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+          example: 0.0
+        max_timestep:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 1.0
+          example: 1.0
+        mean:
+          type: number
+          description: Mean of the underlying normal (normal / logit_normal only).
+          example: -0.8
+        std:
+          type: number
+          description: Std of the underlying normal (normal / logit_normal only).
+          example: 0.8
+        alpha:
+          type: number
+          description: Beta distribution alpha (beta only).
+          example: 2.0
+        beta:
+          type: number
+          description: Beta distribution beta (beta only).
+          example: 2.0
+        custom_weights:
+          type: array
+          items:
+            type: number
+          description: Per-bin weights (custom distribution only).
+      example:
+        distribution: logit_normal
+        mean: -0.8
+        std: 0.8
+        min_timestep: 0.0
+        max_timestep: 1.0
     GenerationParams:
       type: object
       required:

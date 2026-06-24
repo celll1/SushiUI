@@ -6079,8 +6079,17 @@ class BaseTrainer(ABC):
 
         B = images.shape[0]
 
-        # Timesteps: lognorm schedule (t=1 data, t=0 noise), faithful to reference.
-        t = self.scheduler.sample_train_timesteps(B, self.device, dtype=self.training_dtype)
+        # Timesteps come from the shared, config-driven sampler (drawn once in the
+        # main loop and passed in) so the UI's timestep_sampling controls MiniT2I too.
+        # MiniT2I's convention is t=1 data, t=0 noise; the per-arch default
+        # (param_defaults.TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["minit2i"]) is
+        # logit_normal(mean=-0.8, std=0.8), reproducing the reference lognorm schedule
+        # (low t = noise side). Fall back to the vendored scheduler only if no
+        # timesteps were provided (e.g. a direct unit-test call).
+        if timesteps is not None:
+            t = timesteps.to(device=self.device, dtype=self.training_dtype)
+        else:
+            t = self.scheduler.sample_train_timesteps(B, self.device, dtype=self.training_dtype)
         t_img = t.view(-1, 1, 1, 1)
 
         noise = torch.randn_like(images) * noise_scale
@@ -8628,12 +8637,26 @@ class BaseTrainer(ABC):
         from .timestep_sampler import TimestepSampler
 
         if timestep_sampling_config is None:
-            # Default: uniform [0, 1]
-            timestep_sampling_config = {
-                "distribution": "uniform",
-                "min_timestep": 0.0,
-                "max_timestep": 1.0,
-            }
+            # No explicit config: resolve the per-architecture default (SSOT in
+            # param_defaults). Only MiniT2I differs from uniform; all others use
+            # uniform [0,1]. This keeps non-UI/API callers consistent with the UI.
+            from api.param_defaults import TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
+            arch = (
+                "minit2i" if self.is_minit2i else
+                "zimage" if self.is_zimage else
+                "flux2" if self.is_flux2 else
+                "anima" if self.is_anima else
+                "lens" if self.is_lens else
+                "ideogram4" if self.is_ideogram4 else
+                "_default"
+            )
+            timestep_sampling_config = dict(
+                TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH.get(
+                    arch, TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["_default"]
+                )
+            )
+            print(f"{self.log_prefix} No timestep_sampling supplied; using per-arch "
+                  f"default for '{arch}': {timestep_sampling_config}")
 
         timestep_sampler = TimestepSampler.from_config(timestep_sampling_config)
         print(f"{self.log_prefix} Timestep sampler: {timestep_sampler.__class__.__name__}")

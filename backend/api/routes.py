@@ -40,6 +40,7 @@ from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
+    TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
 )
 from api.generation_utils import (
     process_controlnet_configs,
@@ -189,6 +190,16 @@ async def get_training_defaults():
 async def get_tagger_training_defaults():
     """Return default parameter values for tagger training."""
     return TAGGER_TRAINING_DEFAULTS
+
+@router.get("/schema/timestep-defaults-by-arch")
+async def get_timestep_defaults_by_arch():
+    """Per-architecture default timestep_sampling configs.
+
+    The frontend applies the selected model's entry when the base model changes
+    (user edits still win). Most architectures default to uniform; only MiniT2I
+    differs (logit_normal mean=-0.8/std=0.8). "_default" is the global fallback.
+    """
+    return TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
 
 
 # ---------------------------------------------------------------------------

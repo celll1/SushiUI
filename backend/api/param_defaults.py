@@ -382,6 +382,31 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Per-architecture default timestep_sampling
+# ---------------------------------------------------------------------------
+# The training timestep distribution is drawn once per step by the shared
+# TimestepSampler (core/training/timestep_sampler.py) and is fully user-overridable
+# from the UI. Most models default to uniform [0,1]; only MiniT2I defaults to a
+# logit-normal that reproduces its reference "lognorm" schedule.
+#
+# IMPORTANT — convention: the sampler emits t in [0,1]; each model interprets it.
+# MiniT2I uses t=1 = data / t=0 = noise (inverted vs the flow models that use
+# t=1 = noise). So for MiniT2I, logit_normal(mean=-0.8) concentrates t≈0.31 = the
+# NOISE side (matching MiniT2IFlowMatchScheduler's mu=-0.8/sigma=0.8). Do not copy
+# this sign to t=1=noise models without flipping it.
+#
+# Frontend (TrainingConfig.tsx) fetches this map and applies the selected model's
+# entry when the base model changes (user edits still win); the backend
+# (base_trainer.train) also resolves it when no timestep_sampling is supplied, so
+# non-UI/API callers get the right default too. "_default" is the global fallback.
+TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
+    "_default": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
+    # MiniT2I: t=1=data convention; mean=-0.8 biases toward the noise side.
+    "minit2i": {"distribution": "logit_normal", "mean": -0.8, "std": 0.8,
+                "min_timestep": 0.0, "max_timestep": 1.0},
+}
+
+# ---------------------------------------------------------------------------
 # Tagger Training (TaggerTrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 

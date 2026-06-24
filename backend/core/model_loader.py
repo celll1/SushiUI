@@ -1271,6 +1271,7 @@ class ModelLoader:
         # are reconstructed after load. Absent => standard SDXL (unchanged path).
         custom_vae_type = None
         custom_in_channels = None
+        custom_te = None  # dict(te_type, hidden_layer, max_len, dim, embedded) when custom TE
         if model_type == "sdxl":
             try:
                 from safetensors import safe_open
@@ -1282,6 +1283,16 @@ class ModelLoader:
                     custom_in_channels = int(_md.get("sushi.in_channels", "0") or 0) or None
                     print(f"[ModelLoader] Custom SDXL arch: vae_type={custom_vae_type}, "
                           f"in_channels={custom_in_channels}")
+                _tt = (_md.get("sushi.te_type") or "").strip().lower()
+                if _tt and _tt not in ("none", "clip"):
+                    custom_te = {
+                        "te_type": _tt,
+                        "hidden_layer": int(_md.get("sushi.te_hidden_layer", "-2") or -2),
+                        "max_len": int(_md.get("sushi.te_max_len", "256") or 256),
+                        "dim": int(_md.get("sushi.te_dim", "0") or 0),
+                        "embedded": _md.get("sushi.te_embedded") == "1",
+                    }
+                    print(f"[ModelLoader] Custom SDXL text encoder: {custom_te}")
             except Exception as _e:
                 print(f"[ModelLoader] custom-arch metadata read failed (standard load): {_e}")
 
@@ -1394,6 +1405,43 @@ class ModelLoader:
                       f"({custom_vae_type} VAE)")
             except Exception as _re:
                 print(f"[ModelLoader] ERROR reconstructing custom SDXL: {_re}")
+                import traceback
+                traceback.print_exc()
+
+        # Custom SDXL text encoder: rebuild the swapped encoder + bridge adapters and
+        # attach to the pipeline (the inference encode path uses them in place of CLIP).
+        if custom_te is not None:
+            try:
+                from safetensors import safe_open
+                from core.models.sdxl_te_registry import load_sdxl_te
+                from core.models.sdxl_te_adapter import SDXLTEAdapters
+                encoder, tokenizer, dim = load_sdxl_te(
+                    custom_te["te_type"], dtype=torch_dtype, device=device,
+                    max_len=custom_te["max_len"],
+                )
+                adapters = SDXLTEAdapters(dim).to(device=device, dtype=torch_dtype)
+                with safe_open(file_path, framework="pt") as _f:
+                    keys = list(_f.keys())
+                    ad_sd = {k[len("sushi.te_adapter."):]: _f.get_tensor(k)
+                             for k in keys if k.startswith("sushi.te_adapter.")}
+                    if ad_sd:
+                        adapters.load_state_dict(ad_sd)
+                    if custom_te["embedded"]:
+                        body_sd = {k[len("sushi.te_encoder."):]: _f.get_tensor(k)
+                                   for k in keys if k.startswith("sushi.te_encoder.")}
+                        if body_sd:
+                            encoder.load_state_dict(body_sd, strict=False)
+                            print(f"[ModelLoader] Loaded fine-tuned custom-TE encoder body from file")
+                encoder.eval(); adapters.eval()
+                pipeline._sushi_te = encoder
+                pipeline._sushi_te_tokenizer = tokenizer
+                pipeline._sushi_te_adapters = adapters
+                pipeline._sushi_te_max_len = custom_te["max_len"]
+                pipeline._sushi_te_hidden_layer = custom_te["hidden_layer"]
+                print(f"[ModelLoader] Custom SDXL text encoder attached: {custom_te['te_type']} "
+                      f"(dim={dim}, max_len={custom_te['max_len']})")
+            except Exception as _te:
+                print(f"[ModelLoader] ERROR reconstructing custom SDXL text encoder: {_te}")
                 import traceback
                 traceback.print_exc()
 

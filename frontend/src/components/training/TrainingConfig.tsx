@@ -730,6 +730,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       noise_process: params.noise_process,
       prediction_target: params.prediction_target,
       sdxl_vae_type: params.sdxl_vae_type,
+      sdxl_te_type: params.sdxl_te_type,
+      sdxl_te_hidden_layer: params.sdxl_te_hidden_layer,
+      sdxl_te_max_len: params.sdxl_te_max_len,
+      sdxl_te_train_encoder: params.sdxl_te_train_encoder,
       strict_validation: params.strict_validation,
       controlnet_type: trainingMethod === "controlnet" ? params.controlnet_type : undefined,
       controlnet_pretrained_path: trainingMethod === "controlnet" && params.controlnet_pretrained_path ? params.controlnet_pretrained_path : undefined,
@@ -933,6 +937,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
       "energy_normalize_by_pixels",
       "noise_process", "prediction_target", "strict_validation", "sdxl_vae_type",
+      "sdxl_te_type", "sdxl_te_hidden_layer", "sdxl_te_max_len", "sdxl_te_train_encoder",
       "controlnet_type", "controlnet_init_from_unet",
       "lllite_conditioning_channels", "lllite_rank",
       "condition_cache_mode",
@@ -3093,6 +3098,48 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       Swaps the VAE and resizes the U-Net conv_in/out to the new latent
                       channel count (body kept; in/out re-adapt during training). Produces a
                       non-standard &quot;sdxl-custom&quot; checkpoint.
+                    </p>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">
+                      SDXL Text Encoder swap (SDXL only)
+                    </label>
+                    <select
+                      value={params.sdxl_te_type ?? "none"}
+                      onChange={(e) => updateParam("sdxl_te_type", e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="none">None (standard CLIP)</option>
+                      <option value="siglip2_text">SigLIP2 text tower</option>
+                    </select>
+                    {params.sdxl_te_type && params.sdxl_te_type !== "none" ? (
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Hidden layer (-2=penultimate)</label>
+                          <input type="number" value={params.sdxl_te_hidden_layer ?? -2}
+                            onChange={(e) => updateParam("sdxl_te_hidden_layer", parseInt(e.target.value))}
+                            className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
+                        </div>
+                        <div>
+                          <label className="block text-xs text-gray-400 mb-1">Max token length</label>
+                          <input type="number" min={16} value={params.sdxl_te_max_len ?? 256}
+                            onChange={(e) => updateParam("sdxl_te_max_len", parseInt(e.target.value) || 256)}
+                            className="w-full px-2 py-1 bg-gray-900 border border-gray-700 rounded text-xs" />
+                        </div>
+                        <label className="col-span-2 flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={!!params.sdxl_te_train_encoder}
+                            onChange={(e) => updateParam("sdxl_te_train_encoder", e.target.checked)}
+                            className="w-3.5 h-3.5" />
+                          <span className="text-xs text-gray-300">
+                            Train encoder body too (off = freeze TE, train bridge adapters only)
+                          </span>
+                        </label>
+                      </div>
+                    ) : null}
+                    <p className="text-xs text-gray-500 mt-1">
+                      Replaces CLIP with the selected encoder + trainable adapters bridging to
+                      the U-Net (2048 / 1280). Produces a non-standard &quot;sdxl-custom&quot; checkpoint.
                     </p>
                   </div>
 

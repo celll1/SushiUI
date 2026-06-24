@@ -2876,14 +2876,50 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Successfully loaded optimizer state from {optimizer_file.name}")
                 return True
             except Exception as e:
-                # Fallback: Optimizer configuration changed (e.g., different optimizer type, LR, etc.)
-                print(f"{self.log_prefix} WARNING: Failed to load optimizer state: {e}")
-                print(f"{self.log_prefix} This can happen if:")
-                print(f"{self.log_prefix}   - Optimizer type was changed")
-                print(f"{self.log_prefix}   - Model architecture was changed")
-                print(f"{self.log_prefix}   - Number of trainable parameters changed")
-                print(f"{self.log_prefix} Continuing with fresh optimizer state (momentum/variance will be reset)")
-                return False
+                # The usual cause here is a param-GROUP count change between runs —
+                # specifically adding/removing the REPA projector group (which is
+                # always appended LAST). Rather than reset the WHOLE optimizer
+                # (losing transformer/TE momentum+variance), try a prefix-preserving
+                # partial load: keep the overlapping leading groups' state and only
+                # drop/skip the projector group's state. This makes turning REPA
+                # off (or on) mid-training non-destructive for the model's optimizer.
+                print(f"{self.log_prefix} WARNING: Failed to load optimizer state directly: {e}")
+                try:
+                    cur_sd = self.optimizer.state_dict()
+                    cur_groups = cur_sd.get("param_groups", [])
+                    saved_groups = optimizer_state.get("param_groups", [])
+                    saved_state = optimizer_state.get("state", {})
+                    n = min(len(cur_groups), len(saved_groups))
+                    # Only safe when the overlapping leading groups have identical
+                    # param counts (i.e. the sole difference is a trailing group
+                    # added/removed). Otherwise this is a genuine incompatibility.
+                    prefix_ok = n > 0 and all(
+                        len(cur_groups[i]["params"]) == len(saved_groups[i]["params"])
+                        for i in range(n)
+                    )
+                    if not prefix_ok:
+                        raise RuntimeError("optimizer param groups are not prefix-compatible")
+                    # Number of params in the overlapping prefix (saved 'state' is keyed
+                    # by a flat param index in param_groups order; the trailing group's
+                    # params have the highest indices).
+                    overlap_params = sum(len(cur_groups[i]["params"]) for i in range(n))
+                    filtered_state = {k: v for k, v in saved_state.items() if int(k) < overlap_params}
+                    partial = {"state": filtered_state, "param_groups": cur_groups}
+                    self.optimizer.load_state_dict(partial)
+                    for param_state in self.optimizer.state.values():
+                        for key, value in param_state.items():
+                            if isinstance(value, torch.Tensor) and not value.is_cuda:
+                                param_state[key] = value.to(self.device)
+                    kept = "model groups preserved; REPA projector group reset" if len(cur_groups) < len(saved_groups) \
+                        else "model groups preserved; new (REPA projector) group starts fresh"
+                    print(f"{self.log_prefix} Partial optimizer state load OK ({kept})")
+                    return True
+                except Exception as e2:
+                    print(f"{self.log_prefix} Partial optimizer load not applicable: {e2}")
+                    print(f"{self.log_prefix} This can also happen if the optimizer type or trainable")
+                    print(f"{self.log_prefix} parameters changed. Continuing with fresh optimizer state")
+                    print(f"{self.log_prefix} (momentum/variance will be reset)")
+                    return False
         except Exception as e:
             print(f"{self.log_prefix} ERROR: Failed to load optimizer file: {e}")
             print(f"{self.log_prefix} Continuing with fresh optimizer state")

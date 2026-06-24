@@ -301,7 +301,11 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             trainer.unet.requires_grad_(True)
             trainer.unet.train()
 
-        if trainer.train_text_encoder:
+        # When a custom TE is swapped in, the CLIP encoders are unused (encode routes to
+        # the custom path) — keep them frozen regardless of train_text_encoder so they get
+        # no gradients and are not retrained/saved as dead weight.
+        _custom_te = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
+        if trainer.train_text_encoder and not _custom_te:
             if trainer.text_encoder is not None:
                 trainer.text_encoder.requires_grad_(True)
                 trainer.text_encoder.train()
@@ -344,7 +348,8 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             if unet_params:
                 params.append({"params": unet_params, "lr": trainer.unet_lr})
 
-        if trainer.train_text_encoder:
+        _custom_te = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
+        if trainer.train_text_encoder and not _custom_te:
             if trainer.text_encoder is not None:
                 te1_params = [p for p in trainer.text_encoder.parameters() if p.requires_grad]
                 if te1_params:
@@ -423,8 +428,10 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             print(f"[SDXLFullParameterAdapter] Custom VAE ({trainer.sdxl_vae_type}) not embedded "
                   f"(referenced by metadata sushi.vae_type, reloaded on load).")
 
-        # Save Text Encoder 1 weights (CLIP ViT-L, no conversion needed)
-        if trainer.train_text_encoder and trainer.text_encoder is not None:
+        # Save Text Encoder 1/2 weights (CLIP) — skipped when a custom TE is swapped in
+        # (CLIP is unused dead weight in that checkpoint; the custom TE is saved instead).
+        _custom_te_save = str(getattr(trainer, "sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
+        if trainer.train_text_encoder and not _custom_te_save and trainer.text_encoder is not None:
             print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 1 weights...")
             te1_state = trainer.text_encoder.state_dict()
             converted_te1 = convert_openai_text_enc_to_original(te1_state)
@@ -432,7 +439,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
                 combined_state_dict[f"conditioner.embedders.0.transformer.{key}"] = value.cpu()
 
         # Save Text Encoder 2 weights: convert HF -> OpenCLIP format
-        if trainer.train_text_encoder and trainer.text_encoder_2 is not None:
+        if trainer.train_text_encoder and not _custom_te_save and trainer.text_encoder_2 is not None:
             print(f"[SDXLFullParameterAdapter] Collecting Text Encoder 2 weights (HF -> OpenCLIP)...")
             te2_state = trainer.text_encoder_2.state_dict()
             converted_te2 = convert_openclip_text_enc_to_original(te2_state)

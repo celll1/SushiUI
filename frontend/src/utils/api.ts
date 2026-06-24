@@ -184,6 +184,11 @@ export interface GenerationParams {
   nag_alpha?: number;
   nag_sigma_end?: number;
   nag_negative_prompt?: string;
+  // SDXL micro-conditioning override (inference): original_size for time_ids.
+  // Explicit w/h (0/undefined = auto), else output size * scale. crop stays (0,0).
+  original_size_w?: number;
+  original_size_h?: number;
+  original_size_scale?: number;
   // U-Net Quantization
   unet_quantization?: string | null;
   // Text Encoder Quantization (Z-Image only)
@@ -346,6 +351,12 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // Quantization
   if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
     formData.append("unet_quantization", paramsWithImages.unet_quantization);
+  }
+  // SDXL micro-conditioning original_size override
+  if (paramsWithImages.original_size_w) formData.append("original_size_w", String(paramsWithImages.original_size_w));
+  if (paramsWithImages.original_size_h) formData.append("original_size_h", String(paramsWithImages.original_size_h));
+  if (paramsWithImages.original_size_scale !== undefined && paramsWithImages.original_size_scale !== null) {
+    formData.append("original_size_scale", String(paramsWithImages.original_size_scale));
   }
   if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
     formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);

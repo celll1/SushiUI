@@ -1319,6 +1319,11 @@ class ModelLoader:
                 traceback.print_exc()
                 raise RuntimeError(f"Failed to load external VAE: {e}")
 
+        # Override U-Net in_channels ONLY for a custom-arch SDXL (e.g. 16ch latent). For
+        # standard SDXL custom_in_channels is None and the kwarg must be OMITTED entirely —
+        # passing num_in_channels=None makes diffusers build conv_in with in_channels=None.
+        _sf_kw = {"num_in_channels": custom_in_channels} if custom_in_channels else {}
+
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")
         try:
@@ -1327,7 +1332,7 @@ class ModelLoader:
                 if external_vae is not None:
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
-                        num_in_channels=custom_in_channels,
+                        **_sf_kw,
                         torch_dtype=torch_dtype,
                         use_safetensors=True,
                         vae=external_vae,
@@ -1336,7 +1341,7 @@ class ModelLoader:
                     # Use embedded VAE (don't pass vae parameter)
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
-                        num_in_channels=custom_in_channels,
+                        **_sf_kw,
                         torch_dtype=torch_dtype,
                         use_safetensors=True,
                     )
@@ -1354,7 +1359,7 @@ class ModelLoader:
                 if external_vae is not None:
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
-                        num_in_channels=custom_in_channels,
+                        **_sf_kw,
                         torch_dtype=torch.float32,
                         use_safetensors=True,
                         vae=external_vae,
@@ -1363,7 +1368,7 @@ class ModelLoader:
                     # Use embedded VAE (don't pass vae parameter)
                     pipeline = StableDiffusionXLPipeline.from_single_file(
                         file_path,
-                        num_in_channels=custom_in_channels,
+                        **_sf_kw,
                         torch_dtype=torch.float32,
                         use_safetensors=True,
                     )

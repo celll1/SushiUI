@@ -314,12 +314,16 @@ def _inherit_minit2i_weights(model, source_sd: dict) -> None:
     """In-place: copy compatible weights from a source MiniT2I state_dict into the
     (random-initialized) target model. Same variant required for the body to match.
 
+    - final_layer.linear (output projection): NEVER inherited — always kept at the
+      target's fresh init, even when the source has the same shape. It is the layer
+      that carries the trained output mapping (the monochrome mean-regression
+      collapse); a warm start should transfer the body but relearn this head from
+      scratch. Only the linear is reset; final_layer.norm_final still inherits.
     - name+shape match (body, proj2, embedders, norms): full copy.
-    - img_embedder.proj1 [pca,in,k,k] / final_layer.linear [k^2*c,hidden] (+bias):
-      when patch (kernel k) is unchanged but channel count differs, copy the
-      overlapping channels and keep the rest random (the user's "carry 3ch, init the
-      new ch" case). When patch differs (pixel<->latent), shapes are incompatible →
-      left random.
+    - img_embedder.proj1 [pca,in,k,k]: when patch (kernel k) is unchanged but channel
+      count differs, copy the overlapping channels and keep the rest random (the
+      "carry 3ch, init the new ch" case). When patch differs (pixel<->latent), shapes
+      are incompatible → left random.
     - everything else with no match: left random.
     """
     # Determine source & target patch_size so in/out-layer channel surgery is only
@@ -333,6 +337,11 @@ def _inherit_minit2i_weights(model, source_sd: dict) -> None:
     new_sd = {}
     full, partial, init = [], [], []
     for name, tparam in tgt_sd.items():
+        # Output projection is intentionally never inherited (see docstring): always
+        # keep the target's fresh init so the head relearns from scratch on a warm
+        # start. Matches the manual final_layer reset applied to resume checkpoints.
+        if "final_layer.linear" in name:
+            new_sd[name] = tparam; init.append(name); continue
         sparam = source_sd.get(name)
         if sparam is None:
             new_sd[name] = tparam; init.append(name); continue
@@ -352,12 +361,16 @@ def _inherit_minit2i_weights(model, source_sd: dict) -> None:
 def _channel_partial_copy(name: str, src: "torch.Tensor", tgt: "torch.Tensor",
                           src_patch: int, tgt_patch: int):
     """Return a tensor shaped like tgt with src's overlapping channels copied in,
-    for the channel-dependent in/out layers when ONLY the channel count differs.
-    Requires src_patch == tgt_patch (same token geometry); otherwise the layouts
-    are incompatible (e.g. pixel patch16 <-> latent patch2) and None is returned."""
+    for the input projection (img_embedder.proj1) when ONLY the channel count
+    differs. Requires src_patch == tgt_patch (same token geometry); otherwise the
+    layouts are incompatible (e.g. pixel patch16 <-> latent patch2) and None is
+    returned.
+
+    NOTE: the output projection (final_layer.linear) is handled upstream in
+    _inherit_minit2i_weights — it is always left at fresh init, never partial-copied.
+    """
     if src_patch != tgt_patch or src_patch <= 0:
         return None
-    pp = tgt_patch * tgt_patch  # patch² (spatial layout, identical src/tgt)
 
     # proj1: Conv2d weight [pca, in_ch, k, k] — differ only in in_ch (dim 1).
     if name.endswith("img_embedder.proj1.weight"):
@@ -368,26 +381,6 @@ def _channel_partial_copy(name: str, src: "torch.Tensor", tgt: "torch.Tensor",
         out[:, :n] = src[:, :n].to(out.dtype)
         return out
 
-    # final_layer.linear weight [pp*c, hidden] / bias [pp*c] — differ only in c.
-    # Layout is (pp) outer, c inner (unpatchify reshape ...,p,p,c). Partial-copy c.
-    if name.endswith("final_layer.linear.weight") or name.endswith("final_layer.linear.bias"):
-        is_w = name.endswith(".weight")
-        s_rows, t_rows = src.shape[0], tgt.shape[0]
-        if s_rows % pp != 0 or t_rows % pp != 0:
-            return None
-        c_s, c_t = s_rows // pp, t_rows // pp
-        n = min(c_s, c_t)
-        if is_w:
-            hidden = tgt.shape[1]
-            sv = src.reshape(pp, c_s, hidden)
-            out = tgt.clone().reshape(pp, c_t, hidden)
-            out[:, :n, :] = sv[:, :n, :].to(out.dtype)
-            return out.reshape(t_rows, hidden)
-        else:
-            sv = src.reshape(pp, c_s)
-            out = tgt.clone().reshape(pp, c_t)
-            out[:, :n] = sv[:, :n].to(out.dtype)
-            return out.reshape(t_rows)
     return None
 
 

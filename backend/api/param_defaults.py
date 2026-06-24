@@ -58,6 +58,11 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "use_pinned_memory": False,
     # Vision encoder
     "vision_encoder_path": None,
+    # SDXL micro-conditioning override (inference). original_size for time_ids:
+    # explicit w/h (0 = auto), else output size * scale. crop stays (0,0).
+    "original_size_w": 0,
+    "original_size_h": 0,
+    "original_size_scale": 1.0,
     # img2img / inpaint shared
     "denoising_strength": 0.75,
     "img2img_fix_steps": True,

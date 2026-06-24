@@ -290,6 +290,11 @@ export const fetchTrainingDefaults = async (): Promise<Record<string, unknown>> 
 export const fetchTaggerTrainingDefaults = async (): Promise<Record<string, unknown>> =>
   (await api.get("/schema/tagger-training-defaults")).data;
 
+// Per-architecture default timestep_sampling configs (e.g. { _default: {...}, minit2i: {...} }).
+// The training UI applies the selected model's entry when the base model changes.
+export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Record<string, unknown>>> =>
+  (await api.get("/schema/timestep-defaults-by-arch")).data;
+
 export const generateTxt2Img = async (params: GenerationParams) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;

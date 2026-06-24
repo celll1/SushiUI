@@ -255,7 +255,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   //   4. Add UI input: read `params.x`, write via `updateParam("x", v)`
   //   No changes to getRequestData/applyParamsToState required.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
-  const { trainingDefaults } = useStartup();
+  const { trainingDefaults, timestepDefaultsByArch } = useStartup();
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
@@ -294,6 +294,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // Flag to track if we are in the middle of restoring from YAML
   // When true, optimizer useEffect will NOT reset hyperparameters to defaults
   const restoringFromYAMLRef = useRef(false);
+
+  // Tracks the baseModelPath for which the per-arch default timestep_sampling has
+  // already been applied, so model changes apply the model's default exactly once
+  // while user edits (which don't change baseModelPath) are never clobbered.
+  const lastTimestepModelRef = useRef<string | null>(null);
 
   // Tracks which editRunId has already been restored from YAML.
   // Prevents React StrictMode's double-invoked mount effect from calling
@@ -1092,6 +1097,31 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath]);
+
+  // Apply the per-architecture default timestep_sampling when the base model changes
+  // (e.g. MiniT2I -> logit_normal(-0.8,0.8), most others -> uniform). The per-arch map
+  // is fetched once from the backend (param_defaults SSOT). Applied exactly once per
+  // model so user edits afterward persist; skipped during YAML/edit restore so a loaded
+  // run's own timestep config is preserved (the restored model is recorded so a later
+  // defaults-map load does not overwrite it).
+  useEffect(() => {
+    if (!baseModelPath) return;
+    if (restoringFromYAMLRef.current) { lastTimestepModelRef.current = baseModelPath; return; }
+    if (!timestepDefaultsByArch) return;
+    if (lastTimestepModelRef.current === baseModelPath) return;  // already applied for this model
+    const arch = getModelArchitecture(baseModelPath);
+    const ts = (arch && timestepDefaultsByArch[arch]) || timestepDefaultsByArch["_default"];
+    lastTimestepModelRef.current = baseModelPath;
+    if (!ts) return;
+    setTimestepDistribution((ts.distribution as string) ?? "uniform");
+    setTimestepMin((ts.min_timestep as number) ?? 0.0);
+    setTimestepMax((ts.max_timestep as number) ?? 1.0);
+    setTimestepMean((ts.mean as number) ?? 0.0);
+    setTimestepStd((ts.std as number) ?? 1.0);
+    setTimestepAlpha((ts.alpha as number) ?? 2.0);
+    setTimestepBeta((ts.beta as number) ?? 2.0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseModelPath, timestepDefaultsByArch]);
 
   // Ideogram 4 does not support Full Fine-tune (fp8 base; VRAM-impractical) —
   // fall back to LoRA if a full-FT method was carried over from another model/preset.

@@ -226,6 +226,12 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # SDXL high-spec VAE migration: swap the VAE + resize U-Net conv_in/out to the new
     # latent channel count. "none"/"sdxl" = standard 4ch (unchanged). e.g. "flux1" (16ch).
     "sdxl_vae_type": "none",
+    # SDXL Text Encoder swap: replace CLIP with an alternative encoder + trainable
+    # bridge adapters. "none" = standard CLIP. e.g. "siglip2_text".
+    "sdxl_te_type": "none",
+    "sdxl_te_hidden_layer": -2,      # which TE hidden-states layer to tap (penultimate)
+    "sdxl_te_max_len": 256,          # fixed token length the new TE is padded/truncated to
+    "sdxl_te_train_encoder": False,  # False = freeze TE, train adapters only; True = train both
     # Vision encoder
     "use_reference_images": False,
     "vision_encoder_path": None,

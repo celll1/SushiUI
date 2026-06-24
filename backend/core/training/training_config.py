@@ -68,6 +68,7 @@ def _build_train_section(
         "noise_process": p.get("noise_process", "auto"),
         "prediction_target": p.get("prediction_target", "auto"),
         "strict_validation": p.get("strict_validation", False),
+        "sdxl_micro_conditioning": p.get("sdxl_micro_conditioning", True),
         # Optimizer
         "optimizer": p.get("optimizer", "adamw8bit"),
         "lr": lr,

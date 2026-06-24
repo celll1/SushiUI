@@ -6547,6 +6547,7 @@ class TrainingRunCreateRequest(BaseModel):
     noise_process: str = "auto"  # "auto", "ddpm", "flow"
     prediction_target: str = "auto"  # "auto", "epsilon", "velocity", "sample"
     strict_validation: bool = False  # Abort training if mismatch detected
+    sdxl_micro_conditioning: bool = TRAINING_DEFAULTS["sdxl_micro_conditioning"]
 
     # Reference image conditioning (FLUX.2 only)
     use_reference_images: bool = False  # Enable reference image latent conditioning during training

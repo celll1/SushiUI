@@ -4903,6 +4903,29 @@ class DiffusionPipelineManager:
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
+    def _custom_te_encode(self, pipeline, prompt: str, negative_prompt: str = ""):
+        """Encode prompts with a swapped SDXL text encoder + bridge adapters (inference).
+
+        Returns the SDXL 4-tuple (prompt_embeds[1,L,2048], negative_prompt_embeds,
+        pooled[1,1280], negative_pooled). Fixed-length; emphasis weights / chunking are
+        not applied for custom encoders in this first version.
+        """
+        from core.models.sdxl_te_registry import encode_text
+        enc = pipeline._sushi_te
+        tok = pipeline._sushi_te_tokenizer
+        ad = pipeline._sushi_te_adapters
+        max_len = getattr(pipeline, "_sushi_te_max_len", 256)
+        hidden_layer = getattr(pipeline, "_sushi_te_hidden_layer", -2)
+        ad_dtype = next(ad.parameters()).dtype
+        with torch.no_grad():
+            h, p = encode_text(enc, tok, [prompt or ""], max_len=max_len,
+                               hidden_layer=hidden_layer, device=self.device)
+            nh, np_ = encode_text(enc, tok, [negative_prompt or ""], max_len=max_len,
+                                  hidden_layer=hidden_layer, device=self.device)
+            pe, pp = ad(h.to(ad_dtype), p.to(ad_dtype))
+            ne, npp = ad(nh.to(ad_dtype), np_.to(ad_dtype))
+        return pe, ne, pp, npp
+
     def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None):
         """
         Encode prompts with A1111-style emphasis weights and/or chunking.
@@ -4917,6 +4940,11 @@ class DiffusionPipelineManager:
 
         if pipeline is None:
             return None, None, None, None
+
+        # Custom SDXL text encoder (swapped at train time): bypass CLIP / emphasis /
+        # chunking and use the attached encoder + bridge adapters at fixed length.
+        if getattr(pipeline, "_sushi_te", None) is not None:
+            return self._custom_te_encode(pipeline, prompt, negative_prompt)
 
         # Check if prompt or negative prompt contains emphasis syntax
         # Note: Escaped parentheses like \( and \) should not be counted as emphasis

@@ -613,6 +613,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       minit2i_lr_factor: params.minit2i_lr_factor,
       minit2i_flan_t5_path: params.minit2i_flan_t5_path,
       minit2i_scratch_init_from: params.minit2i_scratch_init_from,
+      minit2i_inherit_final_layer: params.minit2i_inherit_final_layer,
       // REPA (Representation Alignment) — MiniT2I only.
       repa_enable: params.repa_enable,
       repa_encoder_source: params.repa_encoder_source,
@@ -905,6 +906,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
+      "minit2i_inherit_final_layer",
       "repa_enable", "repa_encoder_source", "repa_tagger_model_dir", "repa_siglip2_repo",
       "repa_align_depth", "repa_weight", "repa_proj_lr_factor", "repa_encoder_resolution",
       "danbooru_aug_enable", "danbooru_aug_queries", "danbooru_aug_weight_static",
@@ -2188,6 +2190,19 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     in/out layers copy overlapping channels when the patch is unchanged
                     (latent↔latent), else they are re-initialized (pixel→latent).
                   </p>
+                  {params.minit2i_scratch_init_from ? (
+                    <label className="flex items-center gap-2 cursor-pointer mt-2">
+                      <input
+                        type="checkbox"
+                        checked={!!params.minit2i_inherit_final_layer}
+                        onChange={(e) => updateParam("minit2i_inherit_final_layer", e.target.checked)}
+                        className="w-3.5 h-3.5"
+                      />
+                      <span className="text-xs text-gray-300">
+                        Inherit output head (final_layer) when shape matches
+                      </span>
+                    </label>
+                  ) : null}
                 </div>
                 <p className="text-xs text-gray-500">
                   Random-initialized in memory and trained with Full Fine-tune. Latent variants

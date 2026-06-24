@@ -282,6 +282,9 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (same variant) instead of pure random init. Body/proj2/embedders copy fully;
     # in/out layers copy overlapping channels when patch is unchanged. Empty = off.
     "minit2i_scratch_init_from": "",
+    # From-scratch inheritance: also copy the output head (final_layer.linear) from
+    # the source model when shapes match. Default off = relearn the head from scratch.
+    "minit2i_inherit_final_layer": False,
 
     # ---- REPA (Representation Alignment) — MiniT2I only ----
     # Aligns a DiT intermediate hidden state with frozen clean-image patch features

@@ -184,6 +184,7 @@ def _build_train_section(
     train["minit2i_lr_factor"] = p.get("minit2i_lr_factor", 1.0)
     train["minit2i_flan_t5_path"] = p.get("minit2i_flan_t5_path", "")
     train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")
+    train["minit2i_inherit_final_layer"] = p.get("minit2i_inherit_final_layer", False)
 
     # ---- REPA (Representation Alignment) — MiniT2I only. SSoT: param_defaults. ----
     train["repa_enable"] = p.get("repa_enable", False)

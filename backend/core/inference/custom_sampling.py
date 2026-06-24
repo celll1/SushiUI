@@ -96,7 +96,7 @@ def prepare_reference_guide_latents(
             clean_latent = pipeline.vae.encode(
                 img_tensor.to(device=device, dtype=vae_dtype)
             ).latent_dist.sample(generator)
-            clean_latent = clean_latent * pipeline.vae.config.scaling_factor
+            clean_latent = (clean_latent - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
             clean_latent = clean_latent.to(dtype=dtype)
 
         # Generate noise for re-noising at each step
@@ -1308,7 +1308,7 @@ def custom_img2img_sampling_loop(
         init_latents = pipeline.vae.encode(
             init_image.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
-        init_latents = init_latents * pipeline.vae.config.scaling_factor
+        init_latents = (init_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
         # Convert latents back to U-Net dtype for denoising
         init_latents = init_latents.to(dtype=dtype)
 
@@ -2020,7 +2020,7 @@ def custom_inpaint_sampling_loop(
         init_latents = pipeline.vae.encode(
             init_image_tensor.to(device=device, dtype=vae_dtype)
         ).latent_dist.sample(generator)
-        init_latents = init_latents * pipeline.vae.config.scaling_factor
+        init_latents = (init_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
         # Convert latents back to U-Net dtype for denoising
         init_latents = init_latents.to(dtype=dtype)
 
@@ -2065,7 +2065,7 @@ def custom_inpaint_sampling_loop(
 
             with torch.no_grad():
                 blurred_latents = pipeline.vae.encode(blurred).latent_dist.sample(generator)
-                blurred_latents = blurred_latents * pipeline.vae.config.scaling_factor
+                blurred_latents = (blurred_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
                 blurred_latents = blurred_latents.to(dtype=dtype)
 
             # Mix blurred latents into masked region (mask=1 is inpaint area)

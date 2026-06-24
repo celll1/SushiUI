@@ -2465,6 +2465,23 @@ class BaseTrainer(ABC):
         # Store SDXL flag
         self.is_sdxl = is_sdxl_model
 
+        # Custom architecture (VAE/TE swap) changes the base structure (conv channels /
+        # text encoder) and is LoRA-incompatible — LoRA cannot train the resized conv
+        # layers or the TE bridge adapters, and the LoRA save path does not persist them
+        # (the trained pieces would be silently lost). Require full fine-tune.
+        if self.is_sdxl:
+            _tm = str(self.config.get("training_method", "lora") or "lora").strip().lower()
+            _wants_custom = (
+                str(self.config.get("sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
+                or str(self.config.get("sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
+            )
+            if _wants_custom and _tm == "lora":
+                raise ValueError(
+                    "SDXL custom architecture (sdxl_vae_type / sdxl_te_type) requires "
+                    "training_method='full' — LoRA cannot train the resized conv layers or "
+                    "the text-encoder bridge adapters. Switch to Full Fine-tune."
+                )
+
         # SDXL high-spec VAE migration (optional): swap the VAE and resize the U-Net
         # conv_in/conv_out to the new latent channel count (channel-partial copy; the
         # transformer body is kept and adapts during training). "none"/"sdxl" keeps the

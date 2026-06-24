@@ -137,7 +137,7 @@ def load_custom_convs_from_single_file(unet, file_path: str) -> bool:
                 conv.weight.copy_(found[wk].to(conv.weight.device, conv.weight.dtype))
             else:
                 ok = False
-            if conv.bias is not None and bk in found:
+            if conv.bias is not None and bk in found and tuple(found[bk].shape) == tuple(conv.bias.shape):
                 conv.bias.copy_(found[bk].to(conv.bias.device, conv.bias.dtype))
     print(f"[SDXLCustomArch] Loaded trained conv_in/conv_out from single-file "
           f"({'ok' if ok else 'partial/missing — left at resize init'})")

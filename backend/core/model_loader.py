@@ -1330,10 +1330,15 @@ class ModelLoader:
                 traceback.print_exc()
                 raise RuntimeError(f"Failed to load external VAE: {e}")
 
-        # Override U-Net in_channels ONLY for a custom-arch SDXL (e.g. 16ch latent). For
-        # standard SDXL custom_in_channels is None and the kwarg must be OMITTED entirely —
-        # passing num_in_channels=None makes diffusers build conv_in with in_channels=None.
-        _sf_kw = {"num_in_channels": custom_in_channels} if custom_in_channels else {}
+        # Override U-Net in/out channels ONLY for a custom-arch SDXL (e.g. 16ch latent).
+        # Both are needed: num_in_channels overrides conv_in, but conv_out is otherwise
+        # built at the SDXL default (4) from the LDM config and would mismatch the trained
+        # 16ch conv_out during from_single_file. out_channels is a UNet2DConditionModel
+        # __init__ kwarg picked up by single_file_model's config update. For standard SDXL
+        # custom_in_channels is None and BOTH must be omitted (None would break conv_in).
+        # The custom path always sets external_vae, so out_channels does not reach the VAE.
+        _sf_kw = ({"num_in_channels": custom_in_channels, "out_channels": custom_in_channels}
+                  if custom_in_channels else {})
 
         # Use single_file loading which is the standard way to load safetensors
         print(f"[ModelLoader] Loading as {'SDXL' if model_type == 'sdxl' else 'SD1.5'} (standard pipeline)")

@@ -19,12 +19,23 @@ epoch ごとに変動させる**ための設計書。狙いは、様々なクロ
 - 真の外挿性のためには、データごとに入る bucket を固定すべきではなく、**epoch ごとに
   bucketing が変化する**ことに対応する必要がある。
 
-### 1.2 機能要件
-1. 各 (item, epoch) について、確率的に「全体画像」または「制約付きランダムクロップ」を選択。
-2. クロップ結果の解像度に応じて bucket を **epoch ごとに**再割当（小クロップ→小 bucket へ移動）。
-3. クロップに整合する SDXL time_ids（kohya 式）を per-item で付与。
-4. **resume で完全再現**（クロップ計画・bucket 割当・バッチ順・global_step が一致）。
-5. 既存機能（priority training / VE reconstruction / マルチデータセット / Danbooru augmentation /
+### 1.2 機能要件（2×2 マトリクス）
+
+各 (item, epoch) を **2 つの独立軸**で決める。各軸の確率で 4 象限の割合を制御する。
+
+| (crop 軸 \ bucket 軸) | 最大fitバケット（縮小最小） | より小さいバケット（追加縮小） |
+|---|---|---|
+| 全体画像（最小crop のみ） | ① 全体→最大bucket（原寸で入れば原寸） | ③ 全体→小bucket |
+| ランダムcrop（面積≥指定） | ② crop→最大bucket（cropがbucket級なら原寸） | ④ crop→小bucket |
+
+- `crop_full_image_prob` = P(全体画像) → ①③
+- `crop_max_bucket_prob` = P(最大fitバケット) → ①②
+
+その他の機能要件:
+1. クロップ結果の解像度に応じて bucket を **epoch ごとに**再割当（小クロップ→小 bucket へ移動）。
+2. クロップに整合する SDXL time_ids（kohya 式）を per-item で付与。
+3. **resume で完全再現**（クロップ計画・bucket 割当・バッチ順・global_step が一致）。
+4. 既存機能（priority training / VE reconstruction / マルチデータセット / Danbooru augmentation /
    per-epoch caption shuffle）と共存。
 
 ### 1.3 非対象
@@ -59,29 +70,44 @@ epoch ごとに変動させる**ための設計書。狙いは、様々なクロ
 `backend/api/param_defaults.py` に追加。全て**最初にここへ追加**してから routes / config / frontend へ展開。
 
 ```python
-# Epoch-dynamic crop augmentation (SDXL only). Per (item, epoch), with probability
-# (1 - crop_full_image_prob) sample a constrained random crop instead of the full image;
-# the crop's pixel size is re-bucketed each epoch. Requires onthefly_gpu latent encoding.
-"crop_augment_enable": False,            # master switch
-"crop_full_image_prob": 0.7,             # P(use full image) per (item, epoch); else random crop
-"crop_min_area_ratio": 0.25,             # crop area >= ratio * original area
-"crop_min_short_side_px": 512,           # crop short side (in original px) >= this
-"crop_scale_range": [0.5, 1.0],          # crop window short-side / original short-side range (<=1.0)
-"crop_position_mode": "random",          # "random" | "center"
-"crop_microcond_mode": "kohya",          # time_ids semantics. "kohya" = original_size is full image
-"crop_plan_seed": 0,                     # 0 = derive from global training seed
+# Epoch-dynamic crop augmentation (SDXL only). Two independent axes (crop, bucket size)
+# pick how the image is presented; re-bucketed each epoch. Requires onthefly_gpu encoding.
+"crop_augment_enable": False,             # master switch
+# Mix proportions (2x2 axes):
+"crop_full_image_prob": 0.7,              # P(full image, minimal crop only) -> (1)(3)
+"crop_max_bucket_prob": 0.7,              # P(largest-fitting bucket = least downscale) -> (1)(2)
+# Random-crop controls:
+"crop_min_area_ratio": 0.25,              # crop area >= ratio * original area
+"crop_min_short_side_px": 512,            # crop short side (original px) >= this (also bounds aspect)
+"crop_aspect_mode": "source",             # "source" (keep image aspect) | "free" (any aspect)
+"crop_position_mode": "random",           # "random" (any point) | "corner" (touch a corner)
+# Smaller-bucket controls:
+"crop_smaller_bucket_mode": "base_res",   # "base_res" (smaller base_resolution) | "scale_range"
+"crop_smaller_scale_range": [0.5, 0.9],   # downscale range for scale_range / single base_res fallback
+# Full-image (minimal crop) position:
+"full_crop_position_mode": "center",      # "center" | "fixed_corner" | "random"
+# Conditioning + seed:
+"crop_microcond_mode": "kohya",           # time_ids semantics. "kohya" = original_size is full image
+"crop_plan_seed": 0,                      # 0 = derive from global training seed
 ```
 
 ### 3.1 パラメータ意味論
-- `crop_full_image_prob`: per (item, epoch) で全体画像を使う確率。残りでランダムクロップ。
-- `crop_min_area_ratio`, `crop_min_short_side_px`: クロップ窓のサンプリング制約（両方を満たす）。
-- `crop_scale_range = [s_min, s_max]`（`s_max <= 1.0`）: クロップ窓の短辺 = `original_short * s`。
-  `s` を一様サンプルし、制約（area / short_side）でクランプ。`s=1.0` は元画像全体に漸近。
-- `crop_position_mode`: 窓内の配置。`random` = 一様、`center` = 中央固定（位置のみ固定、サイズは可変）。
-- `crop_microcond_mode`: `"kohya"` 固定（将来 `"zoom"` 追加余地）。
+- **混合割合**: `crop_full_image_prob`（全体 vs crop）, `crop_max_bucket_prob`（最大fit vs 小bucket）の
+  独立 2 確率で 4 象限（①②③④）の割合を制御。
+- **ランダムcrop**:
+  - `crop_min_area_ratio` / `crop_min_short_side_px`: 窓の面積・短辺の下限（短辺下限がアスペクト比の
+    極端化も抑制）。満たせない小画像は全体画像へフォールバック。
+  - `crop_aspect_mode`: `source`=元画像と同アスペクト、`free`=任意アスペクト（例 2048²→1024×2048）。
+  - `crop_position_mode`: `random`=任意点、`corner`=四隅のいずれかを含む。
+- **小bucket選択**: `crop_smaller_bucket_mode`=`base_res`（`base_resolutions`の小解像度を一様選択。
+  単一base_resのときは scale_range にフォールバック）/ `scale_range`（連続縮小率
+  `crop_smaller_scale_range` を最大bucket解像度に適用し /64 量子化）。
+- **全体画像の最小crop位置**: `full_crop_position_mode`=`center`/`fixed_corner`/`random`。
+  アスペクト維持の cover 後、はみ出しをこの位置で crop。
+- `crop_microcond_mode`: `"kohya"` 固定。
 
 ### 3.2 配線チェックリスト（CLAUDE.md 準拠）
-1. `param_defaults.py` の `TRAINING_DEFAULTS` に 8 キー追加。
+1. `param_defaults.py` の `TRAINING_DEFAULTS` に crop_* キー追加。
 2. `routes.py` の `TrainingRunCreateRequest`（Pydantic）に `= TRAINING_DEFAULTS["..."]` 参照で追加。
 3. `training_config.py` の YAML 生成に追加（`p.get(...)`）。
 4. `TrainingConfig.tsx` の `DEFAULT_CONFIG` / 送信処理 / UI セクション追加。
@@ -151,21 +177,35 @@ def _item_rng(seed: int, epoch: int, image_path: str) -> random.Random:
 ```
 rng = _item_rng(seed, epoch, image_path)
 ow, oh = header_size(image_path)              # _get_original_size_for_item を流用
-if rng.random() < crop_full_image_prob:
-    spec = full_image_spec(ow, oh)            # bucket は通常割当
+full     = rng.random() < crop_full_image_prob    # crop 軸
+use_max  = rng.random() < crop_max_bucket_prob    # bucket 軸（描画順固定で決定論）
+
+if full:
+    bucket = select_bucket(ow, oh, use_max, rng)   # 画像アスペクトから最大fit/小bucket
+    cw, ch = max_window_for_aspect(ow, oh, bucket)  # アスペクト維持 cover
+    cx, cy = place(rng, ow, oh, cw, ch, full_crop_position_mode)
 else:
-    s = rng.uniform(s_min, s_max)             # crop_scale_range
-    short = max(round(min(ow,oh) * s), crop_min_short_side_px)
-    # bucket をクロップ短辺/アスペクトから選び、窓サイズ(cw,ch)を bucket アスペクトに整形
-    bucket = assign_bucket_for_crop(short, aspect=rng_aspect_or_original)
-    cw, ch = window_from_bucket(bucket, short, ow, oh)
-    # area 制約を満たすまでクランプ／再サンプル（上限試行回数で打ち切り→ full_image fallback）
-    cx, cy = sample_position(rng, ow, oh, cw, ch, crop_position_mode)
-    spec = CropSpec(is_full=False, crop_box=(cx,cy,cw,ch),
-                    bucket_w=bucket.w, bucket_h=bucket.h, time_ids=kohya_time_ids(...))
+    win = sample_crop_window(rng, ow, oh)          # area≥ratio・short≥min、source/free
+    if win is None: return full_spec(..., fallback=True)
+    cw, ch = win
+    cx, cy = place(rng, ow, oh, cw, ch, crop_position_mode)  # random/corner
+    bucket = select_bucket(cw, ch, use_max, rng)    # crop窓から最大fit/小bucket
+spec = CropSpec(is_full=full, crop_box=(cx,cy,cw,ch),
+                bucket_w=bucket.w, bucket_h=bucket.h, time_ids=kohya(oh,ow,cy,cx,bucket))
 ```
-- 制約を満たせない小画像は **full_image にフォールバック**（ログに記録、サイレント切り捨て禁止）。
-- `assign_bucket_for_crop` は既存 `BucketManager` の no-upscale 最大 bucket ロジックを再利用。
+
+**`select_bucket(rw, rh, use_max, rng)`**（base_res 主軸）:
+- 各 base_res で `get_bucket_for_image_size` → no-upscale で収まる候補を抽出。
+- `use_max`: 収まる中で最大 base_res のバケット（原寸で入れば原寸）。
+- 非 use_max: `base_res` モード=最大より小さい base_res を一様選択（無ければ scale_range）。
+  `scale_range` モード/フォールバック=最大bucket解像度 × `uniform(smaller_scale)` を /64 量子化して再バケット。
+
+**`sample_crop_window`**: 面積 `A∈[max(min_area·img, min_short²), img]` を一様、`source`=元アスペクト、
+`free`=`A` から定まる有効アスペクト範囲で log-uniform（短辺下限が極端アスペクトを排除）。
+
+- 制約を満たせない小画像は **full_image にフォールバック**（`fallback=True` でログ可能、サイレント禁止）。
+- ネイティブ crop（リサイズ無し）は「② crop→最大bucket かつ crop 窓 ≒ bucket」のとき自然に発生
+  （例 4096²から2048²窓→2048bucket）。割合を増やすには `crop_min_area_ratio` を調整。
 
 ### 5.5 事前計算 API
 ```python

@@ -152,10 +152,14 @@ def _build_train_section(
     train["crop_augment_enable"] = p.get("crop_augment_enable", False)
     if train["crop_augment_enable"]:
         train["crop_full_image_prob"] = p.get("crop_full_image_prob", 0.7)
+        train["crop_max_bucket_prob"] = p.get("crop_max_bucket_prob", 0.7)
         train["crop_min_area_ratio"] = p.get("crop_min_area_ratio", 0.25)
         train["crop_min_short_side_px"] = p.get("crop_min_short_side_px", 512)
-        train["crop_scale_range"] = p.get("crop_scale_range") or [0.5, 1.0]
+        train["crop_aspect_mode"] = p.get("crop_aspect_mode", "source")
         train["crop_position_mode"] = p.get("crop_position_mode", "random")
+        train["crop_smaller_bucket_mode"] = p.get("crop_smaller_bucket_mode", "base_res")
+        train["crop_smaller_scale_range"] = p.get("crop_smaller_scale_range") or [0.5, 0.9]
+        train["full_crop_position_mode"] = p.get("full_crop_position_mode", "center")
         train["crop_microcond_mode"] = p.get("crop_microcond_mode", "kohya")
         train["crop_plan_seed"] = p.get("crop_plan_seed", 0)
 

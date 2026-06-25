@@ -2055,10 +2055,14 @@ export interface TrainingRunCreateRequest {
   // Epoch-dynamic crop augmentation (SDXL only)
   crop_augment_enable?: boolean;
   crop_full_image_prob?: number;
+  crop_max_bucket_prob?: number;
   crop_min_area_ratio?: number;
   crop_min_short_side_px?: number;
-  crop_scale_range?: number[];
+  crop_aspect_mode?: string;
   crop_position_mode?: string;
+  crop_smaller_bucket_mode?: string;
+  crop_smaller_scale_range?: number[];
+  full_crop_position_mode?: string;
   crop_microcond_mode?: string;
   crop_plan_seed?: number;
   train_unet?: boolean;

@@ -137,10 +137,14 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // Epoch-dynamic crop augmentation (SDXL only)
   crop_augment_enable: false,
   crop_full_image_prob: 0.7,
+  crop_max_bucket_prob: 0.7,
   crop_min_area_ratio: 0.25,
   crop_min_short_side_px: 512,
-  crop_scale_range: [0.5, 1.0],
+  crop_aspect_mode: "source",
   crop_position_mode: "random",
+  crop_smaller_bucket_mode: "base_res",
+  crop_smaller_scale_range: [0.5, 0.9],
+  full_crop_position_mode: "center",
   crop_microcond_mode: "kohya",
   crop_plan_seed: 0,
   cache_latents_to_disk: false,
@@ -683,10 +687,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Epoch-dynamic crop augmentation (SDXL only; requires bucketing)
       crop_augment_enable: params.enable_bucketing ? params.crop_augment_enable : false,
       crop_full_image_prob: params.crop_full_image_prob,
+      crop_max_bucket_prob: params.crop_max_bucket_prob,
       crop_min_area_ratio: params.crop_min_area_ratio,
       crop_min_short_side_px: params.crop_min_short_side_px,
-      crop_scale_range: params.crop_scale_range,
+      crop_aspect_mode: params.crop_aspect_mode,
       crop_position_mode: params.crop_position_mode,
+      crop_smaller_bucket_mode: params.crop_smaller_bucket_mode,
+      crop_smaller_scale_range: params.crop_smaller_scale_range,
+      full_crop_position_mode: params.full_crop_position_mode,
       crop_microcond_mode: params.crop_microcond_mode,
       crop_plan_seed: params.crop_plan_seed,
       cache_latents_to_disk: params.cache_latents_to_disk,
@@ -963,9 +971,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
       "debug_latents", "debug_latents_every",
       "enable_bucketing", "bucket_strategy", "multi_resolution_mode",
-      "crop_augment_enable", "crop_full_image_prob", "crop_min_area_ratio",
-      "crop_min_short_side_px", "crop_scale_range", "crop_position_mode",
-      "crop_microcond_mode", "crop_plan_seed",
+      "crop_augment_enable", "crop_full_image_prob", "crop_max_bucket_prob",
+      "crop_min_area_ratio", "crop_min_short_side_px", "crop_aspect_mode",
+      "crop_position_mode", "crop_smaller_bucket_mode", "crop_smaller_scale_range",
+      "full_crop_position_mode", "crop_microcond_mode", "crop_plan_seed",
       "cache_latents_to_disk", "force_recache",
       "use_reference_images", "train_vision_encoder", "gradient_routing_ve",
       "vision_encoder_lr", "param_tracking", "param_tracking_interval",
@@ -1544,10 +1553,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       multiResolutionMode,
       cropAugmentEnable: params.crop_augment_enable,
       cropFullImageProb: params.crop_full_image_prob,
+      cropMaxBucketProb: params.crop_max_bucket_prob,
       cropMinAreaRatio: params.crop_min_area_ratio,
       cropMinShortSidePx: params.crop_min_short_side_px,
-      cropScaleRange: params.crop_scale_range,
+      cropAspectMode: params.crop_aspect_mode,
       cropPositionMode: params.crop_position_mode,
+      cropSmallerBucketMode: params.crop_smaller_bucket_mode,
+      cropSmallerScaleRange: params.crop_smaller_scale_range,
+      fullCropPositionMode: params.full_crop_position_mode,
       cropMicrocondMode: params.crop_microcond_mode,
       cropPlanSeed: params.crop_plan_seed,
       cacheLatentsToDisk,
@@ -1700,10 +1713,14 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.multiResolutionMode !== undefined) updateParam("multi_resolution_mode", config.multiResolutionMode);
     if (config.cropAugmentEnable !== undefined) updateParam("crop_augment_enable", config.cropAugmentEnable);
     if (config.cropFullImageProb !== undefined) updateParam("crop_full_image_prob", config.cropFullImageProb);
+    if (config.cropMaxBucketProb !== undefined) updateParam("crop_max_bucket_prob", config.cropMaxBucketProb);
     if (config.cropMinAreaRatio !== undefined) updateParam("crop_min_area_ratio", config.cropMinAreaRatio);
     if (config.cropMinShortSidePx !== undefined) updateParam("crop_min_short_side_px", config.cropMinShortSidePx);
-    if (config.cropScaleRange !== undefined) updateParam("crop_scale_range", config.cropScaleRange);
+    if (config.cropAspectMode !== undefined) updateParam("crop_aspect_mode", config.cropAspectMode);
     if (config.cropPositionMode !== undefined) updateParam("crop_position_mode", config.cropPositionMode);
+    if (config.cropSmallerBucketMode !== undefined) updateParam("crop_smaller_bucket_mode", config.cropSmallerBucketMode);
+    if (config.cropSmallerScaleRange !== undefined) updateParam("crop_smaller_scale_range", config.cropSmallerScaleRange);
+    if (config.fullCropPositionMode !== undefined) updateParam("full_crop_position_mode", config.fullCropPositionMode);
     if (config.cropMicrocondMode !== undefined) updateParam("crop_microcond_mode", config.cropMicrocondMode);
     if (config.cropPlanSeed !== undefined) updateParam("crop_plan_seed", config.cropPlanSeed);
     if (config.cacheLatentsToDisk !== undefined) updateParam("cache_latents_to_disk", config.cacheLatentsToDisk);
@@ -5387,13 +5404,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   <span className="text-sm text-gray-300">Epoch-dynamic crop augmentation (SDXL)</span>
                 </label>
                 <p className="text-xs text-gray-500 mt-1">
-                  Per (image, epoch), with some probability train on a constrained random
-                  crop instead of the full image; the crop is re-bucketed each epoch. Forces
-                  on-the-fly latent encoding (no latent cache). SDXL only.
+                  Per (image, epoch), two independent axes decide presentation: crop
+                  (full image vs random crop) and bucket size (largest-fitting vs smaller).
+                  Re-bucketed each epoch. Forces on-the-fly latent encoding (no latent
+                  cache). SDXL only.
                 </p>
 
                 {params.crop_augment_enable && (
                   <div className="mt-3 space-y-3 pl-2 border-l-2 border-gray-700">
+                    {/* Mix proportions (2x2 axes) */}
                     <div>
                       <label className="block text-sm text-gray-400 mb-1">
                         Full-image probability: {(params.crop_full_image_prob ?? 0.7).toFixed(2)}
@@ -5404,9 +5423,22 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                         onChange={(e) => updateParam("crop_full_image_prob", parseFloat(e.target.value))}
                         className="w-full"
                       />
-                      <p className="text-xs text-gray-500">P(use full image); the rest are random crops.</p>
+                      <p className="text-xs text-gray-500">P(full image, minimal crop only); rest are random crops.</p>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-1">
+                        Max-bucket probability: {(params.crop_max_bucket_prob ?? 0.7).toFixed(2)}
+                      </label>
+                      <input
+                        type="range" min={0} max={1} step={0.05}
+                        value={params.crop_max_bucket_prob ?? 0.7}
+                        onChange={(e) => updateParam("crop_max_bucket_prob", parseFloat(e.target.value))}
+                        className="w-full"
+                      />
+                      <p className="text-xs text-gray-500">P(largest-fitting bucket = least downscale); rest use a smaller bucket.</p>
                     </div>
 
+                    {/* Random-crop controls */}
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Min area ratio</label>
@@ -5430,46 +5462,86 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-sm text-gray-400 mb-1">Scale min</label>
-                        <input
-                          type="number" min={0.1} max={1} step={0.05}
-                          value={(params.crop_scale_range ?? [0.5, 1.0])[0]}
-                          onChange={(e) => updateParam("crop_scale_range", [parseFloat(e.target.value) || 0.5, (params.crop_scale_range ?? [0.5, 1.0])[1]])}
+                        <label className="block text-sm text-gray-400 mb-1">Crop aspect</label>
+                        <select
+                          value={params.crop_aspect_mode ?? "source"}
+                          onChange={(e) => updateParam("crop_aspect_mode", e.target.value as "source" | "free")}
                           className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
-                        />
+                        >
+                          <option value="source">Source (keep image aspect)</option>
+                          <option value="free">Free (any aspect)</option>
+                        </select>
                       </div>
                       <div>
-                        <label className="block text-sm text-gray-400 mb-1">Scale max (≤ 1.0)</label>
-                        <input
-                          type="number" min={0.1} max={1} step={0.05}
-                          value={(params.crop_scale_range ?? [0.5, 1.0])[1]}
-                          onChange={(e) => updateParam("crop_scale_range", [(params.crop_scale_range ?? [0.5, 1.0])[0], parseFloat(e.target.value) || 1.0])}
+                        <label className="block text-sm text-gray-400 mb-1">Crop position</label>
+                        <select
+                          value={params.crop_position_mode ?? "random"}
+                          onChange={(e) => updateParam("crop_position_mode", e.target.value as "random" | "corner")}
                           className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
-                        />
+                        >
+                          <option value="random">Random point</option>
+                          <option value="corner">Include a corner</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Smaller-bucket controls */}
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Smaller-bucket mode</label>
+                        <select
+                          value={params.crop_smaller_bucket_mode ?? "base_res"}
+                          onChange={(e) => updateParam("crop_smaller_bucket_mode", e.target.value as "base_res" | "scale_range")}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                        >
+                          <option value="base_res">Smaller base resolution</option>
+                          <option value="scale_range">Continuous scale range</option>
+                        </select>
+                        <p className="text-xs text-gray-500 mt-0.5">base_res needs multiple base_resolutions.</p>
+                      </div>
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Full-image crop position</label>
+                        <select
+                          value={params.full_crop_position_mode ?? "center"}
+                          onChange={(e) => updateParam("full_crop_position_mode", e.target.value as "center" | "fixed_corner" | "random")}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                        >
+                          <option value="center">Center</option>
+                          <option value="fixed_corner">Fixed corner (top-left)</option>
+                          <option value="random">Random per epoch</option>
+                        </select>
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-sm text-gray-400 mb-1">Crop position</label>
-                        <select
-                          value={params.crop_position_mode ?? "random"}
-                          onChange={(e) => updateParam("crop_position_mode", e.target.value as "random" | "center")}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
-                        >
-                          <option value="random">Random</option>
-                          <option value="center">Center</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-sm text-gray-400 mb-1">Plan seed (0 = train seed)</label>
+                        <label className="block text-sm text-gray-400 mb-1">Smaller scale min</label>
                         <input
-                          type="number" min={0} step={1}
-                          value={params.crop_plan_seed ?? 0}
-                          onChange={(e) => updateParam("crop_plan_seed", parseInt(e.target.value) || 0)}
+                          type="number" min={0.1} max={1} step={0.05}
+                          value={(params.crop_smaller_scale_range ?? [0.5, 0.9])[0]}
+                          onChange={(e) => updateParam("crop_smaller_scale_range", [parseFloat(e.target.value) || 0.5, (params.crop_smaller_scale_range ?? [0.5, 0.9])[1]])}
                           className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
                         />
                       </div>
+                      <div>
+                        <label className="block text-sm text-gray-400 mb-1">Smaller scale max (≤ 1.0)</label>
+                        <input
+                          type="number" min={0.1} max={1} step={0.05}
+                          value={(params.crop_smaller_scale_range ?? [0.5, 0.9])[1]}
+                          onChange={(e) => updateParam("crop_smaller_scale_range", [(params.crop_smaller_scale_range ?? [0.5, 0.9])[0], parseFloat(e.target.value) || 0.9])}
+                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-gray-400 mb-1">Plan seed (0 = train seed)</label>
+                      <input
+                        type="number" min={0} step={1}
+                        value={params.crop_plan_seed ?? 0}
+                        onChange={(e) => updateParam("crop_plan_seed", parseInt(e.target.value) || 0)}
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                      />
                     </div>
                     <p className="text-xs text-gray-500">
                       Micro-conditioning: kohya (original_size = full image). Crops are

@@ -6434,10 +6434,14 @@ class TrainingRunCreateRequest(BaseModel):
     # Epoch-dynamic crop augmentation (SDXL only). See param_defaults / design doc.
     crop_augment_enable: bool = TRAINING_DEFAULTS["crop_augment_enable"]
     crop_full_image_prob: float = TRAINING_DEFAULTS["crop_full_image_prob"]
+    crop_max_bucket_prob: float = TRAINING_DEFAULTS["crop_max_bucket_prob"]
     crop_min_area_ratio: float = TRAINING_DEFAULTS["crop_min_area_ratio"]
     crop_min_short_side_px: int = TRAINING_DEFAULTS["crop_min_short_side_px"]
-    crop_scale_range: List[float] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["crop_scale_range"]))
+    crop_aspect_mode: str = TRAINING_DEFAULTS["crop_aspect_mode"]
     crop_position_mode: str = TRAINING_DEFAULTS["crop_position_mode"]
+    crop_smaller_bucket_mode: str = TRAINING_DEFAULTS["crop_smaller_bucket_mode"]
+    crop_smaller_scale_range: List[float] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["crop_smaller_scale_range"]))
+    full_crop_position_mode: str = TRAINING_DEFAULTS["full_crop_position_mode"]
     crop_microcond_mode: str = TRAINING_DEFAULTS["crop_microcond_mode"]
     crop_plan_seed: int = TRAINING_DEFAULTS["crop_plan_seed"]
     cache_latents_to_disk: bool = False  # Cache VAE latents and text embeddings to disk (default: False, in-memory cache)

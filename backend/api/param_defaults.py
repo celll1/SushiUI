@@ -164,18 +164,27 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "base_resolutions": [1024],
     "bucket_strategy": "resize",
     "multi_resolution_mode": "max",
-    # Epoch-dynamic crop augmentation (SDXL only). Per (item, epoch), with probability
-    # (1 - crop_full_image_prob) sample a constrained random crop instead of the full
-    # image; the crop's pixel size is re-bucketed each epoch. Forces onthefly_gpu latent
-    # encoding (disk/swap latent caches cannot represent per-epoch crops). Defaults
+    # Epoch-dynamic crop augmentation (SDXL only). Per (item, epoch), two independent
+    # axes pick how the image is presented: crop (full image vs random crop) and bucket
+    # size (largest-fitting vs smaller). Re-bucketed each epoch; forces onthefly_gpu
+    # latent encoding (disk/swap caches cannot represent per-epoch crops). Defaults
     # reproduce the previous behavior (disabled). See
     # docs/EPOCH_DYNAMIC_CROP_BUCKETING_DESIGN.md.
     "crop_augment_enable": False,            # master switch
-    "crop_full_image_prob": 0.7,            # P(use full image) per (item, epoch)
+    # Mix proportions (2x2 axes):
+    "crop_full_image_prob": 0.7,            # P(full image, minimal crop only)
+    "crop_max_bucket_prob": 0.7,            # P(largest-fitting bucket = least downscale)
+    # Random-crop controls:
     "crop_min_area_ratio": 0.25,            # crop area >= ratio * original area
     "crop_min_short_side_px": 512,          # crop short side (original px) >= this
-    "crop_scale_range": [0.5, 1.0],         # crop short-side / original short-side range (<=1.0)
-    "crop_position_mode": "random",         # "random" | "center"
+    "crop_aspect_mode": "source",           # "source" (keep image aspect) | "free" (any aspect)
+    "crop_position_mode": "random",         # "random" (any point) | "corner" (touch a corner)
+    # Smaller-bucket controls:
+    "crop_smaller_bucket_mode": "base_res",  # "base_res" (use smaller base_resolution) | "scale_range"
+    "crop_smaller_scale_range": [0.5, 0.9],  # downscale range when scale_range / single base_res
+    # Full-image (minimal crop) position:
+    "full_crop_position_mode": "center",    # "center" | "fixed_corner" | "random"
+    # Conditioning + seed:
     "crop_microcond_mode": "kohya",         # time_ids semantics: "kohya" = original_size is full image
     "crop_plan_seed": 0,                    # 0 = derive from global training seed
     "cache_latents_to_disk": False,         # Fix: frontend had True

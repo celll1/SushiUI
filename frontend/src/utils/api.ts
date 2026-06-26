@@ -2456,6 +2456,12 @@ export interface DebugLatentVisualization {
   recon_loss?: number;  // Optional: may not exist in older debug data
   caption?: string;  // Processed caption used during training
   reference_image?: string;  // base64 thumbnail of reference image used in this training batch
+  // SDXL micro-conditioning (crop-augmentation verification), item 0 of the debug batch
+  original_size?: [number, number];   // (W, H) full original image
+  crop_top_left?: [number, number];   // (left, top) crop point in original pixels
+  target_size?: [number, number];     // (W, H) output bucket
+  sdxl_time_ids?: number[];           // [oh, ow, ct, cl, th, tw]
+  sdxl_time_ids_all?: number[][];     // per-item time_ids for the whole batch
   latents_image?: string;  // base64
   noisy_latents_image?: string;  // base64
   predicted_noise_image?: string;  // base64

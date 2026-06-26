@@ -5437,6 +5437,22 @@ class BaseTrainer(ABC):
                 if first_ref:
                     debug_data['reference_image_path'] = first_ref
 
+            # SDXL micro-conditioning for this debug sample (item 0): lets the user verify
+            # crop augmentation. time_ids order = [orig_h, orig_w, crop_top, crop_left,
+            # target_h, target_w]. crop_top_left != (0,0) or original_size != target_size
+            # indicates a random crop / scale. Per-item array included for the whole batch.
+            try:
+                if self.is_sdxl and add_time_ids is not None:
+                    _ti_all = add_time_ids.detach().cpu().to(torch.int64).tolist()  # [B, 6]
+                    _t0 = _ti_all[0]
+                    debug_data['sdxl_time_ids'] = _t0
+                    debug_data['original_size'] = [int(_t0[1]), int(_t0[0])]   # (w, h)
+                    debug_data['crop_top_left'] = [int(_t0[3]), int(_t0[2])]   # (left, top) = crop point
+                    debug_data['target_size'] = [int(_t0[5]), int(_t0[4])]     # (w, h) = bucket
+                    debug_data['sdxl_time_ids_all'] = _ti_all
+            except Exception:
+                pass
+
             torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
             del predicted_latent_for_debug
 

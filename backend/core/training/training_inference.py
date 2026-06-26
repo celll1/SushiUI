@@ -104,6 +104,9 @@ class TrainingPreviewGenerator:
         output_dir = str(self.trainer.output_dir)
         meta: Dict[str, Any] = {"request_id": request_id, "ok": False}
         png_bytes: Optional[bytes] = None
+        # Live-preview frames written during sampling are keyed by this id (read+decoded
+        # by the API and broadcast to the WebSocket).
+        self._current_request_id = request_id
         try:
             mode = (params.get("mode") or "txt2img").lower()
             self._enter_eval_mode()
@@ -148,6 +151,12 @@ class TrainingPreviewGenerator:
                 write_result(output_dir, request_id, png_bytes, meta)
             except Exception as we:   # noqa: BLE001
                 print(f"[TrainingPreview:{request_id}] failed to write result: {we}")
+            try:
+                from .training_preview_rpc import cleanup_preview_frame
+                cleanup_preview_frame(output_dir, request_id)
+            except Exception:
+                pass
+            self._current_request_id = None
 
     # ------------------------------------------------------------------
     # eval/train mode helpers (idempotent)
@@ -244,6 +253,56 @@ class TrainingPreviewGenerator:
         if mask_image is None:
             raise ValueError("inpaint preview missing 'mask_image_base64'")
         return self._run_sampling(params, init_image=init_image, mask_image=mask_image)
+
+    def _make_preview_callback(
+        self, *, request_id, output_dir, width, height,
+        preview_interval, preview_predicted_x0, preview_decoder,
+    ):
+        """Build a custom_sampling_loop progress_callback that writes live-preview frames
+        (small latent + meta) to disk for the API to decode + broadcast. Returns None when
+        previews aren't applicable (no request id, or FLUX.2 latents which TAESD can't decode)."""
+        if not request_id:
+            return None
+        t = self.trainer
+        if getattr(t, "is_flux2", False):
+            return None
+        from .training_preview_rpc import write_preview_frame
+        flags = {
+            "is_sdxl": bool(getattr(t, "is_sdxl", False)),
+            "is_zimage": bool(getattr(t, "is_zimage", False)),
+            "is_anima": bool(getattr(t, "is_anima", False)),
+            "is_lens": bool(getattr(t, "is_lens", False)),
+            "is_ideogram4": bool(getattr(t, "is_ideogram4", False)),
+            "is_minit2i": bool(getattr(t, "is_minit2i", False)),
+        }
+        seq = [0]
+
+        def _cb(step, total_steps, latents, cfg_metrics=None, pred_original_sample=None):
+            try:
+                is_last = (step == total_steps - 1)
+                if not (step == -1 or step == 0 or is_last
+                        or (step > 0 and preview_interval > 0 and step % preview_interval == 0)):
+                    return
+                lat = (pred_original_sample
+                       if (preview_predicted_x0 and pred_original_sample is not None)
+                       else latents)
+                if lat is None:
+                    return
+                seq[0] += 1
+                write_preview_frame(output_dir, request_id, {
+                    "seq": seq[0],
+                    "step": step,
+                    "total": total_steps,
+                    "latents": lat.detach().to("cpu", dtype=torch.float32),
+                    "image_width": width,
+                    "image_height": height,
+                    "preview_decoder": preview_decoder,
+                    **flags,
+                })
+            except Exception:
+                pass  # never break generation for a preview frame
+
+        return _cb
 
     # ------------------------------------------------------------------
     # Unified sampling — used by txt2img / img2img / inpaint.  Dispatches
@@ -351,8 +410,22 @@ class TrainingPreviewGenerator:
         num_inference_steps = int(params.get("steps", 28))
         guidance_scale = float(params.get("cfg_scale", 7.0))
 
+        # ----- live-preview frame callback -----
+        # Write a small latent + meta to disk per preview interval; the API decodes it
+        # (TAESD) and broadcasts to the WebSocket, so the user sees a live preview during
+        # the in-training generation. Best-effort: never raise into the sampling loop.
+        preview_cb = self._make_preview_callback(
+            request_id=getattr(self, "_current_request_id", None),
+            output_dir=str(t.output_dir),
+            width=width, height=height,
+            preview_interval=int(params.get("preview_interval", 4) or 4),
+            preview_predicted_x0=bool(params.get("preview_predicted_x0", False)),
+            preview_decoder=str(params.get("preview_decoder", "matrix")),
+        )
+
         # ----- params shared by all 3 sampling loops -----
         common_kwargs: Dict[str, Any] = dict(
+            progress_callback=preview_cb,
             pipeline=runtime_pipeline,
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,

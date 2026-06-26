@@ -4285,6 +4285,34 @@ class BaseTrainer(ABC):
             self.vae.to(device="cpu", dtype=self.vae_dtype)
         torch.cuda.empty_cache()
 
+    def _ve_set_device(self, device):
+        """Move the Vision Encoder model AND its AdamW optimizer state to `device` together,
+        so optimizer steps stay device-consistent.
+
+        Used to offload the trained VE (params + state) during reference-free batches and
+        reload it before a reference batch's step. The optimizer-state move is a no-op until
+        the VE has actually been stepped (AdamW allocates exp_avg/exp_avg_sq lazily on the
+        first gradient), so a run that never uses the VE pays nothing — and for it the state
+        offload below frees the ~743MB (92.9M params x 2 x fp32) it would otherwise hold once
+        the VE is exercised.
+        """
+        ve = getattr(self, "vision_encoder", None)
+        if ve is None:
+            return
+        ve.to(device if isinstance(device, str) else str(device))
+        opt = getattr(self, "optimizer", None)
+        if opt is None:
+            return
+        try:
+            ve_params = set(ve.parameters())
+            for p, st in opt.state.items():
+                if p in ve_params:
+                    for k, v in list(st.items()):
+                        if isinstance(v, torch.Tensor):
+                            st[k] = v.to(device)
+        except Exception:
+            pass
+
     # ============================================================
     # Image Encoding
     # ============================================================
@@ -10185,7 +10213,7 @@ class BaseTrainer(ABC):
                     if not _epoch_has_ref:
                         try:
                             if next(self.vision_encoder.model.parameters()).device.type != "cpu":
-                                self.vision_encoder.to("cpu")
+                                self._ve_set_device("cpu")
                                 torch.cuda.empty_cache()
                                 print(f"{self.log_prefix} [VE] Epoch {epoch + 1}: no reference-image "
                                       f"batches — Vision Encoder offloaded to CPU (~186MB freed)")
@@ -10211,7 +10239,7 @@ class BaseTrainer(ABC):
                             if self._ve_idle_batches == 64:  # fire exactly once at the threshold
                                 try:
                                     if next(self.vision_encoder.model.parameters()).device.type != "cpu":
-                                        self.vision_encoder.to("cpu")
+                                        self._ve_set_device("cpu")
                                         torch.cuda.empty_cache()
                                         print(f"{self.log_prefix} [VE] 64 reference-free batches — "
                                               f"Vision Encoder offloaded to CPU (~186MB freed; reloads "
@@ -11080,7 +11108,10 @@ class BaseTrainer(ABC):
                                     mnt_pooled_embeddings = mnt_pooled_embeddings * (1.0 - _mask_p)
                             if batch_has_ref:
                                 try:
-                                    ve_obj.to(self.device)
+                                    # Reload VE params AND its optimizer state to GPU before
+                                    # the step (they may have been offloaded during a
+                                    # reference-free run); keeps optimizer.step() consistent.
+                                    self._ve_set_device(self.device)
                                     ve_obj.train(train_ve)
                                     target_dim = mnt_text_embeddings.shape[-1]
                                     ve_pos_list = []

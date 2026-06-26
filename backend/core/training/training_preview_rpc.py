@@ -121,6 +121,43 @@ def write_result(
     os.replace(meta_tmp, meta_path)
 
 
+PREVIEW_FRAME_SUFFIX = ".frame.pt"
+
+
+def preview_frame_path(output_dir: str | Path, request_id: str) -> Path:
+    return Path(output_dir) / f"{RESULT_PREFIX}{request_id}{PREVIEW_FRAME_SUFFIX}"
+
+
+def write_preview_frame(output_dir: str | Path, request_id: str, frame: Dict[str, Any]) -> None:
+    """Atomic-write a live-preview frame (small latent + meta). The trainer writes one per
+    preview interval during a preview generation; the API decodes it (TAESD) and broadcasts
+    it to the WebSocket so the user sees a live preview. Best-effort — never raise into the
+    sampling loop."""
+    import torch
+    p = preview_frame_path(output_dir, request_id)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    torch.save(frame, tmp)
+    os.replace(tmp, p)
+
+
+def read_preview_frame(output_dir: str | Path, request_id: str) -> Optional[Dict[str, Any]]:
+    import torch
+    p = preview_frame_path(output_dir, request_id)
+    if not p.exists():
+        return None
+    try:
+        return torch.load(p, map_location="cpu")
+    except Exception:
+        return None
+
+
+def cleanup_preview_frame(output_dir: str | Path, request_id: str) -> None:
+    try:
+        preview_frame_path(output_dir, request_id).unlink()
+    except OSError:
+        pass
+
+
 def cleanup_stale(output_dir: str | Path) -> int:
     """Remove request / result files older than ``STALE_TIMEOUT_SEC``.
 

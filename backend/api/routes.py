@@ -657,6 +657,46 @@ def _get_active_training_for_preview(run_id_hint: Optional[int]) -> tuple[int, s
     return int(rid), proc.output_dir
 
 
+def _broadcast_training_preview_frame(frame: dict) -> None:
+    """Decode a training-preview latent frame (written by the trainer subprocess) with the
+    API's TAESD model and broadcast it to the WebSocket in the same message shape as normal
+    generation previews, so the frontend's existing preview handler shows it live."""
+    import io as _io, base64 as _b64
+    lat = frame.get("latents")
+    if lat is None:
+        return
+    try:
+        preview_pil = taesd_manager.decode_latent(
+            lat,
+            is_sdxl=bool(frame.get("is_sdxl", False)),
+            is_zimage=bool(frame.get("is_zimage", False)),
+            is_deus=False,
+            is_zimage_sdxl_vae=False,
+            is_flux2=False,
+            is_anima=bool(frame.get("is_anima", False)),
+            is_lens=bool(frame.get("is_lens", False)),
+            is_ideogram4=bool(frame.get("is_ideogram4", False)),
+            is_minit2i=bool(frame.get("is_minit2i", False)),
+            minit2i_vae_type=frame.get("minit2i_vae_type"),
+            image_width=int(frame.get("image_width", 1024)),
+            image_height=int(frame.get("image_height", 1024)),
+            preview_decoder=str(frame.get("preview_decoder", "matrix")),
+        )
+        if not preview_pil:
+            return
+        buf = _io.BytesIO()
+        preview_pil.save(buf, format="JPEG", quality=75)
+        b64 = _b64.b64encode(buf.getvalue()).decode()
+        step = int(frame.get("step", 0))
+        total = int(frame.get("total", 1)) or 1
+        display_step = 0 if step == -1 else step + 1
+        manager.send_progress_sync(
+            display_step, total, f"Preview {display_step}/{total}", preview_image=b64,
+        )
+    except Exception as e:   # noqa: BLE001
+        print(f"[Preview] frame decode/broadcast failed: {e}")
+
+
 async def _await_preview_result(
     output_dir: str, request_id: str, timeout: float = 180.0,
 ) -> tuple[Optional[bytes], dict]:
@@ -666,12 +706,13 @@ async def _await_preview_result(
     the meta file is sufficient to know the PNG is fully written.
     """
     from core.training.training_preview_rpc import (
-        result_image_path, result_meta_path,
+        result_image_path, result_meta_path, read_preview_frame,
     )
     import json as _json
     deadline = asyncio.get_event_loop().time() + timeout
     meta_path = result_meta_path(output_dir, request_id)
     img_path  = result_image_path(output_dir, request_id)
+    last_seq = 0
     while asyncio.get_event_loop().time() < deadline:
         if meta_path.exists():
             try:
@@ -689,7 +730,17 @@ async def _await_preview_result(
                 try: p.unlink()
                 except OSError: pass
             return image_bytes, meta
-        await asyncio.sleep(0.5)
+        # Live preview: the trainer writes a latent frame per preview interval; decode it
+        # here (the API has the TAESD model) and broadcast to the WebSocket so the user sees
+        # progress during the in-training generation.
+        try:
+            frame = read_preview_frame(output_dir, request_id)
+            if frame and int(frame.get("seq", 0)) > last_seq:
+                last_seq = int(frame["seq"])
+                _broadcast_training_preview_frame(frame)
+        except Exception:
+            pass
+        await asyncio.sleep(0.25)
     raise HTTPException(
         status_code=504,
         detail=f"Preview request timed out after {timeout:.0f}s "

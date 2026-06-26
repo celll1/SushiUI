@@ -1279,6 +1279,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       loopGroupId,
       loopStepIndex: loopGroupId ? -1 : undefined,
       isLoopStep: false,
+      useTrainingModel,
+      trainingRunId: activeTraining?.run_id,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -1466,11 +1468,13 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         loopGroupId,
         loopStepIndex: i,
         isLoopStep: true,
+        useTrainingModel,
+        trainingRunId: activeTraining?.run_id,
       });
     }
 
     console.log(`[Img2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, refImages]);
+  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -1532,7 +1536,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
       let imageUrl: string;
       let result: any;
-      if (useTrainingModel && activeTraining) {
+      // Use the per-item flag (set at enqueue time) so loop steps queued under the
+      // training model keep using it even though this panel's own checkbox may be off.
+      const itemUseTraining = (nextItem?.useTrainingModel ?? useTrainingModel);
+      const itemRunId = nextItem?.trainingRunId ?? activeTraining?.run_id;
+      if (itemUseTraining && itemRunId) {
         // Training-preview branch: encode init image as base64 and route
         // to /generate/img2img/training-preview.  Result is a blob;
         // we wrap it in an object-URL for display (no gallery save).
@@ -1541,7 +1549,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           ...(paramsWithDevMode as any),
           init_image_base64: initImageBase64,
           denoising_strength: paramsWithDevMode.denoising_strength ?? 0.75,
-          run_id: activeTraining.run_id,
+          run_id: itemRunId,
           save_to_gallery: savePreviewToGallery,
         });
         if (preview.filename) {

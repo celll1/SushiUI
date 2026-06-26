@@ -1401,6 +1401,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       loopGroupId,
       loopStepIndex: loopGroupId ? -1 : undefined,
       isLoopStep: false,
+      useTrainingModel,
+      trainingRunId: activeTraining?.run_id,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -1596,11 +1598,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         loopGroupId,
         loopStepIndex: i,
         isLoopStep: true,
+        useTrainingModel,
+        trainingRunId: activeTraining?.run_id,
       });
     }
 
     console.log(`[Inpaint] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, refImages]);
+  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -1689,7 +1693,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
       let result: any;
       let imageUrl: string;
-      if (useTrainingModel && activeTraining) {
+      // Per-item flag (set at enqueue) so loop steps keep the model choice.
+      if ((nextItem?.useTrainingModel ?? useTrainingModel) && (nextItem?.trainingRunId ?? activeTraining?.run_id)) {
         // Training-preview branch: encode init+mask, route to
         // /generate/inpaint/training-preview; result is a blob URL.
         const initImageBase64 = await toBase64(nextItem.inputImage!);
@@ -1699,7 +1704,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           init_image_base64: initImageBase64,
           mask_image_base64: maskImageBase64,
           denoising_strength: apiParams.denoising_strength ?? 0.75,
-          run_id: activeTraining.run_id,
+          run_id: nextItem?.trainingRunId ?? activeTraining!.run_id,
           save_to_gallery: savePreviewToGallery,
         });
         if (preview.filename) {

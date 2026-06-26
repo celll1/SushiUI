@@ -16,6 +16,11 @@ export interface QueueItem {
   loopGroupId?: string; // ID to group loop steps together
   loopStepIndex?: number; // Index of this step in the loop sequence
   isLoopStep?: boolean; // Whether this is a loop step (vs main generation)
+  // Generate with the in-training model (training-preview). Captured per item at enqueue
+  // time so loop steps (which may be processed by a different panel whose own
+  // "use training model" checkbox is off) keep the base generation's choice.
+  useTrainingModel?: boolean;
+  trainingRunId?: number;
   startTime?: number; // When generation started (for timing)
   endTime?: number; // When generation completed (for timing)
 }

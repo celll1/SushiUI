@@ -8876,9 +8876,11 @@ class BaseTrainer(ABC):
                 )
                 print(f"{self.log_prefix} Epoch-dynamic crop augmentation ENABLED "
                       f"(full_prob={self.crop_planner.full_image_prob}, "
+                      f"max_bucket_prob={self.crop_planner.max_bucket_prob}, "
                       f"min_area={self.crop_planner.min_area_ratio}, "
                       f"min_short={self.crop_planner.min_short_side_px}, "
-                      f"scale={self.crop_planner.scale_min}-{self.crop_planner.scale_max}, "
+                      f"aspect={self.crop_planner.aspect_mode}, "
+                      f"smaller_mode={self.crop_planner.smaller_bucket_mode}, "
                       f"seed={self.crop_planner.seed})")
 
         # Validate MNT parameters

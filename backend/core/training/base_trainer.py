@@ -8980,7 +8980,10 @@ class BaseTrainer(ABC):
         if self.crop_planner is not None:
             print(f"{self.log_prefix} [crop] Precomputing step plan: reading {total_items} "
                   f"image sizes + sampling per-epoch bucket distribution...")
+            if progress_callback:
+                progress_callback(phase="crop_precompute", step=0, total=total_items)
             _plan_items = []
+            _cp_done = 0
             for dataset in datasets:
                 for item in dataset.items:
                     try:
@@ -8988,6 +8991,12 @@ class BaseTrainer(ABC):
                     except Exception:
                         ow, oh = item.get("width", 1024), item.get("height", 1024)
                     _plan_items.append((item["image_path"], ow, oh))
+                    _cp_done += 1
+                    # Throttle UI updates (every ~2000 items) to avoid flooding.
+                    if progress_callback and _cp_done % 2000 == 0:
+                        progress_callback(phase="crop_precompute", step=_cp_done, total=total_items)
+            if progress_callback:
+                progress_callback(phase="crop_precompute", step=total_items, total=total_items)
             self.crop_planner.precompute(_plan_items, num_epochs, batch_size)
             self._crop_step_offsets = self.crop_planner.step_offsets(multi_noise_timesteps)
             self._crop_plan_fingerprint = self.crop_planner.fingerprint(

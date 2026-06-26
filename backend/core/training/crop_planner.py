@@ -110,7 +110,7 @@ class CropPlanner:
         self.position_mode: str = str(_cfg("crop_position_mode"))      # "random" | "corner"
         # Smaller-bucket controls.
         self.smaller_bucket_mode: str = str(_cfg("crop_smaller_bucket_mode"))  # "base_res" | "scale_range"
-        _ssr = _cfg("crop_smaller_scale_range")
+        _ssr = _cfg("crop_smaller_scale_range") or TRAINING_DEFAULTS["crop_smaller_scale_range"]
         self.smaller_scale_lo: float = float(_ssr[0])
         self.smaller_scale_hi: float = min(1.0, float(_ssr[1]))
         # Full-image (minimal crop) position.

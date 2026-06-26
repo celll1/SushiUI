@@ -693,7 +693,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       crop_aspect_mode: params.crop_aspect_mode,
       crop_position_mode: params.crop_position_mode,
       crop_smaller_bucket_mode: params.crop_smaller_bucket_mode,
-      crop_smaller_scale_range: params.crop_smaller_scale_range,
+      crop_smaller_scale_range: params.crop_smaller_scale_range ?? [0.5, 0.9],
       full_crop_position_mode: params.full_crop_position_mode,
       crop_microcond_mode: params.crop_microcond_mode,
       crop_plan_seed: params.crop_plan_seed,
@@ -5443,7 +5443,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Min area ratio</label>
                         <input
-                          type="number" min={0.01} max={1} step={0.05}
+                          type="number" min={0.01} max={1} step={0.01}
                           value={params.crop_min_area_ratio ?? 0.25}
                           onChange={(e) => updateParam("crop_min_area_ratio", parseFloat(e.target.value) || 0.25)}
                           className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"

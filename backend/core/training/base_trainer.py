@@ -10308,12 +10308,14 @@ class BaseTrainer(ABC):
                     # in-training model state.  Failures are isolated per
                     # request and reported via the result file — training
                     # never crashes because of a bad request.
+                    _preview_ran = False
                     try:
                         from core.training.training_preview_rpc import (
                             list_pending_requests, read_request, cleanup_stale,
                         )
                         _pending = list_pending_requests(self.output_dir)
                         if _pending:
+                            _preview_ran = True
                             from core.training.training_inference import TrainingPreviewGenerator
                             if not hasattr(self, "_preview_gen"):
                                 self._preview_gen = TrainingPreviewGenerator(self)
@@ -10335,6 +10337,20 @@ class BaseTrainer(ABC):
                     except Exception as _pe:   # noqa: BLE001
                         # Never let preview handling kill training
                         print(f"{self.log_prefix} WARNING: preview poll failed: {_pe}")
+
+                    # A preview generation moves the model's components around and offloads
+                    # them to CPU when done, breaking the device layout the training loop
+                    # relies on (next encode/forward would hit a CPU/GPU mismatch — e.g.
+                    # text encoder left on CPU). Restore it before continuing this step.
+                    if _preview_ran:
+                        try:
+                            self.move_main_model_to_gpu()
+                            if text_encoding_mode == "onthefly_gpu":
+                                self.move_text_encoder_to_gpu()
+                            # VAE is re-homed by the per-item onthefly encode guard.
+                            print(f"{self.log_prefix} Restored training device layout after preview generation")
+                        except Exception as _re:
+                            print(f"{self.log_prefix} WARNING: failed to restore device layout after preview: {_re}")
 
                     # cpu_prefetch path: drain the background worker for this
                     # batch (and let it run ahead while we train). We pull

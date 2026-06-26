@@ -8778,6 +8778,24 @@ class BaseTrainer(ABC):
                     # Per-batch CPU offloading is skipped when training VE (92.9M params ≈ 186MB
                     # is negligible vs UNet, and PCIe round-trips per batch hurt throughput).
                     self.vision_encoder.to(self.device)
+                    # Gradient checkpointing on the trained VE: the reference images are
+                    # encoded one forward each (their graphs all held until the batch
+                    # backward), so activation memory adds up. GC trades a little recompute
+                    # for much lower activation VRAM with identical gradients (settings-neutral).
+                    # use_reentrant=False: the pixel inputs don't require grad.
+                    try:
+                        _ve_model = getattr(self.vision_encoder, "model", None)
+                        if _ve_model is not None and hasattr(_ve_model, "gradient_checkpointing_enable"):
+                            try:
+                                _ve_model.gradient_checkpointing_enable(
+                                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                                )
+                            except TypeError:
+                                # Older transformers without the kwargs argument.
+                                _ve_model.gradient_checkpointing_enable()
+                            print(f"{self.log_prefix} Gradient checkpointing enabled for Vision Encoder")
+                    except Exception as _ve_gc_err:
+                        print(f"{self.log_prefix} WARNING: could not enable VE gradient checkpointing: {_ve_gc_err}")
                     print(f"{self.log_prefix} Vision Encoder: Will be trained (lr={vision_encoder_lr or 'inherit'}), kept on GPU")
                 else:
                     print(f"{self.log_prefix} Vision Encoder: Frozen (inference only, CPU offloaded between batches)")

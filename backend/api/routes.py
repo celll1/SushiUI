@@ -6440,7 +6440,7 @@ class TrainingRunCreateRequest(BaseModel):
     crop_aspect_mode: str = TRAINING_DEFAULTS["crop_aspect_mode"]
     crop_position_mode: str = TRAINING_DEFAULTS["crop_position_mode"]
     crop_smaller_bucket_mode: str = TRAINING_DEFAULTS["crop_smaller_bucket_mode"]
-    crop_smaller_scale_range: List[float] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["crop_smaller_scale_range"]))
+    crop_smaller_scale_range: Optional[List[float]] = Field(default_factory=lambda: list(TRAINING_DEFAULTS["crop_smaller_scale_range"]))
     full_crop_position_mode: str = TRAINING_DEFAULTS["full_crop_position_mode"]
     crop_microcond_mode: str = TRAINING_DEFAULTS["crop_microcond_mode"]
     crop_plan_seed: int = TRAINING_DEFAULTS["crop_plan_seed"]

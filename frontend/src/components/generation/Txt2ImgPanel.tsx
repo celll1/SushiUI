@@ -1075,6 +1075,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       loopGroupId,
       loopStepIndex: loopGroupId ? -1 : undefined, // -1 indicates main generation
       isLoopStep: false,
+      useTrainingModel,
+      trainingRunId: activeTraining?.run_id,
     });
 
     // If loop generation is enabled, add all loop steps immediately
@@ -1223,11 +1225,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         loopGroupId,
         loopStepIndex: i,
         isLoopStep: true,
+        useTrainingModel,
+        trainingRunId: activeTraining?.run_id,
       });
     }
 
     console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue, refImages]);
+  }, [loopGenerationConfig, addToQueue, refImages, useTrainingModel, activeTraining]);
 
   // Add loop generation steps to queue after main generation completes (legacy - not used anymore)
   const addLoopStepsToQueue = useCallback(async (baseImageUrl: string, mainParams: GenerationParams, loopGroupId: string) => {
@@ -1312,11 +1316,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         loopGroupId,
         loopStepIndex: i,
         isLoopStep: true,
+        useTrainingModel,
+        trainingRunId: activeTraining?.run_id,
       });
     }
 
     console.log(`[Txt2Img] Added ${enabledSteps.length} loop steps to queue with group ID: ${loopGroupId}`);
-  }, [loopGenerationConfig, addToQueue]);
+  }, [loopGenerationConfig, addToQueue, useTrainingModel, activeTraining]);
 
   // Process queue - automatically start next item
   const processQueueRef = useRef<() => Promise<void>>();
@@ -1372,10 +1378,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         // toggle is on and a LoRA/Full-FT run is active.  Returns a blob;
         // we wrap it in an object-URL and reuse the same display path.
         // Skips gallery save (preview only).
-        if (useTrainingModel && activeTraining) {
+        // Per-item flag (set at enqueue) so queued items keep the model choice
+        // regardless of the live checkbox state.
+        if ((nextItem?.useTrainingModel ?? useTrainingModel) && (nextItem?.trainingRunId ?? activeTraining?.run_id)) {
           const preview = await generateTxt2ImgTrainingPreview({
             ...(paramsWithDevMode as GenerationParams),
-            run_id: activeTraining.run_id,
+            run_id: nextItem?.trainingRunId ?? activeTraining!.run_id,
             save_to_gallery: savePreviewToGallery,
           });
           // Prefer the stable /outputs/<filename> URL when the backend

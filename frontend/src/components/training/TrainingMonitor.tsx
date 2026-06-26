@@ -718,6 +718,31 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
                           {debugVisualization.recon_loss !== undefined && (
                             <div><span className="text-gray-400">Recon Loss:</span> {debugVisualization.recon_loss.toFixed(6)}</div>
                           )}
+                          {/* SDXL crop / micro-conditioning (crop-augmentation verification) */}
+                          {(debugVisualization.original_size || debugVisualization.crop_top_left || debugVisualization.target_size) && (
+                            <div className="pt-1 border-t border-gray-700">
+                              <div className="text-gray-400 mb-0.5">SDXL micro-conditioning (item 0):</div>
+                              {debugVisualization.original_size && (
+                                <div><span className="text-gray-400">Original size (WxH):</span> {debugVisualization.original_size[0]}×{debugVisualization.original_size[1]}</div>
+                              )}
+                              {debugVisualization.crop_top_left && (
+                                <div>
+                                  <span className="text-gray-400">Crop point (left,top):</span> {debugVisualization.crop_top_left[0]},{debugVisualization.crop_top_left[1]}
+                                  {(debugVisualization.crop_top_left[0] !== 0 || debugVisualization.crop_top_left[1] !== 0) && (
+                                    <span className="text-green-400 ml-1">(cropped)</span>
+                                  )}
+                                </div>
+                              )}
+                              {debugVisualization.target_size && (
+                                <div><span className="text-gray-400">Target/bucket (WxH):</span> {debugVisualization.target_size[0]}×{debugVisualization.target_size[1]}</div>
+                              )}
+                              {debugVisualization.sdxl_time_ids_all && debugVisualization.sdxl_time_ids_all.length > 1 && (
+                                <div className="text-gray-500 text-xxs mt-0.5">
+                                  batch: {debugVisualization.sdxl_time_ids_all.length} items (time_ids = [oh,ow,ct,cl,th,tw])
+                                </div>
+                              )}
+                            </div>
+                          )}
                           {debugVisualization.caption && (
                             <div className="pt-1 border-t border-gray-700">
                               <div className="text-gray-400 mb-0.5">Caption (processed):</div>

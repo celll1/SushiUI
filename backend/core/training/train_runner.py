@@ -451,7 +451,18 @@ def get_dataset_items_cached(
 
     caption_config = dataset.caption_processing or get_default_caption_processing_config()
 
-    # Compute cache key
+    # Honor the dataset's configured caption_types (from Dataset Management ->
+    # caption_processing) when the caller passes none. The YAML datasets section does not
+    # carry caption_types, so ds_config["caption_types"] arrives empty; without this fallback
+    # get_dataset_items_fast() would hit its hardcoded ["tags", "natural_language"] default
+    # and silently train on tags even when the dataset is set to captions.
+    if not caption_types:
+        _cfg_types = caption_config.get("caption_types")
+        if _cfg_types:
+            caption_types = list(_cfg_types)
+            print(f"[TrainRunner] caption_types not supplied; using dataset.caption_processing: {caption_types}")
+
+    # Compute cache key (includes caption_types, so a corrected type invalidates stale cache)
     cache_key = _compute_dataset_cache_key(db, [dataset_id], caption_types)
     cache_path = _get_dataset_cache_path(output_dir, cache_key)
 

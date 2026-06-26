@@ -8006,6 +8006,12 @@ async def visualize_debug_latent(
     if "caption" in data:
         result["caption"] = data["caption"]
 
+    # SDXL micro-conditioning / crop info (for crop-augmentation verification):
+    # original_size, crop_top_left (= crop point), target_size, and the raw time_ids.
+    for _k in ("original_size", "crop_top_left", "target_size", "sdxl_time_ids", "sdxl_time_ids_all"):
+        if _k in data:
+            result[_k] = data[_k]
+
     # Add reference image thumbnail if available
     if "reference_image_path" in data:
         try:

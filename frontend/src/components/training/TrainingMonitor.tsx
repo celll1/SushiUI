@@ -318,9 +318,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
       </div>
 
       {/* Main Content - Responsive Layout */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Left Panel - Training Info */}
-        <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
+      <div className="flex-1 flex flex-col lg:flex-row overflow-y-auto lg:overflow-hidden">
+        {/* Left Panel - Training Info (internal scroll on desktop; flows on mobile) */}
+        <div className="flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-3 sm:space-y-4">
           {/* Status */}
           <div className="bg-gray-800 rounded-lg p-2.5 sm:p-3">
             <div className="flex items-center justify-between mb-2 sm:mb-3">
@@ -578,8 +578,9 @@ export default function TrainingMonitor({ run, onClose, onStatusChange, onDelete
             </button>
           </div>
 
-          {/* Tab Content */}
-          <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2.5 sm:space-y-3">
+          {/* Tab Content — internal scroll on desktop; on mobile the whole content area
+              (parent) scrolls so nothing below (e.g. the comparison slider) gets clipped. */}
+          <div className="flex-1 lg:overflow-y-auto p-3 sm:p-4 space-y-2.5 sm:space-y-3">
             {viewMode === "samples" ? (
               <>
                 {samples.length === 0 ? (

@@ -10171,10 +10171,53 @@ class BaseTrainer(ABC):
                         if update_total_steps_callback is not None:
                             update_total_steps_callback(actual_total_steps)
 
+                # Vision Encoder VRAM management: if NO batch this epoch uses a reference
+                # image (e.g. no VE-reconstruction data in the run), the trained VE would
+                # just waste ~186MB on GPU. Offload it to CPU for the epoch; the per-batch
+                # encode block reloads it just-in-time should a reference batch appear. This
+                # is safe for the optimizer because reference-free batches produce no VE grad
+                # (set_to_none), so the step skips the VE params even while on CPU.
+                self._ve_idle_batches = 0
+                if getattr(self, '_train_vision_encoder', False) and self.vision_encoder is not None:
+                    _epoch_has_ref = any(
+                        any((_it.get("reference_images") for _it, _ds in _b)) for _b in batches
+                    )
+                    if not _epoch_has_ref:
+                        try:
+                            if next(self.vision_encoder.model.parameters()).device.type != "cpu":
+                                self.vision_encoder.to("cpu")
+                                torch.cuda.empty_cache()
+                                print(f"{self.log_prefix} [VE] Epoch {epoch + 1}: no reference-image "
+                                      f"batches — Vision Encoder offloaded to CPU (~186MB freed)")
+                        except Exception:
+                            pass
+
                 for batch_idx, batch in enumerate(tqdm(batches, desc=f"Epoch {epoch+1}/{num_epochs} ({epoch_steps} steps)")):
                     # Reset fused optimizer groups counters (start of each step)
                     if self.fused_optimizer_groups is not None:
                         self.fused_optimizer_groups.reset_counters()
+
+                    # Vision Encoder VRAM management (mixed epochs): offload the trained VE
+                    # after a sustained run of reference-free batches; the encode block
+                    # reloads it just-in-time when a reference batch arrives. Hysteresis
+                    # (offload only after _VE_OFFLOAD_AFTER idle batches, fire once) avoids
+                    # thrashing on interspersed reference batches — important for iter speed.
+                    if getattr(self, '_train_vision_encoder', False) and self.vision_encoder is not None:
+                        _b_has_ref = any((_it.get("reference_images") for _it, _ds in batch))
+                        if _b_has_ref:
+                            self._ve_idle_batches = 0
+                        else:
+                            self._ve_idle_batches = getattr(self, "_ve_idle_batches", 0) + 1
+                            if self._ve_idle_batches == 64:  # fire exactly once at the threshold
+                                try:
+                                    if next(self.vision_encoder.model.parameters()).device.type != "cpu":
+                                        self.vision_encoder.to("cpu")
+                                        torch.cuda.empty_cache()
+                                        print(f"{self.log_prefix} [VE] 64 reference-free batches — "
+                                              f"Vision Encoder offloaded to CPU (~186MB freed; reloads "
+                                              f"on the next reference batch)")
+                                except Exception:
+                                    pass
 
                     # Aspect-ratio bucketing produces many distinct tensor shapes
                     # (this dataset has ~140 buckets). Each new shape reserves fresh
@@ -10772,6 +10815,15 @@ class BaseTrainer(ABC):
 
                     # Create batch tensors (ONCE, reused across MNT iterations)
                     latents = torch.cat(latents_list, dim=0)
+
+                    # onthefly_gpu latent encoding keeps the VAE on GPU per batch (see the
+                    # encode branch). The VAE is not needed during the forward/backward, so
+                    # offload it to CPU now to free its VRAM during the peak; the next batch's
+                    # encode moves it back. No empty_cache(): the freed block stays in the
+                    # allocator cache and is reused by the train step (calling empty_cache
+                    # every batch would hurt throughput).
+                    if latent_encoding_mode == "onthefly_gpu" and self.vae is not None:
+                        self.vae.to(device="cpu", dtype=self.vae_dtype)
 
                     # REPA clean-image batch [B,3,S,S] (CPU). Requires a pixel for every
                     # surviving item; if any failed to load, skip REPA for this batch.

@@ -292,29 +292,43 @@ class CropPlanner:
 
     # --------------------------------------------------------- step accounting
     def precompute(self, items: List[Tuple[str, int, int]], num_epochs: int, batch_size: int,
-                   sample_epochs: int = 4) -> None:
-        """Precompute per-epoch batch counts for step accounting.
+                   sample_epochs: int = 4, max_sample_items: int = 50_000) -> None:
+        """Precompute per-epoch batch counts for step accounting (for the progress total).
 
         items: list of (image_path, ow, oh). The per-epoch batch count is the standard
         bucketed count (sum over buckets of ceil(count / batch_size)).
 
-        A full O(num_epochs * num_items) pass is prohibitive for large datasets with many
-        epochs (e.g. 500 epochs x 14k items = 7.3M planner evals). Since the crop/bucket
-        mix uses fixed probabilities, the per-epoch batch count is statistically stable, so
-        we compute the first `sample_epochs` epochs exactly and use their mean for the rest.
-        priority/VE adjustments are layered on by the trainer.
+        A full O(num_epochs * num_items) pass is prohibitive at scale (e.g. 500 epochs x
+        3M items = 1.5B planner evals). Two reductions, both valid because this only feeds
+        the progress-bar total (the real per-epoch step count is whatever the epoch loop
+        builds at runtime):
+          - epoch sampling: compute `sample_epochs` epochs, mean for the rest (the fixed
+            mix probabilities make per-epoch counts statistically stable).
+          - item sampling: estimate the bucket distribution from a strided subset of up to
+            `max_sample_items` items and scale the per-bucket counts back to the full size.
         """
+        n = len(items)
+        if n > max_sample_items:
+            stride = n / max_sample_items
+            sample = [items[int(i * stride)] for i in range(max_sample_items)]
+            scale = n / len(sample)
+        else:
+            sample = items
+            scale = 1.0
+
         sample_n = max(1, min(num_epochs, sample_epochs))
         sampled: List[int] = []
         for epoch in range(sample_n):
-            hist: Dict[Tuple[int, int], int] = {}
-            for image_path, ow, oh in items:
+            hist: Dict[Tuple[int, int], float] = {}
+            for image_path, ow, oh in sample:
                 spec = self.spec_for(epoch, image_path, ow, oh)
                 key = (spec.bucket_w, spec.bucket_h)
                 hist[key] = hist.get(key, 0) + 1
-            sampled.append(sum((c + batch_size - 1) // batch_size for c in hist.values()))
+            # Scale per-bucket counts to the full dataset, then ceil into batches.
+            batches = sum(int(math.ceil(c * scale / batch_size)) for c in hist.values())
+            sampled.append(batches)
         mean_b = round(sum(sampled) / len(sampled))
-        # Exact for sampled epochs, mean for the remainder.
+        # Exact (sampled) for the sampled epochs, mean for the remainder.
         self._batches_per_epoch = [
             (sampled[e] if e < sample_n else mean_b) for e in range(num_epochs)
         ]

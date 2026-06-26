@@ -1644,18 +1644,22 @@ class BaseTrainer(ABC):
     def _get_original_size_for_item(self, item) -> Tuple[int, int]:
         """Return the real source image (width, height) for SDXL micro-conditioning.
 
-        Reads only the image header (no full decode) and caches per image_path. Used
-        to compute correct original_size/crop time_ids without changing the latent
-        cache or swap-buffer formats.
+        Resolution order (cheapest first):
+          1. Persistent per-path map (populated for free from DB dims at bucketing setup,
+             see _seed_orig_size_from_db). Keyed by image_path so it survives per-epoch
+             dataset reloads and bucket-dim overwrites.
+          2. Image header read (no full decode), then memoized into the map.
+
+        The map is NOT capped: crop augmentation reads every item's size every epoch
+        (per-epoch re-bucketing), so an LRU cap would thrash and re-open headers on large
+        datasets. Each entry is a tiny (w,h) tuple keyed by path.
         """
+        m = getattr(self, "_orig_size_map", None)
+        if m is None:
+            m = self._orig_size_map = {}
         key = item.get("image_path")
-        cache = getattr(self, "_origsize_cache", None)
-        if cache is None:
-            from collections import OrderedDict
-            cache = self._origsize_cache = OrderedDict()
-        if key and key in cache:
-            cache.move_to_end(key)
-            return cache[key]
+        if key and key in m:
+            return m[key]
         _b = item.get("_danbooru_image_bytes")
         if _b is not None:
             with Image.open(BytesIO(_b)) as im:
@@ -1666,14 +1670,24 @@ class BaseTrainer(ABC):
         else:
             raise ValueError("no image_path/bytes for original size")
         if key:
-            cache[key] = wh
-            cache.move_to_end(key)
-            # Cap generously: the value is a tiny (w,h) tuple, and crop augmentation reads
-            # every item's size every epoch (per-epoch re-bucketing). A small cap would
-            # thrash on large datasets and re-open image headers each epoch.
-            while len(cache) > 1_000_000:
-                cache.popitem(last=False)
+            m[key] = wh
         return wh
+
+    def _seed_orig_size_from_db(self, item) -> None:
+        """Populate the original-size map from the DB dims carried on the item, before
+        bucketing overwrites item['width']/['height'] with the bucket size. Free (no header
+        read) when the DB has dimensions; items without dims fall back to a lazy header read.
+        """
+        key = item.get("image_path")
+        if not key:
+            return
+        ow, oh = item.get("width"), item.get("height")
+        if ow and oh and ow > 0 and oh > 0:
+            m = getattr(self, "_orig_size_map", None)
+            if m is None:
+                m = self._orig_size_map = {}
+            if key not in m:
+                m[key] = (int(ow), int(oh))
 
     def _recompute_sdxl_micro_cond(self, item, bucket_w: int, bucket_h: int, strategy: str):
         """Deterministically recompute SDXL time_ids for an item from its real original
@@ -8986,6 +9000,11 @@ class BaseTrainer(ABC):
             _cp_done = 0
             for dataset in datasets:
                 for item in dataset.items:
+                    # At this point item['width']/['height'] are still the DB original
+                    # dims (the bucket-dim overwrite happens later) -> seed the size map
+                    # for free, avoiding image-header reads. Items without DB dims fall
+                    # back to a lazy header read inside _get_original_size_for_item.
+                    self._seed_orig_size_from_db(item)
                     try:
                         ow, oh = self._get_original_size_for_item(item)
                     except Exception:

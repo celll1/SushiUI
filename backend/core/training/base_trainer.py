@@ -1668,7 +1668,10 @@ class BaseTrainer(ABC):
         if key:
             cache[key] = wh
             cache.move_to_end(key)
-            while len(cache) > 8192:
+            # Cap generously: the value is a tiny (w,h) tuple, and crop augmentation reads
+            # every item's size every epoch (per-epoch re-bucketing). A small cap would
+            # thrash on large datasets and re-open image headers each epoch.
+            while len(cache) > 1_000_000:
                 cache.popitem(last=False)
         return wh
 
@@ -8975,6 +8978,8 @@ class BaseTrainer(ABC):
         self._crop_step_offsets = None
         self._crop_plan_fingerprint = None
         if self.crop_planner is not None:
+            print(f"{self.log_prefix} [crop] Precomputing step plan: reading {total_items} "
+                  f"image sizes + sampling per-epoch bucket distribution...")
             _plan_items = []
             for dataset in datasets:
                 for item in dataset.items:
@@ -8990,7 +8995,7 @@ class BaseTrainer(ABC):
                 num_epochs=num_epochs,
             )
             _crop_total = self._crop_step_offsets[-1]
-            print(f"{self.log_prefix} [crop] Exact per-epoch step accounting: "
+            print(f"{self.log_prefix} [crop] Per-epoch step accounting (sampled): "
                   f"total_steps {actual_total_steps} -> {_crop_total} "
                   f"(batches/epoch: {[self.crop_planner.batches_per_epoch(e) for e in range(min(num_epochs, 8))]}"
                   f"{'...' if num_epochs > 8 else ''})")

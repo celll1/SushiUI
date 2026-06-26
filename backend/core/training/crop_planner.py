@@ -291,22 +291,33 @@ class CropPlanner:
         return self._spec_from(ow, oh, (cx, cy, cw, ch), bucket, is_full=False)
 
     # --------------------------------------------------------- step accounting
-    def precompute(self, items: List[Tuple[str, int, int]], num_epochs: int, batch_size: int) -> None:
-        """Precompute per-epoch batch counts for exact step accounting.
+    def precompute(self, items: List[Tuple[str, int, int]], num_epochs: int, batch_size: int,
+                   sample_epochs: int = 4) -> None:
+        """Precompute per-epoch batch counts for step accounting.
 
-        items: list of (image_path, ow, oh). Counts are the standard bucketed batch
-        count (sum over buckets of ceil(count / batch_size)); priority/VE adjustments
-        are layered on by the trainer.
+        items: list of (image_path, ow, oh). The per-epoch batch count is the standard
+        bucketed count (sum over buckets of ceil(count / batch_size)).
+
+        A full O(num_epochs * num_items) pass is prohibitive for large datasets with many
+        epochs (e.g. 500 epochs x 14k items = 7.3M planner evals). Since the crop/bucket
+        mix uses fixed probabilities, the per-epoch batch count is statistically stable, so
+        we compute the first `sample_epochs` epochs exactly and use their mean for the rest.
+        priority/VE adjustments are layered on by the trainer.
         """
-        self._batches_per_epoch = []
-        for epoch in range(num_epochs):
+        sample_n = max(1, min(num_epochs, sample_epochs))
+        sampled: List[int] = []
+        for epoch in range(sample_n):
             hist: Dict[Tuple[int, int], int] = {}
             for image_path, ow, oh in items:
                 spec = self.spec_for(epoch, image_path, ow, oh)
                 key = (spec.bucket_w, spec.bucket_h)
                 hist[key] = hist.get(key, 0) + 1
-            batches = sum((c + batch_size - 1) // batch_size for c in hist.values())
-            self._batches_per_epoch.append(batches)
+            sampled.append(sum((c + batch_size - 1) // batch_size for c in hist.values()))
+        mean_b = round(sum(sampled) / len(sampled))
+        # Exact for sampled epochs, mean for the remainder.
+        self._batches_per_epoch = [
+            (sampled[e] if e < sample_n else mean_b) for e in range(num_epochs)
+        ]
 
     def batches_per_epoch(self, epoch: int) -> int:
         return self._batches_per_epoch[epoch]

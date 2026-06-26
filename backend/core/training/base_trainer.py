@@ -10507,7 +10507,13 @@ class BaseTrainer(ABC):
                             latents_list.append(latent)
 
                         elif latent_encoding_mode == "onthefly_gpu":
-                            # Encode on GPU without cache
+                            # Encode on GPU without cache. Ensure the VAE is on GPU first:
+                            # encode_image runs the VAE on its current device and does NOT
+                            # move it, so after a (step-0 or mid-epoch) sample generation
+                            # moved the VAE to CPU, the encode would silently run on CPU
+                            # (GPU idle, minutes-long stall). .to(cuda) is a no-op when the
+                            # VAE is already on GPU, so the per-item guard is cheap.
+                            self.move_vae_to_gpu()
                             try:
                                 _danb_b = item.get("_danbooru_image_bytes")
                                 if _danb_b is not None:

@@ -51,6 +51,10 @@ export default function SettingsPage() {
   const [fixedResolutionPresets, setFixedResolutionPresets] = useState(DEFAULT_FIXED_RESOLUTION_PRESETS);
   const [includeMetadataInDownloads, setIncludeMetadataInDownloads] = useState(false);
 
+  // Tag suggestion / floating gallery settings
+  const [tagSuggestionMinCount, setTagSuggestionMinCount] = useState(50);
+  const [floatingGalleryMaxImages, setFloatingGalleryMaxImages] = useState(30);
+
   // Send size mode settings
   const [sendSizeMode, setSendSizeMode] = useState<"absolute" | "scale">("absolute");
   const [sendDefaultScale, setSendDefaultScale] = useState(1.0);
@@ -181,6 +185,16 @@ export default function SettingsPage() {
     if (typeof window !== 'undefined') {
       setRestoreOnCancel(localStorage.getItem('restore_image_on_cancel') === 'true');
       setIncludeMetadataInDownloads(localStorage.getItem('include_metadata_in_downloads') === 'true');
+
+      const savedTagMinCount = localStorage.getItem('tag_suggestion_min_count');
+      if (savedTagMinCount !== null) {
+        setTagSuggestionMinCount(parseInt(savedTagMinCount));
+      }
+
+      const savedGalleryMaxImages = localStorage.getItem('floating_gallery_max_images');
+      if (savedGalleryMaxImages !== null) {
+        setFloatingGalleryMaxImages(parseInt(savedGalleryMaxImages));
+      }
 
       const savedAttentionType = localStorage.getItem('attention_type') as "normal" | "sage" | "flash" | null;
       if (savedAttentionType) {
@@ -494,13 +508,11 @@ export default function SettingsPage() {
                     type="number"
                     min="0"
                     max="10000"
-                    value={
-                      typeof window !== 'undefined'
-                        ? parseInt(localStorage.getItem('tag_suggestion_min_count') || '50')
-                        : 50
-                    }
+                    value={tagSuggestionMinCount}
                     onChange={(e) => {
-                      localStorage.setItem('tag_suggestion_min_count', e.target.value);
+                      const value = e.target.value;
+                      setTagSuggestionMinCount(value === '' ? 0 : parseInt(value));
+                      localStorage.setItem('tag_suggestion_min_count', value === '' ? '0' : value);
                     }}
                     className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
                   />
@@ -527,13 +539,11 @@ export default function SettingsPage() {
                     type="number"
                     min="5"
                     max="100"
-                    value={
-                      typeof window !== 'undefined'
-                        ? parseInt(localStorage.getItem('floating_gallery_max_images') || '30')
-                        : 30
-                    }
+                    value={floatingGalleryMaxImages}
                     onChange={(e) => {
-                      localStorage.setItem('floating_gallery_max_images', e.target.value);
+                      const value = e.target.value;
+                      setFloatingGalleryMaxImages(value === '' ? 0 : parseInt(value));
+                      localStorage.setItem('floating_gallery_max_images', value === '' ? '0' : value);
                     }}
                     className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
                   />

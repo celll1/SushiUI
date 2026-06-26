@@ -3657,6 +3657,23 @@ class BaseTrainer(ABC):
             For SD1.5: text_embeddings tensor
             For SDXL: tuple of (text_embeddings, pooled_embeddings)
         """
+        # Safeguard: text encoding on CPU while training on GPU is slow (and usually about
+        # to fail with a device mismatch, since inputs go to self.device). Warn once.
+        # cpu_prefetch intentionally runs the TE on CPU, so skip it there.
+        if (self.text_encoder is not None
+                and str(getattr(self, "device", "cpu")) != "cpu"
+                and getattr(self, "_text_encoding_mode", None) != "cpu_prefetch"
+                and not getattr(self, "_warned_te_cpu", False)):
+            try:
+                if next(self.text_encoder.parameters()).device.type == "cpu":
+                    self._warned_te_cpu = True
+                    print(f"{self.log_prefix} WARNING: text encoder is on CPU while the "
+                          f"trainer device is {self.device}. Text encoding will be slow or "
+                          f"fail with a device mismatch; the text encoder should be on GPU "
+                          f"during encoding. (logged once)")
+            except StopIteration:
+                pass
+
         # Custom SDXL Text Encoder: bypass CLIP and use the swapped encoder + bridge
         # adapters (returns the SDXL (embeddings[B,L,2048], pooled[B,1280]) contract).
         if self.is_sdxl and getattr(self, "sdxl_te_type", "none") not in ("none", "clip", "", None):
@@ -4426,6 +4443,15 @@ class BaseTrainer(ABC):
             return latent.to(device="cpu", dtype=self.training_dtype)
 
         vae_device = next(self.vae.parameters()).device
+        # Safeguard: VAE encoding on CPU while training on GPU is a silent, catastrophic
+        # slowdown (GPU idle for minutes per image). encode_image follows the VAE's device,
+        # so a VAE left on CPU (e.g. after sample generation) goes unnoticed. Warn once.
+        if (vae_device.type == "cpu" and str(getattr(self, "device", "cpu")) != "cpu"
+                and not getattr(self, "_warned_vae_cpu", False)):
+            self._warned_vae_cpu = True
+            print(f"{self.log_prefix} WARNING: VAE latent encoding is running on CPU while "
+                  f"the trainer device is {self.device}. This is extremely slow (GPU idle). "
+                  f"The VAE should be on GPU during encoding. (logged once)")
         # Match VAE dtype to prevent type mismatch errors
         image_tensor = image_tensor.to(device=vae_device, dtype=self.vae_dtype)
 
@@ -8838,6 +8864,9 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Text encoding mode: {text_encoding_mode}")
         if text_encoding_mode == 'cpu_prefetch':
             print(f"{self.log_prefix}   prefetch_depth: {text_encoding_prefetch_depth}")
+        # Record the mode so encode_prompt can skip the "TE on CPU" warning for
+        # cpu_prefetch, where running the TE on CPU is intentional.
+        self._text_encoding_mode = text_encoding_mode
 
         # Setup debug directory
         debug_dir = None

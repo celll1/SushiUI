@@ -874,10 +874,26 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
         optimizer: AdamW8bit_RingBuffer optimizer instance
     """
 
+    # Precompute id(param) -> param_group once. The previous per-hook scan
+    # (for g in param_groups: if any(id(p)==id(param) ...)) was O(P) per
+    # parameter, i.e. O(P^2) per step for P parameters -- a large hidden cost
+    # for models with thousands of weight tensors. This makes it O(1).
+    param_to_group = {}
+    for g in optimizer.param_groups:
+        for gp in g['params']:
+            param_to_group[id(gp)] = g
+
     def create_update_hook(p: nn.Parameter):
         """Create a hook that updates this parameter immediately after grad accumulation."""
 
+        # The parameter identity is fixed for this hook, so resolve its group
+        # once at registration instead of searching on every backward.
+        group = param_to_group.get(id(p))
+
         def hook(param: nn.Parameter):
+            if group is None:
+                return
+
             # Skip parameters on CPU (offloaded by Block Swap)
             # Update will be applied when layer returns to GPU
             if not param.is_cuda:
@@ -885,17 +901,6 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
 
             # Skip if no gradient
             if param.grad is None:
-                return
-
-            # Find parameter's group
-            group = None
-            for g in optimizer.param_groups:
-                # Use id() comparison to avoid tensor shape mismatch errors
-                if any(id(p) == id(param) for p in g['params']):
-                    group = g
-                    break
-
-            if group is None:
                 return
 
             # Initialize state if needed

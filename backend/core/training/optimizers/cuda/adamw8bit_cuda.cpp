@@ -12,7 +12,32 @@
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/CUDAEvent.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAStreamGuard.h>
+#include <c10/util/Optional.h>
 #include <cuda_runtime.h>
+#include <array>
+
+// ============================================================
+// Dedicated per-device transfer stream for Ring Buffer state I/O
+// ============================================================
+// Cached once per device from the stream pool so it is STABLE across calls.
+// Both the H2D and the D2H of a parameter's optimizer state use this same
+// stream, which keeps cross-step coherence of the pinned CPU buffer (this
+// step's D2H is ordered before next step's H2D on the same stream). Running
+// the state writeback here lets it overlap with subsequent backward work on
+// the compute (current) stream instead of serialising with it.
+static at::cuda::CUDAStream get_xfer_stream(c10::DeviceIndex device) {
+    static std::array<c10::optional<at::cuda::CUDAStream>, 64> cache;
+    if (device >= 0 && static_cast<size_t>(device) < cache.size()) {
+        if (!cache[device].has_value()) {
+            cache[device].emplace(at::cuda::getStreamFromPool(/*isHighPriority=*/false, device));
+        }
+        return cache[device].value();
+    }
+    return at::cuda::getStreamFromPool(/*isHighPriority=*/false, device);
+}
 
 // Forward declarations of CUDA kernel wrappers
 extern "C" {
@@ -112,7 +137,7 @@ void adamw_8bit_update(
     int numel = param.numel();
 
     // ============================================================
-    // Ring Buffer Support: CPU→GPU Transfer
+    // Ring Buffer Support: CPU->GPU Transfer (on a dedicated stream)
     // ============================================================
 
     torch::Tensor state1_gpu = state1;
@@ -120,17 +145,27 @@ void adamw_8bit_update(
 
     bool state1_is_cpu = !state1.is_cuda();
     bool state2_is_cpu = !state2.is_cuda();
+    bool any_cpu = state1_is_cpu || state2_is_cpu;
 
-    // Move states to GPU if on CPU (Ring Buffer case)
-    if (state1_is_cpu) {
-        state1_gpu = state1.to(param.device(), /*non_blocking=*/true);
-    }
-    if (state2_is_cpu) {
-        state2_gpu = state2.to(param.device(), /*non_blocking=*/true);
+    c10::DeviceIndex dev = param.device().index();
+    at::cuda::CUDAStream current = at::cuda::getCurrentCUDAStream(dev);
+    at::cuda::CUDAStream xfer = any_cpu ? get_xfer_stream(dev) : current;
+
+    // H2D of the pinned Ring Buffer states on the transfer stream. The update
+    // kernel (current stream) must wait for it -> order via an event.
+    if (any_cpu) {
+        at::cuda::CUDAStreamGuard guard(xfer);
+        if (state1_is_cpu) state1_gpu = state1.to(param.device(), /*non_blocking=*/true);
+        if (state2_is_cpu) state2_gpu = state2.to(param.device(), /*non_blocking=*/true);
+        at::cuda::CUDAEvent e_h2d;
+        e_h2d.record(xfer);
+        e_h2d.block(current);
     }
 
-    // Get CUDA stream
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream(param.device().index()).stream();
+    // The update kernel runs on the current (compute) stream, so the in-place
+    // parameter update stays naturally ordered with the surrounding backward
+    // and the next forward.
+    cudaStream_t stream = current.stream();
 
     // ============================================================
     // Dispatch based on parameter dtype
@@ -174,21 +209,31 @@ void adamw_8bit_update(
     }
 
     // ============================================================
-    // Copy updated states back to CPU (Ring Buffer case)
+    // Copy updated states back to CPU on the transfer stream (Ring Buffer)
     // ============================================================
     //
-    // H2D, the update kernel and D2H are all issued on the SAME current CUDA
-    // stream, so they execute in order; the writeback also precedes the next
-    // step's H2D of the same (pinned) CPU buffer on that stream. The previous
-    // per-parameter cudaStreamSynchronize() therefore was not needed for
-    // correctness -- it forced a CPU<->GPU lockstep on every parameter,
-    // draining the whole pipeline thousands of times per step. Issue the
-    // writeback asynchronously (pinned CPU buffers) and let it overlap.
-    if (state1_is_cpu) {
-        state1.copy_(state1_gpu, /*non_blocking=*/true);
-    }
-    if (state2_is_cpu) {
-        state2.copy_(state2_gpu, /*non_blocking=*/true);
+    // The D2H writeback runs on the dedicated transfer stream so it overlaps
+    // with the next parameters' backward on the current stream, rather than
+    // serialising the (large) state writeback into the compute pipeline. It is
+    // ordered after the update kernel via an event, and record_stream keeps the
+    // GPU staging buffers alive until both streams are done with them. Same-
+    // stream ordering on the transfer stream keeps this step's D2H before next
+    // step's H2D of the same pinned buffer; there is no per-parameter sync.
+    if (any_cpu) {
+        at::cuda::CUDAEvent e_kernel;
+        e_kernel.record(current);
+        e_kernel.block(xfer);
+        at::cuda::CUDAStreamGuard guard(xfer);
+        if (state1_is_cpu) {
+            state1.copy_(state1_gpu, /*non_blocking=*/true);
+            state1_gpu.record_stream(current);
+            state1_gpu.record_stream(xfer);
+        }
+        if (state2_is_cpu) {
+            state2.copy_(state2_gpu, /*non_blocking=*/true);
+            state2_gpu.record_stream(current);
+            state2_gpu.record_stream(xfer);
+        }
     }
 }
 
@@ -258,17 +303,25 @@ void adamw_8bit_schedulefree_update(
 
     bool state_z_is_cpu = !state_z.is_cuda();
     bool state_exp_avg_sq_is_cpu = !state_exp_avg_sq.is_cuda();
+    bool any_cpu = state_z_is_cpu || state_exp_avg_sq_is_cpu;
 
-    // Move states to GPU if on CPU (Ring Buffer case)
-    if (state_z_is_cpu) {
-        state_z_gpu = state_z.to(param.device(), /*non_blocking=*/true);
-    }
-    if (state_exp_avg_sq_is_cpu) {
-        state_exp_avg_sq_gpu = state_exp_avg_sq.to(param.device(), /*non_blocking=*/true);
+    c10::DeviceIndex dev = param.device().index();
+    at::cuda::CUDAStream current = at::cuda::getCurrentCUDAStream(dev);
+    at::cuda::CUDAStream xfer = any_cpu ? get_xfer_stream(dev) : current;
+
+    // H2D of the pinned Ring Buffer states on the transfer stream; the kernel
+    // (current stream) waits for it via an event.
+    if (any_cpu) {
+        at::cuda::CUDAStreamGuard guard(xfer);
+        if (state_z_is_cpu) state_z_gpu = state_z.to(param.device(), /*non_blocking=*/true);
+        if (state_exp_avg_sq_is_cpu) state_exp_avg_sq_gpu = state_exp_avg_sq.to(param.device(), /*non_blocking=*/true);
+        at::cuda::CUDAEvent e_h2d;
+        e_h2d.record(xfer);
+        e_h2d.block(current);
     }
 
-    // Get CUDA stream
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    // Update kernel runs on the current (compute) stream.
+    cudaStream_t stream = current.stream();
 
     // ============================================================
     // Call CUDA kernel (dtype dispatch)
@@ -315,17 +368,25 @@ void adamw_8bit_schedulefree_update(
     // Ring Buffer Support: GPU→CPU Copy-back
     // ============================================================
 
-    if (state_z_is_cpu) {
-        state_z.copy_(state_z_gpu, /*non_blocking=*/true);
+    // D2H writeback on the transfer stream (overlaps with subsequent backward),
+    // ordered after the kernel via an event; record_stream keeps the staging
+    // buffers alive across both streams. (See note in adamw_8bit_update.)
+    if (any_cpu) {
+        at::cuda::CUDAEvent e_kernel;
+        e_kernel.record(current);
+        e_kernel.block(xfer);
+        at::cuda::CUDAStreamGuard guard(xfer);
+        if (state_z_is_cpu) {
+            state_z.copy_(state_z_gpu, /*non_blocking=*/true);
+            state_z_gpu.record_stream(current);
+            state_z_gpu.record_stream(xfer);
+        }
+        if (state_exp_avg_sq_is_cpu) {
+            state_exp_avg_sq.copy_(state_exp_avg_sq_gpu, /*non_blocking=*/true);
+            state_exp_avg_sq_gpu.record_stream(current);
+            state_exp_avg_sq_gpu.record_stream(xfer);
+        }
     }
-    if (state_exp_avg_sq_is_cpu) {
-        state_exp_avg_sq.copy_(state_exp_avg_sq_gpu, /*non_blocking=*/true);
-    }
-
-    // No per-parameter cudaStreamSynchronize: H2D, kernel and D2H are all on the
-    // current stream and thus ordered with the surrounding backward and with the
-    // next step's H2D of the same pinned buffer. Removing the per-parameter
-    // lockstep recovers pipeline throughput. (See note in adamw_8bit_update.)
 }
 
 

@@ -174,18 +174,21 @@ void adamw_8bit_update(
     }
 
     // ============================================================
-    // Synchronize and copy back to CPU (Ring Buffer case)
+    // Copy updated states back to CPU (Ring Buffer case)
     // ============================================================
-
-    // Wait for kernel completion
-    cudaStreamSynchronize(stream);
-
-    // Copy updated states back to CPU if needed
+    //
+    // H2D, the update kernel and D2H are all issued on the SAME current CUDA
+    // stream, so they execute in order; the writeback also precedes the next
+    // step's H2D of the same (pinned) CPU buffer on that stream. The previous
+    // per-parameter cudaStreamSynchronize() therefore was not needed for
+    // correctness -- it forced a CPU<->GPU lockstep on every parameter,
+    // draining the whole pipeline thousands of times per step. Issue the
+    // writeback asynchronously (pinned CPU buffers) and let it overlap.
     if (state1_is_cpu) {
-        state1.copy_(state1_gpu, /*non_blocking=*/false);
+        state1.copy_(state1_gpu, /*non_blocking=*/true);
     }
     if (state2_is_cpu) {
-        state2.copy_(state2_gpu, /*non_blocking=*/false);
+        state2.copy_(state2_gpu, /*non_blocking=*/true);
     }
 }
 
@@ -319,8 +322,10 @@ void adamw_8bit_schedulefree_update(
         state_exp_avg_sq.copy_(state_exp_avg_sq_gpu, /*non_blocking=*/true);
     }
 
-    // Synchronize to ensure copy-back completes
-    cudaStreamSynchronize(stream);
+    // No per-parameter cudaStreamSynchronize: H2D, kernel and D2H are all on the
+    // current stream and thus ordered with the surrounding backward and with the
+    // next step's H2D of the same pinned buffer. Removing the per-parameter
+    // lockstep recovers pipeline throughput. (See note in adamw_8bit_update.)
 }
 
 

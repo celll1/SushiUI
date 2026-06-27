@@ -18,6 +18,14 @@
 #include <stdio.h>
 #include <type_traits>
 
+// CUDA 13 (CCCL) removed cub::Max; provide a version-independent max functor.
+namespace {
+struct CubMaxOp {
+    __host__ __device__ __forceinline__
+    float operator()(const float &a, const float &b) const { return a > b ? a : b; }
+};
+}  // namespace
+
 // Quantization block size (must match bitsandbytes)
 #define QUANTIZATION_BLOCKSIZE 256
 #define THREADS_PER_BLOCK 256
@@ -177,11 +185,11 @@ __global__ void adamw_8bit_update_kernel(
 
     // Block-level reduction for exp_avg (NO ATOMIC OPERATIONS!)
     // Note: exp_avg may be masked if cautious=true
-    float block_absmax1 = BlockReduce(temp_storage).Reduce(fabsf(exp_avg), cub::Max());
+    float block_absmax1 = BlockReduce(temp_storage).Reduce(fabsf(exp_avg), CubMaxOp{});
     __syncthreads();
 
     // Block-level reduction for exp_avg_sq (reuse temp_storage after syncthreads)
-    float block_absmax2 = BlockReduce(temp_storage).Reduce(local_absmax2, cub::Max());
+    float block_absmax2 = BlockReduce(temp_storage).Reduce(local_absmax2, CubMaxOp{});
     __syncthreads();
 
     // Only first thread in block writes absmax (NO RACE CONDITION!)

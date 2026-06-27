@@ -24,6 +24,14 @@
 #include <stdio.h>
 #include <type_traits>
 
+// CUDA 13 (CCCL) removed cub::Max; provide a version-independent max functor.
+namespace {
+struct CubMaxOp {
+    __host__ __device__ __forceinline__
+    float operator()(const float &a, const float &b) const { return a > b ? a : b; }
+};
+}  // namespace
+
 // Quantization block size (must match bitsandbytes)
 #define QUANTIZATION_BLOCKSIZE 256
 #define THREADS_PER_BLOCK 256
@@ -190,7 +198,7 @@ __global__ void lion_8bit_schedulefree_update_kernel(
     float abs_z = fabsf(z_new);
 
     // Block-level reduce (max)
-    float block_absmax_z = BlockReduce(temp_storage_z).Reduce(abs_z, cub::Max());
+    float block_absmax_z = BlockReduce(temp_storage_z).Reduce(abs_z, CubMaxOp{});
 
     // Update absmax (first thread in block writes)
     if (local_tid == 0) {

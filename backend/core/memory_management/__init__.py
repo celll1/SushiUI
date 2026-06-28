@@ -14,6 +14,7 @@ from .tensor_utils import (
 from .layer_offload_strategy import LayerOffloadStrategy
 from .layer_offload_conductor import LayerOffloadConductor
 from .fused_block_swap import FusedBlockSwapTrainer
+from .activation_dispatcher import ActivationDispatcher, offload_activations
 
 __all__ = [
     # Block offloading (existing, production-ready)
@@ -37,4 +38,7 @@ __all__ = [
     "LayerOffloadConductor",
     # Fused block swap (complete VRAM-efficient training)
     "FusedBlockSwapTrainer",
+    # Proactive per-bucket activation offload dispatcher
+    "ActivationDispatcher",
+    "offload_activations",
 ]

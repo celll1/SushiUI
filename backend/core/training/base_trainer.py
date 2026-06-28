@@ -579,6 +579,12 @@ class BaseTrainer(ABC):
         # Block Swap settings (training VRAM optimization)
         blocks_to_swap: int = 0,
         use_pinned_memory: bool = False,
+        # Per-bucket activation offload dispatcher (proactive, OOM-detection-free)
+        activation_dispatch_enable: bool = False,
+        activation_dispatch_margin_gb: float = 1.0,
+        activation_dispatch_seed_coef: float = 24.0e-6,
+        activation_dispatch_residual_frac: float = 0.85,
+        activation_dispatch_threshold_mb: int = 4,
         # Fused optimizer groups (for any optimizer with Block Swap)
         num_optimizer_groups: int = 0,
         # Optimizer options and hyperparameters
@@ -657,6 +663,15 @@ class BaseTrainer(ABC):
         # Block Swap settings (training VRAM optimization)
         self.blocks_to_swap = blocks_to_swap
         self.use_pinned_memory = use_pinned_memory
+
+        # Per-bucket activation offload dispatcher settings. The dispatcher is
+        # created lazily on the first executed step (once static VRAM is known).
+        self.activation_dispatch_enable = activation_dispatch_enable
+        self.activation_dispatch_margin_gb = activation_dispatch_margin_gb
+        self.activation_dispatch_seed_coef = activation_dispatch_seed_coef
+        self.activation_dispatch_residual_frac = activation_dispatch_residual_frac
+        self.activation_dispatch_threshold_mb = activation_dispatch_threshold_mb
+        self.activation_dispatcher = None
 
         # Fused optimizer settings (for Block Swap compatibility)
         self.num_optimizer_groups = num_optimizer_groups
@@ -4665,24 +4680,33 @@ class BaseTrainer(ABC):
         batch_size = mnt_latents.shape[0]
 
         try:
-            # Attempt full batch forward + backward
-            loss, pred_loss, recon_loss = self._execute_forward_backward(
-                mnt_latents=mnt_latents,
-                mnt_text_embeddings=mnt_text_embeddings,
-                mnt_attention_mask=mnt_attention_mask,
-                mnt_pooled_embeddings=mnt_pooled_embeddings,
-                timesteps=timesteps,
-                debug_save_path=debug_save_path,
-                batch_captions=batch_captions,
-                batch_reference_paths=batch_reference_paths,
-                alphas_cumprod_cached=alphas_cumprod_cached,
-                use_condition_images=use_condition_images,
-                condition_images_batch=condition_images_batch,
-                reference_latents_nested=reference_latents_nested,
-                lens_latent_shape=lens_latent_shape,
-                mnt_repa_pixels=mnt_repa_pixels,
-                mnt_time_ids=mnt_time_ids,
-            )
+            # Proactively decide per-bucket activation offload and wrap the whole
+            # forward+backward in the offload context (saved tensors are restored
+            # in backward, so the context must span both). The try/finally ensures
+            # the saved_tensors hooks are popped even if forward/backward raises,
+            # so the except-based OOM recovery below sees a clean autograd state.
+            _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+            try:
+                # Attempt full batch forward + backward
+                loss, pred_loss, recon_loss = self._execute_forward_backward(
+                    mnt_latents=mnt_latents,
+                    mnt_text_embeddings=mnt_text_embeddings,
+                    mnt_attention_mask=mnt_attention_mask,
+                    mnt_pooled_embeddings=mnt_pooled_embeddings,
+                    timesteps=timesteps,
+                    debug_save_path=debug_save_path,
+                    batch_captions=batch_captions,
+                    batch_reference_paths=batch_reference_paths,
+                    alphas_cumprod_cached=alphas_cumprod_cached,
+                    use_condition_images=use_condition_images,
+                    condition_images_batch=condition_images_batch,
+                    reference_latents_nested=reference_latents_nested,
+                    lens_latent_shape=lens_latent_shape,
+                    mnt_repa_pixels=mnt_repa_pixels,
+                    mnt_time_ids=mnt_time_ids,
+                )
+            finally:
+                self._activation_dispatch_end(_disp_cm, _disp_info)
             return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
 
         except RuntimeError as e:
@@ -4875,6 +4899,84 @@ class BaseTrainer(ABC):
 
             # At least one half succeeded, so we have valid gradients
             return avg_loss, avg_pred, avg_recon, False  # cuda_error_skip=False
+
+    def _activation_dispatch_begin(self, mnt_latents: torch.Tensor):
+        """Decide the per-bucket activation-offload mode and enter the offload
+        context. Returns (entered_context_or_None, info_or_None).
+
+        Proactive: the decision is made from a memory PREDICTION (never a caught
+        OOM), which is required on Windows WDDM where overruns spill silently
+        instead of raising. Disabled / non-CUDA paths return (None, None).
+        """
+        if not self.activation_dispatch_enable or not torch.cuda.is_available():
+            return None, None
+        try:
+            lh = int(mnt_latents.shape[-2])
+            lw = int(mnt_latents.shape[-1])
+            bs = int(mnt_latents.shape[0])
+        except Exception:
+            return None, None
+
+        # Lazily create the dispatcher once static VRAM (weights + grad +
+        # optimizer state) is resident. memory_allocated() is a conservative
+        # proxy; passive calibration (record) corrects predictions thereafter.
+        if self.activation_dispatcher is None:
+            from core.memory_management import ActivationDispatcher
+            static_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+            self.activation_dispatcher = ActivationDispatcher(
+                static_gb=static_gb,
+                margin_gb=self.activation_dispatch_margin_gb,
+                seed_coef=self.activation_dispatch_seed_coef,
+                residual_frac=self.activation_dispatch_residual_frac,
+                threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
+            )
+            print(f"{self.log_prefix} [ActDispatch] enabled (static~{static_gb:.2f}GB, "
+                  f"margin={self.activation_dispatch_margin_gb}GB)")
+
+        disp = self.activation_dispatcher
+        free_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+        mode = disp.decide(lh, lw, bs, free_gb)
+
+        # Block-swap activation offload (LayerOffloadConductor) already moves
+        # activations; suppress the dispatcher offload to avoid double offload.
+        conductor = getattr(self, "layer_offload_conductor", None)
+        if conductor is not None and getattr(conductor, "enable_activation_offload", False):
+            if mode != "fast":
+                print(f"{self.log_prefix} [ActDispatch] offload suppressed "
+                      f"(block-swap activation offload active)")
+            mode = "fast"
+
+        if mode == "escalate":
+            print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} may overflow "
+                  f"even with offload; running with offload (escalate=warn-only)")
+
+        use_offload = mode in ("offload", "escalate")
+        from core.memory_management import offload_activations
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+        cm = offload_activations(use_offload, threshold_bytes=disp.threshold_bytes)
+        cm.__enter__()
+        return cm, (lh, lw, bs, mode)
+
+    def _activation_dispatch_end(self, cm, info) -> None:
+        """Exit the offload context and passively calibrate from the measured peak."""
+        if cm is None:
+            return
+        cm.__exit__(None, None, None)
+        if info is None or self.activation_dispatcher is None:
+            return
+        lh, lw, bs, mode = info
+        try:
+            peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
+            record_mode = "base" if mode == "fast" else "offload"
+            self.activation_dispatcher.record(lh, lw, bs, record_mode, peak_gb)
+            if self.debug_vram:
+                print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} "
+                      f"mode={mode} peak={peak_gb:.2f}GB")
+        except Exception:
+            pass
 
     def _execute_forward_backward(
         self,

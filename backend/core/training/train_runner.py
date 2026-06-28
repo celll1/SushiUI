@@ -2115,6 +2115,11 @@ def main():
                 reconstruction_loss_weight=reconstruction_loss_weight,
                 blocks_to_swap=train_config.get('blocks_to_swap', 0),
                 use_pinned_memory=train_config.get('use_pinned_memory', False),
+                activation_dispatch_enable=train_config.get('activation_dispatch_enable', False),
+                activation_dispatch_margin_gb=train_config.get('activation_dispatch_margin_gb', 1.0),
+                activation_dispatch_seed_coef=train_config.get('activation_dispatch_seed_coef', 24.0e-6),
+                activation_dispatch_residual_frac=train_config.get('activation_dispatch_residual_frac', 0.85),
+                activation_dispatch_threshold_mb=train_config.get('activation_dispatch_threshold_mb', 4),
                 num_optimizer_groups=train_config.get('num_optimizer_groups', 0),
                 # Component-specific learning rates
                 unet_lr=unet_lr,

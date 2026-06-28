@@ -173,6 +173,12 @@ def _build_train_section(
         train["blocks_to_swap"] = p.get("blocks_to_swap", 0)
         train["use_pinned_memory"] = p.get("use_pinned_memory", False)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)
+        # Per-bucket activation offload dispatcher
+        train["activation_dispatch_enable"] = p.get("activation_dispatch_enable", False)
+        train["activation_dispatch_margin_gb"] = p.get("activation_dispatch_margin_gb", 1.0)
+        train["activation_dispatch_seed_coef"] = p.get("activation_dispatch_seed_coef", 24.0e-6)
+        train["activation_dispatch_residual_frac"] = p.get("activation_dispatch_residual_frac", 0.85)
+        train["activation_dispatch_threshold_mb"] = p.get("activation_dispatch_threshold_mb", 4)
 
     # Text/Latent encoding
     train["text_encoding_mode"] = p.get("text_encoding_mode", "swap_onthefly")

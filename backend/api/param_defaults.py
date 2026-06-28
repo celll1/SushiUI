@@ -224,6 +224,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "blocks_to_swap": 0,
     "use_pinned_memory": False,
     "num_optimizer_groups": 0,
+    # Per-bucket activation offload dispatcher. Predicts training peak per bucket
+    # (static + coef * bs * latent_area) before the forward and offloads saved
+    # activations to CPU only where it fits the VRAM budget. Proactive (no OOM
+    # detection), so it works on Windows WDDM which spills instead of raising.
+    "activation_dispatch_enable": False,
+    "activation_dispatch_margin_gb": 1.0,
+    "activation_dispatch_seed_coef": 24.0e-6,
+    "activation_dispatch_residual_frac": 0.85,
+    "activation_dispatch_threshold_mb": 4,
     # MNT
     "multi_noise_timesteps": 1,
     "multi_noise_mode": "independent",

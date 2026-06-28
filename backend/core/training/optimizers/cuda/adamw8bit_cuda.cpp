@@ -14,7 +14,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAEvent.h>
 #include <c10/cuda/CUDAStream.h>
-#include <c10/cuda/CUDAStreamGuard.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <c10/util/Optional.h>
 #include <cuda_runtime.h>
 #include <array>
@@ -154,7 +154,7 @@ void adamw_8bit_update(
     // H2D of the pinned Ring Buffer states on the transfer stream. The update
     // kernel (current stream) must wait for it -> order via an event.
     if (any_cpu) {
-        at::cuda::CUDAStreamGuard guard(xfer);
+        c10::cuda::CUDAStreamGuard guard(xfer);
         if (state1_is_cpu) state1_gpu = state1.to(param.device(), /*non_blocking=*/true);
         if (state2_is_cpu) state2_gpu = state2.to(param.device(), /*non_blocking=*/true);
         at::cuda::CUDAEvent e_h2d;
@@ -223,7 +223,7 @@ void adamw_8bit_update(
         at::cuda::CUDAEvent e_kernel;
         e_kernel.record(current);
         e_kernel.block(xfer);
-        at::cuda::CUDAStreamGuard guard(xfer);
+        c10::cuda::CUDAStreamGuard guard(xfer);
         if (state1_is_cpu) {
             state1.copy_(state1_gpu, /*non_blocking=*/true);
             state1_gpu.record_stream(current);
@@ -312,7 +312,7 @@ void adamw_8bit_schedulefree_update(
     // H2D of the pinned Ring Buffer states on the transfer stream; the kernel
     // (current stream) waits for it via an event.
     if (any_cpu) {
-        at::cuda::CUDAStreamGuard guard(xfer);
+        c10::cuda::CUDAStreamGuard guard(xfer);
         if (state_z_is_cpu) state_z_gpu = state_z.to(param.device(), /*non_blocking=*/true);
         if (state_exp_avg_sq_is_cpu) state_exp_avg_sq_gpu = state_exp_avg_sq.to(param.device(), /*non_blocking=*/true);
         at::cuda::CUDAEvent e_h2d;
@@ -375,7 +375,7 @@ void adamw_8bit_schedulefree_update(
         at::cuda::CUDAEvent e_kernel;
         e_kernel.record(current);
         e_kernel.block(xfer);
-        at::cuda::CUDAStreamGuard guard(xfer);
+        c10::cuda::CUDAStreamGuard guard(xfer);
         if (state_z_is_cpu) {
             state_z.copy_(state_z_gpu, /*non_blocking=*/true);
             state_z_gpu.record_stream(current);

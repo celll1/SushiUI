@@ -141,6 +141,11 @@ class ActivationDispatcher:
         act = peak_gb - resident_gb
         if act <= 0 or denom <= 0:
             return
+        # A peak at/above the budget means the step spilled (WDDM) or nearly OOMed;
+        # max_memory_allocated is then an unreliable lower bound, so don't let it
+        # inflate the coefficient (which would over-predict and over-split forever).
+        if peak_gb >= self.budget:
+            return
         implied = act / denom
         if mode == "offload" and self.residual_frac > 0:
             implied = implied / self.residual_frac

@@ -5082,10 +5082,13 @@ class BaseTrainer(ABC):
             )
             self._actdispatch_logged = set()
             print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
-                  f"resident~{resident_gb:.1f}GB, margin={self.activation_dispatch_margin_gb}GB)")
+                  f"resident~{resident_gb:.1f}GB, free~{free_gb:.1f}GB, "
+                  f"margin={self.activation_dispatch_margin_gb}GB)")
 
         disp = self.activation_dispatcher
         mode = disp.decide(lh, lw, bs, resident_gb)
+        _headroom_gb = disp.budget - resident_gb - disp.margin
+        _act_pred_gb = disp.coef * bs * lh * lw
 
         # Block-swap activation offload (LayerOffloadConductor) already moves
         # activations; suppress the dispatcher offload to avoid double offload.
@@ -5116,11 +5119,14 @@ class BaseTrainer(ABC):
                     micro_bs = planned
                     _log_once((lh, lw, bs, "split", micro_bs),
                               f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} -> "
-                              f"micro-batch={micro_bs} + grad accumulation (effective batch={bs})")
+                              f"micro-batch={micro_bs} (act~{_act_pred_gb:.1f}GB, "
+                              f"headroom~{_headroom_gb:.1f}GB, resident~{resident_gb:.1f}GB, "
+                              f"coef={disp.coef:.2e})")
                 else:
                     _log_once((lh, lw, bs, "tight"),
-                              f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} tight even at "
-                              f"micro-batch=1; running with offload")
+                              f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} tight at "
+                              f"micro-batch=1 (act~{_act_pred_gb:.1f}GB, headroom~{_headroom_gb:.1f}GB, "
+                              f"resident~{resident_gb:.1f}GB, coef={disp.coef:.2e}); offload only")
 
         use_offload = mode in ("offload", "escalate")
         from core.memory_management import offload_activations

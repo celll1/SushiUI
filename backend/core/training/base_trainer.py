@@ -2951,8 +2951,15 @@ class BaseTrainer(ABC):
         # Use full run_name with zero-padded step (consistent with model checkpoint naming)
         optimizer_file = self.output_dir / f"{self.run_name}_step_{step:06d}_optimizer.pt"
 
-        # Save optimizer state dict
-        torch.save(self.optimizer.state_dict(), optimizer_file)
+        # Save optimizer state dict. Tag the optimizer class so a resume that
+        # switches optimizer (e.g. bnb AdamW8bit -> AdamW8bit_RingBuffer) can
+        # detect the source format and convert the state instead of crashing.
+        opt_state = self.optimizer.state_dict()
+        try:
+            opt_state["_sushi_opt_class"] = type(self.optimizer).__name__
+        except Exception:
+            pass
+        torch.save(opt_state, optimizer_file)
         print(f"{self.log_prefix} Saved optimizer state to {optimizer_file.name}")
 
     def load_optimizer_state(self, step: int) -> bool:
@@ -3006,6 +3013,23 @@ class BaseTrainer(ABC):
             # Load optimizer state dict
             optimizer_state = torch.load(optimizer_file, map_location='cpu')
 
+            # If the checkpoint was written by a compatible-but-different 8-bit
+            # optimizer (e.g. bnb AdamW8bit -> AdamW8bit_RingBuffer), convert the
+            # state (key remap + absmax copy; the quantization scheme is identical)
+            # so momentum/variance carry over instead of crashing or resetting.
+            _carry_step = 0
+            try:
+                from core.training.optimizers.optimizer_state_convert import (
+                    maybe_convert_optimizer_state,
+                )
+                _converted, _carry_step = maybe_convert_optimizer_state(
+                    optimizer_state, self.optimizer, log_prefix=self.log_prefix
+                )
+                if _converted is not None:
+                    optimizer_state = _converted
+            except Exception as _conv_err:
+                print(f"{self.log_prefix} [OptConvert] conversion skipped: {_conv_err}")
+
             # Recursively move all optimizer state tensors to GPU
             # This is necessary for 8-bit optimizers that have CUDA-only buffers
             # (absmax_z, absmax1, absmax2, etc.) which must be on CUDA device
@@ -3026,6 +3050,13 @@ class BaseTrainer(ABC):
                             moved_count += 1
                 if moved_count > 0:
                     print(f"{self.log_prefix} Moved {moved_count} optimizer state tensors to {self.device}")
+
+                # Carry the step counter across a cross-implementation conversion
+                # so AdamW bias correction continues from the right step (bnb keeps
+                # step per-param; Ring Buffer uses a global step_count).
+                if _carry_step > 0 and hasattr(self.optimizer, "step_count"):
+                    self.optimizer.step_count = _carry_step
+                    print(f"{self.log_prefix} [OptConvert] carried step_count={_carry_step}")
 
                 print(f"{self.log_prefix} Successfully loaded optimizer state from {optimizer_file.name}")
                 return True

@@ -417,7 +417,22 @@ else:
   精度ノイズが出る（fp16 学習と同質）。厳密一致が要る場合は累積を fp32 grad で行う拡張を検討。
 - **VRAM 効果**（実測）: 2048px bs4 で 18.2→13.1GB、3072px **bs8 は full で OOM→micro で 17.2GB**に収まる。
 - 既存 `_forward_backward_with_oom_recovery` のリアクティブ分割は **loss を未スケール**で累積する潜在バグ
-  （勾配が約2倍）がある。本 escalate 実装は別経路で `chunk/bs` スケールを行い等価性を担保する。
+  （勾配が約2倍）があった → 修正済み（`effective_batch_size` を再帰伝播し `chunk/B_eff` スケール）。
+
+**on-the-fly TE/VE 学習との両立（二段構成・実装済み）**: TE/VE を on-the-fly 学習すると埋め込みは
+**TE forward の共有グラフを持つ非リーフ**になり、バッチをスライスして複数回 backward すると
+「backward a second time」で落ちる（最初の backward が共有グラフを解放）。これを**埋め込み境界の
+detach 二段構成**で解決する:
+1. 各 chunk は **detach した埋め込みリーフ**で U-Net を回す（backward は U-Net で止まり TE グラフ不変）。
+   chunk 毎に埋め込み勾配 `leaf.grad` を `chunk/B_eff` スケール込みで回収・累積。
+2. 全 chunk 後、累積した埋め込み勾配で **`torch.autograd.backward(emb_full, emb_grad)` を1回**実行し
+   TE/VE グラフを1回だけ辿る → エンコーダ勾配が正しく入る。
+- 対象は graph を持つ入力（`mnt_latents`/`mnt_text_embeddings`/`mnt_pooled_embeddings`/`mnt_repa_pixels`）を
+  自動検出。リーフ（pre-encoded/cached）なら従来通り素のスライス。
+- **実測**（`tmp/test_twostage_micro.py`）: U-Net 勾配 rel 1.0e-7、**エンコーダ勾配 rel 2.2e-7** で
+  full-batch と等価 → U-Net activation を削りつつ TE/VE も正しく学習。
+- **非対応**: fused backward（Block Swap 時の per-param step）— backward 中に optimizer.step するため
+  micro 分割自体と非互換。この場合は分割を無効化し offload のみ（既存ガード）。
 
 **情報源は2つ**：
 1. `torch.cuda.mem_get_info()` の実空き（GPU容量に自動スケール）。

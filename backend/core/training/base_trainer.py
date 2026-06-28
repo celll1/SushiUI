@@ -4724,40 +4724,59 @@ class BaseTrainer(ABC):
             # so the except-based OOM recovery below sees a clean autograd state.
             _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
             _micro_bs = _disp_info[4] if _disp_info else None
-            # Batch-dim micro-splitting runs one backward per chunk, so it is only
-            # valid when the per-sample inputs are LEAF tensors. With on-the-fly
-            # text-encoder / vision-encoder training the embeddings are non-leaf
-            # (they carry the encoder's autograd graph), and slicing them shares
-            # that upstream graph across chunks -> the first chunk's backward frees
-            # it and the next raises "backward through the graph a second time".
-            # Detect this and fall back to whole-batch (offload still applies).
+            # Batch-dim micro-splitting runs one backward per chunk. Per-sample
+            # inputs that carry a live upstream graph (on-the-fly TE/VE training ->
+            # non-leaf embeddings computed once for the whole batch) would have
+            # that shared graph freed by the first chunk's backward, breaking the
+            # next chunk. Two-stage scheme: run U-Net per chunk on a DETACHED LEAF
+            # copy of each graph-bearing input (so the per-chunk backward stops at
+            # the embedding and accumulates its grad), then do ONE backward through
+            # the encoder(s) with the accumulated embedding gradient. This keeps the
+            # U-Net activation saving AND trains the encoders correctly.
+            _graph_names = ("mnt_latents", "mnt_text_embeddings",
+                            "mnt_pooled_embeddings", "mnt_repa_pixels")
+            _graph_tensors = {"mnt_latents": mnt_latents,
+                              "mnt_text_embeddings": mnt_text_embeddings,
+                              "mnt_pooled_embeddings": mnt_pooled_embeddings,
+                              "mnt_repa_pixels": mnt_repa_pixels}
+            _graph_inputs = {}
             if _micro_bs is not None and _micro_bs < batch_size:
-                _shares_graph = any(
-                    t is not None and isinstance(t, torch.Tensor) and t.grad_fn is not None
-                    for t in (mnt_text_embeddings, mnt_pooled_embeddings, mnt_latents,
-                              mnt_repa_pixels, mnt_attention_mask)
-                )
-                if _shares_graph:
-                    print(f"{self.log_prefix} [ActDispatch] micro-batch split skipped: inputs carry "
-                          f"a live encoder graph (on-the-fly TE/VE training). Running with offload "
-                          f"only. Use pre-encoded/cached embeddings to enable splitting.")
-                    _micro_bs = None
+                for _n in _graph_names:
+                    _t = _graph_tensors[_n]
+                    if isinstance(_t, torch.Tensor) and _t.grad_fn is not None:
+                        _graph_inputs[_n] = _t
             try:
                 if _micro_bs is not None and _micro_bs < batch_size:
                     # Escalate path: proactively split the batch into micro-chunks
                     # and accumulate gradients. Each chunk's loss is scaled by
-                    # chunk_size/batch_size so the accumulated gradient equals the
+                    # chunk_size/eff_bs so the accumulated gradient equals the
                     # full-batch mean gradient. The effective (gradient) batch is
                     # unchanged; only the per-forward activation shrinks.
                     loss_acc = pred_acc = recon_acc = 0.0
+                    _grad_acc = {_n: torch.zeros_like(_t) for _n, _t in _graph_inputs.items()}
                     for _lo in range(0, batch_size, _micro_bs):
                         _hi = min(_lo + _micro_bs, batch_size)
                         _w = _hi - _lo
+
+                        def _slice(name, full):
+                            # Detached leaf for graph-bearing inputs (so we can read
+                            # back its grad and keep the encoder graph untouched);
+                            # plain slice otherwise.
+                            if full is None:
+                                return None
+                            if name in _graph_inputs:
+                                return full[_lo:_hi].detach().requires_grad_(True)
+                            return full[_lo:_hi]
+
+                        _c_lat = _slice("mnt_latents", mnt_latents)
+                        _c_te = _slice("mnt_text_embeddings", mnt_text_embeddings)
+                        _c_pool = _slice("mnt_pooled_embeddings", mnt_pooled_embeddings)
+                        _c_repa = _slice("mnt_repa_pixels", mnt_repa_pixels)
                         l, p, r = self._execute_forward_backward(
-                            mnt_latents=mnt_latents[_lo:_hi],
-                            mnt_text_embeddings=mnt_text_embeddings[_lo:_hi],
+                            mnt_latents=_c_lat,
+                            mnt_text_embeddings=_c_te,
                             mnt_attention_mask=mnt_attention_mask[_lo:_hi] if mnt_attention_mask is not None else None,
-                            mnt_pooled_embeddings=mnt_pooled_embeddings[_lo:_hi] if mnt_pooled_embeddings is not None else None,
+                            mnt_pooled_embeddings=_c_pool,
                             timesteps=timesteps[_lo:_hi],
                             debug_save_path=debug_save_path if _lo == 0 else None,
                             batch_captions=batch_captions[_lo:_hi] if batch_captions else None,
@@ -4767,13 +4786,29 @@ class BaseTrainer(ABC):
                             condition_images_batch=condition_images_batch[_lo:_hi] if condition_images_batch is not None else None,
                             reference_latents_nested=reference_latents_nested[_lo:_hi] if reference_latents_nested is not None else None,
                             lens_latent_shape=lens_latent_shape,
-                            mnt_repa_pixels=mnt_repa_pixels[_lo:_hi] if mnt_repa_pixels is not None else None,
+                            mnt_repa_pixels=_c_repa,
                             mnt_time_ids=mnt_time_ids[_lo:_hi] if mnt_time_ids is not None else None,
                             loss_scale=_w / eff_bs,
                         )
+                        # Capture the (scaled) gradient w.r.t. each graph-bearing
+                        # input for the stage-2 encoder backward.
+                        for _n, _leaf in (("mnt_latents", _c_lat),
+                                          ("mnt_text_embeddings", _c_te),
+                                          ("mnt_pooled_embeddings", _c_pool),
+                                          ("mnt_repa_pixels", _c_repa)):
+                            if _n in _graph_inputs and _leaf is not None and _leaf.grad is not None:
+                                _grad_acc[_n][_lo:_hi] = _leaf.grad
                         loss_acc += l * _w
                         pred_acc += p * _w
                         recon_acc += r * _w
+                    # Stage 2: a single backward through the shared encoder graph(s)
+                    # with the accumulated embedding gradient -> correct encoder
+                    # gradients in one pass (no "backward a second time").
+                    if _graph_inputs:
+                        torch.autograd.backward(
+                            tensors=list(_graph_inputs.values()),
+                            grad_tensors=[_grad_acc[_n] for _n in _graph_inputs],
+                        )
                     loss = loss_acc / batch_size
                     pred_loss = pred_acc / batch_size
                     recon_loss = recon_acc / batch_size

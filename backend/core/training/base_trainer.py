@@ -5061,34 +5061,44 @@ class BaseTrainer(ABC):
         except Exception:
             return None, None
 
-        # Lazily create the dispatcher once static VRAM (weights + grad +
-        # optimizer state) is resident. memory_allocated() is a conservative
-        # proxy; passive calibration (record) corrects predictions thereafter.
+        # Lazily create the dispatcher. The budget is the total VRAM usable by
+        # this process, captured once as allocated + driver-free (= total minus
+        # whatever the system already reserved). Decisions then compare predicted
+        # activation against (budget - current resident), where resident is
+        # memory_allocated() -- the true live bytes, so PyTorch's reusable cache
+        # counts as available. (Using driver-free directly would collapse headroom
+        # to ~0 once the cache fills and falsely escalate every bucket.)
+        resident_gb = torch.cuda.memory_allocated() / (1024 ** 3)
         if self.activation_dispatcher is None:
             from core.memory_management import ActivationDispatcher
-            static_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+            free_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
+            budget_gb = resident_gb + free_gb
             self.activation_dispatcher = ActivationDispatcher(
-                static_gb=static_gb,
+                budget_gb=budget_gb,
                 margin_gb=self.activation_dispatch_margin_gb,
                 seed_coef=self.activation_dispatch_seed_coef,
                 residual_frac=self.activation_dispatch_residual_frac,
                 threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
             )
-            print(f"{self.log_prefix} [ActDispatch] enabled (static~{static_gb:.2f}GB, "
-                  f"margin={self.activation_dispatch_margin_gb}GB)")
+            self._actdispatch_logged = set()
+            print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
+                  f"resident~{resident_gb:.1f}GB, margin={self.activation_dispatch_margin_gb}GB)")
 
         disp = self.activation_dispatcher
-        free_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
-        mode = disp.decide(lh, lw, bs, free_gb)
+        mode = disp.decide(lh, lw, bs, resident_gb)
 
         # Block-swap activation offload (LayerOffloadConductor) already moves
         # activations; suppress the dispatcher offload to avoid double offload.
         conductor = getattr(self, "layer_offload_conductor", None)
         if conductor is not None and getattr(conductor, "enable_activation_offload", False):
-            if mode != "fast":
-                print(f"{self.log_prefix} [ActDispatch] offload suppressed "
-                      f"(block-swap activation offload active)")
             mode = "fast"
+
+        # Throttle decision logging to once per (bucket, decision) so aspect
+        # bucketing (hundreds of distinct shapes) doesn't flood the log.
+        def _log_once(key, msg):
+            if key not in self._actdispatch_logged:
+                self._actdispatch_logged.add(key)
+                print(msg)
 
         # Escalate: even offload won't fit the full batch -> plan a micro-batch
         # split (gradient accumulation keeps the effective batch). Only escalate
@@ -5097,23 +5107,20 @@ class BaseTrainer(ABC):
         micro_bs = None
         if mode == "escalate":
             if getattr(self, "use_fused_backward", False):
-                # Fused backward (per-param optimizer.step during backward, used
-                # with Block Swap) is incompatible with batch-dim gradient
-                # accumulation: the hook would step the optimizer after the first
-                # micro-chunk's backward, before the rest accumulate. Skip the
-                # split (offload still applies); disable Block Swap to enable it.
-                print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} won't fit; "
-                      f"micro-batch split disabled under fused backward (Block Swap), offload only")
+                _log_once((lh, lw, bs, "fused"),
+                          f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit; "
+                          f"micro-batch split disabled under fused backward (Block Swap), offload only")
             else:
-                planned = disp.plan_micro_bs(lh, lw, bs, free_gb)
+                planned = disp.plan_micro_bs(lh, lw, bs, resident_gb)
                 if planned < bs:
                     micro_bs = planned
-                    print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit even "
-                          f"with offload; splitting into micro-batch={micro_bs} + grad accumulation "
-                          f"(effective batch={bs})")
+                    _log_once((lh, lw, bs, "split", micro_bs),
+                              f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} -> "
+                              f"micro-batch={micro_bs} + grad accumulation (effective batch={bs})")
                 else:
-                    print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} may overflow "
-                          f"even with offload at micro-batch=1; running with offload")
+                    _log_once((lh, lw, bs, "tight"),
+                              f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} tight even at "
+                              f"micro-batch=1; running with offload")
 
         use_offload = mode in ("offload", "escalate")
         from core.memory_management import offload_activations
@@ -5123,28 +5130,27 @@ class BaseTrainer(ABC):
             pass
         cm = offload_activations(use_offload, threshold_bytes=disp.threshold_bytes)
         cm.__enter__()
-        return cm, (lh, lw, bs, mode, micro_bs)
+        return cm, (lh, lw, bs, mode, micro_bs, resident_gb)
 
     def _activation_dispatch_end(self, cm, info) -> None:
-        """Exit the offload context and passively calibrate from the measured peak."""
+        """Exit the offload context and self-calibrate from the measured peak."""
         if cm is None:
             return
         cm.__exit__(None, None, None)
         if info is None or self.activation_dispatcher is None:
             return
-        lh, lw, bs, mode, micro_bs = info
+        lh, lw, bs, mode, micro_bs, resident_gb = info
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
             # Skip calibration when the batch was micro-split: the measured peak
-            # is the micro-batch peak, not the full-bucket peak, so recording it
-            # against (lh,lw,bs) would corrupt future full-batch predictions.
+            # is the micro-batch peak, not the full-bucket peak.
             if micro_bs is None:
                 record_mode = "base" if mode == "fast" else "offload"
-                self.activation_dispatcher.record(lh, lw, bs, record_mode, peak_gb)
+                self.activation_dispatcher.record(lh, lw, bs, record_mode, peak_gb, resident_gb)
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
                 print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} "
-                      f"mode={mode}{extra} peak={peak_gb:.2f}GB")
+                      f"mode={mode}{extra} peak={peak_gb:.2f}GB coef={self.activation_dispatcher.coef:.2e}")
         except Exception:
             pass
 

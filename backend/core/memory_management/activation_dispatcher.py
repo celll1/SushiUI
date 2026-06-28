@@ -27,7 +27,6 @@ Validated by tmp/test_B2..B5; see docs/VRAM_OVERFLOW_PREVENTION_DESIGN.md sec 11
 """
 
 import contextlib
-from typing import Dict, Optional, Tuple
 
 import torch
 
@@ -71,7 +70,7 @@ class ActivationDispatcher:
 
     def __init__(
         self,
-        static_gb: float,
+        budget_gb: float,
         margin_gb: float = 1.0,
         seed_coef: float = 24.0e-6,
         residual_frac: float = 0.85,
@@ -79,69 +78,73 @@ class ActivationDispatcher:
     ):
         """
         Args:
-            static_gb: Resolution-independent footprint (weights + grad +
-                optimizer state). Used as the prediction baseline.
+            budget_gb: Total VRAM usable by this process (captured once as
+                allocated + driver-free at startup = total minus system reserve).
+                Decisions compare predicted activation against (budget - resident).
             margin_gb: Safety headroom kept free to avoid WDDM spill.
-            seed_coef: Initial GB per (bs * latent-pixel) for unseen buckets.
+            seed_coef: Initial GB per (bs * latent-pixel); self-calibrated from
+                measured peaks so it generalises across the many aspect buckets.
             residual_frac: Fraction of activation that remains on GPU WITH
                 offload under gradient checkpointing (offload removes ~15-20%).
             threshold_bytes: Min saved-tensor size to offload.
         """
-        self.static = static_gb
+        self.budget = budget_gb
         self.margin = margin_gb
-        self.seed_coef = seed_coef
+        self.coef = seed_coef          # running per-(bs*pixel) activation coef (GB)
         self.residual_frac = residual_frac
         self.threshold_bytes = threshold_bytes
-        # key=(lat_h, lat_w, bs) -> {"base": peak_gb, "offload": peak_gb}
-        self._cache: Dict[Tuple[int, int, int], Dict[str, float]] = {}
 
-    def update_static(self, static_gb: float) -> None:
-        """Refresh the static baseline (e.g. once optimizer state is allocated)."""
-        self.static = static_gb
+    def _headroom(self, resident_gb: float) -> float:
+        """Bytes available for this step's activation. Uses memory_allocated()
+        (true live bytes) NOT driver-free, so PyTorch's reusable reserved cache
+        counts as available -- otherwise headroom collapses to ~0 once the cache
+        fills and every bucket falsely escalates."""
+        return self.budget - resident_gb - self.margin
 
-    def _predict(self, lh: int, lw: int, bs: int, mode: str) -> float:
-        entry = self._cache.get((lh, lw, bs))
-        if entry is not None and mode in entry:
-            return entry[mode]
-        act = self.seed_coef * bs * lh * lw
-        if mode == "offload":
-            act *= self.residual_frac
-        return self.static + act
+    def _act_pred(self, lh: int, lw: int, bs: int) -> float:
+        return self.coef * bs * lh * lw
 
-    def decide(self, lh: int, lw: int, bs: int, free_gb: float) -> str:
-        """Return one of 'fast' / 'offload' / 'escalate' for this bucket."""
-        avail = free_gb - self.margin
-        if self._predict(lh, lw, bs, "base") <= avail:
+    def decide(self, lh: int, lw: int, bs: int, resident_gb: float) -> str:
+        """Return 'fast' / 'offload' / 'escalate'. resident_gb = memory_allocated()
+        at dispatch time (static weights+grad+optimizer; activations already freed)."""
+        headroom = self._headroom(resident_gb)
+        act = self._act_pred(lh, lw, bs)
+        if act <= headroom:
             return "fast"
-        if self._predict(lh, lw, bs, "offload") <= avail:
+        if act * self.residual_frac <= headroom:
             return "offload"
         return "escalate"
 
-    def plan_micro_bs(self, lh: int, lw: int, bs: int, free_gb: float) -> int:
-        """For an 'escalate' bucket (won't fit even with offload at the full batch),
-        return the largest micro-batch M in [1, bs] whose predicted offloaded peak
-        fits the budget. The batch is then split into ceil(bs/M) chunks processed
-        with gradient accumulation, keeping the effective (gradient) batch = bs.
-
-        Activation scales ~linearly with batch, so this inverts the predictor:
-        M = floor((avail - static) / (coef * lat_area * residual_frac)).
-        Returns bs when nothing needs splitting, 1 when even one sample is tight.
-        """
-        avail = free_gb - self.margin
-        per_sample = self.seed_coef * lh * lw * self.residual_frac
+    def plan_micro_bs(self, lh: int, lw: int, bs: int, resident_gb: float) -> int:
+        """Largest micro-batch M in [1, bs] whose offloaded activation fits the
+        headroom. The batch is split into ceil(bs/M) chunks with gradient
+        accumulation, keeping the effective (gradient) batch = bs."""
+        headroom = self._headroom(resident_gb)
+        per_sample = self.coef * lh * lw * self.residual_frac
         if per_sample <= 0:
             return bs
-        room = avail - self.static
-        if room <= 0:
+        if headroom <= 0:
             return 1
-        m = int(room // per_sample)
+        m = int(headroom // per_sample)
         return max(1, min(bs, m))
 
-    def record(self, lh: int, lw: int, bs: int, mode: str, peak_gb: float) -> None:
-        """Passively calibrate from an executed step's measured peak.
+    def record(self, lh: int, lw: int, bs: int, mode: str, peak_gb: float,
+               resident_gb: float) -> None:
+        """Self-calibrate the activation coefficient from a measured step.
 
-        ``mode`` is the canonical bucket cost class -- "base" when the step ran
-        without offload, "offload" when it ran with offload (escalate also runs
-        with offload, so it records under "offload").
+        activation = peak - resident_at_dispatch. Back out per-(bs*pixel) cost and
+        update the running coef conservatively (grow fast to avoid under-predicting
+        and spilling, relax slowly). ``mode`` is "base" (ran without offload) or
+        "offload" (ran with offload -> divide out residual_frac to get base cost).
         """
-        self._cache.setdefault((lh, lw, bs), {})[mode] = peak_gb
+        denom = bs * lh * lw
+        act = peak_gb - resident_gb
+        if act <= 0 or denom <= 0:
+            return
+        implied = act / denom
+        if mode == "offload" and self.residual_frac > 0:
+            implied = implied / self.residual_frac
+        if implied > self.coef:
+            self.coef = implied                      # grow immediately (safe side)
+        else:
+            self.coef = 0.9 * self.coef + 0.1 * implied   # relax slowly

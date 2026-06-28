@@ -395,16 +395,25 @@ PoC: `tmp/test_B2_offload_gc.py`（peak）, `tmp/test_B3_offload_timing.py`（it
 PoC: `tmp/test_B5_dispatcher_poc.py`（`ActivationDispatcher` クラス）。
 
 ```python
-free, total = torch.cuda.mem_get_info()      # 実空きVRAM（24/48GB を自動スケール）
-avail = free - margin                          # margin はスピル回避の安全帯
+# budget は起動時に1回確定 = memory_allocated + driver_free（=システム予約抜きの総VRAM）
+resident = torch.cuda.memory_allocated()       # 真の常駐量（活性化は解放済み）
+headroom = budget - resident - margin          # 再利用可能キャッシュも空き扱い
+act = coef * bs * lat_h * lat_w                 # 活性化のみを予測（static は二重計上しない）
 
-if predict(bucket, bs, offload=False) <= avail:
+if act <= headroom:
     mode = "fast"          # offload OFF（iterコスト0・小〜中バケット）
-elif predict(bucket, bs, offload=True) <= avail:
+elif act * residual_frac <= headroom:
     mode = "offload"       # activation offload ON（大バケット限定発火）
 else:
     mode = "escalate"      # offloadでも不足 → micro-batch分割(+offload) / tiling(C)
 ```
+
+> **重要な実装修正（本番ログで発覚）**: 当初は `mem_get_info()` の**ドライバ空き**で判定していたが、
+> これは PyTorch の予約済みキャッシュを空きと数えず、キャッシュが溜まると空き≈0 → **全バケット誤escalate**
+> （1024px すら「収まらない」と誤判定し全ステップ offload/分割で 15〜23s/it に激遅化）。さらに予測 peak に
+> static を含めつつ static 控除後の空きと比較し **static 二重計上**していた。修正: **固定 budget（起動時に確定）
+> − resident（`memory_allocated`）= headroom** とし、**活性化のみ**を比較。coef は実測 peak から自己校正
+> （`coef = (peak − resident)/(bs·area)`、安全側に grow-fast/relax-slow）するのでアスペクトバケットが多様でも収束。
 
 **escalate の micro-batch 分割（実装済み）**: `plan_micro_bs(lh,lw,bs,free)` が
 `M = floor((avail - static) / (coef·lat_area·residual_frac))` で**収まる最大の micro バッチ M**を

@@ -5031,15 +5031,24 @@ class BaseTrainer(ABC):
         # fit are never slowed down by accumulation.
         micro_bs = None
         if mode == "escalate":
-            micro_bs = disp.plan_micro_bs(lh, lw, bs, free_gb)
-            if micro_bs < bs:
-                print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit even "
-                      f"with offload; splitting into micro-batch={micro_bs} + grad accumulation "
-                      f"(effective batch={bs})")
+            if getattr(self, "use_fused_backward", False):
+                # Fused backward (per-param optimizer.step during backward, used
+                # with Block Swap) is incompatible with batch-dim gradient
+                # accumulation: the hook would step the optimizer after the first
+                # micro-chunk's backward, before the rest accumulate. Skip the
+                # split (offload still applies); disable Block Swap to enable it.
+                print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} won't fit; "
+                      f"micro-batch split disabled under fused backward (Block Swap), offload only")
             else:
-                micro_bs = None  # even bs=1 is tight; run whole batch with offload
-                print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} may overflow "
-                      f"even with offload at micro-batch=1; running with offload")
+                planned = disp.plan_micro_bs(lh, lw, bs, free_gb)
+                if planned < bs:
+                    micro_bs = planned
+                    print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit even "
+                          f"with offload; splitting into micro-batch={micro_bs} + grad accumulation "
+                          f"(effective batch={bs})")
+                else:
+                    print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} may overflow "
+                          f"even with offload at micro-batch=1; running with offload")
 
         use_offload = mode in ("offload", "escalate")
         from core.memory_management import offload_activations

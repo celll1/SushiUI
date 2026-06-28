@@ -5377,10 +5377,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               {/* Base Resolutions */}
               <div>
                 <label className="block text-sm text-gray-400 mb-1.5">Base Resolutions</label>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-3 gap-2">
                   {[
                     [256, 512, 768, 1024],
                     [1280, 1536, 1792, 2048],
+                    [2304, 2560, 3072, 4096],
                   ].map((resGroup, groupIdx) => (
                     <div key={groupIdx} className="space-y-2">
                       {resGroup.map(res => (

@@ -118,52 +118,56 @@ def _param_is_8bit(src: dict, src_impl: str) -> bool:
     return isinstance(t, torch.Tensor) and t.dtype == torch.uint8
 
 
-def _convert_param_state(src: dict, src_fmt: str, dst_fmt: str) -> dict:
-    """Remap a single parameter's state between bnb and ring buffer, handling
-    both 8-bit (quantized + absmax) and 32-bit (small-param fallback) params."""
-    out: dict = {}
-    si, di = _impl(src_fmt), _impl(dst_fmt)
-    is_adam = _algo(src_fmt) == "adamw"
-    eight = _param_is_8bit(src, si)
+def _convert_param_state(src: dict, src_fmt: str, dst_fmt: str) -> Optional[dict]:
+    """Remap a single 8-bit parameter's state between bnb and ring buffer.
 
-    # canonical pull from source (m = first moment, a = its absmax or None)
+    Returns None for non-8-bit (small, below-threshold) params: the two
+    implementations disagree on which params are quantized (bnb skips params
+    below min_8bit_size; the Ring Buffer optimizer quantizes every param in a
+    use_8bit group), so a 32-bit source param cannot be safely placed into the
+    target without re-quantization. Skipping it lets the target fresh-init that
+    param on its first step (these are tiny, e.g. biases -- negligible momentum).
+    """
+    si, di = _impl(src_fmt), _impl(dst_fmt)
+    if not _param_is_8bit(src, si):
+        return None
+
+    is_adam = _algo(src_fmt) == "adamw"
+    out: dict = {}
+
+    # canonical pull from source (m = first moment, a = its absmax)
     if si == "bnb":
-        m1 = src["state1"]
-        a1 = src.get("absmax1")
+        m1, a1 = src["state1"], src["absmax1"]
         m2 = src.get("state2") if is_adam else None
         a2 = src.get("absmax2") if is_adam else None
     else:  # ring buffer
         m1 = src["exp_avg"]
-        a1 = src.get("absmax1") if is_adam else src.get("absmax")
+        a1 = src["absmax1"] if is_adam else src["absmax"]
         m2 = src.get("exp_avg_sq") if is_adam else None
         a2 = src.get("absmax2") if is_adam else None
 
     # push into destination layout
     if di == "bnb":
         out["state1"] = m1
-        if eight:
-            out["absmax1"] = a1
-            device = m1.device if isinstance(m1, torch.Tensor) else torch.device("cpu")
-            q1, q2 = _make_qmaps(device)
-            out["qmap1"] = q1
+        out["absmax1"] = a1
+        device = m1.device if isinstance(m1, torch.Tensor) else torch.device("cpu")
+        q1, q2 = _make_qmaps(device)
+        out["qmap1"] = q1
         if is_adam:
             out["state2"] = m2
-            if eight:
-                out["absmax2"] = a2
-                out["qmap2"] = q2
+            out["absmax2"] = a2
+            out["qmap2"] = q2
         out["step"] = int(src.get("step", 0)) if "step" in src else 0
     else:  # ring buffer
         if is_adam:
             out["exp_avg"] = m1
             out["exp_avg_sq"] = m2
-            if eight:
-                out["absmax1"] = a1
-                out["absmax2"] = a2
+            out["absmax1"] = a1
+            out["absmax2"] = a2
         else:
             out["exp_avg"] = m1
-            if eight:
-                out["absmax"] = a1
-        out["is_8bit"] = bool(eight)
+            out["absmax"] = a1
+        out["is_8bit"] = True
     return out
 
 
@@ -200,12 +204,17 @@ def maybe_convert_optimizer_state(
     saved_state = saved_state_dict.get("state", {})
     converted_state = {}
     carry_step = 0
+    skipped = 0
     try:
         for pid, st in saved_state.items():
             if not isinstance(st, dict):
-                converted_state[pid] = st
                 continue
-            converted_state[pid] = _convert_param_state(st, src_fmt, dst_fmt)
+            conv = _convert_param_state(st, src_fmt, dst_fmt)
+            if conv is None:
+                # non-8-bit (small) param -> let the target fresh-init it
+                skipped += 1
+            else:
+                converted_state[pid] = conv
             if "step" in st:
                 try:
                     carry_step = max(carry_step, int(st["step"]))
@@ -220,5 +229,6 @@ def maybe_convert_optimizer_state(
     target_groups = target_optimizer.state_dict().get("param_groups", [])
     converted = {"state": converted_state, "param_groups": target_groups}
     print(f"{log_prefix} [OptConvert] converted optimizer state {src_fmt} -> {dst_fmt} "
-          f"({len(converted_state)} params, carry step={carry_step})")
+          f"({len(converted_state)} 8-bit params converted, {skipped} small params "
+          f"fresh-init, carry step={carry_step})")
     return converted, carry_step

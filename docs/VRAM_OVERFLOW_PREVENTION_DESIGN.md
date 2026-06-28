@@ -406,6 +406,19 @@ else:
     mode = "escalate"      # offloadでも不足 → micro-batch分割(+offload) / tiling(C)
 ```
 
+**escalate の micro-batch 分割（実装済み）**: `plan_micro_bs(lh,lw,bs,free)` が
+`M = floor((avail - static) / (coef·lat_area·residual_frac))` で**収まる最大の micro バッチ M**を
+求め、バッチを `ceil(bs/M)` チャンクに分割して**勾配累積**する。各チャンクの loss を `chunk/bs` で
+スケールするため、累積勾配は full-batch の mean 勾配と**等価**（実効バッチ不変）。
+- **重要**: 分割は **escalate と判定されたバケットのみ**。fast/offload は分割しない＝**収まるバッチを
+  分割して遅くすることはない**（先制予測ゆえに過剰分割が起きない）。
+- **勾配等価性の実測**（`tmp/test_microbatch_sdxl.py`, 実 SDXL）: full vs micro+accum の勾配差は
+  **fp32 で rel 1.9e-4**（算法的に等価、残差は浮動小数点の縮約順序ノイズ）。**fp16 では L2 ~6%**の
+  精度ノイズが出る（fp16 学習と同質）。厳密一致が要る場合は累積を fp32 grad で行う拡張を検討。
+- **VRAM 効果**（実測）: 2048px bs4 で 18.2→13.1GB、3072px **bs8 は full で OOM→micro で 17.2GB**に収まる。
+- 既存 `_forward_backward_with_oom_recovery` のリアクティブ分割は **loss を未スケール**で累積する潜在バグ
+  （勾配が約2倍）がある。本 escalate 実装は別経路で `chunk/bs` スケールを行い等価性を担保する。
+
 **情報源は2つ**：
 1. `torch.cuda.mem_get_info()` の実空き（GPU容量に自動スケール）。
 2. **オンライン・バケット校正キャッシュ** `key=(lat_h, lat_w, bs)`：各バケット初出現時に

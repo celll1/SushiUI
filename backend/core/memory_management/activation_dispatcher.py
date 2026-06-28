@@ -117,6 +117,26 @@ class ActivationDispatcher:
             return "offload"
         return "escalate"
 
+    def plan_micro_bs(self, lh: int, lw: int, bs: int, free_gb: float) -> int:
+        """For an 'escalate' bucket (won't fit even with offload at the full batch),
+        return the largest micro-batch M in [1, bs] whose predicted offloaded peak
+        fits the budget. The batch is then split into ceil(bs/M) chunks processed
+        with gradient accumulation, keeping the effective (gradient) batch = bs.
+
+        Activation scales ~linearly with batch, so this inverts the predictor:
+        M = floor((avail - static) / (coef * lat_area * residual_frac)).
+        Returns bs when nothing needs splitting, 1 when even one sample is tight.
+        """
+        avail = free_gb - self.margin
+        per_sample = self.seed_coef * lh * lw * self.residual_frac
+        if per_sample <= 0:
+            return bs
+        room = avail - self.static
+        if room <= 0:
+            return 1
+        m = int(room // per_sample)
+        return max(1, min(bs, m))
+
     def record(self, lh: int, lw: int, bs: int, mode: str, peak_gb: float) -> None:
         """Passively calibrate from an executed step's measured peak.
 

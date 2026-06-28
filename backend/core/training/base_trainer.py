@@ -4682,6 +4682,7 @@ class BaseTrainer(ABC):
         lens_latent_shape: Optional[Tuple[int, int]] = None,
         mnt_repa_pixels: Optional[torch.Tensor] = None,
         mnt_time_ids: Optional[torch.Tensor] = None,
+        effective_batch_size: Optional[int] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -4709,6 +4710,11 @@ class BaseTrainer(ABC):
             cuda_error_skip is True if batch was skipped due to unrecoverable CUDA error
         """
         batch_size = mnt_latents.shape[0]
+        # Original full-batch size, preserved across recursive splits so every
+        # leaf chunk scales its loss by chunk/B_eff. Without this, accumulating
+        # per-half MEAN losses overcounts the gradient (sum of means != full mean
+        # -> ~Nx too large). effective_batch_size is None only at the top level.
+        eff_bs = effective_batch_size if effective_batch_size is not None else batch_size
 
         try:
             # Proactively decide per-bucket activation offload and wrap the whole
@@ -4745,7 +4751,7 @@ class BaseTrainer(ABC):
                             lens_latent_shape=lens_latent_shape,
                             mnt_repa_pixels=mnt_repa_pixels[_lo:_hi] if mnt_repa_pixels is not None else None,
                             mnt_time_ids=mnt_time_ids[_lo:_hi] if mnt_time_ids is not None else None,
-                            loss_scale=_w / batch_size,
+                            loss_scale=_w / eff_bs,
                         )
                         loss_acc += l * _w
                         pred_acc += p * _w
@@ -4771,6 +4777,10 @@ class BaseTrainer(ABC):
                         lens_latent_shape=lens_latent_shape,
                         mnt_repa_pixels=mnt_repa_pixels,
                         mnt_time_ids=mnt_time_ids,
+                        # Scale by this sub-batch's share of the original batch so
+                        # gradients accumulated across recovery splits equal the
+                        # full-batch mean gradient. 1.0 at the top level (no split).
+                        loss_scale=batch_size / eff_bs,
                     )
             finally:
                 self._activation_dispatch_end(_disp_cm, _disp_info)
@@ -4899,6 +4909,7 @@ class BaseTrainer(ABC):
                     lens_latent_shape=lens_latent_shape,
                     mnt_repa_pixels=mnt_repa_pixels[:split_size] if mnt_repa_pixels is not None else None,
                     mnt_time_ids=mnt_time_ids[:split_size] if mnt_time_ids is not None else None,
+                    effective_batch_size=eff_bs,
                 )
                 first_half_success = not skip1  # skip1=True means this half was skipped
             except Exception as split1_error:
@@ -4931,6 +4942,7 @@ class BaseTrainer(ABC):
                     lens_latent_shape=lens_latent_shape,
                     mnt_repa_pixels=mnt_repa_pixels[split_size:] if mnt_repa_pixels is not None else None,
                     mnt_time_ids=mnt_time_ids[split_size:] if mnt_time_ids is not None else None,
+                    effective_batch_size=eff_bs,
                 )
                 second_half_success = not skip2  # skip2=True means this half was skipped
             except Exception as split2_error:

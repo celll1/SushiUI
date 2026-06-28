@@ -63,6 +63,15 @@ def create_dynamic_map(signed=True, max_exponent_bits=7, total_bits=8):
     for i in range(gap):
         data.append(0)
 
+    # CRITICAL: sort the map into a monotonically increasing grid. The CUDA
+    # quantize_value() does a BINARY SEARCH over this map, which requires it to
+    # be sorted; the construction above groups values by exponent (and
+    # interleaves +/- for signed), so without sorting binary search returns the
+    # wrong code -> corrupted optimizer state -> divergence/instability. bitsand-
+    # bytes sorts here for the same reason; sorting also makes our grid match
+    # bnb's exactly.
+    data.sort()
+
     return torch.tensor(data, dtype=torch.float32)
 
 

@@ -4724,6 +4724,24 @@ class BaseTrainer(ABC):
             # so the except-based OOM recovery below sees a clean autograd state.
             _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
             _micro_bs = _disp_info[4] if _disp_info else None
+            # Batch-dim micro-splitting runs one backward per chunk, so it is only
+            # valid when the per-sample inputs are LEAF tensors. With on-the-fly
+            # text-encoder / vision-encoder training the embeddings are non-leaf
+            # (they carry the encoder's autograd graph), and slicing them shares
+            # that upstream graph across chunks -> the first chunk's backward frees
+            # it and the next raises "backward through the graph a second time".
+            # Detect this and fall back to whole-batch (offload still applies).
+            if _micro_bs is not None and _micro_bs < batch_size:
+                _shares_graph = any(
+                    t is not None and isinstance(t, torch.Tensor) and t.grad_fn is not None
+                    for t in (mnt_text_embeddings, mnt_pooled_embeddings, mnt_latents,
+                              mnt_repa_pixels, mnt_attention_mask)
+                )
+                if _shares_graph:
+                    print(f"{self.log_prefix} [ActDispatch] micro-batch split skipped: inputs carry "
+                          f"a live encoder graph (on-the-fly TE/VE training). Running with offload "
+                          f"only. Use pre-encoded/cached embeddings to enable splitting.")
+                    _micro_bs = None
             try:
                 if _micro_bs is not None and _micro_bs < batch_size:
                     # Escalate path: proactively split the batch into micro-chunks
@@ -4884,6 +4902,18 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), SKIPPING BATCH")
                 print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
                 # Return zero loss - this batch contributes nothing but training continues
+                return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
+
+            # Batch splitting runs one backward per half, which is invalid when the
+            # inputs carry a live encoder graph (on-the-fly TE/VE training): the
+            # halves share that upstream graph and the second backward would raise
+            # "backward through the graph a second time". Skip rather than crash.
+            if any(t is not None and isinstance(t, torch.Tensor) and t.grad_fn is not None
+                   for t in (mnt_text_embeddings, mnt_pooled_embeddings, mnt_latents,
+                             mnt_repa_pixels, mnt_attention_mask)):
+                print(f"{self.log_prefix} [CUDA Error] Cannot split batch with a live encoder graph "
+                      f"(on-the-fly TE/VE training), SKIPPING BATCH. Use pre-encoded embeddings or "
+                      f"reduce batch/resolution.")
                 return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
 
             split_size = batch_size // 2
@@ -10200,8 +10230,9 @@ class BaseTrainer(ABC):
                             # Mixed batch: split into two pure sub-batches
                             clean_batches.append(_ref_items)
                             clean_batches.append(_noref_items)
-                            print(f"{self.log_prefix} [VE] Split mixed batch → "
-                                  f"{len(_ref_items)} ref + {len(_noref_items)} no-ref sub-batches")
+                            if self.debug_vram:
+                                print(f"{self.log_prefix} [VE] Split mixed batch → "
+                                      f"{len(_ref_items)} ref + {len(_noref_items)} no-ref sub-batches")
                         else:
                             clean_batches.append(_b)
                     _random_ve.shuffle(clean_batches)

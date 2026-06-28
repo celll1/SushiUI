@@ -4717,25 +4717,61 @@ class BaseTrainer(ABC):
             # the saved_tensors hooks are popped even if forward/backward raises,
             # so the except-based OOM recovery below sees a clean autograd state.
             _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+            _micro_bs = _disp_info[4] if _disp_info else None
             try:
-                # Attempt full batch forward + backward
-                loss, pred_loss, recon_loss = self._execute_forward_backward(
-                    mnt_latents=mnt_latents,
-                    mnt_text_embeddings=mnt_text_embeddings,
-                    mnt_attention_mask=mnt_attention_mask,
-                    mnt_pooled_embeddings=mnt_pooled_embeddings,
-                    timesteps=timesteps,
-                    debug_save_path=debug_save_path,
-                    batch_captions=batch_captions,
-                    batch_reference_paths=batch_reference_paths,
-                    alphas_cumprod_cached=alphas_cumprod_cached,
-                    use_condition_images=use_condition_images,
-                    condition_images_batch=condition_images_batch,
-                    reference_latents_nested=reference_latents_nested,
-                    lens_latent_shape=lens_latent_shape,
-                    mnt_repa_pixels=mnt_repa_pixels,
-                    mnt_time_ids=mnt_time_ids,
-                )
+                if _micro_bs is not None and _micro_bs < batch_size:
+                    # Escalate path: proactively split the batch into micro-chunks
+                    # and accumulate gradients. Each chunk's loss is scaled by
+                    # chunk_size/batch_size so the accumulated gradient equals the
+                    # full-batch mean gradient. The effective (gradient) batch is
+                    # unchanged; only the per-forward activation shrinks.
+                    loss_acc = pred_acc = recon_acc = 0.0
+                    for _lo in range(0, batch_size, _micro_bs):
+                        _hi = min(_lo + _micro_bs, batch_size)
+                        _w = _hi - _lo
+                        l, p, r = self._execute_forward_backward(
+                            mnt_latents=mnt_latents[_lo:_hi],
+                            mnt_text_embeddings=mnt_text_embeddings[_lo:_hi],
+                            mnt_attention_mask=mnt_attention_mask[_lo:_hi] if mnt_attention_mask is not None else None,
+                            mnt_pooled_embeddings=mnt_pooled_embeddings[_lo:_hi] if mnt_pooled_embeddings is not None else None,
+                            timesteps=timesteps[_lo:_hi],
+                            debug_save_path=debug_save_path if _lo == 0 else None,
+                            batch_captions=batch_captions[_lo:_hi] if batch_captions else None,
+                            batch_reference_paths=batch_reference_paths[_lo:_hi] if batch_reference_paths else None,
+                            alphas_cumprod_cached=alphas_cumprod_cached,
+                            use_condition_images=use_condition_images,
+                            condition_images_batch=condition_images_batch[_lo:_hi] if condition_images_batch is not None else None,
+                            reference_latents_nested=reference_latents_nested[_lo:_hi] if reference_latents_nested is not None else None,
+                            lens_latent_shape=lens_latent_shape,
+                            mnt_repa_pixels=mnt_repa_pixels[_lo:_hi] if mnt_repa_pixels is not None else None,
+                            mnt_time_ids=mnt_time_ids[_lo:_hi] if mnt_time_ids is not None else None,
+                            loss_scale=_w / batch_size,
+                        )
+                        loss_acc += l * _w
+                        pred_acc += p * _w
+                        recon_acc += r * _w
+                    loss = loss_acc / batch_size
+                    pred_loss = pred_acc / batch_size
+                    recon_loss = recon_acc / batch_size
+                else:
+                    # Attempt full batch forward + backward
+                    loss, pred_loss, recon_loss = self._execute_forward_backward(
+                        mnt_latents=mnt_latents,
+                        mnt_text_embeddings=mnt_text_embeddings,
+                        mnt_attention_mask=mnt_attention_mask,
+                        mnt_pooled_embeddings=mnt_pooled_embeddings,
+                        timesteps=timesteps,
+                        debug_save_path=debug_save_path,
+                        batch_captions=batch_captions,
+                        batch_reference_paths=batch_reference_paths,
+                        alphas_cumprod_cached=alphas_cumprod_cached,
+                        use_condition_images=use_condition_images,
+                        condition_images_batch=condition_images_batch,
+                        reference_latents_nested=reference_latents_nested,
+                        lens_latent_shape=lens_latent_shape,
+                        mnt_repa_pixels=mnt_repa_pixels,
+                        mnt_time_ids=mnt_time_ids,
+                    )
             finally:
                 self._activation_dispatch_end(_disp_cm, _disp_info)
             return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
@@ -4977,9 +5013,21 @@ class BaseTrainer(ABC):
                       f"(block-swap activation offload active)")
             mode = "fast"
 
+        # Escalate: even offload won't fit the full batch -> plan a micro-batch
+        # split (gradient accumulation keeps the effective batch). Only escalate
+        # splits; fast/offload buckets are never split, so batches that already
+        # fit are never slowed down by accumulation.
+        micro_bs = None
         if mode == "escalate":
-            print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} may overflow "
-                  f"even with offload; running with offload (escalate=warn-only)")
+            micro_bs = disp.plan_micro_bs(lh, lw, bs, free_gb)
+            if micro_bs < bs:
+                print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit even "
+                      f"with offload; splitting into micro-batch={micro_bs} + grad accumulation "
+                      f"(effective batch={bs})")
+            else:
+                micro_bs = None  # even bs=1 is tight; run whole batch with offload
+                print(f"{self.log_prefix} [ActDispatch] WARN bucket {lw}x{lh} bs{bs} may overflow "
+                      f"even with offload at micro-batch=1; running with offload")
 
         use_offload = mode in ("offload", "escalate")
         from core.memory_management import offload_activations
@@ -4989,7 +5037,7 @@ class BaseTrainer(ABC):
             pass
         cm = offload_activations(use_offload, threshold_bytes=disp.threshold_bytes)
         cm.__enter__()
-        return cm, (lh, lw, bs, mode)
+        return cm, (lh, lw, bs, mode, micro_bs)
 
     def _activation_dispatch_end(self, cm, info) -> None:
         """Exit the offload context and passively calibrate from the measured peak."""
@@ -4998,14 +5046,19 @@ class BaseTrainer(ABC):
         cm.__exit__(None, None, None)
         if info is None or self.activation_dispatcher is None:
             return
-        lh, lw, bs, mode = info
+        lh, lw, bs, mode, micro_bs = info
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
-            record_mode = "base" if mode == "fast" else "offload"
-            self.activation_dispatcher.record(lh, lw, bs, record_mode, peak_gb)
+            # Skip calibration when the batch was micro-split: the measured peak
+            # is the micro-batch peak, not the full-bucket peak, so recording it
+            # against (lh,lw,bs) would corrupt future full-batch predictions.
+            if micro_bs is None:
+                record_mode = "base" if mode == "fast" else "offload"
+                self.activation_dispatcher.record(lh, lw, bs, record_mode, peak_gb)
             if self.debug_vram:
+                extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
                 print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} "
-                      f"mode={mode} peak={peak_gb:.2f}GB")
+                      f"mode={mode}{extra} peak={peak_gb:.2f}GB")
         except Exception:
             pass
 
@@ -5026,12 +5079,19 @@ class BaseTrainer(ABC):
         lens_latent_shape: Optional[Tuple[int, int]] = None,
         mnt_repa_pixels: Optional[torch.Tensor] = None,
         mnt_time_ids: Optional[torch.Tensor] = None,
+        loss_scale: float = 1.0,
     ) -> Tuple[float, float, float]:
         """
         Execute forward pass (train_step_xxx) and backward pass for a batch.
 
         Returns loss values as Python floats (not tensors).
         Gradients are accumulated in model parameters.
+
+        loss_scale multiplies the loss BEFORE backward. Used by proactive
+        micro-batching: when a bucket is split into chunks of size m out of a
+        batch B, each chunk is scaled by m/B so the accumulated gradient equals
+        the full-batch mean gradient (sum_i (m_i/B) * grad(mean_loss_i)).
+        The returned loss VALUE stays unscaled (per-chunk mean) for reporting.
         """
         # Forward pass (architecture-specific)
         if self.is_zimage:
@@ -5165,7 +5225,9 @@ class BaseTrainer(ABC):
         # no-op, so existing (non-accumulating) runs are unchanged. Report the
         # unscaled loss value below.
         accum = getattr(self, "_grad_accum_steps", 1) or 1
-        loss_for_backward = (loss / accum) if accum > 1 else loss
+        loss_for_backward = loss * loss_scale if loss_scale != 1.0 else loss
+        if accum > 1:
+            loss_for_backward = loss_for_backward / accum
         if self.use_grad_scaler:
             self.grad_scaler.scale(loss_for_backward).backward()
         else:

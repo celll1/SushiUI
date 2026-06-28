@@ -205,6 +205,11 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   blocks_to_swap: 0,
   use_pinned_memory: false,
   num_optimizer_groups: 0,
+  activation_dispatch_enable: false,
+  activation_dispatch_margin_gb: 1.0,
+  activation_dispatch_seed_coef: 0.000024,
+  activation_dispatch_residual_frac: 0.85,
+  activation_dispatch_threshold_mb: 4,
   multi_noise_timesteps: 1,
   multi_noise_mode: "independent",
   trajectory_blend_alpha: 0.7,
@@ -493,6 +498,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const usePinnedMemory = params.use_pinned_memory ?? false;
   const numOptimizerGroups = params.num_optimizer_groups ?? 0;
 
+  // Per-bucket activation offload dispatcher
+  const activationDispatchEnable = params.activation_dispatch_enable ?? false;
+  const activationDispatchMarginGb = params.activation_dispatch_margin_gb ?? 1.0;
+
   // Multi Noise-Timestep (MNT) settings
   const multiNoiseTimesteps = params.multi_noise_timesteps ?? 1;
   const multiNoiseMode = params.multi_noise_mode ?? "independent";
@@ -729,6 +738,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       blocks_to_swap: params.blocks_to_swap,
       use_pinned_memory: params.use_pinned_memory,
       num_optimizer_groups: params.num_optimizer_groups,
+      activation_dispatch_enable: params.activation_dispatch_enable,
+      activation_dispatch_margin_gb: params.activation_dispatch_margin_gb,
+      activation_dispatch_seed_coef: params.activation_dispatch_seed_coef,
+      activation_dispatch_residual_frac: params.activation_dispatch_residual_frac,
+      activation_dispatch_threshold_mb: params.activation_dispatch_threshold_mb,
       multi_noise_timesteps: params.multi_noise_timesteps,
       multi_noise_mode: params.multi_noise_mode,
       trajectory_blend_alpha: params.trajectory_blend_alpha,
@@ -958,6 +972,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
       "blocks_to_swap", "use_pinned_memory", "num_optimizer_groups",
+      "activation_dispatch_enable", "activation_dispatch_margin_gb",
+      "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
+      "activation_dispatch_threshold_mb",
       "multi_noise_timesteps", "multi_noise_mode", "trajectory_blend_alpha",
       "snr_regularization_weight", "snr_timestep_adaptive", "snr_penalty_mode",
       "energy_regularization_weight", "energy_timestep_adaptive", "energy_penalty_mode",
@@ -3825,6 +3842,47 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 </label>
               </div>
             )}
+
+            {/* Per-bucket activation offload dispatcher */}
+            <div className="pt-2 border-t border-gray-700">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="activation-dispatch-enable"
+                  checked={activationDispatchEnable}
+                  onChange={(e) => updateParam("activation_dispatch_enable", e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="activation-dispatch-enable" className="text-xs text-gray-300 cursor-pointer">
+                  Per-Bucket Activation Offload
+                </label>
+              </div>
+              <p className="text-xs text-gray-500 mt-1">
+                Predicts the training peak per resolution bucket before the forward pass and offloads
+                saved activations to CPU only on buckets that would exceed the VRAM budget. Proactive
+                (no OOM detection). Off by default.
+              </p>
+              {activationDispatchEnable && (
+                <div className="mt-2">
+                  <label htmlFor="activation-dispatch-margin" className="block text-xs text-gray-300 mb-1">
+                    VRAM Safety Margin (GB)
+                  </label>
+                  <input
+                    type="number"
+                    id="activation-dispatch-margin"
+                    value={activationDispatchMarginGb}
+                    onChange={(e) => updateParam("activation_dispatch_margin_gb", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("activation_dispatch_margin_gb", 1.0); }}
+                    min={0}
+                    step={0.5}
+                    className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Headroom kept free when deciding offload, to avoid driver spill.
+                  </p>
+                </div>
+              )}
+            </div>
 
             {/* Anima-only Phase D memory-optimisation toggles */}
             {isAnimaModel(baseModelPath) && (

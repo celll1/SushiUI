@@ -6604,6 +6604,13 @@ class TrainingRunCreateRequest(BaseModel):
     use_pinned_memory: bool = False  # Use CUDA pinned memory for faster transfer
     num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)
 
+    # Per-bucket activation offload dispatcher (proactive, OOM-detection-free)
+    activation_dispatch_enable: bool = TRAINING_DEFAULTS["activation_dispatch_enable"]
+    activation_dispatch_margin_gb: float = TRAINING_DEFAULTS["activation_dispatch_margin_gb"]
+    activation_dispatch_seed_coef: float = TRAINING_DEFAULTS["activation_dispatch_seed_coef"]
+    activation_dispatch_residual_frac: float = TRAINING_DEFAULTS["activation_dispatch_residual_frac"]
+    activation_dispatch_threshold_mb: int = TRAINING_DEFAULTS["activation_dispatch_threshold_mb"]
+
     # Multi Noise-Timestep (MNT) settings
     multi_noise_timesteps: int = 1  # Number of different timesteps per batch (default: 1, disable MNT)
     multi_noise_mode: str = "independent"  # "independent" or "trajectory_blend"

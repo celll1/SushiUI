@@ -2139,6 +2139,11 @@ export interface TrainingRunCreateRequest {
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
   num_optimizer_groups?: number;
+  activation_dispatch_enable?: boolean;
+  activation_dispatch_margin_gb?: number;
+  activation_dispatch_seed_coef?: number;
+  activation_dispatch_residual_frac?: number;
+  activation_dispatch_threshold_mb?: number;
   multi_noise_timesteps?: number;
   multi_noise_mode?: string;
   trajectory_blend_alpha?: number;

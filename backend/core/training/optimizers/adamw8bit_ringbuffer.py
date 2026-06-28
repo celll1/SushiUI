@@ -926,7 +926,8 @@ def patch_adamw8bit_ringbuffer(model: nn.Module, optimizer: AdamW8bit_RingBuffer
                 state['absmax1'],
                 state['absmax2'],
                 beta1, beta2, eps, lr, weight_decay, gnorm_scale,
-                optimizer.step_count + 1  # +1 because hook runs before step()
+                optimizer.step_count + 1,  # +1 because hook runs before step()
+                optimizer.cautious          # cautious masking (matches step())
             )
 
             # Clear gradient (already applied)

@@ -260,18 +260,24 @@ class AdamW8bit_RingBuffer(Optimizer):
                     state['z'].copy_(z_quantized.cpu())
                     state['_absmax_z_init'] = absmax_z_init  # Temporary storage (on GPU)
 
-                    # Use pinned memory for faster CPU-GPU transfer
-                    if hasattr(state['exp_avg_sq'], 'pin_memory'):
+                    # Pin only CPU buffers (a get_state_buffer may return a GPU
+                    # tensor for resident params -> partial residency; pinning a
+                    # CUDA tensor would raise).
+                    if state['exp_avg_sq'].is_cpu:
                         state['exp_avg_sq'] = state['exp_avg_sq'].pin_memory()
+                    if state['z'].is_cpu:
                         state['z'] = state['z'].pin_memory()
                 else:
                     # Standard AdamW: exp_avg and exp_avg_sq
                     state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
                     state['exp_avg_sq'] = self.get_state_buffer(p, dtype=torch.uint8)
 
-                    # Use pinned memory for faster CPU-GPU transfer
-                    if hasattr(state['exp_avg'], 'pin_memory'):
+                    # Pin only CPU buffers (a get_state_buffer may return a GPU
+                    # tensor for resident params -> partial residency; pinning a
+                    # CUDA tensor would raise).
+                    if state['exp_avg'].is_cpu:
                         state['exp_avg'] = state['exp_avg'].pin_memory()
+                    if state['exp_avg_sq'].is_cpu:
                         state['exp_avg_sq'] = state['exp_avg_sq'].pin_memory()
             else:
                 # Ring Buffer disabled: GPU allocation (bitsandbytes-compatible)

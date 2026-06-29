@@ -105,6 +105,14 @@ class ActivationDispatcher:
         self._coef_samples = []
         self._coef_cap = seed_coef * 10.0
 
+    def mark_overflow(self, lh: int, lw: int, bs: int) -> None:
+        """A step at this bucket overflowed (raised OOM under the allocator cap).
+        Its true activation exceeds the headroom, so cache a value large enough to
+        force 'escalate' next time -- otherwise the bucket would full-attempt and
+        OOM-retry on every occurrence."""
+        key = (lh, lw, bs)
+        self._act_cache[key] = max(self._act_cache.get(key, 0.0), self.budget * 2.0)
+
     def _learned_coef(self) -> float:
         if not self._coef_samples:
             return self.seed_coef

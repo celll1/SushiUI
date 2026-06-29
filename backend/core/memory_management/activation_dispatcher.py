@@ -90,9 +90,16 @@ class ActivationDispatcher:
         """
         self.budget = budget_gb
         self.margin = margin_gb
-        self.coef = seed_coef          # running per-(bs*pixel) activation coef (GB)
+        self.seed_coef = seed_coef
         self.residual_frac = residual_frac
         self.threshold_bytes = threshold_bytes
+        # (lh, lw, bs) -> measured base (non-offloaded) activation in GB. The
+        # PRIMARY predictor: exact per-bucket measurement. The seed coef is only a
+        # fallback for buckets not yet seen. (An earlier global self-calibrated
+        # coefficient was removed: one inflated measurement latched it ~40x high
+        # and split buckets never recorded, so it could never recover -> every
+        # bucket falsely escalated. A per-bucket cache cannot run away like that.)
+        self._act_cache = {}
 
     def _headroom(self, resident_gb: float) -> float:
         """Bytes available for this step's activation. Uses memory_allocated()
@@ -101,14 +108,19 @@ class ActivationDispatcher:
         fills and every bucket falsely escalates."""
         return self.budget - resident_gb - self.margin
 
-    def _act_pred(self, lh: int, lw: int, bs: int) -> float:
-        return self.coef * bs * lh * lw
+    def base_act(self, lh: int, lw: int, bs: int) -> float:
+        """Predicted base (non-offloaded) activation GB: measured if seen, else
+        the seed estimate (linear in bs * latent-area)."""
+        cached = self._act_cache.get((lh, lw, bs))
+        if cached is not None:
+            return cached
+        return self.seed_coef * bs * lh * lw
 
     def decide(self, lh: int, lw: int, bs: int, resident_gb: float) -> str:
         """Return 'fast' / 'offload' / 'escalate'. resident_gb = memory_allocated()
         at dispatch time (static weights+grad+optimizer; activations already freed)."""
         headroom = self._headroom(resident_gb)
-        act = self._act_pred(lh, lw, bs)
+        act = self.base_act(lh, lw, bs)
         if act <= headroom:
             return "fast"
         if act * self.residual_frac <= headroom:
@@ -120,7 +132,7 @@ class ActivationDispatcher:
         headroom. The batch is split into ceil(bs/M) chunks with gradient
         accumulation, keeping the effective (gradient) batch = bs."""
         headroom = self._headroom(resident_gb)
-        per_sample = self.coef * lh * lw * self.residual_frac
+        per_sample = (self.base_act(lh, lw, bs) / bs) * self.residual_frac
         if per_sample <= 0:
             return bs
         if headroom <= 0:
@@ -129,27 +141,25 @@ class ActivationDispatcher:
         return max(1, min(bs, m))
 
     def record(self, lh: int, lw: int, bs: int, mode: str, peak_gb: float,
-               resident_gb: float) -> None:
-        """Self-calibrate the activation coefficient from a measured step.
+               resident_gb: float, executed_bs: int = None) -> None:
+        """Cache the measured base activation for this bucket.
 
-        activation = peak - resident_at_dispatch. Back out per-(bs*pixel) cost and
-        update the running coef conservatively (grow fast to avoid under-predicting
-        and spilling, relax slowly). ``mode`` is "base" (ran without offload) or
-        "offload" (ran with offload -> divide out residual_frac to get base cost).
+        activation = peak - resident_at_dispatch. ``mode`` is "base" (ran without
+        offload) or "offload" (divide out residual_frac to recover base cost).
+        For a micro-split step the peak reflects ``executed_bs`` samples, so scale
+        up to the full ``bs`` (activation is ~linear in batch) -- this lets a split
+        bucket learn it actually fits and stop splitting next time.
         """
-        denom = bs * lh * lw
+        eb = executed_bs or bs
+        denom = eb * lh * lw
         act = peak_gb - resident_gb
         if act <= 0 or denom <= 0:
             return
-        # A peak at/above the budget means the step spilled (WDDM) or nearly OOMed;
-        # max_memory_allocated is then an unreliable lower bound, so don't let it
-        # inflate the coefficient (which would over-predict and over-split forever).
+        # A peak at/above the budget means the step spilled (WDDM) / nearly OOMed;
+        # max_memory_allocated is then an unreliable lower bound -- don't cache it.
         if peak_gb >= self.budget:
             return
-        implied = act / denom
         if mode == "offload" and self.residual_frac > 0:
-            implied = implied / self.residual_frac
-        if implied > self.coef:
-            self.coef = implied                      # grow immediately (safe side)
-        else:
-            self.coef = 0.9 * self.coef + 0.1 * implied   # relax slowly
+            act = act / self.residual_frac           # recover non-offloaded cost
+        full_act = act * (bs / eb)                   # extrapolate split -> full batch
+        self._act_cache[(lh, lw, bs)] = full_act

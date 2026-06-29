@@ -408,12 +408,17 @@ else:
     mode = "escalate"      # offloadでも不足 → micro-batch分割(+offload) / tiling(C)
 ```
 
-> **重要な実装修正（本番ログで発覚）**: 当初は `mem_get_info()` の**ドライバ空き**で判定していたが、
-> これは PyTorch の予約済みキャッシュを空きと数えず、キャッシュが溜まると空き≈0 → **全バケット誤escalate**
-> （1024px すら「収まらない」と誤判定し全ステップ offload/分割で 15〜23s/it に激遅化）。さらに予測 peak に
-> static を含めつつ static 控除後の空きと比較し **static 二重計上**していた。修正: **固定 budget（起動時に確定）
-> − resident（`memory_allocated`）= headroom** とし、**活性化のみ**を比較。coef は実測 peak から自己校正
-> （`coef = (peak − resident)/(bs·area)`、安全側に grow-fast/relax-slow）するのでアスペクトバケットが多様でも収束。
+> **重要な実装修正（本番ログで発覚、2段階）**:
+> 1. 当初は `mem_get_info()` の**ドライバ空き**で判定 → PyTorch 予約キャッシュを空きと数えず、キャッシュが
+>    溜まると空き≈0 → 全バケット誤escalate。さらに予測 peak に static を含めつつ static 控除後の空きと比較し
+>    **static 二重計上**。修正: **固定 budget（起動時 `allocated+free`）− resident（`memory_allocated`）= headroom**
+>    とし**活性化のみ**を比較。
+> 2. 次に global coef の**自己校正（grow-fast）が暴走**：1つの過大測定に latch（seed の~60倍 1e-3 まで）し、
+>    予測活性化が 141〜678GB と物理的にありえない値に → 全バケット誤escalate。しかも**分割バケットは record
+>    しない**ため校正データが入らず永久ロック（正帰還）。修正: **global coef 自己校正を廃止**し、
+>    **per-bucket 実測キャッシュ（peak−resident）を主予測、seed coef を未測定バケットの fallback**に。
+>    分割バケットも record し（micro 実測を full バケットに線形外挿）次回 fast へ自己修正。**キャッシュは
+>    バケット毎なので global に暴走しない**。spill した測定（peak≥budget）は無視。
 
 **escalate の micro-batch 分割（実装済み）**: `plan_micro_bs(lh,lw,bs,free)` が
 `M = floor((avail - static) / (coef·lat_area·residual_frac))` で**収まる最大の micro バッチ M**を

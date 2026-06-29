@@ -10,6 +10,29 @@ import yaml
 import os
 import signal
 import time
+
+# Reduce CUDA caching-allocator fragmentation across the many aspect-ratio bucket
+# shapes (the allocator otherwise reserves a non-reusable block per distinct shape,
+# so `reserved` grows far beyond `allocated` and the real "available VRAM" becomes
+# history-dependent). MUST be set before torch initialises the CUDA allocator.
+# Respect an existing user setting (escape hatch: set PYTORCH_CUDA_ALLOC_CONF).
+#   - expandable_segments: best fix, but LINUX-ONLY (PyTorch logs "not supported on
+#     this platform" on Windows), so only enable it off-Windows.
+#   - garbage_collection_threshold: cross-platform; releases cached blocks once
+#     reserved exceeds the fraction, so reserved tracks the live shape instead of
+#     the union of every shape seen.
+import platform as _platform
+_alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+_opts = []
+if "expandable_segments" not in _alloc_conf and _platform.system() != "Windows":
+    _opts.append("expandable_segments:True")
+if "garbage_collection_threshold" not in _alloc_conf:
+    _opts.append("garbage_collection_threshold:0.8")
+if _opts:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = (
+        (_alloc_conf + "," if _alloc_conf else "") + ",".join(_opts))
+    print(f"[TrainRunner] PYTORCH_CUDA_ALLOC_CONF={os.environ['PYTORCH_CUDA_ALLOC_CONF']}")
+
 import torch
 import gc
 from pathlib import Path

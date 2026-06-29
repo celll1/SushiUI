@@ -93,13 +93,24 @@ class ActivationDispatcher:
         self.seed_coef = seed_coef
         self.residual_frac = residual_frac
         self.threshold_bytes = threshold_bytes
-        # (lh, lw, bs) -> measured base (non-offloaded) activation in GB. The
-        # PRIMARY predictor: exact per-bucket measurement. The seed coef is only a
-        # fallback for buckets not yet seen. (An earlier global self-calibrated
-        # coefficient was removed: one inflated measurement latched it ~40x high
-        # and split buckets never recorded, so it could never recover -> every
-        # bucket falsely escalated. A per-bucket cache cannot run away like that.)
+        # (lh, lw, bs) -> measured base (non-offloaded) activation in GB. PRIMARY
+        # predictor: exact per-bucket measurement (cannot run away globally).
         self._act_cache = {}
+        # Per-pixel activation samples (GB / (bs*latent-pixel)) from measured steps.
+        # For UNSEEN buckets we predict with the MEDIAN of these (robust to a single
+        # bogus measurement -- unlike the old grow-fast coef that latched ~40x high),
+        # clamped to [seed, seed*10]. A fixed seed alone is config-dependent and was
+        # ~3.5x too low for full-param + TE + VE + MNT, so unseen buckets
+        # under-predicted and spilled; the median learns the real per-pixel cost.
+        self._coef_samples = []
+        self._coef_cap = seed_coef * 10.0
+
+    def _learned_coef(self) -> float:
+        if not self._coef_samples:
+            return self.seed_coef
+        s = sorted(self._coef_samples)
+        med = s[len(s) // 2]
+        return min(max(med, self.seed_coef), self._coef_cap)
 
     def _headroom(self, resident_gb: float) -> float:
         """Bytes available for this step's activation. Uses memory_allocated()
@@ -109,12 +120,12 @@ class ActivationDispatcher:
         return self.budget - resident_gb - self.margin
 
     def base_act(self, lh: int, lw: int, bs: int) -> float:
-        """Predicted base (non-offloaded) activation GB: measured if seen, else
-        the seed estimate (linear in bs * latent-area)."""
+        """Predicted base (non-offloaded) activation GB: measured if seen, else the
+        learned-median per-pixel estimate (linear in bs * latent-area)."""
         cached = self._act_cache.get((lh, lw, bs))
         if cached is not None:
             return cached
-        return self.seed_coef * bs * lh * lw
+        return self._learned_coef() * bs * lh * lw
 
     def decide(self, lh: int, lw: int, bs: int, resident_gb: float) -> str:
         """Return 'fast' / 'offload' / 'escalate'. resident_gb = memory_allocated()
@@ -155,11 +166,16 @@ class ActivationDispatcher:
         act = peak_gb - resident_gb
         if act <= 0 or denom <= 0:
             return
-        # A peak at/above the budget means the step spilled (WDDM) / nearly OOMed;
-        # max_memory_allocated is then an unreliable lower bound -- don't cache it.
-        if peak_gb >= self.budget:
-            return
         if mode == "offload" and self.residual_frac > 0:
             act = act / self.residual_frac           # recover non-offloaded cost
+        # Feed the per-pixel sample for the learned median (unseen-bucket predictor).
+        # NOTE: we intentionally KEEP spilled measurements. On WDDM a spill makes
+        # max_memory_allocated report the real (unified) peak, which is exactly the
+        # signal that this shape needs offload/split next time; dropping it left the
+        # spilling buckets permanently under-predicted.
+        implied = act / denom
+        self._coef_samples.append(implied)
+        if len(self._coef_samples) > 64:
+            self._coef_samples.pop(0)
         full_act = act * (bs / eb)                   # extrapolate split -> full batch
         self._act_cache[(lh, lw, bs)] = full_act

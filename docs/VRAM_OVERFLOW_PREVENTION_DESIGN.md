@@ -414,11 +414,15 @@ else:
 >    **static 二重計上**。修正: **固定 budget（起動時 `allocated+free`）− resident（`memory_allocated`）= headroom**
 >    とし**活性化のみ**を比較。
 > 2. 次に global coef の**自己校正（grow-fast）が暴走**：1つの過大測定に latch（seed の~60倍 1e-3 まで）し、
->    予測活性化が 141〜678GB と物理的にありえない値に → 全バケット誤escalate。しかも**分割バケットは record
->    しない**ため校正データが入らず永久ロック（正帰還）。修正: **global coef 自己校正を廃止**し、
->    **per-bucket 実測キャッシュ（peak−resident）を主予測、seed coef を未測定バケットの fallback**に。
->    分割バケットも record し（micro 実測を full バケットに線形外挿）次回 fast へ自己修正。**キャッシュは
->    バケット毎なので global に暴走しない**。spill した測定（peak≥budget）は無視。
+>    予測活性化が 141〜678GB と物理的にありえない値に → 全バケット誤escalate。修正: grow-fast を廃止し
+>    **per-bucket 実測キャッシュ**を主予測に。
+> 3. しかし純 per-bucket + 固定 seed では**逆に未測定バケットを過小評価**：seed(24e-6) は full-param+TE+VE+MNT
+>    には ~3.5x 低く（実 per-pixel ~85e-6）、新形状（アスペクト+3k 拡大で多数）が毎回 fast 判定→**専用VRAM
+>    満杯+共有メモリへ ~23GB スピル→106s/it**。しかも spill 測定を破棄するガードで**スピルする形状ほど学習
+>    されず永久スピル**。最終修正: 未測定バケットは**実測 per-pixel の中央値**（外れ値に頑健、grow-fast の
+>    暴走を回避）を `[seed, seed×10]` でクランプして予測。**spill 測定も保持**（WDDM では `max_memory_allocated`
+>    が共有込みの実 peak を返すので、その形状が split を要する正しい信号）。→ 1回の測定で実 per-pixel を学習し
+>    未測定バケットにも適用、繰り返しスピルが収束。
 
 **escalate の micro-batch 分割（実装済み）**: `plan_micro_bs(lh,lw,bs,free)` が
 `M = floor((avail - static) / (coef·lat_area·residual_frac))` で**収まる最大の micro バッチ M**を

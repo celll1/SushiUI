@@ -5088,7 +5088,7 @@ class BaseTrainer(ABC):
         disp = self.activation_dispatcher
         mode = disp.decide(lh, lw, bs, resident_gb)
         _headroom_gb = disp.budget - resident_gb - disp.margin
-        _act_pred_gb = disp.coef * bs * lh * lw
+        _act_pred_gb = disp.base_act(lh, lw, bs)
 
         # Block-swap activation offload (LayerOffloadConductor) already moves
         # activations; suppress the dispatcher offload to avoid double offload.
@@ -5120,13 +5120,12 @@ class BaseTrainer(ABC):
                     _log_once((lh, lw, bs, "split", micro_bs),
                               f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} -> "
                               f"micro-batch={micro_bs} (act~{_act_pred_gb:.1f}GB, "
-                              f"headroom~{_headroom_gb:.1f}GB, resident~{resident_gb:.1f}GB, "
-                              f"coef={disp.coef:.2e})")
+                              f"headroom~{_headroom_gb:.1f}GB, resident~{resident_gb:.1f}GB)")
                 else:
                     _log_once((lh, lw, bs, "tight"),
                               f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} tight at "
                               f"micro-batch=1 (act~{_act_pred_gb:.1f}GB, headroom~{_headroom_gb:.1f}GB, "
-                              f"resident~{resident_gb:.1f}GB, coef={disp.coef:.2e}); offload only")
+                              f"resident~{resident_gb:.1f}GB); offload only")
 
         use_offload = mode in ("offload", "escalate")
         from core.memory_management import offload_activations
@@ -5148,15 +5147,18 @@ class BaseTrainer(ABC):
         lh, lw, bs, mode, micro_bs, resident_gb = info
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
-            # Skip calibration when the batch was micro-split: the measured peak
-            # is the micro-batch peak, not the full-bucket peak.
-            if micro_bs is None:
-                record_mode = "base" if mode == "fast" else "offload"
-                self.activation_dispatcher.record(lh, lw, bs, record_mode, peak_gb, resident_gb)
+            # Record every executed step. For a micro-split, the peak reflects
+            # micro_bs samples; record() scales it back to the full bucket so the
+            # bucket can learn it actually fits and stop splitting next time.
+            record_mode = "base" if mode == "fast" else "offload"
+            self.activation_dispatcher.record(
+                lh, lw, bs, record_mode, peak_gb, resident_gb,
+                executed_bs=(micro_bs if micro_bs is not None else bs))
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
+                cached = self.activation_dispatcher.base_act(lh, lw, bs)
                 print(f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} "
-                      f"mode={mode}{extra} peak={peak_gb:.2f}GB coef={self.activation_dispatcher.coef:.2e}")
+                      f"mode={mode}{extra} peak={peak_gb:.2f}GB cached_act={cached:.2f}GB")
         except Exception:
             pass
 

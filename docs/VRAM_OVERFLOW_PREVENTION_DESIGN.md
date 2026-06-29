@@ -424,6 +424,15 @@ else:
 >    が共有込みの実 peak を返すので、その形状が split を要する正しい信号）。→ 1回の測定で実 per-pixel を学習し
 >    未測定バケットにも適用、繰り返しスピルが収束。
 
+**スピル強制OOM化 + リアクティブ micro 再試行（実装済み）**: WDDM はスピル時に例外を出さず、共有メモリ
+へフォールバックして**激遅化＋stop signal も効かなくなる**。対策として dispatcher 有効時に
+`torch.cuda.set_per_process_memory_fraction(budget/total)` で**アロケータ上限を budget に固定** → 超過割当が
+**スピルではなく `OutOfMemoryError` を即座に raise**。これを `_forward_backward_with_oom_recovery` が捕捉し、
+**当該バッチを micro-batch 化して再試行**（two-stage ヘルパで on-the-fly TE/VE グラフも対応、bs//2 → 1 と段階縮小、
+micro=1 でも不足なら skip）。スピルが起きないので即復帰し stop も効く。OOM したバケットは `mark_overflow()` で
+**次回 proactive に escalate**（毎回 full試行→OOM の繰り返しを防止）。proactive(予測) と reactive(強制OOM捕捉) の
+二層で、予測が外れてもスピルせず吸収する。
+
 **escalate の micro-batch 分割（実装済み）**: `plan_micro_bs(lh,lw,bs,free)` が
 `M = floor((avail - static) / (coef·lat_area·residual_frac))` で**収まる最大の micro バッチ M**を
 求め、バッチを `ceil(bs/M)` チャンクに分割して**勾配累積**する。各チャンクの loss を `chunk/bs` で

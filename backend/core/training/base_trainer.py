@@ -4664,6 +4664,101 @@ class BaseTrainer(ABC):
     # OOM Recovery: Batch Splitting
     # ============================================================
 
+    @staticmethod
+    def _is_cuda_oom(e: Exception) -> bool:
+        s = str(e).lower()
+        return ("out of memory" in s or "cuda error" in s or "cublas" in s
+                or "cudnn" in s or "cusparse" in s or "cufft" in s)
+
+    def _oom_recovery_cleanup(self) -> None:
+        """Release tensors/cache after a CUDA OOM so a retry starts clean."""
+        try:
+            self.optimizer.zero_grad(set_to_none=True)
+        except Exception:
+            pass
+        cond = getattr(self, "layer_offload_conductor", None)
+        if cond is not None:
+            try:
+                cond.clear_activations()
+            except Exception:
+                pass
+        flx = getattr(self, "flux2_block_offloader", None)
+        if flx is not None:
+            try:
+                flx.clear_activations()
+            except Exception:
+                pass
+        gc.collect()
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _microbatch_two_stage(self, micro_bs: int, eff_bs: int, b: dict):
+        """Run a batch (the _execute_forward_backward args in dict ``b``) as
+        micro-chunks of size ``micro_bs`` with gradient accumulation, returning
+        (loss, pred, recon) full-batch weighted means.
+
+        Per-chunk loss is scaled by chunk/eff_bs so the accumulated gradient equals
+        the full-batch mean gradient. Inputs that carry a live encoder graph
+        (on-the-fly TE/VE training) are run on DETACHED LEAF copies per chunk and
+        back-propagated through the encoder ONCE at the end (two-stage), so the
+        shared graph isn't freed mid-loop. Used by both the proactive escalate
+        decision and the reactive OOM retry.
+        """
+        batch_size = b["mnt_latents"].shape[0]
+        graph_names = ("mnt_latents", "mnt_text_embeddings",
+                       "mnt_pooled_embeddings", "mnt_repa_pixels")
+        graph_inputs = {n: b[n] for n in graph_names
+                        if isinstance(b.get(n), torch.Tensor) and b[n].grad_fn is not None}
+        grad_acc = {n: torch.zeros_like(t) for n, t in graph_inputs.items()}
+        loss_acc = pred_acc = recon_acc = 0.0
+        for lo in range(0, batch_size, micro_bs):
+            hi = min(lo + micro_bs, batch_size)
+            w = hi - lo
+
+            def _sl(name):
+                full = b.get(name)
+                if full is None:
+                    return None
+                if name in graph_inputs:
+                    return full[lo:hi].detach().requires_grad_(True)
+                return full[lo:hi]
+
+            leaves = {n: _sl(n) for n in graph_names}
+            l, p, r = self._execute_forward_backward(
+                mnt_latents=leaves["mnt_latents"],
+                mnt_text_embeddings=leaves["mnt_text_embeddings"],
+                mnt_attention_mask=b["mnt_attention_mask"][lo:hi] if b["mnt_attention_mask"] is not None else None,
+                mnt_pooled_embeddings=leaves["mnt_pooled_embeddings"],
+                timesteps=b["timesteps"][lo:hi],
+                debug_save_path=b["debug_save_path"] if lo == 0 else None,
+                batch_captions=b["batch_captions"][lo:hi] if b["batch_captions"] else None,
+                batch_reference_paths=b["batch_reference_paths"][lo:hi] if b["batch_reference_paths"] else None,
+                alphas_cumprod_cached=b["alphas_cumprod_cached"],
+                use_condition_images=b["use_condition_images"],
+                condition_images_batch=b["condition_images_batch"][lo:hi] if b["condition_images_batch"] is not None else None,
+                reference_latents_nested=b["reference_latents_nested"][lo:hi] if b["reference_latents_nested"] is not None else None,
+                lens_latent_shape=b["lens_latent_shape"],
+                mnt_repa_pixels=leaves["mnt_repa_pixels"],
+                mnt_time_ids=b["mnt_time_ids"][lo:hi] if b["mnt_time_ids"] is not None else None,
+                loss_scale=w / eff_bs,
+            )
+            for n, leaf in leaves.items():
+                if n in graph_inputs and leaf is not None and leaf.grad is not None:
+                    grad_acc[n][lo:hi] = leaf.grad
+            loss_acc += l * w
+            pred_acc += p * w
+            recon_acc += r * w
+        if graph_inputs:
+            torch.autograd.backward(tensors=list(graph_inputs.values()),
+                                    grad_tensors=[grad_acc[n] for n in graph_inputs])
+        return loss_acc / batch_size, pred_acc / batch_size, recon_acc / batch_size
+
     def _forward_backward_with_oom_recovery(
         self,
         mnt_latents: torch.Tensor,
@@ -4716,333 +4811,66 @@ class BaseTrainer(ABC):
         # -> ~Nx too large). effective_batch_size is None only at the top level.
         eff_bs = effective_batch_size if effective_batch_size is not None else batch_size
 
+        # All _execute_forward_backward args in one dict, so the micro-batch helper
+        # (used by both the proactive escalate decision and the reactive OOM retry)
+        # can slice them uniformly.
+        _batch = dict(
+            mnt_latents=mnt_latents, mnt_text_embeddings=mnt_text_embeddings,
+            mnt_attention_mask=mnt_attention_mask, mnt_pooled_embeddings=mnt_pooled_embeddings,
+            timesteps=timesteps, debug_save_path=debug_save_path,
+            batch_captions=batch_captions, batch_reference_paths=batch_reference_paths,
+            alphas_cumprod_cached=alphas_cumprod_cached, use_condition_images=use_condition_images,
+            condition_images_batch=condition_images_batch, reference_latents_nested=reference_latents_nested,
+            lens_latent_shape=lens_latent_shape, mnt_repa_pixels=mnt_repa_pixels,
+            mnt_time_ids=mnt_time_ids,
+        )
+
+        _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
+        _micro_bs = _disp_info[4] if _disp_info else None
         try:
-            # Proactively decide per-bucket activation offload and wrap the whole
-            # forward+backward in the offload context (saved tensors are restored
-            # in backward, so the context must span both). The try/finally ensures
-            # the saved_tensors hooks are popped even if forward/backward raises,
-            # so the except-based OOM recovery below sees a clean autograd state.
-            _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
-            _micro_bs = _disp_info[4] if _disp_info else None
-            # Batch-dim micro-splitting runs one backward per chunk. Per-sample
-            # inputs that carry a live upstream graph (on-the-fly TE/VE training ->
-            # non-leaf embeddings computed once for the whole batch) would have
-            # that shared graph freed by the first chunk's backward, breaking the
-            # next chunk. Two-stage scheme: run U-Net per chunk on a DETACHED LEAF
-            # copy of each graph-bearing input (so the per-chunk backward stops at
-            # the embedding and accumulates its grad), then do ONE backward through
-            # the encoder(s) with the accumulated embedding gradient. This keeps the
-            # U-Net activation saving AND trains the encoders correctly.
-            _graph_names = ("mnt_latents", "mnt_text_embeddings",
-                            "mnt_pooled_embeddings", "mnt_repa_pixels")
-            _graph_tensors = {"mnt_latents": mnt_latents,
-                              "mnt_text_embeddings": mnt_text_embeddings,
-                              "mnt_pooled_embeddings": mnt_pooled_embeddings,
-                              "mnt_repa_pixels": mnt_repa_pixels}
-            _graph_inputs = {}
-            if _micro_bs is not None and _micro_bs < batch_size:
-                for _n in _graph_names:
-                    _t = _graph_tensors[_n]
-                    if isinstance(_t, torch.Tensor) and _t.grad_fn is not None:
-                        _graph_inputs[_n] = _t
             try:
+                # Proactive path: escalate -> micro-batch (two-stage); else full batch.
                 if _micro_bs is not None and _micro_bs < batch_size:
-                    # Escalate path: proactively split the batch into micro-chunks
-                    # and accumulate gradients. Each chunk's loss is scaled by
-                    # chunk_size/eff_bs so the accumulated gradient equals the
-                    # full-batch mean gradient. The effective (gradient) batch is
-                    # unchanged; only the per-forward activation shrinks.
-                    loss_acc = pred_acc = recon_acc = 0.0
-                    _grad_acc = {_n: torch.zeros_like(_t) for _n, _t in _graph_inputs.items()}
-                    for _lo in range(0, batch_size, _micro_bs):
-                        _hi = min(_lo + _micro_bs, batch_size)
-                        _w = _hi - _lo
-
-                        def _slice(name, full):
-                            # Detached leaf for graph-bearing inputs (so we can read
-                            # back its grad and keep the encoder graph untouched);
-                            # plain slice otherwise.
-                            if full is None:
-                                return None
-                            if name in _graph_inputs:
-                                return full[_lo:_hi].detach().requires_grad_(True)
-                            return full[_lo:_hi]
-
-                        _c_lat = _slice("mnt_latents", mnt_latents)
-                        _c_te = _slice("mnt_text_embeddings", mnt_text_embeddings)
-                        _c_pool = _slice("mnt_pooled_embeddings", mnt_pooled_embeddings)
-                        _c_repa = _slice("mnt_repa_pixels", mnt_repa_pixels)
-                        l, p, r = self._execute_forward_backward(
-                            mnt_latents=_c_lat,
-                            mnt_text_embeddings=_c_te,
-                            mnt_attention_mask=mnt_attention_mask[_lo:_hi] if mnt_attention_mask is not None else None,
-                            mnt_pooled_embeddings=_c_pool,
-                            timesteps=timesteps[_lo:_hi],
-                            debug_save_path=debug_save_path if _lo == 0 else None,
-                            batch_captions=batch_captions[_lo:_hi] if batch_captions else None,
-                            batch_reference_paths=batch_reference_paths[_lo:_hi] if batch_reference_paths else None,
-                            alphas_cumprod_cached=alphas_cumprod_cached,
-                            use_condition_images=use_condition_images,
-                            condition_images_batch=condition_images_batch[_lo:_hi] if condition_images_batch is not None else None,
-                            reference_latents_nested=reference_latents_nested[_lo:_hi] if reference_latents_nested is not None else None,
-                            lens_latent_shape=lens_latent_shape,
-                            mnt_repa_pixels=_c_repa,
-                            mnt_time_ids=mnt_time_ids[_lo:_hi] if mnt_time_ids is not None else None,
-                            loss_scale=_w / eff_bs,
-                        )
-                        # Capture the (scaled) gradient w.r.t. each graph-bearing
-                        # input for the stage-2 encoder backward.
-                        for _n, _leaf in (("mnt_latents", _c_lat),
-                                          ("mnt_text_embeddings", _c_te),
-                                          ("mnt_pooled_embeddings", _c_pool),
-                                          ("mnt_repa_pixels", _c_repa)):
-                            if _n in _graph_inputs and _leaf is not None and _leaf.grad is not None:
-                                _grad_acc[_n][_lo:_hi] = _leaf.grad
-                        loss_acc += l * _w
-                        pred_acc += p * _w
-                        recon_acc += r * _w
-                    # Stage 2: a single backward through the shared encoder graph(s)
-                    # with the accumulated embedding gradient -> correct encoder
-                    # gradients in one pass (no "backward a second time").
-                    if _graph_inputs:
-                        torch.autograd.backward(
-                            tensors=list(_graph_inputs.values()),
-                            grad_tensors=[_grad_acc[_n] for _n in _graph_inputs],
-                        )
-                    loss = loss_acc / batch_size
-                    pred_loss = pred_acc / batch_size
-                    recon_loss = recon_acc / batch_size
+                    loss, pred_loss, recon_loss = self._microbatch_two_stage(_micro_bs, eff_bs, _batch)
                 else:
-                    # Attempt full batch forward + backward
                     loss, pred_loss, recon_loss = self._execute_forward_backward(
-                        mnt_latents=mnt_latents,
-                        mnt_text_embeddings=mnt_text_embeddings,
-                        mnt_attention_mask=mnt_attention_mask,
-                        mnt_pooled_embeddings=mnt_pooled_embeddings,
-                        timesteps=timesteps,
-                        debug_save_path=debug_save_path,
-                        batch_captions=batch_captions,
-                        batch_reference_paths=batch_reference_paths,
-                        alphas_cumprod_cached=alphas_cumprod_cached,
-                        use_condition_images=use_condition_images,
-                        condition_images_batch=condition_images_batch,
-                        reference_latents_nested=reference_latents_nested,
-                        lens_latent_shape=lens_latent_shape,
-                        mnt_repa_pixels=mnt_repa_pixels,
-                        mnt_time_ids=mnt_time_ids,
-                        # Scale by this sub-batch's share of the original batch so
-                        # gradients accumulated across recovery splits equal the
-                        # full-batch mean gradient. 1.0 at the top level (no split).
-                        loss_scale=batch_size / eff_bs,
-                    )
-            finally:
-                self._activation_dispatch_end(_disp_cm, _disp_info)
-            return loss, pred_loss, recon_loss, False  # cuda_error_skip=False (success)
+                        loss_scale=batch_size / eff_bs, **_batch)
+                return loss, pred_loss, recon_loss, False  # success
 
-        except RuntimeError as e:
-            error_str = str(e).lower()
-            # Check for various CUDA memory-related errors
-            is_recoverable_cuda_error = (
-                "out of memory" in error_str or
-                "cuda error" in error_str or
-                "cublas" in error_str or
-                "cudnn" in error_str or
-                "cusparse" in error_str or
-                "cufft" in error_str
-            )
-            if not is_recoverable_cuda_error:
-                raise  # Re-raise non-CUDA errors
-
-            # ============================================================
-            # CUDA Error Recovery: Clean up VRAM before retry
-            # ============================================================
-            # Critical: Must release all tensors from failed forward/backward pass
-            # before attempting batch split. Otherwise VRAM stays full.
-            print(f"{self.log_prefix} [CUDA Recovery] Error detected, cleaning up VRAM...")
-
-            # Step 1: Zero gradients to release gradient tensors from failed backward
-            # This is critical - partial backward may have accumulated invalid gradients
-            try:
-                self.optimizer.zero_grad(set_to_none=True)
-                print(f"{self.log_prefix} [CUDA Recovery] Gradients cleared (set_to_none=True)")
-            except Exception as grad_error:
-                print(f"{self.log_prefix} [CUDA Recovery] zero_grad() failed: {grad_error}")
-
-            # Step 2: Clear gradient checkpointing saved activations if using layer offloading
-            if hasattr(self, 'layer_offload_conductor') and self.layer_offload_conductor is not None:
-                try:
-                    self.layer_offload_conductor.clear_activations()
-                    print(f"{self.log_prefix} [CUDA Recovery] Layer offload activations cleared")
-                except Exception:
-                    pass
-
-            # Step 3: Clear FLUX.2 block swap activations if applicable
-            if hasattr(self, 'flux2_block_offloader') and self.flux2_block_offloader is not None:
-                try:
-                    self.flux2_block_offloader.clear_activations()
-                    print(f"{self.log_prefix} [CUDA Recovery] FLUX.2 block swap activations cleared")
-                except Exception:
-                    pass
-
-            # Step 4: Force Python garbage collection to release orphaned tensors
-            gc.collect()
-
-            # Step 5: Synchronize CUDA to ensure all pending operations complete/fail
-            try:
-                torch.cuda.synchronize()
-            except Exception:
-                pass  # May fail if CUDA is in bad state, that's okay
-
-            # Step 6: Clear CUDA cache (releases unreferenced GPU memory)
-            empty_cache_failed = False
-            try:
-                torch.cuda.empty_cache()
-                print(f"{self.log_prefix} [CUDA Recovery] CUDA cache cleared")
-            except Exception as cache_error:
-                print(f"{self.log_prefix} [CUDA Recovery] empty_cache() failed: {cache_error}")
-                empty_cache_failed = True
-                # If empty_cache itself fails, CUDA context is severely corrupted
-                # Try to reset CUDA context by forcing synchronization
-                try:
-                    torch.cuda.synchronize()
-                except Exception:
-                    pass
-                # Try ipc_collect as last resort
-                try:
-                    torch.cuda.ipc_collect()
-                except Exception:
-                    pass
-
-            # Step 7: Reset CUDA error state by attempting a small allocation
-            try:
-                _test = torch.zeros(1, device=self.device)
-                del _test
-                print(f"{self.log_prefix} [CUDA Recovery] CUDA state verified OK")
-            except Exception as cuda_state_error:
-                print(f"{self.log_prefix} [CUDA Recovery] CUDA still in bad state: {cuda_state_error}")
-                # If CUDA is still broken after empty_cache failed, this is unrecoverable
-                # Signal that emergency checkpoint should be saved and process should restart
-                if empty_cache_failed:
-                    print(f"{self.log_prefix} [CUDA Recovery] CUDA context is severely corrupted (empty_cache failed)")
-                    print(f"{self.log_prefix} [CUDA Recovery] Raising exception to trigger emergency checkpoint save")
-                    raise RuntimeError(f"CUDA context unrecoverable: empty_cache() failed. Original error: {str(e)[:200]}")
-                # If CUDA is still broken, we may need to skip this batch
+            except RuntimeError as e:
+                if not self._is_cuda_oom(e):
+                    raise
+                self._actdispatch_oom = True  # tell dispatch_end to flag this bucket
+                # REACTIVE recovery. With the memory-fraction cap an over-budget
+                # allocation RAISES here instead of silently spilling to shared host
+                # memory (WDDM) -- so we get here fast (no thrashing, stop signals
+                # still responsive) and retry THIS batch micro-batched to shrink the
+                # per-forward footprint. The two-stage helper handles on-the-fly
+                # encoder graphs, so we no longer have to skip those batches.
+                self._oom_recovery_cleanup()
                 if batch_size <= min_split_batch_size:
-                    print(f"{self.log_prefix} [CUDA Recovery] Cannot recover, SKIPPING BATCH")
-                    return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
+                    print(f"{self.log_prefix} [OOM] batch_size={batch_size} already minimal, SKIPPING BATCH "
+                          f"({str(e)[:120]})")
+                    return 0.0, 0.0, 0.0, True
+                for _retry_micro in (max(1, batch_size // 2), 1):
+                    if _retry_micro >= batch_size:
+                        continue
+                    print(f"{self.log_prefix} [OOM] retrying batch {batch_size} micro-batched "
+                          f"(micro={_retry_micro}) after: {str(e)[:80]}")
+                    try:
+                        loss, pred_loss, recon_loss = self._microbatch_two_stage(_retry_micro, eff_bs, _batch)
+                        return loss, pred_loss, recon_loss, False
+                    except RuntimeError as e2:
+                        if not self._is_cuda_oom(e2):
+                            raise
+                        e = e2
+                        self._oom_recovery_cleanup()
+                print(f"{self.log_prefix} [OOM] still out of memory at micro-batch=1, SKIPPING BATCH "
+                      f"({str(e)[:120]})")
+                return 0.0, 0.0, 0.0, True
+        finally:
+            self._activation_dispatch_end(_disp_cm, _disp_info)
 
-            # CUDA error occurred - attempt batch splitting
-            if batch_size <= min_split_batch_size:
-                # Cannot split further - SKIP this batch instead of crashing
-                print(f"{self.log_prefix} [CUDA Error] Cannot split further (batch_size={batch_size}), SKIPPING BATCH")
-                print(f"{self.log_prefix} [CUDA Error] Original error: {str(e)[:200]}")
-                # Return zero loss - this batch contributes nothing but training continues
-                return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
-
-            # Batch splitting runs one backward per half, which is invalid when the
-            # inputs carry a live encoder graph (on-the-fly TE/VE training): the
-            # halves share that upstream graph and the second backward would raise
-            # "backward through the graph a second time". Skip rather than crash.
-            if any(t is not None and isinstance(t, torch.Tensor) and t.grad_fn is not None
-                   for t in (mnt_text_embeddings, mnt_pooled_embeddings, mnt_latents,
-                             mnt_repa_pixels, mnt_attention_mask)):
-                print(f"{self.log_prefix} [CUDA Error] Cannot split batch with a live encoder graph "
-                      f"(on-the-fly TE/VE training), SKIPPING BATCH. Use pre-encoded embeddings or "
-                      f"reduce batch/resolution.")
-                return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
-
-            split_size = batch_size // 2
-            print(f"{self.log_prefix} [CUDA Recovery] Splitting batch {batch_size} -> {split_size} + {batch_size - split_size} (error: {str(e)[:100]})")
-
-            # Process first half with error handling
-            # If sub-batch fails, skip it and continue with the other half
-            try:
-                loss1, pred1, recon1, skip1 = self._forward_backward_with_oom_recovery(
-                    mnt_latents=mnt_latents[:split_size],
-                    mnt_text_embeddings=mnt_text_embeddings[:split_size],
-                    mnt_attention_mask=mnt_attention_mask[:split_size] if mnt_attention_mask is not None else None,
-                    mnt_pooled_embeddings=mnt_pooled_embeddings[:split_size] if mnt_pooled_embeddings is not None else None,
-                    timesteps=timesteps[:split_size],
-                    debug_save_path=debug_save_path,
-                    batch_captions=batch_captions[:split_size] if batch_captions else None,
-                    batch_reference_paths=batch_reference_paths[:split_size] if batch_reference_paths else None,
-                    alphas_cumprod_cached=alphas_cumprod_cached,
-                    use_condition_images=use_condition_images,
-                    condition_images_batch=condition_images_batch[:split_size] if condition_images_batch is not None else None,
-                    reference_latents_nested=reference_latents_nested[:split_size] if reference_latents_nested is not None else None,
-                    min_split_batch_size=min_split_batch_size,
-                    lens_latent_shape=lens_latent_shape,
-                    mnt_repa_pixels=mnt_repa_pixels[:split_size] if mnt_repa_pixels is not None else None,
-                    mnt_time_ids=mnt_time_ids[:split_size] if mnt_time_ids is not None else None,
-                    effective_batch_size=eff_bs,
-                )
-                first_half_success = not skip1  # skip1=True means this half was skipped
-            except Exception as split1_error:
-                print(f"{self.log_prefix} [CUDA Recovery] First half failed: {str(split1_error)[:100]}")
-                loss1, pred1, recon1, skip1 = 0.0, 0.0, 0.0, True
-                first_half_success = False
-                # Clean up after failure
-                gc.collect()
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-
-            # Process second half with error handling
-            try:
-                loss2, pred2, recon2, skip2 = self._forward_backward_with_oom_recovery(
-                    mnt_latents=mnt_latents[split_size:],
-                    mnt_text_embeddings=mnt_text_embeddings[split_size:],
-                    mnt_attention_mask=mnt_attention_mask[split_size:] if mnt_attention_mask is not None else None,
-                    mnt_pooled_embeddings=mnt_pooled_embeddings[split_size:] if mnt_pooled_embeddings is not None else None,
-                    timesteps=timesteps[split_size:],
-                    debug_save_path=None,  # Only save debug from first split
-                    batch_captions=batch_captions[split_size:] if batch_captions else None,
-                    batch_reference_paths=batch_reference_paths[split_size:] if batch_reference_paths else None,
-                    alphas_cumprod_cached=alphas_cumprod_cached,
-                    use_condition_images=use_condition_images,
-                    condition_images_batch=condition_images_batch[split_size:] if condition_images_batch is not None else None,
-                    reference_latents_nested=reference_latents_nested[split_size:] if reference_latents_nested is not None else None,
-                    min_split_batch_size=min_split_batch_size,
-                    lens_latent_shape=lens_latent_shape,
-                    mnt_repa_pixels=mnt_repa_pixels[split_size:] if mnt_repa_pixels is not None else None,
-                    mnt_time_ids=mnt_time_ids[split_size:] if mnt_time_ids is not None else None,
-                    effective_batch_size=eff_bs,
-                )
-                second_half_success = not skip2  # skip2=True means this half was skipped
-            except Exception as split2_error:
-                print(f"{self.log_prefix} [CUDA Recovery] Second half failed: {str(split2_error)[:100]}")
-                loss2, pred2, recon2, skip2 = 0.0, 0.0, 0.0, True
-                second_half_success = False
-                # Clean up after failure
-                gc.collect()
-                try:
-                    torch.cuda.empty_cache()
-                except Exception:
-                    pass
-
-            # If both halves failed, return zero (batch skipped)
-            if not first_half_success and not second_half_success:
-                print(f"{self.log_prefix} [CUDA Recovery] Both halves failed, SKIPPING BATCH")
-                return 0.0, 0.0, 0.0, True  # cuda_error_skip=True
-
-            # Average losses (weighted by split sizes for correctness)
-            # Only count successful halves in the average
-            if first_half_success and second_half_success:
-                w1, w2 = split_size, batch_size - split_size
-                total = w1 + w2
-                avg_loss = (loss1 * w1 + loss2 * w2) / total
-                avg_pred = (pred1 * w1 + pred2 * w2) / total
-                avg_recon = (recon1 * w1 + recon2 * w2) / total
-            elif first_half_success:
-                # Only first half succeeded
-                avg_loss, avg_pred, avg_recon = loss1, pred1, recon1
-            else:
-                # Only second half succeeded
-                avg_loss, avg_pred, avg_recon = loss2, pred2, recon2
-
-            # At least one half succeeded, so we have valid gradients
-            return avg_loss, avg_pred, avg_recon, False  # cuda_error_skip=False
 
     def _activation_dispatch_begin(self, mnt_latents: torch.Tensor):
         """Decide the per-bucket activation-offload mode and enter the offload
@@ -5081,11 +4909,26 @@ class BaseTrainer(ABC):
                 threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
             )
             self._actdispatch_logged = set()
-            print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
-                  f"resident~{resident_gb:.1f}GB, free~{free_gb:.1f}GB, "
-                  f"margin={self.activation_dispatch_margin_gb}GB)")
+            # Cap the caching allocator at the budget so an over-budget allocation
+            # RAISES OutOfMemoryError instead of silently spilling to shared host
+            # memory (WDDM). The reactive retry then micro-batches THIS step, and
+            # the spill -- which also makes stop signals unresponsive while it
+            # thrashes -- never happens. fraction is relative to total device mem.
+            try:
+                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+                frac = max(0.50, min(0.99, budget_gb / total_gb))
+                torch.cuda.set_per_process_memory_fraction(frac)
+                print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
+                      f"resident~{resident_gb:.1f}GB, free~{free_gb:.1f}GB, "
+                      f"margin={self.activation_dispatch_margin_gb}GB, "
+                      f"alloc_cap={frac:.3f}={frac*total_gb:.1f}GB -> OOM-not-spill)")
+            except Exception as _e:
+                print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
+                      f"resident~{resident_gb:.1f}GB, margin={self.activation_dispatch_margin_gb}GB; "
+                      f"alloc cap failed: {_e})")
 
         disp = self.activation_dispatcher
+        self._actdispatch_oom = False  # set by the reactive handler if this step OOMs
         mode = disp.decide(lh, lw, bs, resident_gb)
         _headroom_gb = disp.budget - resident_gb - disp.margin
         _act_pred_gb = disp.base_act(lh, lw, bs)
@@ -5147,13 +4990,19 @@ class BaseTrainer(ABC):
         lh, lw, bs, mode, micro_bs, resident_gb = info
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
-            # Record every executed step. For a micro-split, the peak reflects
-            # micro_bs samples; record() scales it back to the full bucket so the
-            # bucket can learn it actually fits and stop splitting next time.
-            record_mode = "base" if mode == "fast" else "offload"
-            self.activation_dispatcher.record(
-                lh, lw, bs, record_mode, peak_gb, resident_gb,
-                executed_bs=(micro_bs if micro_bs is not None else bs))
+            if getattr(self, "_actdispatch_oom", False):
+                # This step raised OOM under the cap -> its true activation exceeds
+                # the headroom (the measured peak is only the capped lower bound).
+                # Flag the bucket to escalate next time instead of re-OOMing.
+                self.activation_dispatcher.mark_overflow(lh, lw, bs)
+            else:
+                # Record every executed step. For a micro-split, the peak reflects
+                # micro_bs samples; record() scales it back to the full bucket so the
+                # bucket can learn it actually fits and stop splitting next time.
+                record_mode = "base" if mode == "fast" else "offload"
+                self.activation_dispatcher.record(
+                    lh, lw, bs, record_mode, peak_gb, resident_gb,
+                    executed_bs=(micro_bs if micro_bs is not None else bs))
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
                 cached = self.activation_dispatcher.base_act(lh, lw, bs)

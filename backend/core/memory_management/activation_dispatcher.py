@@ -106,12 +106,12 @@ class ActivationDispatcher:
         self._coef_cap = seed_coef * 10.0
 
     def mark_overflow(self, lh: int, lw: int, bs: int) -> None:
-        """A step at this bucket overflowed (raised OOM under the allocator cap).
-        Its true activation exceeds the headroom, so cache a value large enough to
-        force 'escalate' next time -- otherwise the bucket would full-attempt and
-        OOM-retry on every occurrence."""
+        """A step at this bucket overflowed (raised OOM). Its true activation
+        exceeds the headroom, so cache a value large enough to force 'escalate'
+        next time -- otherwise the bucket would full-attempt and OOM-retry on
+        every occurrence. Use a fixed large GB so it doesn't depend on a budget."""
         key = (lh, lw, bs)
-        self._act_cache[key] = max(self._act_cache.get(key, 0.0), self.budget * 2.0)
+        self._act_cache[key] = max(self._act_cache.get(key, 0.0), 1.0e6)
 
     def _learned_coef(self) -> float:
         if not self._coef_samples:
@@ -119,13 +119,6 @@ class ActivationDispatcher:
         s = sorted(self._coef_samples)
         med = s[len(s) // 2]
         return min(max(med, self.seed_coef), self._coef_cap)
-
-    def _headroom(self, resident_gb: float) -> float:
-        """Bytes available for this step's activation. Uses memory_allocated()
-        (true live bytes) NOT driver-free, so PyTorch's reusable reserved cache
-        counts as available -- otherwise headroom collapses to ~0 once the cache
-        fills and every bucket falsely escalates."""
-        return self.budget - resident_gb - self.margin
 
     def base_act(self, lh: int, lw: int, bs: int) -> float:
         """Predicted base (non-offloaded) activation GB: measured if seen, else the
@@ -135,22 +128,22 @@ class ActivationDispatcher:
             return cached
         return self._learned_coef() * bs * lh * lw
 
-    def decide(self, lh: int, lw: int, bs: int, resident_gb: float) -> str:
-        """Return 'fast' / 'offload' / 'escalate'. resident_gb = memory_allocated()
-        at dispatch time (static weights+grad+optimizer; activations already freed)."""
-        headroom = self._headroom(resident_gb)
+    def decide(self, lh: int, lw: int, bs: int, headroom_gb: float) -> str:
+        """Return 'fast' / 'offload' / 'escalate'. headroom_gb = GB this process can
+        still allocate right now (driver-free + reusable cache - margin), computed
+        live by the caller so it adapts to co-located processes (e.g. inference)."""
         act = self.base_act(lh, lw, bs)
-        if act <= headroom:
+        if act <= headroom_gb:
             return "fast"
-        if act * self.residual_frac <= headroom:
+        if act * self.residual_frac <= headroom_gb:
             return "offload"
         return "escalate"
 
-    def plan_micro_bs(self, lh: int, lw: int, bs: int, resident_gb: float) -> int:
+    def plan_micro_bs(self, lh: int, lw: int, bs: int, headroom_gb: float) -> int:
         """Largest micro-batch M in [1, bs] whose offloaded activation fits the
-        headroom. The batch is split into ceil(bs/M) chunks with gradient
+        live headroom. The batch is split into ceil(bs/M) chunks with gradient
         accumulation, keeping the effective (gradient) batch = bs."""
-        headroom = self._headroom(resident_gb)
+        headroom = headroom_gb
         per_sample = (self.base_act(lh, lw, bs) / bs) * self.residual_frac
         if per_sample <= 0:
             return bs

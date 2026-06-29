@@ -4899,48 +4899,48 @@ class BaseTrainer(ABC):
         except Exception:
             return None, None
 
-        # Lazily create the dispatcher. The budget is the total VRAM usable by
-        # this process, captured once as allocated + driver-free (= total minus
-        # whatever the system already reserved). Decisions then compare predicted
-        # activation against (budget - current resident), where resident is
-        # memory_allocated() -- the true live bytes, so PyTorch's reusable cache
-        # counts as available. (Using driver-free directly would collapse headroom
-        # to ~0 once the cache fills and falsely escalate every bucket.)
-        resident_gb = torch.cuda.memory_allocated() / (1024 ** 3)
+        # Live VRAM state. Headroom = how much THIS process can still allocate now
+        # = driver-free + its own reusable reserved cache (reserved - allocated).
+        # Computed EVERY step so it adapts to co-located processes (e.g. the backend
+        # serving inference/UI during training), unlike a one-shot startup budget
+        # (which could latch a transiently-low value and choke the whole run).
+        GB = 1024 ** 3
+        resident_gb = torch.cuda.memory_allocated() / GB
+        free_gb = torch.cuda.mem_get_info()[0] / GB
+        reserved_gb = torch.cuda.memory_reserved() / GB
+        total_gb = torch.cuda.get_device_properties(0).total_memory / GB
+        headroom_gb = (free_gb + (reserved_gb - resident_gb)) - self.activation_dispatch_margin_gb
+
         if self.activation_dispatcher is None:
             from core.memory_management import ActivationDispatcher
-            free_gb = torch.cuda.mem_get_info()[0] / (1024 ** 3)
-            budget_gb = resident_gb + free_gb
             self.activation_dispatcher = ActivationDispatcher(
-                budget_gb=budget_gb,
+                budget_gb=total_gb,
                 margin_gb=self.activation_dispatch_margin_gb,
                 seed_coef=self.activation_dispatch_seed_coef,
                 residual_frac=self.activation_dispatch_residual_frac,
                 threshold_bytes=self.activation_dispatch_threshold_mb * 1024 * 1024,
             )
             self._actdispatch_logged = set()
-            # Cap the caching allocator at the budget so an over-budget allocation
-            # RAISES OutOfMemoryError instead of silently spilling to shared host
-            # memory (WDDM). The reactive retry then micro-batches THIS step, and
-            # the spill -- which also makes stop signals unresponsive while it
-            # thrashes -- never happens. fraction is relative to total device mem.
+            # Cap the caching allocator near the FULL dedicated VRAM (not a startup
+            # snapshot) so an over-budget allocation RAISES OutOfMemoryError instead
+            # of silently spilling to shared host memory (WDDM). A high, fixed cap
+            # never chokes normal use; the proactive headroom check above (which
+            # adapts to co-located VRAM use) is what actually prevents spills.
             try:
-                total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-                frac = max(0.50, min(0.99, budget_gb / total_gb))
+                frac = max(0.80, min(0.985, (total_gb - 1.0) / total_gb))
                 torch.cuda.set_per_process_memory_fraction(frac)
-                print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
-                      f"resident~{resident_gb:.1f}GB, free~{free_gb:.1f}GB, "
+                print(f"{self.log_prefix} [ActDispatch] enabled (total~{total_gb:.1f}GB, "
+                      f"resident~{resident_gb:.1f}GB, headroom~{headroom_gb:.1f}GB, "
                       f"margin={self.activation_dispatch_margin_gb}GB, "
                       f"alloc_cap={frac:.3f}={frac*total_gb:.1f}GB -> OOM-not-spill)")
             except Exception as _e:
-                print(f"{self.log_prefix} [ActDispatch] enabled (budget~{budget_gb:.1f}GB, "
-                      f"resident~{resident_gb:.1f}GB, margin={self.activation_dispatch_margin_gb}GB; "
-                      f"alloc cap failed: {_e})")
+                print(f"{self.log_prefix} [ActDispatch] enabled (total~{total_gb:.1f}GB, "
+                      f"headroom~{headroom_gb:.1f}GB; alloc cap failed: {_e})")
 
         disp = self.activation_dispatcher
         self._actdispatch_oom = False  # set by the reactive handler if this step OOMs
-        mode = disp.decide(lh, lw, bs, resident_gb)
-        _headroom_gb = disp.budget - resident_gb - disp.margin
+        mode = disp.decide(lh, lw, bs, headroom_gb)
+        _headroom_gb = headroom_gb
         _act_pred_gb = disp.base_act(lh, lw, bs)
 
         # Block-swap activation offload (LayerOffloadConductor) already moves
@@ -4967,7 +4967,7 @@ class BaseTrainer(ABC):
                           f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit; "
                           f"micro-batch split disabled under fused backward (Block Swap), offload only")
             else:
-                planned = disp.plan_micro_bs(lh, lw, bs, resident_gb)
+                planned = disp.plan_micro_bs(lh, lw, bs, headroom_gb)
                 if planned < bs:
                     micro_bs = planned
                     _log_once((lh, lw, bs, "split", micro_bs),

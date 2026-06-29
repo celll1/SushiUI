@@ -672,6 +672,12 @@ class BaseTrainer(ABC):
         self.activation_dispatch_residual_frac = activation_dispatch_residual_frac
         self.activation_dispatch_threshold_mb = activation_dispatch_threshold_mb
         self.activation_dispatcher = None
+        # Resolution buckets (image w, h) that OOM even at micro-batch=1 -> they
+        # don't fit even one sample. Populated by the OOM recovery, consumed at the
+        # next epoch's re-bucketing to drop those buckets (no point retrying every
+        # occurrence). _batch_was_unfittable is the per-step signal from recovery.
+        self._unfittable_buckets = set()
+        self._batch_was_unfittable = False
 
         # Fused optimizer settings (for Block Swap compatibility)
         self.num_optimizer_groups = num_optimizer_groups
@@ -4849,8 +4855,10 @@ class BaseTrainer(ABC):
                 # encoder graphs, so we no longer have to skip those batches.
                 self._oom_recovery_cleanup()
                 if batch_size <= min_split_batch_size:
+                    # One sample already doesn't fit -> this bucket is un-fittable.
+                    self._batch_was_unfittable = True
                     print(f"{self.log_prefix} [OOM] batch_size={batch_size} already minimal, SKIPPING BATCH "
-                          f"({str(e)[:120]})")
+                          f"(bucket won't fit one sample) ({str(e)[:120]})")
                     return 0.0, 0.0, 0.0, True
                 for _retry_micro in (max(1, batch_size // 2), 1):
                     if _retry_micro >= batch_size:
@@ -4865,8 +4873,10 @@ class BaseTrainer(ABC):
                             raise
                         e = e2
                         self._oom_recovery_cleanup()
+                # Even micro-batch=1 OOMs -> the bucket can't fit a single sample.
+                self._batch_was_unfittable = True
                 print(f"{self.log_prefix} [OOM] still out of memory at micro-batch=1, SKIPPING BATCH "
-                      f"({str(e)[:120]})")
+                      f"(bucket won't fit one sample) ({str(e)[:120]})")
                 return 0.0, 0.0, 0.0, True
         finally:
             self._activation_dispatch_end(_disp_cm, _disp_info)
@@ -9994,6 +10004,7 @@ class BaseTrainer(ABC):
                         from core.training.bucketing import BucketResolution
                         bucket_manager.buckets = {}
                         _crop_count = 0
+                        _excluded_unfit = 0
                         for item, dataset in all_items:
                             image_path = item["image_path"]
                             try:
@@ -10001,6 +10012,11 @@ class BaseTrainer(ABC):
                             except Exception:
                                 ow, oh = item.get("width", 1024), item.get("height", 1024)
                             spec = self.crop_planner.spec_for(epoch, image_path, ow, oh)
+                            # Drop items whose chosen bucket previously OOM'd at even
+                            # one sample -- it cannot fit on this hardware/config.
+                            if (spec.bucket_w, spec.bucket_h) in self._unfittable_buckets:
+                                _excluded_unfit += 1
+                                continue
                             reference_images = item.get("reference_images", [])
                             has_reference = len(reference_images) > 0
                             _, image_info = bucket_manager.assign_image_to_bucket(
@@ -10020,10 +10036,12 @@ class BaseTrainer(ABC):
                             image_info["height"] = spec.bucket_h
                             if not spec.is_full:
                                 _crop_count += 1
+                        _unfit_note = (f", {_excluded_unfit} excluded (un-fittable buckets: "
+                                       f"{len(self._unfittable_buckets)})") if _excluded_unfit else ""
                         print(f"{self.log_prefix} [crop] Epoch {epoch + 1}: re-bucketed "
                               f"{len(all_items)} items ({_crop_count} cropped, "
                               f"{len(all_items) - _crop_count} full); "
-                              f"{len(bucket_manager.get_bucket_counts())} buckets")
+                              f"{len(bucket_manager.get_bucket_counts())} buckets{_unfit_note}")
 
                 # Create batches
                 if bucket_manager:
@@ -10097,6 +10115,24 @@ class BaseTrainer(ABC):
                               f"+ {len(normal_batches)} normal = {len(batches)} total")
                     else:
                         batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
+
+                # Drop batches whose resolution bucket previously OOM'd at even one
+                # sample (un-fittable on this hardware/config). Covers the non-crop
+                # path and acts as a safety net for crop; the crop re-bucketing above
+                # already excludes such items. Idempotent.
+                if self._unfittable_buckets and batches:
+                    def _bucket_of(_b):
+                        try:
+                            it = _b[0][0] if isinstance(_b[0], tuple) else _b[0]
+                            return (it.get("bucket_width") or it.get("width"),
+                                    it.get("bucket_height") or it.get("height"))
+                        except Exception:
+                            return None
+                    _n0 = len(batches)
+                    batches = [b for b in batches if _bucket_of(b) not in self._unfittable_buckets]
+                    if len(batches) < _n0:
+                        print(f"{self.log_prefix} [OOM] dropped {_n0 - len(batches)} batch(es) in "
+                              f"un-fittable buckets ({len(self._unfittable_buckets)} excluded)")
 
                 # Mid-epoch resume: skip completed batches
                 # (random state was already restored before batch building)
@@ -10415,6 +10451,11 @@ class BaseTrainer(ABC):
                     # spills into shared memory (catastrophic slowdown). Release cached
                     # blocks when the bucket changes so reserved memory tracks the
                     # current shape rather than the union of every shape seen.
+                    # This batch's resolution bucket (image w, h), used both for the
+                    # per-shape empty_cache below and to record an un-fittable bucket
+                    # if the OOM recovery can't fit even one sample.
+                    _cur_bucket_wh = None
+                    self._batch_was_unfittable = False
                     try:
                         _bfirst = batch[0][0] if (batch and isinstance(batch[0], tuple)) else (batch[0] if batch else None)
                         if isinstance(_bfirst, dict):
@@ -10422,6 +10463,7 @@ class BaseTrainer(ABC):
                                 _bfirst.get("bucket_width") or _bfirst.get("width"),
                                 _bfirst.get("bucket_height") or _bfirst.get("height"),
                             )
+                            _cur_bucket_wh = _bhw
                             if _bhw != getattr(self, "_prev_bucket_hw", None):
                                 if torch.cuda.is_available():
                                     torch.cuda.empty_cache()
@@ -11384,6 +11426,15 @@ class BaseTrainer(ABC):
                                 # Non-CUDA error - re-raise
                                 raise
 
+                        # If the recovery couldn't fit even one sample, record this
+                        # resolution bucket so the next epoch's re-bucketing drops it
+                        # (no point full-attempting + OOM-skipping it every occurrence).
+                        if getattr(self, "_batch_was_unfittable", False) and _cur_bucket_wh and all(_cur_bucket_wh):
+                            if _cur_bucket_wh not in self._unfittable_buckets:
+                                self._unfittable_buckets.add(_cur_bucket_wh)
+                                print(f"{self.log_prefix} [OOM] bucket {_cur_bucket_wh[0]}x{_cur_bucket_wh[1]} "
+                                      f"won't fit one sample -> excluding it from subsequent epochs "
+                                      f"({len(self._unfittable_buckets)} bucket(s) excluded so far)")
 
                         # Clear MNT iteration tensors (backward already done in helper)
                         del mnt_latents, mnt_text_embeddings

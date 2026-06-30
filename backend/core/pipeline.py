@@ -5674,6 +5674,7 @@ class DiffusionPipelineManager:
                 spectrum_warmup_steps=params.get("spectrum_warmup_steps", 3),
                 spectrum_window_size=params.get("spectrum_window_size", 4),
                 spectrum_flex_window=params.get("spectrum_flex_window", 0.75),
+                spectrum_tail=params.get("spectrum_tail", 0.12),
                 **controlnet_kwargs,
             )
 

@@ -73,6 +73,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   spectrum_warmup_steps: 3,
   spectrum_window_size: 4,
   spectrum_flex_window: 0.75,
+  spectrum_tail: 0.12,
   preview_predicted_x0: false,
   preview_decoder: "matrix",
   use_tipo: false,
@@ -1152,6 +1153,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         spectrum_warmup_steps: mainParams.spectrum_warmup_steps,
         spectrum_window_size: mainParams.spectrum_window_size,
         spectrum_flex_window: mainParams.spectrum_flex_window,
+        spectrum_tail: mainParams.spectrum_tail,
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
       };
@@ -2566,6 +2568,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 <input type="number" min={0} max={1} step={0.05}
                   value={params.spectrum_flex_window ?? 0.75}
                   onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
+                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+              <label className="text-xs text-gray-400 flex items-center gap-1" title="Fraction of final steps forced to real forwards (preserves detail). Higher = sharper/slower.">
+                Tail
+                <input type="number" min={0} max={0.5} step={0.02}
+                  value={params.spectrum_tail ?? 0.12}
+                  onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
                   className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
               </label>
             </div>

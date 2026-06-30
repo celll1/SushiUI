@@ -170,6 +170,7 @@ class GenerationParams(BaseModel):
     spectrum_warmup_steps: int = GENERATION_DEFAULTS["spectrum_warmup_steps"]
     spectrum_window_size: int = GENERATION_DEFAULTS["spectrum_window_size"]
     spectrum_flex_window: float = GENERATION_DEFAULTS["spectrum_flex_window"]
+    spectrum_tail: float = GENERATION_DEFAULTS["spectrum_tail"]
     # TIPO (prompt upsampling)
     use_tipo: bool = False  # Enable TIPO prompt upsampling
     tipo_config: Optional[Dict] = None  # TIPO configuration (model, lengths, etc.)
@@ -290,6 +291,7 @@ async def generate_txt2img(
     spectrum_warmup_steps: int = Form(GENERATION_DEFAULTS["spectrum_warmup_steps"]),
     spectrum_window_size: int = Form(GENERATION_DEFAULTS["spectrum_window_size"]),
     spectrum_flex_window: float = Form(GENERATION_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(GENERATION_DEFAULTS["spectrum_tail"]),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
@@ -440,6 +442,7 @@ async def generate_txt2img(
             "spectrum_warmup_steps": spectrum_warmup_steps,
             "spectrum_window_size": spectrum_window_size,
             "spectrum_flex_window": spectrum_flex_window,
+            "spectrum_tail": spectrum_tail,
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,

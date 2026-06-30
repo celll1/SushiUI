@@ -70,6 +70,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "spectrum_warmup_steps": 3,    # leading full-eval steps
     "spectrum_window_size": 4,     # initial skip interval
     "spectrum_flex_window": 0.75,  # skip damping (0 = max skip)
+    "spectrum_tail": 0.12,         # fraction of final steps forced to actual passes (detail)
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

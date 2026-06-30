@@ -67,7 +67,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   vae_tiling: false,
   vae_tile_threshold: 0,
   spectrum_enable: false,
-  spectrum_w: 1.0,
+  spectrum_w: 0.5,
   spectrum_m: 4,
   spectrum_lam: 0.1,
   spectrum_warmup_steps: 3,

@@ -492,7 +492,7 @@ def custom_sampling_loop(
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
-    spectrum_w: float = 1.0,  # Spectral/linear mix (1.0 = spectral only)
+    spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps

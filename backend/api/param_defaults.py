@@ -64,7 +64,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # fit over actual passes. Most useful at high step counts (>=30); little benefit on
     # low-step/distilled models. Auto-disabled with prompt-editing/ControlNet/DEUS.
     "spectrum_enable": False,
-    "spectrum_w": 1.0,             # spectral/linear mix (1.0 = spectral only; 0.5-1.0)
+    "spectrum_w": 0.5,             # spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     "spectrum_m": 4,               # number of Chebyshev basis
     "spectrum_lam": 0.1,           # ridge regularization
     "spectrum_warmup_steps": 3,    # leading full-eval steps

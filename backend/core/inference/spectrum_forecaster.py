@@ -52,13 +52,20 @@ def build_anchor_schedule(num_steps: int, warmup_steps: int, window_size: int,
     for i in range(warmup):
         anchors.add(i)
     anchors.add(0)
-    anchors.add(num_steps - 1)
+
+    # Reserve the tail steps as actual passes. Every forecast extrapolates beyond the
+    # most recent anchor, and the LOW-noise tail carries the fine detail, so a large
+    # skip gap there visibly degrades sharpness. Keep the last ~12% (>=2) as anchors.
+    tail = max(2, int(round(0.12 * num_steps)))
+    tail_start = num_steps - tail
+    for i in range(tail_start, num_steps):
+        anchors.add(i)
 
     keep = max(0.0, min(1.0, float(flex_window)))  # fraction of the window kept as actual passes
     interval = max(1, int(window_size))
     i = warmup
     grow = 0
-    while i < num_steps:
+    while i < tail_start:
         anchors.add(i)                  # actual pass
         # number of steps to skip after this anchor; flex_window damps it down
         win = interval + grow
@@ -66,7 +73,6 @@ def build_anchor_schedule(num_steps: int, warmup_steps: int, window_size: int,
         skip = max(0, skip)
         i += 1 + skip
         grow += 1                       # intervals grow over the schedule (sparser late)
-    anchors.add(num_steps - 1)
     return anchors
 
 

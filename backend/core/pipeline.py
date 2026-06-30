@@ -5668,7 +5668,7 @@ class DiffusionPipelineManager:
                 original_size_scale=params.get("original_size_scale", 1.0),
                 negpip_weights=negpip_weights,
                 spectrum_enable=params.get("spectrum_enable", False),
-                spectrum_w=params.get("spectrum_w", 1.0),
+                spectrum_w=params.get("spectrum_w", 0.5),
                 spectrum_m=params.get("spectrum_m", 4),
                 spectrum_lam=params.get("spectrum_lam", 0.1),
                 spectrum_warmup_steps=params.get("spectrum_warmup_steps", 3),

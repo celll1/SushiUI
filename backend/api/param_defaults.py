@@ -71,6 +71,9 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "spectrum_window_size": 4,     # initial skip interval
     "spectrum_flex_window": 0.75,  # skip damping (0 = max skip)
     "spectrum_tail": 0.12,         # fraction of final steps forced to actual passes (detail)
+    "spectrum_feature_mode": "output",  # "output" (black-box) or "block" (deep-feature, paper-faithful)
+    "spectrum_cache_branch": 1,    # block mode: down_blocks[branch:] + mid are forecast
+    "spectrum_max_cache": 0,       # forecaster sliding window (0 = unlimited; block mode -> 6)
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

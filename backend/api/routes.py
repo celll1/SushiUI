@@ -171,6 +171,9 @@ class GenerationParams(BaseModel):
     spectrum_window_size: int = GENERATION_DEFAULTS["spectrum_window_size"]
     spectrum_flex_window: float = GENERATION_DEFAULTS["spectrum_flex_window"]
     spectrum_tail: float = GENERATION_DEFAULTS["spectrum_tail"]
+    spectrum_feature_mode: str = GENERATION_DEFAULTS["spectrum_feature_mode"]
+    spectrum_cache_branch: int = GENERATION_DEFAULTS["spectrum_cache_branch"]
+    spectrum_max_cache: int = GENERATION_DEFAULTS["spectrum_max_cache"]
     # TIPO (prompt upsampling)
     use_tipo: bool = False  # Enable TIPO prompt upsampling
     tipo_config: Optional[Dict] = None  # TIPO configuration (model, lengths, etc.)
@@ -292,6 +295,9 @@ async def generate_txt2img(
     spectrum_window_size: int = Form(GENERATION_DEFAULTS["spectrum_window_size"]),
     spectrum_flex_window: float = Form(GENERATION_DEFAULTS["spectrum_flex_window"]),
     spectrum_tail: float = Form(GENERATION_DEFAULTS["spectrum_tail"]),
+    spectrum_feature_mode: str = Form(GENERATION_DEFAULTS["spectrum_feature_mode"]),
+    spectrum_cache_branch: int = Form(GENERATION_DEFAULTS["spectrum_cache_branch"]),
+    spectrum_max_cache: int = Form(GENERATION_DEFAULTS["spectrum_max_cache"]),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
@@ -443,6 +449,9 @@ async def generate_txt2img(
             "spectrum_window_size": spectrum_window_size,
             "spectrum_flex_window": spectrum_flex_window,
             "spectrum_tail": spectrum_tail,
+            "spectrum_feature_mode": spectrum_feature_mode,
+            "spectrum_cache_branch": spectrum_cache_branch,
+            "spectrum_max_cache": spectrum_max_cache,
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,

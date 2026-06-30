@@ -208,6 +208,9 @@ export interface GenerationParams {
   spectrum_window_size?: number;
   spectrum_flex_window?: number;
   spectrum_tail?: number;
+  spectrum_feature_mode?: string;
+  spectrum_cache_branch?: number;
+  spectrum_max_cache?: number;
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
@@ -388,6 +391,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
   formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
   formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
+  formData.append("spectrum_feature_mode", String(paramsWithImages.spectrum_feature_mode ?? "output"));
+  formData.append("spectrum_cache_branch", String(paramsWithImages.spectrum_cache_branch ?? 1));
+  formData.append("spectrum_max_cache", String(paramsWithImages.spectrum_max_cache ?? 0));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -671,6 +677,9 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
   formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
   formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
+  formData.append("spectrum_feature_mode", String(paramsWithImages.spectrum_feature_mode ?? "output"));
+  formData.append("spectrum_cache_branch", String(paramsWithImages.spectrum_cache_branch ?? 1));
+  formData.append("spectrum_max_cache", String(paramsWithImages.spectrum_max_cache ?? 0));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -799,6 +808,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
   formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
   formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
+  formData.append("spectrum_feature_mode", String(paramsWithImages.spectrum_feature_mode ?? "output"));
+  formData.append("spectrum_cache_branch", String(paramsWithImages.spectrum_cache_branch ?? 1));
+  formData.append("spectrum_max_cache", String(paramsWithImages.spectrum_max_cache ?? 0));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));

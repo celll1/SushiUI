@@ -1391,6 +1391,28 @@ components:
           default: 0.12
           description: "Fraction of the final sampling steps forced to run an actual forward (minimum 2). The low-noise tail carries fine detail, so forecasting it degrades sharpness; raise this for more detail/quality, lower it (toward 0) for more speed."
           example: 0.12
+        spectrum_feature_mode:
+          type: string
+          enum: [output, block]
+          default: output
+          description: |
+            Which quantity Spectrum forecasts. "output" (black-box) forecasts the final
+            U-Net epsilon and skips the whole forward on skip steps -- max speedup but
+            the rough output extrapolates noisily. "block" (paper-faithful, SDXL/SD
+            U-Net only) forecasts the SMOOTH deep features (down_blocks[cache_branch:] +
+            mid) and recomputes the shallow/up path every step -- higher quality, lower
+            speedup (only the deep blocks are skipped).
+          example: output
+        spectrum_cache_branch:
+          type: integer
+          default: 1
+          description: "Block mode only: down_blocks[cache_branch:] and the mid block are forecast; the shallow blocks below it stay exact. Lower = skip more (faster, less safe), higher = skip fewer deep blocks."
+          example: 1
+        spectrum_max_cache:
+          type: integer
+          default: 0
+          description: "Sliding-window size for the coefficient fit (0 = unlimited; block mode defaults to 6). A finite window caps memory for the large block features and makes the fit local, stabilizing extrapolation."
+          example: 0
         vision_encoder_path:
           type: string
           nullable: true

@@ -5873,11 +5873,19 @@ class DiffusionPipelineManager:
                 is_sdxl
             )
 
+        # NegPip auto-activation (same as txt2img): clean embeds + signed V weights
+        # when a negative emphasis weight is present (and not prompt-editing / chunked).
+        _negpip_neg_prompt = params.get("negative_prompt", "")
+        use_negpip = (prompt_processor is None) and self._negpip_eligible(
+            initial_prompt, _negpip_neg_prompt, pipeline_to_use
+        )
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             initial_prompt,
             params.get("negative_prompt", ""),
-            pipeline=pipeline_to_use
+            pipeline=pipeline_to_use,
+            skip_emphasis=use_negpip,
         )
 
         # Log embedding shapes for debugging
@@ -5907,6 +5915,18 @@ class DiffusionPipelineManager:
                 pipeline=pipeline_to_use
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape}")
+
+        # Build NegPip signed per-token weights (clean embeds were encoded above)
+        negpip_weights = None
+        if use_negpip:
+            _negpip_dtype = pipeline_to_use.dtype if hasattr(pipeline_to_use, "dtype") else torch.float16
+            negpip_weights = self._build_negpip_weights(
+                initial_prompt, _negpip_neg_prompt, pipeline_to_use,
+                prompt_embeds, negative_prompt_embeds, _negpip_dtype,
+                nag_negative_prompt=params.get("nag_negative_prompt", "") or params.get("negative_prompt", ""),
+                nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+            )
+            print(f"[NegPip] Auto-activated (img2img, negative emphasis weights detected)")
 
         # Pre-calculate all prompt editing embeddings if needed
         embeds_cache = {}
@@ -6225,6 +6245,7 @@ class DiffusionPipelineManager:
                 original_size_w=params.get("original_size_w", 0),
                 original_size_h=params.get("original_size_h", 0),
                 original_size_scale=params.get("original_size_scale", 1.0),
+                negpip_weights=negpip_weights,
                 **controlnet_kwargs,
             )
 
@@ -6438,11 +6459,19 @@ class DiffusionPipelineManager:
                 is_sdxl
             )
 
+        # NegPip auto-activation (same as txt2img): clean embeds + signed V weights
+        # when a negative emphasis weight is present (and not prompt-editing / chunked).
+        _negpip_neg_prompt = params.get("negative_prompt", "")
+        use_negpip = (prompt_processor is None) and self._negpip_eligible(
+            initial_prompt, _negpip_neg_prompt, pipeline_to_use
+        )
+
         # Encode initial prompt
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             initial_prompt,
             params.get("negative_prompt", ""),
-            pipeline=pipeline_to_use
+            pipeline=pipeline_to_use,
+            skip_emphasis=use_negpip,
         )
 
         # Log embedding shapes for debugging
@@ -6491,6 +6520,18 @@ class DiffusionPipelineManager:
                 pipeline=pipeline_to_use
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape}")
+
+        # Build NegPip signed per-token weights (clean embeds were encoded above)
+        negpip_weights = None
+        if use_negpip:
+            _negpip_dtype = pipeline_to_use.dtype if hasattr(pipeline_to_use, "dtype") else torch.float16
+            negpip_weights = self._build_negpip_weights(
+                initial_prompt, _negpip_neg_prompt, pipeline_to_use,
+                prompt_embeds, negative_prompt_embeds, _negpip_dtype,
+                nag_negative_prompt=params.get("nag_negative_prompt", "") or params.get("negative_prompt", ""),
+                nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+            )
+            print(f"[NegPip] Auto-activated (inpaint, negative emphasis weights detected)")
 
         # Move embeddings to device
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -6648,6 +6689,7 @@ class DiffusionPipelineManager:
             original_size_w=params.get("original_size_w", 0),
             original_size_h=params.get("original_size_h", 0),
             original_size_scale=params.get("original_size_scale", 1.0),
+            negpip_weights=negpip_weights,
             **controlnet_kwargs,
         )
 

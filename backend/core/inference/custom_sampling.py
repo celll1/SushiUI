@@ -424,12 +424,27 @@ def _prepare_negpip_weights(negpip_weights, nag_active):
         pos_w = torch.ones_like(neg_w)
     if pos_w is None and neg_w is None:
         return False, None, None
+
+    def _pad_stack(rows):
+        # Rows can differ in length: the main prompt may be chunked (e.g. 231) while
+        # the NAG negative is a single chunk (77). The sampling loop pads the embeds to
+        # the longest sequence at the END, so pad the weight rows the same way (1.0 =
+        # identity) before stacking.
+        max_len = max(r.shape[-1] for r in rows)
+        padded = []
+        for r in rows:
+            if r.shape[-1] < max_len:
+                pad = torch.ones(max_len - r.shape[-1], device=r.device, dtype=r.dtype)
+                r = torch.cat([r, pad], dim=-1)
+            padded.append(r)
+        return torch.stack(padded, dim=0)
+
     if nag_active:
         nag_neg_w = negpip_weights.get("nag_neg")
         if nag_neg_w is None:
             nag_neg_w = neg_w
-        return True, torch.stack([neg_w, pos_w, nag_neg_w], dim=0), None
-    return True, None, torch.stack([neg_w, pos_w], dim=0)
+        return True, _pad_stack([neg_w, pos_w, nag_neg_w]), None
+    return True, None, _pad_stack([neg_w, pos_w])
 
 
 def custom_sampling_loop(

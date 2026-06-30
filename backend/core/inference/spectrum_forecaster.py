@@ -103,7 +103,7 @@ class SpectrumForecaster:
         self.anchors = build_anchor_schedule(self.num_steps, warmup_steps, window_size,
                                              flex_window, tail_fraction)
         # caches of actual passes
-        self._taus = []            # normalized g(t) in [-1,1]
+        self._steps = []           # step indices of cached anchors (oldest..newest)
         self._H = []               # flattened outputs [F] (stored in source dtype)
         self._shape = None
         self._dtype = None
@@ -115,24 +115,34 @@ class SpectrumForecaster:
     def is_anchor(self, step_idx: int) -> bool:
         return step_idx in self.anchors
 
-    def _g(self, step_idx: int) -> float:
-        # normalized timestep i/(N-1) in [0,1] -> g(t)=2t-1 in [-1,1]
-        denom = max(1, self.num_steps - 1)
-        t = step_idx / denom
-        return 2.0 * t - 1.0
+    def _window_tau(self, step_idx: int) -> float:
+        """Map a step index to [-1,1] using the CURRENT cache window [oldest, newest].
+
+        Local renormalization (rather than a fixed global g(t)=2t-1) keeps the Chebyshev
+        fit well-conditioned: a sliding window of recent anchors spans a narrow slice of
+        the global trajectory, and fitting Chebyshev there directly is ill-conditioned.
+        The forecast step is newer than the newest cached anchor, so it maps to >1
+        (short-range extrapolation whose distance is bounded by the window span).
+        """
+        if len(self._steps) < 2:
+            return 0.0
+        lo, hi = self._steps[0], self._steps[-1]
+        if hi == lo:
+            return 0.0
+        return -1.0 + 2.0 * (step_idx - lo) / (hi - lo)
 
     def record(self, step_idx: int, output: torch.Tensor):
         """Record an actual-pass output and refit the Chebyshev coefficients (Eq.13)."""
         self._shape = output.shape
         self._dtype = output.dtype
         self._device = output.device
-        self._taus.append(self._g(step_idx))
+        self._steps.append(int(step_idx))
         # Store in the source dtype (e.g. fp16) to halve memory; the fit casts to fp32.
         self._H.append(output.detach().reshape(-1))
         # Sliding window: drop the oldest anchors beyond max_cache.
         if self.max_cache > 0 and len(self._H) > self.max_cache:
             drop = len(self._H) - self.max_cache
-            self._taus = self._taus[drop:]
+            self._steps = self._steps[drop:]
             self._H = self._H[drop:]
         self._n_anchor += 1
         self._refit()
@@ -144,7 +154,8 @@ class SpectrumForecaster:
             return
         device = self._device
         M1 = min(self.num_basis, K)   # can't fit more basis than samples
-        Phi = torch.stack([_cheb_row(tau, M1, device, torch.float32) for tau in self._taus], dim=0)  # [K, M1]
+        taus = [self._window_tau(s) for s in self._steps]
+        Phi = torch.stack([_cheb_row(tau, M1, device, torch.float32) for tau in taus], dim=0)  # [K, M1]
         H = torch.stack(self._H, dim=0).float()  # [K, F] (cast to fp32 for the fit)
         # Ridge close-form: C = (ΦᵀΦ + λI)^-1 Φᵀ H, via Cholesky-backed solve.
         A = Phi.transpose(0, 1) @ Phi                       # [M1, M1]
@@ -156,28 +167,28 @@ class SpectrumForecaster:
             self._coeffs = torch.linalg.lstsq(A, B).solution
         self._cur_basis = M1
 
-    def _linear_extrap(self, tau: float) -> torch.Tensor:
+    def _linear_extrap(self, step_idx: int) -> torch.Tensor:
         """Linear extrapolation from the two most recent anchors (stabilizer)."""
         if len(self._H) == 1:
             return self._H[-1]
-        t0, t1 = self._taus[-2], self._taus[-1]
+        s0, s1 = self._steps[-2], self._steps[-1]
         h0, h1 = self._H[-2], self._H[-1]
-        if abs(t1 - t0) < 1e-8:
+        if s1 == s0:
             return h1
-        alpha = (tau - t1) / (t1 - t0)
+        alpha = (step_idx - s1) / (s1 - s0)
         return h1 + alpha * (h1 - h0)
 
     def forecast(self, step_idx: int) -> torch.Tensor:
         """Forecast the denoiser output at a skipped step (Eq.14), mixed with linear."""
         if self._coeffs is None:
             raise RuntimeError("SpectrumForecaster.forecast called before any record()")
-        tau = self._g(step_idx)
+        tau = self._window_tau(step_idx)
         phi = _cheb_row(tau, self._cur_basis, self._device, torch.float32)  # [M1]
         cheb = phi @ self._coeffs                                           # [F] float32
         if self.w >= 0.999:
             out = cheb
         else:
-            lin = self._linear_extrap(tau)
+            lin = self._linear_extrap(step_idx)
             out = self.w * cheb + (1.0 - self.w) * lin
         self._n_forecast += 1
         return out.reshape(self._shape).to(self._dtype)

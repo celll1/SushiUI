@@ -55,6 +55,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # without OOM. Off by default (not bit-identical to a full decode; small images
     # below the tile threshold are unaffected).
     "vae_tiling": False,
+    # Image size (px) above which VAE tiling kicks in (and the tile size). 0 = auto
+    # = VAE sample_size * 1.5 (e.g. ~1536px for SDXL). Below the threshold the decode
+    # runs whole (no quality/speed cost); above it, split into threshold-sized tiles.
+    "vae_tile_threshold": 0,
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

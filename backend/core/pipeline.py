@@ -4522,33 +4522,18 @@ class DiffusionPipelineManager:
         """Whether NegPip should auto-activate for this prompt pair.
 
         Trigger: any negative emphasis weight (e.g. (worst:-1)) in either prompt.
-        Supports single-chunk (<= 75 tokens) in any non-NoBOS mode, and multi-chunk
-        prompts in a1111 mode (77 tokens/chunk -- the layout the signed-weight position
-        mapping assumes). NoBOS, and sd_scripts/nobos multi-chunk, fall back to legacy
-        emphasis (their concatenation strips BOS/EOS, shifting token positions).
+        Supports all chunking modes (a1111 / sd_scripts / nobos), single- and multi-
+        chunk: the signed-weight builder mirrors each mode's BOS/EOS layout. Only the
+        custom swapped text encoder (which bypasses CLIP/emphasis/chunking) falls back.
         """
-        from core.prompts.prompt_parser import prompt_has_negative_weight, parse_prompt_attention
+        from core.prompts.prompt_parser import prompt_has_negative_weight
         if not (prompt_has_negative_weight(prompt) or prompt_has_negative_weight(negative_prompt)):
             return False
-        mode = getattr(self, "prompt_chunking_mode", "a1111")
-        if mode == "nobos":
-            print("[NegPip] Negative weight detected, but NoBOS chunking is active -> "
-                  "falling back to legacy emphasis (NegPip needs BOS-aligned token positions)")
+        if getattr(pipeline, "_sushi_te", None) is not None:
+            print("[NegPip] Negative weight detected, but a custom text encoder is active -> "
+                  "falling back (NegPip needs the standard CLIP path)")
             return False
-        tokenizer = getattr(pipeline, "tokenizer", None)
-        if tokenizer is None:
-            return False
-        chunked = False
-        for p in (prompt, negative_prompt):
-            if not p:
-                continue
-            clean = "".join(t for t, _ in parse_prompt_attention(p))
-            n_tok = tokenizer(clean, add_special_tokens=False, return_tensors="pt").input_ids.shape[1]
-            if n_tok > 75:
-                chunked = True
-        if chunked and mode != "a1111":
-            print(f"[NegPip] Negative weight detected on a chunked prompt, but chunking mode is "
-                  f"'{mode}' -> falling back to legacy emphasis (NegPip chunked supports a1111 only)")
+        if getattr(pipeline, "tokenizer", None) is None:
             return False
         return True
 
@@ -4560,21 +4545,24 @@ class DiffusionPipelineManager:
         Returns {"pos","neg"[, "nag_neg"]} where each value is a 1-D tensor of length
         equal to the corresponding embedding sequence (1.0 on BOS/EOS/padding).
         """
-        from core.prompts.prompt_parser import build_signed_weight_vector
+        from core.prompts.prompt_parser import build_signed_weight_vector_chunked
         is_sdxl = hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None
         tokenizer = pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer
         device = self.device
+        mode = getattr(self, "prompt_chunking_mode", "a1111")
+        max_chunks = getattr(self, "max_prompt_chunks", 0)
 
-        pos_w = build_signed_weight_vector(prompt, prompt_embeds.shape[1], tokenizer, device, dtype)
-        neg_w = None
-        if negative_prompt_embeds is not None:
-            neg_w = build_signed_weight_vector(negative_prompt or "", negative_prompt_embeds.shape[1],
-                                               tokenizer, device, dtype)
+        def _wv(text, embeds):
+            return build_signed_weight_vector_chunked(
+                text or "", embeds.shape[1], tokenizer, device, dtype,
+                mode=mode, max_chunks=max_chunks,
+            )
+
+        pos_w = _wv(prompt, prompt_embeds)
+        neg_w = _wv(negative_prompt, negative_prompt_embeds) if negative_prompt_embeds is not None else None
         weights = {"pos": pos_w, "neg": neg_w}
         if nag_negative_prompt_embeds is not None:
-            weights["nag_neg"] = build_signed_weight_vector(nag_negative_prompt or "",
-                                                            nag_negative_prompt_embeds.shape[1],
-                                                            tokenizer, device, dtype)
+            weights["nag_neg"] = _wv(nag_negative_prompt, nag_negative_prompt_embeds)
         return weights
 
     def _apply_controlnets(self, pipeline, controlnet_images, width, height, is_sdxl):
@@ -4935,10 +4923,12 @@ class DiffusionPipelineManager:
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
-    def _encode_prompt_nobos_single_chunk(self, prompt: str, negative_prompt: str = "", pipeline=None):
+    def _encode_prompt_nobos_single_chunk(self, prompt: str, negative_prompt: str = "", pipeline=None, skip_emphasis: bool = False):
         """
         Encode prompts with NoBOS mode for single chunk (<=75 tokens).
         Strips BOS and EOS tokens from embeddings.
+
+        skip_emphasis: when True, return CLEAN embeddings (no emphasis scaling) for NegPip.
 
         Returns:
             For SD1.5: (prompt_embeds, negative_prompt_embeds, None, None)
@@ -4983,8 +4973,8 @@ class DiffusionPipelineManager:
         if prompt_embeds.shape[1] > 2:  # Ensure there are enough tokens
             prompt_embeds = prompt_embeds[:, 1:-1, :]
 
-        # Apply emphasis weights if present
-        if has_pos_emphasis:
+        # Apply emphasis weights if present (skipped for NegPip, which weights V)
+        if has_pos_emphasis and not skip_emphasis:
             prompt_embeds = apply_emphasis_to_embeds(
                 prompt, prompt_embeds,
                 tokenizer,
@@ -5010,8 +5000,8 @@ class DiffusionPipelineManager:
             if negative_prompt_embeds.shape[1] > 2:
                 negative_prompt_embeds = negative_prompt_embeds[:, 1:-1, :]
 
-            # Apply emphasis weights if present
-            if has_neg_emphasis:
+            # Apply emphasis weights if present (skipped for NegPip, which weights V)
+            if has_neg_emphasis and not skip_emphasis:
                 negative_prompt_embeds = apply_emphasis_to_embeds(
                     negative_prompt, negative_prompt_embeds,
                     tokenizer,
@@ -5100,7 +5090,7 @@ class DiffusionPipelineManager:
             return self._encode_prompt_chunked(prompt, negative_prompt, pipeline, skip_emphasis=skip_emphasis)
         elif needs_nobos_processing:
             # Even for <=75 tokens, apply NoBOS processing
-            return self._encode_prompt_nobos_single_chunk(prompt, negative_prompt, pipeline)
+            return self._encode_prompt_nobos_single_chunk(prompt, negative_prompt, pipeline, skip_emphasis=skip_emphasis)
 
         # For short prompts (<=75 tokens), use pipeline.encode_prompt for correct encoding
         # Then apply emphasis weights if needed

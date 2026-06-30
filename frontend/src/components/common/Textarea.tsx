@@ -50,9 +50,9 @@ function findEmphasisAtCursor(
 
   if (closeParen === -1) return null;
 
-  // Check if this matches emphasis syntax
+  // Check if this matches emphasis syntax (allow negative weights for NegPip)
   const emphasisText = text.substring(openParen, closeParen + 1);
-  const weightMatch = emphasisText.match(/^\((.*?)(?::([0-9.]+))?\)$/);
+  const weightMatch = emphasisText.match(/^\((.*?)(?::(-?[0-9.]+))?\)$/);
 
   if (weightMatch) {
     return {
@@ -119,8 +119,13 @@ function adjustPromptWeight(
     selectedText = text.substring(start, end);
   }
 
-  // Check if selected text already has weight syntax
-  const weightMatch = selectedText.match(/^\((.*?)(?::([0-9.]+))?\)$/);
+  // Check if selected text already has weight syntax (allow negative weights for NegPip)
+  const weightMatch = selectedText.match(/^\((.*?)(?::(-?[0-9.]+))?\)$/);
+
+  // Weight range allows negatives: a negative weight triggers NegPip (the token's
+  // attention value is negated, subtracting the concept) instead of plain emphasis.
+  const WEIGHT_MIN = -2.0;
+  const WEIGHT_MAX = 2.0;
 
   let newText: string;
   let innerText: string;
@@ -130,7 +135,7 @@ function adjustPromptWeight(
     // Already has weight syntax - adjust it
     innerText = weightMatch[1];
     currentWeight = weightMatch[2] ? parseFloat(weightMatch[2]) : 1.1;
-    const newWeight = Math.max(0.1, Math.min(2.0, currentWeight + increment));
+    const newWeight = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, currentWeight + increment));
 
     if (Math.abs(newWeight - 1.0) < 0.01) {
       // Close to 1.0, remove emphasis
@@ -141,7 +146,7 @@ function adjustPromptWeight(
   } else {
     // No weight syntax yet - add it
     innerText = selectedText;
-    const newWeight = Math.max(0.1, Math.min(2.0, 1.0 + increment));
+    const newWeight = Math.max(WEIGHT_MIN, Math.min(WEIGHT_MAX, 1.0 + increment));
 
     if (Math.abs(newWeight - 1.0) < 0.01) {
       // No change needed

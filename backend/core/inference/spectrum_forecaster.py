@@ -35,15 +35,15 @@ def _cheb_row(tau: float, num_basis: int, device, dtype) -> torch.Tensor:
 
 
 def build_anchor_schedule(num_steps: int, warmup_steps: int, window_size: int,
-                          flex_window: float):
+                          flex_window: float, tail_fraction: float = 0.12):
     """Decide which step indices are anchors (actual forward) vs forecast (skipped).
 
     Faithful to the paper's adaptive scheduler (dense early, sparse late) with a
     TaylorSeer-style warm-up: the first ``warmup_steps`` are always anchors, then the
     skip interval starts at ``window_size`` and grows, damped by ``flex_window`` (0 =
     skip the full window, 1 = never skip). The first and last steps are always anchors.
-
-    Returns a set of anchor step indices.
+    ``tail_fraction`` of the final steps (>=2) are forced to actual passes to protect
+    fine detail at low noise. Returns a set of anchor step indices.
     """
     anchors = set()
     if num_steps <= 0:
@@ -55,8 +55,10 @@ def build_anchor_schedule(num_steps: int, warmup_steps: int, window_size: int,
 
     # Reserve the tail steps as actual passes. Every forecast extrapolates beyond the
     # most recent anchor, and the LOW-noise tail carries the fine detail, so a large
-    # skip gap there visibly degrades sharpness. Keep the last ~12% (>=2) as anchors.
-    tail = max(2, int(round(0.12 * num_steps)))
+    # skip gap there visibly degrades sharpness. Keep the last tail_fraction (>=2).
+    tail_frac = max(0.0, min(1.0, float(tail_fraction)))
+    tail = max(2, int(round(tail_frac * num_steps)))
+    tail = min(tail, num_steps)
     tail_start = num_steps - tail
     for i in range(tail_start, num_steps):
         anchors.add(i)
@@ -87,13 +89,14 @@ class SpectrumForecaster:
             out = forecaster.forecast(i)    # skip the forward
     """
 
-    def __init__(self, num_steps, num_basis=4, lam=0.1, w=1.0,
-                 warmup_steps=3, window_size=4, flex_window=0.75):
+    def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5,
+                 warmup_steps=3, window_size=4, flex_window=0.75, tail_fraction=0.12):
         self.num_steps = int(num_steps)
         self.num_basis = max(1, int(num_basis))
         self.lam = float(lam)
         self.w = float(w)
-        self.anchors = build_anchor_schedule(self.num_steps, warmup_steps, window_size, flex_window)
+        self.anchors = build_anchor_schedule(self.num_steps, warmup_steps, window_size,
+                                             flex_window, tail_fraction)
         # caches of actual passes
         self._taus = []            # normalized g(t) in [-1,1]
         self._H = []               # flattened outputs [F]

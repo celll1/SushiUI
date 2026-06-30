@@ -498,6 +498,7 @@ def custom_sampling_loop(
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps
     spectrum_window_size: int = 4,  # Initial skip interval
     spectrum_flex_window: float = 0.75,  # Skip damping (0 = max skip)
+    spectrum_tail: float = 0.12,  # Fraction of final steps forced to actual passes (detail)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -669,13 +670,13 @@ def custom_sampling_loop(
             spectrum = SpectrumForecaster(
                 _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
                 warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
-                flex_window=spectrum_flex_window,
+                flex_window=spectrum_flex_window, tail_fraction=spectrum_tail,
             )
             _n_anchor = len(spectrum.anchors)
             print(f"[Spectrum] enabled: {_n_anchor}/{_n_steps} actual passes "
                   f"(m={spectrum_m}, lam={spectrum_lam}, w={spectrum_w}, "
                   f"warmup={spectrum_warmup_steps}, window={spectrum_window_size}, "
-                  f"flex={spectrum_flex_window})")
+                  f"flex={spectrum_flex_window}, tail={spectrum_tail})")
 
     # Prepare latents
     if latents is None:

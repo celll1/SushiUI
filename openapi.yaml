@@ -1386,6 +1386,11 @@ components:
           default: 0.75
           description: "Damps the actual number of skipped steps. 0 = skip the full window (most aggressive); higher = more conservative/higher quality."
           example: 0.75
+        spectrum_tail:
+          type: number
+          default: 0.12
+          description: "Fraction of the final sampling steps forced to run an actual forward (minimum 2). The low-noise tail carries fine detail, so forecasting it degrades sharpness; raise this for more detail/quality, lower it (toward 0) for more speed."
+          example: 0.12
         vision_encoder_path:
           type: string
           nullable: true

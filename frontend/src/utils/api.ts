@@ -207,6 +207,7 @@ export interface GenerationParams {
   spectrum_warmup_steps?: number;
   spectrum_window_size?: number;
   spectrum_flex_window?: number;
+  spectrum_tail?: number;
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
@@ -386,6 +387,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
   formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
   formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -668,6 +670,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
   formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
   formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -795,6 +798,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
   formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
   formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));

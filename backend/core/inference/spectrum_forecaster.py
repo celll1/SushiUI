@@ -90,16 +90,21 @@ class SpectrumForecaster:
     """
 
     def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5,
-                 warmup_steps=3, window_size=4, flex_window=0.75, tail_fraction=0.12):
+                 warmup_steps=3, window_size=4, flex_window=0.75, tail_fraction=0.12,
+                 max_cache=0):
         self.num_steps = int(num_steps)
         self.num_basis = max(1, int(num_basis))
         self.lam = float(lam)
         self.w = float(w)
+        # Keep only the most recent ``max_cache`` anchors (0 = unlimited). A finite
+        # window caps memory (important for the large block-mode features) and makes the
+        # fit local, which stabilizes extrapolation beyond the most recent anchor.
+        self.max_cache = int(max_cache)
         self.anchors = build_anchor_schedule(self.num_steps, warmup_steps, window_size,
                                              flex_window, tail_fraction)
         # caches of actual passes
         self._taus = []            # normalized g(t) in [-1,1]
-        self._H = []               # flattened outputs [F]
+        self._H = []               # flattened outputs [F] (stored in source dtype)
         self._shape = None
         self._dtype = None
         self._device = None
@@ -122,7 +127,13 @@ class SpectrumForecaster:
         self._dtype = output.dtype
         self._device = output.device
         self._taus.append(self._g(step_idx))
-        self._H.append(output.detach().reshape(-1).float())
+        # Store in the source dtype (e.g. fp16) to halve memory; the fit casts to fp32.
+        self._H.append(output.detach().reshape(-1))
+        # Sliding window: drop the oldest anchors beyond max_cache.
+        if self.max_cache > 0 and len(self._H) > self.max_cache:
+            drop = len(self._H) - self.max_cache
+            self._taus = self._taus[drop:]
+            self._H = self._H[drop:]
         self._n_anchor += 1
         self._refit()
 
@@ -134,7 +145,7 @@ class SpectrumForecaster:
         device = self._device
         M1 = min(self.num_basis, K)   # can't fit more basis than samples
         Phi = torch.stack([_cheb_row(tau, M1, device, torch.float32) for tau in self._taus], dim=0)  # [K, M1]
-        H = torch.stack(self._H, dim=0)  # [K, F] float32
+        H = torch.stack(self._H, dim=0).float()  # [K, F] (cast to fp32 for the fit)
         # Ridge close-form: C = (ΦᵀΦ + λI)^-1 Φᵀ H, via Cholesky-backed solve.
         A = Phi.transpose(0, 1) @ Phi                       # [M1, M1]
         A = A + self.lam * torch.eye(M1, device=device, dtype=A.dtype)

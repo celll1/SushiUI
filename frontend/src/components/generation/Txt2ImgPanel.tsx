@@ -74,6 +74,9 @@ const DEFAULT_PARAMS: GenerationParams = {
   spectrum_window_size: 4,
   spectrum_flex_window: 0.75,
   spectrum_tail: 0.12,
+  spectrum_feature_mode: "output",
+  spectrum_cache_branch: 1,
+  spectrum_max_cache: 0,
   preview_predicted_x0: false,
   preview_decoder: "matrix",
   use_tipo: false,
@@ -1154,6 +1157,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         spectrum_window_size: mainParams.spectrum_window_size,
         spectrum_flex_window: mainParams.spectrum_flex_window,
         spectrum_tail: mainParams.spectrum_tail,
+        spectrum_feature_mode: mainParams.spectrum_feature_mode,
+        spectrum_cache_branch: mainParams.spectrum_cache_branch,
+        spectrum_max_cache: mainParams.spectrum_max_cache,
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
       };
@@ -2526,6 +2532,28 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </label>
             <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
           </div>
+          {params.spectrum_enable && (
+            <div className="ml-6 mt-1 flex items-center gap-2">
+              <label className="text-xs text-gray-400">Mode</label>
+              <select
+                value={params.spectrum_feature_mode ?? "output"}
+                onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
+                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              >
+                <option value="output">output (black-box, max speed)</option>
+                <option value="block">block (deep-feature, higher quality)</option>
+              </select>
+              {params.spectrum_feature_mode === "block" && (
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="down_blocks[branch:] + mid are forecast; lower skips more deep blocks.">
+                  Branch
+                  <input type="number" min={1} max={3} step={1}
+                    value={params.spectrum_cache_branch ?? 1}
+                    onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
+                    className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+              )}
+            </div>
+          )}
           {params.spectrum_enable && (
             <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
               <label className="text-xs text-gray-400 flex items-center gap-1">

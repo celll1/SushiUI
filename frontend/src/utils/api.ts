@@ -199,6 +199,14 @@ export interface GenerationParams {
   use_torch_compile?: boolean;
   vae_tiling?: boolean;
   vae_tile_threshold?: number;
+  // Spectrum (Adaptive Spectral Feature Forecasting) acceleration
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
@@ -369,6 +377,15 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
+  // img2img/inpaint backends ignore these until wired)
+  formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 1.0));
+  formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -642,6 +659,15 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
+  // img2img/inpaint backends ignore these until wired)
+  formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 1.0));
+  formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -760,6 +786,15 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
+  // img2img/inpaint backends ignore these until wired)
+  formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 1.0));
+  formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));

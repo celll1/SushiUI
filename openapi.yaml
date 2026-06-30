@@ -1345,6 +1345,47 @@ components:
             threshold the decode runs whole; above it, split into threshold-sized
             tiles. Raise it if mid-size images decode fine un-tiled.
           example: 0
+        spectrum_enable:
+          type: boolean
+          default: false
+          description: |
+            Spectrum (Adaptive Spectral Feature Forecasting, arXiv 2603.01623):
+            training-free acceleration that skips U-Net forwards on selected steps by
+            forecasting the output from a Chebyshev polynomial fit (ridge regression)
+            over actual passes. Most effective at high step counts (>=30); little
+            benefit on low-step/distilled models. Auto-disabled with prompt-editing,
+            ControlNet, or DEUS (per-step conditioning changes).
+          example: false
+        spectrum_w:
+          type: number
+          default: 1.0
+          description: "Mix between the spectral forecast and linear extrapolation (1.0 = spectral only). Recommended 0.5-1.0."
+          example: 1.0
+        spectrum_m:
+          type: integer
+          default: 4
+          description: "Number of Chebyshev basis functions. Larger = more detail but less stable."
+          example: 4
+        spectrum_lam:
+          type: number
+          default: 0.1
+          description: "Ridge regularization strength for the coefficient fit."
+          example: 0.1
+        spectrum_warmup_steps:
+          type: integer
+          default: 3
+          description: "Leading steps that always run a full forward (build the cache before forecasting)."
+          example: 3
+        spectrum_window_size:
+          type: integer
+          default: 4
+          description: "Initial skip interval; subsequent intervals grow (sparser late)."
+          example: 4
+        spectrum_flex_window:
+          type: number
+          default: 0.75
+          description: "Damps the actual number of skipped steps. 0 = skip the full window (most aggressive); higher = more conservative/higher quality."
+          example: 0.75
         vision_encoder_path:
           type: string
           nullable: true

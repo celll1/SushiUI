@@ -96,14 +96,17 @@ class ActivationDispatcher:
         # (lh, lw, bs) -> measured base (non-offloaded) activation in GB. PRIMARY
         # predictor: exact per-bucket measurement (cannot run away globally).
         self._act_cache = {}
-        # Per-pixel activation samples (GB / (bs*latent-pixel)) from measured steps.
-        # For UNSEEN buckets we predict with the MEDIAN of these (robust to a single
-        # bogus measurement -- unlike the old grow-fast coef that latched ~40x high),
-        # clamped to [seed, seed*10]. A fixed seed alone is config-dependent and was
-        # ~3.5x too low for full-param + TE + VE + MNT, so unseen buckets
-        # under-predicted and spilled; the median learns the real per-pixel cost.
-        self._coef_samples = []
-        self._coef_cap = seed_coef * 10.0
+        # Per-sample activation samples (latent_area, activation_GB_per_sample) from
+        # measured steps, used to fit a 2-TERM model for UNSEEN buckets:
+        #     act_per_sample ~= a + b * latent_area
+        # The constant `a` captures the per-sample overhead that does NOT scale with
+        # image area (text/vision-encoder activations, fixed buffers); `b` is the
+        # genuine per-pixel cost. A single per-pixel coefficient (act/area) wrongly
+        # folds `a` into the slope -> tiny buckets (where `a` dominates) inflate it
+        # to absurd values (e.g. 240e-6 -> 130GB predicted for a large bucket) and
+        # cause needless splitting of mid buckets that actually fit. seed_coef is the
+        # slope fallback until >=2 samples exist.
+        self._samples = []  # list of (area, act_per_sample_gb)
 
     def mark_overflow(self, lh: int, lw: int, bs: int) -> None:
         """A step at this bucket overflowed (raised OOM). Its true activation
@@ -113,20 +116,35 @@ class ActivationDispatcher:
         key = (lh, lw, bs)
         self._act_cache[key] = max(self._act_cache.get(key, 0.0), 1.0e6)
 
-    def _learned_coef(self) -> float:
-        if not self._coef_samples:
-            return self.seed_coef
-        s = sorted(self._coef_samples)
-        med = s[len(s) // 2]
-        return min(max(med, self.seed_coef), self._coef_cap)
+    def _fit(self):
+        """Least-squares fit of act_per_sample = a + b*area over recent samples.
+        Returns (a, b), both clamped >= 0. Falls back to (0, seed_coef) until two
+        distinct-area samples exist."""
+        pts = self._samples
+        n = len(pts)
+        if n < 2:
+            return 0.0, self.seed_coef
+        sx = sum(a for a, _ in pts)
+        sy = sum(y for _, y in pts)
+        sxx = sum(a * a for a, _ in pts)
+        sxy = sum(a * y for a, y in pts)
+        denom = n * sxx - sx * sx
+        if denom <= 0:                      # all same area -> use mean as constant
+            return max(0.0, sy / n), self.seed_coef
+        b = (n * sxy - sx * sy) / denom
+        a = (sy - b * sx) / n
+        b = max(0.0, b)
+        a = max(0.0, a)
+        return a, b
 
     def base_act(self, lh: int, lw: int, bs: int) -> float:
-        """Predicted base (non-offloaded) activation GB: measured if seen, else the
-        learned-median per-pixel estimate (linear in bs * latent-area)."""
+        """Predicted base (non-offloaded) activation GB: exact if the bucket was
+        measured, else the 2-term fit (bs * (a + b*area))."""
         cached = self._act_cache.get((lh, lw, bs))
         if cached is not None:
             return cached
-        return self._learned_coef() * bs * lh * lw
+        a, b = self._fit()
+        return bs * (a + b * lh * lw)
 
     def decide(self, lh: int, lw: int, bs: int, headroom_gb: float) -> str:
         """Return 'fast' / 'offload' / 'escalate'. headroom_gb = GB this process can
@@ -163,20 +181,19 @@ class ActivationDispatcher:
         bucket learn it actually fits and stop splitting next time.
         """
         eb = executed_bs or bs
-        denom = eb * lh * lw
+        area = lh * lw
         act = peak_gb - resident_gb
-        if act <= 0 or denom <= 0:
+        if act <= 0 or eb <= 0 or area <= 0:
             return
         if mode == "offload" and self.residual_frac > 0:
             act = act / self.residual_frac           # recover non-offloaded cost
-        # Feed the per-pixel sample for the learned median (unseen-bucket predictor).
-        # NOTE: we intentionally KEEP spilled measurements. On WDDM a spill makes
-        # max_memory_allocated report the real (unified) peak, which is exactly the
-        # signal that this shape needs offload/split next time; dropping it left the
-        # spilling buckets permanently under-predicted.
-        implied = act / denom
-        self._coef_samples.append(implied)
-        if len(self._coef_samples) > 64:
-            self._coef_samples.pop(0)
-        full_act = act * (bs / eb)                   # extrapolate split -> full batch
-        self._act_cache[(lh, lw, bs)] = full_act
+        # Feed (area, per-sample activation) into the 2-term fit (unseen-bucket
+        # predictor). KEEP spilled measurements: on WDDM a spill makes
+        # max_memory_allocated report the real (unified) peak, the very signal that
+        # this shape needs offload/split next time.
+        aps = act / eb                               # activation per sample
+        self._samples.append((area, aps))
+        if len(self._samples) > 128:
+            self._samples.pop(0)
+        # Exact per-bucket cache: full-batch activation = bs * per-sample.
+        self._act_cache[(lh, lw, bs)] = aps * bs

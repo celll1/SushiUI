@@ -1327,6 +1327,15 @@ components:
         use_torch_compile:
           type: boolean
           default: false
+        vae_tiling:
+          type: boolean
+          default: false
+          description: |
+            Decode the latent through the VAE in overlapping tiles so the decode
+            memory peak is bounded by the tile size, not the full image. Lets large
+            images decode without OOM. Off by default (not bit-identical to a full
+            decode; small images below the tile threshold are unaffected).
+          example: false
         vision_encoder_path:
           type: string
           nullable: true

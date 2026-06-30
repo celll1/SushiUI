@@ -64,6 +64,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   text_encoder_quantization: null,
   cpu_text_encoding: false,
   use_torch_compile: false,
+  vae_tiling: false,
   preview_predicted_x0: false,
   preview_decoder: "matrix",
   use_tipo: false,
@@ -1134,6 +1135,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         original_size_scale: mainParams.original_size_scale,
         cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
+        vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
       };
@@ -2463,6 +2465,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             <span className="text-sm text-gray-300">CPU Text Encoding</span>
             <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
           </label>
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="vae_tiling"
+              checked={params.vae_tiling || false}
+              onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="vae_tiling" className="text-sm text-gray-300">
+              VAE Tiling
+            </label>
+            <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
+          </div>
 
           {developerMode && (
             <>

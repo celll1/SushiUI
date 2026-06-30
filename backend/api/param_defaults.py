@@ -50,6 +50,11 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "text_encoder_quantization": None,
     "cpu_text_encoding": False,
     "use_torch_compile": False,
+    # VAE tiling: decode the latent in overlapping tiles so the VAE decode peak is
+    # bounded by the tile size, not the full image. Lets large images decode
+    # without OOM. Off by default (not bit-identical to a full decode; small images
+    # below the tile threshold are unaffected).
+    "vae_tiling": False,
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

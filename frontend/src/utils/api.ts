@@ -197,6 +197,7 @@ export interface GenerationParams {
   cpu_text_encoding?: boolean;
   // torch.compile optimization
   use_torch_compile?: boolean;
+  vae_tiling?: boolean;
   // TIPO prompt upsampling
   use_tipo?: boolean;
   tipo_config?: any;  // TIPO configuration object
@@ -365,6 +366,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+  formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -636,6 +638,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+  formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
@@ -752,6 +755,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
 
   // torch.compile optimization
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+  formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
 
   // TIPO prompt upsampling
   formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));

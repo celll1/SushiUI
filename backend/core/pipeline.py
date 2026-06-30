@@ -7995,6 +7995,7 @@ class DiffusionPipelineManager:
 
             print("[Ideogram4] Stage 4: VAE decode...")
             self._ideogram4_move("vae", device)
+            self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
             image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"])
             del latents
             self._ideogram4_move("vae", "cpu")
@@ -8065,6 +8066,7 @@ class DiffusionPipelineManager:
 
             print("[Ideogram4] Stage 4: VAE decode...")
             self._ideogram4_move("vae", device)
+            self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
             image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"])
             del latents
             self._ideogram4_move("vae", "cpu")
@@ -8149,6 +8151,7 @@ class DiffusionPipelineManager:
 
             print("[Ideogram4] Stage 4: VAE decode...")
             self._ideogram4_move("vae", device)
+            self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
             image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"])
             del latents
             self._ideogram4_move("vae", "cpu")

@@ -156,6 +156,91 @@ def build_signed_weight_vector(prompt: str, embed_seq_len: int, tokenizer, devic
     return token_weights
 
 
+def _flat_content_weights(prompt, tokenizer):
+    """Per-content-token signed weights in tokenization order (no BOS/EOS/padding)."""
+    parsed = parse_prompt_attention(prompt) if prompt else []
+    weights = []
+    current = ""
+    prev = 0
+    for text, w in parsed:
+        if not text:
+            continue
+        current += text
+        cnt = tokenizer(current, add_special_tokens=False, return_tensors="pt").input_ids.shape[1]
+        weights.extend([w] * (cnt - prev))
+        prev = cnt
+    return weights
+
+
+def build_signed_weight_vector_chunked(prompt, embed_seq_len, tokenizer, device, dtype,
+                                       mode="a1111", max_chunks=0):
+    """Signed per-token weight vector aligned to the encoder's chunk concatenation.
+
+    Mirrors how _encode_prompt_chunked / _encode_prompt_nobos_single_chunk lay out the
+    embedding for each chunking ``mode`` (a1111 keeps [BOS,75,EOS] per chunk; sd_scripts
+    strips the inter-chunk BOS/EOS; nobos strips every BOS/EOS), so a negative-weighted
+    token's V scale lands on exactly its embedding position regardless of mode. BOS/EOS/
+    padding stay 1.0. The result is padded (1.0) / truncated to ``embed_seq_len``.
+    """
+    import torch
+
+    out = torch.ones(embed_seq_len, dtype=dtype, device=device)
+    cw = _flat_content_weights(prompt, tokenizer)
+    n = len(cw)
+    if n == 0:
+        return out
+
+    # Single chunk (<=75 content tokens)
+    if n <= 75:
+        if mode == "nobos":
+            # BOS + last token stripped: content starts at position 0
+            for j, w in enumerate(cw):
+                if j < embed_seq_len:
+                    out[j] = w
+        else:
+            # [BOS, content, EOS, pad]: content at position 1+j
+            for j, w in enumerate(cw):
+                if 1 + j < embed_seq_len:
+                    out[1 + j] = w
+        return out
+
+    # Multi-chunk: build a full [77] weight vector per chunk, then slice/concat per mode
+    chunks = [cw[i:i + 75] for i in range(0, n, 75)]
+    if max_chunks > 0 and len(chunks) > max_chunks:
+        chunks = chunks[:max_chunks]
+    chunk_vecs = []
+    for c in chunks:
+        v = torch.ones(77, dtype=dtype, device=device)
+        for j, w in enumerate(c):
+            v[1 + j] = w  # content at 1..len; BOS(0)/EOS/pad stay 1.0
+        chunk_vecs.append(v)
+
+    if mode == "sd_scripts":
+        parts = []
+        last = len(chunk_vecs) - 1
+        for idx, v in enumerate(chunk_vecs):
+            if len(chunk_vecs) == 1:
+                parts.append(v)
+            elif idx == 0:
+                parts.append(v[:-1])      # drop EOS
+            elif idx == last:
+                parts.append(v[1:])       # drop BOS
+            else:
+                parts.append(v[1:-1])     # drop BOS and EOS
+        concat = torch.cat(parts)
+    elif mode == "nobos":
+        concat = torch.cat([v[1:-1] for v in chunk_vecs])
+    else:  # a1111
+        concat = torch.cat(chunk_vecs)
+
+    if concat.shape[0] < embed_seq_len:
+        pad = torch.ones(embed_seq_len - concat.shape[0], dtype=dtype, device=device)
+        concat = torch.cat([concat, pad])
+    elif concat.shape[0] > embed_seq_len:
+        concat = concat[:embed_seq_len]
+    return concat
+
+
 def apply_emphasis_to_embeds(prompt: str, prompt_embeds, tokenizer, device, dtype):
     """
     Apply A1111-style emphasis weights to already-encoded prompt embeddings.

@@ -1550,6 +1550,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         stepParams.cfg_rescale_snr_alpha = mainParams.cfg_rescale_snr_alpha;
         stepParams.dynamic_threshold_percentile = mainParams.dynamic_threshold_percentile;
         stepParams.dynamic_threshold_mimic_scale = mainParams.dynamic_threshold_mimic_scale;
+        // Inherit NAG from main
+        stepParams.nag_enable = mainParams.nag_enable;
+        stepParams.nag_scale = mainParams.nag_scale;
+        stepParams.nag_tau = mainParams.nag_tau;
+        stepParams.nag_alpha = mainParams.nag_alpha;
+        stepParams.nag_sigma_end = mainParams.nag_sigma_end;
+        stepParams.nag_negative_prompt = mainParams.nag_negative_prompt;
       } else {
         stepParams.steps = step.steps || 20;
         stepParams.cfg_scale = step.cfgScale || 7;

@@ -1160,6 +1160,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         spectrum_feature_mode: mainParams.spectrum_feature_mode,
         spectrum_cache_branch: mainParams.spectrum_cache_branch,
         spectrum_max_cache: mainParams.spectrum_max_cache,
+        attention_type: mainParams.attention_type, // Inherit attention backend (NAG/NegPip)
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
       };
@@ -1180,6 +1181,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         stepParams.cfg_rescale_snr_alpha = mainParams.cfg_rescale_snr_alpha;
         stepParams.dynamic_threshold_percentile = mainParams.dynamic_threshold_percentile;
         stepParams.dynamic_threshold_mimic_scale = mainParams.dynamic_threshold_mimic_scale;
+        // Inherit NAG from main
+        stepParams.nag_enable = mainParams.nag_enable;
+        stepParams.nag_scale = mainParams.nag_scale;
+        stepParams.nag_tau = mainParams.nag_tau;
+        stepParams.nag_alpha = mainParams.nag_alpha;
+        stepParams.nag_sigma_end = mainParams.nag_sigma_end;
+        stepParams.nag_negative_prompt = mainParams.nag_negative_prompt;
       } else {
         stepParams.steps = step.steps || 20;
         stepParams.cfg_scale = step.cfgScale || 7;

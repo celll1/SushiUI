@@ -403,6 +403,35 @@ def _resolve_sdxl_original_size(default_h: int, default_w: int,
     return int(round(default_h * s)), int(round(default_w * s))
 
 
+def _prepare_negpip_weights(negpip_weights, nag_active):
+    """Prepare NegPip per-context signed weight rows from the pipeline-supplied dict.
+
+    negpip_weights: {"pos","neg"[, "nag_neg"]} 1-D signed weight vectors, or None.
+    Returns (negpip_active, nag_token_weights, negpip_token_weights) where:
+      - nag_token_weights: [3, seq] rows [cfg_neg, cfg_pos, nag_neg] when NAG is active,
+        folded into the NAG processor; else None.
+      - negpip_token_weights: [2, seq] rows [neg, pos] for the standalone NegPip
+        processor when NAG is not active; else None.
+    The batch order matches the U-Net's [negative, positive(, nag_negative)] context.
+    """
+    if negpip_weights is None:
+        return False, None, None
+    pos_w = negpip_weights.get("pos")
+    neg_w = negpip_weights.get("neg")
+    if neg_w is None and pos_w is not None:
+        neg_w = torch.ones_like(pos_w)
+    if pos_w is None and neg_w is not None:
+        pos_w = torch.ones_like(neg_w)
+    if pos_w is None and neg_w is None:
+        return False, None, None
+    if nag_active:
+        nag_neg_w = negpip_weights.get("nag_neg")
+        if nag_neg_w is None:
+            nag_neg_w = neg_w
+        return True, torch.stack([neg_w, pos_w, nag_neg_w], dim=0), None
+    return True, None, torch.stack([neg_w, pos_w], dim=0)
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -564,24 +593,12 @@ def custom_sampling_loop(
     # batch order the U-Net receives: [negative, positive] for CFG, plus nag_negative
     # for NAG. When NAG is active the weights are folded into the NAG processor
     # (single forward); otherwise a dedicated NegPip processor is installed.
-    negpip_active = negpip_weights is not None
-    nag_token_weights = None
+    negpip_active, nag_token_weights, negpip_token_weights = _prepare_negpip_weights(negpip_weights, nag_active)
     if negpip_active:
-        pos_w = negpip_weights.get("pos")
-        neg_w = negpip_weights.get("neg")
-        if neg_w is None and pos_w is not None:
-            neg_w = torch.ones_like(pos_w)
-        if pos_w is None and neg_w is not None:
-            pos_w = torch.ones_like(neg_w)
         if nag_active:
-            nag_neg_w = negpip_weights.get("nag_neg")
-            if nag_neg_w is None:
-                nag_neg_w = neg_w
-            nag_token_weights = torch.stack([neg_w, pos_w, nag_neg_w], dim=0)  # [3, seq]
-            print(f"[CustomSampling] NegPip + NAG: signed V weighting folded into NAG processor (seq={pos_w.shape[-1]})")
+            print(f"[CustomSampling] NegPip + NAG: signed V weighting folded into NAG processor (seq={nag_token_weights.shape[-1]})")
         else:
-            negpip_token_weights = torch.stack([neg_w, pos_w], dim=0)  # [2, seq]
-            print(f"[CustomSampling] NegPip active: signed V weighting on cross-attention (seq={pos_w.shape[-1]})")
+            print(f"[CustomSampling] NegPip active: signed V weighting on cross-attention (seq={negpip_token_weights.shape[-1]})")
 
     if nag_active:
         from core.inference.nag_processor import set_nag_processors
@@ -1190,6 +1207,7 @@ def custom_img2img_sampling_loop(
     original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
     original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
+    negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1375,17 +1393,27 @@ def custom_img2img_sampling_loop(
     # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
     original_processors = None
-    negpip_active = False  # NegPip not yet wired into img2img/inpaint (single-chunk txt2img only)
+
+    # NegPip: auto-activated by the pipeline when the prompt(s) contain negative
+    # emphasis weights (see custom_sampling_loop for details). Folded into the NAG
+    # processor when NAG is active; otherwise a dedicated NegPip processor is used.
+    negpip_active, nag_token_weights, negpip_token_weights = _prepare_negpip_weights(negpip_weights, nag_active)
+    if negpip_active:
+        seq = (nag_token_weights if nag_active else negpip_token_weights).shape[-1]
+        print(f"[CustomSampling] NegPip active (img2img): signed V weighting on cross-attention (seq={seq})")
 
     if nag_active:
         from core.inference.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
-        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type)
+        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type, token_weights=nag_token_weights)
 
         nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
         if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
+    elif negpip_active:
+        from core.inference.negpip_processor import set_negpip_processors
+        original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
@@ -1824,8 +1852,8 @@ def custom_img2img_sampling_loop(
 
     print(f"[CustomSampling] Sampling complete, decoding latents")
 
-    # Restore original processors if NAG was active
-    if nag_active and original_processors is not None:
+    # Restore original processors if NAG or NegPip was active
+    if original_processors is not None and (nag_active or negpip_active):
         from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
@@ -1907,6 +1935,7 @@ def custom_inpaint_sampling_loop(
     original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
     original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
+    negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2149,17 +2178,27 @@ def custom_inpaint_sampling_loop(
     # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
     original_processors = None
-    negpip_active = False  # NegPip not yet wired into img2img/inpaint (single-chunk txt2img only)
+
+    # NegPip: auto-activated by the pipeline when the prompt(s) contain negative
+    # emphasis weights. Folded into the NAG processor when NAG is active; otherwise
+    # a dedicated NegPip processor is used.
+    negpip_active, nag_token_weights, negpip_token_weights = _prepare_negpip_weights(negpip_weights, nag_active)
+    if negpip_active:
+        seq = (nag_token_weights if nag_active else negpip_token_weights).shape[-1]
+        print(f"[CustomSampling] NegPip active (inpaint): signed V weighting on cross-attention (seq={seq})")
 
     if nag_active:
         from core.inference.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}")
 
-        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type)
+        original_processors = set_nag_processors(unet, nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha, attention_type=attention_type, token_weights=nag_token_weights)
 
         nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
         if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
+    elif negpip_active:
+        from core.inference.negpip_processor import set_negpip_processors
+        original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
@@ -2603,6 +2642,11 @@ def custom_inpaint_sampling_loop(
         for rg in ref_guides:
             del rg["clean_latent"], rg["noise"]
         ref_guides.clear()
+
+    # Restore original processors if NAG or NegPip was active
+    if original_processors is not None and (nag_active or negpip_active):
+        from core.inference.nag_processor import restore_original_processors
+        restore_original_processors(unet, original_processors)
 
     # ===== STAGE 3: VAE DECODE =====
     from core.vram_optimization import log_device_status, move_unet_to_cpu, move_vae_to_gpu, move_vae_to_cpu

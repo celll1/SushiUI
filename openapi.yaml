@@ -1336,6 +1336,15 @@ components:
             images decode without OOM. Off by default (not bit-identical to a full
             decode; small images below the tile threshold are unaffected).
           example: false
+        vae_tile_threshold:
+          type: integer
+          default: 0
+          description: |
+            Image size in pixels above which VAE tiling activates (also the tile
+            size). 0 = auto = VAE sample_size * 1.5 (~1536px for SDXL). Below the
+            threshold the decode runs whole; above it, split into threshold-sized
+            tiles. Raise it if mid-size images decode fine un-tiled.
+          example: 0
         vision_encoder_path:
           type: string
           nullable: true

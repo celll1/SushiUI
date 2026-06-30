@@ -130,6 +130,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   cpu_text_encoding: false,
   use_torch_compile: false,
   vae_tiling: false,
+  vae_tile_threshold: 0,
   preview_predicted_x0: false,
   preview_decoder: "matrix",
   feeling_lucky: false,
@@ -1505,6 +1506,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
+        vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
         attention_type: mainParams.attention_type, // Inherit attention backend from main
@@ -2986,6 +2988,21 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               </label>
               <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
             </div>
+            {params.vae_tiling && (
+              <div className="flex items-center gap-2 mt-1 ml-6">
+                <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
+                <input
+                  type="number"
+                  id="vae_tile_threshold"
+                  min={0}
+                  step={128}
+                  value={params.vae_tile_threshold ?? 0}
+                  onChange={(e) => setParams({ ...params, vae_tile_threshold: parseInt(e.target.value) || 0 })}
+                  className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                />
+                <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
+              </div>
+            )}
 
             {developerMode && (
               <>

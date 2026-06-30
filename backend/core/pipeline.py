@@ -4325,9 +4325,17 @@ class DiffusionPipelineManager:
         so we explicitly enable or DISABLE it every time to honour the per-request
         option. Routes through wrappers (SDXLVAEWrapper / FluxVAEWrapper) that hold
         an inner diffusers AutoencoderKL.
+
+        The THRESHOLD (image size above which tiling kicks in) is configurable via
+        self._vae_tile_threshold (px). diffusers couples the threshold and the tile
+        size through tile_latent_min_size, so we set both to the threshold: below it
+        the decode runs whole (bit-identical, no quality/speed cost), above it the
+        image is split into threshold-sized tiles -- i.e. tiles as big as the size
+        you're comfortable decoding un-tiled. 0 -> auto = VAE sample_size * 1.5.
         """
         if vae is None:
             return
+        threshold_px = int(getattr(self, "_vae_tile_threshold", 0) or 0)
         targets = [vae]
         inner = getattr(vae, "vae", None)
         if inner is not None and inner is not vae:
@@ -4341,8 +4349,21 @@ class DiffusionPipelineManager:
                         getattr(t, method)()
                     except Exception as e:
                         print(f"[VAE Tiling] {method} failed: {e}")
+            if enabled and hasattr(t, "tile_latent_min_size"):
+                try:
+                    cfg = getattr(t, "config", None)
+                    boc = getattr(cfg, "block_out_channels", None) if cfg else None
+                    scale = 2 ** (len(boc) - 1) if boc else 8
+                    sample = (getattr(cfg, "sample_size", None) if cfg else None) or 1024
+                    thr = threshold_px if threshold_px > 0 else int(sample * 1.5)
+                    thr = max(int(scale), thr)            # at least one tile
+                    t.tile_sample_min_size = int(thr)
+                    t.tile_latent_min_size = max(1, int(thr / scale))
+                except Exception as e:
+                    print(f"[VAE Tiling] threshold setup failed: {e}")
         if enabled:
-            print("[VAE Tiling] enabled (decode bounded by tile size, not image size)")
+            _thr = threshold_px if threshold_px > 0 else "auto(sample_size*1.5)"
+            print(f"[VAE Tiling] enabled (tiles when image > {_thr}px; tile size = threshold)")
 
     def _zimage_decode_latents(self, vae, latents):
         """
@@ -5117,6 +5138,7 @@ class DiffusionPipelineManager:
         # VAE tiling flag for this request (read by all decode paths, incl. the
         # per-architecture handlers dispatched just below).
         self._vae_tiling = bool(params.get("vae_tiling", False))
+        self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
 
         # Z-Image handling
         if self.is_zimage_model:
@@ -5628,6 +5650,7 @@ class DiffusionPipelineManager:
             tuple: (image, actual_seed)
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
+        self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
 
         # Z-Image handling
         if self.is_zimage_model:
@@ -6193,6 +6216,7 @@ class DiffusionPipelineManager:
             tuple: (image, actual_seed)
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
+        self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
 
         # Z-Image inpaint support
         if self.is_zimage_model:

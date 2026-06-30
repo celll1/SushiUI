@@ -2036,6 +2036,7 @@ class DiffusionPipelineManager:
             # Decode - convert latents to VAE dtype (bfloat16 -> float32)
             latents = latents.to(dtype=vae.dtype)
             with torch.no_grad():
+                self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
                 image = vae.decode(latents, return_dict=False)[0]
 
             # Convert to PIL
@@ -2821,6 +2822,7 @@ class DiffusionPipelineManager:
             latents = self._flux2_unpatchify_latents(latents)
 
             with torch.no_grad():
+                self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
                 image = vae.decode(latents, return_dict=False)[0]
 
             image = (image / 2 + 0.5).clamp(0, 1)
@@ -3275,6 +3277,7 @@ class DiffusionPipelineManager:
             latents = self._flux2_unpatchify_latents(latents)
 
             with torch.no_grad():
+                self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
                 image = vae.decode(latents, return_dict=False)[0]
 
             image = (image / 2 + 0.5).clamp(0, 1)
@@ -4313,6 +4316,34 @@ class DiffusionPipelineManager:
 
         return latents
 
+    def _apply_vae_tiling(self, vae, enabled: bool):
+        """Enable (or disable) VAE tiling + slicing for the upcoming decode.
+
+        Tiling decodes the latent in overlapping tiles so the VAE decode peak is
+        bounded by the tile size rather than the full image -- the main lever for
+        decoding large images without OOM. The setting persists on the VAE object,
+        so we explicitly enable or DISABLE it every time to honour the per-request
+        option. Routes through wrappers (SDXLVAEWrapper / FluxVAEWrapper) that hold
+        an inner diffusers AutoencoderKL.
+        """
+        if vae is None:
+            return
+        targets = [vae]
+        inner = getattr(vae, "vae", None)
+        if inner is not None and inner is not vae:
+            targets.append(inner)
+        for t in targets:
+            for on_name, off_name in (("enable_tiling", "disable_tiling"),
+                                      ("enable_slicing", "disable_slicing")):
+                method = on_name if enabled else off_name
+                if hasattr(t, method):
+                    try:
+                        getattr(t, method)()
+                    except Exception as e:
+                        print(f"[VAE Tiling] {method} failed: {e}")
+        if enabled:
+            print("[VAE Tiling] enabled (decode bounded by tile size, not image size)")
+
     def _zimage_decode_latents(self, vae, latents):
         """
         Stage 3: VAE Decode for Z-Image
@@ -4325,6 +4356,7 @@ class DiffusionPipelineManager:
         device = next(vae.parameters()).device
 
         print(f"[Z-Image] Decoding latents with VAE on {device}")
+        self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
 
         # Apply VAE scaling and shift
         shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
@@ -5082,6 +5114,10 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed, actual_ancestral_seed)
         """
+        # VAE tiling flag for this request (read by all decode paths, incl. the
+        # per-architecture handlers dispatched just below).
+        self._vae_tiling = bool(params.get("vae_tiling", False))
+
         # Z-Image handling
         if self.is_zimage_model:
             return self._generate_txt2img_zimage(params, progress_callback, step_callback)
@@ -5108,6 +5144,10 @@ class DiffusionPipelineManager:
 
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
+
+        # VAE tiling option: decode bounded by tile size (large-image OOM relief).
+        self._apply_vae_tiling(getattr(self.txt2img_pipeline, "vae", None),
+                               bool(params.get("vae_tiling", False)))
 
         # Log component devices before generation
         self._log_component_devices(self.txt2img_pipeline, "Before txt2img generation")
@@ -5587,6 +5627,8 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        self._vae_tiling = bool(params.get("vae_tiling", False))
+
         # Z-Image handling
         if self.is_zimage_model:
             return self._generate_img2img_zimage(params, init_image, progress_callback, step_callback)
@@ -5626,6 +5668,10 @@ class DiffusionPipelineManager:
 
             self.img2img_pipeline = self.img2img_pipeline.to(self.device)
             print("img2img pipeline created successfully")
+
+        # VAE tiling option: decode bounded by tile size (large-image OOM relief).
+        self._apply_vae_tiling(getattr(self.img2img_pipeline, "vae", None),
+                               bool(params.get("vae_tiling", False)))
 
         # Apply extensions before generation
         for ext in self.extensions:
@@ -6146,6 +6192,8 @@ class DiffusionPipelineManager:
         Returns:
             tuple: (image, actual_seed)
         """
+        self._vae_tiling = bool(params.get("vae_tiling", False))
+
         # Z-Image inpaint support
         if self.is_zimage_model:
             return self._generate_inpaint_zimage(params, init_image, mask_image, progress_callback, step_callback)
@@ -6184,6 +6232,10 @@ class DiffusionPipelineManager:
                 self.inpaint_pipeline = StableDiffusionInpaintPipeline(**self.txt2img_pipeline.components)
 
             self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
+
+        # VAE tiling option: decode bounded by tile size (large-image OOM relief).
+        self._apply_vae_tiling(getattr(self.inpaint_pipeline, "vae", None),
+                               bool(params.get("vae_tiling", False)))
 
         # Apply extensions before generation
         for ext in self.extensions:
@@ -6937,6 +6989,7 @@ class DiffusionPipelineManager:
 
             # Stage 3: VAE decode
             self._anima_move("vae", device)
+            self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
             images = vae_decode_latents(vae, latents)
             del latents
             self._anima_move("vae", "cpu")
@@ -7063,6 +7116,7 @@ class DiffusionPipelineManager:
 
             # Decode
             self._anima_move("vae", device)
+            self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
             images = vae_decode_latents(vae, latents)
             del latents
             self._anima_move("vae", "cpu")
@@ -7201,6 +7255,7 @@ class DiffusionPipelineManager:
 
             # Decode
             self._anima_move("vae", device)
+            self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
             images = vae_decode_latents(vae, latents)
             del latents
             self._anima_move("vae", "cpu")
@@ -7389,6 +7444,7 @@ class DiffusionPipelineManager:
             print("[Lens] Stage 4: VAE decode...")
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
+            self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
             del latents
             self._lens_move("vae", "cpu")
@@ -7525,6 +7581,7 @@ class DiffusionPipelineManager:
             print("[Lens] Stage 4: VAE decode...")
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
+            self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
             del latents
             self._lens_move("vae", "cpu")
@@ -7673,6 +7730,7 @@ class DiffusionPipelineManager:
             print("[Lens] Stage 4: VAE decode...")
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
+            self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
             image = vae_decode(vae_gpu, latents, latent_h, latent_w)
             del latents
             self._lens_move("vae", "cpu")

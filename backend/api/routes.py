@@ -162,6 +162,14 @@ class GenerationParams(BaseModel):
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
     vae_tiling: bool = GENERATION_DEFAULTS["vae_tiling"]  # Tiled VAE decode for large images
     vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (sample_size*1.5)
+    # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
+    spectrum_enable: bool = GENERATION_DEFAULTS["spectrum_enable"]
+    spectrum_w: float = GENERATION_DEFAULTS["spectrum_w"]
+    spectrum_m: int = GENERATION_DEFAULTS["spectrum_m"]
+    spectrum_lam: float = GENERATION_DEFAULTS["spectrum_lam"]
+    spectrum_warmup_steps: int = GENERATION_DEFAULTS["spectrum_warmup_steps"]
+    spectrum_window_size: int = GENERATION_DEFAULTS["spectrum_window_size"]
+    spectrum_flex_window: float = GENERATION_DEFAULTS["spectrum_flex_window"]
     # TIPO (prompt upsampling)
     use_tipo: bool = False  # Enable TIPO prompt upsampling
     tipo_config: Optional[Dict] = None  # TIPO configuration (model, lengths, etc.)
@@ -275,6 +283,13 @@ async def generate_txt2img(
     use_torch_compile: bool = Form(False),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
+    spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
+    spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(GENERATION_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(GENERATION_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(GENERATION_DEFAULTS["spectrum_flex_window"]),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
@@ -418,6 +433,13 @@ async def generate_txt2img(
             "use_torch_compile": use_torch_compile,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "spectrum_enable": spectrum_enable,
+            "spectrum_w": spectrum_w,
+            "spectrum_m": spectrum_m,
+            "spectrum_lam": spectrum_lam,
+            "spectrum_warmup_steps": spectrum_warmup_steps,
+            "spectrum_window_size": spectrum_window_size,
+            "spectrum_flex_window": spectrum_flex_window,
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,

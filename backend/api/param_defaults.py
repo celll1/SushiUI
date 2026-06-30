@@ -59,6 +59,17 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # = VAE sample_size * 1.5 (e.g. ~1536px for SDXL). Below the threshold the decode
     # runs whole (no quality/speed cost); above it, split into threshold-sized tiles.
     "vae_tile_threshold": 0,
+    # Spectrum: Adaptive Spectral Feature Forecasting (training-free acceleration).
+    # Skips U-Net forwards on selected steps by forecasting the output from a Chebyshev
+    # fit over actual passes. Most useful at high step counts (>=30); little benefit on
+    # low-step/distilled models. Auto-disabled with prompt-editing/ControlNet/DEUS.
+    "spectrum_enable": False,
+    "spectrum_w": 1.0,             # spectral/linear mix (1.0 = spectral only; 0.5-1.0)
+    "spectrum_m": 4,               # number of Chebyshev basis
+    "spectrum_lam": 0.1,           # ridge regularization
+    "spectrum_warmup_steps": 3,    # leading full-eval steps
+    "spectrum_window_size": 4,     # initial skip interval
+    "spectrum_flex_window": 0.75,  # skip damping (0 = max skip)
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

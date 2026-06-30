@@ -491,6 +491,13 @@ def custom_sampling_loop(
     original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
+    spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
+    spectrum_w: float = 1.0,  # Spectral/linear mix (1.0 = spectral only)
+    spectrum_m: int = 4,  # Number of Chebyshev basis
+    spectrum_lam: float = 0.1,  # Ridge regularization
+    spectrum_warmup_steps: int = 3,  # Leading full-eval steps
+    spectrum_window_size: int = 4,  # Initial skip interval
+    spectrum_flex_window: float = 0.75,  # Skip damping (0 = max skip)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -640,6 +647,35 @@ def custom_sampling_loop(
     # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
+
+    # Spectrum (Adaptive Spectral Feature Forecasting): skip U-Net forwards on selected
+    # steps by forecasting the raw output from a Chebyshev fit over actual passes.
+    # Auto-disabled when the per-step conditioning is not stable (prompt editing,
+    # ControlNet), for DEUS (2-pass output), or when there are too few steps to warm up.
+    spectrum = None
+    if spectrum_enable:
+        _n_steps = len(timesteps)
+        _spectrum_blocked = (
+            is_deus or has_controlnet or (prompt_embeds_callback is not None)
+        )
+        if _spectrum_blocked:
+            print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS "
+                  "change the output per step; v1 needs stable conditioning)")
+        elif _n_steps < spectrum_warmup_steps + 3:
+            print(f"[Spectrum] requested but disabled ({_n_steps} steps < warmup+3; "
+                  f"little benefit at low step counts)")
+        else:
+            from core.inference.spectrum_forecaster import SpectrumForecaster
+            spectrum = SpectrumForecaster(
+                _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
+                warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
+                flex_window=spectrum_flex_window,
+            )
+            _n_anchor = len(spectrum.anchors)
+            print(f"[Spectrum] enabled: {_n_anchor}/{_n_steps} actual passes "
+                  f"(m={spectrum_m}, lam={spectrum_lam}, w={spectrum_w}, "
+                  f"warmup={spectrum_warmup_steps}, window={spectrum_window_size}, "
+                  f"flex={spectrum_flex_window})")
 
     # Prepare latents
     if latents is None:
@@ -987,6 +1023,11 @@ def custom_sampling_loop(
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif spectrum is not None and not spectrum.is_anchor(i):
+                # Spectrum skip step: forecast the raw U-Net output (Eq.14) instead of
+                # running the forward. NAG/NegPip effects are baked into the recorded
+                # anchor outputs, so they carry through the forecast.
+                noise_pred = spectrum.forecast(i)
             else:
                 # Standard batch approach: NAG mode, Standard CFG (SDXL/SD1.5), or No CFG
                 unet_kwargs = {
@@ -1024,6 +1065,10 @@ def custom_sampling_loop(
                         t,
                         **unet_kwargs
                     ).sample
+
+                # Spectrum: record this actual-pass output and refit coefficients
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
@@ -1430,6 +1475,7 @@ def custom_img2img_sampling_loop(
         from core.inference.negpip_processor import set_negpip_processors
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
+    spectrum = None  # Spectrum acceleration not wired into img2img yet (v1: txt2img)
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
 
@@ -1721,6 +1767,11 @@ def custom_img2img_sampling_loop(
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+            elif spectrum is not None and not spectrum.is_anchor(i):
+                # Spectrum skip step: forecast the raw U-Net output (Eq.14) instead of
+                # running the forward. NAG/NegPip effects are baked into the recorded
+                # anchor outputs, so they carry through the forecast.
+                noise_pred = spectrum.forecast(i)
             else:
                 # Standard batch approach: NAG mode, Standard CFG (SDXL/SD1.5), or No CFG
                 unet_kwargs = {
@@ -1758,6 +1809,10 @@ def custom_img2img_sampling_loop(
                         t,
                         **unet_kwargs
                     ).sample
+
+                # Spectrum: record this actual-pass output and refit coefficients
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
@@ -2215,6 +2270,7 @@ def custom_inpaint_sampling_loop(
         from core.inference.negpip_processor import set_negpip_processors
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
+    spectrum = None  # Spectrum acceleration not wired into inpaint yet (v1: txt2img)
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
     # Get sigma_max for dynamic CFG scheduling
@@ -2495,6 +2551,11 @@ def custom_inpaint_sampling_loop(
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+            elif spectrum is not None and not spectrum.is_anchor(i):
+                # Spectrum skip step: forecast the raw U-Net output (Eq.14) instead of
+                # running the forward. NAG/NegPip effects are baked into the recorded
+                # anchor outputs, so they carry through the forecast.
+                noise_pred = spectrum.forecast(i)
             else:
                 # Standard batch approach: NAG mode, Standard CFG (SDXL/SD1.5), or No CFG
                 unet_kwargs = {
@@ -2532,6 +2593,10 @@ def custom_inpaint_sampling_loop(
                         t,
                         **unet_kwargs
                     ).sample
+
+                # Spectrum: record this actual-pass output and refit coefficients
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:

@@ -1298,6 +1298,17 @@ def custom_img2img_sampling_loop(
     original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
+    spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
+    spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
+    spectrum_m: int = 4,  # Number of Chebyshev basis
+    spectrum_lam: float = 0.1,  # Ridge regularization
+    spectrum_warmup_steps: int = 3,  # Leading full-eval steps
+    spectrum_window_size: int = 4,  # Initial skip interval
+    spectrum_flex_window: float = 0.75,  # Skip damping (0 = max skip)
+    spectrum_tail: float = 0.12,  # Fraction of final steps forced to actual passes (detail)
+    spectrum_feature_mode: str = "output",  # "output" (black-box) or "block" (deep-feature)
+    spectrum_cache_branch: int = 1,  # block mode: down_blocks[cache_branch:] + mid are forecast
+    spectrum_max_cache: int = 0,  # forecaster sliding-window size (0 = unlimited)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1505,8 +1516,35 @@ def custom_img2img_sampling_loop(
         from core.inference.negpip_processor import set_negpip_processors
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
-    spectrum = None  # Spectrum acceleration not wired into img2img yet (v1: txt2img)
+    # Spectrum (Adaptive Spectral Feature Forecasting) acceleration -- see the txt2img
+    # loop for details. Auto-disabled for unstable per-step conditioning / DEUS / very
+    # few steps.
+    spectrum = None
     spectrum_block_ctrl = None
+    if spectrum_enable:
+        _n_steps = len(timesteps)
+        if is_deus or has_controlnet or (prompt_embeds_callback is not None):
+            print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS; "
+                  "needs stable conditioning)")
+        elif _n_steps < spectrum_warmup_steps + 3:
+            print(f"[Spectrum] requested but disabled ({_n_steps} steps < warmup+3)")
+        else:
+            from core.inference.spectrum_forecaster import SpectrumForecaster
+            _block = spectrum_feature_mode == "block"
+            _max_cache = spectrum_max_cache if spectrum_max_cache > 0 else (6 if _block else 5)
+            spectrum = SpectrumForecaster(
+                _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
+                warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
+                flex_window=spectrum_flex_window, tail_fraction=spectrum_tail,
+                max_cache=_max_cache,
+            )
+            if _block:
+                from core.inference.spectrum_unet import SpectrumBlockController
+                spectrum_block_ctrl = SpectrumBlockController(unet, spectrum, cache_branch=spectrum_cache_branch)
+                print(f"[Spectrum] enabled (img2img, block mode): {len(spectrum.anchors)}/{_n_steps} "
+                      f"deep-feature passes, cache_branch={spectrum_block_ctrl.branch}/{spectrum_block_ctrl.n_down}")
+            else:
+                print(f"[Spectrum] enabled (img2img, output mode): {len(spectrum.anchors)}/{_n_steps} actual passes")
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
 
@@ -2045,6 +2083,17 @@ def custom_inpaint_sampling_loop(
     original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
+    spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
+    spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
+    spectrum_m: int = 4,  # Number of Chebyshev basis
+    spectrum_lam: float = 0.1,  # Ridge regularization
+    spectrum_warmup_steps: int = 3,  # Leading full-eval steps
+    spectrum_window_size: int = 4,  # Initial skip interval
+    spectrum_flex_window: float = 0.75,  # Skip damping (0 = max skip)
+    spectrum_tail: float = 0.12,  # Fraction of final steps forced to actual passes (detail)
+    spectrum_feature_mode: str = "output",  # "output" (black-box) or "block" (deep-feature)
+    spectrum_cache_branch: int = 1,  # block mode: down_blocks[cache_branch:] + mid are forecast
+    spectrum_max_cache: int = 0,  # forecaster sliding-window size (0 = unlimited)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2309,8 +2358,35 @@ def custom_inpaint_sampling_loop(
         from core.inference.negpip_processor import set_negpip_processors
         original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
-    spectrum = None  # Spectrum acceleration not wired into inpaint yet (v1: txt2img)
+    # Spectrum (Adaptive Spectral Feature Forecasting) acceleration -- see the txt2img
+    # loop for details. Auto-disabled for unstable per-step conditioning / DEUS / very
+    # few steps.
+    spectrum = None
     spectrum_block_ctrl = None
+    if spectrum_enable:
+        _n_steps = len(timesteps)
+        if is_deus or has_controlnet or (prompt_embeds_callback is not None):
+            print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS; "
+                  "needs stable conditioning)")
+        elif _n_steps < spectrum_warmup_steps + 3:
+            print(f"[Spectrum] requested but disabled ({_n_steps} steps < warmup+3)")
+        else:
+            from core.inference.spectrum_forecaster import SpectrumForecaster
+            _block = spectrum_feature_mode == "block"
+            _max_cache = spectrum_max_cache if spectrum_max_cache > 0 else (6 if _block else 5)
+            spectrum = SpectrumForecaster(
+                _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
+                warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
+                flex_window=spectrum_flex_window, tail_fraction=spectrum_tail,
+                max_cache=_max_cache,
+            )
+            if _block:
+                from core.inference.spectrum_unet import SpectrumBlockController
+                spectrum_block_ctrl = SpectrumBlockController(unet, spectrum, cache_branch=spectrum_cache_branch)
+                print(f"[Spectrum] enabled (inpaint, block mode): {len(spectrum.anchors)}/{_n_steps} "
+                      f"deep-feature passes, cache_branch={spectrum_block_ctrl.branch}/{spectrum_block_ctrl.n_down}")
+            else:
+                print(f"[Spectrum] enabled (inpaint, output mode): {len(spectrum.anchors)}/{_n_steps} actual passes")
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
     # Get sigma_max for dynamic CFG scheduling

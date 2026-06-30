@@ -120,6 +120,17 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   use_torch_compile: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
+  spectrum_enable: false,
+  spectrum_w: 0.5,
+  spectrum_m: 4,
+  spectrum_lam: 0.1,
+  spectrum_warmup_steps: 3,
+  spectrum_window_size: 4,
+  spectrum_flex_window: 0.75,
+  spectrum_tail: 0.12,
+  spectrum_feature_mode: "output",
+  spectrum_cache_branch: 1,
+  spectrum_max_cache: 0,
   preview_predicted_x0: false,
   preview_decoder: "matrix",
   attention_type: "normal",
@@ -1379,6 +1390,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
+        spectrum_enable: mainParams.spectrum_enable, // Inherit Spectrum acceleration
+        spectrum_w: mainParams.spectrum_w,
+        spectrum_m: mainParams.spectrum_m,
+        spectrum_lam: mainParams.spectrum_lam,
+        spectrum_warmup_steps: mainParams.spectrum_warmup_steps,
+        spectrum_window_size: mainParams.spectrum_window_size,
+        spectrum_flex_window: mainParams.spectrum_flex_window,
+        spectrum_tail: mainParams.spectrum_tail,
+        spectrum_feature_mode: mainParams.spectrum_feature_mode,
+        spectrum_cache_branch: mainParams.spectrum_cache_branch,
+        spectrum_max_cache: mainParams.spectrum_max_cache,
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
       };
@@ -2740,6 +2762,81 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                   className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
                 />
                 <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="spectrum_enable_i2i"
+                checked={params.spectrum_enable || false}
+                onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="spectrum_enable_i2i" className="text-sm text-gray-300">
+                Spectrum (Spectral Feature Forecasting)
+              </label>
+              <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
+            </div>
+            {params.spectrum_enable && (
+              <div className="ml-6 mt-1 flex items-center gap-2">
+                <label className="text-xs text-gray-400">Mode</label>
+                <select
+                  value={params.spectrum_feature_mode ?? "output"}
+                  onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
+                  className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                >
+                  <option value="output">output (black-box, max speed)</option>
+                  <option value="block">block (deep-feature, higher quality)</option>
+                </select>
+                {params.spectrum_feature_mode === "block" && (
+                  <label className="text-xs text-gray-400 flex items-center gap-1">
+                    Branch
+                    <input type="number" min={1} max={3} step={1}
+                      value={params.spectrum_cache_branch ?? 1}
+                      onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
+                      className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  </label>
+                )}
+              </div>
+            )}
+            {params.spectrum_enable && (
+              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
+                  <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
+                    onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Basis m
+                  <input type="number" min={1} max={8} step={1} value={params.spectrum_m ?? 4}
+                    onChange={(e) => setParams({ ...params, spectrum_m: parseInt(e.target.value) || 4 })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Ridge λ
+                  <input type="number" min={0} step={0.01} value={params.spectrum_lam ?? 0.1}
+                    onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Warmup
+                  <input type="number" min={1} step={1} value={params.spectrum_warmup_steps ?? 3}
+                    onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Window
+                  <input type="number" min={1} step={1} value={params.spectrum_window_size ?? 4}
+                    onChange={(e) => setParams({ ...params, spectrum_window_size: parseInt(e.target.value) || 4 })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Flex
+                  <input type="number" min={0} max={1} step={0.05} value={params.spectrum_flex_window ?? 0.75}
+                    onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Tail
+                  <input type="number" min={0} max={0.5} step={0.02} value={params.spectrum_tail ?? 0.12}
+                    onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
               </div>
             )}
 

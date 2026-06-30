@@ -4518,6 +4518,59 @@ class DiffusionPipelineManager:
 
         return torch.tensor(token_weights, device=device, dtype=dtype)
 
+    def _negpip_eligible(self, prompt: str, negative_prompt: str, pipeline) -> bool:
+        """Whether NegPip should auto-activate for this prompt pair.
+
+        Trigger: any negative emphasis weight (e.g. (worst:-1)) in either prompt.
+        v1 scope: single-chunk only (each clean prompt <= 75 tokens) and not NoBOS
+        chunking. Otherwise fall back to legacy emphasis (logged).
+        """
+        from core.prompts.prompt_parser import prompt_has_negative_weight, parse_prompt_attention
+        if not (prompt_has_negative_weight(prompt) or prompt_has_negative_weight(negative_prompt)):
+            return False
+        if getattr(self, "prompt_chunking_mode", "") == "nobos":
+            print("[NegPip] Negative weight detected, but NoBOS chunking is active -> "
+                  "falling back to legacy emphasis (NegPip v1 supports single-chunk only)")
+            return False
+        tokenizer = getattr(pipeline, "tokenizer", None)
+        if tokenizer is None:
+            return False
+        for p in (prompt, negative_prompt):
+            if not p:
+                continue
+            clean = "".join(t for t, _ in parse_prompt_attention(p))
+            n_tok = tokenizer(clean, add_special_tokens=False, return_tensors="pt").input_ids.shape[1]
+            if n_tok > 75:
+                print("[NegPip] Negative weight detected, but prompt exceeds 75 tokens (chunked) -> "
+                      "falling back to legacy emphasis (NegPip v1 supports single-chunk only)")
+                return False
+        return True
+
+    def _build_negpip_weights(self, prompt: str, negative_prompt: str, pipeline,
+                              prompt_embeds, negative_prompt_embeds, dtype,
+                              nag_negative_prompt: str = None, nag_negative_prompt_embeds=None):
+        """Build signed per-token weight vectors aligned with the encoded embeddings.
+
+        Returns {"pos","neg"[, "nag_neg"]} where each value is a 1-D tensor of length
+        equal to the corresponding embedding sequence (1.0 on BOS/EOS/padding).
+        """
+        from core.prompts.prompt_parser import build_signed_weight_vector
+        is_sdxl = hasattr(pipeline, "text_encoder_2") and pipeline.text_encoder_2 is not None
+        tokenizer = pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer
+        device = self.device
+
+        pos_w = build_signed_weight_vector(prompt, prompt_embeds.shape[1], tokenizer, device, dtype)
+        neg_w = None
+        if negative_prompt_embeds is not None:
+            neg_w = build_signed_weight_vector(negative_prompt or "", negative_prompt_embeds.shape[1],
+                                               tokenizer, device, dtype)
+        weights = {"pos": pos_w, "neg": neg_w}
+        if nag_negative_prompt_embeds is not None:
+            weights["nag_neg"] = build_signed_weight_vector(nag_negative_prompt or "",
+                                                            nag_negative_prompt_embeds.shape[1],
+                                                            tokenizer, device, dtype)
+        return weights
+
     def _apply_controlnets(self, pipeline, controlnet_images, width, height, is_sdxl):
         """Apply ControlNets to the pipeline"""
         from core.extensions.controlnet_manager import controlnet_manager
@@ -4979,9 +5032,15 @@ class DiffusionPipelineManager:
             ne, npp = ad(nh.to(ad_dtype), np_.to(ad_dtype))
         return pe, ne, pp, npp
 
-    def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None):
+    def _encode_prompt_with_weights(self, prompt: str, negative_prompt: str = "", pipeline=None, skip_emphasis: bool = False):
         """
         Encode prompts with A1111-style emphasis weights and/or chunking.
+
+        Args:
+            skip_emphasis: When True, return CLEAN embeddings (no emphasis scaling) for
+                the single-chunk path. Used by NegPip, which applies signed per-token
+                weights to V instead of scaling the embedding. Only honored on the
+                single-chunk path (NegPip v1 scope).
 
         Returns:
             For SD1.5: (prompt_embeds, negative_prompt_embeds)
@@ -5089,8 +5148,8 @@ class DiffusionPipelineManager:
         prompt_embeds = base_embeds[0]
         pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
 
-        # Apply emphasis weights
-        if has_pos_emphasis:
+        # Apply emphasis weights (skipped for NegPip, which weights V instead)
+        if has_pos_emphasis and not skip_emphasis:
             prompt_embeds = apply_emphasis_to_embeds(
                 prompt, prompt_embeds,
                 pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer,
@@ -5112,7 +5171,7 @@ class DiffusionPipelineManager:
             negative_prompt_embeds = neg_embeds[0]
             negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
 
-            if has_neg_emphasis:
+            if has_neg_emphasis and not skip_emphasis:
                 negative_prompt_embeds = apply_emphasis_to_embeds(
                     negative_prompt, negative_prompt_embeds,
                     pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer,
@@ -5220,11 +5279,21 @@ class DiffusionPipelineManager:
             move_text_encoders_to_gpu(self.txt2img_pipeline)
         log_device_status("Ready for text encoding", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
+        # NegPip auto-activation: when the prompt(s) carry negative emphasis weights,
+        # encode CLEAN embeddings (skip embedding scaling) and apply the signed weights
+        # to V inside attention instead. Disabled when prompt editing is active (the
+        # per-step edit embeds path is not yet NegPip-aware -- v1 scope).
+        _negpip_neg_prompt = params.get("negative_prompt", "")
+        use_negpip = (prompt_processor is None) and self._negpip_eligible(
+            initial_prompt, _negpip_neg_prompt, self.txt2img_pipeline
+        )
+
         # Encode prompts with weights if emphasis syntax is present
         prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
             initial_prompt,
             params.get("negative_prompt", ""),
-            pipeline=self.txt2img_pipeline
+            pipeline=self.txt2img_pipeline,
+            skip_emphasis=use_negpip,
         )
 
         # Log embedding shapes for debugging
@@ -5254,6 +5323,18 @@ class DiffusionPipelineManager:
                 pipeline=self.txt2img_pipeline
             )
             print(f"[NAG] NAG negative embeddings shape: {nag_negative_prompt_embeds.shape if nag_negative_prompt_embeds is not None else None}")
+
+        # Build NegPip signed per-token weights (clean embeds were encoded above)
+        negpip_weights = None
+        if use_negpip:
+            _negpip_dtype = self.txt2img_pipeline.dtype if hasattr(self.txt2img_pipeline, "dtype") else torch.float16
+            negpip_weights = self._build_negpip_weights(
+                initial_prompt, _negpip_neg_prompt, self.txt2img_pipeline,
+                prompt_embeds, negative_prompt_embeds, _negpip_dtype,
+                nag_negative_prompt=params.get("nag_negative_prompt", "") or params.get("negative_prompt", ""),
+                nag_negative_prompt_embeds=nag_negative_prompt_embeds,
+            )
+            print(f"[NegPip] Auto-activated (negative emphasis weights detected)")
 
         # Pre-calculate all prompt editing embeddings if needed
         embeds_cache = {}
@@ -5584,6 +5665,7 @@ class DiffusionPipelineManager:
                 original_size_w=params.get("original_size_w", 0),
                 original_size_h=params.get("original_size_h", 0),
                 original_size_scale=params.get("original_size_scale", 1.0),
+                negpip_weights=negpip_weights,
                 **controlnet_kwargs,
             )
 

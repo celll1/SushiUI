@@ -208,6 +208,15 @@ class NAGAttnProcessor2_0:
             key = key.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
             value = value.view(context_batch, -1, attn.heads, head_dim).transpose(1, 2)
 
+            # NegPip compatibility: scale V per context by signed per-token weights.
+            # token_weights rows align with [cfg_negative, cfg_positive, nag_negative].
+            # K is left untouched (normal attention pattern); only the value sign/scale
+            # changes, so a negative weight subtracts the concept. No extra forward.
+            tw = getattr(self, 'token_weights', None)
+            if tw is not None:
+                w = _align_token_weights(tw, context_batch, value.shape[2], value.device, value.dtype)
+                value = value * w[:, None, :, None]
+
             # Compute attention with matching batch sizes (3)
             # Result indices for context_batch=3 (CFG + NAG):
             # 0: uncond→cfg_negative, 1: cond→cfg_positive, 2: cond→nag_negative
@@ -340,7 +349,34 @@ class NAGAttnProcessor2_0:
         return hidden_states
 
 
-def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float, attention_type: str = "normal"):
+def _align_token_weights(tw, context_batch, kv_seq, device, dtype):
+    """Align a signed token-weight tensor to [context_batch, kv_seq].
+
+    Accepts [seq], [B, seq], or [context_batch, seq]; broadcasts/truncates rows
+    to context_batch and pads (with 1.0 = identity) or truncates columns to kv_seq.
+    """
+    import torch
+    w = tw.to(device=device, dtype=dtype)
+    if w.dim() == 1:
+        w = w.unsqueeze(0)
+    if w.shape[0] != context_batch:
+        if w.shape[0] == 1:
+            w = w.expand(context_batch, -1)
+        elif w.shape[0] > context_batch:
+            w = w[:context_batch]
+        else:
+            pad_rows = torch.ones(context_batch - w.shape[0], w.shape[1], device=device, dtype=dtype)
+            w = torch.cat([w, pad_rows], dim=0)
+    if w.shape[1] != kv_seq:
+        if w.shape[1] < kv_seq:
+            pad = torch.ones(w.shape[0], kv_seq - w.shape[1], device=device, dtype=dtype)
+            w = torch.cat([w, pad], dim=1)
+        else:
+            w = w[:, :kv_seq]
+    return w
+
+
+def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float, attention_type: str = "normal", token_weights=None):
     """
     Set NAG attention processors on cross-attention layers (attn2)
 
@@ -350,6 +386,10 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float,
         nag_tau: NAG tau parameter
         nag_alpha: NAG alpha parameter
         attention_type: Attention backend - "normal", "sage", or "flash"
+        token_weights: Optional signed per-token weights for NegPip compatibility,
+            shape [3, seq] aligned with [cfg_negative, cfg_positive, nag_negative].
+            When provided, V is scaled per token so negative-weighted tokens are
+            subtracted (NegPip) in the same forward pass.
 
     Returns:
         dict: Original processors for restoration
@@ -361,12 +401,15 @@ def set_nag_processors(unet, nag_scale: float, nag_tau: float, nag_alpha: float,
     new_processors = {}
     for name, processor in unet.attn_processors.items():
         if "attn2" in name:  # Cross-attention only
-            new_processors[name] = NAGAttnProcessor2_0(
+            proc = NAGAttnProcessor2_0(
                 nag_scale=nag_scale,
                 nag_tau=nag_tau,
                 nag_alpha=nag_alpha,
                 attention_type=attention_type,
             )
+            if token_weights is not None:
+                proc.token_weights = token_weights
+            new_processors[name] = proc
         else:
             new_processors[name] = processor
 

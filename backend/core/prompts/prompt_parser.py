@@ -102,6 +102,60 @@ def parse_prompt_attention(text: str) -> List[Tuple[str, float]]:
     return [(text, weight) for text, weight in res if text and text != "BREAK"]
 
 
+def prompt_has_negative_weight(prompt: str, threshold: float = 0.0) -> bool:
+    """True if any fragment of the prompt carries a weight below ``threshold``.
+
+    A negative weight (e.g. ``(worst quality:-1)``) is the trigger for NegPip:
+    the token's attention value is negated so the concept is subtracted rather
+    than added. Plain emphasis scaling cannot represent that.
+    """
+    if not prompt:
+        return False
+    try:
+        parsed = parse_prompt_attention(prompt)
+    except Exception:
+        return False
+    return any(weight < threshold for _, weight in parsed)
+
+
+def build_signed_weight_vector(prompt: str, embed_seq_len: int, tokenizer, device, dtype):
+    """Build the per-token (embedding-position-aligned) signed weight vector.
+
+    Returns a 1-D tensor of length ``embed_seq_len`` with 1.0 on BOS/EOS/padding
+    and the parsed (possibly negative) emphasis weight on each content token,
+    using the same chunk-aware position mapping as :func:`apply_emphasis_to_embeds`.
+    Used by NegPip to scale V per token instead of scaling the embedding.
+    """
+    import torch
+
+    token_weights = torch.ones(embed_seq_len, dtype=dtype, device=device)
+    parsed = parse_prompt_attention(prompt) if prompt else []
+    if len(parsed) == 0:
+        return token_weights
+
+    current_text = ""
+    previous_token_count = 0
+    for text, weight in parsed:
+        if not text:
+            continue
+        current_text += text
+        current_tokens = tokenizer(
+            current_text,
+            add_special_tokens=False,
+            return_tensors="pt",
+        )
+        current_token_count = current_tokens.input_ids.shape[1]
+        for token_idx in range(previous_token_count, current_token_count):
+            chunk_idx = token_idx // 75
+            token_in_chunk = token_idx % 75
+            embed_pos = chunk_idx * 77 + 1 + token_in_chunk
+            if embed_pos < embed_seq_len:
+                token_weights[embed_pos] = weight
+        previous_token_count = current_token_count
+
+    return token_weights
+
+
 def apply_emphasis_to_embeds(prompt: str, prompt_embeds, tokenizer, device, dtype):
     """
     Apply A1111-style emphasis weights to already-encoded prompt embeddings.
@@ -125,55 +179,12 @@ def apply_emphasis_to_embeds(prompt: str, prompt_embeds, tokenizer, device, dtyp
     if len(parsed) == 0:
         return prompt_embeds
 
-    # Reconstruct the full text without emphasis syntax
-    full_text = "".join([text for text, _ in parsed])
-
     # Get actual embeddings length (may be 77, 154, 231, etc. for chunked prompts)
     embed_seq_len = prompt_embeds.size(1)
 
     # Build token weight multipliers for the actual embeddings length
-    token_weights = torch.ones(embed_seq_len, dtype=dtype, device=device)
-
-    # Build the multiplier array by tokenizing progressively
-    current_text = ""
-    previous_token_count = 0
-
-    for text, weight in parsed:
-        if not text:
-            continue
-
-        # Add this fragment to accumulated text
-        current_text += text
-
-        # Tokenize the accumulated text so far
-        current_tokens = tokenizer(
-            current_text,
-            add_special_tokens=False,  # Don't add BOS/EOS yet
-            return_tensors="pt",
-        )
-        current_token_count = current_tokens.input_ids.shape[1]
-
-        # Apply weight to the NEW tokens
-        # For chunked embeddings, we need to account for BOS tokens at the start of each chunk
-        # In A1111 mode: <BOS>75tokens<EOS><BOS>75tokens<EOS>...
-        # Each chunk is 77 tokens, so BOS appears at positions 0, 77, 154, etc.
-
-        # Map token index to embedding position
-        # Token 0-74 -> positions 1-75 (after first BOS)
-        # Token 75-149 -> positions 78-152 (after second BOS)
-        # etc.
-        for token_idx in range(previous_token_count, current_token_count):
-            # Calculate which chunk this token belongs to
-            chunk_idx = token_idx // 75
-            token_in_chunk = token_idx % 75
-
-            # Position in embeddings: chunk_idx * 77 + 1 (skip BOS) + token_in_chunk
-            embed_pos = chunk_idx * 77 + 1 + token_in_chunk
-
-            if embed_pos < embed_seq_len:
-                token_weights[embed_pos] = weight
-
-        previous_token_count = current_token_count
+    # (shared chunk-aware mapping with NegPip's signed-weight vector)
+    token_weights = build_signed_weight_vector(prompt, embed_seq_len, tokenizer, device, dtype)
 
     # Apply weights to embeddings
     weighted_embeds = prompt_embeds * token_weights.unsqueeze(0).unsqueeze(-1)

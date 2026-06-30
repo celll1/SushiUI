@@ -446,6 +446,7 @@ def custom_sampling_loop(
     original_size_w: int = 0,  # SDXL micro-cond override: explicit original width (0 = auto)
     original_size_h: int = 0,  # SDXL micro-cond override: explicit original height (0 = auto)
     original_size_scale: float = 1.0,  # SDXL micro-cond: original_size = output size * scale (when not explicit)
+    negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -558,23 +559,51 @@ def custom_sampling_loop(
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
     original_processors = None
 
+    # NegPip: auto-activated by the pipeline when the prompt(s) contain negative
+    # emphasis weights. Build the per-context signed weight rows aligned with the
+    # batch order the U-Net receives: [negative, positive] for CFG, plus nag_negative
+    # for NAG. When NAG is active the weights are folded into the NAG processor
+    # (single forward); otherwise a dedicated NegPip processor is installed.
+    negpip_active = negpip_weights is not None
+    nag_token_weights = None
+    if negpip_active:
+        pos_w = negpip_weights.get("pos")
+        neg_w = negpip_weights.get("neg")
+        if neg_w is None and pos_w is not None:
+            neg_w = torch.ones_like(pos_w)
+        if pos_w is None and neg_w is not None:
+            pos_w = torch.ones_like(neg_w)
+        if nag_active:
+            nag_neg_w = negpip_weights.get("nag_neg")
+            if nag_neg_w is None:
+                nag_neg_w = neg_w
+            nag_token_weights = torch.stack([neg_w, pos_w, nag_neg_w], dim=0)  # [3, seq]
+            print(f"[CustomSampling] NegPip + NAG: signed V weighting folded into NAG processor (seq={pos_w.shape[-1]})")
+        else:
+            negpip_token_weights = torch.stack([neg_w, pos_w], dim=0)  # [2, seq]
+            print(f"[CustomSampling] NegPip active: signed V weighting on cross-attention (seq={pos_w.shape[-1]})")
+
     if nag_active:
         from core.inference.nag_processor import set_nag_processors
         print(f"[CustomSampling] NAG enabled: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}, sigma_end={nag_sigma_end}, attention={attention_type}")
 
-        # Set NAG processors on cross-attention layers
+        # Set NAG processors on cross-attention layers (with optional NegPip weights)
         original_processors = set_nag_processors(
             unet,
             nag_scale=nag_scale,
             nag_tau=nag_tau,
             nag_alpha=nag_alpha,
             attention_type=attention_type,
+            token_weights=nag_token_weights,
         )
 
         # Ensure NAG embeddings on correct device/dtype
         nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device=device, dtype=dtype)
         if is_sdxl and nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device=device, dtype=dtype)
+    elif negpip_active:
+        from core.inference.negpip_processor import set_negpip_processors
+        original_processors = set_negpip_processors(unet, negpip_token_weights, attention_type=attention_type)
 
     # Set timesteps
     scheduler.set_timesteps(num_inference_steps, device=device)
@@ -698,8 +727,10 @@ def custom_sampling_loop(
             cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
         )
 
-        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
-        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
+        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and neither NAG
+        # nor NegPip is active. NegPip needs the [negative, positive] batch so its
+        # per-context V weights align (and negative-prompt double-negation works).
+        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active
 
         # Prepare latent input based on CFG mode
         if nag_active:
@@ -1080,8 +1111,8 @@ def custom_sampling_loop(
             del rg["clean_latent"], rg["noise"]
         ref_guides.clear()
 
-    # Restore original processors if NAG was active
-    if nag_active and original_processors is not None:
+    # Restore original processors if NAG or NegPip was active
+    if original_processors is not None and (nag_active or negpip_active):
         from core.inference.nag_processor import restore_original_processors
         restore_original_processors(unet, original_processors)
 
@@ -1344,6 +1375,7 @@ def custom_img2img_sampling_loop(
     # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
     original_processors = None
+    negpip_active = False  # NegPip not yet wired into img2img/inpaint (single-chunk txt2img only)
 
     if nag_active:
         from core.inference.nag_processor import set_nag_processors
@@ -1424,8 +1456,10 @@ def custom_img2img_sampling_loop(
             cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
         )
 
-        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
-        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
+        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and neither NAG
+        # nor NegPip is active. NegPip needs the [negative, positive] batch so its
+        # per-context V weights align (and negative-prompt double-negation works).
+        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active
 
         # Prepare latent input based on CFG mode
         if nag_active:
@@ -2115,6 +2149,7 @@ def custom_inpaint_sampling_loop(
     # Setup NAG if enabled
     nag_active = nag_enable and nag_negative_prompt_embeds is not None
     original_processors = None
+    negpip_active = False  # NegPip not yet wired into img2img/inpaint (single-chunk txt2img only)
 
     if nag_active:
         from core.inference.nag_processor import set_nag_processors
@@ -2193,8 +2228,10 @@ def custom_inpaint_sampling_loop(
             cfg_rescale_snr_alpha=cfg_rescale_snr_alpha
         )
 
-        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and NAG is not active
-        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active
+        # Optimize: skip unconditional pass if guidance_scale ~= 1.0 and neither NAG
+        # nor NegPip is active. NegPip needs the [negative, positive] batch so its
+        # per-context V weights align (and negative-prompt double-negation works).
+        do_classifier_free_guidance = (abs(current_guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active
 
         # Prepare latent input based on CFG mode
         if nag_active:

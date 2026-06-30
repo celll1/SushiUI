@@ -1358,9 +1358,9 @@ components:
           example: false
         spectrum_w:
           type: number
-          default: 1.0
-          description: "Mix between the spectral forecast and linear extrapolation (1.0 = spectral only). Recommended 0.5-1.0."
-          example: 1.0
+          default: 0.5
+          description: "Mix between the spectral forecast and linear extrapolation (1.0 = spectral only; lower leans on the more stable linear extrapolation). Raise toward 1.0 for more aggressive forecasting if quality holds."
+          example: 0.5
         spectrum_m:
           type: integer
           default: 4

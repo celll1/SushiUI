@@ -21,6 +21,10 @@ import torch.nn.functional as F
 from typing import Optional
 from diffusers.models.attention_processor import Attention
 
+# Verbose per-call NAG statistics to stderr. Off by default (was always-on and
+# printed ~10 lines on the first call of every NAG generation). Set True to debug.
+_NAG_DEBUG = False
+
 
 class NAGAttnProcessor2_0:
     """
@@ -79,25 +83,22 @@ class NAGAttnProcessor2_0:
         self._call_count += 1
 
         if self.attention_type == "sage" and self._sage_available:
-            # Log first call
-            if self._call_count == 1:
+            if _NAG_DEBUG and self._call_count == 1:
                 print(f"[NAG-SageAttention] First attention call - using SageAttention backend")
 
             # SageAttention expects HND layout
             try:
                 output = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
-                if self._call_count == 1:
-                    print(f"[NAG-SageAttention] sageattn call succeeded")
                 return output
             except Exception as e:
-                if self._call_count == 1:
+                if _NAG_DEBUG and self._call_count == 1:
                     print(f"[NAG-SageAttention] Error, falling back to SDPA: {e}")
                 return F.scaled_dot_product_attention(
                     query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
                 )
         else:
             # Normal or Flash (both use PyTorch SDPA which auto-selects Flash if available)
-            if self._call_count == 1:
+            if _NAG_DEBUG and self._call_count == 1:
                 backend = "FlashAttention-2" if self.attention_type == "flash" else "PyTorch SDPA"
                 print(f"[NAG-{backend}] First attention call - using {backend} backend")
 
@@ -115,9 +116,8 @@ class NAGAttnProcessor2_0:
         *args,
         **kwargs,
     ) -> torch.Tensor:
-        # Log that processor is being called
         import sys
-        if not hasattr(self, '_called_logged'):
+        if _NAG_DEBUG and not hasattr(self, '_called_logged'):
             print(f"[NAG CALL] NAG processor called! encoder_hidden_states is None: {encoder_hidden_states is None}", file=sys.stderr)
             self._called_logged = True
 
@@ -158,7 +158,7 @@ class NAGAttnProcessor2_0:
 
         # Debug logging (only log first few times to avoid spam)
         import sys
-        if is_nag_mode and not hasattr(self, '_debug_logged'):
+        if _NAG_DEBUG and is_nag_mode and not hasattr(self, '_debug_logged'):
             print(f"[NAG DEBUG] is_cross={is_cross_attention_original}, batch_size={batch_size}, context_batch={context_batch}, has_nag_scale={hasattr(self, 'nag_scale')}", file=sys.stderr)
             self._debug_logged = True
 
@@ -214,11 +214,13 @@ class NAGAttnProcessor2_0:
             hidden_states_all = self._compute_attention(query_expanded, key, value, attention_mask)
             hidden_states_all = hidden_states_all.transpose(1, 2).reshape(context_batch, -1, attn.heads * head_dim).to(query.dtype)
 
-            # Extract results following official implementation:
-            # hidden_states_negative = last origin_batch_size items (index 2)
-            # hidden_states_positive = middle origin_batch_size items (index 1)
-            hidden_states_negative = hidden_states_all[-origin_batch_size:]  # index 2: cond→nag_negative
-            hidden_states_positive = hidden_states_all[origin_batch_size:2 * origin_batch_size]  # index 1: uncond→cfg_positive
+            # Extract results. query_expanded = [uncond, cond, cond], so:
+            #   index 1 = cond -> cfg_positive  (Z_pos)
+            #   index 2 = cond -> nag_negative  (Z_neg)
+            # Both NAG terms use the SAME cond query (correct NAG: extrapolate in
+            # attention-output space, not score space).
+            hidden_states_negative = hidden_states_all[-origin_batch_size:]  # index 2: cond->nag_negative
+            hidden_states_positive = hidden_states_all[origin_batch_size:2 * origin_batch_size]  # index 1: cond->cfg_positive
 
             # Debug logging - tensor statistics (first cross-attention call only)
             if not hasattr(self, '_tensor_stats_logged'):

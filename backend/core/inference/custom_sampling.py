@@ -672,7 +672,10 @@ def custom_sampling_loop(
         else:
             from core.inference.spectrum_forecaster import SpectrumForecaster
             _block = spectrum_feature_mode == "block"
-            _max_cache = spectrum_max_cache if spectrum_max_cache > 0 else (6 if _block else 0)
+            # A small local window localizes the Chebyshev fit (with per-window tau
+            # renormalization in the forecaster) so extrapolation past the last anchor
+            # stays well-conditioned -- the key fix for output-mode graininess.
+            _max_cache = spectrum_max_cache if spectrum_max_cache > 0 else (6 if _block else 5)
             spectrum = SpectrumForecaster(
                 _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
                 warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,

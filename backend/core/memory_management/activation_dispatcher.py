@@ -34,13 +34,26 @@ _GB = 1024 ** 3
 
 
 @contextlib.contextmanager
-def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024):
-    """Offload large saved activations to pinned CPU during forward, restore in
-    backward. Synchronous (blocking) copies -- value-exact, so training results
-    are unchanged. ``enabled=False`` is a no-op (zero overhead).
+def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
+                        use_pinned: bool = False):
+    """Offload large saved activations to CPU during forward, restore in backward.
+    Synchronous (blocking) copies -- value-exact, so training results are unchanged.
+    ``enabled=False`` is a no-op (zero overhead).
 
     Must wrap BOTH the forward and the backward pass: ``saved_tensors_hooks``
     packs on save (forward) and unpacks on use (backward).
+
+    ``use_pinned`` defaults to False (PAGEABLE CPU) on purpose. The copies here are
+    synchronous (``non_blocking=False``), so page-locked (pinned) memory gives NO
+    transfer-speed benefit -- and PyTorch's CachingHostAllocator keeps every freed
+    pinned block cached per size and never returns it to the OS (empty_cache does not
+    free host memory). With aspect-ratio bucketing the offloaded activations take on
+    many distinct shapes (bucket x bs x per-layer x variable caption length), so the
+    pinned cache accumulates one block set per shape and "shared GPU memory" grows
+    monotonically and never shrinks for small batches -- risking a host-RAM crash.
+    Pageable CPU tensors are freed back to the normal allocator and do not accumulate
+    as shared GPU memory. Pinning only pays off with async (non_blocking=True) DMA on
+    a dedicated stream, which is a separate follow-up; re-enable use_pinned there.
     """
     if not enabled:
         yield
@@ -49,7 +62,7 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024):
     def pack(t: torch.Tensor):
         if (t.is_cuda and t.is_floating_point() and not t.is_leaf
                 and t.numel() * t.element_size() >= threshold_bytes):
-            cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=True)
+            cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=use_pinned)
             cpu.copy_(t, non_blocking=False)
             return ("cpu", cpu, t.device)
         return ("gpu", t)

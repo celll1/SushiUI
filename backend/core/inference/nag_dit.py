@@ -24,11 +24,12 @@ import torch
 
 def nag_guidance(z_pos: torch.Tensor, z_neg: torch.Tensor,
                  scale: float = 5.0, tau: float = 3.5, alpha: float = 0.25,
-                 feature_dim: int = -1) -> torch.Tensor:
+                 feature_dim: int = -1, norm_p: float = 2.0) -> torch.Tensor:
     """Apply NAG output-space guidance. z_pos/z_neg are attention outputs of the same
-    shape; the L1 norm is taken over ``feature_dim`` (the channel/head_dim axis).
+    shape; the norm is taken over ``feature_dim`` (the channel/head_dim axis).
 
-    scale = nag_scale (phi), tau = nag_tau (L1 cap), alpha = nag_alpha (blend).
+    scale = nag_scale (phi), tau = nag_tau (norm cap), alpha = nag_alpha (blend).
+    norm_p: 2 for the official Flux/DiT NAG (L2), 1 for the SDXL cross-attention variant.
     Returns a tensor with the same shape/dtype as z_pos.
     """
     if scale == 1.0:
@@ -38,8 +39,8 @@ def nag_guidance(z_pos: torch.Tensor, z_neg: torch.Tensor,
     zp = z_pos.float()
     zn = z_neg.float()
     guidance = zp * scale - zn * (scale - 1.0)
-    norm_pos = torch.norm(zp, p=1, dim=feature_dim, keepdim=True)
-    norm_g = torch.norm(guidance, p=1, dim=feature_dim, keepdim=True)
+    norm_pos = torch.norm(zp, p=norm_p, dim=feature_dim, keepdim=True)
+    norm_g = torch.norm(guidance, p=norm_p, dim=feature_dim, keepdim=True)
     s = norm_g / (norm_pos + 1e-8)
     cap = torch.minimum(s, torch.full_like(s, float(tau)))
     guidance = guidance * (cap / (s + 1e-8))

@@ -47,6 +47,11 @@ def get_extension():
     build_dir = current_dir / "build" / "lion8bit"
     build_dir.mkdir(parents=True, exist_ok=True)
 
+    # Windows: pre-activate the MSVC env so torch skips its own (fragile) vcvarsall
+    # detection and builds with the working compiler environment (shared with AdamW).
+    from .adamw8bit_cuda import _ensure_msvc_env
+    _ensure_msvc_env()
+
     print(f"[Lion8bit_CUDA] Compiling CUDA extension...")
     print(f"[Lion8bit_CUDA] Kernel: {kernel_cu}")
     print(f"[Lion8bit_CUDA] Schedule-Free Kernel: {schedulefree_kernel_cu}")

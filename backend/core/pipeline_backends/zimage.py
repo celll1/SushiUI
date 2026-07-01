@@ -922,6 +922,17 @@ class ZImageMixin:
                 seed = torch.randint(0, 2**32, (1,)).item()
             generator = torch.Generator(device=self.device).manual_seed(seed)
 
+            # Determine ancestral seed for database storage (stochastic_sampling uses internal RNG)
+            ancestral_seed = params.get("ancestral_seed", -1)
+            if ancestral_seed == -1:
+                # Generate random seed for reproducibility tracking
+                actual_ancestral_seed = random.randint(0, 2147483647)
+                print(f"[Z-Image] Generated random ancestral seed: {actual_ancestral_seed}")
+            else:
+                # Use specified seed
+                actual_ancestral_seed = ancestral_seed
+                print(f"[Z-Image] Using specified ancestral seed: {ancestral_seed}")
+
             print(f"[Z-Image] Starting inpaint generation")
             print(f"[Z-Image] Generating {width}x{height} inpainted image")
             print(f"[Z-Image] Steps: {num_inference_steps}, CFG: {guidance_scale}, Seed: {seed}, Strength: {denoising_strength}")

@@ -1548,6 +1548,29 @@ class ZImageMixin:
             from core.inference.spectrum_forecaster import build_output_forecaster
             spectrum = build_output_forecaster(spectrum_params, len(timesteps), label="Z-Image")
 
+        # First Block Cache (FBCache): dynamic per-step residual reuse. Mutually exclusive with:
+        #   (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
+        #   (b) Block Swap -- a cache hit skips layers[1:], which would desync the block-swap
+        #       rotation (the offloader expects every layer to run each step).
+        # FBCache runs only when BOTH are off. CFG is BATCHED here (one transformer forward per
+        # step over the whole [neg; pos(; nag)] batch), so a SINGLE FirstBlockCache instance is
+        # correct: the first-block residual and cached full residual span the entire batch and the
+        # same batch layout recurs every step.
+        from core.inference.fbcache import build_fbcache, fbcache_active
+        fbcache = None
+        if spectrum_params is not None and fbcache_active(spectrum_params):
+            _fb_bs = bool(spectrum_params.get("enable_block_swap", False)) and \
+                int(spectrum_params.get("blocks_to_swap", 0)) > 0
+            if spectrum is not None:
+                print("[FBCache] Z-Image disabled: Spectrum is enabled (same redundancy target)")
+            elif _fb_bs:
+                print("[FBCache] Z-Image disabled: Block Swap is enabled (layer skip desyncs rotation)")
+            else:
+                fbcache = build_fbcache(spectrum_params, label="Z-Image")
+        # Ensure no stale cache leaks into this forward stream.
+        if hasattr(transformer, "_fbcache"):
+            transformer._fbcache = None
+
         # NAG (Normalized Attention Guidance) setup. Active only when a nag-negative
         # embedding list was provided (nag_enable AND nag_scale>1, resolved at encode time).
         # When inactive, nag_negative_embeds_list is None and the loop is byte-identical.
@@ -1618,6 +1641,10 @@ class ZImageMixin:
             negpip_on = False
         if hasattr(transformer, "_negpip_request"):
             transformer._negpip_request = None
+
+        # Attach the FBCache to the transformer for the whole loop (None -> forward unchanged).
+        if fbcache is not None:
+            transformer._fbcache = fbcache
 
         # Denoising loop with progress callback
         # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
@@ -1748,6 +1775,11 @@ class ZImageMixin:
                 if negpip_on and negpip_rows_this_step is not None:
                     transformer._negpip_request = {"weight_rows": negpip_rows_this_step}
 
+                # FBCache: hand the transformer the current step index so its forward can gate
+                # warmup and index the per-step decision (mirrors how _block_offloader is attached).
+                if fbcache is not None:
+                    transformer._fbcache_step = i
+
                 # Transformer forward pass
                 # For FP8 quantized models, use autocast to handle mixed precision
                 try:
@@ -1852,6 +1884,15 @@ class ZImageMixin:
                 print(f"[Z-Image] Step {normalized_step+1}/{num_inference_steps} | t={t_norm:.3f} | CFG={current_guidance_scale:.1f}")
 
         print(f"[Z-Image] Denoising loop complete")
+
+        # FBCache cleanup: detach the cache + step so it never leaks into a later forward
+        # (e.g. VAE-adjacent or a subsequent generation reusing this transformer instance).
+        if fbcache is not None:
+            print(f"[FBCache] Z-Image summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+        if hasattr(transformer, "_fbcache"):
+            transformer._fbcache = None
+        if hasattr(transformer, "_fbcache_step"):
+            transformer._fbcache_step = None
 
         return latents
 

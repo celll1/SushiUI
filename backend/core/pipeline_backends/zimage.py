@@ -472,6 +472,8 @@ class ZImageMixin:
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 20)
             use_pinned_memory = params.get("use_pinned_memory", False)
+            block_swap_h2d_only = params.get("block_swap_h2d_only", False)
+            block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
                 # Normal mode: move entire Transformer to GPU
@@ -503,7 +505,9 @@ class ZImageMixin:
                     blocks_to_swap=blocks_to_swap,
                     device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
-                    use_pinned_memory=use_pinned_memory
+                    use_pinned_memory=use_pinned_memory,
+                    h2d_only=block_swap_h2d_only,
+                    ring_size=block_swap_ring_size,
                 )
 
                 # Attach block offloader to transformer
@@ -814,6 +818,8 @@ class ZImageMixin:
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 20)
             use_pinned_memory = params.get("use_pinned_memory", False)
+            block_swap_h2d_only = params.get("block_swap_h2d_only", False)
+            block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
                 transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
@@ -830,7 +836,9 @@ class ZImageMixin:
                     blocks_to_swap=blocks_to_swap,
                     device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
-                    use_pinned_memory=use_pinned_memory
+                    use_pinned_memory=use_pinned_memory,
+                    h2d_only=block_swap_h2d_only,
+                    ring_size=block_swap_ring_size,
                 )
                 transformer._block_offloader = block_offloader
                 block_offloader.prepare_block_devices_before_forward()
@@ -1143,6 +1151,8 @@ class ZImageMixin:
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 20)
             use_pinned_memory = params.get("use_pinned_memory", False)
+            block_swap_h2d_only = params.get("block_swap_h2d_only", False)
+            block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
                 transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
@@ -1159,7 +1169,9 @@ class ZImageMixin:
                     blocks_to_swap=blocks_to_swap,
                     device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
-                    use_pinned_memory=use_pinned_memory
+                    use_pinned_memory=use_pinned_memory,
+                    h2d_only=block_swap_h2d_only,
+                    ring_size=block_swap_ring_size,
                 )
                 transformer._block_offloader = block_offloader
                 block_offloader.prepare_block_devices_before_forward()

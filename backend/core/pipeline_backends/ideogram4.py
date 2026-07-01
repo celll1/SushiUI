@@ -339,7 +339,8 @@ class Ideogram4Mixin:
         return install_negpip(transformer, token_weights)
 
     def _ideogram4_setup_block_swap(self, transformer, blocks_to_swap: int,
-                                    use_pinned_memory: bool, device: str):
+                                    use_pinned_memory: bool, device: str,
+                                    h2d_only: bool = False, ring_size: int = 2):
         """Attach a block-swap offloader to one Ideogram 4 transformer.
 
         The transformer starts on CPU; the offloader keeps the first
@@ -366,6 +367,8 @@ class Ideogram4Mixin:
             device=torch.device(device),
             target_dtype=torch.bfloat16,
             use_pinned_memory=use_pinned_memory,
+            h2d_only=h2d_only,
+            ring_size=ring_size,
         )
         transformer._block_offloader = offloader
         offloader.prepare_block_devices_before_forward()
@@ -384,14 +387,17 @@ class Ideogram4Mixin:
         blocks_to_swap = int(params.get("blocks_to_swap", 20))
         blocks_to_swap = max(0, min(blocks_to_swap, num_layers - 1))
         use_pinned_memory = bool(params.get("use_pinned_memory", False))
+        h2d_only = bool(params.get("block_swap_h2d_only", False))
+        ring_size = int(params.get("block_swap_ring_size", 2))
 
         self._ideogram4_offloaders = []
         if enable_block_swap and blocks_to_swap > 0:
             print(f"[Ideogram4] Block swap enabled: {blocks_to_swap}/{num_layers} blocks per transformer "
-                  f"(pinned_memory={use_pinned_memory})")
+                  f"(pinned_memory={use_pinned_memory}, h2d_only={h2d_only}, ring_size={ring_size})")
             for comp_name in ("transformer", "unconditional_transformer"):
                 t = self.ideogram4_components[comp_name]
-                off = self._ideogram4_setup_block_swap(t, blocks_to_swap, use_pinned_memory, device)
+                off = self._ideogram4_setup_block_swap(t, blocks_to_swap, use_pinned_memory, device,
+                                                       h2d_only=h2d_only, ring_size=ring_size)
                 self._ideogram4_offloaders.append((comp_name, off))
         else:
             self._ideogram4_move("transformer", device)

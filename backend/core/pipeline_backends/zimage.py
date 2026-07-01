@@ -514,7 +514,8 @@ class ZImageMixin:
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
-                generator, progress_callback, step_callback
+                generator, progress_callback, step_callback,
+                spectrum_params=params
             )
 
             # Offload Transformer to CPU to free VRAM for VAE
@@ -829,7 +830,8 @@ class ZImageMixin:
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
                 generator, progress_callback, step_callback,
                 init_latents=noised_latents,
-                timesteps_override=timesteps_img2img
+                timesteps_override=timesteps_img2img,
+                spectrum_params=params
             )
 
             # Offload Transformer to CPU
@@ -1150,7 +1152,8 @@ class ZImageMixin:
                 init_latents=noised_latents,
                 timesteps_override=timesteps_inpaint,
                 mask_latent=mask_latent,
-                original_latents=original_latents
+                original_latents=original_latents,
+                spectrum_params=params
             )
 
             # Offload Transformer to CPU
@@ -1337,7 +1340,8 @@ class ZImageMixin:
         init_latents: Optional[torch.Tensor] = None,
         timesteps_override: Optional[torch.Tensor] = None,
         mask_latent: Optional[torch.Tensor] = None,
-        original_latents: Optional[torch.Tensor] = None
+        original_latents: Optional[torch.Tensor] = None,
+        spectrum_params: Optional[Dict[str, Any]] = None
     ):
         """
         Stage 2: Denoising Loop for Z-Image
@@ -1435,6 +1439,14 @@ class ZImageMixin:
         if not has_fp8_weights:
             print(f"[Z-Image] Transformer not quantized (BF16 inference)")
 
+        # Spectrum output-mode acceleration: forecast the per-step (post-CFG) velocity
+        # on skip steps to avoid the transformer evaluation. Output mode only (block mode
+        # is U-Net-specific). Disabled for too-few steps.
+        spectrum = None
+        if spectrum_params is not None:
+            from core.inference.spectrum_forecaster import build_output_forecaster
+            spectrum = build_output_forecaster(spectrum_params, len(timesteps), label="Z-Image")
+
         # Denoising loop with progress callback
         # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
         # We normalize progress to user-requested num_inference_steps for UI consistency
@@ -1474,68 +1486,75 @@ class ZImageMixin:
             # Apply CFG when guidance_scale is not 1.0 (consistent with SD/SDXL)
             apply_cfg = do_classifier_free_guidance and abs(current_guidance_scale - 1.0) > 1e-5
 
-            # Prepare model input (concat positive + negative if CFG)
-            # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
-            if has_fp8_weights:
-                # FP8 quantized: use BF16 input (autocast will handle conversion)
-                input_dtype = torch.bfloat16
+            # Spectrum: forecast the post-CFG velocity on skip steps (skip transformer + CFG)
+            spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+            if spectrum_skip:
+                noise_pred = spectrum.forecast(i)
             else:
-                # Normal case: use transformer's dtype
-                transformer_dtype = next(transformer.parameters()).dtype
-                input_dtype = transformer_dtype
-
-            if apply_cfg:
-                latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
-                # CFG input order: [negative, positive] (consistent with SD/SDXL)
-                prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
-                timestep_model_input = timestep.repeat(2)
-            else:
-                latent_model_input = latents.to(input_dtype)
-                prompt_embeds_model_input = prompt_embeds_list
-                timestep_model_input = timestep
-
-            # Add channel dimension and split into list
-            latent_model_input = latent_model_input.unsqueeze(2)
-            latent_model_input_list = list(latent_model_input.unbind(dim=0))
-
-            # Transformer forward pass
-            # For FP8 quantized models, use autocast to handle mixed precision
-            with torch.no_grad():
+                # Prepare model input (concat positive + negative if CFG)
+                # Note: For FP8 quantization, keep input in BF16/FP16, don't convert to FP8
                 if has_fp8_weights:
-                    # FP8: use autocast for automatic mixed precision
-                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    # FP8 quantized: use BF16 input (autocast will handle conversion)
+                    input_dtype = torch.bfloat16
+                else:
+                    # Normal case: use transformer's dtype
+                    transformer_dtype = next(transformer.parameters()).dtype
+                    input_dtype = transformer_dtype
+
+                if apply_cfg:
+                    latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
+                    # CFG input order: [negative, positive] (consistent with SD/SDXL)
+                    prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
+                    timestep_model_input = timestep.repeat(2)
+                else:
+                    latent_model_input = latents.to(input_dtype)
+                    prompt_embeds_model_input = prompt_embeds_list
+                    timestep_model_input = timestep
+
+                # Add channel dimension and split into list
+                latent_model_input = latent_model_input.unsqueeze(2)
+                latent_model_input_list = list(latent_model_input.unbind(dim=0))
+
+                # Transformer forward pass
+                # For FP8 quantized models, use autocast to handle mixed precision
+                with torch.no_grad():
+                    if has_fp8_weights:
+                        # FP8: use autocast for automatic mixed precision
+                        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                            model_out_list = transformer(
+                                latent_model_input_list,
+                                timestep_model_input,
+                                prompt_embeds_model_input,
+                            )[0]
+                    else:
+                        # Normal: no autocast needed
                         model_out_list = transformer(
                             latent_model_input_list,
                             timestep_model_input,
                             prompt_embeds_model_input,
                         )[0]
+
+                # Apply CFG if enabled
+                if apply_cfg:
+                    # CFG output order matches input: [negative, positive]
+                    neg_out = model_out_list[:batch_size]  # negative (uncond)
+                    pos_out = model_out_list[batch_size:]  # positive (cond)
+                    noise_pred = []
+                    for j in range(batch_size):
+                        neg = neg_out[j].float()
+                        pos = pos_out[j].float()
+                        # Standard CFG formula (consistent with SD/SDXL)
+                        # pred = uncond + guidance_scale * (cond - uncond)
+                        pred = neg + current_guidance_scale * (pos - neg)
+                        noise_pred.append(pred)
+                    noise_pred = torch.stack(noise_pred, dim=0)
                 else:
-                    # Normal: no autocast needed
-                    model_out_list = transformer(
-                        latent_model_input_list,
-                        timestep_model_input,
-                        prompt_embeds_model_input,
-                    )[0]
+                    noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
 
-            # Apply CFG if enabled
-            if apply_cfg:
-                # CFG output order matches input: [negative, positive]
-                neg_out = model_out_list[:batch_size]  # negative (uncond)
-                pos_out = model_out_list[batch_size:]  # positive (cond)
-                noise_pred = []
-                for j in range(batch_size):
-                    neg = neg_out[j].float()
-                    pos = pos_out[j].float()
-                    # Standard CFG formula (consistent with SD/SDXL)
-                    # pred = uncond + guidance_scale * (cond - uncond)
-                    pred = neg + current_guidance_scale * (pos - neg)
-                    noise_pred.append(pred)
-                noise_pred = torch.stack(noise_pred, dim=0)
-            else:
-                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
-
-            # Scheduler step (flow matching with stochastic_sampling if enabled)
-            noise_pred = -noise_pred.squeeze(2)
+                # Scheduler step (flow matching with stochastic_sampling if enabled)
+                noise_pred = -noise_pred.squeeze(2)
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
             # Predicted clean latent for preview: x_t = (1-σ)·x_0 + σ·noise,
             # v = noise - x_0, so x_0 = x_t - σ·v. σ is t_norm (the timestep

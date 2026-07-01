@@ -34,6 +34,40 @@ def _cheb_row(tau: float, num_basis: int, device, dtype) -> torch.Tensor:
     return row
 
 
+def build_output_forecaster(params, num_steps, label=""):
+    """Build an output-mode SpectrumForecaster from generation params, or return None.
+
+    Shared entry point for the DiT backends (Z-Image / FLUX.2 / Anima / Lens / Ideogram4
+    / MiniT2I), which forecast their final per-step model output (velocity/noise). Honors
+    the same spectrum_* params and auto-disable rules as the SD/SDXL path. block mode is
+    U-Net-only, so this always uses output mode (logs if block was requested). Defaults the
+    sliding window to a small local size for extrapolation stability.
+    """
+    if not params.get("spectrum_enable", False):
+        return None
+    warmup = int(params.get("spectrum_warmup_steps", 3))
+    if num_steps < warmup + 3:
+        print(f"[Spectrum] {label}: requested but disabled ({num_steps} steps < warmup+3; "
+              f"little benefit at low step counts)")
+        return None
+    if params.get("spectrum_feature_mode", "output") == "block":
+        print(f"[Spectrum] {label}: block mode is U-Net (SD/SDXL) only; using output mode on this DiT model")
+    max_cache = params.get("spectrum_max_cache", 0)
+    fc = SpectrumForecaster(
+        int(num_steps),
+        num_basis=int(params.get("spectrum_m", 4)),
+        lam=float(params.get("spectrum_lam", 0.1)),
+        w=float(params.get("spectrum_w", 0.5)),
+        warmup_steps=warmup,
+        window_size=int(params.get("spectrum_window_size", 4)),
+        flex_window=float(params.get("spectrum_flex_window", 0.75)),
+        tail_fraction=float(params.get("spectrum_tail", 0.12)),
+        max_cache=int(max_cache) if int(max_cache) > 0 else 5,
+    )
+    print(f"[Spectrum] {label}: enabled (output mode) {len(fc.anchors)}/{num_steps} actual passes")
+    return fc
+
+
 def build_anchor_schedule(num_steps: int, warmup_steps: int, window_size: int,
                           flex_window: float, tail_fraction: float = 0.12):
     """Decide which step indices are anchors (actual forward) vs forecast (skipped).

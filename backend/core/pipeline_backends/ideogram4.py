@@ -188,6 +188,65 @@ class Ideogram4Mixin:
         cond["neg_llm_features"] = cond["neg_llm_features"].to(dtype)
         return cond
 
+    @torch.no_grad()
+    def _ideogram4_encode_nag_negative(self, params, cfg, cond, device, dtype):
+        """Encode the NAG-negative prompt into a packed ``nag_llm_features`` tensor and store
+        it on ``cond`` — only when NAG is active. Byte-identical (returns early) otherwise.
+
+        NAG is gated on ``nag_enable`` AND ``nag_scale > 1`` (nag-negative defaults to the
+        empty prompt like FLUX.2). The negative features share the positive prompt's packed
+        layout (same ``encode_prompt`` path), so the conditional transformer can run a
+        doubled ``[positive; nag_negative]`` text batch.
+        """
+        from core.models.ideogram4.ideogram4_pipeline_ops import encode_prompt
+
+        nag_enable = bool(params.get("nag_enable", False))
+        nag_scale = float(params.get("nag_scale", 5.0))
+        if not (nag_enable and nag_scale > 1.0):
+            return None
+        nag_neg_prompt = params.get("nag_negative_prompt", "") or params.get("negative_prompt", "") or ""
+
+        self._ideogram4_move("text_encoder", device)
+        text_encoder = self.ideogram4_components["text_encoder"]
+        tokenizer = self.ideogram4_components["tokenizer"]
+        nag_cond = encode_prompt(
+            text_encoder, tokenizer, nag_neg_prompt,
+            grid_h=cfg["grid_h"], grid_w=cfg["grid_w"],
+            max_sequence_length=cfg["max_sequence_length"], device=device,
+        )
+        self._ideogram4_move("text_encoder", "cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        # Packed features with the nag-negative TEXT region (image region stays zero-padded),
+        # same shape/layout as cond["llm_features"] so it feeds the doubled cond forward.
+        cond["nag_llm_features"] = nag_cond["llm_features"].to(dtype)
+        return {"nag_scale": nag_scale,
+                "nag_tau": float(params.get("nag_tau", 2.5)),
+                "nag_alpha": float(params.get("nag_alpha", 0.25))}
+
+    def _ideogram4_wrap_nag(self, transformer, nag_cfg):
+        """Wrap the conditional transformer with the NAG wrapper (in place of the raw
+        transformer for the denoise loop). Returns the wrapper, or the transformer unchanged
+        when NAG is inactive."""
+        if nag_cfg is None:
+            return transformer
+        from core.inference.nag_ideogram4 import Ideogram4NAGWrapper
+        print(f"[Ideogram4] NAG enabled: scale={nag_cfg['nag_scale']}, "
+              f"tau={nag_cfg['nag_tau']}, alpha={nag_cfg['nag_alpha']}")
+        return Ideogram4NAGWrapper(
+            transformer,
+            nag_scale=nag_cfg["nag_scale"], nag_tau=nag_cfg["nag_tau"], nag_alpha=nag_cfg["nag_alpha"],
+        )
+
+    @staticmethod
+    def _ideogram4_unwrap_nag(transformer):
+        """Restore the original attention processors if ``transformer`` is a NAG wrapper.
+        Returns the underlying transformer."""
+        if transformer.__class__.__name__ == "Ideogram4NAGWrapper":
+            transformer.restore()
+            return transformer.transformer
+        return transformer
+
     def _ideogram4_setup_block_swap(self, transformer, blocks_to_swap: int,
                                     use_pinned_memory: bool, device: str):
         """Attach a block-swap offloader to one Ideogram 4 transformer.
@@ -319,9 +378,12 @@ class Ideogram4Mixin:
                 cfg["grid_h"], cfg["grid_w"], dtype=torch.float32, device=device, seed=cfg["seed"],
             )
 
+            nag_cfg = self._ideogram4_encode_nag_negative(params, cfg, cond, device, dtype)
+
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
+            transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             try:
                 latents = denoise_loop(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -333,6 +395,7 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                 )
             finally:
+                transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
                 self._ideogram4_unstage_transformers()
@@ -390,9 +453,12 @@ class Ideogram4Mixin:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+            nag_cfg = self._ideogram4_encode_nag_negative(params, cfg, cond, device, dtype)
+
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
+            transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             try:
                 latents = denoise_loop_img2img(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -405,6 +471,7 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                 )
             finally:
+                transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
                 self._ideogram4_unstage_transformers()
@@ -476,9 +543,12 @@ class Ideogram4Mixin:
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32,
             )
 
+            nag_cfg = self._ideogram4_encode_nag_negative(params, cfg, cond, device, dtype)
+
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
+            transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             try:
                 latents = denoise_loop_inpaint(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -491,6 +561,7 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                 )
             finally:
+                transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
                 self._ideogram4_unstage_transformers()

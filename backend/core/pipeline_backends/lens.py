@@ -221,6 +221,97 @@ class LensMixin:
             print(f"[Lens] Warning: could not move {component_name} to {target_device}: {e}")
         return comp
 
+    def _lens_setup_block_swap(self, transformer, blocks_to_swap: int,
+                               use_pinned_memory: bool, device: str,
+                               h2d_only: bool = False, ring_size: int = 2):
+        """Attach a block-swap offloader to the Lens transformer.
+
+        The offloader keeps the first (num_layers - blocks_to_swap) blocks
+        resident on GPU and streams the rest per forward. Non-block (auxiliary)
+        modules are moved to GPU here since the shared offloader only auto-moves
+        Z-Image-named aux modules.
+        """
+        from core.memory_management import create_block_offloader_for_model
+
+        # Auxiliary modules (everything except the swappable block list) stay on GPU.
+        for name, child in transformer.named_children():
+            if name != "transformer_blocks":
+                child.to(device)
+        for p in transformer.parameters(recurse=False):
+            if p.device.type != "cuda":
+                p.data = p.data.to(device)
+        for b in transformer.buffers(recurse=False):
+            if b.device.type != "cuda":
+                b.data = b.data.to(device)
+
+        offloader = create_block_offloader_for_model(
+            transformer=transformer,
+            blocks_to_swap=blocks_to_swap,
+            device=torch.device(device),
+            target_dtype=torch.bfloat16,
+            use_pinned_memory=use_pinned_memory,
+            h2d_only=h2d_only,
+            ring_size=ring_size,
+            block_list=transformer.transformer_blocks,
+        )
+        transformer._block_offloader = offloader
+        offloader.prepare_block_devices_before_forward()
+        return offloader
+
+    def _lens_stage_transformer(self, params: Dict[str, Any], device: str,
+                                transformer_quantization: Optional[str]):
+        """Place the Lens transformer on GPU for denoising.
+
+        When block swap is enabled, the transformer streams its blocks (per-model
+        offloader) instead of being fully resident. Otherwise the whole
+        transformer is moved to GPU (default path, unchanged).
+        Returns the (possibly quantized) transformer from self.lens_components.
+        """
+        enable_block_swap = bool(params.get("enable_block_swap", False))
+        transformer = self.lens_components["transformer"]
+        num_layers = len(transformer.transformer_blocks)
+        blocks_to_swap = int(params.get("blocks_to_swap", 20))
+        blocks_to_swap = max(0, min(blocks_to_swap, num_layers - 1))
+        use_pinned_memory = bool(params.get("use_pinned_memory", False))
+        h2d_only = bool(params.get("block_swap_h2d_only", False))
+        ring_size = int(params.get("block_swap_ring_size", 2))
+
+        self._lens_offloader = None
+        if enable_block_swap and blocks_to_swap > 0:
+            print(f"[Lens] Block swap enabled: {blocks_to_swap}/{num_layers} blocks "
+                  f"(pinned_memory={use_pinned_memory}, h2d_only={h2d_only}, ring_size={ring_size})")
+            # Optional quantization is applied in place; the transformer stays on CPU
+            # and only its aux modules + resident blocks are staged to GPU by the offloader.
+            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self.lens_components["transformer"]
+            self._lens_offloader = self._lens_setup_block_swap(
+                transformer, blocks_to_swap, use_pinned_memory, device,
+                h2d_only=h2d_only, ring_size=ring_size,
+            )
+        else:
+            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self.lens_components["transformer"]
+        return transformer
+
+    def _lens_unstage_transformer(self):
+        """Tear down any block-swap offloader, then return the transformer to CPU."""
+        transformer = (self.lens_components or {}).get("transformer")
+        offloader = getattr(self, "_lens_offloader", None)
+        if transformer is not None and hasattr(transformer, "_block_offloader"):
+            try:
+                delattr(transformer, "_block_offloader")
+            except Exception:
+                pass
+        if offloader is not None:
+            cleanup = getattr(offloader, "cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+        self._lens_offloader = None
+        self._lens_move("transformer", "cpu")
+
     def _generate_txt2img_lens(self, params: Dict[str, Any],
                                 progress_callback=None, step_callback=None,
                                 ) -> tuple:
@@ -313,7 +404,7 @@ class LensMixin:
 
             # Stage 3: Denoising
             print("[Lens] Stage 3: Denoising...")
-            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self._lens_stage_transformer(params, device, transformer_quantization)
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -333,7 +424,7 @@ class LensMixin:
             finally:
                 if applied_lora_count:
                     self._unload_lora_lens()
-            self._lens_move("transformer", "cpu")
+            self._lens_unstage_transformer()
             del encoder_features, encoder_mask
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -363,6 +454,14 @@ class LensMixin:
                 import gc as _gc
                 self.lens_components["text_encoder"] = None
                 _gc.collect()
+            # Strip any leftover block-swap offloader (e.g. if setup/denoise raised mid-way).
+            _t = (self.lens_components or {}).get("transformer")
+            if _t is not None and hasattr(_t, "_block_offloader"):
+                try:
+                    delattr(_t, "_block_offloader")
+                except Exception:
+                    pass
+            self._lens_offloader = None
             for _comp in ("transformer", "vae"):
                 try:
                     self._lens_move(_comp, "cpu")
@@ -466,7 +565,7 @@ class LensMixin:
 
             # Stage 3: Denoising (SDEdit)
             print("[Lens] Stage 3: Denoising...")
-            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self._lens_stage_transformer(params, device, transformer_quantization)
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -487,7 +586,7 @@ class LensMixin:
             finally:
                 if applied_lora_count:
                     self._unload_lora_lens()
-            self._lens_move("transformer", "cpu")
+            self._lens_unstage_transformer()
             del encoder_features, encoder_mask, init_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -515,6 +614,14 @@ class LensMixin:
                 import gc as _gc
                 self.lens_components["text_encoder"] = None
                 _gc.collect()
+            # Strip any leftover block-swap offloader (e.g. if setup/denoise raised mid-way).
+            _t = (self.lens_components or {}).get("transformer")
+            if _t is not None and hasattr(_t, "_block_offloader"):
+                try:
+                    delattr(_t, "_block_offloader")
+                except Exception:
+                    pass
+            self._lens_offloader = None
             for _comp in ("transformer", "vae"):
                 try:
                     self._lens_move(_comp, "cpu")
@@ -631,7 +738,7 @@ class LensMixin:
 
             # Stage 3: Denoising with repaint
             print("[Lens] Stage 3: Denoising (repaint)...")
-            transformer = self._lens_move("transformer", device, transformer_quantization)
+            transformer = self._lens_stage_transformer(params, device, transformer_quantization)
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -653,7 +760,7 @@ class LensMixin:
             finally:
                 if applied_lora_count:
                     self._unload_lora_lens()
-            self._lens_move("transformer", "cpu")
+            self._lens_unstage_transformer()
             del encoder_features, encoder_mask, init_latents, mask_latent
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -681,6 +788,14 @@ class LensMixin:
                 import gc as _gc
                 self.lens_components["text_encoder"] = None
                 _gc.collect()
+            # Strip any leftover block-swap offloader (e.g. if setup/denoise raised mid-way).
+            _t = (self.lens_components or {}).get("transformer")
+            if _t is not None and hasattr(_t, "_block_offloader"):
+                try:
+                    delattr(_t, "_block_offloader")
+                except Exception:
+                    pass
+            self._lens_offloader = None
             for _comp in ("transformer", "vae"):
                 try:
                     self._lens_move(_comp, "cpu")

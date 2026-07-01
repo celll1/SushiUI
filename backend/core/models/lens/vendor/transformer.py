@@ -366,10 +366,17 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         encoder_hidden_states = self.txt_in(encoder_hidden_states)
         temb = self.time_text_embed(timestep, hidden_states)
         image_rotary_emb = self.pos_embed(img_shapes, [text_seq_len], device=hidden_states.device)
-        for block in self.transformer_blocks:
+        # Optional block-swap offloader (set by pipeline lens.py for VRAM optimization):
+        # streams each block's weights between CPU and GPU around its forward.
+        offloader = getattr(self, "_block_offloader", None)
+        for block_idx, block in enumerate(self.transformer_blocks):
+            if offloader is not None:
+                offloader.wait_for_block(block_idx)
             encoder_hidden_states, hidden_states = block(
                 hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states,
                 temb=temb, image_rotary_emb=image_rotary_emb, attention_mask=attention_mask)
+            if offloader is not None:
+                offloader.submit_move_blocks_forward(block_idx)
         hidden_states = self.norm_out(hidden_states, temb)
         return self.proj_out(hidden_states)
 

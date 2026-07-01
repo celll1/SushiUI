@@ -133,8 +133,8 @@ pinned）で真の async DMA。プリフェッチあり。
 
 | 機能 | FLUX.2 | Z-Image | Ideogram4 | 判定 |
 |---|---|---|---|---|
-| **NAG** | ✅ **併用可**（統合 forward、`flux2.py` の排他ゲートは NegPip のみ） | 併用可 | 併用可 | ✅ 全アーキで NAG × block swap 併用可 |
-| **NegPip** | 排他（`flux2.py` で block swap 強制 OFF、NAG のみ解除） | 併用可 | 併用可 | ⚠️ FLUX.2 の NegPip×swap は後続 |
+| **NAG** | ✅ **併用可**（統合 forward） | 併用可 | 併用可 | ✅ 全アーキで NAG × block swap 併用可 |
+| **NegPip** | ✅ **併用可**（統合 forward、排他ゲート撤去） | 併用可 | 併用可 | ✅ 全アーキで NegPip × block swap 併用可 |
 | **Spectrum** | SAFE | SAFE | SAFE | forward 丸ごと skip → swap cycle も atomically skip |
 | **FP8 量子化** | SAFE | SAFE | SAFE | fp8 Linear を dtype 非依存で stream + autocast |
 | **torchao uint** | ⚠️ RISK | ⚠️ RISK | ⚠️ RISK | subclass weight が `"Linear"` filter を外れ**黙って未 offload**（クラッシュ無し） |
@@ -145,8 +145,13 @@ pinned）で真の async DMA。プリフェッチあり。
   `Flux2BlockSwapWrapper.forward` を単一 forward host に統合し、NAG バッチ処理を同ループに載せた
   （他5アーキと同じ「swap ループ1本 + NAG が上に載る」構造へ収束）。詳細:
   [[FLUX2_NAG_BLOCKSWAP_UNIFY_DESIGN.md]]。
-- **NegPip × block swap は FLUX.2 で引き続き排他**（`Flux2NegPipWrapper` は forward 再実装のまま）。
-  同じ統合ラッパーに NegPip processor 経路を足せば同様に解決可能（後続 PR）。
+- **【更新済】NegPip × block swap も FLUX.2 で併用可能に**（commit `4d47beb`）。`Flux2NegPipWrapper` を
+  NAG 同様に薄いヘルパー化し統合 forward に委譲、排他ゲートを撤去。NegPip はバッチ倍化しない
+  （`do_nag=False`）ため、signed-V processor が swap フック入りループ上でそのまま動作する。
+  → **FLUX.2 で NAG / NegPip / NAG+NegPip すべて block swap と併用可能**。
+- 既知の軽微な差異（到達不能）: NegPip-only 経路の controlnet single-block residual が image スライスでは
+  なく whole-stream 加算（現行 swap-only パスと同一・byte 一致）。FLUX.2 は controlnet を渡さないため
+  観測されない dead code。将来 FLUX.2 controlnet を配線する場合は要修正。
 - torchao uint のみ未ガード（silent under-offload）。フィルタを class 名から
   「`.weight` を持つ量子化 Linear」を含める形へ拡張するか、明示的にガードすべき。
 

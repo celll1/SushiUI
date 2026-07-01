@@ -507,6 +507,19 @@ class Flux2Mixin:
                 negative_prompt_embeds = None
                 negative_text_ids = None
 
+            # NAG (Normalized Attention Guidance): encode the nag-negative prompt so image
+            # tokens can be guided away from it in attention space. Works with CFG (text
+            # batch [cfg_neg, cfg_pos, nag_neg]) and distilled (text [pos, nag_neg]).
+            nag_active = params.get("nag_enable", False) and params.get("nag_scale", 5.0) > 1.0
+            nag_negative_prompt_embeds = None
+            nag_negative_text_ids = None
+            nag_wrapper = None
+            if nag_active:
+                nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
+                nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
+                )
+
             # Offload text encoder to CPU
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
@@ -565,6 +578,13 @@ class Flux2Mixin:
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
+            # NAG needs a standalone forward with all weights on GPU; disable Block Swap
+            # when NAG is active (combined NAG+Block Swap is a separate follow-up).
+            if nag_active and enable_block_swap and blocks_to_swap > 0:
+                print("[FLUX.2] NAG enabled -> disabling Block Swap for this run (NAG+Block Swap not supported yet)")
+                enable_block_swap = False
+                blocks_to_swap = 0
+
             if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
@@ -597,6 +617,21 @@ class Flux2Mixin:
                 for block in transformer.single_transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
+
+                # NAG: swap in the standalone NAG forward wrapper (installs NAG attention
+                # processors; independent of block swap, which is disabled above when NAG
+                # is active). Restored after the loop.
+                if nag_active:
+                    from core.inference.nag_flux2 import Flux2NAGWrapper
+                    nag_wrapper = Flux2NAGWrapper(
+                        transformer,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print(f"[FLUX.2] NAG enabled: scale={params.get('nag_scale', 5.0)}, "
+                          f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
 
             # Prepare timesteps
             image_seq_len = latents.shape[1]
@@ -665,6 +700,10 @@ class Flux2Mixin:
                         timestep_doubled = torch.cat([timestep, timestep], dim=0)
                         prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                         text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        if nag_wrapper is not None:
+                            # CFG+NAG: text batch [cfg_neg, cfg_pos, nag_neg]; image stays 2x
+                            prompt_embeds_combined = torch.cat([prompt_embeds_combined, nag_negative_prompt_embeds], dim=0)
+                            text_ids_combined = torch.cat([text_ids_combined, nag_negative_text_ids], dim=0)
                         latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                         # Single forward pass for both unconditional and conditional
@@ -708,6 +747,12 @@ class Flux2Mixin:
                             device=latent_model_input.device,
                             dtype=latent_model_input.dtype
                         )
+                        # NAG (distilled): text batch [pos, nag_neg]; image stays 1x
+                        _nag_enc = prompt_embeds
+                        _nag_tids = text_ids
+                        if nag_wrapper is not None:
+                            _nag_enc = torch.cat([prompt_embeds, nag_negative_prompt_embeds], dim=0)
+                            _nag_tids = torch.cat([text_ids, nag_negative_text_ids], dim=0)
                         # For FP8 quantized models, use autocast for mixed precision
                         with torch.no_grad():
                             if transformer_has_fp8:
@@ -716,8 +761,8 @@ class Flux2Mixin:
                                         hidden_states=latent_model_input,
                                         timestep=timestep / 1000,
                                         guidance=guidance_vec,
-                                        encoder_hidden_states=prompt_embeds,
-                                        txt_ids=text_ids,
+                                        encoder_hidden_states=_nag_enc,
+                                        txt_ids=_nag_tids,
                                         img_ids=latent_image_ids,
                                         return_dict=False,
                                     )[0]
@@ -726,8 +771,8 @@ class Flux2Mixin:
                                     hidden_states=latent_model_input,
                                     timestep=timestep / 1000,
                                     guidance=guidance_vec,
-                                    encoder_hidden_states=prompt_embeds,
-                                    txt_ids=text_ids,
+                                    encoder_hidden_states=_nag_enc,
+                                    txt_ids=_nag_tids,
                                     img_ids=latent_image_ids,
                                     return_dict=False,
                                 )[0]
@@ -773,6 +818,8 @@ class Flux2Mixin:
             # Cleanup block offloader and offload transformer to CPU
             if block_offloader is not None:
                 block_offloader.cleanup()
+            if nag_wrapper is not None:
+                nag_wrapper.restore()  # restore original attention processors
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
@@ -1237,6 +1284,19 @@ class Flux2Mixin:
                 negative_prompt_embeds = None
                 negative_text_ids = None
 
+            # NAG (Normalized Attention Guidance): encode the nag-negative prompt so image
+            # tokens can be guided away from it in attention space. Works with CFG (text
+            # batch [cfg_neg, cfg_pos, nag_neg]) and distilled (text [pos, nag_neg]).
+            nag_active = params.get("nag_enable", False) and params.get("nag_scale", 5.0) > 1.0
+            nag_negative_prompt_embeds = None
+            nag_negative_text_ids = None
+            nag_wrapper = None
+            if nag_active:
+                nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
+                nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
+                )
+
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
 
@@ -1324,6 +1384,13 @@ class Flux2Mixin:
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
+            # NAG needs a standalone forward with all weights on GPU; disable Block Swap
+            # when NAG is active (combined NAG+Block Swap is a separate follow-up).
+            if nag_active and enable_block_swap and blocks_to_swap > 0:
+                print("[FLUX.2] NAG enabled -> disabling Block Swap for this run (NAG+Block Swap not supported yet)")
+                enable_block_swap = False
+                blocks_to_swap = 0
+
             if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
@@ -1349,6 +1416,21 @@ class Flux2Mixin:
                 for block in transformer.single_transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
+
+                # NAG: swap in the standalone NAG forward wrapper (installs NAG attention
+                # processors; independent of block swap, which is disabled above when NAG
+                # is active). Restored after the loop.
+                if nag_active:
+                    from core.inference.nag_flux2 import Flux2NAGWrapper
+                    nag_wrapper = Flux2NAGWrapper(
+                        transformer,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print(f"[FLUX.2] NAG enabled: scale={params.get('nag_scale', 5.0)}, "
+                          f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
 
             scheduler.set_begin_index(t_start)
 
@@ -1405,6 +1487,10 @@ class Flux2Mixin:
                         timestep_doubled = torch.cat([timestep, timestep], dim=0)
                         prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                         text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        if nag_wrapper is not None:
+                            # CFG+NAG: text batch [cfg_neg, cfg_pos, nag_neg]; image stays 2x
+                            prompt_embeds_combined = torch.cat([prompt_embeds_combined, nag_negative_prompt_embeds], dim=0)
+                            text_ids_combined = torch.cat([text_ids_combined, nag_negative_text_ids], dim=0)
                         latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                         # Single forward pass for both unconditional and conditional
@@ -1448,6 +1534,12 @@ class Flux2Mixin:
                             device=latent_model_input.device,
                             dtype=latent_model_input.dtype
                         )
+                        # NAG (distilled): text batch [pos, nag_neg]; image stays 1x
+                        _nag_enc = prompt_embeds
+                        _nag_tids = text_ids
+                        if nag_wrapper is not None:
+                            _nag_enc = torch.cat([prompt_embeds, nag_negative_prompt_embeds], dim=0)
+                            _nag_tids = torch.cat([text_ids, nag_negative_text_ids], dim=0)
                         # For FP8 quantized models, use autocast for mixed precision
                         with torch.no_grad():
                             if transformer_has_fp8:
@@ -1456,8 +1548,8 @@ class Flux2Mixin:
                                         hidden_states=latent_model_input,
                                         timestep=timestep / 1000,
                                         guidance=guidance_vec,
-                                        encoder_hidden_states=prompt_embeds,
-                                        txt_ids=text_ids,
+                                        encoder_hidden_states=_nag_enc,
+                                        txt_ids=_nag_tids,
                                         img_ids=latent_image_ids,
                                         return_dict=False,
                                     )[0]
@@ -1466,8 +1558,8 @@ class Flux2Mixin:
                                     hidden_states=latent_model_input,
                                     timestep=timestep / 1000,
                                     guidance=guidance_vec,
-                                    encoder_hidden_states=prompt_embeds,
-                                    txt_ids=text_ids,
+                                    encoder_hidden_states=_nag_enc,
+                                    txt_ids=_nag_tids,
                                     img_ids=latent_image_ids,
                                     return_dict=False,
                                 )[0]
@@ -1495,6 +1587,8 @@ class Flux2Mixin:
             # Cleanup block offloader and offload transformer to CPU (img2img)
             if block_offloader is not None:
                 block_offloader.cleanup()
+            if nag_wrapper is not None:
+                nag_wrapper.restore()  # restore original attention processors
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
@@ -1671,6 +1765,19 @@ class Flux2Mixin:
                 negative_prompt_embeds = None
                 negative_text_ids = None
 
+            # NAG (Normalized Attention Guidance): encode the nag-negative prompt so image
+            # tokens can be guided away from it in attention space. Works with CFG (text
+            # batch [cfg_neg, cfg_pos, nag_neg]) and distilled (text [pos, nag_neg]).
+            nag_active = params.get("nag_enable", False) and params.get("nag_scale", 5.0) > 1.0
+            nag_negative_prompt_embeds = None
+            nag_negative_text_ids = None
+            nag_wrapper = None
+            if nag_active:
+                nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
+                nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
+                    text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
+                )
+
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
 
@@ -1779,6 +1886,13 @@ class Flux2Mixin:
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
+            # NAG needs a standalone forward with all weights on GPU; disable Block Swap
+            # when NAG is active (combined NAG+Block Swap is a separate follow-up).
+            if nag_active and enable_block_swap and blocks_to_swap > 0:
+                print("[FLUX.2] NAG enabled -> disabling Block Swap for this run (NAG+Block Swap not supported yet)")
+                enable_block_swap = False
+                blocks_to_swap = 0
+
             if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
@@ -1804,6 +1918,21 @@ class Flux2Mixin:
                 for block in transformer.single_transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
+
+                # NAG: swap in the standalone NAG forward wrapper (installs NAG attention
+                # processors; independent of block swap, which is disabled above when NAG
+                # is active). Restored after the loop.
+                if nag_active:
+                    from core.inference.nag_flux2 import Flux2NAGWrapper
+                    nag_wrapper = Flux2NAGWrapper(
+                        transformer,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print(f"[FLUX.2] NAG enabled: scale={params.get('nag_scale', 5.0)}, "
+                          f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
 
             scheduler.set_begin_index(t_start)
 
@@ -1860,6 +1989,10 @@ class Flux2Mixin:
                         timestep_doubled = torch.cat([timestep, timestep], dim=0)
                         prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
                         text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        if nag_wrapper is not None:
+                            # CFG+NAG: text batch [cfg_neg, cfg_pos, nag_neg]; image stays 2x
+                            prompt_embeds_combined = torch.cat([prompt_embeds_combined, nag_negative_prompt_embeds], dim=0)
+                            text_ids_combined = torch.cat([text_ids_combined, nag_negative_text_ids], dim=0)
                         latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
                         # Single forward pass for both unconditional and conditional
@@ -1903,6 +2036,12 @@ class Flux2Mixin:
                             device=latent_model_input.device,
                             dtype=latent_model_input.dtype
                         )
+                        # NAG (distilled): text batch [pos, nag_neg]; image stays 1x
+                        _nag_enc = prompt_embeds
+                        _nag_tids = text_ids
+                        if nag_wrapper is not None:
+                            _nag_enc = torch.cat([prompt_embeds, nag_negative_prompt_embeds], dim=0)
+                            _nag_tids = torch.cat([text_ids, nag_negative_text_ids], dim=0)
                         # For FP8 quantized models, use autocast for mixed precision
                         with torch.no_grad():
                             if transformer_has_fp8:
@@ -1911,8 +2050,8 @@ class Flux2Mixin:
                                         hidden_states=latent_model_input,
                                         timestep=timestep / 1000,
                                         guidance=guidance_vec,
-                                        encoder_hidden_states=prompt_embeds,
-                                        txt_ids=text_ids,
+                                        encoder_hidden_states=_nag_enc,
+                                        txt_ids=_nag_tids,
                                         img_ids=latent_image_ids,
                                         return_dict=False,
                                     )[0]
@@ -1921,8 +2060,8 @@ class Flux2Mixin:
                                     hidden_states=latent_model_input,
                                     timestep=timestep / 1000,
                                     guidance=guidance_vec,
-                                    encoder_hidden_states=prompt_embeds,
-                                    txt_ids=text_ids,
+                                    encoder_hidden_states=_nag_enc,
+                                    txt_ids=_nag_tids,
                                     img_ids=latent_image_ids,
                                     return_dict=False,
                                 )[0]
@@ -1963,6 +2102,8 @@ class Flux2Mixin:
             # Cleanup block offloader and offload transformer to CPU (inpaint)
             if block_offloader is not None:
                 block_offloader.cleanup()
+            if nag_wrapper is not None:
+                nag_wrapper.restore()  # restore original attention processors
             transformer.to("cpu")
             torch.cuda.empty_cache()
 

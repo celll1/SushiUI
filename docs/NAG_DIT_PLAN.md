@@ -44,6 +44,27 @@ Norm is **L2** (p=2), tau default 2.5 (nag_dit.nag_guidance(..., norm_p=2)).
 Extra cost ≈ one extra attention per block (NAG's "+1 attention"), on anchor steps only
 when combined with Spectrum.
 
+## CFG + NAG (based on how SDXL already does it)
+SDXL's canonical CFG+NAG (custom_sampling.py + nag_processor.py):
+- latent(image) batch = 2 `[uncond, cond]`; text(context) batch = 3
+  `[cfg_negative, cfg_positive, nag_negative]`.
+- The attention expands the query `[uncond, cond]` -> `[uncond, cond, cond]` to pair with
+  the 3 texts. Results: idx0 = uncond->cfg_neg, idx1 = cond->cfg_pos, idx2 = cond->nag_neg.
+- NAG on the COND query only: `A_cond = nag_guidance(idx1, idx2)`, `A_uncond = idx0`.
+- Output `[A_uncond, A_cond]` (batch 2) -> standard CFG combine.
+
+Generalize to DiT (unified batch-ratio logic in one processor):
+- **distilled** (no CFG): image batch B, text batch 2B `[pos, nag_neg]`. Expand image
+  B->2B (duplicate). NAG on all: `guided = nag(img_pos, img_neg)`. Image out = B.
+- **CFG**: image batch 2k `[uncond, cond]`, text batch 3k `[cfg_neg, cfg_pos, nag_neg]`.
+  Expand image `[uncond, cond]` -> `[uncond, cond, cond]` (3k). NAG cond-only:
+  `A_cond = nag(cond->cfg_pos, cond->nag_neg)`, `A_uncond = uncond->cfg_neg`. Image out = 2k.
+- Detect: `txt_b == 2*img_b` -> distilled (k=img_b); `2*txt_b == 3*img_b` -> CFG (k=img_b/2).
+- One SDPA over the full (text_b) batch (each element attends within its own [text;image]),
+  then slice image portions per group and reduce. Image out batch stays = img_b.
+- temb (from the shared timestep) is batch 1 so it broadcasts to both the image (img_b)
+  and text (txt_b) modulation.
+
 ## Port note (our Flux.2 != official Flux.1)
 The official targets diffusers Flux.1 (`FluxAttnProcessor2_0`). Our repo uses
 `transformer_flux2.py` (Flux.2) with `Flux2AttnProcessor` (dual-stream) +

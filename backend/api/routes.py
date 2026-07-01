@@ -305,6 +305,8 @@ async def generate_txt2img(
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(20),
     use_pinned_memory: bool = Form(False),
+    block_swap_h2d_only: bool = Form(GENERATION_DEFAULTS["block_swap_h2d_only"]),
+    block_swap_ring_size: int = Form(GENERATION_DEFAULTS["block_swap_ring_size"]),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
@@ -455,6 +457,8 @@ async def generate_txt2img(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "block_swap_h2d_only": block_swap_h2d_only,
+            "block_swap_ring_size": block_swap_ring_size,
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
@@ -1092,6 +1096,8 @@ async def generate_img2img(
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(GENERATION_DEFAULTS["blocks_to_swap"]),
     use_pinned_memory: bool = Form(False),
+    block_swap_h2d_only: bool = Form(GENERATION_DEFAULTS["block_swap_h2d_only"]),
+    block_swap_ring_size: int = Form(GENERATION_DEFAULTS["block_swap_ring_size"]),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
@@ -1254,6 +1260,8 @@ async def generate_img2img(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "block_swap_h2d_only": block_swap_h2d_only,
+            "block_swap_ring_size": block_swap_ring_size,
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
@@ -1479,6 +1487,8 @@ async def generate_inpaint(
     enable_block_swap: bool = Form(False),
     blocks_to_swap: int = Form(GENERATION_DEFAULTS["blocks_to_swap"]),
     use_pinned_memory: bool = Form(False),
+    block_swap_h2d_only: bool = Form(GENERATION_DEFAULTS["block_swap_h2d_only"]),
+    block_swap_ring_size: int = Form(GENERATION_DEFAULTS["block_swap_ring_size"]),
     use_tipo: bool = Form(False),
     tipo_config: str = Form("{}"),  # JSON string of TIPO config
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
@@ -1660,6 +1670,8 @@ async def generate_inpaint(
             "enable_block_swap": enable_block_swap,
             "blocks_to_swap": blocks_to_swap,
             "use_pinned_memory": use_pinned_memory,
+            "block_swap_h2d_only": block_swap_h2d_only,
+            "block_swap_ring_size": block_swap_ring_size,
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }

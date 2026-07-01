@@ -83,6 +83,8 @@ const DEFAULT_PARAMS: GenerationParams = {
   enable_block_swap: false,
   blocks_to_swap: 20,
   use_pinned_memory: false,
+  block_swap_h2d_only: false,
+  block_swap_ring_size: 2,
   attention_type: "normal",
   vision_encoder_path: null,
 };
@@ -2674,12 +2676,37 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       Use Pinned Memory (faster transfer, more RAM)
                     </label>
                   </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="block_swap_h2d_only"
+                      checked={params.block_swap_h2d_only || false}
+                      onChange={(e) => setParams({ ...params, block_swap_h2d_only: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="block_swap_h2d_only" className="text-xs text-gray-300">
+                      H2D-only (no device-to-host eviction of read-only weights)
+                    </label>
+                  </div>
+                  {params.block_swap_h2d_only && (
+                    <Slider
+                      label="Ring Size (GPU weight buffer slots)"
+                      min={1}
+                      max={4}
+                      step={1}
+                      value={params.block_swap_ring_size || 2}
+                      onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
+                    />
+                  )}
                   <div className="text-xs text-blue-200">
                     <p>
                       <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
                     </p>
                     <p className="mt-1">
                       <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
+                    </p>
+                    <p className="mt-1">
+                      <strong>H2D-only:</strong> Keeps a CPU master copy and only transfers host-to-device (inference / read-only weights). Ring Size 1 = minimum VRAM; 2+ = next block loads during current block compute.
                     </p>
                   </div>
                 </div>

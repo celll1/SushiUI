@@ -6706,6 +6706,8 @@ class TrainingRunCreateRequest(BaseModel):
     # Block Swap settings (training VRAM optimization)
     blocks_to_swap: int = 0  # Number of transformer blocks to swap (0 to disable)
     use_pinned_memory: bool = False  # Use CUDA pinned memory for faster transfer
+    block_swap_h2d_only: bool = TRAINING_DEFAULTS["block_swap_h2d_only"]  # FLUX.2 LoRA: H2D-only swap (no device->host of frozen base)
+    block_swap_ring_size: int = TRAINING_DEFAULTS["block_swap_ring_size"]  # GPU weight-buffer ring slots (>=1)
     num_optimizer_groups: int = 0  # Number of optimizer groups for fused optimizer (0 to disable, recommended 4-10)
 
     # Per-bucket activation offload dispatcher (proactive, OOM-detection-free)

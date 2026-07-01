@@ -172,6 +172,8 @@ def _build_train_section(
     if include_block_swap:
         train["blocks_to_swap"] = p.get("blocks_to_swap", 0)
         train["use_pinned_memory"] = p.get("use_pinned_memory", False)
+        train["block_swap_h2d_only"] = p.get("block_swap_h2d_only", False)
+        train["block_swap_ring_size"] = p.get("block_swap_ring_size", 2)
         train["num_optimizer_groups"] = p.get("num_optimizer_groups", 0)
         # Per-bucket activation offload dispatcher
         train["activation_dispatch_enable"] = p.get("activation_dispatch_enable", False)

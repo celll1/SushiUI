@@ -204,6 +204,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   danbooru_aug_keep_tokens: 0,
   blocks_to_swap: 0,
   use_pinned_memory: false,
+  block_swap_h2d_only: false,
+  block_swap_ring_size: 2,
   num_optimizer_groups: 0,
   activation_dispatch_enable: false,
   activation_dispatch_margin_gb: 1.0,
@@ -737,6 +739,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       latent_encoding_swap_interval: params.latent_encoding_swap_interval,
       blocks_to_swap: params.blocks_to_swap,
       use_pinned_memory: params.use_pinned_memory,
+      block_swap_h2d_only: params.block_swap_h2d_only,
+      block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
       activation_dispatch_enable: params.activation_dispatch_enable,
       activation_dispatch_margin_gb: params.activation_dispatch_margin_gb,
@@ -971,7 +975,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_shuffle_tags", "danbooru_aug_shuffle_keep_first_n",
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
-      "blocks_to_swap", "use_pinned_memory", "num_optimizer_groups",
+      "blocks_to_swap", "use_pinned_memory", "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
       "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
       "activation_dispatch_threshold_mb",
@@ -3840,6 +3844,38 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <label htmlFor="use-pinned-memory" className="text-xs text-gray-300 cursor-pointer">
                   Use Pinned Memory (faster CPU-GPU transfer)
                 </label>
+              </div>
+            )}
+
+            {/* H2D-only block swap (FLUX.2 LoRA training) */}
+            {blocksToSwap > 0 && (
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="block-swap-h2d-only"
+                  checked={params.block_swap_h2d_only ?? false}
+                  onChange={(e) => updateParam("block_swap_h2d_only", e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="block-swap-h2d-only" className="text-xs text-gray-300 cursor-pointer">
+                  H2D-only (FLUX.2 LoRA: no device-to-host of frozen base; requires gradient checkpointing)
+                </label>
+              </div>
+            )}
+
+            {/* H2D-only ring size */}
+            {blocksToSwap > 0 && (params.block_swap_h2d_only ?? false) && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Ring Size (GPU weight buffer slots)</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={4}
+                  value={params.block_swap_ring_size ?? 2}
+                  onChange={(e) => updateParam("block_swap_ring_size", e.target.value === '' ? (undefined as any) : parseInt(e.target.value))}
+                  onBlur={(e) => { if (e.target.value === '' || isNaN(parseInt(e.target.value))) updateParam("block_swap_ring_size", 2); }}
+                  className="w-full px-2 py-1 bg-gray-800 border border-gray-700 rounded text-xs text-gray-200"
+                />
               </div>
             )}
 

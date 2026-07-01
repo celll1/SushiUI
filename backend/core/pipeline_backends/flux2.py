@@ -514,11 +514,28 @@ class Flux2Mixin:
             nag_negative_prompt_embeds = None
             nag_negative_text_ids = None
             nag_wrapper = None
+            nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
             if nag_active:
-                nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
                 nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
                     text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
                 )
+
+            # NegPip: auto-activate on a negative emphasis weight (e.g. (worst:-1)) in
+            # either prompt. Signed per-token V weighting; positive-only prompts skip
+            # this entirely (byte-identical default path). Builds a [txt_b, seq] signed
+            # weight tensor aligned to the Qwen3 chat-template token sequence, per CFG
+            # context (and nag_neg row when NAG is active).
+            negpip_active = self._flux2_negpip_eligible(prompt, negative_prompt)
+            negpip_weights = None
+            negpip_wrapper = None
+            if negpip_active:
+                negpip_weights = self._build_flux2_negpip_weights(
+                    prompt, negative_prompt, tokenizer, prompt_embeds,
+                    prompt_embeds.dtype, do_classifier_free_guidance, nag_active,
+                    nag_neg_prompt, max_sequence_length,
+                )
+                print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
+                      f"weights {tuple(negpip_weights.shape)}")
 
             # Offload text encoder to CPU
             text_encoder.to("cpu")
@@ -578,10 +595,10 @@ class Flux2Mixin:
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
-            # NAG needs a standalone forward with all weights on GPU; disable Block Swap
-            # when NAG is active (combined NAG+Block Swap is a separate follow-up).
-            if nag_active and enable_block_swap and blocks_to_swap > 0:
-                print("[FLUX.2] NAG enabled -> disabling Block Swap for this run (NAG+Block Swap not supported yet)")
+            # NAG/NegPip need a standalone forward with all weights on GPU; disable Block
+            # Swap when either is active (combined with Block Swap is a follow-up).
+            if (nag_active or negpip_active) and enable_block_swap and blocks_to_swap > 0:
+                print("[FLUX.2] NAG/NegPip enabled -> disabling Block Swap for this run")
                 enable_block_swap = False
                 blocks_to_swap = 0
 
@@ -618,10 +635,24 @@ class Flux2Mixin:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-                # NAG: swap in the standalone NAG forward wrapper (installs NAG attention
-                # processors; independent of block swap, which is disabled above when NAG
-                # is active). Restored after the loop.
-                if nag_active:
+                # NAG / NegPip: swap in a standalone forward wrapper (installs attention
+                # processors; independent of block swap, which is disabled above when
+                # either is active). Restored after the loop via nag_wrapper.restore().
+                #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
+                #   NAG only     -> Flux2NAGWrapper
+                #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
+                if nag_active and negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipNAGWrapper
+                    nag_wrapper = Flux2NegPipNAGWrapper(
+                        transformer,
+                        negpip_weights,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print("[FLUX.2] NAG + NegPip enabled")
+                elif nag_active:
                     from core.inference.nag_flux2 import Flux2NAGWrapper
                     nag_wrapper = Flux2NAGWrapper(
                         transformer,
@@ -632,6 +663,10 @@ class Flux2Mixin:
                     transformer_wrapper = nag_wrapper
                     print(f"[FLUX.2] NAG enabled: scale={params.get('nag_scale', 5.0)}, "
                           f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
+                elif negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipWrapper
+                    negpip_wrapper = Flux2NegPipWrapper(transformer, negpip_weights)
+                    transformer_wrapper = negpip_wrapper
 
             # Prepare timesteps
             image_seq_len = latents.shape[1]
@@ -820,6 +855,8 @@ class Flux2Mixin:
                 block_offloader.cleanup()
             if nag_wrapper is not None:
                 nag_wrapper.restore()  # restore original attention processors
+            if negpip_wrapper is not None:
+                negpip_wrapper.restore()  # restore original attention processors
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
@@ -871,6 +908,32 @@ class Flux2Mixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 generation failed: {str(e)}")
+
+    def _flux2_negpip_eligible(self, prompt: str, negative_prompt: str) -> bool:
+        """Auto-activate NegPip iff either prompt carries a negative emphasis weight.
+
+        Positive-only prompts return False so the default path is byte-identical.
+        """
+        try:
+            from core.prompts.prompt_parser import prompt_has_negative_weight
+        except Exception:
+            return False
+        return bool(prompt_has_negative_weight(prompt) or
+                    prompt_has_negative_weight(negative_prompt or ""))
+
+    def _build_flux2_negpip_weights(self, prompt, negative_prompt, tokenizer,
+                                    prompt_embeds, dtype, do_cfg, nag_active,
+                                    nag_negative_prompt, max_sequence_length=512):
+        """Signed per-token weight tensor [txt_b, seq] matching the transformer text batch."""
+        from core.inference.negpip_flux2 import build_flux2_negpip_weights
+        device = prompt_embeds.device
+        return build_flux2_negpip_weights(
+            prompt, negative_prompt or "", tokenizer, device, dtype,
+            embed_seq_len=prompt_embeds.shape[1],
+            nag_negative_prompt=nag_negative_prompt,
+            do_cfg=do_cfg, nag_active=nag_active,
+            max_length=max_sequence_length,
+        )
 
     def _flux2_encode_prompt(
         self,
@@ -1291,11 +1354,24 @@ class Flux2Mixin:
             nag_negative_prompt_embeds = None
             nag_negative_text_ids = None
             nag_wrapper = None
+            nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
             if nag_active:
-                nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
                 nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
                     text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
                 )
+
+            # NegPip: auto-activate on a negative emphasis weight in either prompt.
+            negpip_active = self._flux2_negpip_eligible(prompt, negative_prompt)
+            negpip_weights = None
+            negpip_wrapper = None
+            if negpip_active:
+                negpip_weights = self._build_flux2_negpip_weights(
+                    prompt, negative_prompt, tokenizer, prompt_embeds,
+                    prompt_embeds.dtype, do_classifier_free_guidance, nag_active,
+                    nag_neg_prompt, max_sequence_length,
+                )
+                print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
+                      f"weights {tuple(negpip_weights.shape)}")
 
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
@@ -1384,10 +1460,10 @@ class Flux2Mixin:
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
-            # NAG needs a standalone forward with all weights on GPU; disable Block Swap
-            # when NAG is active (combined NAG+Block Swap is a separate follow-up).
-            if nag_active and enable_block_swap and blocks_to_swap > 0:
-                print("[FLUX.2] NAG enabled -> disabling Block Swap for this run (NAG+Block Swap not supported yet)")
+            # NAG/NegPip need a standalone forward with all weights on GPU; disable Block
+            # Swap when either is active (combined with Block Swap is a follow-up).
+            if (nag_active or negpip_active) and enable_block_swap and blocks_to_swap > 0:
+                print("[FLUX.2] NAG/NegPip enabled -> disabling Block Swap for this run")
                 enable_block_swap = False
                 blocks_to_swap = 0
 
@@ -1417,10 +1493,24 @@ class Flux2Mixin:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-                # NAG: swap in the standalone NAG forward wrapper (installs NAG attention
-                # processors; independent of block swap, which is disabled above when NAG
-                # is active). Restored after the loop.
-                if nag_active:
+                # NAG / NegPip: swap in a standalone forward wrapper (installs attention
+                # processors; independent of block swap, which is disabled above when
+                # either is active). Restored after the loop via nag_wrapper.restore().
+                #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
+                #   NAG only     -> Flux2NAGWrapper
+                #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
+                if nag_active and negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipNAGWrapper
+                    nag_wrapper = Flux2NegPipNAGWrapper(
+                        transformer,
+                        negpip_weights,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print("[FLUX.2] NAG + NegPip enabled")
+                elif nag_active:
                     from core.inference.nag_flux2 import Flux2NAGWrapper
                     nag_wrapper = Flux2NAGWrapper(
                         transformer,
@@ -1431,6 +1521,10 @@ class Flux2Mixin:
                     transformer_wrapper = nag_wrapper
                     print(f"[FLUX.2] NAG enabled: scale={params.get('nag_scale', 5.0)}, "
                           f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
+                elif negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipWrapper
+                    negpip_wrapper = Flux2NegPipWrapper(transformer, negpip_weights)
+                    transformer_wrapper = negpip_wrapper
 
             scheduler.set_begin_index(t_start)
 
@@ -1589,6 +1683,8 @@ class Flux2Mixin:
                 block_offloader.cleanup()
             if nag_wrapper is not None:
                 nag_wrapper.restore()  # restore original attention processors
+            if negpip_wrapper is not None:
+                negpip_wrapper.restore()  # restore original attention processors
             transformer.to("cpu")
             torch.cuda.empty_cache()
 
@@ -1772,11 +1868,24 @@ class Flux2Mixin:
             nag_negative_prompt_embeds = None
             nag_negative_text_ids = None
             nag_wrapper = None
+            nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
             if nag_active:
-                nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
                 nag_negative_prompt_embeds, nag_negative_text_ids = self._flux2_encode_prompt(
                     text_encoder, tokenizer, nag_neg_prompt, max_sequence_length
                 )
+
+            # NegPip: auto-activate on a negative emphasis weight in either prompt.
+            negpip_active = self._flux2_negpip_eligible(prompt, negative_prompt)
+            negpip_weights = None
+            negpip_wrapper = None
+            if negpip_active:
+                negpip_weights = self._build_flux2_negpip_weights(
+                    prompt, negative_prompt, tokenizer, prompt_embeds,
+                    prompt_embeds.dtype, do_classifier_free_guidance, nag_active,
+                    nag_neg_prompt, max_sequence_length,
+                )
+                print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
+                      f"weights {tuple(negpip_weights.shape)}")
 
             text_encoder.to("cpu")
             torch.cuda.empty_cache()
@@ -1886,10 +1995,10 @@ class Flux2Mixin:
             use_pinned_memory = params.get("use_pinned_memory", False)
             block_offloader = None
 
-            # NAG needs a standalone forward with all weights on GPU; disable Block Swap
-            # when NAG is active (combined NAG+Block Swap is a separate follow-up).
-            if nag_active and enable_block_swap and blocks_to_swap > 0:
-                print("[FLUX.2] NAG enabled -> disabling Block Swap for this run (NAG+Block Swap not supported yet)")
+            # NAG/NegPip need a standalone forward with all weights on GPU; disable Block
+            # Swap when either is active (combined with Block Swap is a follow-up).
+            if (nag_active or negpip_active) and enable_block_swap and blocks_to_swap > 0:
+                print("[FLUX.2] NAG/NegPip enabled -> disabling Block Swap for this run")
                 enable_block_swap = False
                 blocks_to_swap = 0
 
@@ -1919,10 +2028,24 @@ class Flux2Mixin:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-                # NAG: swap in the standalone NAG forward wrapper (installs NAG attention
-                # processors; independent of block swap, which is disabled above when NAG
-                # is active). Restored after the loop.
-                if nag_active:
+                # NAG / NegPip: swap in a standalone forward wrapper (installs attention
+                # processors; independent of block swap, which is disabled above when
+                # either is active). Restored after the loop via nag_wrapper.restore().
+                #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
+                #   NAG only     -> Flux2NAGWrapper
+                #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
+                if nag_active and negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipNAGWrapper
+                    nag_wrapper = Flux2NegPipNAGWrapper(
+                        transformer,
+                        negpip_weights,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print("[FLUX.2] NAG + NegPip enabled")
+                elif nag_active:
                     from core.inference.nag_flux2 import Flux2NAGWrapper
                     nag_wrapper = Flux2NAGWrapper(
                         transformer,
@@ -1933,6 +2056,10 @@ class Flux2Mixin:
                     transformer_wrapper = nag_wrapper
                     print(f"[FLUX.2] NAG enabled: scale={params.get('nag_scale', 5.0)}, "
                           f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
+                elif negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipWrapper
+                    negpip_wrapper = Flux2NegPipWrapper(transformer, negpip_weights)
+                    transformer_wrapper = negpip_wrapper
 
             scheduler.set_begin_index(t_start)
 
@@ -2104,6 +2231,8 @@ class Flux2Mixin:
                 block_offloader.cleanup()
             if nag_wrapper is not None:
                 nag_wrapper.restore()  # restore original attention processors
+            if negpip_wrapper is not None:
+                negpip_wrapper.restore()  # restore original attention processors
             transformer.to("cpu")
             torch.cuda.empty_cache()
 

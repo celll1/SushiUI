@@ -138,11 +138,19 @@ def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
                   device: str = "cuda",
                   dtype: torch.dtype = torch.bfloat16,
                   qwen3_max_length: int = 512,
-                  t5_max_length: int = 512) -> Dict[str, torch.Tensor]:
+                  t5_max_length: int = 512,
+                  skip_emphasis: bool = False) -> Dict[str, torch.Tensor]:
     """Run the Qwen3 text encoder and prepare the inputs the Anima DiT expects.
 
     Supports A1111-style emphasis syntax (`(word:1.5)`, `((word))`, `[word]`):
     per-token weights are applied multiplicatively to the Qwen3 hidden states.
+
+    ``skip_emphasis`` (NegPip): when True the emphasis SYNTAX is still stripped
+    (so the encoder sees the clean text) but the per-token weights are NOT applied
+    to the Qwen3 hidden states. This yields CLEAN embeddings and lets the signed
+    V scaling in cross-attention carry ALL the emphasis (including negative
+    weights). The DiT still receives the T5 tokens of the clean prompt, which is
+    exactly the sequence the NegPip weight vector is aligned to.
 
     Returns a dict with:
       - prompt_embeds:  Qwen3 hidden states [1, L_qwen, 1024], zero-masked
@@ -151,6 +159,8 @@ def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
       - t5_attn_mask:   T5 attention mask [1, L_t5]
     """
     clean_prompt, token_weights = _build_emphasis(prompt or "", qwen3_tokenizer, qwen3_max_length)
+    if skip_emphasis:
+        token_weights = []
 
     toks = tokenize_for_anima(qwen3_tokenizer, t5_tokenizer, clean_prompt,
                               qwen3_max_length, t5_max_length)
@@ -404,17 +414,24 @@ def sample_txt2img(
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
     nag_transformer=None,
+    negpip_uncond_transformer=None,
 ) -> torch.Tensor:
     """Run the Rectified-Flow Euler denoising loop and return latents
     of shape [1, 16, 1, H/8, W/8].
 
     ``nag_transformer`` (optional): when supplied, the CONDITIONAL forward pass
-    is routed through it (an ``AnimaNAGWrapper``) so NAG is applied to the
-    positive image tokens only; the unconditional pass always uses the raw
-    ``transformer``. When None (default) both passes use ``transformer`` and the
-    path is unchanged.
+    is routed through it (an ``AnimaNAGWrapper`` and/or ``AnimaNegPipWrapper``)
+    so NAG / NegPip apply to the positive image tokens only; the unconditional
+    pass always uses the raw ``transformer``. When None (default) both passes use
+    ``transformer`` and the path is unchanged.
+
+    ``negpip_uncond_transformer`` (optional): when supplied, the UNCONDITIONAL
+    forward pass is routed through it (an ``AnimaNegPipWrapper`` carrying the
+    negative prompt's signed per-token weights) so NegPip scales the negative
+    context V too. None (default) => uncond uses the raw ``transformer``.
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
+    uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
     latent_h = height // 8
     latent_w = width // 8
@@ -458,7 +475,7 @@ def sample_txt2img(
             )
 
             if do_cfg:
-                v_uncond = transformer(
+                v_uncond = uncond_transformer(
                     x=latents,
                     timesteps=timestep_batch,
                     context=uncond_embeds["prompt_embeds"],
@@ -512,13 +529,18 @@ def sample_img2img(
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
     nag_transformer=None,
+    negpip_uncond_transformer=None,
 ) -> torch.Tensor:
     """img2img: start from `init_latents` partially noised. Returns final latents.
 
     ``nag_transformer`` (optional): routes the CONDITIONAL pass through an
-    ``AnimaNAGWrapper`` (NAG on positive image tokens). None => unchanged path.
+    ``AnimaNAGWrapper`` / ``AnimaNegPipWrapper`` (NAG / NegPip on positive image
+    tokens). None => unchanged path.
+    ``negpip_uncond_transformer`` (optional): routes the UNCONDITIONAL pass
+    through an ``AnimaNegPipWrapper`` (negative prompt's signed V weights).
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
+    uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
     if init_latents.dim() == 4:
         init_latents = init_latents.unsqueeze(2)  # [1, 16, 1, H, W]
@@ -560,7 +582,7 @@ def sample_img2img(
                 source_attention_mask=cond_embeds["source_mask"],
             )
             if do_cfg:
-                v_uncond = transformer(
+                v_uncond = uncond_transformer(
                     x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
                     target_input_ids=uncond_embeds["t5_input_ids"],
@@ -611,6 +633,7 @@ def sample_inpaint(
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
     nag_transformer=None,
+    negpip_uncond_transformer=None,
 ) -> torch.Tensor:
     """Latent-space inpainting via per-step blending.
 
@@ -618,9 +641,13 @@ def sample_inpaint(
     so the unmasked region stays close to the original.
 
     ``nag_transformer`` (optional): routes the CONDITIONAL pass through an
-    ``AnimaNAGWrapper`` (NAG on positive image tokens). None => unchanged path.
+    ``AnimaNAGWrapper`` / ``AnimaNegPipWrapper`` (NAG / NegPip on positive image
+    tokens). None => unchanged path.
+    ``negpip_uncond_transformer`` (optional): routes the UNCONDITIONAL pass
+    through an ``AnimaNegPipWrapper`` (negative prompt's signed V weights).
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
+    uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
     if init_latents.dim() == 4:
         init_latents = init_latents.unsqueeze(2)
@@ -668,7 +695,7 @@ def sample_inpaint(
                 source_attention_mask=cond_embeds["source_mask"],
             )
             if do_cfg:
-                v_uncond = transformer(
+                v_uncond = uncond_transformer(
                     x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
                     target_input_ids=uncond_embeds["t5_input_ids"],

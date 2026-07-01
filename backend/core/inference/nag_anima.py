@@ -52,20 +52,51 @@ import torch.nn as nn
 from core.inference.nag_dit import nag_guidance
 
 
+def _apply_negpip_v(v, token_weights):
+    """Signed per-token scale of the cross-attention VALUE (NegPip).
+
+    ``v`` is ``[B, L_text, H, D]`` (bshd); ``token_weights`` is a 1-D vector of
+    length ``L_text`` (aligned to the T5 token positions that build the cross
+    context). Scales ``v[:, t, :, :] *= weights[t]`` so negative-weight tokens
+    have their contribution SUBTRACTED. When ``token_weights`` is None this is a
+    no-op — the default path is untouched.
+    """
+    if token_weights is None:
+        return v
+    w = token_weights.to(device=v.device, dtype=v.dtype)
+    L = v.shape[1]
+    if w.shape[0] != L:
+        # Align to the actual text-token axis: pad with 1.0 (identity) or
+        # truncate. Padding/truncation may differ from the built length.
+        if w.shape[0] < L:
+            pad = torch.ones(L - w.shape[0], device=w.device, dtype=w.dtype)
+            w = torch.cat([w, pad], dim=0)
+        else:
+            w = w[:L]
+    return v * w[None, :, None, None]
+
+
 def _patched_cross_attn_forward(self, x, attn_params, context=None, rope_emb=None):
     """Drop-in replacement for ``Attention.forward`` on cross-attention modules.
 
-    When ``self._nag_armed`` is False (the default) this is exactly the original
-    forward. When armed, it additionally attends the image queries to the stored
-    NAG-negative context and blends the two attention outputs with nag_guidance.
+    When ``self._nag_armed`` is False (the default) and ``self._negpip_weights``
+    is None this is exactly the original forward. When NAG is armed it also
+    attends the image queries to the stored NAG-negative context and blends the
+    two outputs with nag_guidance. When NegPip weights are armed it applies a
+    signed per-token scale to the text-context V (both the positive and the
+    NAG-negative context), composing with NAG in this single patch.
     """
     # Import here to avoid a circular import at module load.
     from core.models.anima import anima_attention as _attn
+
+    negpip_w = getattr(self, "_negpip_weights", None)
 
     q, k, v = self.compute_qkv(x, context, rope_emb=rope_emb)
     if q.dtype != v.dtype and torch.is_autocast_enabled():
         q = q.to(v.dtype)
         k = k.to(v.dtype)
+    # NegPip: signed per-token V scale on the positive text context.
+    v = _apply_negpip_v(v, negpip_w)
     z_pos = _attn.attention([q, k, v], attn_params=attn_params)
 
     if getattr(self, "_nag_armed", False):
@@ -77,6 +108,10 @@ def _patched_cross_attn_forward(self, x, attn_params, context=None, rope_emb=Non
             _, k_neg, v_neg = self.compute_qkv(x, neg_context, rope_emb=rope_emb)
             if q.dtype != v_neg.dtype and torch.is_autocast_enabled():
                 k_neg = k_neg.to(v_neg.dtype)
+            # NegPip also scales the NAG-negative context V. This uses the SAME
+            # per-context weight vector currently armed (the NAG cond pass runs
+            # with the positive prompt's signed weights).
+            v_neg = _apply_negpip_v(v_neg, negpip_w)
             q_neg = q
             z_neg = _attn.attention([q_neg, k_neg, v_neg], attn_params=attn_params)
             z_pos = nag_guidance(
@@ -116,6 +151,8 @@ class AnimaNAGWrapper(nn.Module):
             ca._nag_tau = self.nag_tau
             ca._nag_alpha = self.nag_alpha
             ca._nag_neg_context = None
+            ca._negpip_weights = None
+            ca._negpip_or_nag_patched = True
             ca.forward = types.MethodType(_patched_cross_attn_forward, ca)
 
     def restore(self):
@@ -123,7 +160,8 @@ class AnimaNAGWrapper(nn.Module):
         for ca, orig in zip(self._cross_attns, self._originals):
             ca.forward = orig
             for attr in ("_nag_armed", "_nag_scale", "_nag_tau",
-                         "_nag_alpha", "_nag_neg_context"):
+                         "_nag_alpha", "_nag_neg_context",
+                         "_negpip_weights", "_negpip_or_nag_patched"):
                 if hasattr(ca, attr):
                     delattr(ca, attr)
 

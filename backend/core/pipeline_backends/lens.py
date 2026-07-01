@@ -106,6 +106,35 @@ class LensMixin:
             "developer_mode": params.get("developer_mode", False),
         }
 
+    @staticmethod
+    def _lens_encode_nag(params: Dict[str, Any], text_encoder, tokenizer,
+                         negative_prompt: str, enc_device, dtype,
+                         max_sequence_length: int) -> Optional[Dict[str, Any]]:
+        """Encode the NAG-negative prompt and build nag_params for the denoise loop.
+
+        Returns None when NAG is inactive (nag_enable off, or nag_scale<=1), keeping the
+        default generation path byte-identical. The nag-negative prompt falls back to the
+        CFG negative prompt when unset (matching the FLUX.2 backend).
+        """
+        nag_enable = bool(params.get("nag_enable", False))
+        nag_scale = float(params.get("nag_scale", 5.0))
+        if not nag_enable or nag_scale <= 1.0:
+            return None
+        from core.models.lens.lens_pipeline_ops import encode_nag_negative
+
+        nag_neg_prompt = params.get("nag_negative_prompt", "") or negative_prompt or ""
+        nag_features, nag_mask = encode_nag_negative(
+            text_encoder, tokenizer, nag_neg_prompt,
+            device=enc_device, dtype=dtype, max_length=max_sequence_length,
+        )
+        return {
+            "nag_features": nag_features,
+            "nag_mask": nag_mask,
+            "nag_scale": nag_scale,
+            "nag_tau": float(params.get("nag_tau", 2.5)),
+            "nag_alpha": float(params.get("nag_alpha", 0.25)),
+        }
+
     def _reload_lens_text_encoder(self) -> None:
         """Reload the Lens text encoder from disk (~4 s).
 
@@ -227,11 +256,18 @@ class LensMixin:
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
             )
+            nag_params = self._lens_encode_nag(
+                params, text_encoder, tokenizer, negative_prompt,
+                enc_device, dtype, max_sequence_length,
+            )
             if not cpu_text_encoding:
                 self._lens_move("text_encoder", "cpu")
             if cpu_text_encoding:
                 encoder_features = [f.to(device) for f in encoder_features]
                 encoder_mask = encoder_mask.to(device)
+                if nag_params is not None:
+                    nag_params["nag_features"] = [f.to(device) for f in nag_params["nag_features"]]
+                    nag_params["nag_mask"] = nag_params["nag_mask"].to(device)
 
             # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
             # Will be reloaded lazily at the start of the next generation.
@@ -259,6 +295,7 @@ class LensMixin:
                     progress_callback=progress_callback,
                     advanced_cfg=self._lens_advanced_cfg(params),
                     spectrum_params=params,
+                    nag_params=nag_params,
                 )
             finally:
                 if applied_lora_count:
@@ -359,11 +396,18 @@ class LensMixin:
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
             )
+            nag_params = self._lens_encode_nag(
+                params, text_encoder, tokenizer, negative_prompt,
+                enc_device, dtype, max_sequence_length,
+            )
             if not cpu_text_encoding:
                 self._lens_move("text_encoder", "cpu")
             if cpu_text_encoding:
                 encoder_features = [f.to(device) for f in encoder_features]
                 encoder_mask = encoder_mask.to(device)
+                if nag_params is not None:
+                    nag_params["nag_features"] = [f.to(device) for f in nag_params["nag_features"]]
+                    nag_params["nag_mask"] = nag_params["nag_mask"].to(device)
 
             # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
             import gc as _gc
@@ -397,6 +441,7 @@ class LensMixin:
                     progress_callback=progress_callback,
                     advanced_cfg=self._lens_advanced_cfg(params),
                     spectrum_params=params,
+                    nag_params=nag_params,
                 )
             finally:
                 if applied_lora_count:
@@ -506,11 +551,18 @@ class LensMixin:
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
             )
+            nag_params = self._lens_encode_nag(
+                params, text_encoder, tokenizer, negative_prompt,
+                enc_device, dtype, max_sequence_length,
+            )
             if not cpu_text_encoding:
                 self._lens_move("text_encoder", "cpu")
             if cpu_text_encoding:
                 encoder_features = [f.to(device) for f in encoder_features]
                 encoder_mask = encoder_mask.to(device)
+                if nag_params is not None:
+                    nag_params["nag_features"] = [f.to(device) for f in nag_params["nag_features"]]
+                    nag_params["nag_mask"] = nag_params["nag_mask"].to(device)
 
             # Free mxfp4 CUDA buffers (~9.7 GB) — not needed during denoising.
             import gc as _gc
@@ -547,6 +599,7 @@ class LensMixin:
                     progress_callback=progress_callback,
                     advanced_cfg=self._lens_advanced_cfg(params),
                     spectrum_params=params,
+                    nag_params=nag_params,
                 )
             finally:
                 if applied_lora_count:

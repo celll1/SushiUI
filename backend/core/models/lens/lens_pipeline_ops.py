@@ -244,6 +244,28 @@ def encode_prompt(
     return encoder_features, encoder_mask
 
 
+@torch.no_grad()
+def encode_nag_negative(
+    text_encoder, tokenizer, nag_negative_prompt: str,
+    device, dtype, max_length: int = 512,
+) -> Tuple[List[torch.Tensor], torch.Tensor]:
+    """Encode the NAG-negative prompt via the SAME encoder path as encode_prompt.
+
+    Returns (nag_features, nag_mask): list of [1, S, H] tensors and a bool mask [1, S].
+    Emphasis syntax is stripped/applied exactly as in encode_prompt.
+    """
+    prompt = nag_negative_prompt or ""
+    clean, weights = _build_emphasis_lens(prompt, tokenizer, max_length)
+    features, mask = _get_text_embeddings(text_encoder, tokenizer, [clean], max_length, device)
+    if weights:
+        try:
+            features = _apply_emphasis_lens(features, weights, dtype)
+        except Exception as e:
+            print(f"[Lens] NAG emphasis application failed (ignored): {e}")
+    features = [f.to(dtype=dtype) for f in features]
+    return features, mask.bool()
+
+
 # ---------------------------------------------------------------------------
 # Latent helpers
 # ---------------------------------------------------------------------------
@@ -432,6 +454,43 @@ def _apply_advanced_cfg_lens(
 
 
 # ---------------------------------------------------------------------------
+# NAG (Normalized Attention Guidance) setup
+# ---------------------------------------------------------------------------
+
+def _maybe_setup_nag(transformer, encoder_features, encoder_mask, nag_params):
+    """If NAG is active, wrap the transformer and build the batch-3 text encoding.
+
+    nag_params (or None) is a dict with keys: nag_features (list of [1,S,H]), nag_mask
+    ([1,S]), nag_scale, nag_tau, nag_alpha. Returns
+    (transformer, encoder_features, encoder_mask, nag_wrapper_or_None). When NAG is off,
+    everything is returned unchanged and nag_wrapper is None (default path byte-identical).
+    """
+    if not nag_params:
+        return transformer, encoder_features, encoder_mask, None
+
+    nag_features = nag_params.get("nag_features")
+    nag_mask = nag_params.get("nag_mask")
+    scale = float(nag_params.get("nag_scale", 5.0))
+    if nag_features is None or nag_mask is None or scale <= 1.0:
+        return transformer, encoder_features, encoder_mask, None
+
+    from core.inference.nag_lens import LensNAGWrapper, build_nag_text_batch
+
+    features3, mask3 = build_nag_text_batch(
+        encoder_features, encoder_mask, nag_features, nag_mask,
+    )
+    wrapper = LensNAGWrapper(
+        transformer,
+        nag_scale=scale,
+        nag_tau=float(nag_params.get("nag_tau", 2.5)),
+        nag_alpha=float(nag_params.get("nag_alpha", 0.25)),
+    )
+    print(f"[Lens] NAG enabled: scale={scale}, tau={nag_params.get('nag_tau', 2.5)}, "
+          f"alpha={nag_params.get('nag_alpha', 0.25)}")
+    return wrapper, features3, mask3, wrapper
+
+
+# ---------------------------------------------------------------------------
 # Denoising loops
 # ---------------------------------------------------------------------------
 
@@ -444,6 +503,7 @@ def denoise_loop(
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    nag_params: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img."""
     seq_len = latent_h * latent_w
@@ -452,6 +512,10 @@ def denoise_loop(
     scheduler.set_timesteps(sigmas=sigmas, device=latents.device, mu=mu)
 
     img_shapes = [(1, latent_h, latent_w)]
+
+    transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
+        transformer, encoder_features, encoder_mask, nag_params,
+    )
 
     spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
     for i, t in enumerate(scheduler.timesteps):
@@ -489,6 +553,8 @@ def denoise_loop(
         if progress_callback is not None:
             progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    if _nag_wrapper is not None:
+        _nag_wrapper.restore()
     return latents
 
 
@@ -504,12 +570,17 @@ def denoise_loop_img2img(
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    nag_params: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on flow-matching schedule."""
     seq_len = latent_h * latent_w
     mu = compute_empirical_mu(seq_len, num_inference_steps)
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
+
+    transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
+        transformer, encoder_features, encoder_mask, nag_params,
+    )
 
     timesteps = scheduler.timesteps
     start_step = max(int(len(timesteps) * (1.0 - denoising_strength)), 1)
@@ -562,6 +633,8 @@ def denoise_loop_img2img(
         if progress_callback is not None:
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    if _nag_wrapper is not None:
+        _nag_wrapper.restore()
     return latents
 
 
@@ -578,6 +651,7 @@ def denoise_loop_inpaint(
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    nag_params: Optional[Dict[str, Any]] = None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on flow-matching schedule.
 
@@ -587,6 +661,10 @@ def denoise_loop_inpaint(
     mu = compute_empirical_mu(seq_len, num_inference_steps)
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
+
+    transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
+        transformer, encoder_features, encoder_mask, nag_params,
+    )
 
     timesteps = scheduler.timesteps
     start_step = max(int(len(timesteps) * (1.0 - denoising_strength)), 1)
@@ -649,6 +727,8 @@ def denoise_loop_inpaint(
             preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
 
+    if _nag_wrapper is not None:
+        _nag_wrapper.restore()
     return latents
 
 

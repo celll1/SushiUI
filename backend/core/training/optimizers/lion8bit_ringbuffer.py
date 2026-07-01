@@ -166,7 +166,7 @@ class Lion8bit_RingBuffer(Optimizer):
                     state['state_z'] = self.get_state_buffer(p, dtype=torch.uint8)
 
                     # Use pinned memory for faster CPU-GPU transfer
-                    if hasattr(state['state_z'], 'pin_memory'):
+                    if state['state_z'].is_cpu:
                         state['state_z'] = state['state_z'].pin_memory()
                 else:
                     # Ring Buffer disabled: GPU allocation
@@ -187,7 +187,7 @@ class Lion8bit_RingBuffer(Optimizer):
                     state['exp_avg'] = self.get_state_buffer(p, dtype=torch.uint8)
 
                     # Use pinned memory for faster CPU-GPU transfer
-                    if hasattr(state['exp_avg'], 'pin_memory'):
+                    if state['exp_avg'].is_cpu:
                         state['exp_avg'] = state['exp_avg'].pin_memory()
                 else:
                     # Ring Buffer disabled: GPU allocation (bitsandbytes-compatible)
@@ -559,26 +559,32 @@ def register_lion8bit_fused_backward(optimizer, model):
     if not isinstance(optimizer, Lion8bit_RingBuffer):
         raise TypeError("Optimizer must be Lion8bit_RingBuffer")
 
+    # Precompute id(param) -> param_group once. The previous per-hook scan
+    # (for g in param_groups: if any(id(p)==id(param) ...)) was O(P) per
+    # parameter, i.e. O(P^2) per step for P parameters -- a large hidden cost
+    # for models with thousands of weight tensors. This makes it O(1).
+    param_to_group = {}
+    for g in optimizer.param_groups:
+        for gp in g['params']:
+            param_to_group[id(gp)] = g
+
     def create_update_hook(param: nn.Parameter):
         """Create hook function for a specific parameter."""
 
+        # The parameter identity is fixed for this hook, so resolve its group
+        # once at registration instead of searching on every backward.
+        group = param_to_group.get(id(param))
+
         def hook(param: nn.Parameter):
+            if group is None:
+                return
+
             # Skip parameters on CPU (offloaded by Block Swap)
             if not param.is_cuda:
                 return
 
             # Skip if no gradient
             if param.grad is None:
-                return
-
-            # Find parameter's group (use id() comparison)
-            group = None
-            for g in optimizer.param_groups:
-                if any(id(p) == id(param) for p in g['params']):
-                    group = g
-                    break
-
-            if group is None:
                 return
 
             # Initialize state if needed
@@ -601,7 +607,8 @@ def register_lion8bit_fused_backward(optimizer, model):
                 state['absmax'],
                 beta1, beta2, 0.0,  # eps unused
                 lr, weight_decay, 1.0,  # gnorm_scale
-                optimizer.step_count + 1  # +1 because hook runs before step()
+                optimizer.step_count + 1,  # +1 because hook runs before step()
+                optimizer.cautious          # cautious masking (matches step())
             )
 
             # Clear gradient (already applied)

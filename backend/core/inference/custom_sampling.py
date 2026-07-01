@@ -502,6 +502,10 @@ def custom_sampling_loop(
     spectrum_feature_mode: str = "output",  # "output" (black-box) or "block" (deep-feature, paper-faithful)
     spectrum_cache_branch: int = 1,  # block mode: down_blocks[cache_branch:] + mid are forecast
     spectrum_max_cache: int = 0,  # forecaster sliding-window size (0 = unlimited; block mode defaults to 6)
+    fbcache_enable: bool = False,  # FBCache (First Block Cache) dynamic U-Net block caching
+    fbcache_threshold: float = 0.12,  # relative-L1 indicator threshold (higher = more skips/faster)
+    fbcache_warmup_steps: int = 1,  # always compute the first N steps
+    fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -698,6 +702,31 @@ def custom_sampling_loop(
                       f"(m={spectrum_m}, lam={spectrum_lam}, w={spectrum_w}, "
                       f"warmup={spectrum_warmup_steps}, window={spectrum_window_size}, "
                       f"flex={spectrum_flex_window}, tail={spectrum_tail})")
+
+    # FBCache (First Block Cache): dynamic per-step deep-block caching via the same
+    # per-block interception as Spectrum block mode. Mutually exclusive with Spectrum
+    # (same monkey-patch), and auto-disabled for the same unstable-conditioning cases
+    # (prompt editing / ControlNet / DEUS) that make per-step block outputs non-reusable.
+    fbcache_ctrl = None
+    if fbcache_enable:
+        if spectrum_block_ctrl is not None or spectrum is not None:
+            print("[FBCache] requested but disabled (Spectrum is active; they share the "
+                  "same block interception and are mutually exclusive)")
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS "
+                  "change the block outputs per step; needs stable conditioning)")
+        else:
+            from core.inference.fbcache_unet import build_unet_fbcache_controller
+            fbcache_ctrl = build_unet_fbcache_controller(
+                unet,
+                {
+                    "fbcache_enable": fbcache_enable,
+                    "fbcache_threshold": fbcache_threshold,
+                    "fbcache_warmup_steps": fbcache_warmup_steps,
+                    "fbcache_cache_branch": fbcache_cache_branch,
+                },
+                label="txt2img",
+            )
 
     # Prepare latents
     if latents is None:
@@ -1076,8 +1105,12 @@ def custom_sampling_loop(
 
                 # Spectrum block mode: deep blocks are captured (anchor) or forecast
                 # (skip) inside the U-Net via wrappers installed for this single call.
+                # FBCache block mode: deep blocks are reused (hit) or captured (miss)
+                # dynamically per step via wrappers installed for this single call.
                 if spectrum_block_ctrl is not None:
                     spectrum_block_ctrl.begin_step(i)
+                if fbcache_ctrl is not None:
+                    fbcache_ctrl.begin_step(i)
                 try:
                     if use_autocast:
                         with torch.autocast(device_type='cuda', dtype=torch.float16):
@@ -1095,6 +1128,8 @@ def custom_sampling_loop(
                 finally:
                     if spectrum_block_ctrl is not None:
                         spectrum_block_ctrl.end_step()
+                    if fbcache_ctrl is not None:
+                        fbcache_ctrl.end_step()
 
                 # Spectrum output mode: record this actual-pass output and refit.
                 if spectrum is not None and spectrum_block_ctrl is None:
@@ -1309,6 +1344,10 @@ def custom_img2img_sampling_loop(
     spectrum_feature_mode: str = "output",  # "output" (black-box) or "block" (deep-feature)
     spectrum_cache_branch: int = 1,  # block mode: down_blocks[cache_branch:] + mid are forecast
     spectrum_max_cache: int = 0,  # forecaster sliding-window size (0 = unlimited)
+    fbcache_enable: bool = False,  # FBCache (First Block Cache) dynamic U-Net block caching
+    fbcache_threshold: float = 0.12,  # relative-L1 indicator threshold (higher = more skips/faster)
+    fbcache_warmup_steps: int = 1,  # always compute the first N steps
+    fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1545,6 +1584,28 @@ def custom_img2img_sampling_loop(
                       f"deep-feature passes, cache_branch={spectrum_block_ctrl.branch}/{spectrum_block_ctrl.n_down}")
             else:
                 print(f"[Spectrum] enabled (img2img, output mode): {len(spectrum.anchors)}/{_n_steps} actual passes")
+
+    # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
+    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS).
+    fbcache_ctrl = None
+    if fbcache_enable:
+        if spectrum_block_ctrl is not None or spectrum is not None:
+            print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS; "
+                  "needs stable conditioning)")
+        else:
+            from core.inference.fbcache_unet import build_unet_fbcache_controller
+            fbcache_ctrl = build_unet_fbcache_controller(
+                unet,
+                {
+                    "fbcache_enable": fbcache_enable,
+                    "fbcache_threshold": fbcache_threshold,
+                    "fbcache_warmup_steps": fbcache_warmup_steps,
+                    "fbcache_cache_branch": fbcache_cache_branch,
+                },
+                label="img2img",
+            )
     print(f"[CustomSampling] Starting img2img loop with {len(timesteps)} steps (strength={strength})")
     print(f"[CustomSampling] Latents shape: {latents.shape}, dtype: {latents.dtype}")
 
@@ -1867,8 +1928,12 @@ def custom_img2img_sampling_loop(
 
                 # Spectrum block mode: deep blocks are captured (anchor) or forecast
                 # (skip) inside the U-Net via wrappers installed for this single call.
+                # FBCache block mode: deep blocks are reused (hit) or captured (miss)
+                # dynamically per step via wrappers installed for this single call.
                 if spectrum_block_ctrl is not None:
                     spectrum_block_ctrl.begin_step(i)
+                if fbcache_ctrl is not None:
+                    fbcache_ctrl.begin_step(i)
                 try:
                     if use_autocast:
                         with torch.autocast(device_type='cuda', dtype=torch.float16):
@@ -1886,6 +1951,8 @@ def custom_img2img_sampling_loop(
                 finally:
                     if spectrum_block_ctrl is not None:
                         spectrum_block_ctrl.end_step()
+                    if fbcache_ctrl is not None:
+                        fbcache_ctrl.end_step()
 
                 # Spectrum output mode: record this actual-pass output and refit.
                 if spectrum is not None and spectrum_block_ctrl is None:
@@ -2094,6 +2161,10 @@ def custom_inpaint_sampling_loop(
     spectrum_feature_mode: str = "output",  # "output" (black-box) or "block" (deep-feature)
     spectrum_cache_branch: int = 1,  # block mode: down_blocks[cache_branch:] + mid are forecast
     spectrum_max_cache: int = 0,  # forecaster sliding-window size (0 = unlimited)
+    fbcache_enable: bool = False,  # FBCache (First Block Cache) dynamic U-Net block caching
+    fbcache_threshold: float = 0.12,  # relative-L1 indicator threshold (higher = more skips/faster)
+    fbcache_warmup_steps: int = 1,  # always compute the first N steps
+    fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2387,6 +2458,28 @@ def custom_inpaint_sampling_loop(
                       f"deep-feature passes, cache_branch={spectrum_block_ctrl.branch}/{spectrum_block_ctrl.n_down}")
             else:
                 print(f"[Spectrum] enabled (inpaint, output mode): {len(spectrum.anchors)}/{_n_steps} actual passes")
+
+    # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
+    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS).
+    fbcache_ctrl = None
+    if fbcache_enable:
+        if spectrum_block_ctrl is not None or spectrum is not None:
+            print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS; "
+                  "needs stable conditioning)")
+        else:
+            from core.inference.fbcache_unet import build_unet_fbcache_controller
+            fbcache_ctrl = build_unet_fbcache_controller(
+                unet,
+                {
+                    "fbcache_enable": fbcache_enable,
+                    "fbcache_threshold": fbcache_threshold,
+                    "fbcache_warmup_steps": fbcache_warmup_steps,
+                    "fbcache_cache_branch": fbcache_cache_branch,
+                },
+                label="inpaint",
+            )
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
     # Get sigma_max for dynamic CFG scheduling
@@ -2698,8 +2791,12 @@ def custom_inpaint_sampling_loop(
 
                 # Spectrum block mode: deep blocks are captured (anchor) or forecast
                 # (skip) inside the U-Net via wrappers installed for this single call.
+                # FBCache block mode: deep blocks are reused (hit) or captured (miss)
+                # dynamically per step via wrappers installed for this single call.
                 if spectrum_block_ctrl is not None:
                     spectrum_block_ctrl.begin_step(i)
+                if fbcache_ctrl is not None:
+                    fbcache_ctrl.begin_step(i)
                 try:
                     if use_autocast:
                         with torch.autocast(device_type='cuda', dtype=torch.float16):
@@ -2717,6 +2814,8 @@ def custom_inpaint_sampling_loop(
                 finally:
                     if spectrum_block_ctrl is not None:
                         spectrum_block_ctrl.end_step()
+                    if fbcache_ctrl is not None:
+                        fbcache_ctrl.end_step()
 
                 # Spectrum output mode: record this actual-pass output and refit.
                 if spectrum is not None and spectrum_block_ctrl is None:

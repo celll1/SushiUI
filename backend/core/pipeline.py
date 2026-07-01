@@ -2149,6 +2149,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 spectrum_feature_mode=params.get("spectrum_feature_mode", "output"),
                 spectrum_cache_branch=params.get("spectrum_cache_branch", 1),
                 spectrum_max_cache=params.get("spectrum_max_cache", 0),
+                fbcache_enable=params.get("fbcache_enable", False),
+                fbcache_threshold=params.get("fbcache_threshold", 0.12),
+                fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
+                fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
                 **controlnet_kwargs,
             )
 
@@ -2740,6 +2744,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 spectrum_feature_mode=params.get("spectrum_feature_mode", "output"),
                 spectrum_cache_branch=params.get("spectrum_cache_branch", 1),
                 spectrum_max_cache=params.get("spectrum_max_cache", 0),
+                fbcache_enable=params.get("fbcache_enable", False),
+                fbcache_threshold=params.get("fbcache_threshold", 0.12),
+                fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
+                fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
                 **controlnet_kwargs,
             )
 
@@ -3195,6 +3203,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             spectrum_feature_mode=params.get("spectrum_feature_mode", "output"),
             spectrum_cache_branch=params.get("spectrum_cache_branch", 1),
             spectrum_max_cache=params.get("spectrum_max_cache", 0),
+            fbcache_enable=params.get("fbcache_enable", False),
+            fbcache_threshold=params.get("fbcache_threshold", 0.12),
+            fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
+            fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
             **controlnet_kwargs,
         )
 

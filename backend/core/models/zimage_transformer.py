@@ -85,6 +85,10 @@ def apply_rotary_emb(x_in: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tenso
 
 class ZImageAttention(nn.Module):
     _attention_backend = None
+    # NAG (Normalized Attention Guidance) context. None => NAG off (default), and the
+    # forward path below is byte-identical to the original. Set to a NAGContext by the
+    # Z-Image denoising loop only while NAG is active. See core/inference/nag_zimage.py.
+    _nag_ctx = None
 
     def __init__(self, dim: int, n_heads: int, n_kv_heads: int, qk_norm: bool = True, eps: float = 1e-5):
         super().__init__()
@@ -132,6 +136,14 @@ class ZImageAttention(nn.Module):
         hidden_states = dispatch_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False, backend=self._attention_backend
         )
+
+        # NAG (Normalized Attention Guidance): OFF by default (_nag_ctx is None). When
+        # active, extrapolate the image (prefix) attention output of the positive/cond
+        # group away from the nag-negative group before the output projection.
+        nag_ctx = type(self)._nag_ctx
+        if nag_ctx is not None:
+            from core.inference.nag_zimage import apply_nag_to_attention_output
+            hidden_states = apply_nag_to_attention_output(hidden_states, nag_ctx)
 
         hidden_states = hidden_states.flatten(2, 3)
         hidden_states = hidden_states.to(dtype)
@@ -579,6 +591,30 @@ class ZImageTransformer2DModel(nn.Module):
         for i, seq_len in enumerate(unified_item_seqlens):
             unified_attn_mask[i, :seq_len] = 1
 
+        # NAG (Normalized Attention Guidance): install the per-forward context on the
+        # ZImageAttention class ONLY for the main joint layers (where image + caption tokens
+        # attend together). The refiners above are pure-image / pure-caption and must not be
+        # touched. image_len is x_item_seqlens[0]: the image tokens are the PREFIX of each
+        # unified row and are identical across all groups (same latents), so a single value
+        # applies. _nag_request is set by the Z-Image denoising loop only while NAG is active.
+        nag_request = getattr(self, "_nag_request", None)
+        nag_installed = False
+        if nag_request is not None:
+            try:
+                from core.inference.nag_zimage import NAGContext
+                ZImageAttention._nag_ctx = NAGContext(
+                    group_size=nag_request["group_size"],
+                    has_cfg=nag_request["has_cfg"],
+                    image_len=x_item_seqlens[0],
+                    scale=nag_request["scale"],
+                    tau=nag_request["tau"],
+                    alpha=nag_request["alpha"],
+                )
+                nag_installed = True
+            except Exception as _nag_e:
+                print(f"[Z-Image NAG] Failed to install NAG context: {_nag_e}")
+                ZImageAttention._nag_ctx = None
+
         for layer_idx, layer in enumerate(self.layers):
             # Block Swap integration: wait for block transfer before execution
             if hasattr(self, '_block_offloader') and self._block_offloader is not None:
@@ -600,6 +636,10 @@ class ZImageTransformer2DModel(nn.Module):
             # Block Swap integration: submit next block transfer after execution
             if hasattr(self, '_block_offloader') and self._block_offloader is not None:
                 self._block_offloader.submit_move_blocks_forward(layer_idx)
+
+        # Clear the NAG context so it never leaks into a subsequent non-NAG forward.
+        if nag_installed:
+            ZImageAttention._nag_ctx = None
 
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))

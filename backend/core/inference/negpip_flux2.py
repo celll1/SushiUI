@@ -528,18 +528,18 @@ def set_negpip_nag_flux2_processors(transformer, nag_scale, nag_tau, nag_alpha, 
 # ---------------------------------------------------------------------------
 
 class Flux2NegPipWrapper(nn.Module):
-    """Reimplements the Flux.2 forward for the NAG-OFF NegPip case.
+    """Thin NegPip helper: installs the standalone NegPip attention processors and
+    delegates the forward to the unified ``Flux2BlockSwapWrapper``.
 
-    Identical batch handling to the plain transformer (no NAG expansion): the only
-    reason a wrapper is needed is to set ``encoder_hidden_states_length`` on the
-    single-stream NegPip processors each forward (so they know where the text prefix
-    ends). Mirrors Flux2NAGWrapper's forward without the NAG image expansion/reduce.
+    NegPip does NOT expand the batch (txt_b == img_b), so the unified host's ``do_nag``
+    is always False -> no NAG batch handling runs. The only per-forward work the unified
+    loop does for us is setting ``encoder_hidden_states_length`` on the single-stream
+    NegPip processors (it also sets ``origin_img_batch``, which those procs ignore).
 
-    Independent of block swap (installs its own processors on the raw transformer);
-    used only when block swap is off, matching the NAG wrapper's constraint.
+    Composes with block swap: pass the offloader via ``block_offloader``.
     """
 
-    def __init__(self, transformer, token_weights):
+    def __init__(self, transformer, token_weights, block_offloader=None):
         super().__init__()
         self.transformer = transformer
         self.config = transformer.config
@@ -549,94 +549,20 @@ class Flux2NegPipWrapper(nn.Module):
             transformer, token_weights
         )
 
+        # The unified forward host sets length/origin on the single procs each forward
+        # and (optionally) drives block swap. Imported lazily to avoid a circular import.
+        from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+        self._unified = Flux2BlockSwapWrapper(
+            transformer,
+            block_offloader=block_offloader,
+            single_procs=self._single_procs,
+        )
+
     def restore(self):
         restore_processors(self.transformer, self._originals)
 
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor = None,
-        pooled_projections: torch.Tensor = None,
-        timestep: torch.LongTensor = None,
-        img_ids: torch.Tensor = None,
-        txt_ids: torch.Tensor = None,
-        guidance: torch.Tensor = None,
-        joint_attention_kwargs: Optional[Dict[str, Any]] = None,
-        controlnet_block_samples=None,
-        controlnet_single_block_samples=None,
-        return_dict: bool = True,
-        controlnet_blocks_repeat: bool = False,
-    ) -> Union[torch.Tensor, Transformer2DModelOutput]:
-        import numpy as np
-        transformer = self.transformer
-        num_txt_tokens = encoder_hidden_states.shape[1]
-
-        ts = timestep[:1] if timestep.ndim >= 1 else timestep
-        ts = ts.to(hidden_states.dtype) * 1000
-        g = None
-        if guidance is not None:
-            g = (guidance[:1] if guidance.ndim >= 1 else guidance).to(hidden_states.dtype) * 1000
-        temb = transformer.time_guidance_embed(ts, g)
-
-        double_stream_mod_img = transformer.double_stream_modulation_img(temb)
-        double_stream_mod_txt = transformer.double_stream_modulation_txt(temb)
-        single_stream_mod = transformer.single_stream_modulation(temb)[0]
-
-        hidden_states = transformer.x_embedder(hidden_states)
-        encoder_hidden_states = transformer.context_embedder(encoder_hidden_states)
-
-        if img_ids.ndim == 3:
-            img_ids = img_ids[0]
-        if txt_ids.ndim == 3:
-            txt_ids = txt_ids[0]
-        image_rotary_emb = transformer.pos_embed(img_ids)
-        text_rotary_emb = transformer.pos_embed(txt_ids)
-        concat_rotary_emb = (
-            torch.cat([text_rotary_emb[0], image_rotary_emb[0]], dim=0),
-            torch.cat([text_rotary_emb[1], image_rotary_emb[1]], dim=0),
-        )
-
-        for p in self._single_procs:
-            p.encoder_hidden_states_length = num_txt_tokens
-
-        for index_block, block in enumerate(transformer.transformer_blocks):
-            encoder_hidden_states, hidden_states = block(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                temb_mod_params_img=double_stream_mod_img,
-                temb_mod_params_txt=double_stream_mod_txt,
-                image_rotary_emb=concat_rotary_emb,
-                joint_attention_kwargs=joint_attention_kwargs,
-            )
-            if controlnet_block_samples is not None:
-                interval = int(np.ceil(len(transformer.transformer_blocks) / len(controlnet_block_samples)))
-                if controlnet_blocks_repeat:
-                    hidden_states = hidden_states + controlnet_block_samples[index_block % len(controlnet_block_samples)]
-                else:
-                    hidden_states = hidden_states + controlnet_block_samples[index_block // interval]
-
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
-
-        for index_block, block in enumerate(transformer.single_transformer_blocks):
-            hidden_states = block(
-                hidden_states=hidden_states,
-                encoder_hidden_states=None,
-                temb_mod_params=single_stream_mod,
-                image_rotary_emb=concat_rotary_emb,
-                joint_attention_kwargs=joint_attention_kwargs,
-            )
-            if controlnet_single_block_samples is not None:
-                interval = int(np.ceil(len(transformer.single_transformer_blocks) / len(controlnet_single_block_samples)))
-                sample = controlnet_single_block_samples[index_block // interval]
-                hidden_states[:, num_txt_tokens:, ...] = hidden_states[:, num_txt_tokens:, ...] + sample
-
-        hidden_states = hidden_states[:, num_txt_tokens:, ...]
-        hidden_states = transformer.norm_out(hidden_states, temb)
-        output = transformer.proj_out(hidden_states)
-
-        if not return_dict:
-            return (output,)
-        return Transformer2DModelOutput(sample=output)
+    def forward(self, *args, **kwargs):
+        return self._unified(*args, **kwargs)
 
     def __getattr__(self, name):
         try:
@@ -654,7 +580,8 @@ class Flux2NegPipNAGWrapper(Flux2NAGWrapper):
     ``token_weights``. Overrides only processor installation.
     """
 
-    def __init__(self, transformer, token_weights, nag_scale=5.0, nag_tau=2.5, nag_alpha=0.25):
+    def __init__(self, transformer, token_weights, nag_scale=5.0, nag_tau=2.5, nag_alpha=0.25,
+                 block_offloader=None):
         nn.Module.__init__(self)
         self.transformer = transformer
         self.config = transformer.config
@@ -664,12 +591,12 @@ class Flux2NegPipNAGWrapper(Flux2NAGWrapper):
         self._originals, self._single_procs = set_negpip_nag_flux2_processors(
             transformer, nag_scale, nag_tau, nag_alpha, token_weights
         )
-        # Delegate the forward to the unified Flux.2 host (NegPip forces block swap off,
-        # so no offloader here). The subclassed processors carry the signed text-V and
-        # NAG batch logic; the unified loop just sets length/origin each forward.
+        # Delegate the forward to the unified Flux.2 host. The subclassed processors carry
+        # the signed text-V and NAG batch logic; the unified loop sets length/origin each
+        # forward and (optionally) drives block swap.
         from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
         self._unified = Flux2BlockSwapWrapper(
             transformer,
-            block_offloader=None,
-            nag_single_procs=self._single_procs,
+            block_offloader=block_offloader,
+            single_procs=self._single_procs,
         )

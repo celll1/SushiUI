@@ -597,14 +597,6 @@ class Flux2Mixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
             block_offloader = None
 
-            # NegPip needs a standalone forward with all weights on GPU; disable Block
-            # Swap when it is active (NegPip + Block Swap is a follow-up). NAG is now
-            # unified into the Block Swap wrapper, so NAG + Block Swap compose.
-            if negpip_active and enable_block_swap and blocks_to_swap > 0:
-                print("[FLUX.2] NegPip enabled -> disabling Block Swap for this run")
-                enable_block_swap = False
-                blocks_to_swap = 0
-
             if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
@@ -625,9 +617,26 @@ class Flux2Mixin:
                 # Prepare block devices
                 block_offloader.prepare_block_devices_before_forward()
 
-                # NAG + Block Swap: install NAG processors and build ONE unified wrapper
-                # holding both the offloader and the single-stream NAG processors.
-                if nag_active:
+                # NAG / NegPip now compose with Block Swap: install the matching attention
+                # processors and build ONE unified wrapper holding both the offloader and
+                # the single-stream processors.
+                #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
+                #   NAG only     -> Flux2NAGWrapper
+                #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
+                #   plain        -> Flux2BlockSwapWrapper
+                if nag_active and negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipNAGWrapper
+                    nag_wrapper = Flux2NegPipNAGWrapper(
+                        transformer,
+                        negpip_weights,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                        block_offloader=block_offloader,
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print("[FLUX.2] NAG + NegPip + Block Swap enabled")
+                elif nag_active:
                     from core.inference.nag_flux2 import Flux2NAGWrapper
                     nag_wrapper = Flux2NAGWrapper(
                         transformer,
@@ -639,6 +648,13 @@ class Flux2Mixin:
                     transformer_wrapper = nag_wrapper
                     print(f"[FLUX.2] NAG + Block Swap enabled: scale={params.get('nag_scale', 5.0)}, "
                           f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
+                elif negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipWrapper
+                    negpip_wrapper = Flux2NegPipWrapper(
+                        transformer, negpip_weights, block_offloader=block_offloader
+                    )
+                    transformer_wrapper = negpip_wrapper
+                    print("[FLUX.2] NegPip + Block Swap enabled")
                 else:
                     # Wrap transformer (block swap only)
                     transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
@@ -655,9 +671,10 @@ class Flux2Mixin:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-                # NAG / NegPip: swap in a standalone forward wrapper (installs attention
-                # processors; independent of block swap, which is disabled above when
-                # either is active). Restored after the loop via nag_wrapper.restore().
+                # NAG / NegPip (no block swap): swap in a forward wrapper (installs
+                # attention processors; built with no offloader here). The same wrappers
+                # compose with block swap in the branch above. Restored after the loop via
+                # nag_wrapper.restore() / negpip_wrapper.restore().
                 #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
                 #   NAG only     -> Flux2NAGWrapper
                 #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
@@ -1482,14 +1499,6 @@ class Flux2Mixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
             block_offloader = None
 
-            # NegPip needs a standalone forward with all weights on GPU; disable Block
-            # Swap when it is active (NegPip + Block Swap is a follow-up). NAG is now
-            # unified into the Block Swap wrapper, so NAG + Block Swap compose.
-            if negpip_active and enable_block_swap and blocks_to_swap > 0:
-                print("[FLUX.2] NegPip enabled -> disabling Block Swap for this run")
-                enable_block_swap = False
-                blocks_to_swap = 0
-
             if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
@@ -1506,9 +1515,26 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
-                # NAG + Block Swap: install NAG processors and build ONE unified wrapper
-                # holding both the offloader and the single-stream NAG processors.
-                if nag_active:
+                # NAG / NegPip now compose with Block Swap: install the matching attention
+                # processors and build ONE unified wrapper holding both the offloader and
+                # the single-stream processors.
+                #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
+                #   NAG only     -> Flux2NAGWrapper
+                #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
+                #   plain        -> Flux2BlockSwapWrapper
+                if nag_active and negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipNAGWrapper
+                    nag_wrapper = Flux2NegPipNAGWrapper(
+                        transformer,
+                        negpip_weights,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                        block_offloader=block_offloader,
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print("[FLUX.2] NAG + NegPip + Block Swap enabled")
+                elif nag_active:
                     from core.inference.nag_flux2 import Flux2NAGWrapper
                     nag_wrapper = Flux2NAGWrapper(
                         transformer,
@@ -1520,6 +1546,13 @@ class Flux2Mixin:
                     transformer_wrapper = nag_wrapper
                     print(f"[FLUX.2] NAG + Block Swap enabled: scale={params.get('nag_scale', 5.0)}, "
                           f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
+                elif negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipWrapper
+                    negpip_wrapper = Flux2NegPipWrapper(
+                        transformer, negpip_weights, block_offloader=block_offloader
+                    )
+                    transformer_wrapper = negpip_wrapper
+                    print("[FLUX.2] NegPip + Block Swap enabled")
                 else:
                     transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
                     print("[FLUX.2] Using Block Swap wrapper for denoising")
@@ -1533,9 +1566,10 @@ class Flux2Mixin:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-                # NAG / NegPip: swap in a standalone forward wrapper (installs attention
-                # processors; independent of block swap, which is disabled above when
-                # either is active). Restored after the loop via nag_wrapper.restore().
+                # NAG / NegPip (no block swap): swap in a forward wrapper (installs
+                # attention processors; built with no offloader here). The same wrappers
+                # compose with block swap in the branch above. Restored after the loop via
+                # nag_wrapper.restore() / negpip_wrapper.restore().
                 #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
                 #   NAG only     -> Flux2NAGWrapper
                 #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
@@ -2037,14 +2071,6 @@ class Flux2Mixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
             block_offloader = None
 
-            # NegPip needs a standalone forward with all weights on GPU; disable Block
-            # Swap when it is active (NegPip + Block Swap is a follow-up). NAG is now
-            # unified into the Block Swap wrapper, so NAG + Block Swap compose.
-            if negpip_active and enable_block_swap and blocks_to_swap > 0:
-                print("[FLUX.2] NegPip enabled -> disabling Block Swap for this run")
-                enable_block_swap = False
-                blocks_to_swap = 0
-
             if enable_block_swap and blocks_to_swap > 0:
                 print(f"[FLUX.2] Block Swap enabled: {blocks_to_swap} blocks to swap")
                 from core.memory_management import create_flux_block_offloader
@@ -2061,9 +2087,26 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
-                # NAG + Block Swap: install NAG processors and build ONE unified wrapper
-                # holding both the offloader and the single-stream NAG processors.
-                if nag_active:
+                # NAG / NegPip now compose with Block Swap: install the matching attention
+                # processors and build ONE unified wrapper holding both the offloader and
+                # the single-stream processors.
+                #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
+                #   NAG only     -> Flux2NAGWrapper
+                #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)
+                #   plain        -> Flux2BlockSwapWrapper
+                if nag_active and negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipNAGWrapper
+                    nag_wrapper = Flux2NegPipNAGWrapper(
+                        transformer,
+                        negpip_weights,
+                        nag_scale=params.get("nag_scale", 5.0),
+                        nag_tau=params.get("nag_tau", 2.5),
+                        nag_alpha=params.get("nag_alpha", 0.25),
+                        block_offloader=block_offloader,
+                    )
+                    transformer_wrapper = nag_wrapper
+                    print("[FLUX.2] NAG + NegPip + Block Swap enabled")
+                elif nag_active:
                     from core.inference.nag_flux2 import Flux2NAGWrapper
                     nag_wrapper = Flux2NAGWrapper(
                         transformer,
@@ -2075,6 +2118,13 @@ class Flux2Mixin:
                     transformer_wrapper = nag_wrapper
                     print(f"[FLUX.2] NAG + Block Swap enabled: scale={params.get('nag_scale', 5.0)}, "
                           f"tau={params.get('nag_tau', 2.5)}, alpha={params.get('nag_alpha', 0.25)}")
+                elif negpip_active:
+                    from core.inference.negpip_flux2 import Flux2NegPipWrapper
+                    negpip_wrapper = Flux2NegPipWrapper(
+                        transformer, negpip_weights, block_offloader=block_offloader
+                    )
+                    transformer_wrapper = negpip_wrapper
+                    print("[FLUX.2] NegPip + Block Swap enabled")
                 else:
                     transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
                     print("[FLUX.2] Using Block Swap wrapper for denoising")
@@ -2088,9 +2138,10 @@ class Flux2Mixin:
                     weighs_to_device(block, torch.device(self.device))
                 transformer_wrapper = transformer
 
-                # NAG / NegPip: swap in a standalone forward wrapper (installs attention
-                # processors; independent of block swap, which is disabled above when
-                # either is active). Restored after the loop via nag_wrapper.restore().
+                # NAG / NegPip (no block swap): swap in a forward wrapper (installs
+                # attention processors; built with no offloader here). The same wrappers
+                # compose with block swap in the branch above. Restored after the loop via
+                # nag_wrapper.restore() / negpip_wrapper.restore().
                 #   NAG + NegPip -> Flux2NegPipNAGWrapper (signed V folded into NAG's V)
                 #   NAG only     -> Flux2NAGWrapper
                 #   NegPip only  -> Flux2NegPipWrapper (signed text-V, no extra forward)

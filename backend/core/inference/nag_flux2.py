@@ -240,7 +240,7 @@ class Flux2NAGWrapper(nn.Module):
         self._unified = Flux2BlockSwapWrapper(
             transformer,
             block_offloader=block_offloader,
-            nag_single_procs=self._single_procs,
+            single_procs=self._single_procs,
         )
 
     def restore(self):

@@ -11,9 +11,34 @@ Functions:
 
 #include <torch/extension.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/CUDAEvent.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/util/Optional.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
+#include <array>
+
+// ============================================================
+// Dedicated per-device transfer stream for Ring Buffer state I/O
+// ============================================================
+// Cached once per device from the stream pool so it is STABLE across calls.
+// Both the H2D and the D2H of a parameter's optimizer state use this same
+// stream, which keeps cross-step coherence of the pinned CPU buffer (this
+// step's D2H is ordered before next step's H2D on the same stream). Running
+// the state writeback here lets it overlap with subsequent backward work on
+// the compute (current) stream instead of serialising with it.
+static at::cuda::CUDAStream get_xfer_stream(c10::DeviceIndex device) {
+    static std::array<c10::optional<at::cuda::CUDAStream>, 64> cache;
+    if (device >= 0 && static_cast<size_t>(device) < cache.size()) {
+        if (!cache[device].has_value()) {
+            cache[device].emplace(at::cuda::getStreamFromPool(/*isHighPriority=*/false, device));
+        }
+        return cache[device].value();
+    }
+    return at::cuda::getStreamFromPool(/*isHighPriority=*/false, device);
+}
 
 // Forward declarations of CUDA functions (defined in .cu files)
 extern "C" {
@@ -53,7 +78,8 @@ void launch_lion_8bit_blockwise_update_kernel(
     bool cautious,
     int N,
     int blocks,
-    int threads
+    int threads,
+    cudaStream_t stream
 );
 
 /*
@@ -134,9 +160,18 @@ void lion_8bit_update(
     torch::Tensor exp_avg_gpu = exp_avg;
     bool exp_avg_is_cpu = !exp_avg.is_cuda();
 
-    // Transfer state to GPU if on CPU (Ring Buffer case)
+    c10::DeviceIndex dev = param.device().index();
+    at::cuda::CUDAStream current = at::cuda::getCurrentCUDAStream(dev);
+    at::cuda::CUDAStream xfer = exp_avg_is_cpu ? get_xfer_stream(dev) : current;
+
+    // H2D of the pinned Ring Buffer state on the transfer stream. The update
+    // kernel (current stream) must wait for it -> order via an event.
     if (exp_avg_is_cpu) {
+        c10::cuda::CUDAStreamGuard guard(xfer);
         exp_avg_gpu = exp_avg.to(param.device(), /*non_blocking=*/true);
+        at::cuda::CUDAEvent e_h2d;
+        e_h2d.record(xfer);
+        e_h2d.block(current);
     }
 
     // ============================================================
@@ -145,6 +180,10 @@ void lion_8bit_update(
 
     const int threads = 256;
     const int blocks = (N + threads - 1) / threads;
+
+    // The update kernel runs on the current (compute) stream, so the in-place
+    // parameter update stays naturally ordered with the surrounding backward.
+    cudaStream_t stream = current.stream();
 
     auto param_dtype = param.dtype();
 
@@ -155,7 +194,7 @@ void lion_8bit_update(
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
             beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N,
-            blocks, threads
+            blocks, threads, stream
         );
     } else if (param_dtype == torch::kFloat16) {
         launch_lion_8bit_blockwise_update_kernel<__half>(
@@ -164,7 +203,7 @@ void lion_8bit_update(
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
             beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N,
-            blocks, threads
+            blocks, threads, stream
         );
     } else if (param_dtype == torch::kBFloat16) {
         launch_lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
@@ -173,7 +212,7 @@ void lion_8bit_update(
             exp_avg_gpu.data_ptr<unsigned char>(),
             absmax.data_ptr<float>(),
             beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N,
-            blocks, threads
+            blocks, threads, stream
         );
     } else {
         TORCH_CHECK(false, "Unsupported parameter dtype");
@@ -184,16 +223,24 @@ void lion_8bit_update(
     TORCH_CHECK(err == cudaSuccess,
                 "CUDA kernel launch failed: ", cudaGetErrorString(err));
 
-    // Synchronize to ensure kernel completion before CPU→GPU copy back
-    cudaDeviceSynchronize();
-
     // ============================================================
-    // Ring Buffer Support: GPU→CPU Transfer
+    // Ring Buffer Support: GPU→CPU Transfer (on the transfer stream)
     // ============================================================
 
-    // Copy updated state back to CPU if needed
+    // D2H writeback on the dedicated transfer stream so it overlaps with the
+    // next parameters' backward on the current stream. Ordered after the update
+    // kernel via an event; record_stream keeps the GPU staging buffer alive
+    // until both streams are done with it. Same-stream ordering on the transfer
+    // stream keeps this step's D2H before next step's H2D of the same pinned
+    // buffer; there is no per-parameter sync.
     if (exp_avg_is_cpu) {
-        exp_avg.copy_(exp_avg_gpu, /*non_blocking=*/false);
+        at::cuda::CUDAEvent e_kernel;
+        e_kernel.record(current);
+        e_kernel.block(xfer);
+        c10::cuda::CUDAStreamGuard guard(xfer);
+        exp_avg.copy_(exp_avg_gpu, /*non_blocking=*/true);
+        exp_avg_gpu.record_stream(current);
+        exp_avg_gpu.record_stream(xfer);
     }
 }
 
@@ -256,9 +303,18 @@ void lion_8bit_schedulefree_update(
     torch::Tensor state_z_gpu = state_z;
     bool state_z_is_cpu = !state_z.is_cuda();
 
-    // Transfer state to GPU if on CPU (Ring Buffer case)
+    c10::DeviceIndex dev = param.device().index();
+    at::cuda::CUDAStream current = at::cuda::getCurrentCUDAStream(dev);
+    at::cuda::CUDAStream xfer = state_z_is_cpu ? get_xfer_stream(dev) : current;
+
+    // H2D of the pinned Ring Buffer state on the transfer stream; the kernel
+    // (current stream) waits for it via an event.
     if (state_z_is_cpu) {
+        c10::cuda::CUDAStreamGuard guard(xfer);
         state_z_gpu = state_z.to(param.device(), /*non_blocking=*/true);
+        at::cuda::CUDAEvent e_h2d;
+        e_h2d.record(xfer);
+        e_h2d.block(current);
     }
 
     // ============================================================
@@ -266,7 +322,8 @@ void lion_8bit_schedulefree_update(
     // ============================================================
 
     auto param_dtype = param.dtype();
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    // Update kernel runs on the current (compute) stream.
+    cudaStream_t stream = current.stream();
 
     if (param_dtype == torch::kFloat32) {
         lion_8bit_schedulefree_update_fp32(
@@ -301,16 +358,21 @@ void lion_8bit_schedulefree_update(
     TORCH_CHECK(err == cudaSuccess,
                 "CUDA kernel launch failed: ", cudaGetErrorString(err));
 
-    // Synchronize to ensure kernel completion before GPU→CPU copy back
-    cudaDeviceSynchronize();
-
     // ============================================================
-    // Ring Buffer Support: GPU→CPU Transfer
+    // Ring Buffer Support: GPU→CPU Transfer (on the transfer stream)
     // ============================================================
 
-    // Copy updated state back to CPU if needed
+    // D2H writeback on the dedicated transfer stream (overlaps with subsequent
+    // backward), ordered after the kernel via an event; record_stream keeps the
+    // staging buffer alive across both streams. (See note in lion_8bit_update.)
     if (state_z_is_cpu) {
-        state_z.copy_(state_z_gpu, /*non_blocking=*/false);
+        at::cuda::CUDAEvent e_kernel;
+        e_kernel.record(current);
+        e_kernel.block(xfer);
+        c10::cuda::CUDAStreamGuard guard(xfer);
+        state_z.copy_(state_z_gpu, /*non_blocking=*/true);
+        state_z_gpu.record_stream(current);
+        state_z_gpu.record_stream(xfer);
     }
 }
 

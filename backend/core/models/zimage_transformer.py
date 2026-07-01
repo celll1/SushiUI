@@ -647,27 +647,51 @@ class ZImageTransformer2DModel(nn.Module):
                 print(f"[Z-Image NegPip] Failed to install NegPip context: {_np_e}")
                 ZImageAttention._negpip_ctx = None
 
-        for layer_idx, layer in enumerate(self.layers):
-            # Block Swap integration: wait for block transfer before execution
-            if hasattr(self, '_block_offloader') and self._block_offloader is not None:
-                self._block_offloader.wait_for_block(layer_idx)
-
-            if self.gradient_checkpointing and self.training:
-                # Use gradient checkpointing: recompute activations during backward pass
-                unified = torch.utils.checkpoint.checkpoint(
-                    layer,
-                    unified,
-                    unified_attn_mask,
-                    unified_freqs_cis,
-                    adaln_input,
-                    use_reentrant=False
-                )
+        # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical).
+        # When a FirstBlockCache is attached by the Z-Image denoising loop, run only the first
+        # joint layer, take its residual as the indicator, and either reuse the cached full
+        # residual (skip layers[1:]) or run them and refresh the cache. The indicator and cache
+        # both use the FULL unified [image; caption] hidden state (both streams evolve), which is
+        # correct and shape-stable across steps within a generation (same image size + captions).
+        # Mutually exclusive with Spectrum and Block Swap (guarded in the pipeline), so this branch
+        # never runs alongside _block_offloader.
+        fbcache = getattr(self, "_fbcache", None)
+        if fbcache is not None:
+            fbcache_step = getattr(self, "_fbcache_step", 0)
+            original = unified
+            first_out = self.layers[0](unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+            indicator = first_out - original
+            if fbcache.use_cache(indicator, fbcache_step):
+                # Cache hit: reuse the full-transformer residual, skip layers[1:].
+                unified = original + fbcache.get()
             else:
-                unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+                # Cache miss: run remaining layers from first_out, refresh the cached residual.
+                unified = first_out
+                for layer in self.layers[1:]:
+                    unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+                fbcache.store(unified - original)
+        else:
+            for layer_idx, layer in enumerate(self.layers):
+                # Block Swap integration: wait for block transfer before execution
+                if hasattr(self, '_block_offloader') and self._block_offloader is not None:
+                    self._block_offloader.wait_for_block(layer_idx)
 
-            # Block Swap integration: submit next block transfer after execution
-            if hasattr(self, '_block_offloader') and self._block_offloader is not None:
-                self._block_offloader.submit_move_blocks_forward(layer_idx)
+                if self.gradient_checkpointing and self.training:
+                    # Use gradient checkpointing: recompute activations during backward pass
+                    unified = torch.utils.checkpoint.checkpoint(
+                        layer,
+                        unified,
+                        unified_attn_mask,
+                        unified_freqs_cis,
+                        adaln_input,
+                        use_reentrant=False
+                    )
+                else:
+                    unified = layer(unified, unified_attn_mask, unified_freqs_cis, adaln_input)
+
+                # Block Swap integration: submit next block transfer after execution
+                if hasattr(self, '_block_offloader') and self._block_offloader is not None:
+                    self._block_offloader.submit_move_blocks_forward(layer_idx)
 
         # Clear the NAG context so it never leaks into a subsequent non-NAG forward.
         if nag_installed:

@@ -42,6 +42,7 @@ class Flux2BlockSwapWrapper(nn.Module):
         self,
         transformer: nn.Module,
         block_offloader: Optional["FluxBlockOffloader"] = None,
+        nag_single_procs=None,
     ):
         """
         Initialize wrapper
@@ -49,10 +50,14 @@ class Flux2BlockSwapWrapper(nn.Module):
         Args:
             transformer: FluxTransformer2DModel instance
             block_offloader: FluxBlockOffloader for block swapping (optional)
+            nag_single_procs: single-stream NAG processors that need
+                ``encoder_hidden_states_length`` / ``origin_img_batch`` set each
+                forward (list, or None when NAG is not active)
         """
         super().__init__()
         self.transformer = transformer
         self._block_offloader = block_offloader
+        self._nag_single_procs = nag_single_procs
 
         # Copy config for compatibility
         self.config = transformer.config
@@ -81,8 +86,9 @@ class Flux2BlockSwapWrapper(nn.Module):
 
         Same signature as FluxTransformer2DModel.forward()
         """
-        # If no block offloader, use original forward
-        if self._block_offloader is None or self._block_offloader.blocks_to_swap == 0:
+        # Fast path: no block swap AND no NAG -> original forward (unchanged).
+        swap_on = self._block_offloader is not None and self._block_offloader.blocks_to_swap > 0
+        if not swap_on and self._nag_single_procs is None:
             return self.transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
@@ -98,8 +104,13 @@ class Flux2BlockSwapWrapper(nn.Module):
                 controlnet_blocks_repeat=controlnet_blocks_repeat,
             )
 
-        # === Custom forward with block swap ===
-        # Based on diffusers Flux2Transformer2DModel.forward()
+        # === Unified custom forward (block swap and/or NAG) ===
+        # Based on diffusers Flux2Transformer2DModel.forward(); the block-swap hooks are
+        # guarded by ``swap_on`` and the NAG batch handling by ``do_nag`` so that:
+        #   - swap-only (no NAG procs): identical to the original block-swap forward.
+        #   - NAG-only (no offloader):  identical to the original Flux2NAGWrapper forward.
+        from core.inference.nag_flux2 import _expand
+
         transformer = self.transformer
         offloader = self._block_offloader
 
@@ -111,14 +122,28 @@ class Flux2BlockSwapWrapper(nn.Module):
             lora_scale = 1.0
 
         num_txt_tokens = encoder_hidden_states.shape[1]
+        img_b = hidden_states.shape[0]
+        txt_b = encoder_hidden_states.shape[0]
+        do_nag = txt_b > img_b  # true only when NAG duplicated the text batch
 
-        # 1. Calculate timestep embedding and modulation parameters
-        timestep = timestep.to(hidden_states.dtype) * 1000
+        # Number of dual-stream blocks (unified index base for the single stream).
+        num_dual_blocks = (
+            offloader.num_dual_blocks if offloader is not None
+            else len(transformer.transformer_blocks)
+        )
+
+        # 1. Timestep embedding + modulation parameters.
+        # Use timestep[:1] (same t for all batch elements) so the batch-1 modulation
+        # broadcasts to both the image (img_b) and text (txt_b) streams. For the non-NAG
+        # path this is numerically identical to the full-batch timestep.
+        ts = timestep[:1] if timestep.ndim >= 1 else timestep
+        ts = ts.to(hidden_states.dtype) * 1000
+        g = None
         if guidance is not None:
-            guidance = guidance.to(hidden_states.dtype) * 1000
+            g = (guidance[:1] if guidance.ndim >= 1 else guidance).to(hidden_states.dtype) * 1000
 
         # FLUX.2 uses time_guidance_embed (not time_text_embed)
-        temb = transformer.time_guidance_embed(timestep, guidance)
+        temb = transformer.time_guidance_embed(ts, g)
 
         # Get modulation parameters
         double_stream_mod_img = transformer.double_stream_modulation_img(temb)
@@ -142,11 +167,17 @@ class Flux2BlockSwapWrapper(nn.Module):
             torch.cat([text_rotary_emb[1], image_rotary_emb[1]], dim=0),
         )
 
-        # === 4. Dual stream blocks (transformer_blocks) with block swap ===
-        num_dual_blocks = offloader.num_dual_blocks
+        # NAG single-stream processors need per-forward length/batch context.
+        if self._nag_single_procs:
+            for p in self._nag_single_procs:
+                p.encoder_hidden_states_length = num_txt_tokens
+                p.origin_img_batch = img_b
+
+        # === 4. Dual stream blocks (transformer_blocks) ===
         for index_block, block in enumerate(transformer.transformer_blocks):
             # Wait for block transfer before execution
-            offloader.wait_for_block(index_block)
+            if swap_on:
+                offloader.wait_for_block(index_block)
 
             if torch.is_grad_enabled() and transformer.gradient_checkpointing:
                 encoder_hidden_states, hidden_states = transformer._gradient_checkpointing_func(
@@ -169,9 +200,10 @@ class Flux2BlockSwapWrapper(nn.Module):
                 )
 
             # Submit next block transfer after execution
-            offloader.submit_move_blocks_forward(index_block)
+            if swap_on:
+                offloader.submit_move_blocks_forward(index_block)
 
-            # ControlNet residual
+            # ControlNet residual (dual stream stays at image batch img_b)
             if controlnet_block_samples is not None:
                 interval_control = len(transformer.transformer_blocks) / len(controlnet_block_samples)
                 interval_control = int(np.ceil(interval_control))
@@ -182,16 +214,21 @@ class Flux2BlockSwapWrapper(nn.Module):
                 else:
                     hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
 
+        # Pair the image with the text batch for the single stream (NAG tiles it to txt_b).
+        if do_nag:
+            hidden_states = _expand(hidden_states, img_b, txt_b)
+
         # Concatenate text and image streams for single-block inference
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
 
-        # === 5. Single stream blocks (single_transformer_blocks) with block swap ===
+        # === 5. Single stream blocks (single_transformer_blocks) ===
         for index_block, block in enumerate(transformer.single_transformer_blocks):
             # Unified index for block swap
             unified_idx = num_dual_blocks + index_block
 
             # Wait for block transfer before execution
-            offloader.wait_for_block(unified_idx)
+            if swap_on:
+                offloader.wait_for_block(unified_idx)
 
             if torch.is_grad_enabled() and transformer.gradient_checkpointing:
                 hidden_states = transformer._gradient_checkpointing_func(
@@ -212,16 +249,26 @@ class Flux2BlockSwapWrapper(nn.Module):
                 )
 
             # Submit next block transfer after execution
-            offloader.submit_move_blocks_forward(unified_idx)
+            if swap_on:
+                offloader.submit_move_blocks_forward(unified_idx)
 
             # ControlNet residual
             if controlnet_single_block_samples is not None:
                 interval_control = len(transformer.single_transformer_blocks) / len(controlnet_single_block_samples)
                 interval_control = int(np.ceil(interval_control))
-                hidden_states = hidden_states + controlnet_single_block_samples[index_block // interval_control]
+                sample = controlnet_single_block_samples[index_block // interval_control]
+                if do_nag:
+                    # NAG: image is tiled to txt_b and lives after the text tokens.
+                    sample = _expand(sample, img_b, txt_b)
+                    hidden_states[:, num_txt_tokens:, ...] = hidden_states[:, num_txt_tokens:, ...] + sample
+                else:
+                    # Swap-only path: preserve the original whole-stream residual add.
+                    hidden_states = hidden_states + sample
 
         # Remove text tokens from concatenated stream
         hidden_states = hidden_states[:, num_txt_tokens:, ...]
+        if do_nag:
+            hidden_states = hidden_states[:img_b]  # [A_uncond, A_cond] (CFG) or guided (distilled)
 
         # 6. Output layers
         hidden_states = transformer.norm_out(hidden_states, temb)

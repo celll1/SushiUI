@@ -664,3 +664,12 @@ class Flux2NegPipNAGWrapper(Flux2NAGWrapper):
         self._originals, self._single_procs = set_negpip_nag_flux2_processors(
             transformer, nag_scale, nag_tau, nag_alpha, token_weights
         )
+        # Delegate the forward to the unified Flux.2 host (NegPip forces block swap off,
+        # so no offloader here). The subclassed processors carry the signed text-V and
+        # NAG batch logic; the unified loop just sets length/origin each forward.
+        from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+        self._unified = Flux2BlockSwapWrapper(
+            transformer,
+            block_offloader=None,
+            nag_single_procs=self._single_procs,
+        )

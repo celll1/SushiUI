@@ -17,7 +17,21 @@
 | FLUX.2 | ✅ | 専用 `Flux2BlockSwapWrapper.forward`（forward 再実装） | `FluxBlockOffloader`（dual/single 2 リスト） |
 | Z-Image | ✅ | vendored forward インライン（`self._block_offloader`） | 共有 `TransformerBlockOffloader` |
 | Ideogram4 | ✅ | vendored forward インライン（cond/uncond の 2 transformer） | 共有 `TransformerBlockOffloader` ×2 |
-| Anima / Lens / MiniT2I | ❌ 未実装 | — | — |
+| Anima | ✅ | `forward_mini_train_dit` の `self.blocks` ループにフック | 共有（`block_list=transformer.blocks`） |
+| Lens | ✅ | `LensTransformer2DModel.forward` の `transformer_blocks` にフック | 共有（`block_list=transformer.transformer_blocks`） |
+| MiniT2I | ✅ | `MMJiT.forward` の `double_blocks` のみにフック（`txt_preamble_blocks` は常駐） | 共有（`block_list=net.double_blocks`） |
+
+→ **6 DiT アーキすべてで block swap 実装済**（+ SD/SDXL U-Net 系は対象外）。Anima/Lens/MiniT2I は
+共有ファクトリの `block_list` 明示指定で対応（`.layers` 以外の block list 名に対応）。各 pipeline が
+aux モジュールを GPU へ移動（Z-Image 用ハードコード aux-mover は no-op）。デフォルト（block swap OFF）
+パスは byte 一致を監査で確認済。
+
+**既知の制限（全アーキ共通）: H2D-only / pinned + LoRA**
+H2D-only・pinned の master は `prepare_block_devices_before_forward` 時点（LoRA 適用前）に構築される
+ため、後から適用される LoRA sub-Linear は master に含まれず fast path をストリームしない。
+**標準（非 pinned・非 h2d_only）パスは LoRA と正常動作**（各 `wait_for_block` で再帰的に重み移動）。
+→ block swap + LoRA は当面 **標準パス**（`block_swap_h2d_only=false`, `use_pinned_memory=false`）を推奨。
+恒久対応は LoRA 適用後に master を再構築する follow-up。
 
 - **U-Net 系（SD1.5/SDXL）は対象外**（本監査のスコープ外）。
 - 共有機構: 先頭 `N = num_blocks − blocks_to_swap` を GPU 常駐、残りを stream。移動対象は

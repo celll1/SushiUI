@@ -26,12 +26,14 @@
 aux モジュールを GPU へ移動（Z-Image 用ハードコード aux-mover は no-op）。デフォルト（block swap OFF）
 パスは byte 一致を監査で確認済。
 
-**既知の制限（全アーキ共通）: H2D-only / pinned + LoRA**
-H2D-only・pinned の master は `prepare_block_devices_before_forward` 時点（LoRA 適用前）に構築される
-ため、後から適用される LoRA sub-Linear は master に含まれず fast path をストリームしない。
-**標準（非 pinned・非 h2d_only）パスは LoRA と正常動作**（各 `wait_for_block` で再帰的に重み移動）。
-→ block swap + LoRA は当面 **標準パス**（`block_swap_h2d_only=false`, `use_pinned_memory=false`）を推奨。
-恒久対応は LoRA 適用後に master を再構築する follow-up。
+**【修正済】H2D-only + LoRA/processor**
+以前は H2D-only master が `prepare_block_devices_before_forward` 時点（LoRA/processor 適用前）に
+構築され、後から適用される LoRA sub-Linear が master に含まれず CPU に取り残される問題があった。
+→ **master/ring 構築を初回 forward まで遅延（lazy build）**する修正で解消（`_h2d_wait`/`_h2d_submit`
+の先頭で `h2d_masters is None` なら構築）。初回 forward 時点では LoRA・NAG/NegPip processor とも
+適用済みなので、swappable ブロックの全 Linear（base + LoRA）が master に取り込まれる。パイプライン
+改変不要・arch 非依存。CPU 単体テストで「lazy build + LoRA-after-prepare 取り込み」を検証済
+（`tmp/test_h2d_only_ring.py`）。
 
 - **U-Net 系（SD1.5/SDXL）は対象外**（本監査のスコープ外）。
 - 共有機構: 先頭 `N = num_blocks − blocks_to_swap` を GPU 常駐、残りを stream。移動対象は

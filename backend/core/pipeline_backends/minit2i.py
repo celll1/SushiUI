@@ -92,17 +92,28 @@ class MiniT2IMixin:
         then free TE to CPU. NAG-negative uses the same encoder path as the negative
         prompt; returns (nag_text, nag_mask) or (None, None) when not requested."""
         from core.models.minit2i.minit2i_pipeline_ops import encode_prompt
+        from core.inference.negpip_minit2i import negpip_eligible, clean_prompt
+        # NegPip auto-activation: when a negative emphasis weight is present, strip the
+        # emphasis syntax so T5 encodes CLEAN text; the signed weights are carried on the
+        # attention value (V) instead. Positive-only prompts are left untouched (the
+        # default path stays byte-identical).
+        if negpip_eligible(prompt, negative_prompt):
+            enc_prompt = clean_prompt(prompt)
+            enc_negative = clean_prompt(negative_prompt) if (negative_prompt and negative_prompt.strip()) else negative_prompt
+            enc_nag = clean_prompt(nag_negative_prompt) if (nag_negative_prompt and str(nag_negative_prompt).strip()) else nag_negative_prompt
+        else:
+            enc_prompt, enc_negative, enc_nag = prompt, negative_prompt, nag_negative_prompt
         self._minit2i_move("text_encoder", device)
         te = self.minit2i_components["text_encoder"]
         tok = self.minit2i_components["tokenizer"]
-        text, mask = encode_prompt(te, tok, prompt, prompt_length, device)
+        text, mask = encode_prompt(te, tok, enc_prompt, prompt_length, device)
         neg_text = neg_mask = None
-        if negative_prompt and negative_prompt.strip():
-            neg_text, neg_mask = encode_prompt(te, tok, negative_prompt, prompt_length, device)
+        if enc_negative and enc_negative.strip():
+            neg_text, neg_mask = encode_prompt(te, tok, enc_negative, prompt_length, device)
             neg_text = neg_text.to(dtype)
         nag_text = nag_mask = None
-        if nag_negative_prompt is not None and str(nag_negative_prompt).strip():
-            nag_text, nag_mask = encode_prompt(te, tok, nag_negative_prompt, prompt_length, device)
+        if enc_nag is not None and str(enc_nag).strip():
+            nag_text, nag_mask = encode_prompt(te, tok, enc_nag, prompt_length, device)
             nag_text = nag_text.to(dtype)
         self._minit2i_move("text_encoder", "cpu")
         if torch.cuda.is_available():
@@ -127,6 +138,39 @@ class MiniT2IMixin:
         )
         print(f"[MiniT2I] NAG active: scale={nag_scale} tau={params.get('nag_tau', 2.5)} "
               f"alpha={params.get('nag_alpha', 0.25)}")
+        return wrapper, wrapper
+
+    def _minit2i_negpip_wrap(self, params, call_target, nag_wrapper, transformer,
+                             prompt, negative_prompt, seq_len, device, dtype):
+        """Install the MiniT2I NegPip wrapper when the prompt has a negative emphasis
+        weight (auto-activation). Returns (new_call_target, negpip_wrapper_or_None).
+
+        When eligible, NegPip wraps the current ``call_target`` (the NAG wrapper if NAG
+        is active, else the transformer). Signed per-token weight vectors are built for
+        the positive prompt, the negative prompt, and (if present) the NAG-negative prompt,
+        aligned to the FLAN-T5 token sequence. When NOT eligible the call target is
+        returned unchanged -> the positive-only default path is byte-identical to before.
+        """
+        from core.inference.negpip_minit2i import (
+            negpip_eligible, build_signed_weight_vector_t5, MiniT2INegPipWrapper,
+        )
+        if not negpip_eligible(prompt, negative_prompt):
+            return call_target, None
+        tokenizer = self.minit2i_components["tokenizer"]
+
+        def _wv(p):
+            return build_signed_weight_vector_t5(p, tokenizer, seq_len, device, dtype)
+
+        pos_w = _wv(prompt)
+        neg_w = _wv(negative_prompt) if (negative_prompt and negative_prompt.strip()) else None
+        nag_neg = params.get("nag_negative_prompt")
+        nag_w = _wv(nag_neg) if (nag_wrapper is not None and nag_neg and str(nag_neg).strip()) else None
+        wrapper = MiniT2INegPipWrapper(
+            transformer, pos_w, neg_weights=neg_w, nag_neg_weights=nag_w,
+            nag_wrapper=nag_wrapper,
+        )
+        print(f"[MiniT2I] NegPip active (negative emphasis weight detected): "
+              f"pos+neg{'+nag' if nag_w is not None else ''} signed V scaling, seq_len={seq_len}")
         return wrapper, wrapper
 
     def _load_lora_minit2i(self, lora_configs: List[Dict]) -> int:
@@ -213,6 +257,9 @@ class MiniT2IMixin:
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
+            call_target, negpip_wrapper = self._minit2i_negpip_wrap(
+                params, call_target, nag_wrapper, transformer,
+                cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
             try:
                 if cfg["is_latent"]:
                     # work in latent space: [1, C, H/vsf, W/vsf]
@@ -233,6 +280,8 @@ class MiniT2IMixin:
                         spectrum_params=params,
                     )
             finally:
+                if negpip_wrapper is not None:
+                    negpip_wrapper.restore()
                 if nag_wrapper is not None:
                     nag_wrapper.restore()
                 if applied_lora:
@@ -271,6 +320,9 @@ class MiniT2IMixin:
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
+            call_target, negpip_wrapper = self._minit2i_negpip_wrap(
+                params, call_target, nag_wrapper, transformer,
+                cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
             try:
                 x = denoise_loop_img2img(
                     call_target, init_t, denoising_strength, text, mask,
@@ -281,6 +333,8 @@ class MiniT2IMixin:
                     spectrum_params=params,
                 )
             finally:
+                if negpip_wrapper is not None:
+                    negpip_wrapper.restore()
                 if nag_wrapper is not None:
                     nag_wrapper.restore()
                 if applied_lora:
@@ -322,6 +376,9 @@ class MiniT2IMixin:
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
+            call_target, negpip_wrapper = self._minit2i_negpip_wrap(
+                params, call_target, nag_wrapper, transformer,
+                cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
             try:
                 x = denoise_loop_inpaint(
                     call_target, init_t, mask_latent, denoising_strength, text, mask,
@@ -332,6 +389,8 @@ class MiniT2IMixin:
                     spectrum_params=params,
                 )
             finally:
+                if negpip_wrapper is not None:
+                    negpip_wrapper.restore()
                 if nag_wrapper is not None:
                     nag_wrapper.restore()
                 if applied_lora:

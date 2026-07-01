@@ -253,6 +253,7 @@ class AnimaMixin:
                 generator=generator, device=device, dtype=compute_dtype,
                 step_callback=(progress_callback or step_callback),
                 advanced_cfg=self._anima_advanced_cfg(params),
+                spectrum_params=params,
             )
             if applied_lora_count:
                 self._unload_lora_anima()
@@ -380,6 +381,7 @@ class AnimaMixin:
                 generator=generator, device=device, dtype=compute_dtype,
                 step_callback=(progress_callback or step_callback),
                 advanced_cfg=self._anima_advanced_cfg(params),
+                spectrum_params=params,
             )
             if applied_lora_count:
                 self._unload_lora_anima()
@@ -519,6 +521,7 @@ class AnimaMixin:
                 generator=generator, device=device, dtype=compute_dtype,
                 step_callback=(progress_callback or step_callback),
                 advanced_cfg=self._anima_advanced_cfg(params),
+                spectrum_params=params,
             )
             if applied_lora_count:
                 self._unload_lora_anima()

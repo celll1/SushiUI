@@ -17,6 +17,7 @@ from PIL import Image
 
 from .anima_scheduler import AnimaFlowMatchScheduler, calculate_shift_anima
 from core.inference.cancellation import raise_if_cancelled
+from core.inference.spectrum_forecaster import build_output_forecaster
 
 
 def _to_device(model, device):
@@ -401,6 +402,7 @@ def sample_txt2img(
     dtype: torch.dtype,
     step_callback: Optional[Callable] = None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Run the Rectified-Flow Euler denoising loop and return latents
     of shape [1, 16, 1, H/8, W/8].
@@ -422,40 +424,51 @@ def sample_txt2img(
 
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
+    spectrum = build_output_forecaster(spectrum_params, num_inference_steps, "Anima")
+    sp_i = -1
     for i in range(num_inference_steps):
+        sp_i += 1
         raise_if_cancelled()
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
         # Conditional pass
-        v_cond = transformer(
-            x=latents,
-            timesteps=timestep_batch,
-            context=cond_embeds["prompt_embeds"],
-            padding_mask=padding_mask,
-            target_input_ids=cond_embeds["t5_input_ids"],
-            target_attention_mask=cond_embeds["t5_attn_mask"],
-            source_attention_mask=cond_embeds["source_mask"],
-        )
-
-        if do_cfg:
-            v_uncond = transformer(
+        # Spectrum: forecast the model output (v) on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(sp_i)
+        if spectrum_skip:
+            v = spectrum.forecast(sp_i)
+            cfg_metrics = None
+        else:
+            v_cond = transformer(
                 x=latents,
                 timesteps=timestep_batch,
-                context=uncond_embeds["prompt_embeds"],
+                context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
-                target_input_ids=uncond_embeds["t5_input_ids"],
-                target_attention_mask=uncond_embeds["t5_attn_mask"],
-                source_attention_mask=uncond_embeds["source_mask"],
+                target_input_ids=cond_embeds["t5_input_ids"],
+                target_attention_mask=cond_embeds["t5_attn_mask"],
+                source_attention_mask=cond_embeds["source_mask"],
             )
-        else:
-            v_uncond = None
 
-        sigma_now_f = float(scheduler.sigmas[i].item())
-        sigma_max_f = float(scheduler.sigmas[0].item())
-        v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
-            v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
-        )
+            if do_cfg:
+                v_uncond = transformer(
+                    x=latents,
+                    timesteps=timestep_batch,
+                    context=uncond_embeds["prompt_embeds"],
+                    padding_mask=padding_mask,
+                    target_input_ids=uncond_embeds["t5_input_ids"],
+                    target_attention_mask=uncond_embeds["t5_attn_mask"],
+                    source_attention_mask=uncond_embeds["source_mask"],
+                )
+            else:
+                v_uncond = None
+
+            sigma_now_f = float(scheduler.sigmas[i].item())
+            sigma_max_f = float(scheduler.sigmas[0].item())
+            v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
+                v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(sp_i, v)
 
         # Predicted clean latent for preview: x_0 = x_t - sigma * v
         sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
@@ -489,6 +502,7 @@ def sample_img2img(
     dtype: torch.dtype,
     step_callback: Optional[Callable] = None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """img2img: start from `init_latents` partially noised. Returns final latents."""
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
@@ -510,34 +524,45 @@ def sample_img2img(
 
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
+    spectrum = build_output_forecaster(spectrum_params, num_inference_steps - start_step, "Anima")
+    sp_i = -1
     for i in range(start_step, num_inference_steps):
+        sp_i += 1
         raise_if_cancelled()
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
-        v_cond = transformer(
-            x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
-            padding_mask=padding_mask,
-            target_input_ids=cond_embeds["t5_input_ids"],
-            target_attention_mask=cond_embeds["t5_attn_mask"],
-            source_attention_mask=cond_embeds["source_mask"],
-        )
-        if do_cfg:
-            v_uncond = transformer(
-                x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
-                padding_mask=padding_mask,
-                target_input_ids=uncond_embeds["t5_input_ids"],
-                target_attention_mask=uncond_embeds["t5_attn_mask"],
-                source_attention_mask=uncond_embeds["source_mask"],
-            )
+        # Spectrum: forecast the model output (v) on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(sp_i)
+        if spectrum_skip:
+            v = spectrum.forecast(sp_i)
+            cfg_metrics = None
         else:
-            v_uncond = None
+            v_cond = transformer(
+                x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
+                padding_mask=padding_mask,
+                target_input_ids=cond_embeds["t5_input_ids"],
+                target_attention_mask=cond_embeds["t5_attn_mask"],
+                source_attention_mask=cond_embeds["source_mask"],
+            )
+            if do_cfg:
+                v_uncond = transformer(
+                    x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
+                    padding_mask=padding_mask,
+                    target_input_ids=uncond_embeds["t5_input_ids"],
+                    target_attention_mask=uncond_embeds["t5_attn_mask"],
+                    source_attention_mask=uncond_embeds["source_mask"],
+                )
+            else:
+                v_uncond = None
 
-        sigma_now_f = float(scheduler.sigmas[i].item())
-        sigma_max_f = float(scheduler.sigmas[0].item())
-        v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
-            v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
-        )
+            sigma_now_f = float(scheduler.sigmas[i].item())
+            sigma_max_f = float(scheduler.sigmas[0].item())
+            v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
+                v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(sp_i, v)
 
         sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
         pred_x0 = latents - sigma_now * v
@@ -570,6 +595,7 @@ def sample_inpaint(
     dtype: torch.dtype,
     step_callback: Optional[Callable] = None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Latent-space inpainting via per-step blending.
 
@@ -601,34 +627,45 @@ def sample_inpaint(
 
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
+    spectrum = build_output_forecaster(spectrum_params, num_inference_steps - start_step, "Anima")
+    sp_i = -1
     for i in range(start_step, num_inference_steps):
+        sp_i += 1
         raise_if_cancelled()
         timestep = scheduler.get_timestep(i, device=torch.device(device), dtype=dtype)
         timestep_batch = timestep.expand(latents.shape[0])
 
-        v_cond = transformer(
-            x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
-            padding_mask=padding_mask,
-            target_input_ids=cond_embeds["t5_input_ids"],
-            target_attention_mask=cond_embeds["t5_attn_mask"],
-            source_attention_mask=cond_embeds["source_mask"],
-        )
-        if do_cfg:
-            v_uncond = transformer(
-                x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
-                padding_mask=padding_mask,
-                target_input_ids=uncond_embeds["t5_input_ids"],
-                target_attention_mask=uncond_embeds["t5_attn_mask"],
-                source_attention_mask=uncond_embeds["source_mask"],
-            )
+        # Spectrum: forecast the model output (v) on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(sp_i)
+        if spectrum_skip:
+            v = spectrum.forecast(sp_i)
+            cfg_metrics = None
         else:
-            v_uncond = None
+            v_cond = transformer(
+                x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
+                padding_mask=padding_mask,
+                target_input_ids=cond_embeds["t5_input_ids"],
+                target_attention_mask=cond_embeds["t5_attn_mask"],
+                source_attention_mask=cond_embeds["source_mask"],
+            )
+            if do_cfg:
+                v_uncond = transformer(
+                    x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
+                    padding_mask=padding_mask,
+                    target_input_ids=uncond_embeds["t5_input_ids"],
+                    target_attention_mask=uncond_embeds["t5_attn_mask"],
+                    source_attention_mask=uncond_embeds["source_mask"],
+                )
+            else:
+                v_uncond = None
 
-        sigma_now_f = float(scheduler.sigmas[i].item())
-        sigma_max_f = float(scheduler.sigmas[0].item())
-        v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
-            v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
-        )
+            sigma_now_f = float(scheduler.sigmas[i].item())
+            sigma_max_f = float(scheduler.sigmas[0].item())
+            v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
+                v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(sp_i, v)
 
         sigma_now = scheduler.sigmas[i].to(latents.dtype).to(latents.device)
         pred_x0 = latents - sigma_now * v

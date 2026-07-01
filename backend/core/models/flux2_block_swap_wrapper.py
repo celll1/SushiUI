@@ -42,7 +42,7 @@ class Flux2BlockSwapWrapper(nn.Module):
         self,
         transformer: nn.Module,
         block_offloader: Optional["FluxBlockOffloader"] = None,
-        nag_single_procs=None,
+        single_procs=None,
     ):
         """
         Initialize wrapper
@@ -50,14 +50,14 @@ class Flux2BlockSwapWrapper(nn.Module):
         Args:
             transformer: FluxTransformer2DModel instance
             block_offloader: FluxBlockOffloader for block swapping (optional)
-            nag_single_procs: single-stream NAG processors that need
+            single_procs: single-stream processors (NAG and/or NegPip) that need
                 ``encoder_hidden_states_length`` / ``origin_img_batch`` set each
-                forward (list, or None when NAG is not active)
+                forward (list, or None when none are active)
         """
         super().__init__()
         self.transformer = transformer
         self._block_offloader = block_offloader
-        self._nag_single_procs = nag_single_procs
+        self._single_procs = single_procs
 
         # Copy config for compatibility
         self.config = transformer.config
@@ -86,9 +86,9 @@ class Flux2BlockSwapWrapper(nn.Module):
 
         Same signature as FluxTransformer2DModel.forward()
         """
-        # Fast path: no block swap AND no NAG -> original forward (unchanged).
+        # Fast path: no block swap AND no single-stream procs -> original forward (unchanged).
         swap_on = self._block_offloader is not None and self._block_offloader.blocks_to_swap > 0
-        if not swap_on and self._nag_single_procs is None:
+        if not swap_on and self._single_procs is None:
             return self.transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
@@ -167,9 +167,11 @@ class Flux2BlockSwapWrapper(nn.Module):
             torch.cat([text_rotary_emb[1], image_rotary_emb[1]], dim=0),
         )
 
-        # NAG single-stream processors need per-forward length/batch context.
-        if self._nag_single_procs:
-            for p in self._nag_single_procs:
+        # Single-stream processors (NAG and/or NegPip) need per-forward length/batch
+        # context. NegPip procs read only ``encoder_hidden_states_length`` (setting
+        # ``origin_img_batch`` is harmless); NAG procs use both.
+        if self._single_procs:
+            for p in self._single_procs:
                 p.encoder_hidden_states_length = num_txt_tokens
                 p.origin_img_batch = img_b
 

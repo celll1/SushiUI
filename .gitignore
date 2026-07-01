@@ -175,3 +175,4 @@ docs/FLUX2_IMAGE_EDIT_IMPLEMENTATION.md
 docs/FLUX2_IMAGE_EDIT_HYBRID_ANALYSIS.md
 run_tagger_inference.py
 docs/custom_loss_specs.md
+docs/TAGGER_DETAIL_SIDECHAIN_DESIGN.md

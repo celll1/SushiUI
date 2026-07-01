@@ -86,8 +86,11 @@ class MiniT2IMixin:
                 torch.cuda.empty_cache()
 
     @torch.no_grad()
-    def _minit2i_encode(self, prompt, negative_prompt, prompt_length, device, dtype):
-        """Encode prompt (+ optional negative) with FLAN-T5, then free TE to CPU."""
+    def _minit2i_encode(self, prompt, negative_prompt, prompt_length, device, dtype,
+                        nag_negative_prompt=None):
+        """Encode prompt (+ optional negative, + optional NAG-negative) with FLAN-T5,
+        then free TE to CPU. NAG-negative uses the same encoder path as the negative
+        prompt; returns (nag_text, nag_mask) or (None, None) when not requested."""
         from core.models.minit2i.minit2i_pipeline_ops import encode_prompt
         self._minit2i_move("text_encoder", device)
         te = self.minit2i_components["text_encoder"]
@@ -97,10 +100,34 @@ class MiniT2IMixin:
         if negative_prompt and negative_prompt.strip():
             neg_text, neg_mask = encode_prompt(te, tok, negative_prompt, prompt_length, device)
             neg_text = neg_text.to(dtype)
+        nag_text = nag_mask = None
+        if nag_negative_prompt is not None and str(nag_negative_prompt).strip():
+            nag_text, nag_mask = encode_prompt(te, tok, nag_negative_prompt, prompt_length, device)
+            nag_text = nag_text.to(dtype)
         self._minit2i_move("text_encoder", "cpu")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return text.to(dtype), mask, neg_text, neg_mask
+        return text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask
+
+    def _minit2i_nag_wrap(self, params, transformer, nag_text, nag_mask):
+        """Install the MiniT2I NAG wrapper when NAG is active; returns (call_target,
+        wrapper_or_None). The call target is what the euler loop uses as ``transformer``:
+        the NAG wrapper if active, else the transformer itself (byte-identical path)."""
+        from core.inference.nag_dit import nag_active
+        nag_enable = bool(params.get("nag_enable", False))
+        nag_scale = float(params.get("nag_scale", 1.0))
+        if not nag_active(nag_enable, nag_scale, nag_text):
+            return transformer, None
+        from core.inference.nag_minit2i import MiniT2INAGWrapper
+        wrapper = MiniT2INAGWrapper(
+            transformer, nag_text, nag_mask,
+            nag_scale=nag_scale,
+            nag_tau=float(params.get("nag_tau", 2.5)),
+            nag_alpha=float(params.get("nag_alpha", 0.25)),
+        )
+        print(f"[MiniT2I] NAG active: scale={nag_scale} tau={params.get('nag_tau', 2.5)} "
+              f"alpha={params.get('nag_alpha', 0.25)}")
+        return wrapper, wrapper
 
     def _load_lora_minit2i(self, lora_configs: List[Dict]) -> int:
         from core.models.minit2i.minit2i_lora import (
@@ -180,15 +207,17 @@ class MiniT2IMixin:
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, 512, 512)
         try:
-            text, mask, neg_text, neg_mask = self._minit2i_encode(
-                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
+            text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
+                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
+                nag_negative_prompt=params.get("nag_negative_prompt"))
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             try:
                 if cfg["is_latent"]:
                     # work in latent space: [1, C, H/vsf, W/vsf]
                     x = denoise_loop(
-                        transformer, text, mask, cfg["latent_h"], cfg["latent_w"],
+                        call_target, text, mask, cfg["latent_h"], cfg["latent_w"],
                         cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                         device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                         progress_callback=progress_callback,
@@ -197,13 +226,15 @@ class MiniT2IMixin:
                     )
                 else:
                     x = denoise_loop(
-                        transformer, text, mask, cfg["height"], cfg["width"],
+                        call_target, text, mask, cfg["height"], cfg["width"],
                         cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                         device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                         progress_callback=progress_callback,
                         spectrum_params=params,
                     )
             finally:
+                if nag_wrapper is not None:
+                    nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
             image = self._minit2i_decode(x, cfg)
@@ -228,8 +259,9 @@ class MiniT2IMixin:
         cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
         denoising_strength = float(params.get("denoising_strength", 0.7))
         try:
-            text, mask, neg_text, neg_mask = self._minit2i_encode(
-                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
+            text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
+                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
+                nag_negative_prompt=params.get("nag_negative_prompt"))
             if cfg["is_latent"]:
                 vae = self._minit2i_move("vae", device)
                 init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
@@ -238,9 +270,10 @@ class MiniT2IMixin:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             try:
                 x = denoise_loop_img2img(
-                    transformer, init_t, denoising_strength, text, mask,
+                    call_target, init_t, denoising_strength, text, mask,
                     cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                     device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                     progress_callback=progress_callback,
@@ -248,6 +281,8 @@ class MiniT2IMixin:
                     spectrum_params=params,
                 )
             finally:
+                if nag_wrapper is not None:
+                    nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
             image = self._minit2i_decode(x, cfg)
@@ -272,8 +307,9 @@ class MiniT2IMixin:
         cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
         denoising_strength = float(params.get("denoising_strength", 0.8))
         try:
-            text, mask, neg_text, neg_mask = self._minit2i_encode(
-                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype)
+            text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
+                cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
+                nag_negative_prompt=params.get("nag_negative_prompt"))
             if cfg["is_latent"]:
                 vae = self._minit2i_move("vae", device)
                 init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
@@ -285,9 +321,10 @@ class MiniT2IMixin:
                 mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_move("transformer", device)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
+            call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             try:
                 x = denoise_loop_inpaint(
-                    transformer, init_t, mask_latent, denoising_strength, text, mask,
+                    call_target, init_t, mask_latent, denoising_strength, text, mask,
                     cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                     device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                     progress_callback=progress_callback,
@@ -295,6 +332,8 @@ class MiniT2IMixin:
                     spectrum_params=params,
                 )
             finally:
+                if nag_wrapper is not None:
+                    nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
             image = self._minit2i_decode(x, cfg)

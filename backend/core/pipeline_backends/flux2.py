@@ -593,6 +593,8 @@ class Flux2Mixin:
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
             use_pinned_memory = params.get("use_pinned_memory", False)
+            block_swap_h2d_only = params.get("block_swap_h2d_only", False)
+            block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
             block_offloader = None
 
             # NAG/NegPip need a standalone forward with all weights on GPU; disable Block
@@ -614,7 +616,9 @@ class Flux2Mixin:
                     device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
                     use_pinned_memory=use_pinned_memory,
-                    supports_backward=False
+                    supports_backward=False,
+                    h2d_only=block_swap_h2d_only,
+                    ring_size=block_swap_ring_size,
                 )
 
                 # Prepare block devices
@@ -1458,6 +1462,8 @@ class Flux2Mixin:
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
             use_pinned_memory = params.get("use_pinned_memory", False)
+            block_swap_h2d_only = params.get("block_swap_h2d_only", False)
+            block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
             block_offloader = None
 
             # NAG/NegPip need a standalone forward with all weights on GPU; disable Block
@@ -1478,7 +1484,9 @@ class Flux2Mixin:
                     device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
                     use_pinned_memory=use_pinned_memory,
-                    supports_backward=False
+                    supports_backward=False,
+                    h2d_only=block_swap_h2d_only,
+                    ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
                 transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)
@@ -1993,6 +2001,8 @@ class Flux2Mixin:
             enable_block_swap = params.get("enable_block_swap", False)
             blocks_to_swap = params.get("blocks_to_swap", 0) if enable_block_swap else 0
             use_pinned_memory = params.get("use_pinned_memory", False)
+            block_swap_h2d_only = params.get("block_swap_h2d_only", False)
+            block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
             block_offloader = None
 
             # NAG/NegPip need a standalone forward with all weights on GPU; disable Block
@@ -2013,7 +2023,9 @@ class Flux2Mixin:
                     device=torch.device(self.device),
                     target_dtype=torch.bfloat16,
                     use_pinned_memory=use_pinned_memory,
-                    supports_backward=False
+                    supports_backward=False,
+                    h2d_only=block_swap_h2d_only,
+                    ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
                 transformer_wrapper = Flux2BlockSwapWrapper(transformer, block_offloader)

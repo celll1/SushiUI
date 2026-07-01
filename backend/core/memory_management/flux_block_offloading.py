@@ -45,7 +45,9 @@ class FluxBlockOffloader:
         target_dtype: torch.dtype = torch.bfloat16,
         use_pinned_memory: bool = False,
         transformer: Optional[nn.Module] = None,
-        supports_backward: bool = False
+        supports_backward: bool = False,
+        h2d_only: bool = False,
+        ring_size: int = 2,
     ):
         """
         Initialize FLUX.2 Block Offloader
@@ -59,6 +61,9 @@ class FluxBlockOffloader:
             use_pinned_memory: Use pinned memory for faster transfer
             transformer: Parent transformer (for auxiliary modules)
             supports_backward: Enable backward pass support (for training)
+            h2d_only: H2D-only block swap (inference / read-only weights). Permanent pinned
+                CPU masters + fixed GPU ring, no device->host eviction. Forward-only.
+            ring_size: Number of GPU weight-buffer slots in the H2D-only ring (>=1).
         """
         self.transformer_blocks = transformer_blocks
         self.single_transformer_blocks = single_transformer_blocks
@@ -72,6 +77,20 @@ class FluxBlockOffloader:
         self.transformer = transformer
         self.supports_backward = supports_backward
         self.forward_only = not supports_backward
+
+        # H2D-only mode is forward-only (read-only weights).
+        self.h2d_only = bool(h2d_only) and self.forward_only
+        self.ring_size = max(1, int(ring_size))
+        if h2d_only and not self.forward_only:
+            print("[FluxBlockOffloader] h2d_only requested but backward is enabled; "
+                  "falling back to normal block swap (H2D-only is inference-only for now).")
+        # H2D-only state (built in prepare)
+        self.h2d_masters = None       # unified_idx -> (flat_cpu, [(module, offset, numel, shape)])
+        self.h2d_ring = None          # slot -> flat GPU buffer (max block size)
+        self.h2d_slot_futures = None
+        self.h2d_loaded_block = None
+        self.h2d_swappable = None
+        self.h2d_num_on_gpu = None
 
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
         self.futures = {}
@@ -150,6 +169,10 @@ class FluxBlockOffloader:
 
         _synchronize_device(self.device)
 
+        # Build H2D-only state (permanent pinned flat masters + GPU ring) from CPU weights.
+        if self.h2d_only:
+            self._h2d_setup()
+
         # Move auxiliary modules to GPU
         self._move_auxiliary_modules_to_gpu()
 
@@ -223,6 +246,10 @@ class FluxBlockOffloader:
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
+        if self.h2d_only:
+            self._h2d_wait(unified_idx)
+            return
+
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
 
         # First N blocks stay on GPU permanently, no wait needed
@@ -257,6 +284,10 @@ class FluxBlockOffloader:
             unified_idx: Current unified block index (just executed)
         """
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
+            return
+
+        if self.h2d_only:
+            self._h2d_submit(unified_idx)
             return
 
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
@@ -301,6 +332,134 @@ class FluxBlockOffloader:
         self.futures[block_idx_to_gpu] = self.thread_pool.submit(
             move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_gpu, block_to_gpu
         )
+
+    # ------------------------------------------------------------------
+    # H2D-only block swap (inference / read-only weights) — FLUX.2 variant.
+    # Handles the dual+single structure: swappable blocks may differ in size, so the GPU
+    # ring buffers are sized to the largest swappable block and each block copies only its
+    # own bytes (flat_gpu[:n]). Views index within [0, block_total).
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _h2d_linear_modules(block):
+        out = []
+        for _n, m in block.named_modules():
+            if m.__class__.__name__.endswith("Linear") and getattr(m, "weight", None) is not None:
+                out.append(m)
+        return out
+
+    def _h2d_setup(self):
+        self.h2d_num_on_gpu = self.num_blocks - self.blocks_to_swap
+        self.h2d_swappable = list(range(self.h2d_num_on_gpu, self.num_blocks))
+        num_swappable = len(self.h2d_swappable)
+        if num_swappable == 0:
+            self.h2d_only = False
+            return
+        self.ring_size = max(1, min(self.ring_size, num_swappable))
+
+        dtypes = set()
+        for uidx in self.h2d_swappable:
+            for m in self._h2d_linear_modules(self._get_block(uidx)):
+                dtypes.add(m.weight.data.dtype)
+        if len(dtypes) != 1:
+            print(f"[FluxBlockOffloader] H2D-only disabled: mixed Linear weight dtypes {dtypes}; "
+                  f"using standard block swap.")
+            self.h2d_only = False
+            return
+        flat_dtype = dtypes.pop()
+
+        # Permanent pinned flat CPU master per swappable block (dual and single differ in
+        # size). h2d_masters[uidx] = (flat_cpu, [(module, offset, numel, shape)]).
+        self.h2d_masters = {}
+        max_numel = 0
+        for uidx in self.h2d_swappable:
+            mods = self._h2d_linear_modules(self._get_block(uidx))
+            total = sum(m.weight.data.numel() for m in mods)
+            flat_cpu = torch.empty(total, dtype=flat_dtype, device="cpu")
+            if self.cuda_available:
+                flat_cpu = flat_cpu.pin_memory(device=self.device)
+            layout = []
+            off = 0
+            for m in mods:
+                w = m.weight.data
+                n = w.numel()
+                shape = tuple(w.shape)
+                flat_cpu[off:off + n].copy_(w.reshape(-1))
+                m.weight.data = flat_cpu[off:off + n].view(shape)
+                layout.append((m, off, n, shape))
+                off += n
+            self.h2d_masters[uidx] = (flat_cpu, layout)
+            max_numel = max(max_numel, total)
+
+        # GPU ring sized to the largest swappable block; each load copies only its own bytes.
+        self.h2d_ring = [
+            torch.empty(max_numel, dtype=flat_dtype, device=self.device)
+            for _ in range(self.ring_size)
+        ]
+        self.h2d_slot_futures = [None] * self.ring_size
+        self.h2d_loaded_block = [None] * self.ring_size
+        for j in range(self.ring_size):
+            self._h2d_submit_load(self.h2d_swappable[j], j)
+        print(f"[FluxBlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
+              f"ring_size={self.ring_size}, coalesced flat pinned CPU masters (no D2H eviction)")
+
+    def _h2d_submit_load(self, unified_idx: int, slot: int):
+        flat_cpu = self.h2d_masters[unified_idx][0]
+        n = flat_cpu.numel()
+        flat_gpu = self.h2d_ring[slot]
+        self.h2d_loaded_block[slot] = unified_idx
+        if not self.cuda_available:
+            flat_gpu[:n].copy_(flat_cpu)
+            self.h2d_slot_futures[slot] = None
+            return
+        compute_done = torch.cuda.current_stream().record_event()
+
+        def load():
+            with torch.cuda.stream(self.stream):
+                self.stream.wait_event(compute_done)
+                flat_gpu[:n].copy_(flat_cpu, non_blocking=True)
+                ev = self.stream.record_event()
+            return unified_idx, slot, ev
+
+        self.h2d_slot_futures[slot] = self.thread_pool.submit(load)
+
+    def _h2d_point_weights(self, unified_idx: int, flat_buf):
+        for (m, off, n, shape) in self.h2d_masters[unified_idx][1]:
+            m.weight.data = flat_buf[off:off + n].view(shape)
+
+    def _h2d_wait(self, unified_idx: int):
+        if unified_idx < self.h2d_num_on_gpu:
+            return
+        slot = (unified_idx - self.h2d_num_on_gpu) % self.ring_size
+        fut = self.h2d_slot_futures[slot]
+        if fut is not None and self.h2d_loaded_block[slot] == unified_idx:
+            bidx, s, ev = fut.result()
+            self.h2d_slot_futures[slot] = None
+            assert bidx == unified_idx and s == slot, f"H2D slot mismatch: {bidx}/{s} != {unified_idx}/{slot}"
+            if self.cuda_available and ev is not None:
+                torch.cuda.current_stream().wait_event(ev)
+        elif self.h2d_loaded_block[slot] != unified_idx:
+            if fut is not None:
+                fut.result()
+                self.h2d_slot_futures[slot] = None
+            flat_cpu = self.h2d_masters[unified_idx][0]
+            self.h2d_ring[slot][:flat_cpu.numel()].copy_(flat_cpu)
+            if self.cuda_available:
+                torch.cuda.synchronize()
+            self.h2d_loaded_block[slot] = unified_idx
+        self._h2d_point_weights(unified_idx, self.h2d_ring[slot])
+
+    def _h2d_submit(self, unified_idx: int):
+        if unified_idx < self.h2d_num_on_gpu:
+            return
+        i = unified_idx - self.h2d_num_on_gpu
+        slot = i % self.ring_size
+        self._h2d_point_weights(unified_idx, self.h2d_masters[unified_idx][0])
+        next_i = i + self.ring_size
+        if next_i < len(self.h2d_swappable):
+            self._h2d_submit_load(self.h2d_swappable[next_i], slot)
+        else:
+            self.h2d_slot_futures[slot] = None
+            self.h2d_loaded_block[slot] = None
 
     def _is_dual_block(self, block: nn.Module) -> bool:
         """Check if block is a dual stream block (has different structure than single)"""
@@ -685,7 +844,9 @@ def create_flux_block_offloader(
     device: torch.device,
     target_dtype: Optional[torch.dtype] = None,
     use_pinned_memory: bool = False,
-    supports_backward: bool = False
+    supports_backward: bool = False,
+    h2d_only: bool = False,
+    ring_size: int = 2,
 ) -> FluxBlockOffloader:
     """
     Create block offloader for FLUX.2 transformer
@@ -725,7 +886,9 @@ def create_flux_block_offloader(
         target_dtype=target_dtype,
         use_pinned_memory=use_pinned_memory,
         transformer=transformer,
-        supports_backward=supports_backward
+        supports_backward=supports_backward,
+        h2d_only=h2d_only,
+        ring_size=ring_size,
     )
 
     return offloader

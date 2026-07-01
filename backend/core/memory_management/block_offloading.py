@@ -351,8 +351,13 @@ class TransformerBlockOffloader:
         return out
 
     def _h2d_setup(self):
-        """Build permanent pinned CPU masters and the GPU ring. Called from prepare after
-        the swappable blocks' weights are on CPU."""
+        """Build permanent pinned flat CPU masters and the GPU ring. Called from prepare
+        after the swappable blocks' weights are on CPU.
+
+        Coalescing (Tier 2C): each swappable block's Linear weights are concatenated into a
+        single flat pinned CPU tensor, and each ring slot is a single flat GPU tensor, so a
+        block's whole weight set moves in ONE host->device copy instead of one per Linear.
+        Each Linear's weight.data becomes a (reshaped) view into the flat buffer."""
         self.h2d_num_on_gpu = self.num_blocks - self.blocks_to_swap
         self.h2d_swappable = list(range(self.h2d_num_on_gpu, self.num_blocks))
         num_swappable = len(self.h2d_swappable)
@@ -361,23 +366,47 @@ class TransformerBlockOffloader:
             return
         self.ring_size = max(1, min(self.ring_size, num_swappable))
 
-        # Permanent pinned CPU masters (weights are already on CPU here). Pointer stays on
-        # the master; it is never overwritten (read-only).
+        # Coalescing into one flat buffer requires a single dtype across all swappable Linear
+        # weights. Fall back to standard block swap if mixed (keeps correctness).
+        dtypes = set()
+        for bidx in self.h2d_swappable:
+            for m in self._linear_weight_modules(self.blocks[bidx]):
+                dtypes.add(m.weight.data.dtype)
+        if len(dtypes) != 1:
+            print(f"[BlockOffloader] H2D-only disabled: mixed Linear weight dtypes {dtypes}; "
+                  f"using standard block swap.")
+            self.h2d_only = False
+            return
+        flat_dtype = dtypes.pop()
+
+        # Permanent pinned flat CPU master per swappable block. Never overwritten (read-only).
+        # h2d_masters[bidx] = (flat_cpu, [(module, offset, numel, shape), ...])
         self.h2d_masters = {}
         for bidx in self.h2d_swappable:
-            entries = []
-            for m in self._linear_weight_modules(self.blocks[bidx]):
-                master = m.weight.data
-                if self.cuda_available and not master.is_pinned():
-                    master = master.pin_memory(device=self.device)
-                m.weight.data = master
-                entries.append((m, master))
-            self.h2d_masters[bidx] = entries
+            mods = self._linear_weight_modules(self.blocks[bidx])
+            total = sum(m.weight.data.numel() for m in mods)
+            flat_cpu = torch.empty(total, dtype=flat_dtype, device="cpu")
+            if self.cuda_available:
+                flat_cpu = flat_cpu.pin_memory(device=self.device)
+            layout = []
+            off = 0
+            for m in mods:
+                w = m.weight.data
+                n = w.numel()
+                shape = tuple(w.shape)
+                flat_cpu[off:off + n].copy_(w.reshape(-1))
+                m.weight.data = flat_cpu[off:off + n].view(shape)  # master view (CPU)
+                layout.append((m, off, n, shape))
+                off += n
+            self.h2d_masters[bidx] = (flat_cpu, layout)
 
-        # GPU ring slots (all swappable blocks share structure -> template from the first).
-        template = self.h2d_masters[self.h2d_swappable[0]]
+        # GPU ring: ring_size flat buffers (all swappable blocks share size/structure).
+        flat_numel = self.h2d_masters[self.h2d_swappable[0]][0].numel()
+        for bidx in self.h2d_swappable:
+            assert self.h2d_masters[bidx][0].numel() == flat_numel, (
+                "H2D-only requires identically-structured swappable blocks")
         self.h2d_ring = [
-            [torch.empty_like(master, device=self.device) for (_m, master) in template]
+            torch.empty(flat_numel, dtype=flat_dtype, device=self.device)
             for _ in range(self.ring_size)
         ]
         self.h2d_slot_futures = [None] * self.ring_size
@@ -388,16 +417,15 @@ class TransformerBlockOffloader:
             self._h2d_submit_load(self.h2d_swappable[j], j)
 
         print(f"[BlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
-              f"ring_size={self.ring_size}, permanent pinned CPU masters (no D2H eviction)")
+              f"ring_size={self.ring_size}, coalesced flat pinned CPU masters (no D2H eviction)")
 
     def _h2d_submit_load(self, block_idx: int, slot: int):
-        """Submit an async H2D load of block_idx's masters into ring[slot]."""
-        masters = self.h2d_masters[block_idx]
-        slot_bufs = self.h2d_ring[slot]
+        """Submit an async single-copy H2D load of block_idx's flat master into ring[slot]."""
+        flat_cpu = self.h2d_masters[block_idx][0]
+        flat_gpu = self.h2d_ring[slot]
         self.h2d_loaded_block[slot] = block_idx
         if not self.cuda_available:
-            for buf, (_m, master) in zip(slot_bufs, masters):
-                buf.copy_(master)
+            flat_gpu.copy_(flat_cpu)
             self.h2d_slot_futures[slot] = None
             return
         # Order the H2D after the compute that last used this slot (the block vacating it),
@@ -407,16 +435,20 @@ class TransformerBlockOffloader:
         def load():
             with torch.cuda.stream(self.stream):
                 self.stream.wait_event(compute_done)
-                for buf, (_m, master) in zip(slot_bufs, masters):
-                    buf.copy_(master, non_blocking=True)
+                flat_gpu.copy_(flat_cpu, non_blocking=True)
                 ev = self.stream.record_event()
             return block_idx, slot, ev
 
         self.h2d_slot_futures[slot] = self.thread_pool.submit(load)
 
+    def _h2d_point_weights(self, block_idx: int, flat_buf):
+        """Point each Linear's weight.data at its slice/view of the given flat buffer."""
+        for (m, off, n, shape) in self.h2d_masters[block_idx][1]:
+            m.weight.data = flat_buf[off:off + n].view(shape)
+
     def _h2d_wait(self, block_idx: int):
         """Ensure block_idx's weights are resident in its ring slot, then point weight.data
-        at the slot's GPU buffers. Self-heals at step boundaries with a synchronous load."""
+        at views into the slot's flat GPU buffer. Self-heals at step boundaries."""
         if block_idx < self.h2d_num_on_gpu:
             return
         slot = (block_idx - self.h2d_num_on_gpu) % self.ring_size
@@ -433,13 +465,11 @@ class TransformerBlockOffloader:
             if fut is not None:
                 fut.result()
                 self.h2d_slot_futures[slot] = None
-            for buf, (_m, master) in zip(self.h2d_ring[slot], self.h2d_masters[block_idx]):
-                buf.copy_(master)
+            self.h2d_ring[slot].copy_(self.h2d_masters[block_idx][0])
             if self.cuda_available:
                 torch.cuda.synchronize()
             self.h2d_loaded_block[slot] = block_idx
-        for buf, (m, _master) in zip(self.h2d_ring[slot], self.h2d_masters[block_idx]):
-            m.weight.data = buf
+        self._h2d_point_weights(block_idx, self.h2d_ring[slot])
 
     def _h2d_submit(self, block_idx: int):
         """After block_idx ran: repoint it to its CPU master (no copy) and prefetch the
@@ -448,9 +478,8 @@ class TransformerBlockOffloader:
             return
         i = block_idx - self.h2d_num_on_gpu
         slot = i % self.ring_size
-        # Repoint the just-run block back to its permanent CPU master (no D2H).
-        for (m, master) in self.h2d_masters[block_idx]:
-            m.weight.data = master
+        # Repoint the just-run block back to its permanent flat CPU master (no D2H).
+        self._h2d_point_weights(block_idx, self.h2d_masters[block_idx][0])
         # Prefetch ring_size blocks ahead into this freed slot (no wrap across the step end;
         # the first blocks of the next step self-heal in _h2d_wait).
         next_i = i + self.ring_size

@@ -190,12 +190,18 @@ def _apply_emphasis_lens(
 def encode_prompt(
     text_encoder, tokenizer, prompt, negative_prompt,
     device, dtype, max_length: int = 512,
+    skip_emphasis: bool = False,
 ) -> Tuple[List[torch.Tensor], torch.Tensor]:
     """Encode prompts and build CFG-batched encoder_features and encoder_mask.
 
     Returns:
         encoder_features: list of Tensors, each [2, S_txt, hidden_dim]  (cond first)
         encoder_mask:     BoolTensor [2, S_txt]
+
+    When ``skip_emphasis`` is True the emphasis SYNTAX is still stripped (so the clean
+    text goes to the encoder) but the per-token weights are NOT multiplied into the
+    embeddings — used by NegPip, which instead carries the (possibly negative) signed
+    weights on the attention value V. Default False keeps the standard path unchanged.
     """
     prompts = [prompt] if isinstance(prompt, str) else list(prompt)
     negatives = [negative_prompt] if isinstance(negative_prompt, str) else list(negative_prompt)
@@ -211,9 +217,10 @@ def encode_prompt(
 
     pos_features, pos_mask = _get_text_embeddings(text_encoder, tokenizer, clean_prompts, max_length, device)
 
-    # Apply per-token emphasis to each sample in the batch
+    # Apply per-token emphasis to each sample in the batch (skipped for NegPip,
+    # which carries the signed weights on the attention value V instead).
     for bi, weights in enumerate(prompt_weights):
-        if weights:
+        if weights and not skip_emphasis:
             try:
                 emphasised = _apply_emphasis_lens(
                     [f[bi:bi+1] for f in pos_features], weights, dtype
@@ -248,6 +255,7 @@ def encode_prompt(
 def encode_nag_negative(
     text_encoder, tokenizer, nag_negative_prompt: str,
     device, dtype, max_length: int = 512,
+    skip_emphasis: bool = False,
 ) -> Tuple[List[torch.Tensor], torch.Tensor]:
     """Encode the NAG-negative prompt via the SAME encoder path as encode_prompt.
 
@@ -257,7 +265,7 @@ def encode_nag_negative(
     prompt = nag_negative_prompt or ""
     clean, weights = _build_emphasis_lens(prompt, tokenizer, max_length)
     features, mask = _get_text_embeddings(text_encoder, tokenizer, [clean], max_length, device)
-    if weights:
+    if weights and not skip_emphasis:
         try:
             features = _apply_emphasis_lens(features, weights, dtype)
         except Exception as e:
@@ -491,6 +499,48 @@ def _maybe_setup_nag(transformer, encoder_features, encoder_mask, nag_params):
 
 
 # ---------------------------------------------------------------------------
+# NegPip (negative-emphasis prompting) setup
+# ---------------------------------------------------------------------------
+
+def _maybe_setup_negpip(transformer, encoder_features, encoder_mask, tokenizer,
+                        negpip_params, nag_active: bool):
+    """If NegPip is active, install the signed-V hook on every attention module.
+
+    negpip_params (or None) is a dict with keys: prompt, negative_prompt,
+    nag_negative_prompt, max_length. Returns the list of touched modules (for
+    restoration), or None when NegPip is inactive (default path byte-identical).
+
+    The signed weight batch is aligned to the CURRENT text batch order and the CURRENT
+    (post-NAG-padding) sequence length:
+        plain CFG  -> [positive, negative]
+        NAG active -> [positive, negative, nag_neg]   (nag_neg appended by build_nag_text_batch)
+    """
+    if not negpip_params:
+        return None
+
+    from core.inference.negpip_lens import build_lens_signed_weight_batch, install_negpip
+
+    seq_txt = encoder_features[0].shape[1]
+    device = encoder_features[0].device
+    dtype = encoder_features[0].dtype
+    max_length = int(negpip_params.get("max_length", 512))
+
+    prompts = [
+        negpip_params.get("prompt", ""),
+        negpip_params.get("negative_prompt", ""),
+    ]
+    if nag_active:
+        prompts.append(negpip_params.get("nag_negative_prompt", "") or negpip_params.get("negative_prompt", ""))
+
+    weights = build_lens_signed_weight_batch(
+        prompts, tokenizer, seq_txt, device, dtype, max_length,
+    )
+    modules = install_negpip(transformer, weights)
+    print(f"[Lens] NegPip enabled: signed V on text tokens, batch={weights.shape[0]}, seq_txt={seq_txt}")
+    return modules
+
+
+# ---------------------------------------------------------------------------
 # Denoising loops
 # ---------------------------------------------------------------------------
 
@@ -504,6 +554,8 @@ def denoise_loop(
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
     nag_params: Optional[Dict[str, Any]] = None,
+    negpip_params: Optional[Dict[str, Any]] = None,
+    tokenizer=None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img."""
     seq_len = latent_h * latent_w
@@ -515,6 +567,10 @@ def denoise_loop(
 
     transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
         transformer, encoder_features, encoder_mask, nag_params,
+    )
+    _negpip_modules = _maybe_setup_negpip(
+        transformer, encoder_features, encoder_mask, tokenizer,
+        negpip_params, nag_active=_nag_wrapper is not None,
     )
 
     spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
@@ -553,6 +609,9 @@ def denoise_loop(
         if progress_callback is not None:
             progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    if _negpip_modules is not None:
+        from core.inference.negpip_lens import restore_negpip
+        restore_negpip(_negpip_modules)
     if _nag_wrapper is not None:
         _nag_wrapper.restore()
     return latents
@@ -571,6 +630,8 @@ def denoise_loop_img2img(
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
     nag_params: Optional[Dict[str, Any]] = None,
+    negpip_params: Optional[Dict[str, Any]] = None,
+    tokenizer=None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on flow-matching schedule."""
     seq_len = latent_h * latent_w
@@ -580,6 +641,10 @@ def denoise_loop_img2img(
 
     transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
         transformer, encoder_features, encoder_mask, nag_params,
+    )
+    _negpip_modules = _maybe_setup_negpip(
+        transformer, encoder_features, encoder_mask, tokenizer,
+        negpip_params, nag_active=_nag_wrapper is not None,
     )
 
     timesteps = scheduler.timesteps
@@ -633,6 +698,9 @@ def denoise_loop_img2img(
         if progress_callback is not None:
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    if _negpip_modules is not None:
+        from core.inference.negpip_lens import restore_negpip
+        restore_negpip(_negpip_modules)
     if _nag_wrapper is not None:
         _nag_wrapper.restore()
     return latents
@@ -652,6 +720,8 @@ def denoise_loop_inpaint(
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
     nag_params: Optional[Dict[str, Any]] = None,
+    negpip_params: Optional[Dict[str, Any]] = None,
+    tokenizer=None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on flow-matching schedule.
 
@@ -664,6 +734,10 @@ def denoise_loop_inpaint(
 
     transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
         transformer, encoder_features, encoder_mask, nag_params,
+    )
+    _negpip_modules = _maybe_setup_negpip(
+        transformer, encoder_features, encoder_mask, tokenizer,
+        negpip_params, nag_active=_nag_wrapper is not None,
     )
 
     timesteps = scheduler.timesteps
@@ -727,6 +801,9 @@ def denoise_loop_inpaint(
             preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
 
+    if _negpip_modules is not None:
+        from core.inference.negpip_lens import restore_negpip
+        restore_negpip(_negpip_modules)
     if _nag_wrapper is not None:
         _nag_wrapper.restore()
     return latents

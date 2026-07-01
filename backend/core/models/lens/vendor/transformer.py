@@ -145,6 +145,15 @@ class LensJointAttention(nn.Module):
         txt_qkv = self.txt_qkv(encoder_hidden_states).view(bsz, seq_txt, 3, self.heads, self.dim_head)
         img_q, img_k, img_v = img_qkv.unbind(dim=2)
         txt_q, txt_k, txt_v = txt_qkv.unbind(dim=2)
+        # NegPip (negative-emphasis prompting) branch — OFF by default, installed only
+        # by core.inference.negpip_lens.install_negpip when the prompt has a negative
+        # emphasis weight. It scales the TEXT value (txt_v) per-token by a signed weight
+        # (negative -> subtract the concept); Q and K are untouched, so the attention
+        # pattern is unchanged and no extra forward is added. V is neither normed nor
+        # RoPE'd, so scaling it here (pre-transpose) is the correct interception point.
+        if getattr(self, "_negpip_enabled", False) and self._negpip_weights is not None:
+            from core.inference.negpip_lens import scale_text_value
+            txt_v = scale_text_value(txt_v, self._negpip_weights)
         img_q = self.norm_q(img_q)
         img_k = self.norm_k(img_k)
         txt_q = self.norm_added_q(txt_q)

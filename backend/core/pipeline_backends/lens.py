@@ -109,7 +109,8 @@ class LensMixin:
     @staticmethod
     def _lens_encode_nag(params: Dict[str, Any], text_encoder, tokenizer,
                          negative_prompt: str, enc_device, dtype,
-                         max_sequence_length: int) -> Optional[Dict[str, Any]]:
+                         max_sequence_length: int,
+                         skip_emphasis: bool = False) -> Optional[Dict[str, Any]]:
         """Encode the NAG-negative prompt and build nag_params for the denoise loop.
 
         Returns None when NAG is inactive (nag_enable off, or nag_scale<=1), keeping the
@@ -126,6 +127,7 @@ class LensMixin:
         nag_features, nag_mask = encode_nag_negative(
             text_encoder, tokenizer, nag_neg_prompt,
             device=enc_device, dtype=dtype, max_length=max_sequence_length,
+            skip_emphasis=skip_emphasis,
         )
         return {
             "nag_features": nag_features,
@@ -133,6 +135,29 @@ class LensMixin:
             "nag_scale": nag_scale,
             "nag_tau": float(params.get("nag_tau", 2.5)),
             "nag_alpha": float(params.get("nag_alpha", 0.25)),
+        }
+
+    @staticmethod
+    def _lens_negpip_params(prompt: str, negative_prompt: str,
+                            nag_negative_prompt: str, max_sequence_length: int,
+                            ) -> Optional[Dict[str, Any]]:
+        """Auto-activate NegPip when any prompt carries a negative emphasis weight.
+
+        Returns None (default path byte-identical) unless the positive, negative, or
+        nag-negative prompt contains a negative weight (e.g. "(worst quality:-1)").
+        When active, the raw (emphasis-bearing) prompt strings are carried through to
+        the denoise loop, which builds the per-context signed V weights there.
+        """
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+
+        candidates = [prompt, negative_prompt, nag_negative_prompt]
+        if not any(prompt_has_negative_weight(p or "") for p in candidates):
+            return None
+        return {
+            "prompt": prompt or "",
+            "negative_prompt": negative_prompt or "",
+            "nag_negative_prompt": nag_negative_prompt or negative_prompt or "",
+            "max_length": max_sequence_length,
         }
 
     def _reload_lens_text_encoder(self) -> None:
@@ -252,13 +277,19 @@ class LensMixin:
             print("[Lens] Stage 1: Text encoding...")
             if not cpu_text_encoding:
                 text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            negpip_params = self._lens_negpip_params(
+                prompt, negative_prompt,
+                params.get("nag_negative_prompt", "") or "", max_sequence_length,
+            )
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
+                skip_emphasis=negpip_params is not None,
             )
             nag_params = self._lens_encode_nag(
                 params, text_encoder, tokenizer, negative_prompt,
                 enc_device, dtype, max_sequence_length,
+                skip_emphasis=negpip_params is not None,
             )
             if not cpu_text_encoding:
                 self._lens_move("text_encoder", "cpu")
@@ -296,6 +327,8 @@ class LensMixin:
                     advanced_cfg=self._lens_advanced_cfg(params),
                     spectrum_params=params,
                     nag_params=nag_params,
+                    negpip_params=negpip_params,
+                    tokenizer=tokenizer,
                 )
             finally:
                 if applied_lora_count:
@@ -392,13 +425,19 @@ class LensMixin:
             print("[Lens] Stage 1: Text encoding...")
             if not cpu_text_encoding:
                 text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            negpip_params = self._lens_negpip_params(
+                prompt, negative_prompt,
+                params.get("nag_negative_prompt", "") or "", max_sequence_length,
+            )
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
+                skip_emphasis=negpip_params is not None,
             )
             nag_params = self._lens_encode_nag(
                 params, text_encoder, tokenizer, negative_prompt,
                 enc_device, dtype, max_sequence_length,
+                skip_emphasis=negpip_params is not None,
             )
             if not cpu_text_encoding:
                 self._lens_move("text_encoder", "cpu")
@@ -442,6 +481,8 @@ class LensMixin:
                     advanced_cfg=self._lens_advanced_cfg(params),
                     spectrum_params=params,
                     nag_params=nag_params,
+                    negpip_params=negpip_params,
+                    tokenizer=tokenizer,
                 )
             finally:
                 if applied_lora_count:
@@ -547,13 +588,19 @@ class LensMixin:
             print("[Lens] Stage 1: Text encoding...")
             if not cpu_text_encoding:
                 text_encoder = self._lens_move("text_encoder", device, text_encoder_quantization)
+            negpip_params = self._lens_negpip_params(
+                prompt, negative_prompt,
+                params.get("nag_negative_prompt", "") or "", max_sequence_length,
+            )
             encoder_features, encoder_mask = encode_prompt(
                 text_encoder, tokenizer, prompt, negative_prompt,
                 device=enc_device, dtype=dtype, max_length=max_sequence_length,
+                skip_emphasis=negpip_params is not None,
             )
             nag_params = self._lens_encode_nag(
                 params, text_encoder, tokenizer, negative_prompt,
                 enc_device, dtype, max_sequence_length,
+                skip_emphasis=negpip_params is not None,
             )
             if not cpu_text_encoding:
                 self._lens_move("text_encoder", "cpu")
@@ -600,6 +647,8 @@ class LensMixin:
                     advanced_cfg=self._lens_advanced_cfg(params),
                     spectrum_params=params,
                     nag_params=nag_params,
+                    negpip_params=negpip_params,
+                    tokenizer=tokenizer,
                 )
             finally:
                 if applied_lora_count:

@@ -663,6 +663,15 @@ class BaseTrainer(ABC):
         # Block Swap settings (training VRAM optimization)
         self.blocks_to_swap = blocks_to_swap
         self.use_pinned_memory = use_pinned_memory
+        # H2D-only block swap settings (FLUX.2 LoRA / frozen-base training).
+        # Read from the same train_config source that populates blocks_to_swap /
+        # use_pinned_memory (train_runner passes those via constructor from
+        # train_config.get(...)). Defaults: h2d_only=False, ring_size=2.
+        # NOTE: SSoT plumbing (TRAINING_DEFAULTS/OpenAPI/Pydantic/frontend) is a
+        # separate follow-up; here we only READ these keys.
+        _tc = train_config if train_config else {}
+        self.block_swap_h2d_only = bool(_tc.get("block_swap_h2d_only", False))
+        self.block_swap_ring_size = int(_tc.get("block_swap_ring_size", 2))
 
         # Per-bucket activation offload dispatcher settings. The dispatcher is
         # created lazily on the first executed step (once static VRAM is known).
@@ -1851,6 +1860,81 @@ class BaseTrainer(ABC):
     #     if not unet_has_inf and not unet_has_nan:
     #         print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
 
+    def _flux2_block_swap_h2d_args(self):
+        """Policy gate + H2D args for FLUX.2 training block swap.
+
+        FLUX.2 training block swap is supported ONLY via the H2D-only + frozen-base
+        (LoRA) + gradient-checkpointing path. The standard (non-H2D) training swap has
+        a pre-existing index inconsistency and is NOT functional, so anything that
+        would activate it must raise a clear error instead.
+
+        Returns a dict of kwargs to pass to create_flux_block_offloader
+        ({"h2d_only": ..., "ring_size": ...}).
+
+        Raises ValueError if the policy is violated.
+        """
+        # Gate 1: block swap for FLUX.2 training requires h2d_only.
+        if not self.block_swap_h2d_only:
+            raise ValueError(
+                "FLUX.2 training block swap currently requires block_swap_h2d_only=True "
+                "(the standard swap path is not yet functional)."
+            )
+
+        # Gate 2: requires a frozen base (LoRA training, not full-parameter FT).
+        # The training mode is known at setup time via train_config['training_method'];
+        # LoRA adapters are applied after this point, so we key off the mode rather than
+        # inspecting requires_grad here. The offloader also has a lazy Full-FT
+        # auto-detect+disable as a backstop.
+        training_method = str(self.config.get("training_method", "lora") or "lora").strip().lower()
+        if training_method != "lora":
+            raise ValueError(
+                "FLUX.2 training block swap (H2D-only) requires a frozen base, i.e. LoRA "
+                f"training. Current training_method={training_method!r} updates the base "
+                "weights (Full-FT), which needs D2H persistence and cannot use H2D-only "
+                "block swap. Use training_method='lora' or disable Block Swap "
+                "(blocks_to_swap=0)."
+            )
+
+        # Gate 3: requires gradient checkpointing on the transformer (H2D backward
+        # re-reads base weights via recompute). Enable it if the transformer supports
+        # the switch; then verify the attribute the wrapper checks becomes True.
+        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+            try:
+                self.transformer.enable_gradient_checkpointing()
+            except Exception as e:
+                raise ValueError(
+                    "FLUX.2 training block swap (H2D-only) requires gradient checkpointing "
+                    f"on the transformer, but enable_gradient_checkpointing() failed: {e}"
+                )
+        if not getattr(self.transformer, "gradient_checkpointing", False):
+            raise ValueError(
+                "FLUX.2 training block swap (H2D-only) requires gradient checkpointing on "
+                "the transformer (transformer.gradient_checkpointing must be True). The "
+                "current transformer does not support enabling it, so H2D-only block swap "
+                "cannot be used. Disable Block Swap (blocks_to_swap=0) instead."
+            )
+
+        print(f"{self.log_prefix} FLUX.2 block swap H2D-only enabled "
+              f"(ring_size={self.block_swap_ring_size}, LoRA/frozen base, grad-ckpt on)")
+        return {"h2d_only": True, "ring_size": self.block_swap_ring_size}
+
+    def _wire_flux2_block_swap_driver(self):
+        """Wire the offloader into the FLUX.2 forward/backward after devices are prepared.
+
+        - Wraps self.transformer with Flux2BlockSwapWrapper (drives wait_for_block /
+          submit_move_blocks_forward per block during forward). self.transformer itself
+          is NOT replaced, so optimizer / LoRA / state_dict keep seeing the raw module.
+        - Registers full-backward hooks so recompute-time reads pull blocks resident.
+        """
+        from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+
+        self.flux2_transformer_wrapper = Flux2BlockSwapWrapper(
+            self.transformer, self.flux2_block_offloader
+        )
+        self.flux2_block_offloader.register_backward_hooks()
+        print(f"{self.log_prefix} FLUX.2 block swap driver wired "
+              f"(wrapper + backward hooks registered)")
+
     def _load_flux2_components(self):
         """Load FLUX.2 Klein model components.
 
@@ -1922,11 +2006,16 @@ class BaseTrainer(ABC):
 
         # Setup Block Swap if enabled (before moving to GPU)
         self.flux2_block_offloader = None  # FLUX.2 specific offloader
+        self.flux2_transformer_wrapper = None  # Drives the offloader during forward
 
         if self.blocks_to_swap > 0:
             print(f"{self.log_prefix} Block Swap enabled for FLUX.2 training: {self.blocks_to_swap} blocks")
             print(f"{self.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
             print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
+
+            # Policy gate: FLUX.2 training block swap requires H2D-only + frozen base
+            # (LoRA) + gradient checkpointing. Raises on any unsupported combination.
+            _h2d_args = self._flux2_block_swap_h2d_args()
 
             # Import FLUX.2 specific block offloader
             from core.memory_management import create_flux_block_offloader
@@ -1945,11 +2034,16 @@ class BaseTrainer(ABC):
                 device=self.device,
                 target_dtype=self.training_dtype,
                 use_pinned_memory=self.use_pinned_memory,
-                supports_backward=True  # Training mode
+                supports_backward=True,  # Training mode
+                **_h2d_args,
             )
 
             # Prepare block devices (keep some on GPU, offload rest to CPU)
             self.flux2_block_offloader.prepare_block_devices_before_forward()
+
+            # Wire the offloader into the forward (wrapper) and backward (hooks).
+            # Without this the offloader is never driven -> device mismatch.
+            self._wire_flux2_block_swap_driver()
 
             num_dual = len(self.transformer.transformer_blocks)
             num_single = len(self.transformer.single_transformer_blocks)
@@ -2080,11 +2174,16 @@ class BaseTrainer(ABC):
 
             # Setup Block Swap if enabled (before moving to GPU)
             self.flux2_block_offloader = None  # FLUX.2 specific offloader
+            self.flux2_transformer_wrapper = None  # Drives the offloader during forward
 
             if self.blocks_to_swap > 0:
                 print(f"{self.log_prefix} Block Swap enabled for FLUX.2 training: {self.blocks_to_swap} blocks")
                 print(f"{self.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
                 print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
+
+                # Policy gate: FLUX.2 training block swap requires H2D-only + frozen base
+                # (LoRA) + gradient checkpointing. Raises on any unsupported combination.
+                _h2d_args = self._flux2_block_swap_h2d_args()
 
                 # Import FLUX.2 specific block offloader
                 from core.memory_management import create_flux_block_offloader
@@ -2103,11 +2202,15 @@ class BaseTrainer(ABC):
                     device=self.device,
                     target_dtype=self.training_dtype,
                     use_pinned_memory=self.use_pinned_memory,
-                    supports_backward=True  # Training mode
+                    supports_backward=True,  # Training mode
+                    **_h2d_args,
                 )
 
                 # Prepare block devices (keep some on GPU, offload rest to CPU)
                 self.flux2_block_offloader.prepare_block_devices_before_forward()
+
+                # Wire the offloader into the forward (wrapper) and backward (hooks).
+                self._wire_flux2_block_swap_driver()
 
                 num_dual = len(self.transformer.transformer_blocks)
                 num_single = len(self.transformer.single_transformer_blocks)
@@ -6842,10 +6945,14 @@ class BaseTrainer(ABC):
         if profile_vram:
             print_vram_usage("[train_step_flux2] Before Transformer forward")
 
-        # Predict velocity using FLUX.2 Transformer
+        # Predict velocity using FLUX.2 Transformer.
+        # When block swap is active, route the forward through the block-swap wrapper so
+        # it drives the offloader (wait_for_block / submit per block). self.transformer
+        # itself is NOT replaced -> optimizer / LoRA / state_dict keep seeing the raw module.
+        fwd = self.flux2_transformer_wrapper if getattr(self, "flux2_transformer_wrapper", None) is not None else self.transformer
         if self.mixed_precision:
             with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                output = self.transformer(
+                output = fwd(
                     hidden_states=noisy_latents,
                     encoder_hidden_states=prompt_embeds,
                     timestep=timesteps,
@@ -6856,7 +6963,7 @@ class BaseTrainer(ABC):
                 )
                 model_pred = output[0]
         else:
-            output = self.transformer(
+            output = fwd(
                 hidden_states=noisy_latents,
                 encoder_hidden_states=prompt_embeds,
                 timestep=timesteps,
@@ -12464,6 +12571,20 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Cleaning up LayerOffloadConductor...")
             self.layer_offload_conductor.cleanup()
             self.layer_offload_conductor = None
+
+        # Cleanup FLUX.2 block offloader + its forward/backward driver.
+        # Drop the wrapper and remove backward hooks to avoid leaking hooks across runs.
+        if getattr(self, 'flux2_block_offloader', None) is not None:
+            print(f"{self.log_prefix} Cleaning up FLUX.2 block offloader...")
+            _flx = self.flux2_block_offloader
+            if hasattr(_flx, 'remove_backward_hooks'):
+                try:
+                    _flx.remove_backward_hooks()
+                except Exception as e:
+                    print(f"{self.log_prefix} WARNING: remove_backward_hooks failed: {e}")
+            self.flux2_block_offloader = None
+        if getattr(self, 'flux2_transformer_wrapper', None) is not None:
+            self.flux2_transformer_wrapper = None
 
         # Close TensorBoard writer
         if hasattr(self, 'writer') and self.writer is not None:

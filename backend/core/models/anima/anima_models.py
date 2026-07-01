@@ -1133,17 +1133,52 @@ class Anima(nn.Module):
         # optimization): streams each block's weights between CPU and GPU around
         # its forward. Gated on the attribute so the default path is unchanged.
         offloader = getattr(self, "_block_offloader", None)
-        for block_idx, block in enumerate(self.blocks):
-            if offloader is not None:
-                offloader.wait_for_block(block_idx)
-            x_B_T_H_W_D = block(
+
+        # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical,
+        # including the block-swap wait/submit path below). When a FirstBlockCache is attached
+        # by the Anima denoising loop, run only blocks[0], take its residual on the image stream
+        # x_B_T_H_W_D as the indicator, and either reuse the cached full residual (skip blocks[1:])
+        # or run them and refresh the cache. Only x_B_T_H_W_D evolves through the block list
+        # (crossattn_emb is read-only context), so a single image tensor is both indicator and
+        # cache. Mutually exclusive with Spectrum and Block Swap (guarded in the pipeline), so
+        # this branch never runs alongside _block_offloader.
+        fbcache = getattr(self, "_fbcache", None)
+        if fbcache is not None:
+            fbcache_step = getattr(self, "_fbcache_step", 0)
+            original = x_B_T_H_W_D
+            first_out = self.blocks[0](
                 x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32,
                 rope_emb_L_1_1_D=rope_emb_L_1_1_D,
                 adaln_lora_B_T_3D=adaln_lora_B_T_3D,
                 extra_per_block_pos_emb=extra_pos_emb,
             )
-            if offloader is not None:
-                offloader.submit_move_blocks_forward(block_idx)
+            indicator = first_out - original
+            if fbcache.use_cache(indicator, fbcache_step):
+                # Cache hit: reuse the full-transformer residual, skip blocks[1:].
+                x_B_T_H_W_D = original + fbcache.get()
+            else:
+                # Cache miss: run remaining blocks from first_out, refresh the cached residual.
+                x_B_T_H_W_D = first_out
+                for block in self.blocks[1:]:
+                    x_B_T_H_W_D = block(
+                        x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32,
+                        rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                        adaln_lora_B_T_3D=adaln_lora_B_T_3D,
+                        extra_per_block_pos_emb=extra_pos_emb,
+                    )
+                fbcache.store(x_B_T_H_W_D - original)
+        else:
+            for block_idx, block in enumerate(self.blocks):
+                if offloader is not None:
+                    offloader.wait_for_block(block_idx)
+                x_B_T_H_W_D = block(
+                    x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32,
+                    rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                    adaln_lora_B_T_3D=adaln_lora_B_T_3D,
+                    extra_per_block_pos_emb=extra_pos_emb,
+                )
+                if offloader is not None:
+                    offloader.submit_move_blocks_forward(block_idx)
 
         x_B_T_H_W_O = self.final_layer(
             x_B_T_H_W_D, t_embedding_B_T_D,

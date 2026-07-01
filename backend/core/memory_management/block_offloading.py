@@ -322,8 +322,17 @@ class TransformerBlockOffloader:
                     if module_to_cuda.weight.data.device.type != self.device.type:
                         module_to_cuda.weight.data = module_to_cuda.weight.data.to(self.device)
 
-        # Synchronize before swap
-        torch.cuda.current_stream().synchronize()
+        # Order the swap AFTER the compute that just used these weights, but do it on the
+        # transfer stream via a CUDA event instead of draining the whole compute stream on
+        # the host. record_event() on the compute stream captures all work enqueued so far
+        # (the block that just executed, enqueued before this swap was submitted); the
+        # transfer stream then waits for that event before it evicts (D2H) / overwrites
+        # (H2D) the GPU weight buffers. This removes a full current_stream().synchronize()
+        # that was paid on every one of ~20 swaps per denoise step (draining unrelated
+        # compute + blocking the host thread) and replaces it with a GPU-side dependency
+        # that preserves the exact same ordering guarantee.
+        compute_done = torch.cuda.current_stream().record_event()
+        self.stream.wait_event(compute_done)
 
         if not self.use_pinned_memory:
             # Strategy 1: Use staging buffers (less pinned memory)

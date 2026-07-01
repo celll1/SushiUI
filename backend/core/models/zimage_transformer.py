@@ -89,6 +89,10 @@ class ZImageAttention(nn.Module):
     # forward path below is byte-identical to the original. Set to a NAGContext by the
     # Z-Image denoising loop only while NAG is active. See core/inference/nag_zimage.py.
     _nag_ctx = None
+    # NegPip (signed-value attention) context. None => NegPip off (default), forward is
+    # byte-identical. Set to a NegPipContext by the Z-Image denoising loop only while a prompt
+    # with a negative emphasis weight is active. See core/inference/negpip_zimage.py.
+    _negpip_ctx = None
 
     def __init__(self, dim: int, n_heads: int, n_kv_heads: int, qk_norm: bool = True, eps: float = 1e-5):
         super().__init__()
@@ -117,6 +121,16 @@ class ZImageAttention(nn.Module):
         query = query.unflatten(-1, (self.n_heads, -1))
         key = key.unflatten(-1, (self.n_kv_heads, -1))
         value = value.unflatten(-1, (self.n_kv_heads, -1))
+
+        # NegPip (signed-value attention): OFF by default (_negpip_ctx is None). When active,
+        # scale the caption (suffix) portion of the attention VALUE by signed per-token weights
+        # so a negatively-weighted token subtracts its concept. Q and K are untouched. This is a
+        # single elementwise multiply (no extra forward). Applied before RoPE/qk-norm, which only
+        # touch Q/K -- V is unaffected by those, so ordering is irrelevant for V.
+        negpip_ctx = type(self)._negpip_ctx
+        if negpip_ctx is not None:
+            from core.inference.negpip_zimage import apply_negpip_to_value
+            value = apply_negpip_to_value(value, negpip_ctx)
 
         if self.norm_q is not None:
             query = self.norm_q(query)
@@ -615,6 +629,24 @@ class ZImageTransformer2DModel(nn.Module):
                 print(f"[Z-Image NAG] Failed to install NAG context: {_nag_e}")
                 ZImageAttention._nag_ctx = None
 
+        # NegPip (signed-value attention): install the per-forward context on ZImageAttention
+        # only for the joint layers. weight_rows is aligned to the caption batch order (same as
+        # cap_feats / the prompt_embeds list the denoising loop built). image_len is the image
+        # (prefix) length shared by every row. OFF by default (_negpip_request is None).
+        negpip_request = getattr(self, "_negpip_request", None)
+        negpip_installed = False
+        if negpip_request is not None:
+            try:
+                from core.inference.negpip_zimage import NegPipContext
+                ZImageAttention._negpip_ctx = NegPipContext(
+                    weight_rows=negpip_request["weight_rows"],
+                    image_len=x_item_seqlens[0],
+                )
+                negpip_installed = True
+            except Exception as _np_e:
+                print(f"[Z-Image NegPip] Failed to install NegPip context: {_np_e}")
+                ZImageAttention._negpip_ctx = None
+
         for layer_idx, layer in enumerate(self.layers):
             # Block Swap integration: wait for block transfer before execution
             if hasattr(self, '_block_offloader') and self._block_offloader is not None:
@@ -640,6 +672,9 @@ class ZImageTransformer2DModel(nn.Module):
         # Clear the NAG context so it never leaks into a subsequent non-NAG forward.
         if nag_installed:
             ZImageAttention._nag_ctx = None
+        # Clear the NegPip context so it never leaks into a subsequent non-NegPip forward.
+        if negpip_installed:
+            ZImageAttention._negpip_ctx = None
 
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))

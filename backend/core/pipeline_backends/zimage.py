@@ -1555,6 +1555,58 @@ class ZImageMixin:
         if hasattr(transformer, "_nag_request"):
             transformer._nag_request = None
 
+        # NegPip (signed-value attention) setup. AUTO-ACTIVATES (no toggle) only when a prompt
+        # carries a NEGATIVE emphasis weight (e.g. "(worst quality:-1)"). When no negative weight
+        # is present, negpip_on is False and _negpip_request stays None -> the transformer forward
+        # is byte-identical (positive-only default path unchanged). Per-context signed weight
+        # rows are aligned to each caption's real token count (the encoder's masked length, i.e.
+        # the length of the corresponding embeds row), so a negatively-weighted token's V scale
+        # lands on exactly its caption token. Composes with NAG (image-prefix output guidance) and
+        # Spectrum (post-CFG forecast: NegPip only touches evaluated steps).
+        negpip_on = False
+        negpip_pos_rows = negpip_neg_rows = negpip_nag_rows = None
+        try:
+            from core.prompts.prompt_parser import prompt_has_negative_weight
+            from core.inference.negpip_zimage import build_zimage_caption_weights
+            _np = nag_params or {}
+            _pos_prompt = _np.get("prompt", "")
+            _neg_prompt = _np.get("negative_prompt", "") or ""
+            _nag_neg_prompt = _np.get("nag_negative_prompt", "") or ""
+            _pos_list = [_pos_prompt] if isinstance(_pos_prompt, str) else list(_pos_prompt)
+            _has_neg = (prompt_has_negative_weight(_pos_prompt)
+                        or prompt_has_negative_weight(_neg_prompt)
+                        or prompt_has_negative_weight(_nag_neg_prompt))
+            if _has_neg:
+                _tok = self.zimage_components["tokenizer"]
+                _wdtype = torch.float32
+
+                def _rows_for(prompt_str, embeds_list):
+                    # One weight row per caption item, length == that caption's real token count
+                    # (== embeds row length == encoder masked length). Same prompt string per item
+                    # in this pipeline (batch shares one prompt), so build once per item length.
+                    rows = []
+                    for e in (embeds_list or []):
+                        rows.append(build_zimage_caption_weights(
+                            prompt_str, _tok, e.shape[0], e.device, _wdtype))
+                    return rows
+
+                negpip_pos_rows = _rows_for(_pos_prompt if isinstance(_pos_prompt, str)
+                                            else (_pos_list[0] if _pos_list else ""),
+                                            prompt_embeds_list)
+                if do_classifier_free_guidance and negative_prompt_embeds_list:
+                    negpip_neg_rows = _rows_for(_neg_prompt, negative_prompt_embeds_list)
+                if nag_negative_embeds_list:
+                    negpip_nag_rows = _rows_for(_nag_neg_prompt, nag_negative_embeds_list)
+                negpip_on = True
+                print(f"[Z-Image NegPip] Active: negative emphasis weight detected "
+                      f"(pos={negpip_pos_rows is not None}, neg={negpip_neg_rows is not None}, "
+                      f"nag={negpip_nag_rows is not None})")
+        except Exception as _np_err:
+            print(f"[Z-Image NegPip] Setup skipped ({_np_err}); positive-only path unchanged")
+            negpip_on = False
+        if hasattr(transformer, "_negpip_request"):
+            transformer._negpip_request = None
+
         # Denoising loop with progress callback
         # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
         # We normalize progress to user-requested num_inference_steps for UI consistency
@@ -1615,6 +1667,10 @@ class ZImageMixin:
                 #   CFG on  -> groups [neg, pos, nag_neg]   (repeat x3, NAG on cond only)
                 #   CFG off -> groups [pos, nag_neg]        (repeat x2, NAG on pos)
                 nag_this_step = nag_on
+                # NegPip: assemble the signed weight rows in the SAME batch order as
+                # prompt_embeds_model_input (one row per caption item). Each context uses its own
+                # signed weights: pos subtracts, neg (uncond) re-affirms via double-negative.
+                negpip_rows_this_step = None
                 if apply_cfg:
                     if nag_this_step:
                         latent_model_input = latents.to(input_dtype).repeat(3, 1, 1, 1)
@@ -1623,20 +1679,40 @@ class ZImageMixin:
                             + nag_negative_embeds_list
                         )
                         timestep_model_input = timestep.repeat(3)
+                        if negpip_on:
+                            negpip_rows_this_step = (
+                                (negpip_neg_rows or [None] * len(negative_prompt_embeds_list))
+                                + (negpip_pos_rows or [None] * len(prompt_embeds_list))
+                                + (negpip_nag_rows or [None] * len(nag_negative_embeds_list))
+                            )
                     else:
                         latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
                         # CFG input order: [negative, positive] (consistent with SD/SDXL)
                         prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
                         timestep_model_input = timestep.repeat(2)
+                        if negpip_on:
+                            negpip_rows_this_step = (
+                                (negpip_neg_rows or [None] * len(negative_prompt_embeds_list))
+                                + (negpip_pos_rows or [None] * len(prompt_embeds_list))
+                            )
                 else:
                     if nag_this_step:
                         latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
                         prompt_embeds_model_input = prompt_embeds_list + nag_negative_embeds_list
                         timestep_model_input = timestep.repeat(2)
+                        if negpip_on:
+                            negpip_rows_this_step = (
+                                (negpip_pos_rows or [None] * len(prompt_embeds_list))
+                                + (negpip_nag_rows or [None] * len(nag_negative_embeds_list))
+                            )
                     else:
                         latent_model_input = latents.to(input_dtype)
                         prompt_embeds_model_input = prompt_embeds_list
                         timestep_model_input = timestep
+                        if negpip_on:
+                            negpip_rows_this_step = (
+                                negpip_pos_rows or [None] * len(prompt_embeds_list)
+                            )
 
                 # Add channel dimension and split into list
                 latent_model_input = latent_model_input.unsqueeze(2)
@@ -1653,6 +1729,12 @@ class ZImageMixin:
                         "tau": nag_tau,
                         "alpha": nag_alpha,
                     }
+
+                # NegPip: install the signed weight rows (batch order matches the caption list
+                # built above). Converted into the live NegPipContext by the transformer forward,
+                # which also clears it; we clear again in finally as a safety net.
+                if negpip_on and negpip_rows_this_step is not None:
+                    transformer._negpip_request = {"weight_rows": negpip_rows_this_step}
 
                 # Transformer forward pass
                 # For FP8 quantized models, use autocast to handle mixed precision
@@ -1678,6 +1760,10 @@ class ZImageMixin:
                         transformer._nag_request = None
                         from core.models.zimage_transformer import ZImageAttention
                         ZImageAttention._nag_ctx = None
+                    if negpip_on:
+                        transformer._negpip_request = None
+                        from core.models.zimage_transformer import ZImageAttention
+                        ZImageAttention._negpip_ctx = None
 
                 # Apply CFG if enabled
                 if apply_cfg:

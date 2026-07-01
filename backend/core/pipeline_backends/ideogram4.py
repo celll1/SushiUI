@@ -330,6 +330,7 @@ class Ideogram4Mixin:
                     grid_h=cfg["grid_h"], grid_w=cfg["grid_w"], height=cfg["height"], width=cfg["width"],
                     mu=cfg["mu"], std=cfg["std"],
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora:
@@ -401,6 +402,7 @@ class Ideogram4Mixin:
                     grid_h=cfg["grid_h"], grid_w=cfg["grid_w"], height=cfg["height"], width=cfg["width"],
                     mu=cfg["mu"], std=cfg["std"], seed=cfg["seed"],
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora:
@@ -486,6 +488,7 @@ class Ideogram4Mixin:
                     grid_h=cfg["grid_h"], grid_w=cfg["grid_w"], height=height, width=width,
                     mu=cfg["mu"], std=cfg["std"], seed=cfg["seed"],
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora:

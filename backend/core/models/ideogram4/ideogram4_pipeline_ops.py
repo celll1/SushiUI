@@ -24,6 +24,7 @@ import numpy as np
 import torch
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
+from core.inference.spectrum_forecaster import build_output_forecaster
 
 from .vendor.transformer import (
     IMAGE_POSITION_OFFSET,
@@ -605,10 +606,12 @@ def _run_loop(
     init_latents: Optional[torch.Tensor] = None,
     init_noise: Optional[torch.Tensor] = None,
     mask_latent: Optional[torch.Tensor] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Shared dual-branch flow-matching loop (txt2img / img2img / inpaint)."""
     from core.inference.cancellation import raise_if_cancelled
     total_steps = len(timesteps)
+    spectrum = build_output_forecaster(spectrum_params, total_steps, "Ideogram4")
     batch = latents.shape[0]
 
     for i, t in enumerate(timesteps):
@@ -616,10 +619,18 @@ def _run_loop(
         sigma_t = t.item() / num_train_timesteps
         t_model = (1.0 - (t.float() / num_train_timesteps)).expand(batch).to(transformer.dtype)
 
-        v, cfg_metrics = _dual_branch_velocity(
-            transformer, unconditional_transformer, latents, cond, t_model,
-            guidance[i], sigma_t, advanced_cfg,
-        )
+        # Spectrum: forecast the dual-branch velocity on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+        if spectrum_skip:
+            v = spectrum.forecast(i)
+            cfg_metrics = None
+        else:
+            v, cfg_metrics = _dual_branch_velocity(
+                transformer, unconditional_transformer, latents, cond, t_model,
+                guidance[i], sigma_t, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(i, v)
 
         # x0 estimate for preview (diffusers passes -v to step; x0 = z + sigma * v).
         pred_x0 = latents + sigma_t * v
@@ -658,6 +669,7 @@ def denoise_loop(
     guidance_schedule: Optional[List[float]] = None,
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img (dual-branch asymmetric CFG)."""
     device = latents.device
@@ -668,6 +680,7 @@ def denoise_loop(
         transformer, unconditional_transformer, scheduler, latents, cond,
         timesteps, guidance, num_train_timesteps,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        spectrum_params=spectrum_params,
     )
 
 
@@ -691,6 +704,7 @@ def denoise_loop_img2img(
     guidance_schedule: Optional[List[float]] = None,
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on the flow-matching schedule."""
     device = init_latents.device
@@ -714,6 +728,7 @@ def denoise_loop_img2img(
         transformer, unconditional_transformer, scheduler, latents, cond,
         timesteps, guidance, num_train_timesteps,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        spectrum_params=spectrum_params,
     )
 
 
@@ -738,6 +753,7 @@ def denoise_loop_inpaint(
     guidance_schedule: Optional[List[float]] = None,
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on the flow-matching schedule.
 
@@ -765,5 +781,6 @@ def denoise_loop_inpaint(
         transformer, unconditional_transformer, scheduler, latents, cond,
         timesteps, guidance, num_train_timesteps,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        spectrum_params=spectrum_params,
         init_latents=init_latents, init_noise=init_noise, mask_latent=mask_latent,
     )

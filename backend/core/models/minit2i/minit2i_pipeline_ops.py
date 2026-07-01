@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+from core.inference.spectrum_forecaster import build_output_forecaster
 from PIL import Image
 
 NOISE_SCALE = 2.0
@@ -116,7 +117,7 @@ def _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale
 @torch.no_grad()
 def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                start_idx=0, progress_callback=None, mask_latent=None, init_image=None, fixed_noise=None,
-               clamp_output=True):
+               clamp_output=True, spectrum_params=None):
     """Shared Euler loop from ts[start_idx] -> 1.
 
     Returns the final tensor. clamp_output=True clamps to [-1,1] (pixel RGB);
@@ -127,12 +128,19 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
     from core.inference.cancellation import raise_if_cancelled
     n = len(ts) - 1
     total = n - start_idx
+    spectrum = build_output_forecaster(spectrum_params, total, "MiniT2I")
     for j, i in enumerate(range(start_idx, n)):
         raise_if_cancelled()
         t0 = ts[i]
         t1 = ts[i + 1]
         t = t0.expand(1).to(x.dtype)
-        pred_x0 = _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval)
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(j)
+        if spectrum_skip:
+            pred_x0 = spectrum.forecast(j)
+        else:
+            pred_x0 = _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval)
+            if spectrum is not None:
+                spectrum.record(j, pred_x0)
         v = (pred_x0 - x) / (1.0 - t0).clamp_min(0.05)
         x = x + v * (t1 - t0)
         if mask_latent is not None:
@@ -147,7 +155,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
 def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cfg_scale,
                  cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
                  progress_callback=None, channels: int = 3, noise_scale: float = NOISE_SCALE,
-                 clamp_output: bool = True):
+                 clamp_output: bool = True, spectrum_params=None):
     """txt2img: start from pure noise, integrate t:0->1.
 
     Pixel: channels=3, noise_scale=2, height/width = image dims, clamp_output=True.
@@ -156,13 +164,13 @@ def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cf
     x = prepare_noise(height, width, device, dtype, seed, channels=channels, noise_scale=noise_scale)
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device, dtype=dtype)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                      progress_callback=progress_callback, clamp_output=clamp_output)
+                      progress_callback=progress_callback, clamp_output=clamp_output, spectrum_params=spectrum_params)
 
 
 @torch.no_grad()
 def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask, num_inference_steps,
                          cfg_scale, cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
-                         progress_callback=None, noise_scale: float = NOISE_SCALE, clamp_output: bool = True):
+                         progress_callback=None, noise_scale: float = NOISE_SCALE, clamp_output: bool = True, spectrum_params=None):
     """img2img (SDEdit): start at t_start = 1 - strength with the noised init.
 
     init_image is the working tensor: pixel RGB [1,3,H,W] or (latent) a normalized
@@ -177,7 +185,7 @@ def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask
     ti = ts[start_idx]
     x = init_image.to(dtype) * ti + noise * (1.0 - ti)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
-                      start_idx=start_idx, progress_callback=progress_callback, clamp_output=clamp_output)
+                      start_idx=start_idx, progress_callback=progress_callback, clamp_output=clamp_output, spectrum_params=spectrum_params)
 
 
 def prepare_mask(mask_image: Image.Image, height, width, device, dtype) -> torch.Tensor:
@@ -191,7 +199,7 @@ def prepare_mask(mask_image: Image.Image, height, width, device, dtype) -> torch
 def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strength, text, mask,
                          num_inference_steps, cfg_scale, cfg_interval, device, dtype, seed=None,
                          neg_text=None, neg_mask=None, progress_callback=None,
-                         noise_scale: float = NOISE_SCALE, clamp_output: bool = True):
+                         noise_scale: float = NOISE_SCALE, clamp_output: bool = True, spectrum_params=None):
     """inpaint (repaint): keep non-masked pixels pinned to the noised init each step.
 
     init_image is the working tensor (pixel RGB or normalized VAE latent); mask_latent
@@ -209,4 +217,4 @@ def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strengt
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       start_idx=start_idx, progress_callback=progress_callback,
                       mask_latent=mask_latent, init_image=init_image, fixed_noise=fixed_noise,
-                      clamp_output=clamp_output)
+                      clamp_output=clamp_output, spectrum_params=spectrum_params)

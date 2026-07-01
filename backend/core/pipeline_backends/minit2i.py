@@ -193,6 +193,7 @@ class MiniT2IMixin:
                         device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                         progress_callback=progress_callback,
                         channels=cfg["channels"], noise_scale=cfg["noise_scale"], clamp_output=False,
+                        spectrum_params=params,
                     )
                 else:
                     x = denoise_loop(
@@ -200,6 +201,7 @@ class MiniT2IMixin:
                         cfg["num_inference_steps"], cfg["cfg_scale"], cfg["cfg_interval"],
                         device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                         progress_callback=progress_callback,
+                        spectrum_params=params,
                     )
             finally:
                 if applied_lora:
@@ -243,6 +245,7 @@ class MiniT2IMixin:
                     device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                     progress_callback=progress_callback,
                     noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora:
@@ -289,6 +292,7 @@ class MiniT2IMixin:
                     device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                     progress_callback=progress_callback,
                     noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora:

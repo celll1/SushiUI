@@ -541,6 +541,56 @@ def _maybe_setup_negpip(transformer, encoder_features, encoder_mask, tokenizer,
 
 
 # ---------------------------------------------------------------------------
+# First Block Cache (FBCache)
+# ---------------------------------------------------------------------------
+
+def _unwrap_transformer(driver):
+    """Return the raw LensTransformer2DModel (whose transformer_blocks loop runs) from a
+    possibly-nested NAG wrapper. LensNAGWrapper holds ``.transformer`` and delegates forward
+    to it, so ``_fbcache`` / ``_fbcache_step`` must be set on this real object."""
+    real = driver
+    while hasattr(real, "transformer") and not hasattr(real, "transformer_blocks"):
+        real = real.transformer
+    return real
+
+
+def _build_lens_fbcache(spectrum_params, spectrum):
+    """Build a single FBCache instance for the Lens denoise loop, or None.
+
+    Lens runs ONE BATCHED transformer forward per step (cond/uncond — and the NAG negative —
+    concatenated in the batch dim, then chunked), so a single FirstBlockCache is correct.
+
+    FBCache is mutually exclusive with:
+      (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
+      (b) Block Swap -- a cache hit skips transformer_blocks[1:], desyncing the block-swap
+          rotation (the offloader expects every block to run each step).
+    It runs only when BOTH are off."""
+    from core.inference.fbcache import build_fbcache, fbcache_active
+    if spectrum_params is None or not fbcache_active(spectrum_params):
+        return None
+    block_swap_on = bool(spectrum_params.get("enable_block_swap", False)) and \
+        int(spectrum_params.get("blocks_to_swap", 0)) > 0
+    if spectrum is not None:
+        print("[FBCache] Lens disabled: Spectrum is enabled (same redundancy target)")
+        return None
+    if block_swap_on:
+        print("[FBCache] Lens disabled: Block Swap is enabled (block skip desyncs rotation)")
+        return None
+    return build_fbcache(spectrum_params, label="Lens")
+
+
+def _cleanup_lens_fbcache(real_transformer, fbcache):
+    """Detach FBCache state so it never leaks into a later forward (VAE-adjacent or a
+    subsequent generation reusing this transformer instance)."""
+    if fbcache is not None:
+        print(f"[FBCache] Lens summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
+    if hasattr(real_transformer, "_fbcache_step"):
+        real_transformer._fbcache_step = None
+
+
+# ---------------------------------------------------------------------------
 # Denoising loops
 # ---------------------------------------------------------------------------
 
@@ -574,6 +624,11 @@ def denoise_loop(
     )
 
     spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
+    # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum)
+    real_transformer = _unwrap_transformer(transformer)
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
     for i, t in enumerate(scheduler.timesteps):
         raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
@@ -585,6 +640,10 @@ def denoise_loop(
             noise_pred = spectrum.forecast(i)
             cfg_metrics = None
         else:
+            # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
+            if fbcache is not None:
+                real_transformer._fbcache = fbcache
+                real_transformer._fbcache_step = i
             noise_out = transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_features,
@@ -609,6 +668,7 @@ def denoise_loop(
         if progress_callback is not None:
             progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    _cleanup_lens_fbcache(real_transformer, fbcache)
     if _negpip_modules is not None:
         from core.inference.negpip_lens import restore_negpip
         restore_negpip(_negpip_modules)
@@ -664,6 +724,11 @@ def denoise_loop_img2img(
     total_steps = len(timesteps_to_use)
 
     spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
+    # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum)
+    real_transformer = _unwrap_transformer(transformer)
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
     for i, t in enumerate(timesteps_to_use):
         raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)
@@ -675,6 +740,10 @@ def denoise_loop_img2img(
             noise_pred = spectrum.forecast(i)
             cfg_metrics = None
         else:
+            # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
+            if fbcache is not None:
+                real_transformer._fbcache = fbcache
+                real_transformer._fbcache_step = i
             noise_out = transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_features,
@@ -698,6 +767,7 @@ def denoise_loop_img2img(
         if progress_callback is not None:
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    _cleanup_lens_fbcache(real_transformer, fbcache)
     if _negpip_modules is not None:
         from core.inference.negpip_lens import restore_negpip
         restore_negpip(_negpip_modules)
@@ -761,6 +831,11 @@ def denoise_loop_inpaint(
     mask_latent = mask_latent.to(device=init_latents.device, dtype=init_latents.dtype)
 
     spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
+    # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum)
+    real_transformer = _unwrap_transformer(transformer)
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
     for i, t in enumerate(timesteps_to_use):
         raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)
@@ -772,6 +847,10 @@ def denoise_loop_inpaint(
             noise_pred = spectrum.forecast(i)
             cfg_metrics = None
         else:
+            # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
+            if fbcache is not None:
+                real_transformer._fbcache = fbcache
+                real_transformer._fbcache_step = i
             noise_out = transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_features,
@@ -801,6 +880,7 @@ def denoise_loop_inpaint(
             preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
 
+    _cleanup_lens_fbcache(real_transformer, fbcache)
     if _negpip_modules is not None:
         from core.inference.negpip_lens import restore_negpip
         restore_negpip(_negpip_modules)

@@ -369,14 +369,48 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         # Optional block-swap offloader (set by pipeline lens.py for VRAM optimization):
         # streams each block's weights between CPU and GPU around its forward.
         offloader = getattr(self, "_block_offloader", None)
-        for block_idx, block in enumerate(self.transformer_blocks):
-            if offloader is not None:
-                offloader.wait_for_block(block_idx)
-            encoder_hidden_states, hidden_states = block(
+
+        # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical,
+        # including the block-swap wait/submit path below). When a FirstBlockCache is attached
+        # by the Lens denoising loop, run only transformer_blocks[0], take its residual on the
+        # IMAGE stream (hidden_states) as the indicator, and either reuse the cached full residual
+        # (skip transformer_blocks[1:]) or run them and refresh the cache. Lens is dual-stream:
+        # each block returns (encoder_hidden_states, hidden_states) and BOTH evolve through the
+        # block list, so the cached object is the (text_residual, image_residual) tuple while only
+        # the image residual drives the hit/miss decision (per FBCache's image-stream indicator).
+        # Shape-stable across steps within a generation (same image size + captions). Mutually
+        # exclusive with Spectrum and Block Swap (guarded in the pipeline), so this branch never
+        # runs alongside _block_offloader.
+        fbcache = getattr(self, "_fbcache", None)
+        if fbcache is not None:
+            fbcache_step = getattr(self, "_fbcache_step", 0)
+            orig_txt = encoder_hidden_states
+            orig_img = hidden_states
+            encoder_hidden_states, hidden_states = self.transformer_blocks[0](
                 hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states,
                 temb=temb, image_rotary_emb=image_rotary_emb, attention_mask=attention_mask)
-            if offloader is not None:
-                offloader.submit_move_blocks_forward(block_idx)
+            indicator = hidden_states - orig_img  # image-stream first-block residual
+            if fbcache.use_cache(indicator, fbcache_step):
+                # Cache hit: reuse the full-block residuals, skip transformer_blocks[1:].
+                txt_res, img_res = fbcache.get()
+                encoder_hidden_states = orig_txt + txt_res
+                hidden_states = orig_img + img_res
+            else:
+                # Cache miss: run remaining blocks from the first block's outputs, refresh cache.
+                for block in self.transformer_blocks[1:]:
+                    encoder_hidden_states, hidden_states = block(
+                        hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states,
+                        temb=temb, image_rotary_emb=image_rotary_emb, attention_mask=attention_mask)
+                fbcache.store((encoder_hidden_states - orig_txt, hidden_states - orig_img))
+        else:
+            for block_idx, block in enumerate(self.transformer_blocks):
+                if offloader is not None:
+                    offloader.wait_for_block(block_idx)
+                encoder_hidden_states, hidden_states = block(
+                    hidden_states=hidden_states, encoder_hidden_states=encoder_hidden_states,
+                    temb=temb, image_rotary_emb=image_rotary_emb, attention_mask=attention_mask)
+                if offloader is not None:
+                    offloader.submit_move_blocks_forward(block_idx)
         hidden_states = self.norm_out(hidden_states, temb)
         return self.proj_out(hidden_states)
 

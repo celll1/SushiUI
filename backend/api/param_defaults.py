@@ -78,6 +78,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "fbcache_enable": False,
     "fbcache_threshold": 0.12,     # relative-L1 first-block residual threshold (higher = more skips/faster)
     "fbcache_warmup_steps": 1,     # always compute the first N steps
+    "fbcache_cache_branch": 1,     # U-Net block mode: indicator = down[branch]; reused region = down[branch+1:]+mid
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

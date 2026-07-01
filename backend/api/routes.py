@@ -167,6 +167,7 @@ class GenerationParams(BaseModel):
     fbcache_enable: bool = GENERATION_DEFAULTS["fbcache_enable"]
     fbcache_threshold: float = GENERATION_DEFAULTS["fbcache_threshold"]
     fbcache_warmup_steps: int = GENERATION_DEFAULTS["fbcache_warmup_steps"]
+    fbcache_cache_branch: int = GENERATION_DEFAULTS["fbcache_cache_branch"]
     spectrum_w: float = GENERATION_DEFAULTS["spectrum_w"]
     spectrum_m: int = GENERATION_DEFAULTS["spectrum_m"]
     spectrum_lam: float = GENERATION_DEFAULTS["spectrum_lam"]
@@ -294,6 +295,7 @@ async def generate_txt2img(
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(GENERATION_DEFAULTS["fbcache_warmup_steps"]),
+    fbcache_cache_branch: int = Form(GENERATION_DEFAULTS["fbcache_cache_branch"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
@@ -453,6 +455,7 @@ async def generate_txt2img(
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,
             "fbcache_warmup_steps": fbcache_warmup_steps,
+            "fbcache_cache_branch": fbcache_cache_branch,
             "spectrum_w": spectrum_w,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
@@ -1095,6 +1098,7 @@ async def generate_img2img(
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(GENERATION_DEFAULTS["fbcache_warmup_steps"]),
+    fbcache_cache_branch: int = Form(GENERATION_DEFAULTS["fbcache_cache_branch"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
@@ -1262,6 +1266,7 @@ async def generate_img2img(
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,
             "fbcache_warmup_steps": fbcache_warmup_steps,
+            "fbcache_cache_branch": fbcache_cache_branch,
             "spectrum_w": spectrum_w,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
@@ -1492,6 +1497,7 @@ async def generate_inpaint(
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(GENERATION_DEFAULTS["fbcache_warmup_steps"]),
+    fbcache_cache_branch: int = Form(GENERATION_DEFAULTS["fbcache_cache_branch"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
@@ -1678,6 +1684,7 @@ async def generate_inpaint(
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,
             "fbcache_warmup_steps": fbcache_warmup_steps,
+            "fbcache_cache_branch": fbcache_cache_branch,
             "spectrum_w": spectrum_w,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,

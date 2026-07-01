@@ -377,11 +377,20 @@ class MMJiT(nn.Module):
             else:
                 txt = block(txt)
         self._repa_tap_out = None
+        # Block swap (inference only): when a TransformerBlockOffloader is attached, only
+        # the heavy `double_blocks` are streamed CPU<->GPU (txt_preamble_blocks and all
+        # other modules stay GPU-resident). Gated strictly on `_block_offloader`; when it
+        # is None the default path below is byte-for-byte unchanged.
+        _offloader = getattr(self, "_block_offloader", None)
         for _depth, block in enumerate(self.double_blocks):
+            if _offloader is not None:
+                _offloader.wait_for_block(_depth)
             if use_ckpt:
                 x, txt = torch.utils.checkpoint.checkpoint(block, x, txt, vec, gh, gw, use_reentrant=False)
             else:
                 x, txt = block(x, txt, vec, gh, gw)
+            if _offloader is not None:
+                _offloader.submit_move_blocks_forward(_depth)
             if self._repa_tap_depth is not None and _depth == self._repa_tap_depth:
                 self._repa_tap_out = x
         combined = torch.cat([txt, x], dim=1)

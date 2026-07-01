@@ -173,6 +173,109 @@ class MiniT2IMixin:
               f"pos+neg{'+nag' if nag_w is not None else ''} signed V scaling, seq_len={seq_len}")
         return wrapper, wrapper
 
+    def _minit2i_setup_block_swap(self, transformer, blocks_to_swap: int,
+                                  use_pinned_memory: bool, device: str,
+                                  h2d_only: bool = False, ring_size: int = 2):
+        """Attach a block-swap offloader that streams only the heavy MMJiT
+        ``double_blocks`` CPU<->GPU per forward.
+
+        MiniT2I's swappable list lives at ``transformer.model.net.double_blocks``.
+        The offloader's built-in aux-move only knows Z-Image module names, so ALL
+        other modules (``txt_preamble_blocks``, embedders, final layer, top-level
+        params/buffers) are moved to GPU here first; the offloader then pushes the
+        swappable ``double_blocks`` back to CPU in prepare_block_devices_before_forward.
+        The offloader is stored on the MMJiT net (whose forward drives swapping) and
+        mirrored on the top-level transformer for teardown.
+        """
+        from core.memory_management import create_block_offloader_for_model
+
+        net = transformer.model.net  # MMJiT instance carrying double_blocks
+
+        # Auxiliary modules (everything except the swappable double_blocks) stay on GPU.
+        for name, child in net.named_children():
+            if name != "double_blocks":
+                child.to(device)
+        for p in net.parameters(recurse=False):
+            if p.device.type != "cuda":
+                p.data = p.data.to(device)
+        for b in net.buffers(recurse=False):
+            if b.device.type != "cuda":
+                b.data = b.data.to(device)
+        # Outer wrapper (MiniT2IMMJiTModel / DiffusionModel) non-recursive params/buffers.
+        for holder in (transformer, transformer.model):
+            for p in holder.parameters(recurse=False):
+                if p.device.type != "cuda":
+                    p.data = p.data.to(device)
+            for b in holder.buffers(recurse=False):
+                if b.device.type != "cuda":
+                    b.data = b.data.to(device)
+
+        offloader = create_block_offloader_for_model(
+            transformer=net,
+            blocks_to_swap=blocks_to_swap,
+            device=torch.device(device),
+            target_dtype=torch.bfloat16,
+            use_pinned_memory=use_pinned_memory,
+            h2d_only=h2d_only,
+            ring_size=ring_size,
+            block_list=net.double_blocks,
+        )
+        net._block_offloader = offloader
+        transformer._block_offloader = offloader
+        offloader.prepare_block_devices_before_forward()
+        return offloader
+
+    def _minit2i_stage_transformer(self, device: str, params: Optional[Dict[str, Any]] = None):
+        """Place the MiniT2I transformer on GPU for the denoise loop.
+
+        With block swap enabled, only the heavy ``double_blocks`` are streamed
+        (the rest stays resident); otherwise the whole transformer moves to GPU
+        (default path, unchanged)."""
+        params = params or {}
+        transformer = self.minit2i_components["transformer"]
+        enable_block_swap = bool(params.get("enable_block_swap", False))
+        num_blocks = len(transformer.model.net.double_blocks)
+        blocks_to_swap = int(params.get("blocks_to_swap", 0))
+        blocks_to_swap = max(0, min(blocks_to_swap, num_blocks - 1))
+        use_pinned_memory = bool(params.get("use_pinned_memory", False))
+        h2d_only = bool(params.get("block_swap_h2d_only", False))
+        ring_size = int(params.get("block_swap_ring_size", 2))
+
+        self._minit2i_offloader = None
+        if enable_block_swap and blocks_to_swap > 0:
+            print(f"[MiniT2I] Block swap enabled: {blocks_to_swap}/{num_blocks} double_blocks "
+                  f"(pinned_memory={use_pinned_memory}, h2d_only={h2d_only}, ring_size={ring_size})")
+            self._minit2i_offloader = self._minit2i_setup_block_swap(
+                transformer, blocks_to_swap, use_pinned_memory, device,
+                h2d_only=h2d_only, ring_size=ring_size)
+        else:
+            self._minit2i_move("transformer", device)
+        return transformer
+
+    def _minit2i_unstage_transformer(self):
+        """Tear down any block-swap offloader, then return the transformer to CPU."""
+        off = getattr(self, "_minit2i_offloader", None)
+        transformer = (self.minit2i_components or {}).get("transformer")
+        if transformer is not None:
+            net = getattr(getattr(transformer, "model", None), "net", None)
+            for holder in (transformer, net):
+                if holder is not None and hasattr(holder, "_block_offloader"):
+                    try:
+                        delattr(holder, "_block_offloader")
+                    except Exception:
+                        pass
+        if off is not None:
+            cleanup = getattr(off, "cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+        self._minit2i_offloader = None
+        self._minit2i_move("transformer", "cpu")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     def _load_lora_minit2i(self, lora_configs: List[Dict]) -> int:
         from core.models.minit2i.minit2i_lora import (
             load_lora_safetensors, normalise_lora_state_dict, apply_lora_group,
@@ -234,6 +337,17 @@ class MiniT2IMixin:
             self._unload_lora_minit2i()
         except Exception:
             pass
+        # Strip any leftover block-swap offloader (e.g. if staging raised mid-way).
+        transformer = (self.minit2i_components or {}).get("transformer")
+        if transformer is not None:
+            net = getattr(getattr(transformer, "model", None), "net", None)
+            for holder in (transformer, net):
+                if holder is not None and hasattr(holder, "_block_offloader"):
+                    try:
+                        delattr(holder, "_block_offloader")
+                    except Exception:
+                        pass
+        self._minit2i_offloader = None
         for _c in ("text_encoder", "transformer", "vae"):
             try:
                 self._minit2i_move(_c, "cpu")
@@ -254,7 +368,7 @@ class MiniT2IMixin:
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
                 nag_negative_prompt=params.get("nag_negative_prompt"))
-            transformer = self._minit2i_move("transformer", device)
+            transformer = self._minit2i_stage_transformer(device, params)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             call_target, negpip_wrapper = self._minit2i_negpip_wrap(
@@ -286,6 +400,7 @@ class MiniT2IMixin:
                     nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
+                self._minit2i_unstage_transformer()
             image = self._minit2i_decode(x, cfg)
             print("[MiniT2I] txt2img completed")
             return image, cfg["seed"], 0
@@ -317,7 +432,7 @@ class MiniT2IMixin:
                 self._minit2i_move("vae", "cpu")
             else:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
-            transformer = self._minit2i_move("transformer", device)
+            transformer = self._minit2i_stage_transformer(device, params)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             call_target, negpip_wrapper = self._minit2i_negpip_wrap(
@@ -339,6 +454,7 @@ class MiniT2IMixin:
                     nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
+                self._minit2i_unstage_transformer()
             image = self._minit2i_decode(x, cfg)
             print("[MiniT2I] img2img completed")
             return image, cfg["seed"], 0
@@ -373,7 +489,7 @@ class MiniT2IMixin:
             else:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
                 mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
-            transformer = self._minit2i_move("transformer", device)
+            transformer = self._minit2i_stage_transformer(device, params)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             call_target, negpip_wrapper = self._minit2i_negpip_wrap(
@@ -395,6 +511,7 @@ class MiniT2IMixin:
                     nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
+                self._minit2i_unstage_transformer()
             image = self._minit2i_decode(x, cfg)
             print("[MiniT2I] inpaint completed")
             return image, cfg["seed"], 0

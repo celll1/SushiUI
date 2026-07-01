@@ -230,9 +230,10 @@ void launch_lion_8bit_blockwise_update_kernel(
     bool cautious,
     int N,
     int blocks,
-    int threads
+    int threads,
+    cudaStream_t stream
 ) {
-    lion_8bit_blockwise_update_kernel<T><<<blocks, threads>>>(
+    lion_8bit_blockwise_update_kernel<T><<<blocks, threads, 0, stream>>>(
         param, grad, exp_avg, absmax,
         beta1, beta2, eps, lr, weight_decay, gnorm_scale, step, cautious, N
     );
@@ -240,11 +241,11 @@ void launch_lion_8bit_blockwise_update_kernel(
 
 // Explicit instantiations
 template void launch_lion_8bit_blockwise_update_kernel<float>(
-    float*, const float*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int);
+    float*, const float*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int, cudaStream_t);
 template void launch_lion_8bit_blockwise_update_kernel<__half>(
-    __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int);
+    __half*, const __half*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int, cudaStream_t);
 template void launch_lion_8bit_blockwise_update_kernel<__nv_bfloat16>(
-    __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int);
+    __nv_bfloat16*, const __nv_bfloat16*, unsigned char*, float*, float, float, float, float, float, float, int, bool, int, int, int, cudaStream_t);
 
 // ============================================================
 // Quantization Map Initialization (extern "C" for C++ linkage)

@@ -46,7 +46,9 @@ class TransformerBlockOffloader:
         target_dtype: torch.dtype = torch.bfloat16,
         use_pinned_memory: bool = False,
         transformer: Optional[nn.Module] = None,
-        supports_backward: bool = False
+        supports_backward: bool = False,
+        h2d_only: bool = False,
+        ring_size: int = 2,
     ):
         """
         Initialize Block Offloader
@@ -59,6 +61,14 @@ class TransformerBlockOffloader:
             use_pinned_memory: Use pinned memory for faster transfer
             transformer: Parent transformer (for auxiliary modules)
             supports_backward: Enable backward pass support (for training)
+            h2d_only: H2D-only block swap (inference / frozen weights). Keeps a permanent
+                pinned CPU master per swappable block and only ever copies host->device into
+                a fixed ring of GPU buffers, eliminating the redundant device->host eviction
+                of read-only weights (~halves PCIe traffic). Forward-only; ignored when
+                supports_backward is True.
+            ring_size: Number of GPU weight-buffer slots in the H2D-only ring (>=1). 1 keeps
+                the minimum VRAM (fully serial loads); 2 (default) double-buffers so the next
+                block's H2D overlaps the current block's compute.
         """
         self.blocks = blocks
         self.num_blocks = len(blocks)
@@ -70,6 +80,14 @@ class TransformerBlockOffloader:
         self.supports_backward = supports_backward
         self.forward_only = not supports_backward
 
+        # H2D-only mode is forward-only (read-only weights). Fall back to the normal swap
+        # path for training (backward) until backward-direction H2D-only is implemented.
+        self.h2d_only = bool(h2d_only) and self.forward_only
+        self.ring_size = max(1, int(ring_size))
+        if h2d_only and not self.forward_only:
+            print("[BlockOffloader] h2d_only requested but backward is enabled; "
+                  "falling back to normal block swap (H2D-only is inference-only for now).")
+
         self.thread_pool = ThreadPoolExecutor(max_workers=1)
         self.futures = {}
         self.cuda_available = device.type == "cuda"
@@ -80,11 +98,20 @@ class TransformerBlockOffloader:
         self.staging_buffer_b = None
         self.pinned_buffer = None
 
+        # H2D-only state (built in prepare when h2d_only is active)
+        self.h2d_masters = None       # block_idx -> list[(module, pinned_cpu_master)]
+        self.h2d_ring = None          # slot -> list[gpu_buffer] (one per Linear)
+        self.h2d_slot_futures = None  # slot -> pending load future (or None)
+        self.h2d_loaded_block = None  # slot -> block_idx currently (being) loaded (or None)
+        self.h2d_swappable = None     # list of swappable block indices
+        self.h2d_num_on_gpu = None
+
         # Backward hook handles (for training)
         self.backward_hook_handles = []
 
         mode_str = "training (backward enabled)" if supports_backward else "inference (forward-only)"
-        print(f"[BlockOffloader] Initialized: {self.num_blocks} total blocks, {self.blocks_to_swap} to swap ({mode_str})")
+        h2d_str = f", H2D-only ring_size={self.ring_size}" if self.h2d_only else ""
+        print(f"[BlockOffloader] Initialized: {self.num_blocks} total blocks, {self.blocks_to_swap} to swap ({mode_str}){h2d_str}")
         print(f"[BlockOffloader] Device: {self.device}, dtype: {self.target_dtype}, pinned_memory: {self.use_pinned_memory}")
 
     def prepare_block_devices_before_forward(self):
@@ -121,6 +148,10 @@ class TransformerBlockOffloader:
             weighs_to_device(self.blocks[i], cpu_device)
 
         _synchronize_device(self.device)
+
+        # Build H2D-only state (permanent pinned masters + GPU ring) from the CPU weights.
+        if self.h2d_only:
+            self._h2d_setup()
 
         # Move auxiliary modules to GPU
         self._move_auxiliary_modules_to_gpu()
@@ -188,6 +219,10 @@ class TransformerBlockOffloader:
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
+        if self.h2d_only:
+            self._h2d_wait(block_idx)
+            return
+
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
 
         # First N blocks stay on GPU permanently, no wait needed
@@ -247,6 +282,10 @@ class TransformerBlockOffloader:
         if self.blocks_to_swap is None or self.blocks_to_swap == 0:
             return
 
+        if self.h2d_only:
+            self._h2d_submit(block_idx)
+            return
+
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
 
         if not self.forward_only:
@@ -289,6 +328,137 @@ class TransformerBlockOffloader:
         self.futures[block_idx_to_gpu] = self.thread_pool.submit(
             move_blocks, block_idx_to_cpu, block_to_cpu, block_idx_to_gpu, block_to_gpu
         )
+
+    # ------------------------------------------------------------------
+    # H2D-only block swap (inference / read-only weights)
+    #
+    # Standard block swap copies the just-used block's weights back to CPU (D2H) and the
+    # next block's weights to GPU (H2D). During inference the transformer weights never
+    # change, so the D2H eviction of read-only weights is redundant PCIe traffic. H2D-only
+    # keeps a permanent pinned CPU master per swappable block (never written) and streams
+    # only host->device into a fixed ring of GPU buffers, halving PCIe bytes and removing
+    # the per-tensor D2H sync. A ring of ring_size>=2 lets the next block's H2D overlap the
+    # current block's compute.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _linear_weight_modules(block: nn.Module):
+        """List (module, weight_name-agnostic) Linear modules that carry a weight tensor,
+        in a deterministic order shared across identically-structured blocks."""
+        out = []
+        for _name, m in block.named_modules():
+            if m.__class__.__name__.endswith("Linear") and getattr(m, "weight", None) is not None:
+                out.append(m)
+        return out
+
+    def _h2d_setup(self):
+        """Build permanent pinned CPU masters and the GPU ring. Called from prepare after
+        the swappable blocks' weights are on CPU."""
+        self.h2d_num_on_gpu = self.num_blocks - self.blocks_to_swap
+        self.h2d_swappable = list(range(self.h2d_num_on_gpu, self.num_blocks))
+        num_swappable = len(self.h2d_swappable)
+        if num_swappable == 0:
+            self.h2d_only = False
+            return
+        self.ring_size = max(1, min(self.ring_size, num_swappable))
+
+        # Permanent pinned CPU masters (weights are already on CPU here). Pointer stays on
+        # the master; it is never overwritten (read-only).
+        self.h2d_masters = {}
+        for bidx in self.h2d_swappable:
+            entries = []
+            for m in self._linear_weight_modules(self.blocks[bidx]):
+                master = m.weight.data
+                if self.cuda_available and not master.is_pinned():
+                    master = master.pin_memory(device=self.device)
+                m.weight.data = master
+                entries.append((m, master))
+            self.h2d_masters[bidx] = entries
+
+        # GPU ring slots (all swappable blocks share structure -> template from the first).
+        template = self.h2d_masters[self.h2d_swappable[0]]
+        self.h2d_ring = [
+            [torch.empty_like(master, device=self.device) for (_m, master) in template]
+            for _ in range(self.ring_size)
+        ]
+        self.h2d_slot_futures = [None] * self.ring_size
+        self.h2d_loaded_block = [None] * self.ring_size
+
+        # Prime the first ring_size swappable blocks into slots 0..ring_size-1.
+        for j in range(self.ring_size):
+            self._h2d_submit_load(self.h2d_swappable[j], j)
+
+        print(f"[BlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
+              f"ring_size={self.ring_size}, permanent pinned CPU masters (no D2H eviction)")
+
+    def _h2d_submit_load(self, block_idx: int, slot: int):
+        """Submit an async H2D load of block_idx's masters into ring[slot]."""
+        masters = self.h2d_masters[block_idx]
+        slot_bufs = self.h2d_ring[slot]
+        self.h2d_loaded_block[slot] = block_idx
+        if not self.cuda_available:
+            for buf, (_m, master) in zip(slot_bufs, masters):
+                buf.copy_(master)
+            self.h2d_slot_futures[slot] = None
+            return
+        # Order the H2D after the compute that last used this slot (the block vacating it),
+        # captured as an event on the compute stream at submit time.
+        compute_done = torch.cuda.current_stream().record_event()
+
+        def load():
+            with torch.cuda.stream(self.stream):
+                self.stream.wait_event(compute_done)
+                for buf, (_m, master) in zip(slot_bufs, masters):
+                    buf.copy_(master, non_blocking=True)
+                ev = self.stream.record_event()
+            return block_idx, slot, ev
+
+        self.h2d_slot_futures[slot] = self.thread_pool.submit(load)
+
+    def _h2d_wait(self, block_idx: int):
+        """Ensure block_idx's weights are resident in its ring slot, then point weight.data
+        at the slot's GPU buffers. Self-heals at step boundaries with a synchronous load."""
+        if block_idx < self.h2d_num_on_gpu:
+            return
+        slot = (block_idx - self.h2d_num_on_gpu) % self.ring_size
+        fut = self.h2d_slot_futures[slot]
+        if fut is not None and self.h2d_loaded_block[slot] == block_idx:
+            bidx, s, ev = fut.result()
+            self.h2d_slot_futures[slot] = None
+            assert bidx == block_idx and s == slot, f"H2D slot mismatch: {bidx}/{s} != {block_idx}/{slot}"
+            if self.cuda_available and ev is not None:
+                torch.cuda.current_stream().wait_event(ev)
+        elif self.h2d_loaded_block[slot] != block_idx:
+            # Slot does not hold this block (e.g. first blocks of a new denoise step) -> load
+            # synchronously.
+            if fut is not None:
+                fut.result()
+                self.h2d_slot_futures[slot] = None
+            for buf, (_m, master) in zip(self.h2d_ring[slot], self.h2d_masters[block_idx]):
+                buf.copy_(master)
+            if self.cuda_available:
+                torch.cuda.synchronize()
+            self.h2d_loaded_block[slot] = block_idx
+        for buf, (m, _master) in zip(self.h2d_ring[slot], self.h2d_masters[block_idx]):
+            m.weight.data = buf
+
+    def _h2d_submit(self, block_idx: int):
+        """After block_idx ran: repoint it to its CPU master (no copy) and prefetch the
+        block ring_size ahead into the freed slot."""
+        if block_idx < self.h2d_num_on_gpu:
+            return
+        i = block_idx - self.h2d_num_on_gpu
+        slot = i % self.ring_size
+        # Repoint the just-run block back to its permanent CPU master (no D2H).
+        for (m, master) in self.h2d_masters[block_idx]:
+            m.weight.data = master
+        # Prefetch ring_size blocks ahead into this freed slot (no wrap across the step end;
+        # the first blocks of the next step self-heal in _h2d_wait).
+        next_i = i + self.ring_size
+        if next_i < len(self.h2d_swappable):
+            self._h2d_submit_load(self.h2d_swappable[next_i], slot)
+        else:
+            self.h2d_slot_futures[slot] = None
+            self.h2d_loaded_block[slot] = None
 
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         """

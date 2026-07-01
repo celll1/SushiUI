@@ -282,6 +282,17 @@ byte-identical な冗長コピー。
 | **学習 LoRA（ベース凍結）** | ✅ 有利 | swap 対象の base block は凍結 = 読み取り専用。musubi と同条件 |
 | **学習 Full-FT** | ⚠️ 条件付き | optimizer が GPU 常駐 param を毎 step 更新 → 更新された重みの D2H 永続化が必要。naive H2D-only は更新を喪失 |
 
+### 実装状況（2026-07）
+- ✅ **推論（Z-Image / Ideogram4）実装済**: 共有 `TransformerBlockOffloader` に opt-in H2D-only
+  パス（`h2d_only` + `ring_size`）を追加。永続 pinned CPU master（書き込み無し）+ 固定 GPU リング
+  （`ring_size` スロット、default 2 で次 block の H2D を現 block の compute に overlap）+ D2H 完全排除。
+  `block_swap_h2d_only` / `block_swap_ring_size` を Z-Image 3 経路・Ideogram4 に配線。既存 pointer-swap
+  path は無変更で温存（default off）。ステップ境界は同期ロードで self-heal。リングのインデックス計算・
+  複数ステップ・非可分 swap 数を CPU 単体テストで検証済（`tmp/test_h2d_only_ring.py`）。
+- ⏳ **FLUX.2 推論**: `FluxBlockOffloader`（dual/single 2 リスト）への H2D-only は follow-up。
+- ⏳ **LoRA 学習**: forward_only 前提のため現状は推論のみ。backward 方向 H2D-only + gradient
+  checkpointing 連携（musubi 同条件）は follow-up。
+
 ### 必要な実装変更（pointer-swap → fixed GPU ring）
 現行は `weight.data` ポインタを 2 block 間で交換し GPU buffer が CPU home へ移動するため、
 D2H 行を消すだけでは pinned master を破壊してしまう。正しい H2D-only 設計:

@@ -381,13 +381,22 @@ class TransformerBlockOffloader:
 
         # Permanent pinned flat CPU master per swappable block. Never overwritten (read-only).
         # h2d_masters[bidx] = (flat_cpu, [(module, offset, numel, shape), ...])
+        # The master inherits the weight dtype, so weight-only-FP8 models transfer fp8 bytes
+        # (~half the H2D of bf16) automatically -- no separate fp8 path needed.
         self.h2d_masters = {}
+        pin_warned = False
         for bidx in self.h2d_swappable:
             mods = self._linear_weight_modules(self.blocks[bidx])
             total = sum(m.weight.data.numel() for m in mods)
             flat_cpu = torch.empty(total, dtype=flat_dtype, device="cpu")
             if self.cuda_available:
-                flat_cpu = flat_cpu.pin_memory(device=self.device)
+                try:
+                    flat_cpu = flat_cpu.pin_memory(device=self.device)
+                except (RuntimeError, NotImplementedError) as e:
+                    if not pin_warned:
+                        print(f"[BlockOffloader] pin_memory unavailable for dtype "
+                              f"{flat_cpu.dtype} ({e}); using non-pinned H2D masters.")
+                        pin_warned = True
             layout = []
             off = 0
             for m in mods:
@@ -417,7 +426,8 @@ class TransformerBlockOffloader:
             self._h2d_submit_load(self.h2d_swappable[j], j)
 
         print(f"[BlockOffloader] H2D-only ready: {num_swappable} swappable blocks, "
-              f"ring_size={self.ring_size}, coalesced flat pinned CPU masters (no D2H eviction)")
+              f"ring_size={self.ring_size}, master dtype={flat_dtype}, coalesced flat "
+              f"pinned CPU masters (no D2H eviction)")
 
     def _h2d_submit_load(self, block_idx: int, slot: int):
         """Submit an async single-copy H2D load of block_idx's flat master into ring[slot]."""

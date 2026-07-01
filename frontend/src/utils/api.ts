@@ -201,6 +201,9 @@ export interface GenerationParams {
   vae_tile_threshold?: number;
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration
   spectrum_enable?: boolean;
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
   spectrum_w?: number;
   spectrum_m?: number;
   spectrum_lam?: number;
@@ -386,6 +389,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("fbcache_enable", String(paramsWithImages.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(paramsWithImages.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
   formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
   formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
   formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
@@ -674,6 +680,9 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("fbcache_enable", String(paramsWithImages.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(paramsWithImages.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
   formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
   formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
   formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
@@ -805,6 +814,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("fbcache_enable", String(paramsWithImages.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(paramsWithImages.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
   formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
   formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
   formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));

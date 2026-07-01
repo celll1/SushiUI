@@ -705,6 +705,33 @@ class Flux2Mixin:
                     negpip_wrapper = Flux2NegPipWrapper(transformer, negpip_weights)
                     transformer_wrapper = negpip_wrapper
 
+            # First Block Cache (FBCache): dynamic per-step image-residual reuse. Mutually
+            # exclusive with (a) Spectrum (same trajectory redundancy; combining compounds
+            # error) and (b) Block Swap (a cache hit skips the block loops -> desyncs the
+            # per-block swap rotation). Active only when BOTH are off. When active, we must
+            # route through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
+            # forward intercepts the dual+single block loops; the raw diffusers forward
+            # (fast path) does not. If NAG/NegPip already installed a wrapper above, reuse it.
+            fbcache = self._flux2_build_fbcache(
+                params, enable_block_swap and blocks_to_swap > 0
+            )
+            if fbcache is not None:
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+                _unified = getattr(transformer_wrapper, "_unified", None)
+                if isinstance(transformer_wrapper, Flux2BlockSwapWrapper):
+                    fbcache_target = transformer_wrapper
+                elif isinstance(_unified, Flux2BlockSwapWrapper):
+                    # NAG/NegPip wrapper delegates forward to its internal _unified
+                    # Flux2BlockSwapWrapper (whose forward has the FBCache branch); attach
+                    # there so the NAG/NegPip wrapper is preserved (do NOT replace it).
+                    fbcache_target = _unified
+                else:
+                    fbcache_target = Flux2BlockSwapWrapper(transformer, block_offloader=None)
+                    transformer_wrapper = fbcache_target
+                fbcache_target._fbcache = fbcache
+            else:
+                fbcache_target = None
+
             # Prepare timesteps
             image_seq_len = latents.shape[1]
             mu = self._flux2_compute_empirical_mu(image_seq_len, num_inference_steps)
@@ -753,6 +780,10 @@ class Flux2Mixin:
                     noise_pred = spectrum.forecast(i)
                 else:
                     timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                    # FBCache: hand the wrapper the current step index (warmup + per-step gate).
+                    if fbcache_target is not None:
+                        fbcache_target._fbcache_step = i
 
                     latent_model_input = latents.to(transformer_input_dtype)
                     latent_image_ids = latent_ids
@@ -886,6 +917,12 @@ class Flux2Mixin:
 
                 if (i + 1) % 10 == 0 or i == len(timesteps) - 1:
                     print(f"[FLUX.2] Step {i + 1}/{len(timesteps)}")
+
+            # FBCache cleanup: detach the cache + step so it never leaks into a later forward.
+            if fbcache_target is not None:
+                print(f"[FBCache] FLUX.2 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+                fbcache_target._fbcache = None
+                fbcache_target._fbcache_step = 0
 
             # Cleanup block offloader and offload transformer to CPU
             if block_offloader is not None:
@@ -1126,6 +1163,23 @@ class Flux2Mixin:
         latents = latents.permute(0, 1, 4, 2, 5, 3)
         latents = latents.reshape(batch_size, num_channels // 4, height * 2, width * 2)
         return latents
+
+    def _flux2_build_fbcache(self, params, block_swap_on: bool):
+        """Build a FirstBlockCache for FLUX.2, or None when inactive/guarded.
+
+        FBCache is mutually exclusive with Spectrum (same trajectory-redundancy target) and
+        Block Swap (a cache hit skips the block loops, desyncing the per-block swap rotation),
+        so it is force-disabled (with a logged reason) when either is enabled."""
+        from core.inference.fbcache import build_fbcache, fbcache_active
+        if not fbcache_active(params):
+            return None
+        if params.get("spectrum_enable", False):
+            print("[FBCache] FLUX.2 disabled: Spectrum is enabled (same redundancy target)")
+            return None
+        if block_swap_on:
+            print("[FBCache] FLUX.2 disabled: Block Swap is enabled (layer skip desyncs rotation)")
+            return None
+        return build_fbcache(params, label="FLUX.2")
 
     def _flux2_compute_empirical_mu(self, image_seq_len: int, num_steps: int) -> float:
         """Compute empirical mu for FLUX.2 scheduler"""
@@ -1600,6 +1654,31 @@ class Flux2Mixin:
                     negpip_wrapper = Flux2NegPipWrapper(transformer, negpip_weights)
                     transformer_wrapper = negpip_wrapper
 
+            # First Block Cache (FBCache): dynamic per-step image-residual reuse. Mutually
+            # exclusive with Spectrum and Block Swap (see _flux2_build_fbcache). When active,
+            # route through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
+            # forward intercepts the dual+single block loops (the raw diffusers forward /
+            # fast path does not). Reuse the NAG/NegPip wrapper if one was installed above.
+            fbcache = self._flux2_build_fbcache(
+                params, enable_block_swap and blocks_to_swap > 0
+            )
+            if fbcache is not None:
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+                _unified = getattr(transformer_wrapper, "_unified", None)
+                if isinstance(transformer_wrapper, Flux2BlockSwapWrapper):
+                    fbcache_target = transformer_wrapper
+                elif isinstance(_unified, Flux2BlockSwapWrapper):
+                    # NAG/NegPip wrapper delegates forward to its internal _unified
+                    # Flux2BlockSwapWrapper (whose forward has the FBCache branch); attach
+                    # there so the NAG/NegPip wrapper is preserved (do NOT replace it).
+                    fbcache_target = _unified
+                else:
+                    fbcache_target = Flux2BlockSwapWrapper(transformer, block_offloader=None)
+                    transformer_wrapper = fbcache_target
+                fbcache_target._fbcache = fbcache
+            else:
+                fbcache_target = None
+
             scheduler.set_begin_index(t_start)
 
             # Determine input dtype for transformer (FP8 quantized uses BF16 input)
@@ -1637,6 +1716,11 @@ class Flux2Mixin:
                     noise_pred = spectrum.forecast(i)
                 else:
                     timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                    # FBCache: hand the wrapper the current step index (warmup + per-step gate).
+                    if fbcache_target is not None:
+                        fbcache_target._fbcache_step = i
+
                     latent_model_input = latents.to(transformer_input_dtype)
                     latent_image_ids = latent_ids
 
@@ -1751,6 +1835,12 @@ class Flux2Mixin:
                         progress_callback(i, len(timesteps), latents)
                     except Exception:
                         pass
+
+            # FBCache cleanup: detach the cache + step so it never leaks into a later forward.
+            if fbcache_target is not None:
+                print(f"[FBCache] FLUX.2 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+                fbcache_target._fbcache = None
+                fbcache_target._fbcache_step = 0
 
             # Cleanup block offloader and offload transformer to CPU (img2img)
             if block_offloader is not None:
@@ -2172,6 +2262,31 @@ class Flux2Mixin:
                     negpip_wrapper = Flux2NegPipWrapper(transformer, negpip_weights)
                     transformer_wrapper = negpip_wrapper
 
+            # First Block Cache (FBCache): dynamic per-step image-residual reuse. Mutually
+            # exclusive with Spectrum and Block Swap (see _flux2_build_fbcache). When active,
+            # route through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
+            # forward intercepts the dual+single block loops (the raw diffusers forward /
+            # fast path does not). Reuse the NAG/NegPip wrapper if one was installed above.
+            fbcache = self._flux2_build_fbcache(
+                params, enable_block_swap and blocks_to_swap > 0
+            )
+            if fbcache is not None:
+                from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
+                _unified = getattr(transformer_wrapper, "_unified", None)
+                if isinstance(transformer_wrapper, Flux2BlockSwapWrapper):
+                    fbcache_target = transformer_wrapper
+                elif isinstance(_unified, Flux2BlockSwapWrapper):
+                    # NAG/NegPip wrapper delegates forward to its internal _unified
+                    # Flux2BlockSwapWrapper (whose forward has the FBCache branch); attach
+                    # there so the NAG/NegPip wrapper is preserved (do NOT replace it).
+                    fbcache_target = _unified
+                else:
+                    fbcache_target = Flux2BlockSwapWrapper(transformer, block_offloader=None)
+                    transformer_wrapper = fbcache_target
+                fbcache_target._fbcache = fbcache
+            else:
+                fbcache_target = None
+
             scheduler.set_begin_index(t_start)
 
             # Determine input dtype for transformer (FP8 quantized uses BF16 input)
@@ -2209,6 +2324,11 @@ class Flux2Mixin:
                     noise_pred = spectrum.forecast(i)
                 else:
                     timestep = t.expand(latents.shape[0]).to(latents.dtype)
+
+                    # FBCache: hand the wrapper the current step index (warmup + per-step gate).
+                    if fbcache_target is not None:
+                        fbcache_target._fbcache_step = i
+
                     latent_model_input = latents.to(transformer_input_dtype)
                     latent_image_ids = latent_ids
 
@@ -2336,6 +2456,12 @@ class Flux2Mixin:
                         progress_callback(i, len(timesteps), latents)
                     except Exception:
                         pass
+
+            # FBCache cleanup: detach the cache + step so it never leaks into a later forward.
+            if fbcache_target is not None:
+                print(f"[FBCache] FLUX.2 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+                fbcache_target._fbcache = None
+                fbcache_target._fbcache_step = 0
 
             # Cleanup block offloader and offload transformer to CPU (inpaint)
             if block_offloader is not None:

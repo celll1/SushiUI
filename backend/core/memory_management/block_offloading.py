@@ -149,9 +149,11 @@ class TransformerBlockOffloader:
 
         _synchronize_device(self.device)
 
-        # Build H2D-only state (permanent pinned masters + GPU ring) from the CPU weights.
-        if self.h2d_only:
-            self._h2d_setup()
+        # NOTE: H2D-only masters/ring are built LAZILY on the first forward (see
+        # _h2d_wait / _h2d_submit), NOT here. LoRA adapters and NAG/NegPip processors are
+        # applied AFTER block-swap setup; building masters now would capture only the base
+        # Linear weights and strand LoRA sub-Linears (added later) on CPU -> device
+        # mismatch. Deferring to the first forward captures every Linear (base + LoRA).
 
         # Move auxiliary modules to GPU
         self._move_auxiliary_modules_to_gpu()
@@ -220,8 +222,11 @@ class TransformerBlockOffloader:
             return
 
         if self.h2d_only:
-            self._h2d_wait(block_idx)
-            return
+            if self.h2d_masters is None:
+                self._h2d_setup()          # lazy build on first forward (after LoRA/procs)
+            if self.h2d_only:              # still active (setup may disable on mixed dtype)
+                self._h2d_wait(block_idx)
+                return
 
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
 
@@ -283,8 +288,11 @@ class TransformerBlockOffloader:
             return
 
         if self.h2d_only:
-            self._h2d_submit(block_idx)
-            return
+            if self.h2d_masters is None:
+                self._h2d_setup()          # lazy build on first forward (after LoRA/procs)
+            if self.h2d_only:
+                self._h2d_submit(block_idx)
+                return
 
         num_blocks_on_gpu = self.num_blocks - self.blocks_to_swap
 

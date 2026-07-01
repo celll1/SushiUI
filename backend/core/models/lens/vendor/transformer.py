@@ -186,7 +186,18 @@ class LensJointAttention(nn.Module):
         if out is None:
             out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
         out = out.transpose(1, 2).reshape(bsz, seq_img + seq_txt, -1)
-        img_out = self.to_out[1](self.to_out[0](out[:, :seq_img, :]))
+        img_hs = out[:, :seq_img, :]
+        # NAG (Normalized Attention Guidance) branch — OFF by default, installed only by
+        # LensNAGWrapper. Batch layout is [cond, uncond, nag_neg] (bsz==3): the raw image
+        # attention output for the cond group is extrapolated away from the nag-negative
+        # group in attention-OUTPUT space, then written into both the cond and nag_neg
+        # groups so their residual streams stay identical through the remaining blocks.
+        if getattr(self, "_nag_enabled", False) and bsz == 3:
+            from core.inference.nag_lens import _nag_reduce_and_writeback_image
+            img_hs = _nag_reduce_and_writeback_image(
+                img_hs, self._nag_scale, self._nag_tau, self._nag_alpha,
+            )
+        img_out = self.to_out[1](self.to_out[0](img_hs))
         txt_out = self.to_add_out(out[:, seq_img:, :])
         return img_out, txt_out
 

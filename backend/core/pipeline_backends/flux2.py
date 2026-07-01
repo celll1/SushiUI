@@ -624,6 +624,11 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Denoising loop
+            # Spectrum output-mode acceleration (forecast per-step model output)
+            spectrum = None
+            if params.get("spectrum_enable", False):
+                from core.inference.spectrum_forecaster import build_output_forecaster
+                spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
@@ -634,33 +639,49 @@ class Flux2Mixin:
                     raise RuntimeError("Generation cancelled by user")
 
                 # Expand timestep
-                timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                preview_pred_x0 = None  # set by the eval branch; None on Spectrum skip steps
+                # Spectrum: forecast the model output on skip steps (skip transformer + CFG)
+                spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+                if spectrum_skip:
+                    noise_pred = spectrum.forecast(i)
+                else:
+                    timestep = t.expand(latents.shape[0]).to(latents.dtype)
 
-                latent_model_input = latents.to(transformer_input_dtype)
-                latent_image_ids = latent_ids
+                    latent_model_input = latents.to(transformer_input_dtype)
+                    latent_image_ids = latent_ids
 
-                # Concatenate reference tokens/IDs if present (Image Edit)
-                if ref_tokens is not None:
-                    # Temporarily move to GPU for concatenation
-                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
-                    ref_ids = ref_ids.to(device=latent_image_ids.device)
-                    latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
-                    latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
+                    # Concatenate reference tokens/IDs if present (Image Edit)
+                    if ref_tokens is not None:
+                        # Temporarily move to GPU for concatenation
+                        ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
+                        ref_ids = ref_ids.to(device=latent_image_ids.device)
+                        latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
+                        latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
-                # Batch CFG: Concatenate unconditional and conditional for single forward pass
-                if do_classifier_free_guidance:
-                    # Double the batch: [uncond, cond]
-                    latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
-                    timestep_doubled = torch.cat([timestep, timestep], dim=0)
-                    prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-                    text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
-                    latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
+                    # Batch CFG: Concatenate unconditional and conditional for single forward pass
+                    if do_classifier_free_guidance:
+                        # Double the batch: [uncond, cond]
+                        latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                        timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                        prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                        text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
-                    # Single forward pass for both unconditional and conditional
-                    # For FP8 quantized models, use autocast for mixed precision
-                    with torch.no_grad():
-                        if transformer_has_fp8:
-                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        # Single forward pass for both unconditional and conditional
+                        # For FP8 quantized models, use autocast for mixed precision
+                        with torch.no_grad():
+                            if transformer_has_fp8:
+                                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    noise_pred_combined = transformer_wrapper(
+                                        hidden_states=latent_model_input_doubled,
+                                        timestep=timestep_doubled / 1000,
+                                        guidance=None,
+                                        encoder_hidden_states=prompt_embeds_combined,
+                                        txt_ids=text_ids_combined,
+                                        img_ids=latent_image_ids_doubled,
+                                        return_dict=False,
+                                    )[0]
+                            else:
                                 noise_pred_combined = transformer_wrapper(
                                     hidden_states=latent_model_input_doubled,
                                     timestep=timestep_doubled / 1000,
@@ -670,37 +691,37 @@ class Flux2Mixin:
                                     img_ids=latent_image_ids_doubled,
                                     return_dict=False,
                                 )[0]
-                        else:
-                            noise_pred_combined = transformer_wrapper(
-                                hidden_states=latent_model_input_doubled,
-                                timestep=timestep_doubled / 1000,
-                                guidance=None,
-                                encoder_hidden_states=prompt_embeds_combined,
-                                txt_ids=text_ids_combined,
-                                img_ids=latent_image_ids_doubled,
-                                return_dict=False,
-                            )[0]
 
-                    # Extract generation part only (remove reference tokens)
-                    if ref_tokens is not None:
-                        seq_len = latents.shape[1]
-                        noise_pred_combined = noise_pred_combined[:, :seq_len, :]
+                        # Extract generation part only (remove reference tokens)
+                        if ref_tokens is not None:
+                            seq_len = latents.shape[1]
+                            noise_pred_combined = noise_pred_combined[:, :seq_len, :]
 
-                    # Split and apply CFG formula
-                    noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-                else:
-                    # Distilled model: Use guidance vector (not CFG)
-                    guidance_vec = torch.full(
-                        (latent_model_input.shape[0],),
-                        guidance_scale,
-                        device=latent_model_input.device,
-                        dtype=latent_model_input.dtype
-                    )
-                    # For FP8 quantized models, use autocast for mixed precision
-                    with torch.no_grad():
-                        if transformer_has_fp8:
-                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        # Split and apply CFG formula
+                        noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    else:
+                        # Distilled model: Use guidance vector (not CFG)
+                        guidance_vec = torch.full(
+                            (latent_model_input.shape[0],),
+                            guidance_scale,
+                            device=latent_model_input.device,
+                            dtype=latent_model_input.dtype
+                        )
+                        # For FP8 quantized models, use autocast for mixed precision
+                        with torch.no_grad():
+                            if transformer_has_fp8:
+                                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    noise_pred = transformer_wrapper(
+                                        hidden_states=latent_model_input,
+                                        timestep=timestep / 1000,
+                                        guidance=guidance_vec,
+                                        encoder_hidden_states=prompt_embeds,
+                                        txt_ids=text_ids,
+                                        img_ids=latent_image_ids,
+                                        return_dict=False,
+                                    )[0]
+                            else:
                                 noise_pred = transformer_wrapper(
                                     hidden_states=latent_model_input,
                                     timestep=timestep / 1000,
@@ -710,38 +731,30 @@ class Flux2Mixin:
                                     img_ids=latent_image_ids,
                                     return_dict=False,
                                 )[0]
-                        else:
-                            noise_pred = transformer_wrapper(
-                                hidden_states=latent_model_input,
-                                timestep=timestep / 1000,
-                                guidance=guidance_vec,
-                                encoder_hidden_states=prompt_embeds,
-                                txt_ids=text_ids,
-                                img_ids=latent_image_ids,
-                                return_dict=False,
-                            )[0]
 
-                    # Extract generation part only (remove reference tokens)
-                    if ref_tokens is not None:
-                        seq_len = latents.shape[1]
-                        noise_pred = noise_pred[:, :seq_len, :]
+                        # Extract generation part only (remove reference tokens)
+                        if ref_tokens is not None:
+                            seq_len = latents.shape[1]
+                            noise_pred = noise_pred[:, :seq_len, :]
 
-                # Predicted clean latent for preview, computed from the
-                # pre-step latents + noise_pred. x_t = (1-σ)·x_0 + σ·noise,
-                # v = noise - x_0, σ = t / 1000 -> pred_x0 = x_t - σ·v.
-                # The progress callback receives this as the 5th positional
-                # arg (pred_original_sample) and the factory uses it when
-                # preview_predicted_x0=True (defaulted on for FLUX.2 below).
-                try:
-                    sigma = (
-                        t.float() / 1000.0 if isinstance(t, torch.Tensor)
-                        else float(t) / 1000.0
-                    )
-                    preview_pred_x0 = (latents.float() - sigma * noise_pred.float()).to(latents.dtype)
-                except Exception:
-                    preview_pred_x0 = None
+                    # Predicted clean latent for preview, computed from the
+                    # pre-step latents + noise_pred. x_t = (1-σ)·x_0 + σ·noise,
+                    # v = noise - x_0, σ = t / 1000 -> pred_x0 = x_t - σ·v.
+                    # The progress callback receives this as the 5th positional
+                    # arg (pred_original_sample) and the factory uses it when
+                    # preview_predicted_x0=True (defaulted on for FLUX.2 below).
+                    try:
+                        sigma = (
+                            t.float() / 1000.0 if isinstance(t, torch.Tensor)
+                            else float(t) / 1000.0
+                        )
+                        preview_pred_x0 = (latents.float() - sigma * noise_pred.float()).to(latents.dtype)
+                    except Exception:
+                        preview_pred_x0 = None
 
-                # Scheduler step
+                    # Scheduler step
+                    if spectrum is not None:
+                        spectrum.record(i, noise_pred)
                 latents_dtype = latents.dtype
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                 if latents.dtype != latents_dtype:
@@ -1354,6 +1367,11 @@ class Flux2Mixin:
 
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
+            # Spectrum output-mode acceleration (forecast per-step model output)
+            spectrum = None
+            if params.get("spectrum_enable", False):
+                from core.inference.spectrum_forecaster import build_output_forecaster
+                spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
@@ -1362,32 +1380,48 @@ class Flux2Mixin:
                         block_offloader.cleanup()
                     raise RuntimeError("Generation cancelled by user")
 
-                timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                latent_model_input = latents.to(transformer_input_dtype)
-                latent_image_ids = latent_ids
+                preview_pred_x0 = None  # set by the eval branch; None on Spectrum skip steps
+                # Spectrum: forecast the model output on skip steps (skip transformer + CFG)
+                spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+                if spectrum_skip:
+                    noise_pred = spectrum.forecast(i)
+                else:
+                    timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                    latent_model_input = latents.to(transformer_input_dtype)
+                    latent_image_ids = latent_ids
 
-                # Concatenate reference tokens/IDs if present (Image Edit)
-                if ref_tokens is not None:
-                    # Temporarily move to GPU for concatenation
-                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
-                    ref_ids = ref_ids.to(device=latent_image_ids.device)
-                    latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
-                    latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
+                    # Concatenate reference tokens/IDs if present (Image Edit)
+                    if ref_tokens is not None:
+                        # Temporarily move to GPU for concatenation
+                        ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
+                        ref_ids = ref_ids.to(device=latent_image_ids.device)
+                        latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
+                        latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
-                # Batch CFG: Concatenate unconditional and conditional for single forward pass
-                if do_classifier_free_guidance:
-                    # Double the batch: [uncond, cond]
-                    latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
-                    timestep_doubled = torch.cat([timestep, timestep], dim=0)
-                    prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-                    text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
-                    latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
+                    # Batch CFG: Concatenate unconditional and conditional for single forward pass
+                    if do_classifier_free_guidance:
+                        # Double the batch: [uncond, cond]
+                        latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                        timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                        prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                        text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
-                    # Single forward pass for both unconditional and conditional
-                    # For FP8 quantized models, use autocast for mixed precision
-                    with torch.no_grad():
-                        if transformer_has_fp8:
-                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        # Single forward pass for both unconditional and conditional
+                        # For FP8 quantized models, use autocast for mixed precision
+                        with torch.no_grad():
+                            if transformer_has_fp8:
+                                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    noise_pred_combined = transformer_wrapper(
+                                        hidden_states=latent_model_input_doubled,
+                                        timestep=timestep_doubled / 1000,
+                                        guidance=None,
+                                        encoder_hidden_states=prompt_embeds_combined,
+                                        txt_ids=text_ids_combined,
+                                        img_ids=latent_image_ids_doubled,
+                                        return_dict=False,
+                                    )[0]
+                            else:
                                 noise_pred_combined = transformer_wrapper(
                                     hidden_states=latent_model_input_doubled,
                                     timestep=timestep_doubled / 1000,
@@ -1397,37 +1431,37 @@ class Flux2Mixin:
                                     img_ids=latent_image_ids_doubled,
                                     return_dict=False,
                                 )[0]
-                        else:
-                            noise_pred_combined = transformer_wrapper(
-                                hidden_states=latent_model_input_doubled,
-                                timestep=timestep_doubled / 1000,
-                                guidance=None,
-                                encoder_hidden_states=prompt_embeds_combined,
-                                txt_ids=text_ids_combined,
-                                img_ids=latent_image_ids_doubled,
-                                return_dict=False,
-                            )[0]
 
-                    # Extract generation part only (remove reference tokens)
-                    if ref_tokens is not None:
-                        seq_len = latents.shape[1]
-                        noise_pred_combined = noise_pred_combined[:, :seq_len, :]
+                        # Extract generation part only (remove reference tokens)
+                        if ref_tokens is not None:
+                            seq_len = latents.shape[1]
+                            noise_pred_combined = noise_pred_combined[:, :seq_len, :]
 
-                    # Split and apply CFG formula
-                    noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-                else:
-                    # Distilled model: Use guidance vector (not CFG)
-                    guidance_vec = torch.full(
-                        (latent_model_input.shape[0],),
-                        guidance_scale,
-                        device=latent_model_input.device,
-                        dtype=latent_model_input.dtype
-                    )
-                    # For FP8 quantized models, use autocast for mixed precision
-                    with torch.no_grad():
-                        if transformer_has_fp8:
-                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        # Split and apply CFG formula
+                        noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    else:
+                        # Distilled model: Use guidance vector (not CFG)
+                        guidance_vec = torch.full(
+                            (latent_model_input.shape[0],),
+                            guidance_scale,
+                            device=latent_model_input.device,
+                            dtype=latent_model_input.dtype
+                        )
+                        # For FP8 quantized models, use autocast for mixed precision
+                        with torch.no_grad():
+                            if transformer_has_fp8:
+                                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    noise_pred = transformer_wrapper(
+                                        hidden_states=latent_model_input,
+                                        timestep=timestep / 1000,
+                                        guidance=guidance_vec,
+                                        encoder_hidden_states=prompt_embeds,
+                                        txt_ids=text_ids,
+                                        img_ids=latent_image_ids,
+                                        return_dict=False,
+                                    )[0]
+                            else:
                                 noise_pred = transformer_wrapper(
                                     hidden_states=latent_model_input,
                                     timestep=timestep / 1000,
@@ -1437,23 +1471,15 @@ class Flux2Mixin:
                                     img_ids=latent_image_ids,
                                     return_dict=False,
                                 )[0]
-                        else:
-                            noise_pred = transformer_wrapper(
-                                hidden_states=latent_model_input,
-                                timestep=timestep / 1000,
-                                guidance=guidance_vec,
-                                encoder_hidden_states=prompt_embeds,
-                                txt_ids=text_ids,
-                                img_ids=latent_image_ids,
-                                return_dict=False,
-                            )[0]
 
-                    # Extract generation part only (remove reference tokens)
-                    if ref_tokens is not None:
-                        seq_len = latents.shape[1]
-                        noise_pred = noise_pred[:, :seq_len, :]
+                        # Extract generation part only (remove reference tokens)
+                        if ref_tokens is not None:
+                            seq_len = latents.shape[1]
+                            noise_pred = noise_pred[:, :seq_len, :]
 
-                # Step
+                    # Step
+                    if spectrum is not None:
+                        spectrum.record(i, noise_pred)
                 latents_dtype = latents.dtype
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                 if latents.dtype != latents_dtype:
@@ -1796,6 +1822,11 @@ class Flux2Mixin:
 
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
+            # Spectrum output-mode acceleration (forecast per-step model output)
+            spectrum = None
+            if params.get("spectrum_enable", False):
+                from core.inference.spectrum_forecaster import build_output_forecaster
+                spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
                     print("[FLUX.2] Generation cancelled")
@@ -1804,32 +1835,48 @@ class Flux2Mixin:
                         block_offloader.cleanup()
                     raise RuntimeError("Generation cancelled by user")
 
-                timestep = t.expand(latents.shape[0]).to(latents.dtype)
-                latent_model_input = latents.to(transformer_input_dtype)
-                latent_image_ids = latent_ids
+                preview_pred_x0 = None  # set by the eval branch; None on Spectrum skip steps
+                # Spectrum: forecast the model output on skip steps (skip transformer + CFG)
+                spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+                if spectrum_skip:
+                    noise_pred = spectrum.forecast(i)
+                else:
+                    timestep = t.expand(latents.shape[0]).to(latents.dtype)
+                    latent_model_input = latents.to(transformer_input_dtype)
+                    latent_image_ids = latent_ids
 
-                # Concatenate reference tokens/IDs if present (Image Edit)
-                if ref_tokens is not None:
-                    # Temporarily move to GPU for concatenation
-                    ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
-                    ref_ids = ref_ids.to(device=latent_image_ids.device)
-                    latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
-                    latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
+                    # Concatenate reference tokens/IDs if present (Image Edit)
+                    if ref_tokens is not None:
+                        # Temporarily move to GPU for concatenation
+                        ref_tokens = ref_tokens.to(device=latent_model_input.device, dtype=transformer_input_dtype)
+                        ref_ids = ref_ids.to(device=latent_image_ids.device)
+                        latent_model_input = torch.cat([latent_model_input, ref_tokens], dim=1)
+                        latent_image_ids = torch.cat([latent_image_ids, ref_ids], dim=1)
 
-                # Batch CFG: Concatenate unconditional and conditional for single forward pass
-                if do_classifier_free_guidance:
-                    # Double the batch: [uncond, cond]
-                    latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
-                    timestep_doubled = torch.cat([timestep, timestep], dim=0)
-                    prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-                    text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
-                    latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
+                    # Batch CFG: Concatenate unconditional and conditional for single forward pass
+                    if do_classifier_free_guidance:
+                        # Double the batch: [uncond, cond]
+                        latent_model_input_doubled = torch.cat([latent_model_input, latent_model_input], dim=0)
+                        timestep_doubled = torch.cat([timestep, timestep], dim=0)
+                        prompt_embeds_combined = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+                        text_ids_combined = torch.cat([negative_text_ids, text_ids], dim=0)
+                        latent_image_ids_doubled = torch.cat([latent_image_ids, latent_image_ids], dim=0)
 
-                    # Single forward pass for both unconditional and conditional
-                    # For FP8 quantized models, use autocast for mixed precision
-                    with torch.no_grad():
-                        if transformer_has_fp8:
-                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        # Single forward pass for both unconditional and conditional
+                        # For FP8 quantized models, use autocast for mixed precision
+                        with torch.no_grad():
+                            if transformer_has_fp8:
+                                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    noise_pred_combined = transformer_wrapper(
+                                        hidden_states=latent_model_input_doubled,
+                                        timestep=timestep_doubled / 1000,
+                                        guidance=None,
+                                        encoder_hidden_states=prompt_embeds_combined,
+                                        txt_ids=text_ids_combined,
+                                        img_ids=latent_image_ids_doubled,
+                                        return_dict=False,
+                                    )[0]
+                            else:
                                 noise_pred_combined = transformer_wrapper(
                                     hidden_states=latent_model_input_doubled,
                                     timestep=timestep_doubled / 1000,
@@ -1839,37 +1886,37 @@ class Flux2Mixin:
                                     img_ids=latent_image_ids_doubled,
                                     return_dict=False,
                                 )[0]
-                        else:
-                            noise_pred_combined = transformer_wrapper(
-                                hidden_states=latent_model_input_doubled,
-                                timestep=timestep_doubled / 1000,
-                                guidance=None,
-                                encoder_hidden_states=prompt_embeds_combined,
-                                txt_ids=text_ids_combined,
-                                img_ids=latent_image_ids_doubled,
-                                return_dict=False,
-                            )[0]
 
-                    # Extract generation part only (remove reference tokens)
-                    if ref_tokens is not None:
-                        seq_len = latents.shape[1]
-                        noise_pred_combined = noise_pred_combined[:, :seq_len, :]
+                        # Extract generation part only (remove reference tokens)
+                        if ref_tokens is not None:
+                            seq_len = latents.shape[1]
+                            noise_pred_combined = noise_pred_combined[:, :seq_len, :]
 
-                    # Split and apply CFG formula
-                    noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
-                else:
-                    # Distilled model: Use guidance vector (not CFG)
-                    guidance_vec = torch.full(
-                        (latent_model_input.shape[0],),
-                        guidance_scale,
-                        device=latent_model_input.device,
-                        dtype=latent_model_input.dtype
-                    )
-                    # For FP8 quantized models, use autocast for mixed precision
-                    with torch.no_grad():
-                        if transformer_has_fp8:
-                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        # Split and apply CFG formula
+                        noise_pred_uncond, noise_pred_cond = noise_pred_combined.chunk(2, dim=0)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    else:
+                        # Distilled model: Use guidance vector (not CFG)
+                        guidance_vec = torch.full(
+                            (latent_model_input.shape[0],),
+                            guidance_scale,
+                            device=latent_model_input.device,
+                            dtype=latent_model_input.dtype
+                        )
+                        # For FP8 quantized models, use autocast for mixed precision
+                        with torch.no_grad():
+                            if transformer_has_fp8:
+                                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                    noise_pred = transformer_wrapper(
+                                        hidden_states=latent_model_input,
+                                        timestep=timestep / 1000,
+                                        guidance=guidance_vec,
+                                        encoder_hidden_states=prompt_embeds,
+                                        txt_ids=text_ids,
+                                        img_ids=latent_image_ids,
+                                        return_dict=False,
+                                    )[0]
+                            else:
                                 noise_pred = transformer_wrapper(
                                     hidden_states=latent_model_input,
                                     timestep=timestep / 1000,
@@ -1879,23 +1926,15 @@ class Flux2Mixin:
                                     img_ids=latent_image_ids,
                                     return_dict=False,
                                 )[0]
-                        else:
-                            noise_pred = transformer_wrapper(
-                                hidden_states=latent_model_input,
-                                timestep=timestep / 1000,
-                                guidance=guidance_vec,
-                                encoder_hidden_states=prompt_embeds,
-                                txt_ids=text_ids,
-                                img_ids=latent_image_ids,
-                                return_dict=False,
-                            )[0]
 
-                    # Extract generation part only (remove reference tokens)
-                    if ref_tokens is not None:
-                        seq_len = latents.shape[1]
-                        noise_pred = noise_pred[:, :seq_len, :]
+                        # Extract generation part only (remove reference tokens)
+                        if ref_tokens is not None:
+                            seq_len = latents.shape[1]
+                            noise_pred = noise_pred[:, :seq_len, :]
 
-                # Step
+                    # Step
+                    if spectrum is not None:
+                        spectrum.record(i, noise_pred)
                 latents_dtype = latents.dtype
                 latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
                 if latents.dtype != latents_dtype:

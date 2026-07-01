@@ -1129,13 +1129,21 @@ class Anima(nn.Module):
         attn_params = attention.AttentionParams.create_attention_params(self.attn_mode, self.split_attn)
         use_fp32 = x_B_T_H_W_D.dtype == torch.float16
 
-        for block in self.blocks:
+        # Optional block-swap offloader (set by the pipeline backend for VRAM
+        # optimization): streams each block's weights between CPU and GPU around
+        # its forward. Gated on the attribute so the default path is unchanged.
+        offloader = getattr(self, "_block_offloader", None)
+        for block_idx, block in enumerate(self.blocks):
+            if offloader is not None:
+                offloader.wait_for_block(block_idx)
             x_B_T_H_W_D = block(
                 x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32,
                 rope_emb_L_1_1_D=rope_emb_L_1_1_D,
                 adaln_lora_B_T_3D=adaln_lora_B_T_3D,
                 extra_per_block_pos_emb=extra_pos_emb,
             )
+            if offloader is not None:
+                offloader.submit_move_blocks_forward(block_idx)
 
         x_B_T_H_W_O = self.final_layer(
             x_B_T_H_W_D, t_embedding_B_T_D,

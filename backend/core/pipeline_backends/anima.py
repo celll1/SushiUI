@@ -255,6 +255,109 @@ class AnimaMixin:
             print(f"[Anima] Warning: could not move {component_name} to {target_device}: {e}")
         return comp
 
+    def _anima_setup_block_swap(self, transformer, blocks_to_swap: int,
+                                use_pinned_memory: bool, device: str,
+                                h2d_only: bool = False, ring_size: int = 2):
+        """Attach a block-swap offloader to the Anima DiT transformer.
+
+        The transformer starts on CPU; the offloader keeps the first
+        (num_blocks - blocks_to_swap) blocks resident on GPU and streams the
+        rest per forward. Non-block (auxiliary) modules are moved to GPU here
+        since the shared offloader only auto-moves Z-Image-named aux modules.
+        """
+        from core.memory_management import create_block_offloader_for_model
+
+        # Auxiliary modules (everything except the swappable 'blocks' list) stay
+        # on GPU. Anima's heavy list is 'blocks' (the LLMAdapter's own 'blocks'
+        # lives under the 'llm_adapter' child, which is moved wholesale here).
+        for name, child in transformer.named_children():
+            if name != "blocks":
+                child.to(device)
+        for p in transformer.parameters(recurse=False):
+            if p.device.type != "cuda":
+                p.data = p.data.to(device)
+        for b in transformer.buffers(recurse=False):
+            if b.device.type != "cuda":
+                b.data = b.data.to(device)
+
+        offloader = create_block_offloader_for_model(
+            transformer=transformer,
+            blocks_to_swap=blocks_to_swap,
+            device=torch.device(device),
+            target_dtype=torch.bfloat16,
+            use_pinned_memory=use_pinned_memory,
+            h2d_only=h2d_only,
+            ring_size=ring_size,
+            block_list=transformer.blocks,
+        )
+        transformer._block_offloader = offloader
+        offloader.prepare_block_devices_before_forward()
+        return offloader
+
+    def _anima_stage_transformer(self, device: str, transformer_quantization,
+                                 params: Dict[str, Any]):
+        """Place the Anima transformer on GPU for the denoise loop.
+
+        Default (block swap disabled): full GPU move via _anima_move, byte-identical
+        to the pre-block-swap behaviour. With block swap enabled, the transformer's
+        blocks are streamed per forward by a per-model offloader instead of being
+        fully resident. Returns the (possibly reassigned) transformer.
+        """
+        enable_block_swap = bool(params.get("enable_block_swap", False))
+        blocks_to_swap = int(params.get("blocks_to_swap", 20))
+        use_pinned_memory = bool(params.get("use_pinned_memory", False))
+        h2d_only = bool(params.get("block_swap_h2d_only", False))
+        ring_size = int(params.get("block_swap_ring_size", 2))
+
+        self._anima_offloader = None
+        if not (enable_block_swap and blocks_to_swap > 0):
+            # Default full-GPU placement (with optional FP8 quantization).
+            return self._anima_move("transformer", device, transformer_quantization)
+
+        # Block-swap mode: apply optional FP8 quantization on CPU first (produces
+        # plain tensors the offloader can stream), then attach the offloader. The
+        # offloader — not a full .to(device) — handles placing the swappable blocks.
+        transformer = self.anima_components["transformer"]
+        if transformer_quantization not in (None, "", "none"):
+            from core.vram_optimization import _anima_quantize_fp8
+            try:
+                if next(transformer.parameters()).device.type != "cpu":
+                    transformer.to("cpu")
+                transformer = _anima_quantize_fp8(transformer, transformer_quantization, "Transformer")
+                self.anima_components["transformer"] = transformer
+            except Exception as e:
+                print(f"[Anima] Warning: block-swap FP8 quantization failed: {e}")
+                transformer = self.anima_components["transformer"]
+
+        num_blocks = len(transformer.blocks)
+        clamped = max(0, min(blocks_to_swap, num_blocks - 1))
+        print(f"[Anima] Block swap enabled: {clamped}/{num_blocks} blocks "
+              f"(pinned_memory={use_pinned_memory}, h2d_only={h2d_only}, ring_size={ring_size})")
+        self._anima_offloader = self._anima_setup_block_swap(
+            transformer, clamped, use_pinned_memory, device,
+            h2d_only=h2d_only, ring_size=ring_size,
+        )
+        return transformer
+
+    def _anima_unstage_transformer(self):
+        """Tear down any block-swap offloader, then return the transformer to CPU."""
+        offloader = getattr(self, "_anima_offloader", None)
+        transformer = (self.anima_components or {}).get("transformer")
+        if transformer is not None and hasattr(transformer, "_block_offloader"):
+            try:
+                delattr(transformer, "_block_offloader")
+            except Exception:
+                pass
+        if offloader is not None:
+            cleanup = getattr(offloader, "cleanup", None)
+            if callable(cleanup):
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+        self._anima_offloader = None
+        self._anima_move("transformer", "cpu")
+
     def _generate_txt2img_anima(self, params: Dict[str, Any],
                                  progress_callback=None, step_callback=None
                                  ) -> tuple[Image.Image, int, int]:
@@ -341,7 +444,7 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Stage 2: denoising
-            transformer = self._anima_move("transformer", device, transformer_quantization)
+            transformer = self._anima_stage_transformer(device, transformer_quantization, params)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -386,7 +489,7 @@ class AnimaMixin:
                         w.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
-            self._anima_move("transformer", "cpu")
+            self._anima_unstage_transformer()
             del cond, uncond
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -407,7 +510,15 @@ class AnimaMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            # Ensure all components are back on CPU even if an error occurred
+            # Strip any leftover block-swap offloader (e.g. if setup raised mid-way),
+            # then ensure all components are back on CPU even if an error occurred.
+            _t = (self.anima_components or {}).get("transformer")
+            if _t is not None and hasattr(_t, "_block_offloader"):
+                try:
+                    delattr(_t, "_block_offloader")
+                except Exception:
+                    pass
+            self._anima_offloader = None
             for _comp in ("text_encoder", "transformer", "vae"):
                 try:
                     self._anima_move(_comp, "cpu")
@@ -500,7 +611,7 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Denoise
-            transformer = self._anima_move("transformer", device, transformer_quantization)
+            transformer = self._anima_stage_transformer(device, transformer_quantization, params)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -543,7 +654,7 @@ class AnimaMixin:
                         w.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
-            self._anima_move("transformer", "cpu")
+            self._anima_unstage_transformer()
             del cond, uncond, init_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -564,6 +675,15 @@ class AnimaMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
+            # Strip any leftover block-swap offloader (e.g. if setup raised mid-way),
+            # then ensure all components are back on CPU even if an error occurred.
+            _t = (self.anima_components or {}).get("transformer")
+            if _t is not None and hasattr(_t, "_block_offloader"):
+                try:
+                    delattr(_t, "_block_offloader")
+                except Exception:
+                    pass
+            self._anima_offloader = None
             for _comp in ("text_encoder", "transformer", "vae"):
                 try:
                     self._anima_move(_comp, "cpu")
@@ -669,7 +789,7 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Denoise
-            transformer = self._anima_move("transformer", device, transformer_quantization)
+            transformer = self._anima_stage_transformer(device, transformer_quantization, params)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -712,7 +832,7 @@ class AnimaMixin:
                         w.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
-            self._anima_move("transformer", "cpu")
+            self._anima_unstage_transformer()
             del cond, uncond, init_latents, mask_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -733,6 +853,15 @@ class AnimaMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
+            # Strip any leftover block-swap offloader (e.g. if setup raised mid-way),
+            # then ensure all components are back on CPU even if an error occurred.
+            _t = (self.anima_components or {}).get("transformer")
+            if _t is not None and hasattr(_t, "_block_offloader"):
+                try:
+                    delattr(_t, "_block_offloader")
+                except Exception:
+                    pass
+            self._anima_offloader = None
             for _comp in ("text_encoder", "transformer", "vae"):
                 try:
                     self._anima_move(_comp, "cpu")

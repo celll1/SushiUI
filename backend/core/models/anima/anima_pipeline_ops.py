@@ -403,10 +403,18 @@ def sample_txt2img(
     step_callback: Optional[Callable] = None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    nag_transformer=None,
 ) -> torch.Tensor:
     """Run the Rectified-Flow Euler denoising loop and return latents
     of shape [1, 16, 1, H/8, W/8].
+
+    ``nag_transformer`` (optional): when supplied, the CONDITIONAL forward pass
+    is routed through it (an ``AnimaNAGWrapper``) so NAG is applied to the
+    positive image tokens only; the unconditional pass always uses the raw
+    ``transformer``. When None (default) both passes use ``transformer`` and the
+    path is unchanged.
     """
+    cond_transformer = nag_transformer if nag_transformer is not None else transformer
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
     latent_h = height // 8
     latent_w = width // 8
@@ -439,7 +447,7 @@ def sample_txt2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
-            v_cond = transformer(
+            v_cond = cond_transformer(
                 x=latents,
                 timesteps=timestep_batch,
                 context=cond_embeds["prompt_embeds"],
@@ -503,8 +511,14 @@ def sample_img2img(
     step_callback: Optional[Callable] = None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    nag_transformer=None,
 ) -> torch.Tensor:
-    """img2img: start from `init_latents` partially noised. Returns final latents."""
+    """img2img: start from `init_latents` partially noised. Returns final latents.
+
+    ``nag_transformer`` (optional): routes the CONDITIONAL pass through an
+    ``AnimaNAGWrapper`` (NAG on positive image tokens). None => unchanged path.
+    """
+    cond_transformer = nag_transformer if nag_transformer is not None else transformer
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
     if init_latents.dim() == 4:
         init_latents = init_latents.unsqueeze(2)  # [1, 16, 1, H, W]
@@ -538,7 +552,7 @@ def sample_img2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
-            v_cond = transformer(
+            v_cond = cond_transformer(
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
                 target_input_ids=cond_embeds["t5_input_ids"],
@@ -596,12 +610,17 @@ def sample_inpaint(
     step_callback: Optional[Callable] = None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    nag_transformer=None,
 ) -> torch.Tensor:
     """Latent-space inpainting via per-step blending.
 
     Each step we re-blend the masked region with a freshly-noised reference latent
     so the unmasked region stays close to the original.
+
+    ``nag_transformer`` (optional): routes the CONDITIONAL pass through an
+    ``AnimaNAGWrapper`` (NAG on positive image tokens). None => unchanged path.
     """
+    cond_transformer = nag_transformer if nag_transformer is not None else transformer
     do_cfg = guidance_scale is not None and guidance_scale > 1.0 and uncond_embeds is not None
     if init_latents.dim() == 4:
         init_latents = init_latents.unsqueeze(2)
@@ -641,7 +660,7 @@ def sample_inpaint(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
-            v_cond = transformer(
+            v_cond = cond_transformer(
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
                 target_input_ids=cond_embeds["t5_input_ids"],

@@ -167,6 +167,33 @@ class Ideogram4Mixin:
             "grid_w": grid_w,
         }
 
+    @staticmethod
+    def _ideogram4_negpip_clean_prompt(prompt: str, params: Dict[str, Any]) -> str:
+        """Return the emphasis-syntax-stripped prompt when NegPip will auto-activate, else the
+        prompt unchanged.
+
+        NegPip carries ALL the signed emphasis weights via V scaling (like the SDXL
+        skip_emphasis clean-embeds path), so when a negative weight is present the CLEAN text
+        (parentheses/weights removed) must be fed to ``encode_prompt`` — otherwise Qwen3-VL
+        would tokenize the literal ``(worst quality:-1)`` characters. The clean text matches
+        the token->weight alignment in ``build_ideogram4_text_weights``. Positive-only prompts
+        return unchanged so the default encode path is byte-identical.
+        """
+        from core.prompts.prompt_parser import prompt_has_negative_weight, parse_prompt_attention
+        # NegPip is a GLOBAL decision (main prompt OR, with NAG, the nag-negative prompt has a
+        # negative weight). Once active, strip emphasis from ANY text fed to the encoder so V
+        # scaling carries all weights consistently.
+        main_prompt = params.get("prompt", "")
+        is_nag = bool(params.get("nag_enable", False)) and float(params.get("nag_scale", 5.0)) > 1.0
+        nag_neg = (params.get("nag_negative_prompt", "") or params.get("negative_prompt", "") or "")
+        negpip_active = prompt_has_negative_weight(main_prompt) or (
+            is_nag and prompt_has_negative_weight(nag_neg)
+        )
+        if not negpip_active:
+            return prompt
+        parsed = parse_prompt_attention(prompt) if prompt else []
+        return "".join(t for t, _ in parsed)
+
     @torch.no_grad()
     def _ideogram4_encode(self, prompt, grid_h, grid_w, max_sequence_length, device, dtype):
         """Stage the text encoder to GPU, encode the prompt, then free it back to CPU."""
@@ -205,6 +232,9 @@ class Ideogram4Mixin:
         if not (nag_enable and nag_scale > 1.0):
             return None
         nag_neg_prompt = params.get("nag_negative_prompt", "") or params.get("negative_prompt", "") or ""
+        # When NegPip is active, strip emphasis syntax so the nag-negative text tokenizes
+        # cleanly; the signed nag_neg weights are carried by NegPip's V scaling instead.
+        nag_neg_prompt = self._ideogram4_negpip_clean_prompt(nag_neg_prompt, params)
 
         self._ideogram4_move("text_encoder", device)
         text_encoder = self.ideogram4_components["text_encoder"]
@@ -246,6 +276,67 @@ class Ideogram4Mixin:
             transformer.restore()
             return transformer.transformer
         return transformer
+
+    def _ideogram4_maybe_negpip(self, transformer, params, cfg, cond, device, dtype):
+        """Auto-activate NegPip on the conditional transformer when the prompt (or, with NAG,
+        the nag-negative prompt) carries a negative emphasis weight.
+
+        Returns a handle dict (with ``restore``) to undo the processor swap after denoising,
+        or ``None`` when NegPip is not active. Byte-identical (returns early) when the prompt
+        has no negative weight -- the positive-only default path never installs processors.
+
+        Ideogram 4 has no CLIP text encoder: the signed per-token weight vector is built with
+        the model's own tokenizer + chat template (matching ``encode_prompt``), aligned to the
+        left-padded ``[text][image]`` packed sequence. Because Ideogram 4's CFG is dual-branch
+        with a ZEROED-text unconditional branch, only the conditional branch's text V is
+        scaled (there is no unconditional text context to double-negate). When NAG is active
+        the doubled ``[pos; nag_neg]`` batch gets per-half weights so a negative weight in the
+        nag-negative prompt re-affirms.
+        """
+        from core.prompts.prompt_parser import prompt_has_negative_weight
+        from core.inference.negpip_ideogram4 import (
+            build_ideogram4_negpip_weights, install_negpip,
+        )
+
+        # Weights are built from the ORIGINAL prompt (with emphasis syntax); the CLEAN prompt
+        # was already fed to encode_prompt so the token positions line up.
+        prompt = cfg.get("negpip_prompt", cfg["prompt"])
+        is_nag = transformer.__class__.__name__ == "Ideogram4NAGWrapper"
+        nag_neg_prompt = None
+        if is_nag:
+            nag_neg_prompt = (
+                params.get("nag_negative_prompt", "")
+                or params.get("negative_prompt", "")
+                or ""
+            )
+
+        has_neg = prompt_has_negative_weight(prompt) or (
+            is_nag and prompt_has_negative_weight(nag_neg_prompt)
+        )
+        if not has_neg:
+            return None
+
+        tokenizer = self.ideogram4_components["tokenizer"]
+        weights = build_ideogram4_negpip_weights(
+            prompt=prompt,
+            tokenizer=tokenizer,
+            max_sequence_length=cfg["max_sequence_length"],
+            grid_h=cfg["grid_h"],
+            grid_w=cfg["grid_w"],
+            device=device,
+            dtype=dtype,
+            nag_negative_prompt=nag_neg_prompt if is_nag else None,
+        )
+
+        if is_nag:
+            import torch as _torch
+            token_weights = _torch.stack([weights["pos"], weights["nag_neg"]], dim=0)
+        else:
+            token_weights = weights["pos"].unsqueeze(0)
+
+        print(f"[NegPip/Ideogram4] Negative emphasis detected -> signed V scaling active "
+              f"(nag={'on' if is_nag else 'off'})")
+        return install_negpip(transformer, token_weights)
 
     def _ideogram4_setup_block_swap(self, transformer, blocks_to_swap: int,
                                     use_pinned_memory: bool, device: str):
@@ -363,6 +454,8 @@ class Ideogram4Mixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._ideogram4_common_params(params, 1024, 1024)
+        cfg["negpip_prompt"] = cfg["prompt"]  # original (with emphasis syntax) for weight build
+        cfg["prompt"] = self._ideogram4_negpip_clean_prompt(cfg["prompt"], params)
         scheduler = self.ideogram4_components["scheduler"]
         advanced_cfg = self._ideogram4_advanced_cfg(params)
 
@@ -384,6 +477,8 @@ class Ideogram4Mixin:
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
+            negpip_handle = self._ideogram4_maybe_negpip(
+                transformer, params, cfg, cond, device, dtype)
             try:
                 latents = denoise_loop(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -395,6 +490,8 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                 )
             finally:
+                if negpip_handle is not None:
+                    negpip_handle["restore"]()
                 transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
@@ -432,6 +529,8 @@ class Ideogram4Mixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._ideogram4_common_params(params, init_image.width, init_image.height)
+        cfg["negpip_prompt"] = cfg["prompt"]
+        cfg["prompt"] = self._ideogram4_negpip_clean_prompt(cfg["prompt"], params)
         denoising_strength = float(params.get("denoising_strength", 0.7))
         scheduler = self.ideogram4_components["scheduler"]
         advanced_cfg = self._ideogram4_advanced_cfg(params)
@@ -459,6 +558,8 @@ class Ideogram4Mixin:
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
+            negpip_handle = self._ideogram4_maybe_negpip(
+                transformer, params, cfg, cond, device, dtype)
             try:
                 latents = denoise_loop_img2img(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -471,6 +572,8 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                 )
             finally:
+                if negpip_handle is not None:
+                    negpip_handle["restore"]()
                 transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
@@ -509,6 +612,8 @@ class Ideogram4Mixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._ideogram4_common_params(params, init_image.width, init_image.height)
+        cfg["negpip_prompt"] = cfg["prompt"]
+        cfg["prompt"] = self._ideogram4_negpip_clean_prompt(cfg["prompt"], params)
         denoising_strength = float(params.get("denoising_strength", 0.8))
         mask_blur = int(params.get("mask_blur", 4))
         scheduler = self.ideogram4_components["scheduler"]
@@ -549,6 +654,8 @@ class Ideogram4Mixin:
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
+            negpip_handle = self._ideogram4_maybe_negpip(
+                transformer, params, cfg, cond, device, dtype)
             try:
                 latents = denoise_loop_inpaint(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -561,6 +668,8 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                 )
             finally:
+                if negpip_handle is not None:
+                    negpip_handle["restore"]()
                 transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()

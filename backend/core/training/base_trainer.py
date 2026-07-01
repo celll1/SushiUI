@@ -3503,20 +3503,35 @@ class BaseTrainer(ABC):
         # Setup fused backward/optimizer groups if Block Swap is enabled
         if self.blocks_to_swap > 0:
             if self.num_optimizer_groups > 0:
-                # Validate compatibility: Block Swap + Fused Optimizer Groups + 8bit optimizer
-                if optimizer_type.lower() in ["adamw8bit", "lion8bit", "adafactor8bit"]:
+                # Validate compatibility: Block Swap + Fused Optimizer Groups + 8bit optimizer.
+                # 8-bit optimizers (bitsandbytes and our ring-buffer variants) require the
+                # parameter to be on CUDA at update time; Fused Optimizer Groups call a batched
+                # optimizer.step() after Block Swap may have moved some params to CPU. The
+                # ring-buffer optimizers must use num_optimizer_groups=0 (they register their
+                # own per-parameter fused-backward hooks instead).
+                if optimizer_type.lower() in [
+                    "adamw8bit", "lion8bit", "adafactor8bit",
+                    "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
+                ]:
                     raise ValueError(
-                        f"Block Swap + Fused Optimizer Groups is incompatible with 8-bit optimizers ({optimizer_type}). "
-                        f"8-bit optimizers cannot handle CPU parameters that Block Swap creates. "
-                        f"Options: (1) Use Adafactor without num_optimizer_groups (fused backward pass), "
-                        f"(2) Use non-8bit optimizer (AdamW, Lion, etc.) with num_optimizer_groups, "
-                        f"(3) Disable Block Swap (blocks_to_swap=0)"
+                        f"Block Swap + Fused Optimizer Groups (num_optimizer_groups>0) is incompatible "
+                        f"with 8-bit optimizers ({optimizer_type}). 8-bit optimizers cannot update "
+                        f"CPU-resident parameters that Block Swap creates. "
+                        f"Options: (1) set num_optimizer_groups=0 (ring-buffer/8bit optimizers register "
+                        f"their own per-parameter fused-backward hooks), "
+                        f"(2) use a non-8bit optimizer (AdamW, Lion, etc.) with num_optimizer_groups, "
+                        f"(3) disable Block Swap (blocks_to_swap=0)"
                     )
 
                 # Fused optimizer groups: works with non-8bit optimizers only
                 self._setup_fused_optimizer_groups(optimizer_type, total_steps, lr_scheduler_type)
-            elif optimizer_type.lower() in ["adafactor", "adamw8bit"]:
-                # Fused backward pass: Adafactor or AdamW8bit
+            elif optimizer_type.lower() in [
+                "adafactor", "adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
+            ]:
+                # Fused backward pass: Adafactor / AdamW8bit / ring-buffer optimizers.
+                # The ring-buffer optimizers register their per-parameter post-accumulate-grad
+                # hooks inside _setup_fused_backward_pass, so their updates run before Block Swap
+                # moves each block to CPU (otherwise CPU-resident params are silently skipped).
                 self._setup_fused_backward_pass(optimizer_type)
 
     def _setup_fused_backward_pass(self, optimizer_type: str):

@@ -50,18 +50,22 @@
 - first-forward 配置も正しい（FLUX.2/Z-Image は共有 `_move_auxiliary_modules_to_gpu`、
   Ideogram4 は pipeline 側 `_ideogram4_setup_block_swap` で明示移動）。
 
-### 検出した堅牢性の穴（クラッシュはしないが要修正）
+### 検出した堅牢性の穴 → 修正状況
 
-1. **FLUX.2: dual↔single 境界の class assert 欠落**
-   基底 `block_offloading.py` の `assert block_to_cpu.__class__ == block_to_cuda.__class__`
-   が FLUX.2 版で欠落。`blocks_to_swap > single_block 数` のとき dual と single を
-   name/shape で誤ペアリング → swap 空振り → `wait_for_block` の同期フォールバックで救済
-   されるが**黙って直列化**。unguarded。
-2. **Z-Image: `blocks_to_swap` 未クランプ**（`zimage.py:473`）。Ideogram4 は
-   `[0, num_layers-1]` にクランプ済み。過大値で範囲外の可能性。
-3. **`_move_auxiliary_modules_to_gpu` が Z-Image のモジュール名ハードコード**。Ideogram4 は
-   自前で回避しているが、将来 `create_block_offloader_for_model` 経由の新アーキが aux 移動を
-   忘れると aux が CPU に残る潜在結合。
+1. **FLUX.2: dual↔single 境界の class 誤ペアリング** → ✅ 修正済
+   `blocks_to_swap > single_block 数` のとき dual と single を誤ペアリングし、swap 空振り →
+   同期フォールバックで救済されるが黙って直列化＋退避 block が GPU 常駐のままだった。
+   `swap_weight_devices` に**異クラス検出時の独立移動フォールバック**を追加
+   （`weighs_to_device` で incoming→GPU / outgoing→CPU を正しく実行、event 順序化、一度だけ警告）。
+   `flux_block_offloading.py`。
+2. **Z-Image: `blocks_to_swap` 未クランプ** → ✅ 修正済
+   共有ファクトリ `create_block_offloader_for_model`（`transformer_registry.py`）で
+   `[0, num_blocks-1]` にクランプ（FLUX.2 unified sequence / 単一リスト両対応、Z-Image 3 経路を一括カバー）。
+3. **torchao/subclass weight の silent under-offload** → ✅ ガード追加
+   同ファクトリで tensor-subclass（torchao AffineQuantizedTensor 等）の Linear weight を検出し、
+   block swap が offload しない旨を警告（FP8 使用を案内）。
+4. **`_move_auxiliary_modules_to_gpu` が Z-Image のモジュール名ハードコード**（未修正・低優先）。
+   Ideogram4 は自前で回避。将来ファクトリ経由の新アーキが aux 移動を忘れると aux が CPU に残る潜在結合。
 
 ---
 
@@ -200,10 +204,15 @@ block swap の関係を整理する。
   batched `optimizer.step()` を呼ぶが swap で一部 param が CPU へ移動済み → device mismatch。
 - ring-buffer 型は **`_setup_fused_backward_pass`（per-param hook）へ特別ルート**され
   （`:3551-3566`）、fused groups を使わない設計。
-- **ただし `raise` のリストは literal `"adamw8bit"/"lion8bit"/"adafactor8bit"` のみで
-  `"adamw8bit_ringbuffer"` に一致しない** → ring-buffer + block_swap + `num_optimizer_groups>0` は
-  **ブロックされず**、`_setup_fused_optimizer_groups` に落ちるが `create_optimizer_groups` が
-  `get_state_buffer`/cautious/schedule_free を forward しない → 未テストの設定穴。
+- **【修正済】発見した 2 つの配線バグ**（`base_trainer.py`）:
+  1. `num_optimizer_groups>0` の非互換 `raise` リストが literal
+     `"adamw8bit"/"lion8bit"/"adafactor8bit"` のみで `"*_ringbuffer"` に一致せず → 未ブロックだった。
+     → **`raise` リストに `adamw8bit_ringbuffer`/`lion8bit_ringbuffer` を追加**（明確なエラー＋
+     `num_optimizer_groups=0` を案内）。
+  2. `num_optimizer_groups=0`（推奨経路）の `elif` が `["adafactor","adamw8bit"]` のみで
+     ring-buffer 型を含まず → `_setup_fused_backward_pass` が呼ばれず**per-param hook が未登録**
+     → 通常 `step()` が swap-out 済み CPU param を silent skip し**学習されない**致命バグだった。
+     → **`elif` に `adamw8bit_ringbuffer`/`lion8bit_ringbuffer` を追加**し hook 登録を配線。
 - 命名の罠: `adamw8bit_fused.py` は bnb patch で **state は FP32**（真の 8-bit state ではない）。
 
 ### 6.5 互換性マトリクス（optimizer × block_swap × fused_groups）

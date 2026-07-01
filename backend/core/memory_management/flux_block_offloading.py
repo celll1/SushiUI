@@ -401,6 +401,26 @@ class FluxBlockOffloader:
         """
         weight_swap_jobs = []
 
+        # Dual/single boundary crossing: when blocks_to_swap exceeds the number of single
+        # blocks, the rotation can pair a dual block (FluxTransformerBlock) with a single
+        # block (FluxSingleTransformerBlock). Their Linear layouts/shapes differ, so the
+        # name/shape-paired pointer swap below does not apply. Move each block's weights to
+        # its target device independently instead of relying on the wait_for_block
+        # synchronous fallback (which also leaves the outgoing block GPU-resident). This is
+        # correct and fully offloads the outgoing block.
+        if block_to_cpu.__class__ != block_to_cuda.__class__:
+            if not getattr(self, "_warned_boundary_swap", False):
+                print("[FluxBlockOffloader] blocks_to_swap crosses the dual/single block "
+                      "boundary; using independent per-block moves there. Set blocks_to_swap "
+                      "<= number of single blocks to keep the fast paired swap.")
+                self._warned_boundary_swap = True
+            compute_done = torch.cuda.current_stream().record_event()
+            self.stream.wait_event(compute_done)
+            with torch.cuda.stream(self.stream):
+                weighs_to_device(block_to_cuda, self.device)
+                weighs_to_device(block_to_cpu, torch.device("cpu"))
+            return self.stream.record_event()
+
         # Determine block type for buffer selection
         is_dual = self._is_dual_block(block_to_cuda)
 

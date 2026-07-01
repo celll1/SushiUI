@@ -71,6 +71,39 @@ def create_block_offloader_for_model(
     architecture = detect_transformer_architecture(transformer)
     print(f"[TransformerRegistry] Detected architecture: {architecture}")
 
+    # Clamp blocks_to_swap to a valid range [0, num_blocks - 1] so an over-large value
+    # (e.g. from a stale config) cannot index past the block list. At least one block must
+    # stay resident, so the maximum is num_blocks - 1. Covers both the FLUX.2 dual/single
+    # unified sequence and single-list (Z-Image etc.) architectures.
+    if hasattr(transformer, 'transformer_blocks') and hasattr(transformer, 'single_transformer_blocks'):
+        num_blocks = len(transformer.transformer_blocks) + len(transformer.single_transformer_blocks)
+    elif hasattr(transformer, 'layers'):
+        num_blocks = len(transformer.layers)
+    else:
+        num_blocks = None
+    if num_blocks is not None:
+        clamped = max(0, min(int(blocks_to_swap), num_blocks - 1))
+        if clamped != blocks_to_swap:
+            print(f"[TransformerRegistry] blocks_to_swap={blocks_to_swap} out of range; "
+                  f"clamped to {clamped} (num_blocks={num_blocks})")
+        blocks_to_swap = clamped
+
+    # torchao / tensor-subclass weights (e.g. AffineQuantizedTensor from uint quantization)
+    # are not handled by the Linear weight-data swap path: block swap streams plain Linear
+    # weights only, so subclass weights are either left GPU-resident (no VRAM saving) or the
+    # pinned-buffer copy is unreliable. Warn clearly rather than silently under-offloading.
+    def _has_subclass_linear_weight(mod):
+        for m in mod.modules():
+            if m.__class__.__name__.endswith("Linear") and getattr(m, "weight", None) is not None:
+                if type(m.weight.data) is not torch.Tensor:
+                    return True
+        return False
+    if _has_subclass_linear_weight(transformer):
+        print("[TransformerRegistry] WARNING: transformer has tensor-subclass (e.g. torchao "
+              "uint-quantized) Linear weights. Block swap streams plain Linear weights only "
+              "and will NOT offload these (reduced VRAM saving; transfers may be unreliable). "
+              "Use FP8 (fp8_e4m3fn / fp8_e5m2) instead of uint/torchao quantization with block swap.")
+
     # FLUX.2: Use specialized FluxBlockOffloader
     if architecture == "flux2":
         from .flux_block_offloading import create_flux_block_offloader

@@ -556,6 +556,11 @@ def _dual_branch_velocity(
     max_text = cond["max_text_tokens"]
     t_dtype = transformer.dtype
 
+    # NAG: hand the doubled-batch nag-negative text features to the wrapped conditional
+    # transformer for this step (no-op when NAG is off / transformer is not the wrapper).
+    if cond.get("nag_llm_features") is not None and hasattr(transformer, "_procs"):
+        transformer._nag_llm_features = cond["nag_llm_features"]
+
     # Conditional pass on the full packed [text-pad-latent][image-latent] sequence.
     text_z_padding = torch.zeros(
         latents.shape[0], max_text, latents.shape[-1], dtype=latents.dtype, device=latents.device

@@ -55,6 +55,7 @@ def create_block_offloader_for_model(
     supports_backward: bool = False,
     h2d_only: bool = False,
     ring_size: int = 2,
+    block_list: Optional[nn.ModuleList] = None,
 ) -> Union[TransformerBlockOffloader, "FluxBlockOffloader"]:
     """
     Create block offloader for transformer model (auto-detect architecture)
@@ -66,6 +67,11 @@ def create_block_offloader_for_model(
         target_dtype: Target dtype for computation
         use_pinned_memory: Use pinned memory for faster transfer
         supports_backward: Enable backward pass support (for training)
+        block_list: Explicit swappable block ModuleList. Use for architectures whose
+            heavy block list is not named ``layers`` (e.g. Anima ``blocks``, Lens
+            ``transformer_blocks``, MiniT2I ``double_blocks``). When given, it is used
+            directly for the single-list offloader (and for the clamp), bypassing the
+            ``layers`` auto-detection. Ignored for the FLUX.2 dual-list path.
 
     Returns:
         TransformerBlockOffloader or FluxBlockOffloader instance
@@ -77,7 +83,9 @@ def create_block_offloader_for_model(
     # (e.g. from a stale config) cannot index past the block list. At least one block must
     # stay resident, so the maximum is num_blocks - 1. Covers both the FLUX.2 dual/single
     # unified sequence and single-list (Z-Image etc.) architectures.
-    if hasattr(transformer, 'transformer_blocks') and hasattr(transformer, 'single_transformer_blocks'):
+    if block_list is not None:
+        num_blocks = len(block_list)
+    elif hasattr(transformer, 'transformer_blocks') and hasattr(transformer, 'single_transformer_blocks'):
         num_blocks = len(transformer.transformer_blocks) + len(transformer.single_transformer_blocks)
     elif hasattr(transformer, 'layers'):
         num_blocks = len(transformer.layers)
@@ -120,11 +128,14 @@ def create_block_offloader_for_model(
             ring_size=ring_size,
         )
 
-    # Z-Image and other single-list architectures
-    if hasattr(transformer, 'layers'):
+    # Z-Image and other single-list architectures. An explicit block_list wins (for models
+    # whose heavy block list is not named 'layers'); otherwise fall back to 'layers'.
+    if block_list is not None:
+        blocks = block_list
+    elif hasattr(transformer, 'layers'):
         blocks = transformer.layers
     else:
-        raise ValueError(f"Transformer does not have 'layers' attribute")
+        raise ValueError(f"Transformer does not have 'layers' attribute and no block_list was provided")
 
     # Default dtype
     if target_dtype is None:

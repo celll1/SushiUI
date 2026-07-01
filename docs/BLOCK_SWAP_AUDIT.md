@@ -133,17 +133,20 @@ pinned）で真の async DMA。プリフェッチあり。
 
 | 機能 | FLUX.2 | Z-Image | Ideogram4 | 判定 |
 |---|---|---|---|---|
-| **NAG** | 排他（`flux2.py:600-603` で block swap 強制 OFF） | 併用可 | 併用可 | ✅ 衝突は FLUX.2 のみ・enforce 済 |
-| **NegPip** | 同上の排他 | 併用可 | 併用可 | ✅ SAFE |
+| **NAG** | ✅ **併用可**（統合 forward、`flux2.py` の排他ゲートは NegPip のみ） | 併用可 | 併用可 | ✅ 全アーキで NAG × block swap 併用可 |
+| **NegPip** | 排他（`flux2.py` で block swap 強制 OFF、NAG のみ解除） | 併用可 | 併用可 | ⚠️ FLUX.2 の NegPip×swap は後続 |
 | **Spectrum** | SAFE | SAFE | SAFE | forward 丸ごと skip → swap cycle も atomically skip |
 | **FP8 量子化** | SAFE | SAFE | SAFE | fp8 Linear を dtype 非依存で stream + autocast |
 | **torchao uint** | ⚠️ RISK | ⚠️ RISK | ⚠️ RISK | subclass weight が `"Linear"` filter を外れ**黙って未 offload**（クラッシュ無し） |
 | **LoRA** | SAFE | SAFE | SAFE | LoRA 子 Linear が base block と一緒に offload/復帰 |
 
-- **FLUX.2 の NAG は forward を丸ごと再実装**（swap hook を持たない）ため block swap と両立不可
-  → コードで強制排他（正しい）。**Z-Image/Ideogram4 の NAG は swap 統合済み forward に委譲する
-  層構造なので併用可能**。→ 「NAG on / block swap on」follow-up は Z-Image/Ideogram4 では既に達成、
-  FLUX.2 のみ排他を解くか判断が必要。
+- **【更新済】FLUX.2 の NAG × block swap は統合 forward で併用可能に**（commit `2d4f1b4`）。
+  旧: NAG が forward を丸ごと再実装し swap hook を持たないため強制排他していた。案2 で
+  `Flux2BlockSwapWrapper.forward` を単一 forward host に統合し、NAG バッチ処理を同ループに載せた
+  （他5アーキと同じ「swap ループ1本 + NAG が上に載る」構造へ収束）。詳細:
+  [[FLUX2_NAG_BLOCKSWAP_UNIFY_DESIGN.md]]。
+- **NegPip × block swap は FLUX.2 で引き続き排他**（`Flux2NegPipWrapper` は forward 再実装のまま）。
+  同じ統合ラッパーに NegPip processor 経路を足せば同様に解決可能（後続 PR）。
 - torchao uint のみ未ガード（silent under-offload）。フィルタを class 名から
   「`.weight` を持つ量子化 Linear」を含める形へ拡張するか、明示的にガードすべき。
 

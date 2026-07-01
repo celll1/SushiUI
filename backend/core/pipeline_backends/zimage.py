@@ -450,6 +450,13 @@ class ZImageMixin:
                     guidance_scale, max_sequence_length, text_encoder_quantization
                 )
 
+            # NAG: encode the nag-negative prompt while the text encoder is still on GPU
+            # (None when NAG is off -> generation path is unchanged).
+            nag_negative_embeds_list = self._zimage_encode_nag_negative(
+                text_encoder, tokenizer, params, prompt, max_sequence_length,
+                text_encoder_quantization
+            )
+
             # Offload Text Encoder to CPU to free VRAM
             move_zimage_text_encoder_to_cpu(text_encoder)
             log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
@@ -515,7 +522,9 @@ class ZImageMixin:
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
                 generator, progress_callback, step_callback,
-                spectrum_params=params
+                spectrum_params=params,
+                nag_negative_embeds_list=nag_negative_embeds_list,
+                nag_params=params
             )
 
             # Offload Transformer to CPU to free VRAM for VAE
@@ -678,6 +687,13 @@ class ZImageMixin:
                     guidance_scale, max_sequence_length, text_encoder_quantization
                 )
 
+            # NAG: encode the nag-negative prompt while the text encoder is still on GPU
+            # (None when NAG is off -> generation path is unchanged).
+            nag_negative_embeds_list = self._zimage_encode_nag_negative(
+                text_encoder, tokenizer, params, prompt, max_sequence_length,
+                text_encoder_quantization
+            )
+
             # Offload Text Encoder to CPU
             move_zimage_text_encoder_to_cpu(text_encoder)
             log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
@@ -831,7 +847,9 @@ class ZImageMixin:
                 generator, progress_callback, step_callback,
                 init_latents=noised_latents,
                 timesteps_override=timesteps_img2img,
-                spectrum_params=params
+                spectrum_params=params,
+                nag_negative_embeds_list=nag_negative_embeds_list,
+                nag_params=params
             )
 
             # Offload Transformer to CPU
@@ -971,6 +989,13 @@ class ZImageMixin:
                     text_encoder, tokenizer, prompt, negative_prompt,
                     guidance_scale, max_sequence_length, text_encoder_quantization
                 )
+
+            # NAG: encode the nag-negative prompt while the text encoder is still on GPU
+            # (None when NAG is off -> generation path is unchanged).
+            nag_negative_embeds_list = self._zimage_encode_nag_negative(
+                text_encoder, tokenizer, params, prompt, max_sequence_length,
+                text_encoder_quantization
+            )
 
             # Offload Text Encoder to CPU
             move_zimage_text_encoder_to_cpu(text_encoder)
@@ -1153,7 +1178,9 @@ class ZImageMixin:
                 timesteps_override=timesteps_inpaint,
                 mask_latent=mask_latent,
                 original_latents=original_latents,
-                spectrum_params=params
+                spectrum_params=params,
+                nag_negative_embeds_list=nag_negative_embeds_list,
+                nag_params=params
             )
 
             # Offload Transformer to CPU
@@ -1198,6 +1225,66 @@ class ZImageMixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Z-Image inpaint generation failed: {str(e)}")
+
+    def _zimage_encode_single(self, text_encoder, tokenizer, prompts, max_sequence_length,
+                              has_fp8_weights, device):
+        """Encode a list of prompt strings with the Qwen text encoder (penultimate layer),
+        returning a list of per-prompt embeddings masked by their attention mask. Shared
+        helper so the NAG-negative prompt uses the exact same encoder path as pos/neg."""
+        formatted = []
+        for p in prompts:
+            messages = [{"role": "user", "content": p}]
+            formatted.append(tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=True,
+            ))
+        inputs = tokenizer(
+            formatted, padding="max_length", max_length=max_sequence_length,
+            truncation=True, return_tensors="pt",
+        )
+        input_ids = inputs.input_ids.to(device)
+        masks = inputs.attention_mask.to(device).bool()
+        with torch.no_grad():
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    embeds = text_encoder(input_ids=input_ids, attention_mask=masks,
+                                          output_hidden_states=True).hidden_states[-2]
+            else:
+                embeds = text_encoder(input_ids=input_ids, attention_mask=masks,
+                                      output_hidden_states=True).hidden_states[-2]
+        return [embeds[i][masks[i]] for i in range(len(embeds))]
+
+    def _zimage_encode_nag_negative(self, text_encoder, tokenizer, params, prompt,
+                                    max_sequence_length, text_encoder_quantization=None):
+        """Encode the NAG-negative prompt (only when NAG is active) using the same encoder
+        path as the positive/negative prompts. Returns a list of embeddings (one per prompt)
+        or None when NAG is off. Gated by nag_enable AND nag_scale>1.
+        """
+        nag_enable = params.get("nag_enable", False)
+        try:
+            nag_scale = float(params.get("nag_scale", 1.0))
+        except (TypeError, ValueError):
+            nag_scale = 1.0
+        if not nag_enable or abs(nag_scale - 1.0) <= 1e-5:
+            return None
+        nag_negative_prompt = params.get("nag_negative_prompt", "")
+        if nag_negative_prompt is None:
+            nag_negative_prompt = ""
+
+        device = next(text_encoder.parameters()).device
+        has_fp8_weights = False
+        if text_encoder_quantization and text_encoder_quantization.startswith('fp8_'):
+            for module in text_encoder.modules():
+                if hasattr(module, 'weight') and module.weight is not None:
+                    if module.weight.dtype in [torch.float8_e4m3fn, torch.float8_e5m2]:
+                        has_fp8_weights = True
+                        break
+
+        prompt_list = [prompt] if isinstance(prompt, str) else list(prompt)
+        nag_neg_list = [nag_negative_prompt for _ in prompt_list]
+        print(f"[Z-Image NAG] Encoding NAG-negative prompt (scale={nag_scale})")
+        return self._zimage_encode_single(
+            text_encoder, tokenizer, nag_neg_list, max_sequence_length, has_fp8_weights, device
+        )
 
     def _zimage_encode_prompt(
         self, text_encoder, tokenizer, prompt, negative_prompt,
@@ -1341,7 +1428,9 @@ class ZImageMixin:
         timesteps_override: Optional[torch.Tensor] = None,
         mask_latent: Optional[torch.Tensor] = None,
         original_latents: Optional[torch.Tensor] = None,
-        spectrum_params: Optional[Dict[str, Any]] = None
+        spectrum_params: Optional[Dict[str, Any]] = None,
+        nag_negative_embeds_list: Optional[List[torch.Tensor]] = None,
+        nag_params: Optional[Dict[str, Any]] = None
     ):
         """
         Stage 2: Denoising Loop for Z-Image
@@ -1447,6 +1536,25 @@ class ZImageMixin:
             from core.inference.spectrum_forecaster import build_output_forecaster
             spectrum = build_output_forecaster(spectrum_params, len(timesteps), label="Z-Image")
 
+        # NAG (Normalized Attention Guidance) setup. Active only when a nag-negative
+        # embedding list was provided (nag_enable AND nag_scale>1, resolved at encode time).
+        # When inactive, nag_negative_embeds_list is None and the loop is byte-identical.
+        from core.inference.nag_dit import nag_active as _nag_active_fn
+        _nag_p = nag_params or {}
+        try:
+            nag_scale = float(_nag_p.get("nag_scale", 1.0))
+        except (TypeError, ValueError):
+            nag_scale = 1.0
+        nag_on = _nag_active_fn(_nag_p.get("nag_enable", False), nag_scale,
+                                nag_negative_embeds_list)
+        if nag_on:
+            nag_tau = float(_nag_p.get("nag_tau", 2.5))
+            nag_alpha = float(_nag_p.get("nag_alpha", 0.25))
+            print(f"[Z-Image NAG] Active: scale={nag_scale}, tau={nag_tau}, alpha={nag_alpha}")
+        # Ensure any stale request is cleared before the loop.
+        if hasattr(transformer, "_nag_request"):
+            transformer._nag_request = None
+
         # Denoising loop with progress callback
         # Note: Heun scheduler generates 2*steps-1 timesteps (39 for 20 steps)
         # We normalize progress to user-requested num_inference_steps for UI consistency
@@ -1501,38 +1609,75 @@ class ZImageMixin:
                     transformer_dtype = next(transformer.parameters()).dtype
                     input_dtype = transformer_dtype
 
+                # NAG batch layout: when active, append the nag-negative caption group so
+                # its captions evolve through the blocks. Image latents are duplicated for
+                # that group (identical image, different caption -> guidance driver).
+                #   CFG on  -> groups [neg, pos, nag_neg]   (repeat x3, NAG on cond only)
+                #   CFG off -> groups [pos, nag_neg]        (repeat x2, NAG on pos)
+                nag_this_step = nag_on
                 if apply_cfg:
-                    latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
-                    # CFG input order: [negative, positive] (consistent with SD/SDXL)
-                    prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
-                    timestep_model_input = timestep.repeat(2)
+                    if nag_this_step:
+                        latent_model_input = latents.to(input_dtype).repeat(3, 1, 1, 1)
+                        prompt_embeds_model_input = (
+                            negative_prompt_embeds_list + prompt_embeds_list
+                            + nag_negative_embeds_list
+                        )
+                        timestep_model_input = timestep.repeat(3)
+                    else:
+                        latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
+                        # CFG input order: [negative, positive] (consistent with SD/SDXL)
+                        prompt_embeds_model_input = negative_prompt_embeds_list + prompt_embeds_list
+                        timestep_model_input = timestep.repeat(2)
                 else:
-                    latent_model_input = latents.to(input_dtype)
-                    prompt_embeds_model_input = prompt_embeds_list
-                    timestep_model_input = timestep
+                    if nag_this_step:
+                        latent_model_input = latents.to(input_dtype).repeat(2, 1, 1, 1)
+                        prompt_embeds_model_input = prompt_embeds_list + nag_negative_embeds_list
+                        timestep_model_input = timestep.repeat(2)
+                    else:
+                        latent_model_input = latents.to(input_dtype)
+                        prompt_embeds_model_input = prompt_embeds_list
+                        timestep_model_input = timestep
 
                 # Add channel dimension and split into list
                 latent_model_input = latent_model_input.unsqueeze(2)
                 latent_model_input_list = list(latent_model_input.unbind(dim=0))
 
+                # Install the NAG request so ZImageAttention applies guidance in the joint
+                # layers only; the transformer forward converts it into the live context and
+                # clears it. We also clear it here in a finally as a safety net.
+                if nag_this_step:
+                    transformer._nag_request = {
+                        "group_size": batch_size,
+                        "has_cfg": bool(apply_cfg),
+                        "scale": nag_scale,
+                        "tau": nag_tau,
+                        "alpha": nag_alpha,
+                    }
+
                 # Transformer forward pass
                 # For FP8 quantized models, use autocast to handle mixed precision
-                with torch.no_grad():
-                    if has_fp8_weights:
-                        # FP8: use autocast for automatic mixed precision
-                        with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                try:
+                    with torch.no_grad():
+                        if has_fp8_weights:
+                            # FP8: use autocast for automatic mixed precision
+                            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                                model_out_list = transformer(
+                                    latent_model_input_list,
+                                    timestep_model_input,
+                                    prompt_embeds_model_input,
+                                )[0]
+                        else:
+                            # Normal: no autocast needed
                             model_out_list = transformer(
                                 latent_model_input_list,
                                 timestep_model_input,
                                 prompt_embeds_model_input,
                             )[0]
-                    else:
-                        # Normal: no autocast needed
-                        model_out_list = transformer(
-                            latent_model_input_list,
-                            timestep_model_input,
-                            prompt_embeds_model_input,
-                        )[0]
+                finally:
+                    if nag_this_step:
+                        transformer._nag_request = None
+                        from core.models.zimage_transformer import ZImageAttention
+                        ZImageAttention._nag_ctx = None
 
                 # Apply CFG if enabled
                 if apply_cfg:
@@ -1549,7 +1694,10 @@ class ZImageMixin:
                         noise_pred.append(pred)
                     noise_pred = torch.stack(noise_pred, dim=0)
                 else:
-                    noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+                    # No CFG. When NAG is on the batch is [pos_nag, nag_neg]; the pos group
+                    # is already NAG-guided, so keep only the first batch_size outputs.
+                    out_slice = model_out_list[:batch_size] if nag_this_step else model_out_list
+                    noise_pred = torch.stack([out.float() for out in out_slice], dim=0)
 
                 # Scheduler step (flow matching with stochastic_sampling if enabled)
                 noise_pred = -noise_pred.squeeze(2)

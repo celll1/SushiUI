@@ -155,7 +155,90 @@ pinned）で真の async DMA。プリフェッチあり。
 
 ---
 
-## 6. H2D-Only Block Swap（musubi-tuner 由来の概念）
+## 6. Ring-Buffer 8-bit Optimizer との整合性・連携
+
+SushiUI 独自の `adamw8bit_ringbuffer` / `lion8bit_ringbuffer`（`backend/core/training/optimizers/`）と
+block swap の関係を整理する。
+
+### 6.1 用語の注意: 2 つの無関係な「ring buffer」
+- **`memory_management/ring_buffer_allocator.py::RingBufferAllocator`**: `LayerOffloadConductor` が使う
+  **weight（層）用**の CPU バイトアリーナ（学習 Path B）。
+- **Optimizer の "Ring Buffer"**: `get_state_buffer` コールバック機構による **optimizer state 用**。
+
+両者は名前と概念が似るだけで**コード上の接続は無い**。混同しないこと。
+
+### 6.2 Ring-buffer optimizer とは（設計）
+- オフロードするのは **optimizer state（`exp_avg`/`exp_avg_sq`/`z`）であって weight ではない**。
+  state を **UINT8 blockwise 量子化**（blocksize 256）。Lion は `exp_avg` のみ（~87.5% 削減）、
+  AdamW は ~75% 削減。
+- `absmax1/absmax2`（FP32、dequant メタ）は **CPU offload 時も常に GPU 常駐**が不変条件
+  （CUDA kernel 要件、`adamw8bit_ringbuffer.py:301-318`, load 時も強制 `:407-409`）。
+- **state 配置は `get_state_buffer` で決定**（`:248`）。`None` → 純 GPU（bitsandbytes 相当、PCIe 無し）。
+  callable → CPU buffer は `.pin_memory()`。commit `12bb584` で pin を `.is_cpu` ガード化 →
+  **常駐 param は GPU tensor、溢れ分は CPU tensor** という **partial residency（GPU/CPU 混在 state）**が可能。
+- **転送 stream は C++ 側**（commit `5a4b71f`, `adamw8bit_cuda.cpp`）: 専用 xfer stream で CPU-resident
+  state を H2D、update kernel は compute stream で `CUDAEvent` 待ち、D2H writeback も xfer stream で
+  event 順序化。**CPU-resident state のみ**を stream（`any_cpu` ガード）→ GPU 常駐分は転送スキップ。
+
+### 6.3 Block Swap との連携: **独立サブシステム（協調していない）**
+- block swap 側（`flux_block_offloading.py` / `block_offloading.py`）は **weight のみ**移動し、
+  optimizer state を一切知らない（grep で `optimizer/exp_avg/state/grad` は 0 ヒット）。
+- **重要**: shipped code では `get_state_buffer` に non-None を渡す呼び出しが**どこにも無い**
+  （`RING_BUFFER_OPTIMIZER.md` も「現状 `get_state_buffer=None` → Fallback」と明記）。つまり
+  CPU オフロード機構は実装・ベンチ済みだが **block swap とは自動連携していない**。現状 state は GPU 常駐。
+- **fused hook の発火順序**: optimizer 更新は per-param `register_post_accumulate_grad_hook`
+  （`:945`）、block swap-out は per-block `register_full_backward_hook`（`flux:579`）。full-backward は
+  param の grad hook の**後**に発火するので、**backward 中の当該 block の更新は swap-out より前**に走る
+  （その block については順序は正しい）。
+- **ただし両 hook とも `p.is_cuda` で CPU param を黙ってスキップ**（step `:607`, fused hook `:905`）。
+  「GPU に戻ったとき適用する」というコメントは**aspirational で未実装**（deferred-update queue は無い）。
+  grad 完了時に CPU 常駐だった param は**その step の更新が黙って drop**される。
+
+### 6.4 非互換ガードと ring-buffer の位置づけ
+- CLAUDE.md 記載の非互換（Block Swap + Fused Optimizer Groups + 8bit）は `base_trainer.py:3504-3514`
+  で `raise`。理由: 8bit kernel は `param.is_cuda` 必須（`adamw8bit_cuda.cpp:126`）、fused groups は
+  batched `optimizer.step()` を呼ぶが swap で一部 param が CPU へ移動済み → device mismatch。
+- ring-buffer 型は **`_setup_fused_backward_pass`（per-param hook）へ特別ルート**され
+  （`:3551-3566`）、fused groups を使わない設計。
+- **ただし `raise` のリストは literal `"adamw8bit"/"lion8bit"/"adafactor8bit"` のみで
+  `"adamw8bit_ringbuffer"` に一致しない** → ring-buffer + block_swap + `num_optimizer_groups>0` は
+  **ブロックされず**、`_setup_fused_optimizer_groups` に落ちるが `create_optimizer_groups` が
+  `get_state_buffer`/cautious/schedule_free を forward しない → 未テストの設定穴。
+- 命名の罠: `adamw8bit_fused.py` は bnb patch で **state は FP32**（真の 8-bit state ではない）。
+
+### 6.5 互換性マトリクス（optimizer × block_swap × fused_groups）
+
+| Optimizer | block_swap | fused_groups | fused_backward(per-param) | 判定 |
+|---|---|---|---|---|
+| Adafactor | ✅ | ❌（8bit名なら raise） | ✅ | 最小 VRAM 推奨 |
+| AdamW / Lion (FP32) | ✅ | ✅ | — | FP32 state・VRAM 増 |
+| bnb AdamW8bit/Lion8bit | ✅ | ❌ **raise** | ✅(adamw8bitのみ,FP32 state) | groups 禁止 |
+| **AdamW8bit_RingBuffer** | ✅(per-param hook, CPU param skip) | ⚠️未ブロック・未テスト | ✅ 想定経路 | groups=0 で使う |
+| **Lion8bit_RingBuffer** | ✅ 同上 | ⚠️同穴 | ✅ | 同上 |
+
+### 6.6 Correctness リスク（ring-buffer + block swap 固有）
+1. **"GPU 復帰時に適用" 未実装** → CPU 常駐時に grad 完了した param の更新が silent drop（§6.3）。
+2. **state/param の device desync**: state（optimizer）と weight（block swap）は別ライフサイクル。
+   現状 state は GPU 常駐・weight のみ CPU へ → fused hook が CPU param を skip して整合を回避
+   （正しく扱うのではなく skip で回避）。`get_state_buffer` を CPU に配線しても kernel が
+   `param.is_cuda` 必須なので結局 skip。
+3. **absmax always-GPU 不変条件**: checkpoint ロードで CPU に落ちると kernel `TORCH_CHECK` 発火
+   （custom loader で強制済みだが fragile）。
+4. **async D2H とチェックポイント整合**: commit `5a4b71f` が「host で CPU state を読む保存前に
+   `torch.cuda.synchronize()` すべき」と警告。save 経路（`base_trainer.py:7654,7889,8172` が
+   ring-buffer state を動かさない特別扱い）が sync しているか要確認。
+
+### 6.7 まとめ（設計 vs 実装）
+- **設計**: 8-bit CPU-offload optimizer state + 専用 xfer stream overlap + partial residency で、
+  per-param fused hook により block swap と共存する意図。
+- **実装（現状）**: `get_state_buffer` 未配線で state は GPU 常駐、「GPU 復帰時適用」はコメントのみ
+  （CPU 常駐 param は silent skip）、weight ring と state ring は完全独立。→ **実運用は
+  `blocks_to_swap>0` + ring-buffer optimizer + `num_optimizer_groups=0`（per-param fused backward）**
+  を推奨経路とし、`num_optimizer_groups>0` との併用は避ける（ガード追加が望ましい）。
+
+---
+
+## 7. H2D-Only Block Swap（musubi-tuner 由来の概念）
 
 参照: kohya-ss/musubi-tuner README.ja.md
 （`--block_swap_h2d_only` / `--gradient_checkpointing` 必須 / `--block_swap_ring_size` デフォルト 2）。
@@ -213,19 +296,23 @@ D2H 行を消すだけでは pinned master を破壊してしまう。正しい 
 
 ---
 
-## 7. 結論と次アクション
+## 8. 結論と次アクション
 
 1. **正しさ**: 推論 3 アーキとも動作。堅牢性の穴（FLUX.2 assert / Z-Image クランプ /
    aux-mover ハードコード / torchao 未ガード）は現状フォールバックで救済されるが要修正。
 2. **効率**: overlap+pinned で naive `.to()` より良いが、per-swap 全同期・per-Linear host 同期・
    深さ 1 でパイプライン性能を出せていない。Tier 1(A)(B) だけで大きく改善可能。
 3. **学習**: FLUX.2(Path A) は良好、Path B（Conductor）は backward pre-load 欠落・同期 forward・
-   dead code で要改善。fused-backward+8bit の deferred-update 未実装リスクあり。
-4. **H2D-only**: 推論と LoRA 学習で有利、Full-FT は条件付き。fixed GPU ring への書き換えが前提。
+   dead code で要改善。
+4. **Ring-buffer optimizer**: state offload（8-bit・専用 xfer stream・partial residency）は堅実だが
+   block swap とは**独立サブシステム**で、`get_state_buffer` 未配線・deferred-update 未実装
+   （CPU 常駐 param は silent skip）。推奨経路は `blocks_to_swap>0` + ring-buffer +
+   `num_optimizer_groups=0`。`num_optimizer_groups>0` との併用ガードが `_ringbuffer` 名を
+   カバーしていない穴あり。
+5. **H2D-only**: 推論と LoRA 学習で有利、Full-FT は条件付き。fixed GPU ring への書き換えが前提。
 
 ### 実施順
 - **本 PR**: 本ドキュメント(D) → Tier 1(A) 効率改善（per-swap 同期を event-based 順序へ置換）。
-- **後続候補**: Tier 1(B)、堅牢性修正、H2D-only（推論 + LoRA）、Path B（Conductor）改善、
+- **後続候補**: Tier 1(B)、堅牢性修正（含: ring-buffer + fused_groups ガードの `_ringbuffer` 名拡張）、
+  H2D-only（推論 + LoRA）、Path B（Conductor）改善、
   「NAG on / block swap on」FLUX.2 排他解除判断。
-</content>
-</invoke>

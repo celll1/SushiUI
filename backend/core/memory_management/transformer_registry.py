@@ -108,9 +108,6 @@ def create_block_offloader_for_model(
 
     # FLUX.2: Use specialized FluxBlockOffloader
     if architecture == "flux2":
-        if h2d_only:
-            print("[TransformerRegistry] h2d_only is not yet implemented for FLUX.2; "
-                  "using standard block swap for this model.")
         from .flux_block_offloading import create_flux_block_offloader
         return create_flux_block_offloader(
             transformer=transformer,
@@ -118,7 +115,9 @@ def create_block_offloader_for_model(
             device=device,
             target_dtype=target_dtype,
             use_pinned_memory=use_pinned_memory,
-            supports_backward=supports_backward
+            supports_backward=supports_backward,
+            h2d_only=h2d_only,
+            ring_size=ring_size,
         )
 
     # Z-Image and other single-list architectures

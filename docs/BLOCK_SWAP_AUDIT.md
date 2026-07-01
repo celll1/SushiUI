@@ -286,10 +286,15 @@ byte-identical な冗長コピー。
 - ✅ **推論（Z-Image / Ideogram4）実装済**: 共有 `TransformerBlockOffloader` に opt-in H2D-only
   パス（`h2d_only` + `ring_size`）を追加。永続 pinned CPU master（書き込み無し）+ 固定 GPU リング
   （`ring_size` スロット、default 2 で次 block の H2D を現 block の compute に overlap）+ D2H 完全排除。
-  `block_swap_h2d_only` / `block_swap_ring_size` を Z-Image 3 経路・Ideogram4 に配線。既存 pointer-swap
-  path は無変更で温存（default off）。ステップ境界は同期ロードで self-heal。リングのインデックス計算・
-  複数ステップ・非可分 swap 数を CPU 単体テストで検証済（`tmp/test_h2d_only_ring.py`）。
-- ⏳ **FLUX.2 推論**: `FluxBlockOffloader`（dual/single 2 リスト）への H2D-only は follow-up。
+- ✅ **FLUX.2 推論 実装済**: `FluxBlockOffloader`（dual/single 2 リスト）に H2D-only を実装。
+  dual/single のサイズ差に対応し、GPU リングは最大 block サイズで確保・各 block は自分の bytes のみ
+  コピー。境界跨ぎ（`blocks_to_swap > single 数`）でも正しく動作。可変サイズ・境界跨ぎを CPU 単体
+  テストで検証済（`tmp/test_h2d_only_flux.py`）。
+- ✅ **Tier 2(C) coalesce 統合済**: 各 block の per-Linear コピーを 1 個の flat pinned buffer に統合
+  （N DMA → 1 DMA）。両 offloader の H2D-only path に実装（uniform dtype 前提、mixed なら標準 swap に
+  フォールバック）。**Tier 2(D) 深いプリフェッチ**は `ring_size` を 3+ にするだけで達成。
+- 配線: `block_swap_h2d_only` / `block_swap_ring_size` を Z-Image 3 経路・Ideogram4・FLUX.2 3 経路に配線。
+  既存 pointer-swap path は無変更で温存（default off）。ステップ境界は同期ロードで self-heal。
 - ⏳ **LoRA 学習**: forward_only 前提のため現状は推論のみ。backward 方向 H2D-only + gradient
   checkpointing 連携（musubi 同条件）は follow-up。
 

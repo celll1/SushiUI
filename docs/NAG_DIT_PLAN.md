@@ -30,15 +30,28 @@ Spectrum records/forecasts whatever the (NAG-modified) forward produces.
 | Ideogram4 | vendored transformer (dual-branch) | packed [text][image] | edit attention forward |
 | MiniT2I | mmjit transformer | joint | edit attention forward |
 
-## Mechanism (per model)
-When NAG active, run each attention block twice for the IMAGE query rows:
-  - z_pos = attn(img_q, keys/values from [positive text (+ image)])  ← the normal output
-  - z_neg = attn(img_q, keys/values from [nag-negative text (+ image)])
-  - image output rows := nag_guidance(z_pos, z_neg, scale, tau, alpha)
-  - text output rows unchanged (positive)
-Requires threading nag_negative_prompt_embeds into the transformer forward so the block
-can compute the nag-negative text K/V. Extra cost ≈ one extra text→image attention per
-block (NAG's "+1 attention", on anchor steps only when combined with Spectrum).
+## Mechanism (from the official MIT impl — ChenDarYen/Normalized-Attention-Guidance)
+The official `NAGFluxAttnProcessor2_0` shows canonical NAG on MM-DiT WITHOUT a separate
+evolving image stream (my earlier "parallel-stream" worry was wrong):
+  - Carry the TEXT as a doubled batch `[positive_text; negative_text]` (both evolve via
+    each block's own projections — the negative "context" evolves as the batch half).
+  - The IMAGE is shared: tile it x2 for the attention, run the [pos_text+img] and
+    [neg_text+img] attentions, extrapolate the IMAGE output rows via nag_guidance, then
+    write the SAME NAG-guided image back into both batch halves (image stays single).
+  - Text output rows keep their own pos/neg halves for the next block.
+Norm is **L2** (p=2), tau default 2.5 (nag_dit.nag_guidance(..., norm_p=2)).
+
+Extra cost ≈ one extra attention per block (NAG's "+1 attention"), on anchor steps only
+when combined with Spectrum.
+
+## Port note (our Flux.2 != official Flux.1)
+The official targets diffusers Flux.1 (`FluxAttnProcessor2_0`). Our repo uses
+`transformer_flux2.py` (Flux.2) with `Flux2AttnProcessor` (dual-stream) +
+`Flux2ParallelSelfAttnProcessor` (single-stream). Porting = adapt the tile/chunk/
+extrapolate logic to Flux.2's projection + rotary + split structure, plus a wrapper that
+doubles the text batch through the forward. The official demo uses the DISTILLED path
+(guidance_scale=0, NAG only) — start there; CFG(non-distilled)+NAG batch interaction is a
+follow-up.
 
 ## Order (separate commit each; runtime-tested by the user between models)
 0. Shared core + plan (this).

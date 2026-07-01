@@ -95,6 +95,21 @@ backward の勾配計算に必要な base 重みが GPU に無い＝**再計算�
 推論と同じく block ごとに flat pinned master + flat GPU ring slot（1 DMA/block）。
 学習でも凍結 base のみを連結。
 
+## 5.6 実装状況（2026-07）
+- ✅ **offloader コア実装済**（`FluxBlockOffloader`, commit 参照）: 学習時 `h2d_only` を許可、frozen-only
+  master（LoRA adapter は GPU 常駐で除外）、Full-FT フォールバック、**順序非依存 pull-based residency**
+  （block↔slot マップ + LRU、miss 時同期ロード、D2H 無し）。forward/backward/再計算のどの順序でも
+  correct。CPU シミュレーションで forward+backward(+recompute) 列を再現し全 config 通過
+  （`backend/tmp/test_h2d_only_flux_training.py`）。推論 forward-only パスは無変更。
+- ⚠️ **【要対応・既存ギャップ】FLUX 学習の block swap 駆動が未配線**: `base_trainer.py:1942/2100` は
+  offloader を生成し `prepare_block_devices_before_forward()` を呼ぶが、**`Flux2BlockSwapWrapper` で
+  wrap せず `register_backward_hooks()` も呼ばない**。学習 forward は `self.transformer(...)` を直接呼ぶ
+  （`:5986/6219`）。そのため wait_for_block/submit が発火せず、標準 block swap も含め **FLUX 学習の
+  block swap は現状駆動されていない**（H2D 以前の問題）。H2D 学習を実際に効かせるには、この配線
+  （wrap + backward hooks + grad checkpointing 必須化）を先に整備する必要がある。→ §6 のトレーナー
+  配線 follow-up に含める。
+- ⏳ SSoT 配線（`TRAINING_DEFAULTS`/OpenAPI/Pydantic/frontend）未実施。
+
 ## 6. 統合ポイント（実装時チェックリスト）
 
 1. `FluxBlockOffloader.__init__`: `h2d_only and self.forward_only` のゲートを緩め、

@@ -80,6 +80,8 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "enable_block_swap": False,
     "blocks_to_swap": 20,
     "use_pinned_memory": False,
+    "block_swap_h2d_only": False,   # H2D-only swap (no device->host eviction of read-only weights)
+    "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1; 2 double-buffers)
     # Vision encoder
     "vision_encoder_path": None,
     # SDXL micro-conditioning override (inference). original_size for time_ids:

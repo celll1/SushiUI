@@ -223,6 +223,8 @@ export interface GenerationParams {
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
+  block_swap_h2d_only?: boolean;
+  block_swap_ring_size?: number;
   // FLUX.2 Image Edit (reference images for sequence conditioning)
   ref_images?: File[];
   // SigLIP2 Vision Encoder path (SDXL/SD1.5 reference image conditioning)
@@ -407,6 +409,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
   formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
   formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
+  formData.append("block_swap_h2d_only", String(paramsWithImages.block_swap_h2d_only ?? false));
+  formData.append("block_swap_ring_size", String(paramsWithImages.block_swap_ring_size ?? 2));
 
   // FLUX.2 Image Edit / Vision Encoder (reference images)
   if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {

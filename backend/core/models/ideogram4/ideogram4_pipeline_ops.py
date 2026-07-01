@@ -593,6 +593,70 @@ def _dual_branch_velocity(
 
 
 # ---------------------------------------------------------------------------
+# First Block Cache (FBCache) helpers
+# ---------------------------------------------------------------------------
+
+def _unwrap_ideogram4_transformer(driver):
+    """Return the raw Ideogram4 transformer (whose ``forward`` runs the ``self.layers`` block
+    loop) from a possibly NAG-wrapped driver. ``Ideogram4NAGWrapper`` holds ``.transformer`` and
+    delegates forward to it, so ``_fbcache`` / ``_fbcache_step`` must be set on the real object.
+    (NegPip installs attention processors in place and does not wrap the object.)"""
+    # NOTE: peel by wrapper CLASS NAME, not `not hasattr(real, "layers")`:
+    # Ideogram4NAGWrapper.__getattr__ delegates missing attrs to self.transformer, so
+    # hasattr(wrapper, "layers") is True and a hasattr-based loop would stop on the wrapper
+    # and set _fbcache where the real forward never reads it.
+    real = driver
+    while hasattr(real, "transformer") and "Wrapper" in real.__class__.__name__:
+        real = real.transformer
+    return real
+
+
+def _build_ideogram4_fbcache(spectrum_params, spectrum, do_cfg):
+    """Build FBCache instance(s) for the Ideogram4 denoise loop, or (None, None).
+
+    Ideogram4 runs CFG as TWO SEPARATE transformer objects per step -- the conditional
+    ``transformer`` and the ``unconditional_transformer`` -- each with its own denoising
+    trajectory, so a hit on one must not reuse the other's residual -> two independent
+    FirstBlockCache instances (uncond is None when do_cfg is off).
+
+    FBCache is mutually exclusive with:
+      (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
+      (b) Block Swap -- a cache hit skips layers[1:], desyncing the block-swap rotation
+          (the offloader expects every block to run each step).
+    It runs only when BOTH are off. Returns (fbcache_cond, fbcache_uncond)."""
+    from core.inference.fbcache import build_fbcache, fbcache_active
+    if spectrum_params is None or not fbcache_active(spectrum_params):
+        return None, None
+    block_swap_on = bool(spectrum_params.get("enable_block_swap", False)) and \
+        int(spectrum_params.get("blocks_to_swap", 0)) > 0
+    if spectrum is not None:
+        print("[FBCache] Ideogram4 disabled: Spectrum is enabled (same redundancy target)")
+        return None, None
+    if block_swap_on:
+        print("[FBCache] Ideogram4 disabled: Block Swap is enabled (block skip desyncs rotation)")
+        return None, None
+    fbcache_cond = build_fbcache(spectrum_params, label="Ideogram4 (cond)")
+    fbcache_uncond = build_fbcache(spectrum_params, label="Ideogram4 (uncond)") if do_cfg else None
+    return fbcache_cond, fbcache_uncond
+
+
+def _cleanup_ideogram4_fbcache(real_cond, real_uncond, fbcache_cond, fbcache_uncond):
+    """Detach FBCache state from both real transformers so it never leaks into a later
+    forward (VAE-adjacent, or a subsequent generation reusing these transformer objects)."""
+    if fbcache_cond is not None:
+        print(f"[FBCache] Ideogram4 cond summary: {fbcache_cond.n_hits} hit(s), {fbcache_cond.n_miss} miss(es)")
+    if fbcache_uncond is not None:
+        print(f"[FBCache] Ideogram4 uncond summary: {fbcache_uncond.n_hits} hit(s), {fbcache_uncond.n_miss} miss(es)")
+    for real in (real_cond, real_uncond):
+        if real is None:
+            continue
+        if hasattr(real, "_fbcache"):
+            real._fbcache = None
+        if hasattr(real, "_fbcache_step"):
+            real._fbcache_step = None
+
+
+# ---------------------------------------------------------------------------
 # Denoising loops
 # ---------------------------------------------------------------------------
 
@@ -619,6 +683,18 @@ def _run_loop(
     spectrum = build_output_forecaster(spectrum_params, total_steps, "Ideogram4")
     batch = latents.shape[0]
 
+    # FBCache: two instances (cond/uncond) for the two-transformer-object CFG. None when
+    # inactive/guarded (Spectrum or block swap). Attached to the REAL transformers (past any
+    # NAG wrapper) so the vendored forward's block loop reads _fbcache; the step index is
+    # refreshed each step (mirrors how _block_offloader is attached to both transformers).
+    fbcache_cond, fbcache_uncond = _build_ideogram4_fbcache(spectrum_params, spectrum, True)
+    real_cond = _unwrap_ideogram4_transformer(transformer)
+    real_uncond = _unwrap_ideogram4_transformer(unconditional_transformer)
+    if fbcache_cond is not None:
+        real_cond._fbcache = fbcache_cond
+    if fbcache_uncond is not None:
+        real_uncond._fbcache = fbcache_uncond
+
     for i, t in enumerate(timesteps):
         raise_if_cancelled()
         sigma_t = t.item() / num_train_timesteps
@@ -630,6 +706,12 @@ def _run_loop(
             v = spectrum.forecast(i)
             cfg_metrics = None
         else:
+            # FBCache: set the current step index on each transformer's cache (no-op when
+            # the cache is None -> the vendored forward keeps its default block loop).
+            if fbcache_cond is not None:
+                real_cond._fbcache_step = i
+            if fbcache_uncond is not None:
+                real_uncond._fbcache_step = i
             v, cfg_metrics = _dual_branch_velocity(
                 transformer, unconditional_transformer, latents, cond, t_model,
                 guidance[i], sigma_t, advanced_cfg,
@@ -653,6 +735,7 @@ def _run_loop(
         elif progress_callback is not None:
             progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
 
+    _cleanup_ideogram4_fbcache(real_cond, real_uncond, fbcache_cond, fbcache_uncond)
     return latents
 
 

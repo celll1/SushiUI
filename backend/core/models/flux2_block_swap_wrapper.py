@@ -58,6 +58,11 @@ class Flux2BlockSwapWrapper(nn.Module):
         self.transformer = transformer
         self._block_offloader = block_offloader
         self._single_procs = single_procs
+        # First Block Cache (FBCache). None by default -> forward behavior (incl. the fast
+        # path) is byte-identical. Set by the pipeline (with ``_fbcache_step`` per step) to
+        # dynamically reuse the image residual and skip the dual+single block loops on a hit.
+        self._fbcache = None
+        self._fbcache_step = 0
 
         # Copy config for compatibility
         self.config = transformer.config
@@ -86,9 +91,12 @@ class Flux2BlockSwapWrapper(nn.Module):
 
         Same signature as FluxTransformer2DModel.forward()
         """
-        # Fast path: no block swap AND no single-stream procs -> original forward (unchanged).
+        # Fast path: no block swap AND no single-stream procs AND no FBCache -> original
+        # forward (unchanged). FBCache must NOT take the fast path: it needs the custom
+        # forward to intercept the dual+single block loops.
+        fbcache = getattr(self, "_fbcache", None)
         swap_on = self._block_offloader is not None and self._block_offloader.blocks_to_swap > 0
-        if not swap_on and self._single_procs is None:
+        if not swap_on and self._single_procs is None and fbcache is None:
             return self.transformer(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
@@ -175,6 +183,17 @@ class Flux2BlockSwapWrapper(nn.Module):
                 p.encoder_hidden_states_length = num_txt_tokens
                 p.origin_img_batch = img_b
 
+        # First Block Cache (FBCache): only the IMAGE tokens survive to the output (text is
+        # stripped after the single blocks), so a SINGLE image residual is cached. Capture the
+        # image hidden right before the dual loop; after the first dual block the image residual
+        # is the indicator. On a HIT we skip ALL remaining dual blocks + ALL single blocks and
+        # set the final image = original_img + cached_img_residual (reproducing the exact tensor
+        # fed to norm_out on a miss). ``original_img`` keeps the image batch (img_b); the cached
+        # residual is on the same img_b rows (any NAG expansion happens inside the skipped
+        # region), so hit and miss both feed norm_out an [img_b, ...] image tensor.
+        fb_hit = False
+        original_img = hidden_states  # image hidden before transformer_blocks[0] (batch img_b)
+
         # === 4. Dual stream blocks (transformer_blocks) ===
         for index_block, block in enumerate(transformer.transformer_blocks):
             # Wait for block transfer before execution
@@ -216,14 +235,59 @@ class Flux2BlockSwapWrapper(nn.Module):
                 else:
                     hidden_states = hidden_states + controlnet_block_samples[index_block // interval_control]
 
-        # Pair the image with the text batch for the single stream (NAG tiles it to txt_b).
-        if do_nag:
-            hidden_states = _expand(hidden_states, img_b, txt_b)
+            # FBCache decision after the FIRST dual block: indicator = image residual so far.
+            # On a hit, reuse the cached full image residual and skip everything remaining.
+            if fbcache is not None and index_block == 0:
+                indicator = hidden_states - original_img
+                if fbcache.use_cache(indicator, int(getattr(self, "_fbcache_step", 0))):
+                    hidden_states = original_img + fbcache.get()
+                    fb_hit = True
+                    break
 
-        # Concatenate text and image streams for single-block inference
-        hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+        if not fb_hit:
+            # Pair the image with the text batch for the single stream (NAG tiles it to txt_b).
+            if do_nag:
+                hidden_states = _expand(hidden_states, img_b, txt_b)
 
-        # === 5. Single stream blocks (single_transformer_blocks) ===
+            # Concatenate text and image streams for single-block inference
+            hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
+
+            # === 5. Single stream blocks (single_transformer_blocks) ===
+            hidden_states = self._flux2_single_blocks(
+                transformer, hidden_states, single_stream_mod, concat_rotary_emb,
+                joint_attention_kwargs, controlnet_single_block_samples, swap_on, offloader,
+                num_dual_blocks, num_txt_tokens, do_nag, img_b, txt_b,
+            )
+
+            # Remove text tokens from concatenated stream
+            hidden_states = hidden_states[:, num_txt_tokens:, ...]
+            if do_nag:
+                hidden_states = hidden_states[:img_b]  # [A_uncond, A_cond] (CFG) or guided (distilled)
+
+            # FBCache miss: store the full image residual (pre-norm_out image minus original_img).
+            # This is the exact image tensor fed to norm_out; a future hit reproduces it.
+            if fbcache is not None:
+                fbcache.store(hidden_states - original_img)
+
+        # 6. Output layers
+        hidden_states = transformer.norm_out(hidden_states, temb)
+        output = transformer.proj_out(hidden_states)
+
+        if not return_dict:
+            return (output,)
+
+        return Transformer2DModelOutput(sample=output)
+
+    def _flux2_single_blocks(
+        self, transformer, hidden_states, single_stream_mod, concat_rotary_emb,
+        joint_attention_kwargs, controlnet_single_block_samples, swap_on, offloader,
+        num_dual_blocks, num_txt_tokens, do_nag, img_b, txt_b,
+    ):
+        """Run the single-stream block loop (extracted so the FBCache hit path can skip it).
+
+        Returns the concatenated [text; image] hidden after the last single block; the caller
+        strips the text tokens and applies norm_out/proj_out."""
+        from core.inference.nag_flux2 import _expand
         for index_block, block in enumerate(transformer.single_transformer_blocks):
             # Unified index for block swap
             unified_idx = num_dual_blocks + index_block
@@ -267,19 +331,7 @@ class Flux2BlockSwapWrapper(nn.Module):
                     # Swap-only path: preserve the original whole-stream residual add.
                     hidden_states = hidden_states + sample
 
-        # Remove text tokens from concatenated stream
-        hidden_states = hidden_states[:, num_txt_tokens:, ...]
-        if do_nag:
-            hidden_states = hidden_states[:img_b]  # [A_uncond, A_cond] (CFG) or guided (distilled)
-
-        # 6. Output layers
-        hidden_states = transformer.norm_out(hidden_states, temb)
-        output = transformer.proj_out(hidden_states)
-
-        if not return_dict:
-            return (output,)
-
-        return Transformer2DModelOutput(sample=output)
+        return hidden_states
 
     def to(self, *args, **kwargs):
         """Forward .to() to transformer"""

@@ -115,6 +115,50 @@ class AnimaMixin:
             "developer_mode": params.get("developer_mode", False),
         }
 
+    @staticmethod
+    def _anima_encode_nag_neg(params, encode_prompt, text_encoder, qwen3_tokenizer,
+                              t5_tokenizer, enc_device, compute_dtype):
+        """Encode the NAG-negative prompt using the SAME encoder path as the
+        positive / negative prompt. Returns the embeds dict, or None when NAG is
+        not active (so the generation path is unchanged by default).
+
+        NAG is active only when nag_enable is set, nag_scale > 1, and a
+        NAG-negative prompt string is provided (falls back to the regular
+        negative_prompt when nag_negative_prompt is empty, matching the other
+        backends' behaviour of guiding away from the negative context).
+        """
+        from core.inference.nag_dit import nag_active
+
+        nag_enable = params.get("nag_enable", False)
+        nag_scale = float(params.get("nag_scale", 1.0) or 1.0)
+        nag_negative_prompt = params.get("nag_negative_prompt", "") or ""
+        if not nag_negative_prompt:
+            nag_negative_prompt = params.get("negative_prompt", "") or ""
+
+        # nag_active gates on enable + scale; require a non-empty negative text too.
+        if not (nag_enable and abs(nag_scale - 1.0) > 1e-5 and nag_negative_prompt):
+            return None
+
+        neg = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
+                            nag_negative_prompt, device=enc_device, dtype=compute_dtype)
+        # Sanity: only proceed if nag_active agrees (defensive, mirrors reference).
+        return neg if nag_active(nag_enable, nag_scale, neg.get("prompt_embeds")) else None
+
+    @staticmethod
+    def _anima_build_nag_wrapper(params, transformer, nag_neg_embeds):
+        """Build an AnimaNAGWrapper for the conditional pass, or None when NAG
+        is inactive (nag_neg_embeds is None). OFF by default."""
+        if nag_neg_embeds is None:
+            return None
+        from core.inference.nag_anima import AnimaNAGWrapper
+        nag_scale = float(params.get("nag_scale", 5.0) or 5.0)
+        nag_tau = float(params.get("nag_tau", 2.5) or 2.5)
+        nag_alpha = float(params.get("nag_alpha", 0.25) or 0.25)
+        return AnimaNAGWrapper(
+            transformer, nag_neg_embeds,
+            nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha,
+        )
+
     def _anima_move(self, component_name: str, target_device: str,
                      quantization: Optional[str] = None):
         """Move a named Anima component to the given device.
@@ -222,6 +266,10 @@ class AnimaMixin:
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
                                        negative_prompt, device=enc_device, dtype=compute_dtype)
+            nag_neg = self._anima_encode_nag_neg(
+                params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
+                enc_device, compute_dtype,
+            )
             if not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
@@ -231,6 +279,8 @@ class AnimaMixin:
                 cond = _embeds_to_gpu(cond)
                 if uncond is not None:
                     uncond = _embeds_to_gpu(uncond)
+                if nag_neg is not None:
+                    nag_neg = _embeds_to_gpu(nag_neg)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -244,17 +294,25 @@ class AnimaMixin:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
             transformer = self.anima_components["transformer"]
-            latents = sample_txt2img(
-                transformer=transformer, scheduler=scheduler,
-                cond_embeds=cond, uncond_embeds=uncond,
-                height=height, width=width,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                generator=generator, device=device, dtype=compute_dtype,
-                step_callback=(progress_callback or step_callback),
-                advanced_cfg=self._anima_advanced_cfg(params),
-                spectrum_params=params,
-            )
+
+            # Optional NAG (Normalized Attention Guidance). OFF by default.
+            nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
+            try:
+                latents = sample_txt2img(
+                    transformer=transformer, scheduler=scheduler,
+                    cond_embeds=cond, uncond_embeds=uncond,
+                    height=height, width=width,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator, device=device, dtype=compute_dtype,
+                    step_callback=(progress_callback or step_callback),
+                    advanced_cfg=self._anima_advanced_cfg(params),
+                    spectrum_params=params,
+                    nag_transformer=nag_wrapper,
+                )
+            finally:
+                if nag_wrapper is not None:
+                    nag_wrapper.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
@@ -350,6 +408,10 @@ class AnimaMixin:
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
                                        negative_prompt, device=enc_device, dtype=compute_dtype)
+            nag_neg = self._anima_encode_nag_neg(
+                params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
+                enc_device, compute_dtype,
+            )
             if not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
@@ -358,6 +420,8 @@ class AnimaMixin:
                 cond = _embeds_to_gpu(cond)
                 if uncond is not None:
                     uncond = _embeds_to_gpu(uncond)
+                if nag_neg is not None:
+                    nag_neg = _embeds_to_gpu(nag_neg)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -371,18 +435,26 @@ class AnimaMixin:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
             transformer = self.anima_components["transformer"]
-            latents = sample_img2img(
-                transformer=transformer, scheduler=scheduler,
-                init_latents=init_latents,
-                cond_embeds=cond, uncond_embeds=uncond,
-                num_inference_steps=num_inference_steps,
-                denoising_strength=denoising_strength,
-                guidance_scale=guidance_scale,
-                generator=generator, device=device, dtype=compute_dtype,
-                step_callback=(progress_callback or step_callback),
-                advanced_cfg=self._anima_advanced_cfg(params),
-                spectrum_params=params,
-            )
+
+            # Optional NAG (Normalized Attention Guidance). OFF by default.
+            nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
+            try:
+                latents = sample_img2img(
+                    transformer=transformer, scheduler=scheduler,
+                    init_latents=init_latents,
+                    cond_embeds=cond, uncond_embeds=uncond,
+                    num_inference_steps=num_inference_steps,
+                    denoising_strength=denoising_strength,
+                    guidance_scale=guidance_scale,
+                    generator=generator, device=device, dtype=compute_dtype,
+                    step_callback=(progress_callback or step_callback),
+                    advanced_cfg=self._anima_advanced_cfg(params),
+                    spectrum_params=params,
+                    nag_transformer=nag_wrapper,
+                )
+            finally:
+                if nag_wrapper is not None:
+                    nag_wrapper.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
@@ -490,6 +562,10 @@ class AnimaMixin:
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
                                        negative_prompt, device=enc_device, dtype=compute_dtype)
+            nag_neg = self._anima_encode_nag_neg(
+                params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
+                enc_device, compute_dtype,
+            )
             if not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
@@ -498,6 +574,8 @@ class AnimaMixin:
                 cond = _embeds_to_gpu(cond)
                 if uncond is not None:
                     uncond = _embeds_to_gpu(uncond)
+                if nag_neg is not None:
+                    nag_neg = _embeds_to_gpu(nag_neg)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -511,18 +589,26 @@ class AnimaMixin:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_anima(lora_configs) if lora_configs else 0
             transformer = self.anima_components["transformer"]
-            latents = sample_inpaint(
-                transformer=transformer, scheduler=scheduler,
-                init_latents=init_latents, mask_latents=mask_latents,
-                cond_embeds=cond, uncond_embeds=uncond,
-                num_inference_steps=num_inference_steps,
-                denoising_strength=denoising_strength,
-                guidance_scale=guidance_scale,
-                generator=generator, device=device, dtype=compute_dtype,
-                step_callback=(progress_callback or step_callback),
-                advanced_cfg=self._anima_advanced_cfg(params),
-                spectrum_params=params,
-            )
+
+            # Optional NAG (Normalized Attention Guidance). OFF by default.
+            nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
+            try:
+                latents = sample_inpaint(
+                    transformer=transformer, scheduler=scheduler,
+                    init_latents=init_latents, mask_latents=mask_latents,
+                    cond_embeds=cond, uncond_embeds=uncond,
+                    num_inference_steps=num_inference_steps,
+                    denoising_strength=denoising_strength,
+                    guidance_scale=guidance_scale,
+                    generator=generator, device=device, dtype=compute_dtype,
+                    step_callback=(progress_callback or step_callback),
+                    advanced_cfg=self._anima_advanced_cfg(params),
+                    spectrum_params=params,
+                    nag_transformer=nag_wrapper,
+                )
+            finally:
+                if nag_wrapper is not None:
+                    nag_wrapper.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")

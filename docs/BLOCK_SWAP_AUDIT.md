@@ -298,6 +298,16 @@ byte-identical な冗長コピー。
 - ⏳ **LoRA 学習**: forward_only 前提のため現状は推論のみ。backward 方向 H2D-only + gradient
   checkpointing 連携（musubi 同条件）は follow-up。
 
+### Tier 3(F) fp8 CPU 常駐について（結論）
+- **fp8-native モデル（weight-only fp8 量子化）は追加コード無しで既に恩恵を受ける**: H2D-only の
+  flat master は `flat_dtype = 実際の重み dtype` を継承するため、重みが `float8_e4m3fn` なら master・
+  GPU リング・H2D 転送すべて fp8 バイト（bf16 の約半分）で行われる。`master dtype=...` をログに出力し
+  可視化。fp8 の `pin_memory` が失敗する環境では非 pinned にフォールバック（クラッシュしない）。
+- **lossy fp8 転送（bf16 モデルを fp8 で転送）は実装しない**: (a) bf16→fp8→bf16 で精度劣化、
+  (b) 転送用 fp8 + compute 用 bf16 の二重バッファで **GPU メモリが増え**、H2D-only の省VRAM目的と相反。
+  bf16 モデルで帯域を減らしたい場合は、モデル全体を fp8 量子化する方が筋が良い（結果的に上記の
+  fp8-native 経路に乗る）。
+
 ### 必要な実装変更（pointer-swap → fixed GPU ring）
 現行は `weight.data` ポインタを 2 block 間で交換し GPU buffer が CPU home へ移動するため、
 D2H 行を消すだけでは pinned master を破壊してしまう。正しい H2D-only 設計:

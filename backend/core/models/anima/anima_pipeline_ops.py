@@ -26,6 +26,57 @@ def _to_device(model, device):
     return model.to(device) if model.device != torch.device(device) else model
 
 
+def _unwrap_transformer(driver):
+    """Return the raw Anima transformer (whose forward_mini_train_dit runs) from a
+    possibly-nested NAG/NegPip wrapper. The wrappers hold ``.transformer`` and delegate
+    forward to it, so ``_fbcache`` / ``_fbcache_step`` must be set on this real object."""
+    real = driver
+    while hasattr(real, "transformer") and not hasattr(real, "blocks"):
+        real = real.transformer
+    return real
+
+
+def _build_anima_fbcache(spectrum_params, spectrum, do_cfg):
+    """Build FBCache instance(s) for the Anima denoise loop, or (None, None).
+
+    Anima runs CFG as TWO SEPARATE transformer passes per step (v_cond, v_uncond),
+    each with its own denoising trajectory, so a hit on one must not reuse the other's
+    residual -> two independent FirstBlockCache instances (uncond is None when do_cfg is off).
+
+    FBCache is mutually exclusive with:
+      (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
+      (b) Block Swap -- a cache hit skips blocks[1:], desyncing the block-swap rotation
+          (the offloader expects every block to run each step).
+    It runs only when BOTH are off. Returns (fbcache_cond, fbcache_uncond)."""
+    from core.inference.fbcache import build_fbcache, fbcache_active
+    if spectrum_params is None or not fbcache_active(spectrum_params):
+        return None, None
+    block_swap_on = bool(spectrum_params.get("enable_block_swap", False)) and \
+        int(spectrum_params.get("blocks_to_swap", 0)) > 0
+    if spectrum is not None:
+        print("[FBCache] Anima disabled: Spectrum is enabled (same redundancy target)")
+        return None, None
+    if block_swap_on:
+        print("[FBCache] Anima disabled: Block Swap is enabled (block skip desyncs rotation)")
+        return None, None
+    fbcache_cond = build_fbcache(spectrum_params, label="Anima (cond)")
+    fbcache_uncond = build_fbcache(spectrum_params, label="Anima (uncond)") if do_cfg else None
+    return fbcache_cond, fbcache_uncond
+
+
+def _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond):
+    """Detach FBCache state from the transformer so it never leaks into a later forward
+    (VAE-adjacent or a subsequent generation reusing this transformer instance)."""
+    if fbcache_cond is not None:
+        print(f"[FBCache] Anima cond summary: {fbcache_cond.n_hits} hit(s), {fbcache_cond.n_miss} miss(es)")
+    if fbcache_uncond is not None:
+        print(f"[FBCache] Anima uncond summary: {fbcache_uncond.n_hits} hit(s), {fbcache_uncond.n_miss} miss(es)")
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
+    if hasattr(real_transformer, "_fbcache_step"):
+        real_transformer._fbcache_step = None
+
+
 # --------- Tokenization & encoding ---------
 
 def tokenize_for_anima(qwen3_tokenizer, t5_tokenizer, prompt: str,
@@ -450,6 +501,11 @@ def sample_txt2img(
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
     spectrum = build_output_forecaster(spectrum_params, num_inference_steps, "Anima")
+    # FBCache: two instances (cond/uncond) for the 2-pass CFG. None when inactive/guarded.
+    fbcache_cond, fbcache_uncond = _build_anima_fbcache(spectrum_params, spectrum, do_cfg)
+    real_transformer = _unwrap_transformer(transformer)
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
     sp_i = -1
     for i in range(num_inference_steps):
         sp_i += 1
@@ -464,6 +520,11 @@ def sample_txt2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
+            # FBCache: select the cond instance + current step for the conditional pass
+            # (mirrors how _block_offloader is attached; None -> forward unchanged).
+            if fbcache_cond is not None:
+                real_transformer._fbcache = fbcache_cond
+                real_transformer._fbcache_step = i
             v_cond = cond_transformer(
                 x=latents,
                 timesteps=timestep_batch,
@@ -475,6 +536,10 @@ def sample_txt2img(
             )
 
             if do_cfg:
+                # FBCache: switch to the uncond instance for the unconditional pass.
+                if fbcache_uncond is not None:
+                    real_transformer._fbcache = fbcache_uncond
+                    real_transformer._fbcache_step = i
                 v_uncond = uncond_transformer(
                     x=latents,
                     timesteps=timestep_batch,
@@ -509,6 +574,7 @@ def sample_txt2img(
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
+    _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond)
     return latents
 
 
@@ -561,6 +627,11 @@ def sample_img2img(
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
     spectrum = build_output_forecaster(spectrum_params, num_inference_steps - start_step, "Anima")
+    # FBCache: two instances (cond/uncond) for the 2-pass CFG. None when inactive/guarded.
+    fbcache_cond, fbcache_uncond = _build_anima_fbcache(spectrum_params, spectrum, do_cfg)
+    real_transformer = _unwrap_transformer(transformer)
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
     sp_i = -1
     for i in range(start_step, num_inference_steps):
         sp_i += 1
@@ -574,6 +645,9 @@ def sample_img2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
+            if fbcache_cond is not None:
+                real_transformer._fbcache = fbcache_cond
+                real_transformer._fbcache_step = i
             v_cond = cond_transformer(
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
@@ -582,6 +656,9 @@ def sample_img2img(
                 source_attention_mask=cond_embeds["source_mask"],
             )
             if do_cfg:
+                if fbcache_uncond is not None:
+                    real_transformer._fbcache = fbcache_uncond
+                    real_transformer._fbcache_step = i
                 v_uncond = uncond_transformer(
                     x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
@@ -611,6 +688,8 @@ def sample_img2img(
                                latents, cfg_metrics, pred_x0)
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
+
+    _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond)
 
     return latents
 
@@ -674,6 +753,11 @@ def sample_inpaint(
     padding_mask = _prepare_padding_mask(1, latent_h, latent_w, torch.device(device), dtype)
 
     spectrum = build_output_forecaster(spectrum_params, num_inference_steps - start_step, "Anima")
+    # FBCache: two instances (cond/uncond) for the 2-pass CFG. None when inactive/guarded.
+    fbcache_cond, fbcache_uncond = _build_anima_fbcache(spectrum_params, spectrum, do_cfg)
+    real_transformer = _unwrap_transformer(transformer)
+    if hasattr(real_transformer, "_fbcache"):
+        real_transformer._fbcache = None
     sp_i = -1
     for i in range(start_step, num_inference_steps):
         sp_i += 1
@@ -687,6 +771,9 @@ def sample_inpaint(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
+            if fbcache_cond is not None:
+                real_transformer._fbcache = fbcache_cond
+                real_transformer._fbcache_step = i
             v_cond = cond_transformer(
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
@@ -695,6 +782,9 @@ def sample_inpaint(
                 source_attention_mask=cond_embeds["source_mask"],
             )
             if do_cfg:
+                if fbcache_uncond is not None:
+                    real_transformer._fbcache = fbcache_uncond
+                    real_transformer._fbcache_step = i
                 v_uncond = uncond_transformer(
                     x=latents, timesteps=timestep_batch, context=uncond_embeds["prompt_embeds"],
                     padding_mask=padding_mask,
@@ -737,6 +827,7 @@ def sample_inpaint(
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
+    _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond)
     return latents
 
 

@@ -101,14 +101,18 @@ backward の勾配計算に必要な base 重みが GPU に無い＝**再計算�
   （block↔slot マップ + LRU、miss 時同期ロード、D2H 無し）。forward/backward/再計算のどの順序でも
   correct。CPU シミュレーションで forward+backward(+recompute) 列を再現し全 config 通過
   （`backend/tmp/test_h2d_only_flux_training.py`）。推論 forward-only パスは無変更。
-- ⚠️ **【要対応・既存ギャップ】FLUX 学習の block swap 駆動が未配線**: `base_trainer.py:1942/2100` は
-  offloader を生成し `prepare_block_devices_before_forward()` を呼ぶが、**`Flux2BlockSwapWrapper` で
-  wrap せず `register_backward_hooks()` も呼ばない**。学習 forward は `self.transformer(...)` を直接呼ぶ
-  （`:5986/6219`）。そのため wait_for_block/submit が発火せず、標準 block swap も含め **FLUX 学習の
-  block swap は現状駆動されていない**（H2D 以前の問題）。H2D 学習を実際に効かせるには、この配線
-  （wrap + backward hooks + grad checkpointing 必須化）を先に整備する必要がある。→ §6 のトレーナー
-  配線 follow-up に含める。
-- ⏳ SSoT 配線（`TRAINING_DEFAULTS`/OpenAPI/Pydantic/frontend）未実施。
+- ✅ **【解消済】FLUX 学習の block swap 駆動を配線**（commit `d6ad3e5`）: `base_trainer.py` の 2 経路
+  （fresh load + checkpoint resume）で、gate（`block_swap_h2d_only=True` 必須・LoRA 必須・grad
+  checkpointing 有効化+検証）→ `create_flux_block_offloader(h2d_only, ring_size)` →
+  `Flux2BlockSwapWrapper` で wrap（forward が wait/submit を駆動）+ `register_backward_hooks()`。
+  `train_step_flux2` の forward を wrapper 経由に（`self.transformer` は raw のまま＝optimizer/LoRA/save
+  無影響）。cleanup で hook 除去。**標準（非H2D）FLUX 学習 swap は index 不整合が残るため gate で
+  到達不能化**（活性化しない）。監査 PASS。
+- ✅ **SSoT 配線済**（commit 参照）: `TRAINING_DEFAULTS`（`block_swap_h2d_only`/`block_swap_ring_size`）
+  → `TrainingRunCreateRequest`（Pydantic）→ `training_config.py` → frontend `TrainingConfig`
+  （型 + default + payload + key-list + UI）。OpenAPI は training block swap を非掲載（既存踏襲）。
+- ⚠️ **実機検証はユーザー**: CUDA/学習は当環境で不可。FLUX.2 LoRA + `blocks_to_swap>0` +
+  `block_swap_h2d_only=true` + grad checkpointing で 1 run 実行し、loss/VRAM/成果物を確認要。
 
 ## 6. 統合ポイント（実装時チェックリスト）
 

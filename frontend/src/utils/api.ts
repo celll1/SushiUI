@@ -2201,6 +2201,8 @@ export interface TrainingRunCreateRequest {
   danbooru_aug_keep_tokens?: number;
   blocks_to_swap?: number;
   use_pinned_memory?: boolean;
+  block_swap_h2d_only?: boolean;
+  block_swap_ring_size?: number;
   num_optimizer_groups?: number;
   activation_dispatch_enable?: boolean;
   activation_dispatch_margin_gb?: number;

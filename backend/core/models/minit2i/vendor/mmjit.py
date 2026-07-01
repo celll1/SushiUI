@@ -377,22 +377,65 @@ class MMJiT(nn.Module):
             else:
                 txt = block(txt)
         self._repa_tap_out = None
-        # Block swap (inference only): when a TransformerBlockOffloader is attached, only
-        # the heavy `double_blocks` are streamed CPU<->GPU (txt_preamble_blocks and all
-        # other modules stay GPU-resident). Gated strictly on `_block_offloader`; when it
-        # is None the default path below is byte-for-byte unchanged.
-        _offloader = getattr(self, "_block_offloader", None)
-        for _depth, block in enumerate(self.double_blocks):
-            if _offloader is not None:
-                _offloader.wait_for_block(_depth)
+        # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical,
+        # including the block-swap wait/submit path below). When a FirstBlockCache is attached
+        # by the MiniT2I denoising loop, run only double_blocks[0], take its residual on the
+        # image stream `x` as the indicator, and either reuse the cached full residual (skip
+        # double_blocks[1:]) or run them and refresh the cache. Both `x` (image) and `txt`
+        # (text) evolve through the double-block list and both feed `combined` afterwards, so
+        # the cache stores a tuple of BOTH residuals (x_residual, txt_residual); the indicator
+        # is the image residual only (the cheap change signal). Mutually exclusive with Spectrum
+        # and Block Swap (guarded in the pipeline), so this branch never runs alongside
+        # _block_offloader. txt_preamble_blocks above are untouched (small, kept resident).
+        #
+        # REPA tap: the tap captures `x` at _repa_tap_depth during real compute (training-time
+        # auxiliary). On a MISS the full loop runs so the tap fires exactly as before; on a HIT
+        # the skipped blocks are not executed so the tap is not set for a skipped depth (FBCache
+        # is inference-only and REPA is not read at inference, so this is safe).
+        fbcache = getattr(self, "_fbcache", None)
+        if fbcache is not None:
+            fbcache_step = getattr(self, "_fbcache_step", 0)
+            orig_x, orig_txt = x, txt
+            first = self.double_blocks[0]
             if use_ckpt:
-                x, txt = torch.utils.checkpoint.checkpoint(block, x, txt, vec, gh, gw, use_reentrant=False)
+                x, txt = torch.utils.checkpoint.checkpoint(first, x, txt, vec, gh, gw, use_reentrant=False)
             else:
-                x, txt = block(x, txt, vec, gh, gw)
-            if _offloader is not None:
-                _offloader.submit_move_blocks_forward(_depth)
-            if self._repa_tap_depth is not None and _depth == self._repa_tap_depth:
+                x, txt = first(x, txt, vec, gh, gw)
+            if self._repa_tap_depth is not None and 0 == self._repa_tap_depth:
                 self._repa_tap_out = x
+            indicator = x - orig_x
+            if fbcache.use_cache(indicator, fbcache_step):
+                # Cache hit: reuse the full-transformer residuals, skip double_blocks[1:].
+                x_res, txt_res = fbcache.get()
+                x = orig_x + x_res
+                txt = orig_txt + txt_res
+            else:
+                # Cache miss: run remaining blocks, refresh the cached (x, txt) residuals.
+                for _depth, block in enumerate(self.double_blocks[1:], start=1):
+                    if use_ckpt:
+                        x, txt = torch.utils.checkpoint.checkpoint(block, x, txt, vec, gh, gw, use_reentrant=False)
+                    else:
+                        x, txt = block(x, txt, vec, gh, gw)
+                    if self._repa_tap_depth is not None and _depth == self._repa_tap_depth:
+                        self._repa_tap_out = x
+                fbcache.store((x - orig_x, txt - orig_txt))
+        else:
+            # Block swap (inference only): when a TransformerBlockOffloader is attached, only
+            # the heavy `double_blocks` are streamed CPU<->GPU (txt_preamble_blocks and all
+            # other modules stay GPU-resident). Gated strictly on `_block_offloader`; when it
+            # is None the default path below is byte-for-byte unchanged.
+            _offloader = getattr(self, "_block_offloader", None)
+            for _depth, block in enumerate(self.double_blocks):
+                if _offloader is not None:
+                    _offloader.wait_for_block(_depth)
+                if use_ckpt:
+                    x, txt = torch.utils.checkpoint.checkpoint(block, x, txt, vec, gh, gw, use_reentrant=False)
+                else:
+                    x, txt = block(x, txt, vec, gh, gw)
+                if _offloader is not None:
+                    _offloader.submit_move_blocks_forward(_depth)
+                if self._repa_tap_depth is not None and _depth == self._repa_tap_depth:
+                    self._repa_tap_out = x
         combined = torch.cat([txt, x], dim=1)
         out = self.final_layer(combined, vec)
         img_out = out[:, txt.shape[1]:, :]

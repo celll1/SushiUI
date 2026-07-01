@@ -93,6 +93,63 @@ def vae_decode_latent(vae, latent: torch.Tensor) -> Image.Image:
 
 
 @torch.no_grad()
+def _unwrap_minit2i_net(transformer):
+    """Return the raw MMJiT net (whose forward reads _fbcache) from the call target.
+
+    The call target is either the raw MiniT2IMMJiTModel (``.model.net`` == MMJiT) or a
+    NAG/NegPip wrapper (``.net`` == the same MMJiT). This is the same object block swap's
+    _block_offloader is attached to, so _fbcache / _fbcache_step must live here too."""
+    net = getattr(transformer, "net", None)
+    if net is not None and hasattr(net, "double_blocks"):
+        return net
+    model = getattr(transformer, "model", None)
+    if model is not None:
+        net = getattr(model, "net", None)
+        if net is not None and hasattr(net, "double_blocks"):
+            return net
+    return None
+
+
+def _build_minit2i_fbcache(net, spectrum, spectrum_params):
+    """Build a FirstBlockCache for the MiniT2I denoise loop, or None.
+
+    MiniT2I runs ONE BATCHED transformer forward per step (cond+uncond concatenated in
+    _predict_x0_cfg; NAG expands the batch inside a single forward too), so a SINGLE
+    FirstBlockCache instance is correct. Mutually exclusive with:
+      (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
+      (b) Block Swap -- a cache hit skips double_blocks[1:], desyncing the swap rotation
+          (the offloader expects every block to run each step).
+    Runs only when BOTH are off. Ensures no stale cache leaks in either way."""
+    from core.inference.fbcache import build_fbcache, fbcache_active
+    if net is not None and hasattr(net, "_fbcache"):
+        net._fbcache = None
+    if spectrum_params is None or not fbcache_active(spectrum_params):
+        return None
+    if net is None:
+        print("[FBCache] MiniT2I disabled: could not locate MMJiT net on call target")
+        return None
+    block_swap_on = bool(spectrum_params.get("enable_block_swap", False)) and \
+        int(spectrum_params.get("blocks_to_swap", 0)) > 0
+    if spectrum is not None:
+        print("[FBCache] MiniT2I disabled: Spectrum is enabled (same redundancy target)")
+        return None
+    if block_swap_on or getattr(net, "_block_offloader", None) is not None:
+        print("[FBCache] MiniT2I disabled: Block Swap is enabled (block skip desyncs rotation)")
+        return None
+    return build_fbcache(spectrum_params, label="MiniT2I")
+
+
+def _cleanup_minit2i_fbcache(net, fbcache):
+    """Detach FBCache state so it never leaks into a later forward / generation."""
+    if fbcache is not None:
+        print(f"[FBCache] MiniT2I summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+    if net is not None:
+        if hasattr(net, "_fbcache"):
+            net._fbcache = None
+        if hasattr(net, "_fbcache_step"):
+            net._fbcache_step = None
+
+
 def _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval):
     """CFG x0 prediction. neg_* may be None -> mask-zeroed pure uncond."""
     t_val = float(t.reshape(-1)[0].item())
@@ -129,6 +186,11 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
     n = len(ts) - 1
     total = n - start_idx
     spectrum = build_output_forecaster(spectrum_params, total, "MiniT2I")
+    # FBCache: single instance (batched CFG). None when inactive/guarded (Spectrum/Block Swap).
+    _fb_net = _unwrap_minit2i_net(transformer)
+    fbcache = _build_minit2i_fbcache(_fb_net, spectrum, spectrum_params)
+    if fbcache is not None and _fb_net is not None:
+        _fb_net._fbcache = fbcache
     for j, i in enumerate(range(start_idx, n)):
         raise_if_cancelled()
         t0 = ts[i]
@@ -138,6 +200,9 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
         if spectrum_skip:
             pred_x0 = spectrum.forecast(j)
         else:
+            # FBCache: hand the net the current step index (mirrors _block_offloader attach).
+            if fbcache is not None and _fb_net is not None:
+                _fb_net._fbcache_step = j
             pred_x0 = _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval)
             if spectrum is not None:
                 spectrum.record(j, pred_x0)
@@ -148,6 +213,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             x = mask_latent * x + (1.0 - mask_latent) * known
         if progress_callback is not None:
             progress_callback(j, total, x.detach(), None, pred_x0.detach())
+    _cleanup_minit2i_fbcache(_fb_net, fbcache)
     return x.clamp(-1, 1) if clamp_output else x
 
 

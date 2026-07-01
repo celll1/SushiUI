@@ -159,6 +159,56 @@ class AnimaMixin:
             nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha,
         )
 
+    @staticmethod
+    def _anima_negpip_active(params) -> bool:
+        """True when NegPip should auto-activate: the positive OR the negative
+        prompt carries a NEGATIVE emphasis weight. OFF by default otherwise, so
+        positive-only prompts take the byte-identical default path."""
+        from core.inference.negpip_anima import negpip_active
+        return negpip_active(params.get("prompt", "") or "",
+                             params.get("negative_prompt", "") or "")
+
+    @staticmethod
+    def _anima_build_negpip(params, cond_transformer, uncond_transformer,
+                            cond_embeds, uncond_embeds, t5_tokenizer,
+                            device, compute_dtype):
+        """Build the (cond, uncond) NegPip transformer wrappers, or (cond, None).
+
+        ``cond_transformer`` is whatever already drives the COND pass (the raw
+        transformer, or an ``AnimaNAGWrapper`` when NAG is active) — the returned
+        cond wrapper arms the POSITIVE prompt's signed weights around it, folding
+        into NAG when present. ``uncond_transformer`` (raw transformer) is wrapped
+        with the NEGATIVE prompt's signed weights (a negative weight there is a
+        double-negative that re-affirms). Returns the possibly-wrapped
+        (cond, uncond) transformers; wrappers must be ``.restore()``d after use.
+
+        Only called when ``_anima_negpip_active`` is true, so the default path is
+        untouched. If neither prompt yields a non-unit weight vector aligned to
+        its T5 tokens, the corresponding pass is left as-is.
+        """
+        from core.inference.negpip_anima import (
+            build_anima_negpip_weights, AnimaNegPipWrapper,
+        )
+
+        pos_w = build_anima_negpip_weights(
+            params.get("prompt", "") or "", cond_embeds["t5_input_ids"],
+            t5_tokenizer, device, compute_dtype,
+        )
+        cond_wrapped = cond_transformer
+        if pos_w is not None:
+            cond_wrapped = AnimaNegPipWrapper(cond_transformer, pos_w)
+
+        uncond_wrapped = None
+        if uncond_embeds is not None:
+            neg_w = build_anima_negpip_weights(
+                params.get("negative_prompt", "") or "", uncond_embeds["t5_input_ids"],
+                t5_tokenizer, device, compute_dtype,
+            )
+            if neg_w is not None:
+                uncond_wrapped = AnimaNegPipWrapper(uncond_transformer, neg_w)
+
+        return cond_wrapped, uncond_wrapped
+
     def _anima_move(self, component_name: str, target_device: str,
                      quantization: Optional[str] = None):
         """Move a named Anima component to the given device.
@@ -260,12 +310,18 @@ class AnimaMixin:
             # Stage 1: text encoding
             if not cpu_text_encoding:
                 text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
+            # NegPip auto-activates on any negative emphasis weight. When active
+            # we encode CLEAN embeddings (skip_emphasis) so the signed V scaling
+            # carries all the emphasis; otherwise the default emphasis path runs.
+            use_negpip = self._anima_negpip_active(params)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=enc_device, dtype=compute_dtype)
+                                  prompt, device=enc_device, dtype=compute_dtype,
+                                  skip_emphasis=use_negpip)
             uncond = None
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=enc_device, dtype=compute_dtype)
+                                       negative_prompt, device=enc_device, dtype=compute_dtype,
+                                       skip_emphasis=use_negpip)
             nag_neg = self._anima_encode_nag_neg(
                 params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
                 enc_device, compute_dtype,
@@ -297,6 +353,19 @@ class AnimaMixin:
 
             # Optional NAG (Normalized Attention Guidance). OFF by default.
             nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
+            # Optional NegPip (signed per-token V scale). OFF by default; folds
+            # into NAG on the cond pass and wraps the raw transformer on uncond.
+            base_cond = nag_wrapper if nag_wrapper is not None else transformer
+            cond_driver = base_cond
+            negpip_uncond = None
+            if use_negpip:
+                cond_driver, negpip_uncond = self._anima_build_negpip(
+                    params, base_cond, transformer, cond, uncond,
+                    t5_tokenizer, device, compute_dtype,
+                )
+            # Restore only the NegPip wrappers we actually created (cond_driver
+            # differs from base_cond only when a NegPip cond wrapper was built).
+            negpip_cond = cond_driver if cond_driver is not base_cond else None
             try:
                 latents = sample_txt2img(
                     transformer=transformer, scheduler=scheduler,
@@ -308,11 +377,13 @@ class AnimaMixin:
                     step_callback=(progress_callback or step_callback),
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
-                    nag_transformer=nag_wrapper,
+                    nag_transformer=cond_driver if cond_driver is not transformer else None,
+                    negpip_uncond_transformer=negpip_uncond,
                 )
             finally:
-                if nag_wrapper is not None:
-                    nag_wrapper.restore()
+                for w in (negpip_uncond, negpip_cond, nag_wrapper):
+                    if w is not None and hasattr(w, "restore"):
+                        w.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
@@ -402,12 +473,15 @@ class AnimaMixin:
             # Text encoding
             if not cpu_text_encoding:
                 text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
+            use_negpip = self._anima_negpip_active(params)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=enc_device, dtype=compute_dtype)
+                                  prompt, device=enc_device, dtype=compute_dtype,
+                                  skip_emphasis=use_negpip)
             uncond = None
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=enc_device, dtype=compute_dtype)
+                                       negative_prompt, device=enc_device, dtype=compute_dtype,
+                                       skip_emphasis=use_negpip)
             nag_neg = self._anima_encode_nag_neg(
                 params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
                 enc_device, compute_dtype,
@@ -438,6 +512,16 @@ class AnimaMixin:
 
             # Optional NAG (Normalized Attention Guidance). OFF by default.
             nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
+            # Optional NegPip (signed per-token V scale). OFF by default.
+            base_cond = nag_wrapper if nag_wrapper is not None else transformer
+            cond_driver = base_cond
+            negpip_uncond = None
+            if use_negpip:
+                cond_driver, negpip_uncond = self._anima_build_negpip(
+                    params, base_cond, transformer, cond, uncond,
+                    t5_tokenizer, device, compute_dtype,
+                )
+            negpip_cond = cond_driver if cond_driver is not base_cond else None
             try:
                 latents = sample_img2img(
                     transformer=transformer, scheduler=scheduler,
@@ -450,11 +534,13 @@ class AnimaMixin:
                     step_callback=(progress_callback or step_callback),
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
-                    nag_transformer=nag_wrapper,
+                    nag_transformer=cond_driver if cond_driver is not transformer else None,
+                    negpip_uncond_transformer=negpip_uncond,
                 )
             finally:
-                if nag_wrapper is not None:
-                    nag_wrapper.restore()
+                for w in (negpip_uncond, negpip_cond, nag_wrapper):
+                    if w is not None and hasattr(w, "restore"):
+                        w.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")
@@ -556,12 +642,15 @@ class AnimaMixin:
             # Text encoding
             if not cpu_text_encoding:
                 text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
+            use_negpip = self._anima_negpip_active(params)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                  prompt, device=enc_device, dtype=compute_dtype)
+                                  prompt, device=enc_device, dtype=compute_dtype,
+                                  skip_emphasis=use_negpip)
             uncond = None
             if guidance_scale > 1.0:
                 uncond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
-                                       negative_prompt, device=enc_device, dtype=compute_dtype)
+                                       negative_prompt, device=enc_device, dtype=compute_dtype,
+                                       skip_emphasis=use_negpip)
             nag_neg = self._anima_encode_nag_neg(
                 params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
                 enc_device, compute_dtype,
@@ -592,6 +681,16 @@ class AnimaMixin:
 
             # Optional NAG (Normalized Attention Guidance). OFF by default.
             nag_wrapper = self._anima_build_nag_wrapper(params, transformer, nag_neg)
+            # Optional NegPip (signed per-token V scale). OFF by default.
+            base_cond = nag_wrapper if nag_wrapper is not None else transformer
+            cond_driver = base_cond
+            negpip_uncond = None
+            if use_negpip:
+                cond_driver, negpip_uncond = self._anima_build_negpip(
+                    params, base_cond, transformer, cond, uncond,
+                    t5_tokenizer, device, compute_dtype,
+                )
+            negpip_cond = cond_driver if cond_driver is not base_cond else None
             try:
                 latents = sample_inpaint(
                     transformer=transformer, scheduler=scheduler,
@@ -604,11 +703,13 @@ class AnimaMixin:
                     step_callback=(progress_callback or step_callback),
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
-                    nag_transformer=nag_wrapper,
+                    nag_transformer=cond_driver if cond_driver is not transformer else None,
+                    negpip_uncond_transformer=negpip_uncond,
                 )
             finally:
-                if nag_wrapper is not None:
-                    nag_wrapper.restore()
+                for w in (negpip_uncond, negpip_cond, nag_wrapper):
+                    if w is not None and hasattr(w, "restore"):
+                        w.restore()
             if applied_lora_count:
                 self._unload_lora_anima()
             self._anima_move("transformer", "cpu")

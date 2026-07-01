@@ -164,6 +164,9 @@ class GenerationParams(BaseModel):
     vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (sample_size*1.5)
     # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_enable: bool = GENERATION_DEFAULTS["spectrum_enable"]
+    fbcache_enable: bool = GENERATION_DEFAULTS["fbcache_enable"]
+    fbcache_threshold: float = GENERATION_DEFAULTS["fbcache_threshold"]
+    fbcache_warmup_steps: int = GENERATION_DEFAULTS["fbcache_warmup_steps"]
     spectrum_w: float = GENERATION_DEFAULTS["spectrum_w"]
     spectrum_m: int = GENERATION_DEFAULTS["spectrum_m"]
     spectrum_lam: float = GENERATION_DEFAULTS["spectrum_lam"]
@@ -288,6 +291,9 @@ async def generate_txt2img(
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
+    fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(GENERATION_DEFAULTS["fbcache_warmup_steps"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
@@ -444,6 +450,9 @@ async def generate_txt2img(
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "spectrum_enable": spectrum_enable,
+            "fbcache_enable": fbcache_enable,
+            "fbcache_threshold": fbcache_threshold,
+            "fbcache_warmup_steps": fbcache_warmup_steps,
             "spectrum_w": spectrum_w,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
@@ -1083,6 +1092,9 @@ async def generate_img2img(
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
+    fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(GENERATION_DEFAULTS["fbcache_warmup_steps"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
@@ -1247,6 +1259,9 @@ async def generate_img2img(
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "spectrum_enable": spectrum_enable,
+            "fbcache_enable": fbcache_enable,
+            "fbcache_threshold": fbcache_threshold,
+            "fbcache_warmup_steps": fbcache_warmup_steps,
             "spectrum_w": spectrum_w,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
@@ -1474,6 +1489,9 @@ async def generate_inpaint(
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
+    fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(GENERATION_DEFAULTS["fbcache_warmup_steps"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
@@ -1657,6 +1675,9 @@ async def generate_inpaint(
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "spectrum_enable": spectrum_enable,
+            "fbcache_enable": fbcache_enable,
+            "fbcache_threshold": fbcache_threshold,
+            "fbcache_warmup_steps": fbcache_warmup_steps,
             "spectrum_w": spectrum_w,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,

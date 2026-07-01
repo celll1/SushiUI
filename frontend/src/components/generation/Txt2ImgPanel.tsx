@@ -67,6 +67,9 @@ const DEFAULT_PARAMS: GenerationParams = {
   vae_tiling: false,
   vae_tile_threshold: 0,
   spectrum_enable: false,
+  fbcache_enable: false,
+  fbcache_threshold: 0.12,
+  fbcache_warmup_steps: 1,
   spectrum_w: 0.5,
   spectrum_m: 4,
   spectrum_lam: 0.1,
@@ -1152,6 +1155,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
         spectrum_enable: mainParams.spectrum_enable, // Inherit Spectrum acceleration
+        fbcache_enable: mainParams.fbcache_enable, // Inherit First Block Cache
+        fbcache_threshold: mainParams.fbcache_threshold,
+        fbcache_warmup_steps: mainParams.fbcache_warmup_steps,
         spectrum_w: mainParams.spectrum_w,
         spectrum_m: mainParams.spectrum_m,
         spectrum_lam: mainParams.spectrum_lam,
@@ -2613,6 +2619,38 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 <input type="number" min={0} max={0.5} step={0.02}
                   value={params.spectrum_tail ?? 0.12}
                   onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
+                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="fbcache_enable"
+              checked={params.fbcache_enable || false}
+              onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="fbcache_enable" className="text-sm text-gray-300">
+              First Block Cache (dynamic caching)
+            </label>
+            <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
+          </div>
+          {params.fbcache_enable && (
+            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-400 flex items-center gap-1">
+                Residual threshold (higher = more skips)
+                <input type="number" min={0} step={0.01}
+                  value={params.fbcache_threshold ?? 0.12}
+                  onChange={(e) => setParams({ ...params, fbcache_threshold: parseFloat(e.target.value) })}
+                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+              <label className="text-xs text-gray-400 flex items-center gap-1">
+                Warmup steps
+                <input type="number" min={0} step={1}
+                  value={params.fbcache_warmup_steps ?? 1}
+                  onChange={(e) => setParams({ ...params, fbcache_warmup_steps: parseInt(e.target.value) || 0 })}
                   className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
               </label>
             </div>

@@ -74,6 +74,10 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "spectrum_feature_mode": "output",  # "output" (black-box) or "block" (deep-feature, paper-faithful)
     "spectrum_cache_branch": 1,    # block mode: down_blocks[branch:] + mid are forecast
     "spectrum_max_cache": 0,       # forecaster sliding window (0 = unlimited; block mode -> 6)
+    # First Block Cache (FBCache): dynamic per-step caching. Mutually exclusive with Spectrum.
+    "fbcache_enable": False,
+    "fbcache_threshold": 0.12,     # relative-L1 first-block residual threshold (higher = more skips/faster)
+    "fbcache_warmup_steps": 1,     # always compute the first N steps
     "use_tipo": False,
     "preview_predicted_x0": False,
     # Block swap (Form-only in original code)

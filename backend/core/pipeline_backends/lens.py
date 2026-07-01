@@ -258,6 +258,7 @@ class LensMixin:
                     latent_h=latent_h, latent_w=latent_w,
                     progress_callback=progress_callback,
                     advanced_cfg=self._lens_advanced_cfg(params),
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora_count:
@@ -395,6 +396,7 @@ class LensMixin:
                     latent_h=latent_h, latent_w=latent_w, seed=seed,
                     progress_callback=progress_callback,
                     advanced_cfg=self._lens_advanced_cfg(params),
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora_count:
@@ -544,6 +546,7 @@ class LensMixin:
                     latent_h=latent_h, latent_w=latent_w, seed=seed,
                     progress_callback=progress_callback,
                     advanced_cfg=self._lens_advanced_cfg(params),
+                    spectrum_params=params,
                 )
             finally:
                 if applied_lora_count:

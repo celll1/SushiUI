@@ -16,6 +16,7 @@ from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.inference.cancellation import raise_if_cancelled
+from core.inference.spectrum_forecaster import build_output_forecaster
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +443,7 @@ def denoise_loop(
     latent_h: int, latent_w: int,
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img."""
     seq_len = latent_h * latent_w
@@ -451,24 +453,33 @@ def denoise_loop(
 
     img_shapes = [(1, latent_h, latent_w)]
 
+    spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
     for i, t in enumerate(scheduler.timesteps):
         raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
         hidden_states = latents.repeat(2, 1, 1)            # [cond, uncond]
 
-        noise_out = transformer(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_features,
-            encoder_hidden_states_mask=encoder_mask,
-            timestep=timestep / 1000,
-            img_shapes=img_shapes,
-        )
+        # Spectrum: forecast the model output on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+        if spectrum_skip:
+            noise_pred = spectrum.forecast(i)
+            cfg_metrics = None
+        else:
+            noise_out = transformer(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_features,
+                encoder_hidden_states_mask=encoder_mask,
+                timestep=timestep / 1000,
+                img_shapes=img_shapes,
+            )
 
-        cond, uncond = noise_out.chunk(2)
-        sigma_t = t.item() / 1000.0
-        noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
-            cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
-        )
+            cond, uncond = noise_out.chunk(2)
+            sigma_t = t.item() / 1000.0
+            noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+                cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(i, noise_pred)
 
         # pred_x0 = x_t - σ·v  (Flow Matching clean-image estimate)
         pred_x0 = latents - sigma_t * noise_pred
@@ -492,6 +503,7 @@ def denoise_loop_img2img(
     seed: Optional[int] = None,
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on flow-matching schedule."""
     seq_len = latent_h * latent_w
@@ -515,24 +527,33 @@ def denoise_loop_img2img(
     img_shapes = [(1, latent_h, latent_w)]
     total_steps = len(timesteps_to_use)
 
+    spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
     for i, t in enumerate(timesteps_to_use):
         raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)
         hidden_states = latents.repeat(2, 1, 1)
 
-        noise_out = transformer(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_features,
-            encoder_hidden_states_mask=encoder_mask,
-            timestep=timestep / 1000,
-            img_shapes=img_shapes,
-        )
+        # Spectrum: forecast the model output on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+        if spectrum_skip:
+            noise_pred = spectrum.forecast(i)
+            cfg_metrics = None
+        else:
+            noise_out = transformer(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_features,
+                encoder_hidden_states_mask=encoder_mask,
+                timestep=timestep / 1000,
+                img_shapes=img_shapes,
+            )
 
-        cond, uncond = noise_out.chunk(2)
-        sigma_t = t.item() / 1000.0
-        noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
-            cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
-        )
+            cond, uncond = noise_out.chunk(2)
+            sigma_t = t.item() / 1000.0
+            noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+                cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(i, noise_pred)
 
         pred_x0 = latents - sigma_t * noise_pred
 
@@ -556,6 +577,7 @@ def denoise_loop_inpaint(
     seed: Optional[int] = None,
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
+    spectrum_params=None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on flow-matching schedule.
 
@@ -586,24 +608,33 @@ def denoise_loop_inpaint(
     total_steps = len(timesteps_to_use)
     mask_latent = mask_latent.to(device=init_latents.device, dtype=init_latents.dtype)
 
+    spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
     for i, t in enumerate(timesteps_to_use):
         raise_if_cancelled()
         timestep = t.expand(2).to(latents.dtype)
         hidden_states = latents.repeat(2, 1, 1)
 
-        noise_out = transformer(
-            hidden_states=hidden_states,
-            encoder_hidden_states=encoder_features,
-            encoder_hidden_states_mask=encoder_mask,
-            timestep=timestep / 1000,
-            img_shapes=img_shapes,
-        )
+        # Spectrum: forecast the model output on skip steps
+        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+        if spectrum_skip:
+            noise_pred = spectrum.forecast(i)
+            cfg_metrics = None
+        else:
+            noise_out = transformer(
+                hidden_states=hidden_states,
+                encoder_hidden_states=encoder_features,
+                encoder_hidden_states_mask=encoder_mask,
+                timestep=timestep / 1000,
+                img_shapes=img_shapes,
+            )
 
-        cond, uncond = noise_out.chunk(2)
-        sigma_t = t.item() / 1000.0
-        noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
-            cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
-        )
+            cond, uncond = noise_out.chunk(2)
+            sigma_t = t.item() / 1000.0
+            noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+                cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(i, noise_pred)
 
         pred_x0 = latents - sigma_t * noise_pred
 

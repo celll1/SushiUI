@@ -93,6 +93,182 @@ class Ideogram4MRoPE(nn.Module):
         return emb.cos(), emb.sin()
 
 
+# ---------------------------------------------------------------------------
+# Unified attention dispatch for Ideogram 4 (attention conduit integration).
+#
+# The vendored processors previously called diffusers ``dispatch_attention_fn``
+# with ``backend=None`` (always the native/default kernel). Inference plumbing
+# (``pipeline_backends/ideogram4.set_ideogram4_attention_backend``) now stamps
+# ``_attention_backend`` with the diffusers AttentionBackendName string (via
+# ``to_diffusers_backend``): ``"native"`` | ``"flash"`` | ``"sage"``.
+#
+# Ideogram 4's self-attention runs a single packed sequence with a per-sample
+# block-diagonal segment mask ``(B, 1, L, L)``. FlashAttention's dense kernel
+# cannot consume that mask, so a plain ``backend="flash"`` call would degrade to
+# a native no-op. Per the design (D2/R2 REVISION v2) we instead convert the
+# block-diagonal segments to ``cu_seqlens`` and run ``flash_attn_varlen_func`` so
+# FlashAttention actually engages. head_dim=256 requires Ampere+/Hopper (compute
+# capability >= 8.0); on older GPUs (or when the varlen kernel is unavailable) we
+# fall back cleanly to the exact native dense-mask path. SageAttention is
+# native-only for Ideogram 4 (head_dim=256 exceeds sage's 128 max), mirroring the
+# conduit head_dim guard.
+# ---------------------------------------------------------------------------
+
+_HALF_DTYPES = (torch.float16, torch.bfloat16)
+
+
+def _ideogram4_fa_varlen_capable(device) -> bool:
+    """True when FlashAttention head_dim=256 is supported on this device.
+
+    FA-2 supports head_dim up to 256 only on Ampere+ / Hopper (compute
+    capability >= 8.0). CPU / older GPUs -> native fallback.
+    """
+    if not torch.cuda.is_available():
+        return False
+    try:
+        major, minor = torch.cuda.get_device_capability(device)
+    except Exception:
+        return False
+    return (major, minor) >= (8, 0)
+
+
+def _ideogram4_segment_cu_seqlens(segment_ids: torch.Tensor):
+    """Build ``(cu_seqlens, max_seqlen)`` from the packed segment ids.
+
+    ``segment_ids`` is ``(B, L)`` (long). Within each sample, tokens that share a
+    segment id form a CONTIGUOUS run (the packed ``[left-pad][text+image]``
+    layout uses id ``-1`` for the padding prefix and id ``1`` for the real
+    suffix). Runs from different samples are ALWAYS kept separate so no token
+    attends across the batch -- exactly reproducing the per-sample
+    ``(B, 1, L, L)`` block-diagonal mask.
+
+    Returns an int32 ``cu_seqlens`` (cumulative segment boundaries over the
+    flattened ``B*L`` token axis) on ``segment_ids``' device and the python-int
+    max segment length, as required by ``flash_attn_varlen_func``.
+    """
+    batch, seq_len = segment_ids.shape
+    seg_cpu = segment_ids.detach().to("cpu")
+    cu = [0]
+    running = 0
+    max_seqlen = 0
+    for b in range(batch):
+        row = seg_cpu[b]
+        if seq_len == 0:
+            continue
+        change = (row[1:] != row[:-1]).nonzero(as_tuple=True)[0]
+        boundaries = (change + 1).tolist()
+        starts = [0] + boundaries
+        ends = boundaries + [seq_len]
+        for s, e in zip(starts, ends):
+            seg_len = e - s
+            running += seg_len
+            cu.append(running)
+            if seg_len > max_seqlen:
+                max_seqlen = seg_len
+    cu_seqlens = torch.tensor(cu, dtype=torch.int32, device=segment_ids.device)
+    return cu_seqlens, max_seqlen
+
+
+def _ideogram4_flash_varlen(query, key, value, segment_ids):
+    """Run ``flash_attn_varlen_func`` over the block-diagonal segments.
+
+    ``query``/``key``/``value`` are ``(B, L, num_heads, head_dim)``. Returns the
+    output in the SAME ``(B, L, num_heads, head_dim)`` layout, or ``None`` if the
+    varlen kernel is unavailable / fails (caller falls back to native).
+    """
+    try:
+        from flash_attn import flash_attn_varlen_func
+    except Exception:
+        return None
+    try:
+        batch, seq_len, num_heads, head_dim = query.shape
+        cu_seqlens, max_seqlen = _ideogram4_segment_cu_seqlens(segment_ids)
+
+        orig_dtype = query.dtype
+        needs_cast = orig_dtype not in _HALF_DTYPES
+        q = query.to(torch.bfloat16) if needs_cast else query
+        k = key.to(torch.bfloat16) if needs_cast else key
+        v = value.to(torch.bfloat16) if needs_cast else value
+
+        # (B, L, H, D) -> (B*L, H, D) flattened token axis for varlen.
+        q = q.reshape(batch * seq_len, num_heads, head_dim).contiguous()
+        k = k.reshape(batch * seq_len, num_heads, head_dim).contiguous()
+        v = v.reshape(batch * seq_len, num_heads, head_dim).contiguous()
+
+        out = flash_attn_varlen_func(
+            q,
+            k,
+            v,
+            cu_seqlens_q=cu_seqlens,
+            cu_seqlens_k=cu_seqlens,
+            max_seqlen_q=max_seqlen,
+            max_seqlen_k=max_seqlen,
+            dropout_p=0.0,
+            softmax_scale=None,  # None -> 1/sqrt(head_dim), matches SDPA default
+            causal=False,
+        )
+        out = out.reshape(batch, seq_len, num_heads, head_dim)
+        if needs_cast:
+            out = out.to(orig_dtype)
+        return out
+    except Exception as e:  # noqa: BLE001 - never raise into the model
+        print(f"[Ideogram4] flash_attn_varlen failed ({e}); falling back to native")
+        return None
+
+
+def ideogram4_dispatch_attention(
+    query,
+    key,
+    value,
+    attention_mask,
+    backend,
+    parallel_config=None,
+    segment_ids=None,
+):
+    """Backend-aware self-attention dispatch shared by all Ideogram 4 processors.
+
+    ``backend`` is the diffusers AttentionBackendName string stamped by
+    ``set_ideogram4_attention_backend`` (``None`` -> diffusers default native).
+
+    * ``flash`` + block-diagonal mask: convert segments to ``cu_seqlens`` and run
+      ``flash_attn_varlen_func`` (D2). Falls back to the exact native dense-mask
+      path when the varlen kernel is unavailable or the GPU is pre-Ampere.
+    * ``sage`` with head_dim > 128 (Ideogram 4 is 256): downgraded to native,
+      mirroring the conduit head_dim guard.
+    * everything else (native, or flash without a mask): diffusers
+      ``dispatch_attention_fn`` unchanged -- byte-identical to the legacy path
+      when ``backend`` is ``None``/``"native"``.
+    """
+    head_dim = query.shape[-1]
+
+    if backend == "flash" and attention_mask is not None:
+        if segment_ids is not None and _ideogram4_fa_varlen_capable(query.device):
+            out = _ideogram4_flash_varlen(query, key, value, segment_ids)
+            if out is not None:
+                return out
+        # varlen unavailable / pre-Ampere / kernel failure -> exact native fallback.
+        return dispatch_attention_fn(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            backend="native",
+            parallel_config=parallel_config,
+        )
+
+    if backend == "sage" and head_dim > 128:
+        backend = "native"
+
+    return dispatch_attention_fn(
+        query,
+        key,
+        value,
+        attn_mask=attention_mask,
+        backend=backend,
+        parallel_config=parallel_config,
+    )
+
+
 class Ideogram4AttnProcessor:
     _attention_backend = None
     _parallel_config = None
@@ -103,6 +279,7 @@ class Ideogram4AttnProcessor:
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor,
         image_rotary_emb,
+        segment_ids: torch.Tensor = None,
     ) -> torch.Tensor:
         query = attn.to_q(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
         key = attn.to_k(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
@@ -118,13 +295,14 @@ class Ideogram4AttnProcessor:
         query = (query * cos) + (_rotate_half(query) * sin)
         key = (key * cos) + (_rotate_half(key) * sin)
 
-        hidden_states = dispatch_attention_fn(
+        hidden_states = ideogram4_dispatch_attention(
             query,
             key,
             value,
-            attn_mask=attention_mask,
-            backend=self._attention_backend,
-            parallel_config=self._parallel_config,
+            attention_mask,
+            self._attention_backend,
+            self._parallel_config,
+            segment_ids,
         )
         hidden_states = hidden_states.flatten(2, 3)
         return attn.to_out[0](hidden_states)
@@ -211,6 +389,7 @@ class Ideogram4TransformerBlock(nn.Module):
         attention_mask: torch.Tensor,
         image_rotary_emb,
         adaln_input: torch.Tensor,
+        segment_ids: torch.Tensor = None,
     ) -> torch.Tensor:
         mod = self.adaln_modulation(adaln_input)
         scale_msa, gate_msa, scale_mlp, gate_mlp = mod.chunk(4, dim=-1)
@@ -223,6 +402,7 @@ class Ideogram4TransformerBlock(nn.Module):
             self.attention_norm1(hidden_states) * scale_msa,
             attention_mask=attention_mask,
             image_rotary_emb=image_rotary_emb,
+            segment_ids=segment_ids,
         )
         hidden_states = hidden_states + gate_msa * self.attention_norm2(attn_out)
         hidden_states = hidden_states + gate_mlp * self.ffn_norm2(
@@ -413,7 +593,7 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
         if fbcache is not None:
             fbcache_step = getattr(self, "_fbcache_step", 0)
             original = hidden_states
-            first_out = self.layers[0](hidden_states, attention_mask, image_rotary_emb, adaln_input)
+            first_out = self.layers[0](hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
             indicator_residual = first_out - original
             if fbcache.use_cache(indicator_residual, fbcache_step):
                 # Cache hit: reuse the full-transformer residual, skip layers[1:].
@@ -422,7 +602,7 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                 # Cache miss: run remaining layers from first_out, refresh the cached residual.
                 hidden_states = first_out
                 for block in self.layers[1:]:
-                    hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input)
+                    hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
                 fbcache.store(hidden_states - original)
         else:
             for block_idx, block in enumerate(self.layers):
@@ -430,10 +610,10 @@ class Ideogram4Transformer2DModel(ModelMixin, ConfigMixin, AttentionMixin, PeftA
                     offloader.wait_for_block(block_idx)
                 if torch.is_grad_enabled() and self.gradient_checkpointing:
                     hidden_states = self._gradient_checkpointing_func(
-                        block, hidden_states, attention_mask, image_rotary_emb, adaln_input
+                        block, hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids
                     )
                 else:
-                    hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input)
+                    hidden_states = block(hidden_states, attention_mask, image_rotary_emb, adaln_input, segment_ids)
                 if offloader is not None:
                     offloader.submit_move_blocks_forward(block_idx)
 

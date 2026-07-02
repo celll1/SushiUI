@@ -30,12 +30,11 @@ from typing import Dict, Optional
 import torch
 import torch.nn as nn
 
-from diffusers.models.attention_dispatch import dispatch_attention_fn
-
 from core.inference.nag_dit import nag_guidance
 from core.models.ideogram4.vendor.transformer import (
     OUTPUT_IMAGE_INDICATOR,
     _rotate_half,
+    ideogram4_dispatch_attention,
 )
 
 
@@ -60,7 +59,7 @@ class Ideogram4NAGAttnProcessor:
         self.nag_alpha = nag_alpha
         self.image_token_index: Optional[torch.Tensor] = None
 
-    def __call__(self, attn, hidden_states, attention_mask, image_rotary_emb):
+    def __call__(self, attn, hidden_states, attention_mask, image_rotary_emb, segment_ids=None):
         query = attn.to_q(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
         key = attn.to_k(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
         value = attn.to_v(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
@@ -74,13 +73,14 @@ class Ideogram4NAGAttnProcessor:
         query = (query * cos) + (_rotate_half(query) * sin)
         key = (key * cos) + (_rotate_half(key) * sin)
 
-        hidden_states = dispatch_attention_fn(
+        hidden_states = ideogram4_dispatch_attention(
             query,
             key,
             value,
-            attn_mask=attention_mask,
-            backend=self._attention_backend,
-            parallel_config=self._parallel_config,
+            attention_mask,
+            self._attention_backend,
+            self._parallel_config,
+            segment_ids,
         )
         hidden_states = hidden_states.flatten(2, 3)
 

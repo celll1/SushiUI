@@ -21,6 +21,8 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.models.normalization import AdaLayerNormContinuous, RMSNorm
 
+from core.attention import AttentionMode, dispatch_attention
+
 
 def get_timestep_embedding(timesteps, embedding_dim, flip_sin_to_cos=False,
     downscale_freq_shift=1.0, scale=1.0, max_period=10000):
@@ -178,22 +180,22 @@ class LensJointAttention(nn.Module):
             if attention_mask.shape != expected_mask_shape:
                 raise ValueError(f"attention_mask must have shape {expected_mask_shape}, got {tuple(attention_mask.shape)}.")
             attention_mask = attention_mask.to(q.dtype)
-        # Optional FlashAttention-2 path (opt-in via _use_flash_attn, set by the
-        # trainer). Only used for the unmasked case (flash_attn_func has no
-        # additive-mask support); any failure falls back to SDPA, so the default
-        # path is byte-for-byte unchanged when the flag is off.
-        out = None
-        if getattr(self, "_use_flash_attn", False) and attention_mask is None:
-            try:
-                from flash_attn import flash_attn_func
-                # q/k/v are [B, H, S, D]; flash_attn_func expects [B, S, H, D].
-                out = flash_attn_func(
-                    q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-                ).transpose(1, 2)
-            except Exception:
-                out = None
-        if out is None:
-            out = F.scaled_dot_product_attention(q, k, v, attn_mask=attention_mask)
+        # Backend-agnostic attention through the unified conduit. q/k/v are
+        # [B, H, S, D] (BHSD); the conduit transposes to its canonical BSHD at the
+        # boundary and back. The selected backend is stamped on the module by the
+        # inference plumbing (pipeline_backends/lens.py) or the training hook as
+        # ``_attention_backend`` (native/flash/sage); default native keeps the
+        # path byte-identical to the previous SDPA behavior. When an additive
+        # attention_mask is present the conduit auto-downgrades mask-incapable
+        # kernels (flash/sage) to native, matching the old ``attention_mask is
+        # None`` FA guard.
+        out = dispatch_attention(
+            q, k, v,
+            attn_mask=attention_mask,
+            backend=getattr(self, "_attention_backend", "native"),
+            mode=AttentionMode.INFERENCE,
+            layout="BHSD",
+        )
         out = out.transpose(1, 2).reshape(bsz, seq_img + seq_txt, -1)
         img_hs = out[:, :seq_img, :]
         # NAG (Normalized Attention Guidance) branch — OFF by default, installed only by

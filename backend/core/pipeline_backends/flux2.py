@@ -26,6 +26,95 @@ from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 
 
+def _set_flux2_nag_negpip_backend(diffusers_backend: str) -> None:
+    """Set ``_attention_backend`` on the 6 vendored NAG/NegPip Flux.2 processor classes.
+
+    The vendored NAG/NegPip processors funnel every attention call through their
+    ``_sdpa`` helper (``nag_flux2._sdpa``), which forwards ``self._attention_backend``
+    to diffusers' ``dispatch_attention_fn``. All six classes read the per-class
+    attribute, so setting it once on each class covers every instance the wrappers
+    install. ``dispatch_attention_fn`` normalizes the string itself
+    (``AttentionBackendName(backend)``), so the diffusers backend string is exactly
+    what each ``_sdpa`` needs.
+
+    Imported lazily so a FLUX.2 run that never touches NAG/NegPip pays nothing, and so
+    an import hiccup inside those modules cannot break the default (registry) path.
+    """
+    from core.inference.nag_flux2 import (
+        NAGFlux2AttnProcessor,
+        NAGFlux2ParallelSelfAttnProcessor,
+    )
+    from core.inference.negpip_flux2 import (
+        NegPipFlux2AttnProcessor,
+        NegPipFlux2ParallelSelfAttnProcessor,
+        NegPipNAGFlux2AttnProcessor,
+        NegPipNAGFlux2ParallelSelfAttnProcessor,
+    )
+    for cls in (
+        NAGFlux2AttnProcessor,
+        NAGFlux2ParallelSelfAttnProcessor,
+        NegPipFlux2AttnProcessor,
+        NegPipFlux2ParallelSelfAttnProcessor,
+        NegPipNAGFlux2AttnProcessor,
+        NegPipNAGFlux2ParallelSelfAttnProcessor,
+    ):
+        cls._attention_backend = diffusers_backend
+
+
+def set_flux2_attention_backend(transformer, backend) -> str:
+    """Honor the selected attention backend for a FLUX.2 inference run.
+
+    FLUX.2 uses diffusers' OWN attention registry (``dispatch_attention_fn``), which we
+    keep intact (NOT rerouted through SushiUI's unified conduit) so diffusers' context-
+    parallel + varlen machinery keeps working. Instead we drive that registry from the
+    SAME canonical backend string the rest of SushiUI uses, setting two things from ONE
+    source string:
+
+      1. The DEFAULT processors (``Flux2AttnProcessor`` / ``Flux2ParallelSelfAttnProcessor``)
+         via ``transformer.set_attention_backend`` -- this also sets diffusers' global
+         active backend so the registry propagates to any processor left at ``None``.
+      2. The vendored NAG / NegPip processor classes, whose ``_sdpa`` choke point reads
+         the per-class ``_attention_backend`` attribute (see
+         :func:`_set_flux2_nag_negpip_backend`).
+
+    ``set_attention_backend`` is wrapped in try/except: some diffusers builds reject
+    ``flash``/``sage`` (missing flash-attn / sageattention, unsupported head_dim, etc.),
+    in which case we fall back to ``native`` for BOTH the default path and the NAG/NegPip
+    processors. Selecting ``normal``/``none``/``native`` (or leaving it unset) maps to
+    ``native`` and is byte-identical to the pre-wiring behavior (attention_type was
+    previously ignored and FLUX.2 always ran native).
+
+    Returns the diffusers backend string actually applied ("native" on any fallback).
+    """
+    from core.attention import normalize_backend, to_diffusers_backend
+
+    canonical = normalize_backend(backend)
+    diffusers_backend = to_diffusers_backend(canonical)  # 'native' | 'flash' | 'sage'
+
+    # (1) Default processors + diffusers' global active backend.
+    applied = diffusers_backend
+    try:
+        transformer.set_attention_backend(diffusers_backend)
+    except Exception as e:
+        if diffusers_backend != "native":
+            print(f"[FLUX.2] Attention backend '{diffusers_backend}' unavailable "
+                  f"({e}); falling back to native")
+        applied = "native"
+        try:
+            transformer.set_attention_backend("native")
+        except Exception:
+            # Even native rejected (very old diffusers lacking the registry API):
+            # leave diffusers' default in place -- dispatch stays native.
+            pass
+
+    # (2) NAG / NegPip processor class-attrs (choke point: nag_flux2._sdpa).
+    _set_flux2_nag_negpip_backend(applied)
+
+    print(f"[FLUX.2] Attention backend: {applied} "
+          f"(requested '{backend}' -> canonical '{canonical}')")
+    return applied
+
+
 class Flux2Mixin:
     """Flux2Mixin: flux2 backend methods extracted verbatim from pipeline.py."""
 
@@ -443,6 +532,15 @@ class Flux2Mixin:
             tokenizer = self.flux2_components["tokenizer"]
             scheduler = self.flux2_components["scheduler"]
             config = self.flux2_components.get("config", {})
+
+            # Honor the selected attention backend for this run. FLUX.2 drives diffusers'
+            # own attention registry (dispatch_attention_fn) from our canonical backend
+            # string: default processors via transformer.set_attention_backend, and the
+            # NAG/NegPip processor classes via their _attention_backend choke point. This
+            # was previously always native (attention_type was ignored). try/except inside
+            # the helper falls back to native if the diffusers build rejects flash/sage.
+            attention_type = params.get("attention_type", settings.attention_type)
+            set_flux2_attention_backend(transformer, attention_type)
 
             # Prepare generator
             seed = params.get("seed", -1)
@@ -1367,6 +1465,15 @@ class Flux2Mixin:
             scheduler = self.flux2_components["scheduler"]
             config = self.flux2_components.get("config", {})
 
+            # Honor the selected attention backend for this run. FLUX.2 drives diffusers'
+            # own attention registry (dispatch_attention_fn) from our canonical backend
+            # string: default processors via transformer.set_attention_backend, and the
+            # NAG/NegPip processor classes via their _attention_backend choke point. This
+            # was previously always native (attention_type was ignored). try/except inside
+            # the helper falls back to native if the diffusers build rejects flash/sage.
+            attention_type = params.get("attention_type", settings.attention_type)
+            set_flux2_attention_backend(transformer, attention_type)
+
             # Prepare generator
             seed = params.get("seed", -1)
             if seed == -1:
@@ -1947,6 +2054,15 @@ class Flux2Mixin:
             tokenizer = self.flux2_components["tokenizer"]
             scheduler = self.flux2_components["scheduler"]
             config = self.flux2_components.get("config", {})
+
+            # Honor the selected attention backend for this run. FLUX.2 drives diffusers'
+            # own attention registry (dispatch_attention_fn) from our canonical backend
+            # string: default processors via transformer.set_attention_backend, and the
+            # NAG/NegPip processor classes via their _attention_backend choke point. This
+            # was previously always native (attention_type was ignored). try/except inside
+            # the helper falls back to native if the diffusers build rejects flash/sage.
+            attention_type = params.get("attention_type", settings.attention_type)
+            set_flux2_attention_backend(transformer, attention_type)
 
             # Prepare generator
             seed = params.get("seed", -1)

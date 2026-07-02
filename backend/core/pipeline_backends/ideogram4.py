@@ -25,6 +25,52 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 
+
+def set_ideogram4_attention_backend(transformer, uncond_transformer, backend: str) -> str:
+    """Stamp the inference attention backend on every Ideogram4Attention processor.
+
+    ``backend`` is the canonical inference selector (``normal|flash|sage``, or the
+    app-wide default). It is normalized and mapped to the diffusers
+    AttentionBackendName via ``to_diffusers_backend`` and set as
+    ``_attention_backend`` on:
+
+      1. each ``Ideogram4Attention`` module's currently-installed base processor
+         (scanning BOTH the conditional and unconditional transformers), and
+      2. the ``Ideogram4NAGAttnProcessor`` / ``Ideogram4NegPipAttnProcessor``
+         CLASSES, so NAG / NegPip instances created later (by the NAG wrapper and
+         the NegPip installer) -- and the dynamic NegPip+NAG subclass, which
+         inherits from the NAG processor -- pick up the same backend.
+
+    The vendored ``ideogram4_dispatch_attention`` reads this attribute: ``flash``
+    engages ``flash_attn_varlen_func`` over the block-diagonal segment mask (D2),
+    ``sage`` falls back to native for Ideogram 4's head_dim=256, and ``native``
+    is byte-identical to the legacy diffusers default path.
+    """
+    from core.attention import normalize_backend, to_diffusers_backend
+    from core.inference.nag_ideogram4 import Ideogram4NAGAttnProcessor
+    from core.inference.negpip_ideogram4 import Ideogram4NegPipAttnProcessor
+
+    canonical = normalize_backend(backend)
+    diff_backend = to_diffusers_backend(canonical)
+
+    n = 0
+    for t in (transformer, uncond_transformer):
+        if t is None:
+            continue
+        for m in t.modules():
+            if type(m).__name__ == "Ideogram4Attention":
+                proc = getattr(m, "processor", None)
+                if proc is not None:
+                    proc._attention_backend = diff_backend
+                n += 1
+
+    Ideogram4NAGAttnProcessor._attention_backend = diff_backend
+    Ideogram4NegPipAttnProcessor._attention_backend = diff_backend
+
+    print(f"[Ideogram4] Attention backend '{canonical}' -> diffusers '{diff_backend}' set on {n} module(s)")
+    return diff_backend
+
+
 class Ideogram4Mixin:
     """Ideogram4Mixin: ideogram4 backend methods extracted verbatim from pipeline.py."""
 
@@ -481,6 +527,10 @@ class Ideogram4Mixin:
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            set_ideogram4_attention_backend(
+                transformer, uncond_transformer,
+                params.get("attention_type", settings.attention_type),
+            )
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             negpip_handle = self._ideogram4_maybe_negpip(
@@ -562,6 +612,10 @@ class Ideogram4Mixin:
 
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            set_ideogram4_attention_backend(
+                transformer, uncond_transformer,
+                params.get("attention_type", settings.attention_type),
+            )
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             negpip_handle = self._ideogram4_maybe_negpip(
@@ -658,6 +712,10 @@ class Ideogram4Mixin:
 
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
             transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            set_ideogram4_attention_backend(
+                transformer, uncond_transformer,
+                params.get("attention_type", settings.attention_type),
+            )
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
             negpip_handle = self._ideogram4_maybe_negpip(

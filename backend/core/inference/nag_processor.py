@@ -21,6 +21,8 @@ import torch.nn.functional as F
 from typing import Optional
 from diffusers.models.attention_processor import Attention
 
+from core.attention import AttentionMode, dispatch_attention
+
 # Verbose per-call NAG statistics to stderr. Off by default (was always-on and
 # printed ~10 lines on the first call of every NAG generation). Set True to debug.
 _NAG_DEBUG = False
@@ -51,60 +53,41 @@ class NAGAttnProcessor2_0:
         self.nag_scale = nag_scale
         self.nag_tau = nag_tau
         self.nag_alpha = nag_alpha
+        # Backend selector ("normal"/"sage"/"flash"); normalized and
+        # capability-gated inside the unified conduit (availability, mask, and
+        # head_dim fallbacks all happen there).
         self.attention_type = attention_type
         self._call_count = 0
 
-        # Initialize SageAttention if requested
-        if attention_type == "sage":
-            try:
-                from sageattention import sageattn
-                self.sageattn = sageattn
-                self._sage_available = True
-                print(f"[NAG-SageAttention] Successfully loaded SageAttention module")
-            except ImportError:
-                print(f"[NAG-SageAttention] Warning: sageattention not installed, falling back to normal")
-                self._sage_available = False
-                self.attention_type = "normal"
-        else:
-            self._sage_available = False
-
     def _compute_attention(self, query, key, value, attention_mask=None):
         """
-        Compute attention using the selected backend (normal/sage/flash)
+        Compute attention via the unified conduit (backend selected by
+        ``self.attention_type``; flash is now honored instead of routed to SDPA).
 
         Args:
-            query: [batch, heads, seq_len, head_dim]
-            key: [batch, heads, seq_len, head_dim]
-            value: [batch, heads, seq_len, head_dim]
+            query: [batch, heads, seq_len, head_dim] (BHSD)
+            key: [batch, heads, seq_len, head_dim] (BHSD)
+            value: [batch, heads, seq_len, head_dim] (BHSD)
 
         Returns:
-            [batch, heads, seq_len, head_dim]
+            [batch, heads, seq_len, head_dim] (BHSD)
         """
         self._call_count += 1
 
-        if self.attention_type == "sage" and self._sage_available:
-            if _NAG_DEBUG and self._call_count == 1:
-                print(f"[NAG-SageAttention] First attention call - using SageAttention backend")
+        if _NAG_DEBUG and self._call_count == 1:
+            print(f"[NAG] First attention call - conduit backend='{self.attention_type}'")
 
-            # SageAttention expects HND layout
-            try:
-                output = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
-                return output
-            except Exception as e:
-                if _NAG_DEBUG and self._call_count == 1:
-                    print(f"[NAG-SageAttention] Error, falling back to SDPA: {e}")
-                return F.scaled_dot_product_attention(
-                    query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-                )
-        else:
-            # Normal or Flash (both use PyTorch SDPA which auto-selects Flash if available)
-            if _NAG_DEBUG and self._call_count == 1:
-                backend = "FlashAttention-2" if self.attention_type == "flash" else "PyTorch SDPA"
-                print(f"[NAG-{backend}] First attention call - using {backend} backend")
-
-            return F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
+        return dispatch_attention(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            backend=self.attention_type,
+            mode=AttentionMode.INFERENCE,
+            layout="BHSD",
+        )
 
     def __call__(
         self,

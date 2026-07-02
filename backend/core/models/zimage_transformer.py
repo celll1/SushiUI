@@ -166,6 +166,51 @@ class ZImageAttention(nn.Module):
         return output
 
 
+def set_zimage_attention_backend(backend: Optional[str]) -> str:
+    """Select the inference attention backend on ``ZImageAttention``.
+
+    Two concerns are handled here:
+
+    1. **Normalization.** The raw selector (``attention_type`` / global setting)
+       is passed through :func:`core.attention.normalize_backend`, so UI/alias
+       spellings ("normal"/"none"/"sdpa"/``None``) collapse to the canonical
+       ``"native"`` key -- fixing the historical silent ``"normal"``
+       fall-through. The non-fungible ``"sla"`` backend is a passthrough in
+       ``normalize_backend`` and is therefore preserved verbatim, so SLA models
+       keep their required kernel.
+
+    2. **Dual-module hazard.** This transformer can live in ``sys.modules`` under
+       more than one key -- ``"core.models.zimage_transformer"`` (normal package
+       import) and the bare ``"zimage_transformer"`` (top-level identity used by
+       the training dual-module resolution path). Those are DISTINCT module
+       objects, each with its own ``ZImageAttention`` class and its own
+       ``_attention_backend`` class attribute. Setting it on only one leaves the
+       other stale, so a running transformer built from the other identity would
+       dispatch with the wrong backend. We set the canonical value on every
+       ``ZImageAttention`` class object that currently exists.
+
+    Returns the canonical backend string that was applied.
+    """
+    import sys
+
+    from core.attention import normalize_backend
+
+    canonical = normalize_backend(backend)
+
+    applied: set = set()
+    for mod_name in ("zimage_transformer", "core.models.zimage_transformer", __name__):
+        module = sys.modules.get(mod_name)
+        if module is None:
+            continue
+        attn_cls = getattr(module, "ZImageAttention", None)
+        if attn_cls is None or id(attn_cls) in applied:
+            continue
+        attn_cls._attention_backend = canonical
+        applied.add(id(attn_cls))
+
+    return canonical
+
+
 class ZImageTransformerBlock(nn.Module):
     def __init__(
         self,

@@ -19,29 +19,47 @@ from torch import nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
 
+from core.attention import AttentionMode, dispatch_attention
 
-def mem_efficient_sdpa(q, k, v):
+
+def mem_efficient_sdpa(q, k, v, backend="native", mode=AttentionMode.INFERENCE):
     """scaled_dot_product_attention with a head_dim that is always SDPA-fast.
 
-    q/k/v: [B, H, N, D]. The flash and memory-efficient SDPA backends require the
-    head dim to be a multiple of 8; otherwise SDPA silently falls back to the math
-    backend, which materialises the [B, H, N, N] score matrix (O(N^2) VRAM). The
-    l16 variant uses head_dim=52, so at high token counts this alone costs tens of
-    GB. Zero-padding D up to the next multiple of 8 leaves QK^T and the value mix
-    unchanged (the padded lanes contribute 0), so passing the original-D scale
-    makes the result numerically identical while keeping the O(N) fast path. b16
-    (D=64) needs no padding and hits the fast path directly.
+    q/k/v: [B, H, N, D] (BHSD). The flash and memory-efficient SDPA backends
+    require the head dim to be a multiple of 8; otherwise SDPA silently falls
+    back to the math backend, which materialises the [B, H, N, N] score matrix
+    (O(N^2) VRAM). The l16 variant uses head_dim=52, so at high token counts this
+    alone costs tens of GB. Zero-padding D up to the next multiple of 8 leaves
+    QK^T and the value mix unchanged (the padded lanes contribute 0), so passing
+    the ORIGINAL-D scale makes the result numerically identical while keeping the
+    O(N) fast path. b16 (D=64) needs no padding and hits the fast path directly.
+
+    ``backend``/``mode`` route the (padded) attention through the unified conduit
+    (native SDPA / FlashAttention / SageAttention) via ``dispatch_attention``.
+    The default ``backend='native'`` reproduces the previous SDPA behaviour
+    exactly. The explicit ``scale = orig_D ** -0.5`` MUST be passed: a kernel's
+    default scale would use the PADDED head dim, changing the softmax temperature.
+    l16 pads D=52->56 (sage excludes 52 -> conduit downgrades to native; flash
+    accepts the padded 56); b16 D=64 is accepted by both flash and sage. No mask
+    is ever forwarded (the joint sequence is dense).
     """
     d = q.shape[-1]
+    scale = d ** -0.5
     pad = (-d) % 8
     if pad:
-        scale = d ** -0.5
         q = F.pad(q, (0, pad))
         k = F.pad(k, (0, pad))
         v = F.pad(v, (0, pad))
-        out = F.scaled_dot_product_attention(q, k, v, scale=scale)
+    out = dispatch_attention(
+        q, k, v,
+        scale=scale,
+        backend=backend,
+        mode=mode,
+        layout="BHSD",
+    )
+    if pad:
         return out[..., :d]
-    return F.scaled_dot_product_attention(q, k, v)
+    return out
 
 
 def rotate_half(x):
@@ -196,7 +214,9 @@ class PlainTextTransformerBlock(nn.Module):
         # sequences. head_dim is padded to a multiple of 8 so SDPA never falls
         # back to the O(L^2) math backend (mathematically equivalent).
         out = mem_efficient_sdpa(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            backend=getattr(self, "_attn_backend", "native"),
+            mode=getattr(self, "_attn_mode", AttentionMode.INFERENCE),
         ).transpose(1, 2).reshape(b, length, -1)
         txt = txt + self.attn_proj(out)
         txt = txt + self.mlp(self.norm2(txt))
@@ -244,7 +264,9 @@ class DoubleStreamDiTBlock(nn.Module):
         # high res. head_dim is padded to a multiple of 8 so SDPA never falls back
         # to the O(L²) math backend (mathematically equivalent).
         out = mem_efficient_sdpa(
-            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+            backend=getattr(self, "_attn_backend", "native"),
+            mode=getattr(self, "_attn_mode", AttentionMode.INFERENCE),
         ).transpose(1, 2).contiguous()  # [b, seq, heads, hd]
         x = x + self.img_attn_proj(out[:, lt:].reshape(b, li, -1))
         txt = txt + self.txt_attn_proj(out[:, :lt].reshape(b, lt, -1))
@@ -371,6 +393,24 @@ class MMJiT(nn.Module):
         pooled_text = context.mean(dim=1)
         vec = t_vec + self.pooled_embedder(pooled_text.to(dtype=pooled_dtype))
         use_ckpt = self.gradient_checkpointing and self.training and torch.is_grad_enabled()
+        # Attention backend/mode propagation: the vendored (and NAG/NegPip
+        # monkey-patched) block forwards route their mem_efficient_sdpa call
+        # through the unified conduit, reading a per-block ``_attn_backend`` /
+        # ``_attn_mode``. Stamp both onto every attention-bearing block from this
+        # net's ``_attn_backend`` (set by the inference plumbing in
+        # pipeline_backends/minit2i.py and by the training hook). Mode is derived
+        # from the autograd state: inference denoise loops run under
+        # ``torch.no_grad`` (INFERENCE, sage allowed) while training runs with grad
+        # enabled (TRAINING, sage refused by the conduit). Default 'native' keeps
+        # the prior SDPA path byte-identical.
+        _attn_backend = getattr(self, "_attn_backend", "native")
+        _attn_mode = AttentionMode.TRAINING if torch.is_grad_enabled() else AttentionMode.INFERENCE
+        for _blk in self.txt_preamble_blocks:
+            _blk._attn_backend = _attn_backend
+            _blk._attn_mode = _attn_mode
+        for _blk in self.double_blocks:
+            _blk._attn_backend = _attn_backend
+            _blk._attn_mode = _attn_mode
         for block in self.txt_preamble_blocks:
             if use_ckpt:
                 txt = torch.utils.checkpoint.checkpoint(block, txt, use_reentrant=False)

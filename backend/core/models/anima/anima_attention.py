@@ -10,7 +10,43 @@ from dataclasses import dataclass
 from typing import Optional, Union, List
 
 import torch
-import torch.nn.functional as F
+
+from core.attention import dispatch_attention, AttentionMode
+
+
+# Module-global attention backend, set by the inference plumbing in
+# ``pipeline_backends/anima.py`` (mirrors ``ZImageAttention._attention_backend``).
+# ``None`` means "no inference selection made" -> fall back to the ``attn_mode``
+# carried in :class:`AttentionParams` (the training path, set by the trainer's
+# ``_setup_attention_backend_anima`` which writes ``transformer.attn_mode``).
+_attention_backend: Optional[str] = None
+
+
+def set_attention_backend(backend: Optional[str]) -> None:
+    """Select the attention backend the vendored Anima code routes through.
+
+    ``backend`` is one of the canonical conduit strings ("native"/"flash"/
+    "sage"/"normal"/None); it is normalized inside :func:`dispatch_attention`.
+    Anima has no dedicated sage kernel -- a ``sage`` request is handled by the
+    conduit (sage->native guard) with no crash.
+    """
+    global _attention_backend
+    _attention_backend = backend
+
+
+def _resolve_backend(attn_params: Optional["AttentionParams"]) -> Optional[str]:
+    """Pick the backend for one attention call.
+
+    The inference module-global takes precedence. When it is unset (training,
+    or any non-plumbed caller), fall back to the ``attn_mode`` field: Anima's
+    vocabulary is ``'torch'`` (native SDPA) | ``'flash'``, which we map to the
+    conduit's canonical strings. ``'torch'``/``None`` -> native, ``'flash'`` ->
+    flash.
+    """
+    if _attention_backend is not None:
+        return _attention_backend
+    mode = attn_params.attn_mode if attn_params is not None else None
+    return "flash" if mode == "flash" else "native"
 
 
 @dataclass
@@ -81,26 +117,31 @@ def attention(
 
     attn_mask = attn_params.attention_mask if attn_params is not None else None
 
-    # Optional FlashAttention-2 path (opt-in via attn_mode="flash", set by the
-    # trainer). q/k/v are already [B, L, H, D] (bshd) — exactly what
-    # flash_attn_func expects.  Only the unmasked case is routed to flash
-    # (flash_attn_func has no additive-mask support); any failure falls back to
-    # SDPA, so the default path is unchanged when attn_mode != "flash".
-    if attn_params.attn_mode == "flash" and attn_mask is None:
-        try:
-            from flash_attn import flash_attn_func
-            x = flash_attn_func(q, k, v, dropout_p=drop_rate)  # [B, L, H, D]
-            return x.reshape(x.shape[0], x.shape[1], -1)        # [B, L, H*D]
-        except Exception:
-            pass  # fall through to SDPA
+    # Route the kernel through the unified attention conduit. q/k/v are
+    # [B, L, H, D] (bshd) == the conduit's canonical BSHD layout, so no boundary
+    # transpose is needed here (the conduit does BHSD<->BSHD itself).
+    #
+    # Backend selection: the inference module-global (set by
+    # pipeline_backends/anima.py) wins; otherwise the attn_mode carried in
+    # attn_params (training path) decides. The conduit normalizes the string,
+    # applies capability guards, and falls back to native on any kernel failure.
+    #
+    # split_attn (per-sample varlen) and the varlen block-diagonal / additive
+    # attention_mask cannot be honored by FlashAttention/SageAttention. The
+    # conduit's mask guard already downgrades any masked call to native; we
+    # additionally force native when split_attn is set so those paths stay
+    # native-only (matching the vendored SDPA numerics exactly).
+    backend = _resolve_backend(attn_params)
+    if attn_params is not None and attn_params.split_attn:
+        backend = "native"
 
-    # bshd -> bhsd for SDPA
-    q_t = q.transpose(1, 2)
-    k_t = k.transpose(1, 2)
-    v_t = v.transpose(1, 2)
+    x = dispatch_attention(
+        q, k, v,
+        attn_mask=attn_mask,
+        dropout_p=drop_rate,
+        backend=backend,
+        mode=AttentionMode.INFERENCE,
+        layout="BSHD",
+    )  # [B, L, H, D]
 
-    x = F.scaled_dot_product_attention(q_t, k_t, v_t, attn_mask=attn_mask, dropout_p=drop_rate)
-
-    x = x.transpose(1, 2)  # [B, L, H, D]
-    x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, L, H*D]
-    return x
+    return x.reshape(x.shape[0], x.shape[1], -1)  # [B, L, H*D]

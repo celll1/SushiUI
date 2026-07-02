@@ -1,44 +1,45 @@
 """
-Custom Attention Processors for accelerated inference
+Custom Attention Processor for accelerated inference (SDXL / SD1.5 UNet).
 
-Supports:
-- Normal: PyTorch 2.0+ scaled_dot_product_attention (Flash Attention automatically enabled)
-- SageAttention: Quantized attention for 2-5x speedup
-- FlashAttention: Explicit Flash Attention 2 (when available)
+A single :class:`UnifiedAttnProcessor` handles every backend by routing the core
+attention region through the unified conduit (:func:`core.attention.dispatch_attention`).
+The processor keeps only the diffusers norm / residual / reshape boilerplate; the
+backend selection, capability guards (head_dim / mask / dtype / GQA), and native
+fallback all live in the conduit.
+
+Backends (selected by the ``attention_type`` string, normalized inside the conduit):
+- "normal"/"none"/"sdpa"/None: PyTorch scaled_dot_product_attention (native)
+- "flash":                     FlashAttention-2 (falls back to native on any failure)
+- "sage":                      SageAttention INT8 (auto-downgrades to native when the
+                               head_dim is unsupported -- e.g. SD1.5 40/80/160)
 """
 
 import torch
-import torch.nn.functional as F
 from typing import Optional
 from diffusers.models.attention_processor import Attention
 
+from core.attention import AttentionMode, dispatch_attention
 
-class SageAttnProcessor:
+
+class UnifiedAttnProcessor:
     """
-    SageAttention Processor - Quantized attention for accelerated inference
+    Unified attention processor for the diffusers UNet (SDXL / SD1.5).
 
-    Uses INT8 quantization for QK^T and FP16/FP8 for PV to achieve 2-5x speedup
-    over standard attention while maintaining accuracy.
+    Replaces the former hand-written SageAttnProcessor / FlashAttnProcessor and
+    the default AttnProcessor2_0. The QKV projections are reshaped to
+    ``[batch, heads, seq_len, head_dim]`` (BHSD) and handed to the conduit with
+    ``layout="BHSD"``; the conduit adapts the layout and dispatches to the
+    selected kernel, falling back to native SDPA when the kernel is unavailable
+    or unsupported for the given shapes.
 
-    Requires: pip install sageattention
+    Args:
+        backend: Backend selector string ("normal", "sage", or "flash"). The
+            string is normalized and capability-gated inside the conduit, so no
+            per-processor availability probing is needed here.
     """
 
-    def __init__(self):
-        try:
-            from sageattention import sageattn
-            self.sageattn = sageattn
-            self._available = True
-            self._call_count = 0  # Track number of calls
-            print("[SageAttention] [OK] Successfully loaded SageAttention module")
-        except ImportError:
-            print("[SageAttention] [WARN] Warning: sageattention not installed. Falling back to normal attention.")
-            print("[SageAttention] Install with: pip install sageattention")
-            self._available = False
-            self._call_count = 0
-        except Exception as e:
-            print(f"[SageAttention] [ERROR] Error loading sageattention: {e}")
-            self._available = False
-            self._call_count = 0
+    def __init__(self, backend: str = "normal"):
+        self.backend = backend
 
     def __call__(
         self,
@@ -50,11 +51,6 @@ class SageAttnProcessor:
         *args,
         **kwargs,
     ) -> torch.Tensor:
-        # Log first call to confirm processor is being used
-        self._call_count += 1
-        if self._call_count == 1:
-            print("[SageAttention] First attention call - processor is ACTIVE and being called")
-
         residual = hidden_states
 
         if attn.spatial_norm is not None:
@@ -84,36 +80,23 @@ class SageAttnProcessor:
         inner_dim = key.shape[-1]
         head_dim = inner_dim // attn.heads
 
-        # Reshape to (batch, heads, seq_len, head_dim) for SageAttention
+        # Reshape to BHSD == [batch, heads, seq_len, head_dim].
         query = query.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
-        # Apply SageAttention or fallback to normal
-        if self._available:
-            try:
-                # Log first actual sageattn call
-                if self._call_count == 1:
-                    print(f"[SageAttention] Calling sageattn with shapes: Q={query.shape}, K={key.shape}, V={value.shape}")
-                # SageAttention expects (batch, heads, seq_len, head_dim) - "HND" layout
-                hidden_states = self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
-                # Log success on first call
-                if self._call_count == 1:
-                    print(f"[SageAttention] [OK] sageattn succeeded, output shape: {hidden_states.shape}")
-            except Exception as e:
-                print(f"[SageAttention] [ERROR] Error during attention computation: {e}")
-                print(f"[SageAttention] Falling back to standard SDPA")
-                # Fallback to standard attention
-                hidden_states = F.scaled_dot_product_attention(
-                    query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-                )
-        else:
-            # Fallback to standard attention
-            if self._call_count == 1:
-                print(f"[SageAttention] SageAttention not available, using SDPA fallback")
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
+        # Core attention region -> unified conduit (BHSD in/out).
+        hidden_states = dispatch_attention(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            backend=self.backend,
+            mode=AttentionMode.INFERENCE,
+            layout="BHSD",
+        )
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
@@ -133,115 +116,14 @@ class SageAttnProcessor:
         return hidden_states
 
 
-class FlashAttnProcessor:
-    """
-    FlashAttention-2 Processor - Explicit Flash Attention acceleration
-
-    PyTorch 2.0+ automatically uses Flash Attention when available via SDPA,
-    but this processor can be used to explicitly ensure Flash Attention is used.
-
-    Note: PyTorch 2.0+ with CUDA will automatically use Flash Attention in SDPA
-    """
-
-    def __init__(self):
-        self._flash_available = False
-        try:
-            # Check if flash_attn is installed
-            import flash_attn
-            self._flash_available = True
-            from flash_attn import flash_attn_func
-            self.flash_attn_func = flash_attn_func
-            print("[FlashAttention] Using explicit flash_attn package")
-        except ImportError:
-            # Fallback to PyTorch SDPA (which uses Flash Attention automatically on supported hardware)
-            print("[FlashAttention] flash_attn package not found, using PyTorch SDPA")
-            print("[FlashAttention] PyTorch 2.0+ will automatically use Flash Attention when available")
-            self._flash_available = False
-
-    def __call__(
-        self,
-        attn: Attention,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: Optional[torch.Tensor] = None,
-        attention_mask: Optional[torch.Tensor] = None,
-        temb: Optional[torch.Tensor] = None,
-        *args,
-        **kwargs,
-    ) -> torch.Tensor:
-        residual = hidden_states
-
-        if attn.spatial_norm is not None:
-            hidden_states = attn.spatial_norm(hidden_states, temb)
-
-        input_ndim = hidden_states.ndim
-
-        if input_ndim == 4:
-            batch_size, channel, height, width = hidden_states.shape
-            hidden_states = hidden_states.view(batch_size, channel, height * width).transpose(1, 2)
-
-        batch_size, sequence_length, _ = hidden_states.shape
-
-        if attn.group_norm is not None:
-            hidden_states = attn.group_norm(hidden_states.transpose(1, 2)).transpose(1, 2)
-
-        query = attn.to_q(hidden_states)
-
-        if encoder_hidden_states is None:
-            encoder_hidden_states = hidden_states
-        elif attn.norm_cross:
-            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
-
-        key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
-
-        inner_dim = key.shape[-1]
-        head_dim = inner_dim // attn.heads
-
-        # Reshape for attention
-        query = query.view(batch_size, -1, attn.heads, head_dim)
-        key = key.view(batch_size, -1, attn.heads, head_dim)
-        value = value.view(batch_size, -1, attn.heads, head_dim)
-
-        if self._flash_available:
-            # Use explicit flash_attn package
-            # flash_attn_func expects (batch, seqlen, nheads, headdim)
-            hidden_states = self.flash_attn_func(query, key, value, dropout_p=0.0, causal=False)
-        else:
-            # Use PyTorch SDPA (automatically uses Flash Attention when available)
-            query = query.transpose(1, 2)
-            key = key.transpose(1, 2)
-            value = value.transpose(1, 2)
-
-            hidden_states = F.scaled_dot_product_attention(
-                query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-            )
-            hidden_states = hidden_states.transpose(1, 2)
-
-        hidden_states = hidden_states.reshape(batch_size, -1, attn.heads * head_dim)
-        hidden_states = hidden_states.to(query.dtype)
-
-        # Linear projection
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
-
-        if input_ndim == 4:
-            hidden_states = hidden_states.transpose(-1, -2).reshape(batch_size, channel, height, width)
-
-        if attn.residual_connection:
-            hidden_states = hidden_states + residual
-
-        hidden_states = hidden_states / attn.rescale_output_factor
-
-        return hidden_states
-
-
 def set_attention_processor(unet, attention_type: str = "normal"):
     """
-    Set attention processor type for the UNet
+    Set the unified attention processor on every attention layer of the UNet.
 
     Args:
         unet: The UNet model
-        attention_type: Type of attention to use ("normal", "sage", "flash")
+        attention_type: Backend selector ("normal", "sage", "flash"). Normalized
+            inside the conduit.
 
     Returns:
         dict: Original processors for restoration
@@ -251,28 +133,10 @@ def set_attention_processor(unet, attention_type: str = "normal"):
 
     num_processors = len(unet.attn_processors)
 
-    if attention_type == "sage":
-        print(f"[AttentionProcessor] Setting SageAttention processors for {num_processors} attention layers")
-        processor = SageAttnProcessor()
-        new_processors = {name: processor for name in unet.attn_processors.keys()}
-        unet.set_attn_processor(new_processors)
-        print(f"[AttentionProcessor] [OK] SageAttention ACTIVE for all {num_processors} layers")
-
-    elif attention_type == "flash":
-        print(f"[AttentionProcessor] Setting FlashAttention processors for {num_processors} attention layers")
-        processor = FlashAttnProcessor()
-        new_processors = {name: processor for name in unet.attn_processors.keys()}
-        unet.set_attn_processor(new_processors)
-        print(f"[AttentionProcessor] [OK] FlashAttention ACTIVE for all {num_processors} layers")
-
-    else:  # "normal"
-        print(f"[AttentionProcessor] Using default PyTorch 2.0 SDPA (auto Flash Attention) for {num_processors} attention layers")
-        # Reset to default processors - PyTorch 2.0+ automatically uses Flash Attention
-        from diffusers.models.attention_processor import AttnProcessor2_0
-        processor = AttnProcessor2_0()
-        new_processors = {name: processor for name in unet.attn_processors.keys()}
-        unet.set_attn_processor(new_processors)
-        print(f"[AttentionProcessor] [OK] Normal SDPA ACTIVE for all {num_processors} layers")
+    print(f"[AttentionProcessor] Setting UnifiedAttnProcessor (backend={attention_type}) for {num_processors} attention layers")
+    new_processors = {name: UnifiedAttnProcessor(attention_type) for name in unet.attn_processors.keys()}
+    unet.set_attn_processor(new_processors)
+    print(f"[AttentionProcessor] [OK] UnifiedAttnProcessor ACTIVE for all {num_processors} layers")
 
     return original_processors
 

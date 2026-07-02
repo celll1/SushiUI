@@ -225,6 +225,31 @@ class MiniT2IMixin:
         offloader.prepare_block_devices_before_forward()
         return offloader
 
+    def _minit2i_apply_attention_backend(self, transformer, params: Dict[str, Any]):
+        """Select the attention backend (native / flash / sage) for inference.
+
+        Reads the inference key ``attention_type`` (``normal``|``sage``|``flash``;
+        ``normal``/None -> ``native``), normalizes it to the canonical vocabulary,
+        and stamps it on BOTH the transformer wrapper (``transformer._attn_backend``)
+        and the underlying MMJiT net (``transformer.model.net._attn_backend``). The
+        MMJiT forward reads the net-level attr each step and propagates it to every
+        attention-bearing block, so the vendored and NAG/NegPip block forwards route
+        their ``mem_efficient_sdpa`` call through the unified conduit. The default
+        ``native`` keeps the prior SDPA path byte-identical.
+
+        Guards handled downstream by the conduit: l16 head_dim 52 (padded to 56) is
+        excluded from sage's allowed set -> auto-downgrade to native; flash accepts
+        the padded 56. b16 head_dim 64 is accepted by both flash and sage.
+        """
+        from core.attention import normalize_backend
+        attn_backend = normalize_backend(params.get("attention_type"))
+        transformer._attn_backend = attn_backend
+        net = getattr(getattr(transformer, "model", None), "net", None)
+        if net is not None:
+            net._attn_backend = attn_backend
+        print(f"[MiniT2I] Attention backend: {attn_backend} "
+              f"(from attention_type={params.get('attention_type')!r})")
+
     def _minit2i_stage_transformer(self, device: str, params: Optional[Dict[str, Any]] = None):
         """Place the MiniT2I transformer on GPU for the denoise loop.
 
@@ -233,6 +258,7 @@ class MiniT2IMixin:
         (default path, unchanged)."""
         params = params or {}
         transformer = self.minit2i_components["transformer"]
+        self._minit2i_apply_attention_backend(transformer, params)
         enable_block_swap = bool(params.get("enable_block_swap", False))
         num_blocks = len(transformer.model.net.double_blocks)
         blocks_to_swap = int(params.get("blocks_to_swap", 0))

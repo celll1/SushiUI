@@ -164,6 +164,12 @@ def _build_train_section(
         train["crop_plan_seed"] = p.get("crop_plan_seed", 0)
 
     # Common training fields
+    # Attention backend (string selector). Back-compat: an old preset that only
+    # set the boolean use_flash_attention still resolves to "flash". The string
+    # key is authoritative when present.
+    train["attention_backend"] = p.get("attention_backend") or (
+        "flash" if p.get("use_flash_attention") else "native"
+    )
     train["use_flash_attention"] = p.get("use_flash_attention", False)
     train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)
     train["reconstruction_loss_weight"] = p.get("reconstruction_loss_weight", 0.0)

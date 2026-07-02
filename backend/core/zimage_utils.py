@@ -27,6 +27,8 @@ Modifications made by SushiUI:
 - Extracted calculate_shift function and constants for standalone use
 - Extracted dispatch_attention function with multi-backend support (NATIVE, SageAttention, FlashAttention)
 - Added type hints for clarity
+- dispatch_attention is now a thin backward-compatible shim delegating to the
+  unified attention conduit at core.attention.dispatch (see below)
 """
 
 from typing import Optional
@@ -84,6 +86,10 @@ def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype):
 
     Converts bool masks to float additive masks (-inf for masked positions).
     Extracted from Z-Image utils/attention.py
+
+    Retained for backward compatibility. The unified conduit
+    (core.attention.backends) carries its own equivalent helper; this copy is
+    kept here for any external importer of ``core.zimage_utils._process_mask``.
     """
     if attn_mask is None:
         return None
@@ -100,11 +106,6 @@ def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype):
     return attn_mask
 
 
-# Global flag to track if backend has been logged (avoid spamming logs)
-_attention_backend_logged = {}
-_attention_call_count = 0  # Track number of attention calls for debugging
-_flash_mask_warning_logged = False  # Track if Flash Attention mask warning has been shown
-
 def dispatch_attention(
     query: torch.Tensor,
     key: torch.Tensor,
@@ -116,149 +117,48 @@ def dispatch_attention(
     backend: Optional[str] = None,
 ) -> torch.Tensor:
     """
-    Dispatch attention computation to appropriate backend.
+    Backward-compatible shim delegating to the unified attention conduit.
 
-    Supports three backends:
-    - "native" or None: PyTorch SDPA (auto Flash Attention in PyTorch 2.0+)
-    - "sage": SageAttention (INT8 quantized attention for 2-5x speedup)
-    - "flash": Explicit Flash Attention 2
+    This function is preserved so existing importers
+    (``core.models.zimage_transformer`` and any vendored code that does
+    ``from core.zimage_utils import dispatch_attention``) keep working
+    unchanged. All backend selection, capability guards, layout handling, the
+    SLA passthrough/short-circuit, and native fallback now live in
+    ``core.attention.dispatch.dispatch_attention``.
+
+    Z-Image tensors are in the canonical BSHD layout
+    (``[batch, seq_len, num_heads, head_dim]``), so no ``layout`` override is
+    needed. The ``backend`` string (including ``'sla'``) is forwarded verbatim;
+    the conduit normalizes it and short-circuits SLA before registry
+    resolution, so an SLA model's backend selection is never clobbered.
 
     Args:
-        query: Query tensor [batch, seq_len_q, num_heads, head_dim]
-        key: Key tensor [batch, seq_len_k, num_heads, head_dim]
-        value: Value tensor [batch, seq_len_v, num_heads, head_dim]
-        attn_mask: Optional attention mask
-        dropout_p: Dropout probability (default: 0.0)
-        is_causal: Whether to use causal masking (default: False)
-        scale: Optional scale factor for attention scores
-        backend: Attention backend ("native", "sage", "flash")
+        query: Query tensor ``[batch, seq_len_q, num_heads, head_dim]``.
+        key: Key tensor ``[batch, seq_len_k, num_heads, head_dim]``.
+        value: Value tensor ``[batch, seq_len_v, num_heads, head_dim]``.
+        attn_mask: Optional attention mask.
+        dropout_p: Dropout probability (default: 0.0).
+        is_causal: Whether to use causal masking (default: False).
+        scale: Optional scale factor for attention scores.
+        backend: Attention backend ("native"/"normal", "sage", "flash", "sla").
 
     Returns:
-        Attention output tensor [batch, seq_len_q, num_heads, head_dim]
+        Attention output tensor ``[batch, seq_len, num_heads, head_dim]``.
     """
-    global _attention_backend_logged, _attention_call_count, _flash_mask_warning_logged
-    _attention_call_count += 1
-    backend = backend or "native"
-    original_backend = backend  # Track original request for logging
+    from core.attention.dispatch import (
+        AttentionMode,
+        dispatch_attention as _conduit_dispatch,
+    )
 
-    if backend == "sage":
-        # SageAttention: INT8 quantized attention
-        try:
-            from sageattention import sageattn
-
-            # SageAttention expects [batch, seq_len, num_heads, head_dim] layout
-            # Z-Image already uses this layout - no transpose needed
-
-            # Process mask if provided
-            processed_mask = _process_mask(attn_mask, query.dtype) if attn_mask is not None else None
-
-            # Call SageAttention
-            # Note: SageAttention uses "HND" layout notation but expects
-            # [batch, seq_len, num_heads, head_dim] tensor order
-            out = sageattn(
-                query, key, value,
-                tensor_layout="HND",
-                is_causal=is_causal,
-                attn_mask=processed_mask
-            )
-
-            # Log once per backend type
-            if backend not in _attention_backend_logged:
-                print(f"[Z-Image Attention] Using SAGE backend (INT8 quantized attention)")
-                _attention_backend_logged[backend] = True
-
-            return out.contiguous()
-
-        except ImportError:
-            print("[Z-Image Attention] WARNING: SageAttention not available, falling back to NATIVE")
-            backend = "native"
-        except Exception as e:
-            print(f"[Z-Image Attention] WARNING: SageAttention error: {e}, falling back to NATIVE")
-            backend = "native"
-
-    elif backend == "flash":
-        # Explicit Flash Attention 2
-        try:
-            from flash_attn import flash_attn_func
-
-            # Flash Attention expects [batch, seq_len, num_heads, head_dim]
-            # Z-Image already uses this layout - no transpose needed
-
-            # Flash Attention doesn't support attention mask directly
-            # Only supports causal masking via is_causal parameter
-            if attn_mask is not None and not _flash_mask_warning_logged:
-                print("[Z-Image Attention] WARNING: Flash Attention does not support custom masks, ignoring mask")
-                _flash_mask_warning_logged = True
-
-            # Flash Attention only supports fp16/bf16, convert if needed
-            original_dtype = query.dtype
-            needs_conversion = original_dtype not in [torch.float16, torch.bfloat16]
-
-            if needs_conversion:
-                # Convert to bf16 (training dtype) - create new tensors
-                query_fa = query.to(torch.bfloat16)
-                key_fa = key.to(torch.bfloat16)
-                value_fa = value.to(torch.bfloat16)
-            else:
-                # No conversion needed, use original tensors
-                query_fa = query
-                key_fa = key
-                value_fa = value
-
-            # Call Flash Attention
-            out = flash_attn_func(
-                query_fa, key_fa, value_fa,
-                dropout_p=dropout_p,
-                causal=is_causal,
-                softmax_scale=scale
-            )
-
-            # Convert back to original dtype if needed
-            if needs_conversion:
-                out = out.to(original_dtype)
-
-            # Log once per backend type
-            if backend not in _attention_backend_logged:
-                print(f"[Z-Image Attention] Using FLASH backend (explicit Flash Attention 2)")
-                _attention_backend_logged[backend] = True
-
-            return out.contiguous()
-
-        except ImportError:
-            print("[Z-Image Attention] WARNING: Flash Attention not available, falling back to NATIVE")
-            backend = "native"
-        except Exception as e:
-            print(f"[Z-Image Attention] WARNING: Flash Attention error: {e}, falling back to NATIVE")
-            backend = "native"
-
-    # NATIVE backend (PyTorch SDPA)
-    # Log once per backend type (including fallback case)
-    if backend not in _attention_backend_logged:
-        if original_backend != "native":
-            # Fallback case
-            print(f"[Z-Image Attention] Using NATIVE backend (PyTorch SDPA) - fallback from {original_backend.upper()}")
-        else:
-            # Normal native backend
-            print(f"[Z-Image Attention] Using NATIVE backend (PyTorch SDPA)")
-        _attention_backend_logged[backend] = True
-
-    # Transpose to [batch, num_heads, seq_len, head_dim] for PyTorch SDPA
-    query = query.transpose(1, 2)
-    key = key.transpose(1, 2)
-    value = value.transpose(1, 2)
-
-    # Process attention mask
-    attn_mask = _process_mask(attn_mask, query.dtype)
-
-    # Use PyTorch's scaled_dot_product_attention (NATIVE backend)
-    # PyTorch 2.0+ automatically uses Flash Attention when available
-    out = F.scaled_dot_product_attention(
-        query, key, value,
+    return _conduit_dispatch(
+        query,
+        key,
+        value,
         attn_mask=attn_mask,
         dropout_p=dropout_p,
         is_causal=is_causal,
-        scale=scale
+        scale=scale,
+        backend=backend,
+        mode=AttentionMode.INFERENCE,
+        layout="BSHD",
     )
-
-    # Transpose back to [batch, seq_len, num_heads, head_dim]
-    return out.transpose(1, 2).contiguous()

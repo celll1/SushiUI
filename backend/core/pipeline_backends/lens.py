@@ -258,6 +258,30 @@ class LensMixin:
         offloader.prepare_block_devices_before_forward()
         return offloader
 
+    def _lens_set_attention_backend(self, transformer, params: Dict[str, Any]) -> str:
+        """Stamp the inference attention backend on every LensJointAttention module.
+
+        Reads the canonical inference key ``attention_type`` (values
+        ``normal|sage|flash``; falls back to the app-wide default), normalizes it
+        (``normal``->``native``; ``sla`` passthrough preserved), and sets
+        ``_attention_backend`` on each ``LensJointAttention`` via a class-name scan
+        that mirrors the trainer's ``_setup_attention_backend_lens``. The vendor
+        forward reads this attr and routes through ``dispatch_attention``. The
+        conduit itself handles the masked case by auto-downgrading mask-incapable
+        kernels (flash/sage) to native.
+        """
+        from core.attention import normalize_backend
+
+        attention_type = params.get("attention_type", settings.attention_type)
+        backend = normalize_backend(attention_type)
+        n = 0
+        for m in transformer.modules():
+            if type(m).__name__ == "LensJointAttention":
+                m._attention_backend = backend
+                n += 1
+        print(f"[Lens] Attention backend '{backend}' set on {n} module(s)")
+        return backend
+
     def _lens_stage_transformer(self, params: Dict[str, Any], device: str,
                                 transformer_quantization: Optional[str]):
         """Place the Lens transformer on GPU for denoising.
@@ -408,6 +432,7 @@ class LensMixin:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
+            self._lens_set_attention_backend(transformer, params)
             try:
                 latents = denoise_loop(
                     transformer=transformer, scheduler=scheduler,
@@ -569,6 +594,7 @@ class LensMixin:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
+            self._lens_set_attention_backend(transformer, params)
             try:
                 latents = denoise_loop_img2img(
                     transformer=transformer, scheduler=scheduler,
@@ -742,6 +768,7 @@ class LensMixin:
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
+            self._lens_set_attention_backend(transformer, params)
             try:
                 latents = denoise_loop_inpaint(
                     transformer=transformer, scheduler=scheduler,

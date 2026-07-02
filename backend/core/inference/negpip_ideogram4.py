@@ -50,11 +50,10 @@ from typing import Dict, List, Optional
 
 import torch
 
-from diffusers.models.attention_dispatch import dispatch_attention_fn
-
 from core.models.ideogram4.vendor.transformer import (
     LLM_TOKEN_INDICATOR,
     _rotate_half,
+    ideogram4_dispatch_attention,
 )
 
 
@@ -229,7 +228,7 @@ class Ideogram4NegPipAttnProcessor:
     def __init__(self, token_weights: Optional[torch.Tensor] = None):
         self.token_weights: Optional[torch.Tensor] = token_weights
 
-    def __call__(self, attn, hidden_states, attention_mask, image_rotary_emb):
+    def __call__(self, attn, hidden_states, attention_mask, image_rotary_emb, segment_ids=None):
         query = attn.to_q(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
         key = attn.to_k(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
         value = attn.to_v(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
@@ -262,13 +261,14 @@ class Ideogram4NegPipAttnProcessor:
                     w = w[:, :seq]
             value = value * w[:, :, None, None]  # (B, L, 1, 1) broadcast over heads/head_dim
 
-        hidden_states = dispatch_attention_fn(
+        hidden_states = ideogram4_dispatch_attention(
             query,
             key,
             value,
-            attn_mask=attention_mask,
-            backend=self._attention_backend,
-            parallel_config=self._parallel_config,
+            attention_mask,
+            self._attention_backend,
+            self._parallel_config,
+            segment_ids,
         )
         hidden_states = hidden_states.flatten(2, 3)
         return attn.to_out[0](hidden_states)
@@ -315,7 +315,7 @@ def make_negpip_nag_processor_class():
             super().__init__(nag_scale=nag_scale, nag_tau=nag_tau, nag_alpha=nag_alpha)
             self.token_weights = token_weights
 
-        def __call__(self, attn, hidden_states, attention_mask, image_rotary_emb):
+        def __call__(self, attn, hidden_states, attention_mask, image_rotary_emb, segment_ids=None):
             query = attn.to_q(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
             key = attn.to_k(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
             value = attn.to_v(hidden_states).unflatten(-1, (attn.num_heads, attn.head_dim))
@@ -346,9 +346,9 @@ def make_negpip_nag_processor_class():
                         w = w[:, :seq]
                 value = value * w[:, :, None, None]
 
-            hidden_states = dispatch_attention_fn(
-                query, key, value, attn_mask=attention_mask,
-                backend=self._attention_backend, parallel_config=self._parallel_config,
+            hidden_states = ideogram4_dispatch_attention(
+                query, key, value, attention_mask,
+                self._attention_backend, self._parallel_config, segment_ids,
             )
             hidden_states = hidden_states.flatten(2, 3)
 

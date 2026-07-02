@@ -23,6 +23,8 @@ import torch.nn.functional as F
 from typing import Optional
 from diffusers.models.attention_processor import Attention
 
+from core.attention import AttentionMode, dispatch_attention
+
 
 class NegPipAttnProcessor2_0:
     """Cross-attention processor that scales V by signed per-token weights.
@@ -37,26 +39,22 @@ class NegPipAttnProcessor2_0:
         if not hasattr(F, "scaled_dot_product_attention"):
             raise ImportError("NegPipAttnProcessor2_0 requires PyTorch 2.0+")
         self.token_weights = token_weights
+        # Backend selector ("normal"/"sage"/"flash"); normalized and
+        # capability-gated inside the unified conduit.
         self.attention_type = attention_type
-        if attention_type == "sage":
-            try:
-                from sageattention import sageattn
-                self.sageattn = sageattn
-                self._sage_available = True
-            except ImportError:
-                self._sage_available = False
-                self.attention_type = "normal"
-        else:
-            self._sage_available = False
 
     def _attend(self, query, key, value, attention_mask=None):
-        if self.attention_type == "sage" and self._sage_available:
-            try:
-                return self.sageattn(query, key, value, tensor_layout="HND", is_causal=False)
-            except Exception:
-                pass
-        return F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+        # q/k/v are [B, H, S, D] (BHSD); flash is now honored (was flash->SDPA).
+        return dispatch_attention(
+            query,
+            key,
+            value,
+            attn_mask=attention_mask,
+            dropout_p=0.0,
+            is_causal=False,
+            backend=self.attention_type,
+            mode=AttentionMode.INFERENCE,
+            layout="BHSD",
         )
 
     def __call__(

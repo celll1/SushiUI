@@ -358,13 +358,15 @@ class ZImageMixin:
             # Only switch if attention type has changed (avoid redundant switching overhead)
             if attention_type != self.current_attention_type:
                 print(f"[Z-Image] Switching attention backend: {self.current_attention_type} -> {attention_type}")
-                from core.models.zimage_transformer import ZImageAttention
-                ZImageAttention._attention_backend = attention_type
+                # normalize_backend ("normal"->"native"; "sla" preserved) + set on
+                # BOTH module identities (dual-module hazard). See helper docstring.
+                from core.models.zimage_transformer import set_zimage_attention_backend
+                set_zimage_attention_backend(attention_type)
                 self.current_attention_type = attention_type
             else:
                 print(f"[Z-Image] Attention backend already set to: {attention_type} (skipping)")
-                from core.models.zimage_transformer import ZImageAttention
-                ZImageAttention._attention_backend = attention_type  # Ensure it's set (for safety)
+                from core.models.zimage_transformer import set_zimage_attention_backend
+                set_zimage_attention_backend(attention_type)  # Ensure it's set (for safety)
 
             # Load or unload LoRAs
             lora_configs = params.get("loras", [])
@@ -607,13 +609,15 @@ class ZImageMixin:
             attention_type = params.get("attention_type", settings.attention_type)
             if attention_type != self.current_attention_type:
                 print(f"[Z-Image] Switching attention backend: {self.current_attention_type} -> {attention_type}")
-                from core.models.zimage_transformer import ZImageAttention
-                ZImageAttention._attention_backend = attention_type
+                # normalize_backend ("normal"->"native"; "sla" preserved) + set on
+                # BOTH module identities (dual-module hazard). See helper docstring.
+                from core.models.zimage_transformer import set_zimage_attention_backend
+                set_zimage_attention_backend(attention_type)
                 self.current_attention_type = attention_type
             else:
                 print(f"[Z-Image] Attention backend already set to: {attention_type} (skipping)")
-                from core.models.zimage_transformer import ZImageAttention
-                ZImageAttention._attention_backend = attention_type
+                from core.models.zimage_transformer import set_zimage_attention_backend
+                set_zimage_attention_backend(attention_type)
 
             # Load or unload LoRAs
             lora_configs = params.get("loras", [])

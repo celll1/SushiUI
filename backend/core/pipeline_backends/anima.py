@@ -358,6 +358,30 @@ class AnimaMixin:
         self._anima_offloader = None
         self._anima_move("transformer", "cpu")
 
+    def _anima_set_attention_backend(self, params: Dict[str, Any]) -> None:
+        """Route Anima's attention kernel through the unified conduit.
+
+        Mirrors ``pipeline_backends/zimage.py``: the selected backend
+        (``attention_type`` from params, else the global setting) is pushed onto
+        the ``anima_attention`` module-global that ``anima_attention.attention()``
+        reads. Both the image self-attention (``anima_models.Attention.forward``)
+        and the cross-attention (patched by ``nag_anima`` / ``negpip_anima``)
+        call that one primitive, so NAG/NegPip honor the selection too.
+
+        Anima has no dedicated sage kernel; a ``sage`` request is handled by the
+        conduit (sage->native guard) without crashing.
+        """
+        from core.attention import normalize_backend
+        from core.models.anima import anima_attention
+
+        attention_type = params.get("attention_type", settings.attention_type)
+        backend = normalize_backend(attention_type)
+        if backend != getattr(self, "current_attention_type", None):
+            print(f"[Anima] Switching attention backend: "
+                  f"{getattr(self, 'current_attention_type', None)} -> {backend}")
+            self.current_attention_type = backend
+        anima_attention.set_attention_backend(backend)
+
     def _generate_txt2img_anima(self, params: Dict[str, Any],
                                  progress_callback=None, step_callback=None
                                  ) -> tuple[Image.Image, int, int]:
@@ -365,6 +389,7 @@ class AnimaMixin:
             raise RuntimeError("Anima components not loaded. Please load an Anima model first.")
 
         print("[Anima] Starting txt2img generation")
+        self._anima_set_attention_backend(params)
         from core.models.anima.anima_pipeline_ops import (
             encode_prompt, sample_txt2img, vae_decode_latents,
         )
@@ -532,6 +557,7 @@ class AnimaMixin:
             raise RuntimeError("Anima components not loaded.")
 
         print("[Anima] Starting img2img generation")
+        self._anima_set_attention_backend(params)
         from core.models.anima.anima_pipeline_ops import (
             encode_prompt, sample_img2img, vae_encode_image, vae_decode_latents,
         )
@@ -698,6 +724,7 @@ class AnimaMixin:
             raise RuntimeError("Anima components not loaded.")
 
         print("[Anima] Starting inpaint generation")
+        self._anima_set_attention_backend(params)
         from core.models.anima.anima_pipeline_ops import (
             encode_prompt, sample_inpaint, vae_encode_image, vae_decode_latents,
             make_mask_latents,

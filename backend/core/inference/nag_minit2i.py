@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import torch
 
+from core.attention import AttentionMode
 from core.inference.nag_dit import nag_guidance
 
 
@@ -65,7 +66,9 @@ def _nag_double_block_forward(block, x, txt, vec, grid_h: int, grid_w: int):
 
     from core.models.minit2i.vendor.mmjit import mem_efficient_sdpa
     out = mem_efficient_sdpa(
-        q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2),
+        backend=getattr(block, "_attn_backend", "native"),
+        mode=getattr(block, "_attn_mode", AttentionMode.INFERENCE),
     ).transpose(1, 2).contiguous()  # [b, seq, heads, hd]
 
     img_out = out[:, lt:].reshape(b, li, -1)   # image attention output, flattened heads

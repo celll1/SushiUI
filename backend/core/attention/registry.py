@@ -15,7 +15,7 @@ edits are required.
 from dataclasses import dataclass
 from typing import Callable, Optional, Set
 
-from .backends import _flash_attn, _native_sdpa, _sage_attn
+from .backends import _flash_attn, _native_sdpa, _sage_attn, _tq_attn
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,37 @@ BACKENDS = {
         needs_half_dtype=True,
         supports_gqa=False,
     ),
-    # "tq": reserved -- add ONE AttentionBackend entry here + one fn in
-    # backends.py to enable Triton-Quantized attention. No conduit edits.
+    # tq:
+    #   * Triton-Quantized attention with a full (Triton) backward -> trainable=True.
+    #   * No custom mask (sage-compatible API) -> supports_mask=False.
+    #   * head_dim must be a supported power of 2: {64, 128}; other dims (SD1.5
+    #     40/80/160, Ideogram4 256, MiniT2I l16 52) are refused -> native.
+    #     Confirmed against the installed tq_attention kernel (256 unsupported,
+    #     non-power-of-2 rejected by RHT).
+    #   * Broadcasts unequal q/kv heads (GQA verified) -> supports_gqa=True.
+    #   * Only reachable on conduit-routed paths; the diffusers set_attention_backend
+    #     path (FLUX.2 default processors, SDXL/FLUX.2 training) has no tq registry
+    #     entry, so to_diffusers_backend('tq') falls back to native with a warning.
+    #
+    # Per-architecture tq routing (inference / training; see
+    # tq-attention/RELEASE_NOTE_attention_unification.md for file:line evidence):
+    #   SDXL/SD1.5  : tq(SDXL 64) / native(SD1.5 40/80/160)  |  native (diffusers
+    #                 set_attention_backend -> native for training).
+    #   Z-Image     : tq / tq        (conduit; head_dim 128, GQA).
+    #   FLUX.2      : native / native (diffusers dispatch; no tq entry).
+    #   Ideogram4   : native / native (diffusers dispatch; also head_dim 256).
+    #   Lens        : tq / tq        (conduit; head_dim 64).
+    #   MiniT2I     : tq(b16 64) / native(l16 52->56 padded)  | same for training.
+    #   Anima       : tq / native    (inference: conduit _attention_backend='tq';
+    #                 training: attn_mode{'torch','flash'} mapping blocks tq).
+    "tq": AttentionBackend(
+        name="tq",
+        fn=_tq_attn,
+        trainable=True,
+        supports_mask=False,
+        max_head_dim=128,
+        allowed_head_dims={64, 128},
+        needs_half_dtype=True,
+        supports_gqa=True,
+    ),
 }

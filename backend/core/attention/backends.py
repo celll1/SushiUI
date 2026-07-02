@@ -228,3 +228,69 @@ def _sage_attn(
     except Exception as e:  # noqa: BLE001 - never raise into the model
         print(f"[Attention] sageattention error: {e}; falling back to native")
         return None
+
+
+def _tq_attn(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attn_mask: Optional[torch.Tensor] = None,
+    dropout_p: float = 0.0,
+    is_causal: bool = False,
+    scale: Optional[float] = None,
+    enable_gqa: bool = False,
+) -> Optional[torch.Tensor]:
+    """
+    TQ-Attention (Triton-Quantized attention with a full backward), BSHD in/out.
+
+    Sage-compatible signature. Our canonical layout BSHD == ``[B, S, H, D]`` ==
+    tq_attention's ``NHD``, so we call ``tq_attention(..., layout='NHD')``.
+
+    Notes on the verified API (venv tq_attention.tq_attention):
+        * Takes ``sm_scale`` (not ``scale``); does NOT accept an additive/boolean
+          mask -> gated ``supports_mask=False`` upstream, so ``attn_mask`` is
+          always ``None`` here and is intentionally not forwarded.
+        * Supports a real backward (Triton) -> usable in TRAINING (``trainable=True``).
+        * Broadcasts unequal q/kv heads (GQA verified) -> ``enable_gqa`` unused.
+        * head_dim must be a supported power of 2 (64/128); other dims are gated
+          out upstream (``allowed_head_dims={64, 128}``) and never reach here.
+        * Quantized kernel: non-half inputs are cast to bf16 and the output cast
+          back (matches the sage/flash quant path).
+    Returns ``None`` on any failure (conduit falls back to native).
+    """
+    try:
+        from tq_attention import tq_attention as _tq
+
+        original_dtype = query.dtype
+        needs_conversion = original_dtype not in _HALF_DTYPES
+
+        if needs_conversion:
+            q = query.to(torch.bfloat16)
+            k = key.to(torch.bfloat16)
+            v = value.to(torch.bfloat16)
+        else:
+            q, k, v = query, key, value
+
+        q = q.contiguous()
+        k = k.contiguous()
+        v = v.contiguous()
+
+        out = _tq(
+            q,
+            k,
+            v,
+            layout="NHD",  # NHD == [B, S, H, D] == canonical BSHD
+            is_causal=is_causal,
+            sm_scale=scale,
+        )
+
+        if needs_conversion:
+            out = out.to(original_dtype)
+
+        return out.contiguous()
+    except ImportError:
+        print("[Attention] tq_attention not available; falling back to native")
+        return None
+    except Exception as e:  # noqa: BLE001 - never raise into the model
+        print(f"[Attention] tq_attention error: {e}; falling back to native")
+        return None

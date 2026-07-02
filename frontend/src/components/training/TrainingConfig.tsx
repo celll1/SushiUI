@@ -162,10 +162,10 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   output_dtype: "fp32",
   vae_dtype: "fp16",
   mixed_precision: true,
-  // Attention backend for training: "native" | "flash" (sage is inference-only).
+  // Attention backend for training: "native" | "flash" | "tq" (sage is inference-only).
   // Overwritten by trainingDefaults on startup; literal here is the no-backend fallback.
   attention_backend: "native",
-  // DEPRECATED compat mirror of attention_backend (native<->false, flash<->true).
+  // DEPRECATED compat mirror of attention_backend (true ONLY for flash; native/tq -> false).
   // Kept synchronized on every UI change; attention_backend is authoritative.
   use_flash_attention: false,
   min_snr_gamma: 5.0,
@@ -1606,7 +1606,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       mixedPrecision,
       attentionBackend,
       // Legacy compat mirror so old importers still read a flash flag.
-      useFlashAttention: attentionBackend !== "native",
+      // Only 'flash' maps to the bool; tq/sage/native -> false (matches onChange + restore).
+      useFlashAttention: attentionBackend === "flash",
       minSnrGamma,
       reconstructionLossWeight,
       textEncodingMode,
@@ -1787,7 +1788,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     // to native. use_flash_attention is kept synchronized as the derived mirror.
     if (config.attentionBackend !== undefined) {
       updateParam("attention_backend", config.attentionBackend);
-      updateParam("use_flash_attention", config.attentionBackend !== "native");
+      // use_flash_attention is true ONLY for the flash backend; tq and native map to false.
+      updateParam("use_flash_attention", config.attentionBackend === "flash");
     } else if (config.useFlashAttention !== undefined) {
       updateParam("attention_backend", config.useFlashAttention ? "flash" : "native");
       updateParam("use_flash_attention", config.useFlashAttention);
@@ -3770,16 +3772,21 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   const backend = e.target.value;
                   updateParam("attention_backend", backend);
                   // R6: keep the deprecated compat mirror synchronized.
-                  updateParam("use_flash_attention", backend !== "native");
+                  // use_flash_attention is true ONLY for the flash backend; tq and native map to false.
+                  updateParam("use_flash_attention", backend === "flash");
                 }}
                 className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
               >
                 <option value="native">Native (PyTorch SDPA)</option>
                 <option value="flash">Flash Attention</option>
+                <option value="tq">TQ (Triton-Quantized)</option>
                 <option value="sage" disabled title="Sage Attention is inference only (no backward pass)">
                   Sage (inference only)
                 </option>
               </select>
+              <p className="text-xs text-gray-500 mt-1">
+                TQ (Triton-Quantized) applies to Z-Image, Lens, MiniT2I, and Anima training. Other architectures fall back to native.
+              </p>
             </div>
 
             {/* Min-SNR Gamma */}

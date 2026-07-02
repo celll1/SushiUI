@@ -46,6 +46,12 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "nag_negative_prompt": "",
     # Attention / quantization
     "attention_type": "normal",
+    # Which attention IMPLEMENTATION runs the kernel (orthogonal to attention_type,
+    # which selects the backend). "conduit" routes through core/attention (enables
+    # conduit-only backends such as tq on FLUX.2); "diffusers" keeps diffusers' own
+    # registry (byte-identical legacy path). Consumed by the FLUX.2 inference path;
+    # other archs are conduit-only or ignore it.
+    "attention_impl": "conduit",
     "unet_quantization": None,
     "text_encoder_quantization": None,
     "cpu_text_encoding": False,

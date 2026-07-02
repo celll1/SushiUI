@@ -1335,11 +1335,24 @@ components:
             Attention 2, tq=Triton-Quantized attention (trainable, with a real backward).
             tq is effective only on conduit-routed architectures (Z-Image/Lens/MiniT2I/Anima
             and SDXL inference); it does NOT reach FLUX.2 (diffusers-native) and falls back
-            to native there. tq supports head_dim of 64 or 128 only; other head dims
-            (e.g. Ideogram4 head_dim=256) fall back to native. Unsupported combinations
-            (e.g. head_dim outside the backend's supported set, mask present) fall back to
-            native automatically.
+            to native there UNLESS attention_impl=conduit (FLUX.2 then routes through the
+            conduit and tq engages at head_dim 128). tq supports head_dim of 64 or 128 only;
+            other head dims (e.g. Ideogram4 head_dim=256) fall back to native. Unsupported
+            combinations (e.g. head_dim outside the backend's supported set, mask present)
+            fall back to native automatically.
           example: normal
+        attention_impl:
+          type: string
+          enum: [conduit, diffusers]
+          default: conduit
+          description: |
+            Which attention IMPLEMENTATION runs the kernel (orthogonal to attention_type,
+            which selects the backend). conduit=route through SushiUI's unified dispatch
+            (backend/core/attention/), enabling conduit-only backends such as tq on FLUX.2.
+            diffusers=use diffusers' own attention registry (byte-identical legacy path,
+            selectable for reversion). Currently consumed by the FLUX.2 inference path; other
+            architectures are conduit-only or ignore it.
+          example: conduit
         use_torch_compile:
           type: boolean
           default: false

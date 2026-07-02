@@ -2894,16 +2894,41 @@ class BaseTrainer(ABC):
     def _setup_attention_backend_flux2(self, backend: str):
         """Set the attention backend for FLUX.2 models.
 
-        Same diffusers ``set_attention_backend`` mechanism as SD/SDXL, driven by
-        the canonical string. ``resolve_backend`` refuses sage for training (R4).
+        attention_impl='conduit' (default): install ConduitFlux2* processors on the
+        training transformer's NON-KV attention modules so the unified conduit runs
+        the kernel (enables tq training on FLUX.2). attention_impl='diffusers': the
+        legacy set_attention_backend path (byte-identical). ``resolve_backend`` refuses
+        sage for training (R4) in both branches.
         """
         if self.transformer is None:
             print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
             return
 
         b = self._resolve_training_backend(backend)
+
+        if getattr(self, "attention_impl", "conduit") == "conduit":
+            try:
+                from core.attention import AttentionMode
+                from core.pipeline_backends.flux2 import _install_flux2_conduit_processors
+                try:
+                    self.transformer.set_attention_backend("native")
+                except Exception:
+                    pass
+                migrated = _install_flux2_conduit_processors(self.transformer, b, AttentionMode.TRAINING)
+                print(f"{self.log_prefix} [OK] FLUX.2 attention impl=conduit backend='{b}' "
+                      f"({migrated} attn modules migrated)")
+            except Exception as e:
+                print(f"{self.log_prefix} WARNING: FLUX.2 conduit install failed ({e}); "
+                      f"falling back to diffusers set_attention_backend")
+                try:
+                    self.transformer.set_attention_backend(to_diffusers_backend(b))
+                except Exception:
+                    pass
+            return
+
+        # attention_impl='diffusers' (legacy, byte-identical)
         try:
-            print(f"{self.log_prefix} Setting FLUX.2 Transformer attention backend '{b}'...")
+            print(f"{self.log_prefix} Setting FLUX.2 Transformer attention backend '{b}' (impl=diffusers)...")
             self.transformer.set_attention_backend(to_diffusers_backend(b))
             print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
         except Exception as e:

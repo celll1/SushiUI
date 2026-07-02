@@ -168,6 +168,10 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   // DEPRECATED compat mirror of attention_backend (true ONLY for flash; native/tq -> false).
   // Kept synchronized on every UI change; attention_backend is authoritative.
   use_flash_attention: false,
+  // Attention implementation registry: "conduit" | "diffusers". Selects WHICH registry
+  // runs the kernel (orthogonal to attention_backend). Overwritten by trainingDefaults
+  // on startup; literal here is the no-backend fallback. Affects SDXL/SD1.5 training.
+  attention_impl: "conduit",
   min_snr_gamma: 5.0,
   reconstruction_loss_weight: 0.0,
   text_encoding_mode: "swap_onthefly",
@@ -490,6 +494,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const mixedPrecision = params.mixed_precision ?? true;
   // attention_backend is authoritative; use_flash_attention is a derived compat mirror.
   const attentionBackend = params.attention_backend ?? "native";
+  // Attention implementation registry (conduit|diffusers). See DEFAULT_CONFIG note.
+  const attentionImpl = params.attention_impl ?? "conduit";
   const minSnrGamma = params.min_snr_gamma ?? 5.0;
   const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
 
@@ -730,6 +736,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       vae_dtype: params.vae_dtype,
       mixed_precision: params.mixed_precision,
       attention_backend: params.attention_backend,
+      attention_impl: params.attention_impl,
       use_flash_attention: params.use_flash_attention,
       min_snr_gamma: params.min_snr_gamma,
       reconstruction_loss_weight: params.reconstruction_loss_weight,
@@ -958,7 +965,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "train_unet", "train_text_encoder", "train_image_encoder",
       "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
       "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
-      "mixed_precision", "attention_backend", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
+      "mixed_precision", "attention_backend", "attention_impl", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
@@ -1605,6 +1612,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       vaeDtype,
       mixedPrecision,
       attentionBackend,
+      attentionImpl,
       // Legacy compat mirror so old importers still read a flash flag.
       // Only 'flash' maps to the bool; tq/sage/native -> false (matches onChange + restore).
       useFlashAttention: attentionBackend === "flash",
@@ -1793,6 +1801,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     } else if (config.useFlashAttention !== undefined) {
       updateParam("attention_backend", config.useFlashAttention ? "flash" : "native");
       updateParam("use_flash_attention", config.useFlashAttention);
+    }
+    // Attention implementation registry (conduit|diffusers); orthogonal to backend.
+    if (config.attentionImpl !== undefined) {
+      updateParam("attention_impl", config.attentionImpl);
     }
     if (config.minSnrGamma !== undefined) updateParam("min_snr_gamma", config.minSnrGamma);
     if (config.reconstructionLossWeight !== undefined) updateParam("reconstruction_loss_weight", config.reconstructionLossWeight);
@@ -3786,6 +3798,27 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </select>
               <p className="text-xs text-gray-500 mt-1">
                 TQ (Triton-Quantized) applies to Z-Image, Lens, MiniT2I, and Anima training. Other architectures fall back to native.
+              </p>
+            </div>
+
+            {/* Attention Impl */}
+            <div className="space-y-1">
+              <label htmlFor="attention-impl" className="block text-xs text-gray-300">
+                Attention Impl
+              </label>
+              <select
+                id="attention-impl"
+                value={attentionImpl}
+                onChange={(e) => updateParam("attention_impl", e.target.value)}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              >
+                <option value="conduit">Conduit (unified dispatch)</option>
+                <option value="diffusers">Diffusers (legacy set_attention_backend)</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Selects which registry runs the attention kernel (orthogonal to the backend above).
+                "diffusers" reproduces the legacy set_attention_backend path. Affects SDXL/SD1.5 training;
+                FLUX.2 is not yet migrated and ignores this setting.
               </p>
             </div>
 

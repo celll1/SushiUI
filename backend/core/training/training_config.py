@@ -171,6 +171,11 @@ def _build_train_section(
         "flash" if p.get("use_flash_attention") else "native"
     )
     train["use_flash_attention"] = p.get("use_flash_attention", False)
+    # Attention implementation registry ("conduit" | "diffusers"). Persisted into
+    # the run config so resumes reproduce the same registry. Fresh runs default to
+    # "conduit"; base_trainer applies the resume backward-compat (missing key on a
+    # resume -> "diffusers"). Orthogonal to attention_backend.
+    train["attention_impl"] = p.get("attention_impl", "conduit")
     train["min_snr_gamma"] = p.get("min_snr_gamma", 5.0)
     train["reconstruction_loss_weight"] = p.get("reconstruction_loss_weight", 0.0)
 

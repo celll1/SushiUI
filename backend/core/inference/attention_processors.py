@@ -36,10 +36,15 @@ class UnifiedAttnProcessor:
         backend: Backend selector string ("normal", "sage", or "flash"). The
             string is normalized and capability-gated inside the conduit, so no
             per-processor availability probing is needed here.
+        mode: Conduit dispatch mode. Defaults to ``AttentionMode.INFERENCE`` so
+            inference callers are unchanged; SDXL/SD1.5 training installs this
+            same processor with ``AttentionMode.TRAINING`` (autograd-safe path,
+            training-only backend guards).
     """
 
-    def __init__(self, backend: str = "normal"):
+    def __init__(self, backend: str = "normal", mode: AttentionMode = AttentionMode.INFERENCE):
         self.backend = backend
+        self.mode = mode
 
     def __call__(
         self,
@@ -94,7 +99,7 @@ class UnifiedAttnProcessor:
             dropout_p=0.0,
             is_causal=False,
             backend=self.backend,
-            mode=AttentionMode.INFERENCE,
+            mode=self.mode,
             layout="BHSD",
         )
 
@@ -116,7 +121,11 @@ class UnifiedAttnProcessor:
         return hidden_states
 
 
-def set_attention_processor(unet, attention_type: str = "normal"):
+def set_attention_processor(
+    unet,
+    attention_type: str = "normal",
+    mode: AttentionMode = AttentionMode.INFERENCE,
+):
     """
     Set the unified attention processor on every attention layer of the UNet.
 
@@ -124,6 +133,9 @@ def set_attention_processor(unet, attention_type: str = "normal"):
         unet: The UNet model
         attention_type: Backend selector ("normal", "sage", "flash"). Normalized
             inside the conduit.
+        mode: Conduit dispatch mode forwarded to each processor. Defaults to
+            ``AttentionMode.INFERENCE`` so inference callers are unchanged; SDXL/
+            SD1.5 training passes ``AttentionMode.TRAINING``.
 
     Returns:
         dict: Original processors for restoration
@@ -133,8 +145,8 @@ def set_attention_processor(unet, attention_type: str = "normal"):
 
     num_processors = len(unet.attn_processors)
 
-    print(f"[AttentionProcessor] Setting UnifiedAttnProcessor (backend={attention_type}) for {num_processors} attention layers")
-    new_processors = {name: UnifiedAttnProcessor(attention_type) for name in unet.attn_processors.keys()}
+    print(f"[AttentionProcessor] Setting UnifiedAttnProcessor (backend={attention_type}, mode={mode.name}) for {num_processors} attention layers")
+    new_processors = {name: UnifiedAttnProcessor(attention_type, mode=mode) for name in unet.attn_processors.keys()}
     unet.set_attn_processor(new_processors)
     print(f"[AttentionProcessor] [OK] UnifiedAttnProcessor ACTIVE for all {num_processors} layers")
 

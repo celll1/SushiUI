@@ -2003,6 +2003,25 @@ components:
             from `use_flash_attention` (`true` -> `flash`, `false` -> `native`) for
             backward compatibility with existing presets.
           example: "native"
+        attention_impl:
+          type: string
+          enum: ["conduit", "diffusers"]
+          default: "conduit"
+          description: |
+            Attention implementation registry used during training. Selects WHICH
+            registry executes the attention kernel; orthogonal to `attention_backend`
+            (which selects WHICH kernel).
+            - `conduit`: routes through the unified `backend/core/attention` dispatch
+              (new default). Enables the `tq` backend in SDXL/SD1.5 training.
+            - `diffusers`: reproduces the pre-migration `set_attention_backend` path
+              byte-for-byte.
+
+            TRAINING-ONLY this pass; affects SDXL/SD1.5 training (FLUX.2/Ideogram4 are
+            not yet migrated and ignore this flag). Backward-compat: a fresh run
+            defaults to `conduit`; a resume whose saved config lacks this key defaults
+            to `diffusers` to reproduce prior numerics, and the resolved value is
+            persisted back into the run config.
+          example: "conduit"
         use_flash_attention:
           type: boolean
           default: false

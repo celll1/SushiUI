@@ -33,6 +33,13 @@ import gc
 import math
 from abc import ABC, abstractmethod
 
+from core.attention import (
+    AttentionMode,
+    normalize_backend,
+    resolve_backend,
+    to_diffusers_backend,
+)
+
 
 # ============================================================
 # Training Logger Helper
@@ -565,6 +572,7 @@ class BaseTrainer(ABC):
         mixed_precision: bool = True,
         debug_vram: bool = False,
         use_flash_attention: bool = False,
+        attention_backend: Optional[str] = None,
         min_snr_gamma: float = 5.0,
         reconstruction_loss_weight: float = 0.0,
         # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
@@ -625,7 +633,12 @@ class BaseTrainer(ABC):
             vae_dtype: VAE-specific dtype (fp16, fp32, bf16) - SDXL VAE works fine with fp16
             mixed_precision: Enable mixed precision training (autocast)
             debug_vram: Enable detailed VRAM profiling (default: False)
-            use_flash_attention: Enable Flash Attention for training (faster, lower memory)
+            use_flash_attention: DEPRECATED compat boolean; when attention_backend is
+                None it selects flash (True) vs native (False). Superseded by
+                attention_backend and re-derived as (attention_backend != 'native').
+            attention_backend: Attention backend string selector for training
+                ("native"|"flash"; "sage" refused for training -> native). Overrides
+                use_flash_attention when set.
             min_snr_gamma: Min-SNR gamma value for loss weighting (default: 5.0, 0 to disable)
         """
         self.model_path = model_path
@@ -719,7 +732,18 @@ class BaseTrainer(ABC):
         self.vae_dtype = get_torch_dtype(vae_dtype)
         self.mixed_precision = mixed_precision
         self.debug_vram = debug_vram
-        self.use_flash_attention = use_flash_attention
+        # Attention backend (single source of truth for training). The string
+        # selector is authoritative; fall back to the legacy boolean for old
+        # presets/YAML that only set use_flash_attention. normalize_backend maps
+        # aliases/None -> canonical keys and preserves passthrough backends.
+        # R5: self.use_flash_attention becomes a DERIVED compat mirror so all
+        # existing `if self.use_flash_attention:` guard sites keep firing AND the
+        # string selector (e.g. 'flash'/'sage') triggers them. sage is refused
+        # per-hook by resolve_backend(mode=TRAINING) (R4 defense-in-depth).
+        self.attention_backend = normalize_backend(
+            attention_backend or ('flash' if use_flash_attention else 'native')
+        )
+        self.use_flash_attention = (self.attention_backend != 'native')
         self.min_snr_gamma = min_snr_gamma
         self.reconstruction_loss_weight = reconstruction_loss_weight
 
@@ -982,9 +1006,9 @@ class BaseTrainer(ABC):
         self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
         print(f"{self.log_prefix} Phase 2 optimization: Complete batched processing")
 
-        # Setup Flash Attention if enabled
+        # Setup attention backend if non-native (use_flash_attention is derived from it)
         if self.use_flash_attention:
-            self._setup_flash_attention_zimage()
+            self._setup_attention_backend_zimage(self.attention_backend)
 
         # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
         if hasattr(self.transformer, 'enable_gradient_checkpointing'):
@@ -1167,9 +1191,9 @@ class BaseTrainer(ABC):
               f"(block swap, if any, will redistribute after adapter setup)")
         self.transformer.to(self.device)
 
-        # Setup Flash Attention if enabled (opt-in; SDPA fallback otherwise)
+        # Setup attention backend if non-native (opt-in; SDPA fallback otherwise)
         if self.use_flash_attention:
-            self._setup_flash_attention_anima()
+            self._setup_attention_backend_anima(self.attention_backend)
 
         print(f"{self.log_prefix} Anima model loaded successfully")
         print(f"{self.log_prefix} Scheduler: {self.scheduler.__class__.__name__}, "
@@ -1289,9 +1313,9 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Moving Lens transformer to {self.device}")
         self.transformer.to(self.device)
 
-        # Setup Flash Attention if enabled (opt-in; SDPA fallback otherwise)
+        # Setup attention backend if non-native (opt-in; SDPA fallback otherwise)
         if self.use_flash_attention:
-            self._setup_flash_attention_lens()
+            self._setup_attention_backend_lens(self.attention_backend)
 
         print(f"{self.log_prefix} Lens model loaded successfully")
 
@@ -1385,6 +1409,10 @@ class BaseTrainer(ABC):
         self.transformer.to(self.device)
         if self.transformer_uncond is not None:
             self.transformer_uncond.to(self.device)
+
+        # Setup attention backend if non-native (use_flash_attention is derived from it)
+        if self.use_flash_attention:
+            self._setup_attention_backend_ideogram4(self.attention_backend)
 
         print(f"{self.log_prefix} Ideogram 4 model loaded successfully")
 
@@ -1520,6 +1548,10 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Moving MiniT2I transformer to {self.device}")
         self.transformer.to(self.device)
+
+        # Setup attention backend if non-native (use_flash_attention is derived from it)
+        if self.use_flash_attention:
+            self._setup_attention_backend_minit2i(self.attention_backend)
 
         # REPA (representation alignment): load frozen encoder + build the trainable
         # projector BEFORE adapter/optimizer setup so its params join the optimizer.
@@ -1995,9 +2027,9 @@ class BaseTrainer(ABC):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
 
-        # Setup Flash Attention if enabled
+        # Setup attention backend if non-native (use_flash_attention is derived from it)
         if self.use_flash_attention:
-            self._setup_flash_attention_flux2()
+            self._setup_attention_backend_flux2(self.attention_backend)
 
         # Freeze all base weights (full parameter training will unfreeze specific layers later)
         self.vae.requires_grad_(False)
@@ -2163,9 +2195,9 @@ class BaseTrainer(ABC):
                 self.text_encoder.gradient_checkpointing_enable()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
 
-            # Setup Flash Attention if enabled (FLUX.2 checkpoint resume)
+            # Setup attention backend if non-native (FLUX.2 checkpoint resume)
             if self.use_flash_attention:
-                self._setup_flash_attention_flux2()
+                self._setup_attention_backend_flux2(self.attention_backend)
 
             # Freeze all base weights (full parameter training will unfreeze specific layers later)
             self.vae.requires_grad_(False)
@@ -2318,9 +2350,9 @@ class BaseTrainer(ABC):
             self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
             print(f"{self.log_prefix} Phase 2 optimization: Complete batched processing")
 
-            # Setup Flash Attention if enabled
+            # Setup attention backend if non-native (Z-Image checkpoint resume)
             if self.use_flash_attention:
-                self._setup_flash_attention_zimage()
+                self._setup_attention_backend_zimage(self.attention_backend)
 
             # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
             if hasattr(self.transformer, 'enable_gradient_checkpointing'):
@@ -2450,9 +2482,9 @@ class BaseTrainer(ABC):
             # Convert VAE to vae_dtype
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
-            # Setup Flash Attention if enabled
+            # Setup attention backend if non-native (use_flash_attention is derived from it)
             if self.use_flash_attention:
-                self._setup_flash_attention_sd_sdxl()
+                self._setup_attention_backend_sd_sdxl(self.attention_backend)
 
             # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
             if hasattr(self.unet, 'enable_gradient_checkpointing'):
@@ -2676,9 +2708,9 @@ class BaseTrainer(ABC):
         self.transformer = None
         self.transformer_original = None
 
-        # Setup Flash Attention if enabled
+        # Setup attention backend if non-native (use_flash_attention is derived from it)
         if self.use_flash_attention:
-            self._setup_flash_attention_sd_sdxl()
+            self._setup_attention_backend_sd_sdxl(self.attention_backend)
 
         # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
         if hasattr(self.unet, 'enable_gradient_checkpointing'):
@@ -2699,124 +2731,212 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} {'SDXL' if self.is_sdxl else 'SD1.5'} model loaded successfully")
 
-    def _setup_flash_attention_zimage(self):
-        """Setup Flash Attention for Z-Image models.
+    def _resolve_training_backend(self, backend: str) -> str:
+        """Apply the TRAINING-mode capability guard to a backend string (R4).
 
-        Falls back silently (keeps the default backend) if flash-attn is not
-        installed / the module can't be resolved, so a missing dependency never
-        aborts training — matching the SD/SDXL/FLUX.2 setup behaviour.
+        Runs ``resolve_backend(..., mode=TRAINING)`` so inference-only backends
+        (sage — no backward kernel) are stripped to native regardless of the UI
+        restriction. This is defense-in-depth: a hand-edited YAML/preset with
+        ``attention_backend='sage'`` must never reach a diffusers
+        ``set_attention_backend`` / per-module attr in training.
+
+        A neutral probe tensor (head_dim=64, equal q/kv heads, no mask) is passed
+        so ONLY the trainability guard is decisive here; the per-call head_dim /
+        GQA / mask guards still apply at actual dispatch time inside the model
+        forward. Returns the sage-stripped canonical backend key.
+        """
+        probe = torch.empty(1, 1, 1, 64)
+        return resolve_backend(backend, AttentionMode.TRAINING, probe, probe)
+
+    def _setup_attention_backend_zimage(self, backend: str):
+        """Set the attention backend for Z-Image models.
+
+        Sets ``ZImageAttention._attention_backend`` on BOTH module objects (the
+        importlib-loaded ``sys.modules['zimage_transformer']`` used by the loaded
+        transformer AND ``core.models.zimage_transformer``) so the dual-module
+        hazard cannot leave the two disagreeing (design 2.2).
+
+        Falls back silently (keeps the default backend) if the module can't be
+        resolved, so a missing dependency never aborts training.
         """
         import sys
 
+        b = self._resolve_training_backend(backend)
+        applied = False
         try:
             # The transformer is loaded via importlib with module name
-            # "zimage_transformer"; access the ACTUAL module used, not
-            # core.models.zimage_transformer.
+            # "zimage_transformer"; set the attr on the ACTUAL module used.
             if 'zimage_transformer' in sys.modules:
                 zimage_transformer_module = sys.modules['zimage_transformer']
-                ZImageAttention = zimage_transformer_module.ZImageAttention
-                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image...")
-                print(f"{self.log_prefix} [DEBUG] Module: {zimage_transformer_module.__name__}")
+                zimage_transformer_module.ZImageAttention._attention_backend = b
+                applied = True
+                print(f"{self.log_prefix} Set Z-Image attention backend '{b}' on "
+                      f"module {zimage_transformer_module.__name__}")
+            # Also set on core.models.zimage_transformer so both module objects agree.
+            from core.models.zimage_transformer import ZImageAttention
+            ZImageAttention._attention_backend = b
+            applied = True
+            if b == 'native':
+                print(f"{self.log_prefix} [OK] Z-Image attention backend set to native")
             else:
-                # Fallback: core.models.zimage_transformer (inference pipeline path)
-                from core.models.zimage_transformer import ZImageAttention
-                print(f"{self.log_prefix} Setting Flash Attention backend for Z-Image (fallback)...")
-            ZImageAttention._attention_backend = "flash"
-            print(f"{self.log_prefix} [OK] Flash Attention enabled: {ZImageAttention._attention_backend}")
+                print(f"{self.log_prefix} [OK] Z-Image attention backend enabled: {b}")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for Z-Image: {e}")
-            print(f"{self.log_prefix} Continuing with the default attention backend "
-                  f"(ensure flash-attn is installed: pip install flash-attn)")
+            print(f"{self.log_prefix} WARNING: Failed to set Z-Image attention backend '{b}': {e}")
+            if not applied:
+                print(f"{self.log_prefix} Continuing with the default attention backend "
+                      f"(ensure flash-attn is installed for flash: pip install flash-attn)")
 
-    def _setup_flash_attention_sd_sdxl(self):
-        """Setup Flash Attention for SD/SDXL models.
+    def _setup_attention_backend_sd_sdxl(self, backend: str):
+        """Set the attention backend for SD/SDXL models.
 
-        Uses diffusers' set_attention_backend('flash') which requires flash-attn package.
-        This is the same modern API used by FLUX.2 and other DiT models.
-
-        Available backends: 'flash', 'sage', 'native', 'xformers', etc.
-        See: diffusers.models.attention_dispatch.AttentionBackendName
+        Uses diffusers' ``set_attention_backend`` driven by the SAME canonical
+        string (mapped via ``to_diffusers_backend``). ``resolve_backend`` refuses
+        sage before it ever reaches diffusers (R4).
         """
         if self.unet is None:
-            print(f"{self.log_prefix} WARNING: UNet not loaded, skipping Flash Attention setup")
+            print(f"{self.log_prefix} WARNING: UNet not loaded, skipping attention backend setup")
             return
 
+        b = self._resolve_training_backend(backend)
         try:
-            # Use set_attention_backend('flash') - modern diffusers API (same as FLUX.2)
-            print(f"{self.log_prefix} Setting Flash Attention backend for SD/SDXL UNet...")
-            self.unet.set_attention_backend("flash")
-            print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
+            print(f"{self.log_prefix} Setting SD/SDXL UNet attention backend '{b}'...")
+            self.unet.set_attention_backend(to_diffusers_backend(b))
+            print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
+            print(f"{self.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
 
-    def _setup_flash_attention_flux2(self):
-        """Setup Flash Attention for FLUX.2 models.
+    def _setup_attention_backend_flux2(self, backend: str):
+        """Set the attention backend for FLUX.2 models.
 
-        Uses diffusers' set_attention_backend('flash') which requires flash-attn package.
-        Same modern API as SD/SDXL.
-
-        Available backends: 'flash', 'sage', 'native', 'xformers', etc.
-        See: diffusers.models.attention_dispatch.AttentionBackendName
+        Same diffusers ``set_attention_backend`` mechanism as SD/SDXL, driven by
+        the canonical string. ``resolve_backend`` refuses sage for training (R4).
         """
         if self.transformer is None:
-            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
             return
 
+        b = self._resolve_training_backend(backend)
         try:
-            # Use set_attention_backend('flash') - modern diffusers API
-            print(f"{self.log_prefix} Setting Flash Attention backend for FLUX.2 Transformer...")
-            self.transformer.set_attention_backend("flash")
-            print(f"{self.log_prefix} [OK] Flash Attention enabled via set_attention_backend('flash')")
+            print(f"{self.log_prefix} Setting FLUX.2 Transformer attention backend '{b}'...")
+            self.transformer.set_attention_backend(to_diffusers_backend(b))
+            print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention: {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
+            print(f"{self.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
 
-    def _setup_flash_attention_anima(self):
-        """Setup Flash Attention for Anima (Cosmos DiT) models.
+    def _setup_attention_backend_anima(self, backend: str):
+        """Set the attention backend for Anima (Cosmos DiT) models.
 
-        Anima's vendored attention dispatches on a per-block ``attn_mode``; set
-        it to 'flash' so anima_attention.attention() routes unmasked attention
-        through flash_attn_func.  Masked attention (and any failure) falls back
-        to SDPA, so the default path is unchanged when this is not called.
+        Anima's vendored attention dispatches on a per-block ``attn_mode`` whose
+        vocabulary is ``'torch'|'flash'`` (no 'native'/'sage'). Map native->'torch',
+        flash->'flash' (R9); sage is refused upstream by ``resolve_backend`` and
+        arrives here as native. Masked attention (and any failure) still falls
+        back to SDPA inside the vendored kernel.
         """
         if self.transformer is None:
-            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
             return
+        b = self._resolve_training_backend(backend)
+        attn_mode = 'flash' if b == 'flash' else 'torch'
         try:
             n = 0
             for m in self.transformer.modules():
                 if hasattr(m, "attn_mode"):
-                    m.attn_mode = "flash"
+                    m.attn_mode = attn_mode
                     n += 1
-            print(f"{self.log_prefix} [OK] Flash Attention enabled on {n} Anima block(s) "
-                  f"(unmasked attention; SDPA fallback otherwise)")
+            print(f"{self.log_prefix} [OK] Anima attention backend '{b}' (attn_mode='{attn_mode}') "
+                  f"set on {n} block(s)")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for Anima: {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
+            print(f"{self.log_prefix} WARNING: Failed to set Anima attention backend '{b}': {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
 
-    def _setup_flash_attention_lens(self):
-        """Setup Flash Attention for Lens (DiT) models.
+    def _setup_attention_backend_lens(self, backend: str):
+        """Set the attention backend for Lens (DiT) models.
 
-        Lens' vendored joint-attention hardcodes SDPA; set a per-module flag so
-        LensJointAttention.forward routes unmasked attention through
-        flash_attn_func.  Masked attention (and any failure) falls back to SDPA,
-        so the default path is unchanged when this is not called.
+        Sets ``m._attention_backend`` on every ``LensJointAttention`` module (the
+        new contract the Stage-B vendor read-site consumes, design 2.5). Also
+        sets the legacy ``_use_flash_attn`` flag as a TRANSITIONAL bridge so the
+        current vendor (which still reads ``_use_flash_attn`` until Phase 3e)
+        keeps honoring flash during the staged rollout — the two stay consistent
+        and the legacy flag is removed once the read-site migrates.
         """
         if self.transformer is None:
-            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping Flash Attention setup")
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
             return
+        b = self._resolve_training_backend(backend)
         try:
             n = 0
             for m in self.transformer.modules():
                 if type(m).__name__ == "LensJointAttention":
-                    m._use_flash_attn = True
+                    m._attention_backend = b
+                    # Transitional bridge for the pre-Phase-3e vendor read-site.
+                    m._use_flash_attn = (b == 'flash')
                     n += 1
-            print(f"{self.log_prefix} [OK] Flash Attention enabled on {n} Lens attention module(s) "
-                  f"(unmasked attention; SDPA fallback otherwise)")
+            print(f"{self.log_prefix} [OK] Lens attention backend '{b}' set on {n} module(s)")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to enable Flash Attention for Lens: {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed: pip install flash-attn")
+            print(f"{self.log_prefix} WARNING: Failed to set Lens attention backend '{b}': {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+    def _setup_attention_backend_ideogram4(self, backend: str):
+        """Set the attention backend for Ideogram4 models (training hook).
+
+        The vendored ``Ideogram4AttnProcessor`` calls diffusers'
+        ``dispatch_attention_fn(..., backend=self._attention_backend)``, so we set
+        the per-module processor's ``_attention_backend`` to the diffusers string
+        (mapped via ``to_diffusers_backend``). ``resolve_backend`` refuses sage for
+        training (R4); note head_dim=256 also excludes sage at inference. Stage-B
+        adds the inference-pipeline plumbing + flash_attn_varlen path; this hook
+        only stamps the field for training and honors the training guard.
+        """
+        if self.transformer is None:
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
+            return
+        b = self._resolve_training_backend(backend)
+        diffusers_b = to_diffusers_backend(b)
+        try:
+            n = 0
+            for t in (self.transformer, getattr(self, "transformer_uncond", None)):
+                if t is None:
+                    continue
+                for m in t.modules():
+                    if type(m).__name__ == "Ideogram4Attention":
+                        processor = getattr(m, "processor", None)
+                        if processor is not None:
+                            processor._attention_backend = diffusers_b
+                            n += 1
+            print(f"{self.log_prefix} [OK] Ideogram4 attention backend '{b}' "
+                  f"(diffusers '{diffusers_b}') set on {n} processor(s)")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to set Ideogram4 attention backend '{b}': {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+    def _setup_attention_backend_minit2i(self, backend: str):
+        """Set the attention backend for MiniT2I models (training hook).
+
+        MiniT2I routes all attention through the vendored ``mem_efficient_sdpa``
+        primitive. Stage-B extends that primitive to read a transformer attr and
+        delegate to the unified conduit; this hook stamps the canonical backend
+        string on ``transformer._attn_backend`` for training and honors the
+        training guard (sage -> native).
+        """
+        if self.transformer is None:
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
+            return
+        b = self._resolve_training_backend(backend)
+        try:
+            # MMJiT.forward reads the net-level attr (transformer.model.net._attn_backend)
+            # and fans it out to every attention-bearing block; the outer wrapper attr
+            # alone is not consulted. Stamp BOTH (mirrors the inference plumbing in
+            # pipeline_backends/minit2i.py) so flash actually engages in training.
+            self.transformer._attn_backend = b
+            net = getattr(getattr(self.transformer, "model", None), "net", None)
+            if net is not None:
+                net._attn_backend = b
+            print(f"{self.log_prefix} [OK] MiniT2I attention backend set to '{b}'")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to set MiniT2I attention backend '{b}': {e}")
+            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
 
     # ============================================================
     # Abstract Methods (must be implemented by subclasses)

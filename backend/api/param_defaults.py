@@ -237,6 +237,14 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "output_dtype": "fp32",
     "vae_dtype": "fp16",                    # Fix: frontend had "fp32"
     "mixed_precision": True,
+    # Attention backend selector for training (single source of truth).
+    # Values: "native" (SDPA) | "flash" (FlashAttention). "sage" is refused for
+    # training (no backward kernel) and downgraded to native by resolve_backend.
+    "attention_backend": "native",
+    # DEPRECATED compat mirror of attention_backend: kept so existing YAML/presets
+    # that only set the boolean still enable flash. Derived at parse time as
+    # (attention_backend != "native"); the string key above is authoritative.
+    # Do NOT remove until the deprecation/cleanup phase.
     "use_flash_attention": False,
     "min_snr_gamma": 5.0,
     # Text / latent encoding

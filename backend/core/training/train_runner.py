@@ -1304,6 +1304,9 @@ def main():
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
+            # Attention backend string selector (native|flash); back-compat maps the
+            # legacy boolean to flash when the string key is absent.
+            attention_backend = train_config.get('attention_backend') or ('flash' if use_flash_attention else 'native')
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
             reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)  # Dual loss weight (default: 0.0, pred loss only)
 
@@ -1352,6 +1355,7 @@ def main():
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
+                attention_backend=attention_backend,
                 min_snr_gamma=min_snr_gamma,
                 reconstruction_loss_weight=reconstruction_loss_weight,
                 # Component-specific learning rates
@@ -1719,6 +1723,9 @@ def main():
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)
             use_flash_attention = train_config.get('use_flash_attention', False)
+            # Attention backend string selector (native|flash); back-compat maps the
+            # legacy boolean to flash when the string key is absent.
+            attention_backend = train_config.get('attention_backend') or ('flash' if use_flash_attention else 'native')
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)
             reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)
 
@@ -1781,6 +1788,7 @@ def main():
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
+                attention_backend=attention_backend,
                 min_snr_gamma=min_snr_gamma,
                 reconstruction_loss_weight=reconstruction_loss_weight,
                 # Component-specific learning rates
@@ -2102,6 +2110,9 @@ def main():
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
             use_flash_attention = train_config.get('use_flash_attention', False)  # Flash Attention (default: False)
+            # Attention backend string selector (native|flash); back-compat maps the
+            # legacy boolean to flash when the string key is absent.
+            attention_backend = train_config.get('attention_backend') or ('flash' if use_flash_attention else 'native')
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)  # Min-SNR gamma weighting (default: 5.0)
             reconstruction_loss_weight = train_config.get('reconstruction_loss_weight', 0.0)  # Dual loss weight (default: 0.0, pred loss only)
 
@@ -2134,6 +2145,7 @@ def main():
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
+                attention_backend=attention_backend,
                 min_snr_gamma=min_snr_gamma,
                 reconstruction_loss_weight=reconstruction_loss_weight,
                 blocks_to_swap=train_config.get('blocks_to_swap', 0),
@@ -2471,6 +2483,9 @@ def main():
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)
             use_flash_attention = train_config.get('use_flash_attention', False)
+            # Attention backend string selector (native|flash); back-compat maps the
+            # legacy boolean to flash when the string key is absent.
+            attention_backend = train_config.get('attention_backend') or ('flash' if use_flash_attention else 'native')
             min_snr_gamma = train_config.get('min_snr_gamma', 5.0)
 
             # ControlNet-specific parameters
@@ -2528,6 +2543,7 @@ def main():
                 mixed_precision=mixed_precision,
                 debug_vram=debug_vram,
                 use_flash_attention=use_flash_attention,
+                attention_backend=attention_backend,
                 min_snr_gamma=min_snr_gamma,
                 # Component-specific learning rates
                 unet_lr=unet_lr,

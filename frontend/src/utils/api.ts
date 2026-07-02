@@ -2151,6 +2151,7 @@ export interface TrainingRunCreateRequest {
   output_dtype?: string;
   vae_dtype?: string;
   mixed_precision?: boolean;
+  attention_backend?: string;
   use_flash_attention?: boolean;
   min_snr_gamma?: number;
   text_encoding_mode?: string;

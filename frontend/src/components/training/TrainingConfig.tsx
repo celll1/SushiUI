@@ -162,6 +162,11 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   output_dtype: "fp32",
   vae_dtype: "fp16",
   mixed_precision: true,
+  // Attention backend for training: "native" | "flash" (sage is inference-only).
+  // Overwritten by trainingDefaults on startup; literal here is the no-backend fallback.
+  attention_backend: "native",
+  // DEPRECATED compat mirror of attention_backend (native<->false, flash<->true).
+  // Kept synchronized on every UI change; attention_backend is authoritative.
   use_flash_attention: false,
   min_snr_gamma: 5.0,
   reconstruction_loss_weight: 0.0,
@@ -483,7 +488,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const outputDtype = params.output_dtype ?? "fp32";
   const vaeDtype = params.vae_dtype ?? "fp16";
   const mixedPrecision = params.mixed_precision ?? true;
-  const useFlashAttention = params.use_flash_attention ?? false;
+  // attention_backend is authoritative; use_flash_attention is a derived compat mirror.
+  const attentionBackend = params.attention_backend ?? "native";
   const minSnrGamma = params.min_snr_gamma ?? 5.0;
   const reconstructionLossWeight = params.reconstruction_loss_weight ?? 0.0;
 
@@ -723,6 +729,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       output_dtype: params.output_dtype,
       vae_dtype: params.vae_dtype,
       mixed_precision: params.mixed_precision,
+      attention_backend: params.attention_backend,
       use_flash_attention: params.use_flash_attention,
       min_snr_gamma: params.min_snr_gamma,
       reconstruction_loss_weight: params.reconstruction_loss_weight,
@@ -951,7 +958,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "train_unet", "train_text_encoder", "train_image_encoder",
       "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
       "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
-      "mixed_precision", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
+      "mixed_precision", "attention_backend", "use_flash_attention", "min_snr_gamma", "reconstruction_loss_weight",
       "text_encoding_mode", "text_encoding_swap_interval",
       "latent_encoding_mode", "latent_encoding_swap_interval",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
@@ -1597,7 +1604,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       outputDtype,
       vaeDtype,
       mixedPrecision,
-      useFlashAttention,
+      attentionBackend,
+      // Legacy compat mirror so old importers still read a flash flag.
+      useFlashAttention: attentionBackend !== "native",
       minSnrGamma,
       reconstructionLossWeight,
       textEncodingMode,
@@ -1773,7 +1782,16 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.outputDtype !== undefined) updateParam("output_dtype", config.outputDtype);
     if (config.vaeDtype !== undefined) updateParam("vae_dtype", config.vaeDtype);
     if (config.mixedPrecision !== undefined) updateParam("mixed_precision", config.mixedPrecision);
-    if (config.useFlashAttention !== undefined) updateParam("use_flash_attention", config.useFlashAttention);
+    // R6 compat: attention_backend is authoritative if present; otherwise map the
+    // legacy useFlashAttention bool (true->flash) so old presets don't silently drop
+    // to native. use_flash_attention is kept synchronized as the derived mirror.
+    if (config.attentionBackend !== undefined) {
+      updateParam("attention_backend", config.attentionBackend);
+      updateParam("use_flash_attention", config.attentionBackend !== "native");
+    } else if (config.useFlashAttention !== undefined) {
+      updateParam("attention_backend", config.useFlashAttention ? "flash" : "native");
+      updateParam("use_flash_attention", config.useFlashAttention);
+    }
     if (config.minSnrGamma !== undefined) updateParam("min_snr_gamma", config.minSnrGamma);
     if (config.reconstructionLossWeight !== undefined) updateParam("reconstruction_loss_weight", config.reconstructionLossWeight);
     if (config.textEncodingMode !== undefined) updateParam("text_encoding_mode", config.textEncodingMode);
@@ -3740,18 +3758,28 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </label>
             </div>
 
-            {/* Flash Attention */}
-            <div className="flex items-center space-x-2">
-              <input
-                type="checkbox"
-                id="use-flash-attention"
-                checked={useFlashAttention}
-                onChange={(e) => updateParam("use_flash_attention", e.target.checked)}
-                className="w-4 h-4"
-              />
-              <label htmlFor="use-flash-attention" className="text-xs text-gray-300 cursor-pointer">
-                Flash Attention (faster training, lower memory)
+            {/* Attention Backend */}
+            <div className="space-y-1">
+              <label htmlFor="attention-backend" className="block text-xs text-gray-300">
+                Attention Backend
               </label>
+              <select
+                id="attention-backend"
+                value={attentionBackend}
+                onChange={(e) => {
+                  const backend = e.target.value;
+                  updateParam("attention_backend", backend);
+                  // R6: keep the deprecated compat mirror synchronized.
+                  updateParam("use_flash_attention", backend !== "native");
+                }}
+                className="w-full px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+              >
+                <option value="native">Native (PyTorch SDPA)</option>
+                <option value="flash">Flash Attention</option>
+                <option value="sage" disabled title="Sage Attention is inference only (no backward pass)">
+                  Sage (inference only)
+                </option>
+              </select>
             </div>
 
             {/* Min-SNR Gamma */}

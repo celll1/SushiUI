@@ -756,10 +756,10 @@ class BaseTrainer(ABC):
         # "diffusers" so in-flight runs reproduce old numerics. The resolved value is
         # persisted back into the run config so every subsequent resume is stable.
         #
-        # NOTE: _setup_attention_backend_sd_sdxl consumes self.attention_impl this pass
-        # (conduit branch installs UnifiedAttnProcessor(mode=TRAINING); diffusers branch
-        # keeps unet.set_attention_backend). FLUX.2/Ideogram4 hooks are deferred per the
-        # MIGRATION SCOPE LOCK and still ignore the flag for now.
+        # NOTE: _setup_attention_backend_sd_sdxl and _setup_attention_backend_flux2 both
+        # consume self.attention_impl (conduit branch installs the conduit processors with
+        # mode=TRAINING; diffusers branch keeps set_attention_backend). Ideogram4 remains on
+        # diffusers dispatch (head_dim=256 rules out conduit-only backends) and ignores the flag.
         if attention_impl is None:
             self.attention_impl = "diffusers" if self.resume_from_checkpoint else "conduit"
         else:

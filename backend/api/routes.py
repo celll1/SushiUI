@@ -6719,7 +6719,13 @@ class TrainingRunCreateRequest(BaseModel):
     output_dtype: str = "fp32"  # fp32, fp16, bf16, fp8_e4m3fn, fp8_e5m2 (output latent dtype)
     vae_dtype: str = "fp16"  # VAE-specific dtype (SDXL VAE works fine with fp16)
     mixed_precision: bool = True  # Enable mixed precision training (autocast)
-    use_flash_attention: bool = False  # Enable Flash Attention for training (faster, lower memory)
+    use_flash_attention: bool = False  # DEPRECATED compat mirror of attention_backend (see below)
+    # Attention backend selector for training (single source of truth: param_defaults).
+    # "native" (SDPA) | "flash" (FlashAttention). "sage" is inference-only (no backward
+    # kernel) and is refused/downgraded to native by resolve_backend at every training hook.
+    # When present this wins over the legacy use_flash_attention boolean (training_config.py
+    # derives use_flash_attention = attention_backend != "native").
+    attention_backend: Optional[str] = TRAINING_DEFAULTS["attention_backend"]
     min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
     # Text encoding settings

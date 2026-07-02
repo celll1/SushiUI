@@ -1324,6 +1324,17 @@ components:
         unet_quantization:
           type: string
           enum: [none, fp8_e4m3fn, fp8_e5m2, uint2, uint3, uint4, uint5, uint6, uint7, uint8]
+        attention_type:
+          type: string
+          enum: [normal, sage, flash]
+          default: normal
+          description: |
+            Inference attention backend, applied to all model architectures via the
+            unified dispatch (backend/core/attention/). normal=PyTorch SDPA (auto Flash
+            Attention in PyTorch 2.0+), sage=SageAttention (INT8), flash=explicit Flash
+            Attention 2. Unsupported combinations (e.g. head_dim outside the backend's
+            supported set, mask present) fall back to native automatically.
+          example: normal
         use_torch_compile:
           type: boolean
           default: false
@@ -1963,6 +1974,35 @@ components:
           default: 0
           description: Number of LR warmup steps
           example: 100
+        # Attention backend selector (training)
+        attention_backend:
+          type: string
+          enum: ["native", "flash"]
+          default: "native"
+          description: |
+            Attention backend used during training.
+            - `native`: PyTorch scaled_dot_product_attention (SDPA).
+            - `flash`: FlashAttention.
+
+            `sage` (SageAttention) is inference-only: it has no backward kernel, so it is
+            refused for training and downgraded to `native` by the trainer's
+            `resolve_backend` guard even if forced via a hand-edited YAML/preset.
+
+            This string key is authoritative and supersedes the deprecated
+            `use_flash_attention` boolean. When omitted, the trainer derives the backend
+            from `use_flash_attention` (`true` -> `flash`, `false` -> `native`) for
+            backward compatibility with existing presets.
+          example: "native"
+        use_flash_attention:
+          type: boolean
+          default: false
+          deprecated: true
+          description: |
+            DEPRECATED compat mirror of `attention_backend`. Kept so existing YAML/presets
+            that only set the boolean still enable FlashAttention (`true` maps to
+            `attention_backend='flash'`). Prefer `attention_backend`. When both are supplied,
+            `attention_backend` wins.
+          example: false
         # LoRA parameters (used by lora and relora methods)
         lora_rank:
           type: integer

@@ -208,6 +208,22 @@ def test_guards():
     r = resolve_backend("flash", AttentionMode.INFERENCE, q256, k256, None, "BSHD")
     record("guard: flash D=256 -> flash", PASS if r == "flash" else FAIL, f"got {r}")
 
+    # tq: trainable -> stays tq in TRAINING (its differentiator)
+    r = resolve_backend("tq", AttentionMode.TRAINING, q, k, None, "BSHD")
+    record("guard: tq in TRAINING -> tq", PASS if r == "tq" else FAIL, f"got {r}")
+
+    # tq head_dim 256 not in allowed {64,128} -> native
+    r = resolve_backend("tq", AttentionMode.INFERENCE, q256, k256, None, "BSHD")
+    record("guard: tq D=256 -> native", PASS if r == "native" else FAIL, f"got {r}")
+
+    # tq head_dim 40 (SD1.5) not in allowed {64,128} -> native
+    r = resolve_backend("tq", AttentionMode.INFERENCE, q40, k40, None, "BSHD")
+    record("guard: tq D=40 -> native", PASS if r == "native" else FAIL, f"got {r}")
+
+    # tq mask present -> native (no mask support)
+    r = resolve_backend("tq", AttentionMode.INFERENCE, q, k, mask, "BSHD")
+    record("guard: tq mask present -> native", PASS if r == "native" else FAIL, f"got {r}")
+
 
 def test_normalize():
     cases = {
@@ -264,6 +280,11 @@ def main():
     for layout in ("BSHD", "BHSD"):
         for D in (64, 128):
             test_backend_equivalence("flash", layout, D, "flash_attn", tol=0.02)
+
+    # tq vs native, both layouts, head_dim 64 & 128 (quantized -> looser tol).
+    for layout in ("BSHD", "BHSD"):
+        for D in (64, 128):
+            test_backend_equivalence("tq", layout, D, "tq_attention", tol=0.05)
 
     # R3: GQA native path, both layouts.
     for layout in ("BSHD", "BHSD"):

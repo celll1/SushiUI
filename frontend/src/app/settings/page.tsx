@@ -66,7 +66,7 @@ export default function SettingsPage() {
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
 
   // Attention type
-  const [attentionType, setAttentionType] = useState<"normal" | "sage" | "flash">("normal");
+  const [attentionType, setAttentionType] = useState<"normal" | "sage" | "flash" | "tq">("normal");
 
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
@@ -196,7 +196,7 @@ export default function SettingsPage() {
         setFloatingGalleryMaxImages(parseInt(savedGalleryMaxImages));
       }
 
-      const savedAttentionType = localStorage.getItem('attention_type') as "normal" | "sage" | "flash" | null;
+      const savedAttentionType = localStorage.getItem('attention_type') as "normal" | "sage" | "flash" | "tq" | null;
       if (savedAttentionType) {
         setAttentionType(savedAttentionType);
       }
@@ -688,7 +688,7 @@ export default function SettingsPage() {
                     id="attention_type"
                     value={attentionType}
                     onChange={(e) => {
-                      const newValue = e.target.value as "normal" | "sage" | "flash";
+                      const newValue = e.target.value as "normal" | "sage" | "flash" | "tq";
                       setAttentionType(newValue);
                       localStorage.setItem('attention_type', newValue);
                     }}
@@ -697,9 +697,10 @@ export default function SettingsPage() {
                     <option value="normal">Normal (PyTorch SDPA + Auto Flash Attention)</option>
                     <option value="sage">SageAttention (2-5x faster, quantized)</option>
                     <option value="flash">FlashAttention (explicit FA2)</option>
+                    <option value="tq">TQ (Triton-Quantized)</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
-                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). Changes take effect immediately on next generation.
+                    Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). <strong>TQ</strong>: Triton-Quantized attention; applies to Z-Image, Lens, MiniT2I, Anima, and SDXL inference. Other architectures fall back to native. Changes take effect immediately on next generation.
                   </p>
                 </div>
 

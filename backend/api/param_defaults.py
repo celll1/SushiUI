@@ -246,6 +246,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (attention_backend != "native"); the string key above is authoritative.
     # Do NOT remove until the deprecation/cleanup phase.
     "use_flash_attention": False,
+    # Attention implementation selector for training (which REGISTRY runs the
+    # attention kernel; orthogonal to attention_backend, which selects WHICH
+    # kernel). "conduit" routes through the unified backend/core/attention
+    # dispatch (new default; enables the tq backend in SDXL/SD1.5 training).
+    # "diffusers" reproduces the pre-migration set_attention_backend path
+    # byte-for-byte. TRAINING-ONLY this pass (FLUX.2/Ideogram4 not yet migrated).
+    "attention_impl": "conduit",
     "min_snr_gamma": 5.0,
     # Text / latent encoding
     # text_encoding_mode: "swap_onthefly" | "pre_encoded_cache" | "onthefly_gpu"

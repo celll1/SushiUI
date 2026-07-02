@@ -6726,6 +6726,12 @@ class TrainingRunCreateRequest(BaseModel):
     # When present this wins over the legacy use_flash_attention boolean (training_config.py
     # derives use_flash_attention = attention_backend != "native").
     attention_backend: Optional[str] = TRAINING_DEFAULTS["attention_backend"]
+    # Attention implementation selector for training. "conduit" (default) routes
+    # through the unified backend/core/attention dispatch; "diffusers" reproduces
+    # the pre-migration set_attention_backend path. Orthogonal to attention_backend
+    # (which selects WHICH kernel). Persisted into the run config via training_config
+    # so resumes reproduce the same registry. TRAINING-ONLY this pass.
+    attention_impl: Optional[str] = TRAINING_DEFAULTS["attention_impl"]
     min_snr_gamma: float = 5.0  # Min-SNR gamma for loss weighting (default: 5.0, set to 0 to disable)
 
     # Text encoding settings

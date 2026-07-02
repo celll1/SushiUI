@@ -573,6 +573,7 @@ class BaseTrainer(ABC):
         debug_vram: bool = False,
         use_flash_attention: bool = False,
         attention_backend: Optional[str] = None,
+        attention_impl: Optional[str] = None,
         min_snr_gamma: float = 5.0,
         reconstruction_loss_weight: float = 0.0,
         # Prompt chunking settings (SD/SDXL only, for long prompts >75 tokens)
@@ -744,6 +745,26 @@ class BaseTrainer(ABC):
             attention_backend or ('flash' if use_flash_attention else 'native')
         )
         self.use_flash_attention = (self.attention_backend != 'native')
+        # Attention implementation registry ("conduit" | "diffusers"). Selects WHICH
+        # registry executes the training attention kernel; ORTHOGONAL to
+        # attention_backend (WHICH kernel). "conduit" -> unified backend/core/attention
+        # dispatch; "diffusers" -> the pre-migration set_attention_backend path.
+        #
+        # Backward-compat resolution: a FRESH run defaults to "conduit" (the new
+        # default). A RESUME whose saved config LACKS the key (attention_impl is None
+        # here because train_runner read a pre-migration config) defaults to
+        # "diffusers" so in-flight runs reproduce old numerics. The resolved value is
+        # persisted back into the run config so every subsequent resume is stable.
+        #
+        # NOTE: _setup_attention_backend_sd_sdxl consumes self.attention_impl this pass
+        # (conduit branch installs UnifiedAttnProcessor(mode=TRAINING); diffusers branch
+        # keeps unet.set_attention_backend). FLUX.2/Ideogram4 hooks are deferred per the
+        # MIGRATION SCOPE LOCK and still ignore the flag for now.
+        if attention_impl is None:
+            self.attention_impl = "diffusers" if self.resume_from_checkpoint else "conduit"
+        else:
+            self.attention_impl = attention_impl
+        self._persist_attention_impl()
         self.min_snr_gamma = min_snr_gamma
         self.reconstruction_loss_weight = reconstruction_loss_weight
 
@@ -2731,6 +2752,36 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} {'SDXL' if self.is_sdxl else 'SD1.5'} model loaded successfully")
 
+    def _persist_attention_impl(self):
+        """Write the resolved ``attention_impl`` back into the run config YAML.
+
+        Makes the choice reproducible across resumes: once a run has resolved to
+        "conduit" (fresh) or "diffusers" (resume of a pre-migration config), the
+        value is pinned in ``{output_dir}/{run_name}_config.yaml`` so subsequent
+        resumes read it explicitly instead of re-deriving from the resume flag.
+
+        Best-effort and non-fatal: silently returns if the config file is absent
+        (e.g. programmatic trainer construction) or the expected structure is
+        missing. Only rewrites when the stored value actually differs, to avoid
+        churning the file on every start.
+        """
+        try:
+            config_path = self.output_dir / f"{self.run_name}_config.yaml"
+            if not config_path.exists():
+                return
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+            train = cfg["config"]["process"][0]["train"]
+            if train.get("attention_impl") == self.attention_impl:
+                return
+            train["attention_impl"] = self.attention_impl
+            with open(config_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+            print(f"{self.log_prefix} Persisted attention_impl='{self.attention_impl}' to run config")
+        except Exception as e:
+            print(f"{self.log_prefix} [WARN] Could not persist attention_impl to run config: {e}")
+
     def _resolve_training_backend(self, backend: str) -> str:
         """Apply the TRAINING-mode capability guard to a backend string (R4).
 
@@ -2789,22 +2840,56 @@ class BaseTrainer(ABC):
     def _setup_attention_backend_sd_sdxl(self, backend: str):
         """Set the attention backend for SD/SDXL models.
 
-        Uses diffusers' ``set_attention_backend`` driven by the SAME canonical
-        string (mapped via ``to_diffusers_backend``). ``resolve_backend`` refuses
-        sage before it ever reaches diffusers (R4).
+        Branches on ``self.attention_impl`` (migration flag, SCOPE LOCK 2026-07-03):
+
+        - ``"conduit"`` (fresh-run default): install the SAME
+          :class:`UnifiedAttnProcessor` that SDXL/SD1.5 INFERENCE already uses on
+          the training UNet via :func:`set_attention_processor`, with
+          ``mode=AttentionMode.TRAINING``. This routes attention through the
+          unified conduit so ALL backends work in training — notably ``tq``, which
+          the diffusers path silently collapses to native via
+          ``to_diffusers_backend``. The training UNet is the same diffusers
+          ``UNet2DConditionModel`` whose attention modules accept a processor
+          object (the exact object SDXL inference patches), so this is a pure
+          attention-only swap; ``added_cond_kwargs`` / ``time_ids`` / pooled
+          embeds are computed OUTSIDE attention and are untouched.
+        - ``"diffusers"``: keep the pre-migration
+          ``unet.set_attention_backend(to_diffusers_backend(b))`` path
+          byte-identical.
+
+        ``_resolve_training_backend`` (R4) runs FIRST in both branches so sage is
+        stripped to native regardless of impl; ``tq`` survives and now trains on
+        SDXL via the conduit branch.
         """
         if self.unet is None:
             print(f"{self.log_prefix} WARNING: UNet not loaded, skipping attention backend setup")
             return
 
         b = self._resolve_training_backend(backend)
+
+        if self.attention_impl == "diffusers":
+            # Pre-migration path (byte-identical): diffusers registry dispatch.
+            try:
+                print(f"{self.log_prefix} Setting SD/SDXL UNet attention backend '{b}' (impl=diffusers)...")
+                self.unet.set_attention_backend(to_diffusers_backend(b))
+                print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
+            except Exception as e:
+                print(f"{self.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
+                print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+            return
+
+        # Conduit path (default): reuse the inference UnifiedAttnProcessor in
+        # TRAINING mode so tq (and every other conduit backend) engages.
         try:
-            print(f"{self.log_prefix} Setting SD/SDXL UNet attention backend '{b}'...")
-            self.unet.set_attention_backend(to_diffusers_backend(b))
-            print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
+            from core.inference.attention_processors import set_attention_processor
+            print(f"{self.log_prefix} Setting SD/SDXL UNet attention via UnifiedAttnProcessor (backend='{b}', impl=conduit, mode=TRAINING)...")
+            self._sdxl_original_attn_processors = set_attention_processor(
+                self.unet, b, mode=AttentionMode.TRAINING
+            )
+            print(f"{self.log_prefix} [OK] Conduit attention processor installed on training UNet (backend='{b}')")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+            print(f"{self.log_prefix} WARNING: Failed to install conduit attention processor '{b}': {e}")
+            print(f"{self.log_prefix} Falling back to the diffusers default processor (native attention)")
 
     def _setup_attention_backend_flux2(self, backend: str):
         """Set the attention backend for FLUX.2 models.

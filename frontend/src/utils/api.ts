@@ -2152,6 +2152,7 @@ export interface TrainingRunCreateRequest {
   vae_dtype?: string;
   mixed_precision?: boolean;
   attention_backend?: string;
+  attention_impl?: string;  // "conduit" | "diffusers" (training registry selector; SDXL/SD1.5)
   use_flash_attention?: boolean;
   min_snr_gamma?: number;
   text_encoding_mode?: string;

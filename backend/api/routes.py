@@ -152,6 +152,7 @@ class GenerationParams(BaseModel):
     nag_negative_prompt: Optional[str] = ""  # Separate negative prompt for NAG (empty = use main negative prompt)
     # Attention processor type
     attention_type: str = "normal"  # "normal", "sage", "flash"
+    attention_impl: str = "conduit"  # "conduit" | "diffusers" (FLUX.2 inference kernel impl)
     # U-Net Quantization
     unet_quantization: Optional[str] = None  # None, "int8", "fp8", "int4", "nf4"
     # Text Encoder Quantization (Z-Image only)
@@ -286,6 +287,7 @@ async def generate_txt2img(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     attention_type: str = Form("normal"),
+    attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
@@ -443,6 +445,7 @@ async def generate_txt2img(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "attention_type": attention_type,
+            "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,
@@ -1088,6 +1091,7 @@ async def generate_img2img(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     attention_type: str = Form("normal"),
+    attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
     cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
@@ -1253,6 +1257,7 @@ async def generate_img2img(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "attention_type": attention_type,
+            "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,
@@ -1487,6 +1492,7 @@ async def generate_inpaint(
     nag_sigma_end: float = Form(3.0),
     nag_negative_prompt: str = Form(""),
     attention_type: str = Form("normal"),
+    attention_impl: str = Form("conduit"),
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
     cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
@@ -1671,6 +1677,7 @@ async def generate_inpaint(
             "nag_sigma_end": nag_sigma_end,
             "nag_negative_prompt": nag_negative_prompt,
             "attention_type": attention_type,
+            "attention_impl": attention_impl,
             "unet_quantization": unet_quantization,
             "original_size_w": original_size_w,
             "original_size_h": original_size_h,

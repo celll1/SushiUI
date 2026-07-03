@@ -11,6 +11,8 @@ NOTE — Lens text encoder VRAM:
   ~9.7 GB of VRAM is therefore permanently consumed while a Lens model is loaded.
 """
 
+import os
+
 import torch
 
 
@@ -83,12 +85,29 @@ def load_lens_components(
         ) from e
 
     print("[LensLoader] Loading VAE (AutoencoderKLFlux2)...")
-    vae = AutoencoderKLFlux2.from_pretrained(
-        model_path,
-        subfolder="vae",
-        torch_dtype=torch_dtype,
-        low_cpu_mem_usage=True,
-    )
+    # Primary: the model's own vae/ subfolder (Lens ships its own). Fallback: the
+    # shared Apache-2.0 FLUX.2 store (black-forest-labs/FLUX.2-klein-4B vae).
+    own_vae = os.path.join(model_path, "vae") if os.path.isdir(model_path) else None
+    if own_vae and os.path.isfile(os.path.join(own_vae, "config.json")):
+        vae = AutoencoderKLFlux2.from_pretrained(
+            model_path, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+        )
+    else:
+        store_dir = None
+        try:
+            from core.models.common.vae_store import resolve_vae_dir
+            store_dir = resolve_vae_dir("flux2", model_own_vae=own_vae)
+        except Exception as e:
+            print(f"[LensLoader] FLUX.2 VAE store resolution failed: {e}")
+        if store_dir and os.path.isdir(store_dir):
+            print(f"[LensLoader] Loading VAE from shared FLUX.2 store: {store_dir}")
+            vae = AutoencoderKLFlux2.from_pretrained(
+                store_dir, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+            )
+        else:
+            vae = AutoencoderKLFlux2.from_pretrained(
+                model_path, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True,
+            )
     vae.eval()
     vae.to("cpu")
 
@@ -179,11 +198,11 @@ def load_lens_single_file(
     weights are overridden by the trained single-file DiT.
     """
     import os
-    from safetensors import safe_open
-    from safetensors.torch import load_file
+    from core.models.common.single_file_format import read_state_dict, reattach_embedded_weights
 
-    with safe_open(dit_path, framework="pt", device="cpu") as f:
-        md = f.metadata() or {}
+    # Single consolidated read (also tolerates a <stem>.safetensors.index.json path).
+    raw, md = read_state_dict(dit_path)
+    md = md or {}
     hint = base_dir_hint or md.get("component.base_dir") or md.get("sushi.base_model_path")
 
     base_dir = _resolve_lens_base_dir(dit_path, hint)
@@ -192,9 +211,18 @@ def load_lens_single_file(
 
     components = load_lens_components(model_path=base_dir, torch_dtype=torch_dtype)
 
-    # Override the base transformer weights with the trained single-file DiT.
-    raw = load_file(dit_path, device="cpu")
-    dit_sd = {(k[len("net."):] if k.startswith("net.") else k): v for k, v in raw.items()}
+    # Split off an embedded VAE section (bundle_vae saves under first_stage_model.*).
+    embedded_vae_sd = {
+        k[len("first_stage_model."):]: v
+        for k, v in raw.items() if k.startswith("first_stage_model.")
+    } or None
+
+    # Override the base transformer weights with the trained single-file DiT
+    # (net.*-stripped; the first_stage_model.* VAE keys are excluded here).
+    dit_sd = {
+        (k[len("net."):] if k.startswith("net.") else k): v
+        for k, v in raw.items() if not k.startswith("first_stage_model.")
+    }
     info = components["transformer"].load_state_dict(dit_sd, strict=False)
     missing = getattr(info, "missing_keys", [])
     unexpected = getattr(info, "unexpected_keys", [])
@@ -202,6 +230,13 @@ def load_lens_single_file(
     if unexpected:
         print(f"[LensLoader]   unexpected (first 5): {list(unexpected)[:5]}")
     components["transformer"].to(torch_dtype).to("cpu").eval()
+
+    # Embedded (trained) VAE overrides the base-dir VAE. Absent -> keep base VAE.
+    if embedded_vae_sd is not None and components.get("vae") is not None:
+        print("[LensLoader] Reattaching embedded VAE weights from single-file bundle")
+        reattach_embedded_weights(components["vae"], embedded_vae_sd, "VAE")
+        components["vae"].to(torch_dtype).to("cpu").eval()
+
     return components
 
 

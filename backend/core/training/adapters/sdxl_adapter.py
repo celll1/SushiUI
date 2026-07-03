@@ -417,9 +417,14 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
         # Custom high-spec VAE (e.g. FLUX.1 16ch) is NOT embedded — it is referenced by
         # registry (metadata sushi.vae_type) and reloaded on load; the SDXL VAE converter
         # assumes the 4ch SDXL VAE structure and would mishandle a different VAE.
+        # VAE embedding is additionally gated on bundle_vae (per-arch default: sdxl=True
+        # for A1111/ComfyUI compatibility; explicit user boolean wins).
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sdxl")
         _custom_vae = str(getattr(trainer, "sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
-        if trainer.vae is not None and not _custom_vae:
-            print(f"[SDXLFullParameterAdapter] Collecting VAE weights (diffusers -> CompVis)...")
+        vae_embedded = bundle_vae and trainer.vae is not None and not _custom_vae
+        if vae_embedded:
+            print(f"[SDXLFullParameterAdapter] Collecting VAE weights (diffusers -> CompVis, bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             converted_vae = convert_vae_state_dict_to_original(vae_state)
             for key, value in converted_vae.items():
@@ -470,6 +475,7 @@ class SDXLFullParameterAdapter(BaseFullParameterAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "sdxl",
+            "component.vae.embedded": "1" if vae_embedded else "0",
             **sushi_modelspec_metadata(self.trainer),
         }
 

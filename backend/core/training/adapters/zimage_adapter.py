@@ -314,9 +314,13 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             for key, value in transformer_state.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save VAE weights with ComfyUI prefix
-        if trainer.vae is not None:
-            print(f"[ZImageFullParameterAdapter] Collecting VAE weights...")
+        # Save VAE weights with ComfyUI prefix (only when bundle_vae is enabled;
+        # default off -> loader falls back to the default VAE resolution).
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "zimage")
+        vae_embedded = bundle_vae and trainer.vae is not None
+        if vae_embedded:
+            print(f"[ZImageFullParameterAdapter] Collecting VAE weights (bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             for key, value in vae_state.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
@@ -344,12 +348,23 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(
                 te_type="qwen3", te_embedded=te_embedded,
+                vae_type="flux1", vae_embedded=vae_embedded,
             ))
         except Exception as _e:
             print(f"[ZImageFullParameterAdapter] component metadata skipped: {_e}")
 
         print(f"[ZImageFullParameterAdapter] Saving to {output_path}...")
-        save_file(combined_state_dict, output_path, metadata=metadata)
+        # Route through the shared single-file writer so >10 GB full-FT saves
+        # auto-shard (diffusers convention + <stem>.safetensors.index.json). For
+        # sub-threshold saves this writes an identical single .safetensors with
+        # the same keys+metadata as the previous direct save_file call.
+        from core.models.common.single_file_format import (
+            save_single_file_state, dedup_tensors,
+        )
+        dedup_state, dropped_tied = dedup_tensors(combined_state_dict.items())
+        if dropped_tied:
+            metadata["tied_weights_dropped"] = ",".join(dropped_tied)
+        written_path = save_single_file_state(dedup_state, metadata, str(output_path))
 
-        total_params = sum(p.numel() for p in combined_state_dict.values())
-        print(f"[ZImageFullParameterAdapter] Saved {len(combined_state_dict)} tensors ({total_params:,} params) to {output_path}")
+        total_params = sum(p.numel() for p in dedup_state.values())
+        print(f"[ZImageFullParameterAdapter] Saved {len(dedup_state)} tensors ({total_params:,} params) to {written_path}")

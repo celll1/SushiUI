@@ -19,6 +19,7 @@ from .single_file_format import (
     build_component_metadata,
     parse_component_metadata,
     is_index_path,
+    reattach_embedded_weights,
 )
 
 __all__ = [
@@ -35,4 +36,5 @@ __all__ = [
     "build_component_metadata",
     "parse_component_metadata",
     "is_index_path",
+    "reattach_embedded_weights",
 ]

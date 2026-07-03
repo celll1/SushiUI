@@ -42,6 +42,7 @@ from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
+    BUNDLE_VAE_DEFAULTS_BY_ARCH,
 )
 from api.generation_utils import (
     process_controlnet_configs,
@@ -224,6 +225,17 @@ async def get_timestep_defaults_by_arch():
     differs (logit_normal mean=-0.8/std=0.8). "_default" is the global fallback.
     """
     return TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH
+
+@router.get("/schema/bundle-vae-defaults-by-arch")
+async def get_bundle_vae_defaults_by_arch():
+    """Per-architecture default bundle_vae for full-parameter saves.
+
+    sd15/sdxl/deus default True (comfy-layout checkpoints consumed by
+    A1111/ComfyUI require the first_stage_model.* VAE section); other
+    architectures default False. "_default" is the global fallback. The frontend
+    applies the selected model's entry when the base model changes (user edits win).
+    """
+    return BUNDLE_VAE_DEFAULTS_BY_ARCH
 
 
 # ---------------------------------------------------------------------------
@@ -6726,6 +6738,10 @@ class TrainingRunCreateRequest(BaseModel):
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
     anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]
     anima_llm_adapter_lr_factor: float = TRAINING_DEFAULTS["anima_llm_adapter_lr_factor"]
+    # Full-parameter save: embed the VAE into the single-file checkpoint.
+    # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True,
+    # others False); an explicit boolean always wins.
+    bundle_vae: Optional[bool] = TRAINING_DEFAULTS["bundle_vae"]
     # Anima Phase D memory optimisations.
     cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["cpu_offload_checkpointing"]
     async_cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["async_cpu_offload_checkpointing"]

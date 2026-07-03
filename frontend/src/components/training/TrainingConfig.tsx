@@ -216,6 +216,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
   num_optimizer_groups: 0,
+  bundle_vae: false,
   activation_dispatch_enable: false,
   activation_dispatch_margin_gb: 1.0,
   activation_dispatch_seed_coef: 0.000024,
@@ -284,7 +285,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   //   4. Add UI input: read `params.x`, write via `updateParam("x", v)`
   //   No changes to getRequestData/applyParamsToState required.
   const [params, setParams] = useState<TrainingRunCreateRequest>(DEFAULT_PARAMS);
-  const { trainingDefaults, timestepDefaultsByArch } = useStartup();
+  const { trainingDefaults, timestepDefaultsByArch, bundleVaeDefaultsByArch } = useStartup();
 
   // Apply backend-fetched defaults when they arrive (only for new runs, not edit mode)
   useEffect(() => {
@@ -328,6 +329,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   // already been applied, so model changes apply the model's default exactly once
   // while user edits (which don't change baseModelPath) are never clobbered.
   const lastTimestepModelRef = useRef<string | null>(null);
+  // Same pattern for the per-arch default bundle_vae (sd15/sdxl/deus -> true).
+  const lastBundleVaeModelRef = useRef<string | null>(null);
 
   // Tracks which editRunId has already been restored from YAML.
   // Prevents React StrictMode's double-invoked mount effect from calling
@@ -765,6 +768,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       block_swap_h2d_only: params.block_swap_h2d_only,
       block_swap_ring_size: params.block_swap_ring_size,
       num_optimizer_groups: params.num_optimizer_groups,
+      bundle_vae: params.bundle_vae,
       activation_dispatch_enable: params.activation_dispatch_enable,
       activation_dispatch_margin_gb: params.activation_dispatch_margin_gb,
       activation_dispatch_seed_coef: params.activation_dispatch_seed_coef,
@@ -1000,6 +1004,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "danbooru_aug_tag_dropout_rate", "danbooru_aug_tag_dropout_keep_first_n",
       "danbooru_aug_caption_dropout_rate", "danbooru_aug_keep_tokens",
       "blocks_to_swap", "use_pinned_memory", "block_swap_h2d_only", "block_swap_ring_size", "num_optimizer_groups",
+      "bundle_vae",
       "activation_dispatch_enable", "activation_dispatch_margin_gb",
       "activation_dispatch_seed_coef", "activation_dispatch_residual_frac",
       "activation_dispatch_threshold_mb",
@@ -1205,6 +1210,26 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     setTimestepBeta((ts.beta as number) ?? 2.0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseModelPath, timestepDefaultsByArch]);
+
+  // Apply the per-architecture default bundle_vae when the base model changes
+  // (sd15/sdxl/deus -> true: their comfy-layout checkpoints are consumed by
+  // A1111/ComfyUI which require the first_stage_model.* VAE section; others ->
+  // false). Fetched from the backend (param_defaults SSOT); applied once per model
+  // so user edits persist; skipped during YAML/edit restore.
+  useEffect(() => {
+    if (!baseModelPath) return;
+    if (restoringFromYAMLRef.current) { lastBundleVaeModelRef.current = baseModelPath; return; }
+    if (!bundleVaeDefaultsByArch) return;
+    if (lastBundleVaeModelRef.current === baseModelPath) return;  // already applied for this model
+    const arch = getModelArchitecture(baseModelPath);
+    const def = (arch && bundleVaeDefaultsByArch[arch] !== undefined)
+      ? bundleVaeDefaultsByArch[arch]
+      : bundleVaeDefaultsByArch["_default"];
+    lastBundleVaeModelRef.current = baseModelPath;
+    if (def === undefined) return;
+    updateParam("bundle_vae", !!def);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [baseModelPath, bundleVaeDefaultsByArch]);
 
   // Ideogram 4 does not support Full Fine-tune (fp8 base; VRAM-impractical) —
   // fall back to LoRA if a full-FT method was carried over from another model/preset.
@@ -3779,6 +3804,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               />
               <label htmlFor="mixed-precision" className="text-xs text-gray-300 cursor-pointer">
                 Mixed Precision (Autocast)
+              </label>
+            </div>
+
+            {/* Bundle VAE (full-parameter save only) */}
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="bundle-vae"
+                checked={!!params.bundle_vae}
+                onChange={(e) => updateParam("bundle_vae", e.target.checked)}
+                className="w-4 h-4"
+              />
+              <label htmlFor="bundle-vae" className="text-xs text-gray-300 cursor-pointer">
+                Bundle VAE weights into the checkpoint
               </label>
             </div>
 

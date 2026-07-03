@@ -208,6 +208,12 @@ def _build_train_section(
     train["anima_mod_lr_factor"] = p.get("anima_mod_lr_factor", 1.0)
     train["anima_llm_adapter_lr_factor"] = p.get("anima_llm_adapter_lr_factor", 1.0)
     # Phase D memory optimisations (Anima only — other archs ignore).
+    # Full-parameter save: embed the VAE into the single-file checkpoint.
+    # None passes through = per-arch default resolved by the adapters
+    # (BUNDLE_VAE_DEFAULTS_BY_ARCH in api/param_defaults.py; sd15/sdxl/deus True,
+    # others False); an explicit boolean always wins.
+    # Read unconditionally; LoRA / pixel-space archs ignore it.
+    train["bundle_vae"] = p.get("bundle_vae", None)
     train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)

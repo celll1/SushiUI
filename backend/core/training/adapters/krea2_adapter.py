@@ -155,10 +155,15 @@ class Krea2FullParameterAdapter(BaseFullParameterAdapter):
             output_path = Path(str(output_path) + ".safetensors")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         is_distilled = bool(getattr(trainer, "krea2_is_distilled", False))
-        # Qwen3-VL TE is frozen -> not bundled.
+        # Qwen3-VL TE is frozen -> not bundled. VAE bundled only when bundle_vae is set
+        # (default off -> loader resolves the default Qwen-Image VAE). Krea 2 uses the
+        # sushiUI-v2 common ``vae.`` prefix (VAE_PREFIX).
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "krea2")
+        vae_to_bundle = trainer.vae if (bundle_vae and getattr(trainer, "vae", None) is not None) else None
         save_single_file(
             str(output_path), trainer.transformer, is_distilled=is_distilled,
-            text_encoder=None,
+            text_encoder=None, vae=vae_to_bundle,
             extra_metadata={"step": str(step), "epoch": str(epoch)},
         )
         print(f"[Krea2FullParameterAdapter] Saved single-file (transformer) -> {output_path}")

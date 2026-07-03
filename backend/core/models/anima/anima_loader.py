@@ -36,6 +36,19 @@ QWEN_VAE_PATTERNS = [
     "qwen_image_vae_bf16.safetensors",
 ]
 
+# Known-good Qwen-Image VAE config (matches the official Qwen-Image repo).
+# dim_mult MUST be a list, not a tuple — the encoder's __init__ does `[1] + dim_mult`.
+QWEN_IMAGE_VAE_CONFIG = dict(
+    base_dim=96,
+    z_dim=16,
+    dim_mult=[1, 2, 4, 4],
+    num_res_blocks=2,
+    attn_scales=[],
+    temperal_downsample=[False, True, True],
+    dropout=0.0,
+    input_channels=3,
+)
+
 
 # -------- Detection ----------
 
@@ -206,11 +219,16 @@ def discover_anima_components(dit_path: str, models_root: Optional[str] = None,
 # -------- Loading ----------
 
 def load_anima_dit(dit_path: str, device: str = "cpu",
-                   dtype: torch.dtype = torch.bfloat16) -> Anima:
+                   dtype: torch.dtype = torch.bfloat16,
+                   state_dict: Optional[dict] = None) -> Anima:
     """Instantiate the Anima DiT and load weights from a single safetensors file.
 
     Handles the optional `net.` prefix that some third-party Anima DiT
-    checkpoints carry.
+    checkpoints carry. An embedded ``first_stage_model.*`` VAE section (bundle_vae)
+    is ignored here (loaded strict=False); the caller extracts it separately.
+
+    ``state_dict`` may be supplied to reuse an already-read state dict (avoids a
+    second file read when the caller has already split off the embedded VAE).
     """
     from accelerate import init_empty_weights
 
@@ -218,7 +236,11 @@ def load_anima_dit(dit_path: str, device: str = "cpu",
         model = Anima(**ANIMA_DIT_CONFIG)
         model.to(dtype)
 
-    sd = safetensors_load_file(dit_path, device="cpu")
+    if state_dict is not None:
+        sd = state_dict
+    else:
+        from core.models.common.single_file_format import read_state_dict
+        sd, _md = read_state_dict(dit_path)
     # Strip net. prefix if present
     if any(k.startswith("net.") for k in sd.keys()):
         sd = {(k[len("net."):] if k.startswith("net.") else k): v for k, v in sd.items()}
@@ -350,21 +372,7 @@ def load_qwen_image_vae(vae_path: str, device: str = "cpu",
     """
     from diffusers import AutoencoderKLQwenImage
 
-    # Known-good Qwen-Image VAE config (matches the official Qwen-Image repo).
-    # dim_mult MUST be a list, not a tuple — the encoder's __init__ does
-    # `[1] + dim_mult` which only works for a list.
-    qwen_vae_config = dict(
-        base_dim=96,
-        z_dim=16,
-        dim_mult=[1, 2, 4, 4],
-        num_res_blocks=2,
-        attn_scales=[],
-        temperal_downsample=[False, True, True],
-        dropout=0.0,
-        input_channels=3,
-    )
-
-    vae = AutoencoderKLQwenImage(**qwen_vae_config)
+    vae = AutoencoderKLQwenImage(**QWEN_IMAGE_VAE_CONFIG)
 
     sd = safetensors_load_file(vae_path, device="cpu") if vae_path.endswith(".safetensors") \
          else torch.load(vae_path, map_location="cpu", weights_only=True)
@@ -399,6 +407,30 @@ def load_qwen_image_vae(vae_path: str, device: str = "cpu",
     return vae
 
 
+def build_qwen_image_vae_from_embedded(vae_state_dict, device: str = "cpu",
+                                       dtype: torch.dtype = torch.bfloat16):
+    """Build the Qwen-Image VAE from the known config and reattach embedded (trained)
+    weights — no companion file / download. Zero-match raises. The embedded weights
+    are already in diffusers AutoencoderKLQwenImage layout (saved from trainer.vae)."""
+    from diffusers import AutoencoderKLQwenImage
+    from core.models.common.single_file_format import reattach_embedded_weights
+
+    vae = AutoencoderKLQwenImage(**QWEN_IMAGE_VAE_CONFIG)
+    reattach_embedded_weights(vae, vae_state_dict, "VAE")
+    vae = vae.to(dtype).to(device).eval().requires_grad_(False)
+    return vae
+
+
+def resolve_qwen_image_vae_store_dir() -> Optional[str]:
+    """Resolve a shared-store Qwen-Image VAE directory (downloads once), or None."""
+    try:
+        from core.models.common.vae_store import resolve_vae_dir
+        return resolve_vae_dir("qwen_image")
+    except Exception as e:
+        print(f"[AnimaLoader] Qwen-Image VAE store resolution failed: {e}")
+        return None
+
+
 def load_anima_components(
     dit_path: str,
     text_encoder_path: Optional[str] = None,
@@ -419,36 +451,66 @@ def load_anima_components(
         vae_override=vae_path,
     )
 
-    missing = [k for k in ("text_encoder", "vae") if not discovered.get(k)]
-    if missing:
+    # Read the DiT single-file once and split off any embedded VAE section
+    # (bundle_vae saves under ``first_stage_model.*``). Absent -> companion/store VAE.
+    from core.models.common.single_file_format import read_state_dict
+    raw_dit_sd, _dit_md = read_state_dict(discovered["dit"])
+    embedded_vae_sd = {
+        k[len("first_stage_model."):]: v
+        for k, v in raw_dit_sd.items() if k.startswith("first_stage_model.")
+    } or None
+    dit_only_sd = {k: v for k, v in raw_dit_sd.items() if not k.startswith("first_stage_model.")}
+
+    # TE is always a companion; VAE may be embedded OR (new) resolved from the store.
+    if not discovered.get("text_encoder"):
         raise FileNotFoundError(
-            "Anima requires companion components (TE / VAE are NOT embedded in the "
-            f"DiT save) but could not locate: {', '.join(missing)}.\n"
+            "Anima requires a companion Qwen3 text encoder (not embedded in the DiT "
+            f"save) but could not locate one.\n"
             f"  DiT: {dit_path}\n"
-            "Expected filenames:\n"
             "  - Qwen3 text encoder: " + ", ".join(QWEN3_TE_PATTERNS) + "\n"
-            "  - Qwen-Image VAE:     " + ", ".join(QWEN_VAE_PATTERNS) + "\n"
             "Search order (first hit wins):\n"
-            f"  1. explicit overrides (text_encoder_path={text_encoder_path}, vae_path={vae_path})\n"
-            "  2. split_files/ layout next to the DiT (split_files/text_encoders/, split_files/vae/)\n"
-            f"  3. models_root subdirs: {models_root}/text_encoders/, {models_root}/vae/, "
-            f"{models_root}/anima_components/\n"
+            f"  1. explicit overrides (text_encoder_path={text_encoder_path})\n"
+            "  2. split_files/ layout next to the DiT (split_files/text_encoders/)\n"
+            f"  3. models_root subdirs: {models_root}/text_encoders/, {models_root}/anima_components/\n"
             "  4. the DiT file's sibling directory\n"
-            "Place the files under one of the above, or use the official split_files/ "
-            "HuggingFace layout."
         )
 
     print(f"[AnimaLoader] DiT          : {discovered['dit']}")
     print(f"[AnimaLoader] Text encoder : {discovered['text_encoder']}")
-    print(f"[AnimaLoader] VAE          : {discovered['vae']}")
+    print(f"[AnimaLoader] VAE          : "
+          + ("embedded (bundle_vae)" if embedded_vae_sd else str(discovered['vae'])))
 
-    dit = load_anima_dit(discovered["dit"], device="cpu", dtype=dit_dtype)
+    dit = load_anima_dit(discovered["dit"], device="cpu", dtype=dit_dtype,
+                         state_dict=dit_only_sd)
     text_encoder, qwen3_tokenizer = load_qwen3_text_encoder(
         discovered["text_encoder"], config_dir=qwen3_config_dir,
         device="cpu", dtype=te_dtype,
     )
     t5_tokenizer = load_t5_tokenizer()
-    vae = load_qwen_image_vae(discovered["vae"], device="cpu", dtype=vae_dtype)
+
+    if embedded_vae_sd is not None:
+        vae = build_qwen_image_vae_from_embedded(embedded_vae_sd, device="cpu", dtype=vae_dtype)
+    elif discovered.get("vae"):
+        vae = load_qwen_image_vae(discovered["vae"], device="cpu", dtype=vae_dtype)
+    else:
+        # New: shared-store hub fallback, AFTER the existing local search order.
+        store_dir = resolve_qwen_image_vae_store_dir()
+        if store_dir and os.path.isdir(store_dir):
+            from diffusers import AutoencoderKLQwenImage
+            print(f"[AnimaLoader] Loading Qwen-Image VAE from shared store: {store_dir}")
+            vae = AutoencoderKLQwenImage.from_pretrained(
+                store_dir, torch_dtype=vae_dtype, low_cpu_mem_usage=True
+            ).to("cpu").eval().requires_grad_(False)
+        else:
+            raise FileNotFoundError(
+                "Anima could not locate a Qwen-Image VAE. Not embedded in the DiT save, "
+                "no companion file found (see filenames: " + ", ".join(QWEN_VAE_PATTERNS) + "), "
+                "and the shared VAE store (<models_dir>/vae/qwen_image, "
+                "Qwen/Qwen-Image subfolder vae) could not be resolved/downloaded.\n"
+                f"  DiT: {dit_path}\n"
+                "Place a Qwen-Image VAE under split_files/vae/, models_root/vae/, or the DiT's "
+                "sibling directory, or ensure network access for the store download."
+            )
 
     from .anima_scheduler import AnimaFlowMatchScheduler
     scheduler = AnimaFlowMatchScheduler(num_train_timesteps=1000, shift=1.0)

@@ -286,6 +286,17 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
         for k, v in dit_state.items():
             combined[f"net.{k}"] = v.detach().to("cpu").contiguous()
 
+        # Optional VAE bundling (default off). Anima uses the comfy-heritage
+        # ``first_stage_model.*`` prefix; the loader splits + reattaches it into the
+        # AutoencoderKLQwenImage. Absent -> loader resolves the companion/store VAE.
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "anima")
+        vae_embedded = bundle_vae and getattr(trainer, "vae", None) is not None
+        if vae_embedded:
+            print(f"[AnimaFullParameterAdapter] Collecting VAE weights (bundle_vae)...")
+            for k, v in trainer.vae.state_dict().items():
+                combined[f"first_stage_model.{k}"] = v.detach().to("cpu").contiguous()
+
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
@@ -294,9 +305,9 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             "format": "pt",
         }
 
-        # Transformer config JSON (declarative) + component hints. Anima keeps the
-        # DiT-only save convention (TE/VAE are NOT embedded — they are resolved
-        # out-of-band by anima_loader); the hints below aid that resolution.
+        # Transformer config JSON (declarative) + component hints. The TE is never
+        # embedded (resolved out-of-band by anima_loader); the VAE is embedded only
+        # when bundle_vae is set (else the loader resolves companion/store VAE).
         try:
             import json as _json
             from core.models.anima.anima_models import ANIMA_DIT_CONFIG
@@ -307,7 +318,7 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(
                 te_type="qwen3", te_embedded=False,
-                vae_type="qwen_image", vae_channels=16,
+                vae_type="qwen_image", vae_channels=16, vae_embedded=vae_embedded,
             ))
         except Exception as _e:
             print(f"[AnimaFullParameterAdapter] component metadata skipped: {_e}")

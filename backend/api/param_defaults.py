@@ -242,6 +242,13 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "training_dtype": "fp16",
     "output_dtype": "fp32",
     "vae_dtype": "fp16",                    # Fix: frontend had "fp32"
+    # Full-parameter save: also embed the VAE weights into the single-file
+    # checkpoint. None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH below):
+    # sd15/sdxl/deus comfy-layout checkpoints are consumed by A1111/ComfyUI which
+    # expect first_stage_model.* baked in, so they default True; all other archs
+    # default False (their loaders fall back to default VAE resolution when the
+    # section is absent). Ignored for LoRA and for pixel-space MiniT2I (no VAE).
+    "bundle_vae": None,
     "mixed_precision": True,
     # Attention backend selector for training (single source of truth).
     # Values: "native" (SDPA) | "flash" (FlashAttention). "sage" is refused for
@@ -528,6 +535,33 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     # discrete flow shift (krea2_discrete_flow_shift, applied in train_step_krea2).
     "krea2": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
 }
+
+# ---------------------------------------------------------------------------
+# Per-architecture default bundle_vae (full-parameter save VAE embedding)
+# ---------------------------------------------------------------------------
+# bundle_vae=None (the TRAINING_DEFAULTS value) resolves per-arch here.
+# sd15/sdxl/deus comfy-layout single files are consumed by A1111/ComfyUI, which
+# expect first_stage_model.* baked in — a VAE-less save silently produces
+# corrupt decodes there, so they default True. All other archs' loaders fall
+# back to default VAE resolution when the section is absent, so they default
+# False (smaller checkpoints, shared-store VAE reuse).
+BUNDLE_VAE_DEFAULTS_BY_ARCH: Dict[str, bool] = {
+    "_default": False,
+    "sd15": True,
+    "sdxl": True,
+    "deus": True,
+}
+
+
+def resolve_bundle_vae(value, arch: str) -> bool:
+    """Resolve a possibly-None bundle_vae config value to the per-arch default.
+
+    An explicit user boolean always wins; None looks up BUNDLE_VAE_DEFAULTS_BY_ARCH.
+    """
+    if value is not None:
+        return bool(value)
+    return bool(BUNDLE_VAE_DEFAULTS_BY_ARCH.get(
+        arch, BUNDLE_VAE_DEFAULTS_BY_ARCH["_default"]))
 
 # ---------------------------------------------------------------------------
 # Tagger Training (TaggerTrainingRunCreateRequest)

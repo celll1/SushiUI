@@ -80,6 +80,19 @@ def load_minit2i_vae(vae_type: str, torch_dtype: torch.dtype = torch.float16,
         vae.eval()
         return vae
 
+    # Shared VAE store (sdxl/flux1). MINIT2I_VAE_DIR is preserved via _local_candidates
+    # above (takes precedence); the store downloads the default once and reuses it.
+    try:
+        from core.models.common.vae_store import resolve_vae_dir
+        store_dir = resolve_vae_dir(vae_type)
+        if store_dir and os.path.isdir(store_dir):
+            print(f"[MiniT2I VAE] Loading {vae_type} VAE from shared store: {store_dir}")
+            vae = AutoencoderKL.from_pretrained(store_dir, torch_dtype=torch_dtype)
+            vae.eval()
+            return vae
+    except Exception as e:
+        print(f"[MiniT2I VAE] shared store resolution failed ({e}); falling back to hub")
+
     entry = VAE_REGISTRY[vae_type]
     repo, sub = entry["repo"], entry["subfolder"]
     print(f"[MiniT2I VAE] Loading {vae_type} VAE from HF: {repo}" + (f" (subfolder={sub})" if sub else ""))

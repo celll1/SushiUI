@@ -24,6 +24,8 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+import time as _time
+from core.inference.generation_timing import generation_timer
 
 class ZImageMixin:
     """ZImageMixin: zimage backend methods extracted verbatim from pipeline.py."""
@@ -1316,6 +1318,7 @@ class ZImageMixin:
             negative_prompt_embeds_list: List of negative embeddings (if CFG enabled)
             do_classifier_free_guidance: bool
         """
+        _t_phase = _time.perf_counter()
         device = next(text_encoder.parameters()).device
 
         # Check if Text Encoder has FP8 weights
@@ -1434,6 +1437,7 @@ class ZImageMixin:
 
         print(f"[Z-Image] Text encoding complete: {len(prompt_embeds_list)} prompts encoded")
 
+        generation_timer.add("text_encode", _time.perf_counter() - _t_phase)
         return prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance
 
     def _zimage_denoising_loop(
@@ -1462,6 +1466,7 @@ class ZImageMixin:
         Returns:
             latents: Denoised latents (torch.Tensor)
         """
+        _t_phase = _time.perf_counter()
         # Import calculate_shift from local zimage_utils (with fallback)
         try:
             from core.zimage_utils import calculate_shift
@@ -1898,6 +1903,7 @@ class ZImageMixin:
         if hasattr(transformer, "_fbcache_step"):
             transformer._fbcache_step = None
 
+        generation_timer.add("denoise", _time.perf_counter() - _t_phase)
         return latents
 
     def _zimage_decode_latents(self, vae, latents):
@@ -1909,6 +1915,7 @@ class ZImageMixin:
         Returns:
             images: List of PIL images
         """
+        _t_phase = _time.perf_counter()
         device = next(vae.parameters()).device
 
         print(f"[Z-Image] Decoding latents with VAE on {device}")
@@ -1931,4 +1938,5 @@ class ZImageMixin:
 
         print(f"[Z-Image] VAE decode complete: {len(images)} images generated")
 
+        generation_timer.add("vae_decode", _time.perf_counter() - _t_phase)
         return images

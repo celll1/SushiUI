@@ -24,11 +24,11 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -63,6 +63,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # MiniT2I components (pixel-space MM-JiT + FLAN-T5, NO VAE). Flow matching, x0 pred.
         self.minit2i_components: Optional[Dict[str, Any]] = None
         self.is_minit2i_model: bool = False
+
+        # Krea 2 components (single-stream MMDiT + Qwen3-VL + Qwen-Image VAE). Flow matching.
+        self.krea2_components: Optional[Dict[str, Any]] = None
+        self.is_krea2_model: bool = False
 
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
@@ -105,6 +109,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "ideogram4"
         if self.is_minit2i_model:
             return "minit2i"
+        if self.is_krea2_model:
+            return "krea2"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -253,6 +259,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.minit2i_components = None
                 self.is_minit2i_model = False
+
+            # Clean up Krea 2 components
+            if self.krea2_components is not None:
+                print("[Pipeline] Cleaning up Krea 2 components...")
+                for comp_name, comp in self.krea2_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        try:
+                            comp.to('cpu')
+                        except Exception:
+                            pass
+                    del comp
+                self.krea2_components = None
+                self.is_krea2_model = False
 
             # Force garbage collection
             gc.collect()
@@ -501,6 +520,52 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] MiniT2I model loaded successfully")
+                return
+
+            # Check if Krea 2 (single-stream MMDiT + Qwen3-VL + Qwen-Image VAE). Before the
+            # generic Z-Image check (which matches any dict carrying a "transformer" key).
+            if isinstance(model_result, dict) and model_result.get("type") == "krea2":
+                print("[Pipeline] Krea 2 model detected (component-based dict returned)")
+                self.krea2_components = model_result
+                self.is_krea2_model = True
+                self.is_minit2i_model = False
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                for comp_name in ("transformer", "text_encoder", "vae"):
+                    comp = self.krea2_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] Krea 2 components on CPU. Will load to GPU as needed.")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "krea2",
+                    "is_v_prediction": False,  # flow matching, velocity prediction
+                    "model_hash": model_hash,
+                    "is_distilled": self.krea2_components.get("is_distilled", False),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] Krea 2 model loaded successfully")
                 return
 
             # Check if Z-Image
@@ -1694,6 +1759,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # MiniT2I handling (pixel-space MM-JiT)
         if self.is_minit2i_model:
             return self._generate_txt2img_minit2i(params, progress_callback, step_callback)
+        if self.is_krea2_model:
+            return self._generate_txt2img_krea2(params, progress_callback, step_callback)
 
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
@@ -2242,6 +2309,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         if self.is_minit2i_model:
             return self._generate_img2img_minit2i(params, init_image, progress_callback, step_callback)
+        if self.is_krea2_model:
+            return self._generate_img2img_krea2(params, init_image, progress_callback, step_callback)
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
@@ -2846,6 +2915,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # MiniT2I inpaint (repaint approach)
         if self.is_minit2i_model:
             return self._generate_inpaint_minit2i(params, init_image, mask_image, progress_callback, step_callback)
+        if self.is_krea2_model:
+            return self._generate_inpaint_krea2(params, init_image, mask_image, progress_callback, step_callback)
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:

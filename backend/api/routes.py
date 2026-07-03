@@ -613,12 +613,16 @@ async def generate_txt2img(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
-        # Add Vision Encoder info to params for PNG metadata and DB storage
-        ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
-        if ve_name:
-            params["vision_encoder_name"] = ve_name
-        if ve_hash:
-            params["vision_encoder_hash"] = ve_hash
+        # Add Vision Encoder info to params for PNG metadata and DB storage.
+        # Only record VE info when THIS generation actually used reference images.
+        # The VE stays loaded ("sticky") across generations, so extract_vision_encoder_info
+        # returns non-empty even for generations that used no reference image.
+        if ref_image_list:
+            ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+            if ve_name:
+                params["vision_encoder_name"] = ve_name
+            if ve_hash:
+                params["vision_encoder_hash"] = ve_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1406,12 +1410,15 @@ async def generate_img2img(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
-        # Add Vision Encoder info to params for PNG metadata and DB storage
-        ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
-        if ve_name:
-            params["vision_encoder_name"] = ve_name
-        if ve_hash:
-            params["vision_encoder_hash"] = ve_hash
+        # Add Vision Encoder info to params for PNG metadata and DB storage.
+        # Only record VE info when THIS generation actually used reference images
+        # (the VE stays loaded "sticky" across generations).
+        if ref_image_list:
+            ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+            if ve_name:
+                params["vision_encoder_name"] = ve_name
+            if ve_hash:
+                params["vision_encoder_hash"] = ve_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1829,12 +1836,15 @@ async def generate_inpaint(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
-        # Add Vision Encoder info to params for PNG metadata and DB storage
-        ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
-        if ve_name:
-            params["vision_encoder_name"] = ve_name
-        if ve_hash:
-            params["vision_encoder_hash"] = ve_hash
+        # Add Vision Encoder info to params for PNG metadata and DB storage.
+        # Only record VE info when THIS generation actually used reference images
+        # (the VE stays loaded "sticky" across generations).
+        if ref_image_list:
+            ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+            if ve_name:
+                params["vision_encoder_name"] = ve_name
+            if ve_hash:
+                params["vision_encoder_hash"] = ve_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(

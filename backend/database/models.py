@@ -140,11 +140,15 @@ class GeneratedImage(GalleryBase):
             if "ref_images" in self.parameters:
                 result["ref_images"] = self.parameters["ref_images"]
 
-            # Vision Encoder metadata
-            if "vision_encoder_name" in self.parameters:
-                result["vision_encoder_name"] = self.parameters["vision_encoder_name"]
-            if "vision_encoder_hash" in self.parameters:
-                result["vision_encoder_hash"] = self.parameters["vision_encoder_hash"]
+            # Vision Encoder metadata.
+            # Defensive gate: only surface VE info when the row actually used
+            # reference images. Legacy/stray rows may carry vision_encoder_* from
+            # the sticky VE session without any ref_images; suppress those.
+            if self.parameters.get("ref_images"):
+                if "vision_encoder_name" in self.parameters:
+                    result["vision_encoder_name"] = self.parameters["vision_encoder_name"]
+                if "vision_encoder_hash" in self.parameters:
+                    result["vision_encoder_hash"] = self.parameters["vision_encoder_hash"]
 
         return result
 

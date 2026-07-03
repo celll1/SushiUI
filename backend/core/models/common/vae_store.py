@@ -19,8 +19,10 @@ Resolution precedence (``resolve_vae_dir``)
   1. ``explicit`` argument (caller-supplied path)
   2. environment alias (``env_var`` name, e.g. ``KREA2_VAE_DIR``)
   3. the model's own ``vae/`` subfolder (``model_own_vae``)
-  4. the shared store ``<models_dir>/vae/<store_subdir>`` (if already populated)
-  5. Hugging Face Hub download INTO the shared store (so it is fetched once)
+  4. the existing Hugging Face hub cache (offline probe — reuses VAEs already
+     downloaded by pre-store code instead of fetching a second copy)
+  5. the shared store ``<models_dir>/vae/<store_subdir>`` (if already populated)
+  6. Hugging Face Hub download INTO the shared store (so it is fetched once)
 
 Never moves or deletes existing local files; the store is opportunistic.
 """
@@ -114,6 +116,93 @@ def store_dir_for(vae_type: str) -> Optional[str]:
     return os.path.join(store_root, sub) if sub else store_root
 
 
+def _allow_patterns(entry: Dict) -> list:
+    sub = entry.get("default_subfolder")
+    return [f"{sub}/*"] if sub else ["*.json", "*.safetensors", "*.bin"]
+
+
+def _probe_hf_cache(vae_type: str) -> Optional[str]:
+    """Return the default VAE dir from the existing HF hub cache, or None.
+
+    Offline probe only (``local_files_only=True``) — never downloads. Reuses
+    copies fetched by pre-store code so the store does not duplicate them.
+    """
+    entry = VAE_REGISTRY[vae_type]
+    for repo_id in _cache_repo_id_candidates(entry["default_repo"]):
+        try:
+            from huggingface_hub import snapshot_download
+            snapshot_root = snapshot_download(
+                repo_id,
+                allow_patterns=_allow_patterns(entry),
+                local_files_only=True,
+            )
+        except Exception:
+            continue
+        sub = entry.get("default_subfolder")
+        inner = os.path.join(snapshot_root, sub) if sub else snapshot_root
+        if _has_vae_dir(inner):
+            print(f"[VAEStore] Reusing {vae_type} VAE from HF hub cache: {inner}")
+            return inner
+    # The main ref may point to a snapshot without the VAE files (partial
+    # downloads leave older snapshots behind) — scan all cached snapshots.
+    inner = _scan_cached_snapshots(vae_type)
+    if inner:
+        print(f"[VAEStore] Reusing {vae_type} VAE from HF hub cache snapshot: {inner}")
+    return inner
+
+
+def _has_vae_dir(directory: Optional[str]) -> bool:
+    """True when ``directory`` holds a loadable VAE (config + weights)."""
+    if not _has_vae_config(directory):
+        return False
+    return any(
+        name.endswith((".safetensors", ".bin"))
+        for name in os.listdir(directory)
+    )
+
+
+def _scan_cached_snapshots(vae_type: str) -> Optional[str]:
+    """Scan every cached snapshot of the default repo for a loadable VAE dir."""
+    entry = VAE_REGISTRY[vae_type]
+    sub = entry.get("default_subfolder")
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+    except Exception:
+        return None
+    for repo_id in _cache_repo_id_candidates(entry["default_repo"]):
+        snap_root = os.path.join(
+            HF_HUB_CACHE, f"models--{repo_id.replace('/', '--')}", "snapshots"
+        )
+        if not os.path.isdir(snap_root):
+            continue
+        for snap in sorted(os.listdir(snap_root)):
+            inner = os.path.join(snap_root, snap, sub) if sub else os.path.join(snap_root, snap)
+            if _has_vae_dir(inner):
+                return inner
+    return None
+
+
+def _cache_repo_id_candidates(repo_id: str) -> list:
+    """Cache-folder repo-id candidates for ``repo_id``, case-insensitively.
+
+    HF resolves repo ids case-insensitively server-side, but the hub cache
+    folder name follows the string the ORIGINAL download used — e.g. a cache
+    populated via ``FLUX.2-Klein-4B`` is missed by an offline probe for
+    ``FLUX.2-klein-4B``. Scan the cache dir for folders matching the id
+    case-insensitively and probe each spelling found.
+    """
+    candidates = [repo_id]
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        want = f"models--{repo_id.replace('/', '--')}".lower()
+        for name in os.listdir(HF_HUB_CACHE):
+            if name.lower() == want and name != f"models--{repo_id.replace('/', '--')}":
+                candidates.append(name[len("models--"):].replace("--", "/"))
+    except Exception:
+        pass
+    return candidates
+
+
 def _download_into_store(vae_type: str) -> Optional[str]:
     """Download the default VAE for ``vae_type`` into the shared store; return dir."""
     entry = VAE_REGISTRY[vae_type]
@@ -133,7 +222,7 @@ def _download_into_store(vae_type: str) -> Optional[str]:
         print(f"[VAEStore] huggingface_hub unavailable, cannot fetch {vae_type} VAE: {e}")
         return None
 
-    allow = [f"{sub}/*"] if sub else ["*.json", "*.safetensors", "*.bin"]
+    allow = _allow_patterns(entry)
     os.makedirs(store_root, exist_ok=True)
     print(f"[VAEStore] Downloading {vae_type} VAE ({entry['default_repo']}"
           + (f" subfolder={sub}" if sub else "")
@@ -172,12 +261,18 @@ def resolve_vae_dir(
     if _has_vae_config(model_own_vae):
         return model_own_vae
 
-    # 4. shared store (already populated)
+    # 4. existing HF hub cache (offline probe; avoids re-downloading VAEs
+    #    already fetched by pre-store code)
+    cached = _probe_hf_cache(vae_type)
+    if cached:
+        return cached
+
+    # 5. shared store (already populated)
     store_inner = store_dir_for(vae_type)
     if _has_vae_config(store_inner):
         return store_inner
 
-    # 5. download into the shared store
+    # 6. download into the shared store
     if download:
         return _download_into_store(vae_type)
     return None

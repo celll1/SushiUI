@@ -288,6 +288,47 @@ export default function ImageGrid() {
     }
   };
 
+  // Carry acceleration / determinism-affecting settings from a stored image
+  // into a target params object for reproducible re-generation. These all flow
+  // through the generation request today, so restoring them reproduces output.
+  const applyAccelParams = (target: any, image: GeneratedImage) => {
+    const p = image.parameters || {};
+    if (p.spectrum_enable) {
+      target.spectrum_enable = true;
+      const keys = [
+        "spectrum_w", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
+        "spectrum_window_size", "spectrum_flex_window", "spectrum_tail",
+        "spectrum_feature_mode", "spectrum_cache_branch", "spectrum_max_cache",
+      ];
+      keys.forEach((k) => { if (p[k] !== undefined) target[k] = p[k]; });
+    } else {
+      target.spectrum_enable = false;
+    }
+    if (p.fbcache_enable) {
+      target.fbcache_enable = true;
+      ["fbcache_threshold", "fbcache_warmup_steps"].forEach((k) => {
+        if (p[k] !== undefined) target[k] = p[k];
+      });
+    } else {
+      target.fbcache_enable = false;
+    }
+    if (p.prompt_chunking_mode !== undefined) target.prompt_chunking_mode = p.prompt_chunking_mode;
+    if (p.max_prompt_chunks !== undefined) target.max_prompt_chunks = p.max_prompt_chunks;
+    if (p.text_encoder_quantization !== undefined) target.text_encoder_quantization = p.text_encoder_quantization;
+    if (p.nag_negative_prompt !== undefined) target.nag_negative_prompt = p.nag_negative_prompt;
+    if (p.original_size_w !== undefined) target.original_size_w = p.original_size_w;
+    if (p.original_size_h !== undefined) target.original_size_h = p.original_size_h;
+    if (p.original_size_scale !== undefined) target.original_size_scale = p.original_size_scale;
+    if (p.use_tipo !== undefined) target.use_tipo = p.use_tipo;
+    if (p.tipo_config !== undefined) target.tipo_config = p.tipo_config;
+    // attention_type / attention_impl are read from localStorage by the API layer,
+    // not from the params object, so restore them there for reproducibility.
+    if (typeof window !== 'undefined') {
+      if (p.attention_type !== undefined) localStorage.setItem('attention_type', p.attention_type);
+      if (p.attention_impl !== undefined) localStorage.setItem('attention_impl', p.attention_impl);
+    }
+  };
+
   const sendToTxt2Img = (image: GeneratedImage) => {
     // Note: Send image is not applicable for txt2img (no input image)
 
@@ -341,6 +382,9 @@ export default function ImageGrid() {
       } else {
         txt2imgParams.nag_enable = false;
       }
+
+      // Restore acceleration / determinism-affecting settings
+      applyAccelParams(txt2imgParams, image);
     }
 
     // Save merged params once (only if sendPrompt or sendParameters is checked)
@@ -437,6 +481,9 @@ export default function ImageGrid() {
       } else {
         img2imgParams.nag_enable = false;
       }
+
+      // Restore acceleration / determinism-affecting settings
+      applyAccelParams(img2imgParams, image);
     }
 
     // Save merged params once (only if sendPrompt or sendParameters is checked)
@@ -533,6 +580,9 @@ export default function ImageGrid() {
       } else {
         inpaintParams.nag_enable = false;
       }
+
+      // Restore acceleration / determinism-affecting settings
+      applyAccelParams(inpaintParams, image);
     }
 
     // Save merged params once (only if sendPrompt or sendParameters is checked)
@@ -774,6 +824,70 @@ export default function ImageGrid() {
                     </div>
                   )}
                 </div>
+
+                {/* Acceleration / determinism-affecting settings */}
+                {(selectedImage.parameters?.spectrum_enable ||
+                  selectedImage.parameters?.fbcache_enable ||
+                  (selectedImage.parameters?.attention_type && selectedImage.parameters.attention_type !== 'normal') ||
+                  (selectedImage.parameters?.attention_impl && selectedImage.parameters.attention_impl !== 'conduit') ||
+                  (selectedImage.parameters?.prompt_chunking_mode && selectedImage.parameters.prompt_chunking_mode !== 'a1111') ||
+                  (selectedImage.parameters?.max_prompt_chunks !== undefined && selectedImage.parameters.max_prompt_chunks > 0) ||
+                  (selectedImage.parameters?.text_encoder_quantization && selectedImage.parameters.text_encoder_quantization !== 'none') ||
+                  selectedImage.parameters?.use_tipo ||
+                  (selectedImage.parameters?.original_size_w > 0) ||
+                  (selectedImage.parameters?.original_size_h > 0) ||
+                  (selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0)) && (
+                  <div className="border-t border-gray-700 pt-3">
+                    <span className="text-gray-400 font-medium">Acceleration:</span>
+                    <div className="mt-2 space-y-2 text-xs">
+                      {selectedImage.parameters?.spectrum_enable && (
+                        <div>
+                          <span className="text-gray-500">Spectrum forecasting:</span> enabled (w: {selectedImage.parameters.spectrum_w}, m: {selectedImage.parameters.spectrum_m}, lam: {selectedImage.parameters.spectrum_lam}, warmup: {selectedImage.parameters.spectrum_warmup_steps}, window: {selectedImage.parameters.spectrum_window_size}, flex: {selectedImage.parameters.spectrum_flex_window}, tail: {selectedImage.parameters.spectrum_tail}, mode: {selectedImage.parameters.spectrum_feature_mode}, cache_branch: {selectedImage.parameters.spectrum_cache_branch}, max_cache: {selectedImage.parameters.spectrum_max_cache})
+                        </div>
+                      )}
+                      {selectedImage.parameters?.fbcache_enable && (
+                        <div>
+                          <span className="text-gray-500">FBCache:</span> enabled (threshold: {selectedImage.parameters.fbcache_threshold}, warmup: {selectedImage.parameters.fbcache_warmup_steps}{selectedImage.parameters.fbcache_cache_branch !== undefined ? `, cache_branch: ${selectedImage.parameters.fbcache_cache_branch}` : ''})
+                        </div>
+                      )}
+                      {selectedImage.parameters?.attention_type && selectedImage.parameters.attention_type !== 'normal' && (
+                        <div>
+                          <span className="text-gray-500">Attention type:</span> {selectedImage.parameters.attention_type}
+                        </div>
+                      )}
+                      {selectedImage.parameters?.attention_impl && selectedImage.parameters.attention_impl !== 'conduit' && (
+                        <div>
+                          <span className="text-gray-500">Attention impl:</span> {selectedImage.parameters.attention_impl}
+                        </div>
+                      )}
+                      {selectedImage.parameters?.prompt_chunking_mode && selectedImage.parameters.prompt_chunking_mode !== 'a1111' && (
+                        <div>
+                          <span className="text-gray-500">Prompt chunking:</span> {selectedImage.parameters.prompt_chunking_mode}{selectedImage.parameters.max_prompt_chunks > 0 ? ` (max: ${selectedImage.parameters.max_prompt_chunks})` : ''}
+                        </div>
+                      )}
+                      {(selectedImage.parameters?.prompt_chunking_mode === 'a1111' || selectedImage.parameters?.prompt_chunking_mode === undefined) && selectedImage.parameters?.max_prompt_chunks > 0 && (
+                        <div>
+                          <span className="text-gray-500">Max prompt chunks:</span> {selectedImage.parameters.max_prompt_chunks}
+                        </div>
+                      )}
+                      {selectedImage.parameters?.text_encoder_quantization && selectedImage.parameters.text_encoder_quantization !== 'none' && (
+                        <div>
+                          <span className="text-gray-500">TE Quantization:</span> {selectedImage.parameters.text_encoder_quantization}
+                        </div>
+                      )}
+                      {selectedImage.parameters?.use_tipo && (
+                        <div>
+                          <span className="text-gray-500">TIPO:</span> enabled
+                        </div>
+                      )}
+                      {(selectedImage.parameters?.original_size_w > 0 || selectedImage.parameters?.original_size_h > 0 || (selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0)) && (
+                        <div>
+                          <span className="text-gray-500">Original size:</span> {selectedImage.parameters?.original_size_w || 0} x {selectedImage.parameters?.original_size_h || 0}{selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0 ? ` (scale: ${selectedImage.parameters.original_size_scale})` : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 {/* img2img/Inpaint Parameters */}
                 {(selectedImage.generation_type === 'img2img' || selectedImage.generation_type === 'inpaint') && (

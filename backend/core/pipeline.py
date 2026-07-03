@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import gc
+import time
 import random
 from pathlib import Path
 from diffusers import (
@@ -24,6 +25,7 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+from core.inference.generation_timing import generation_timer
 from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
@@ -1828,12 +1830,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
         # Encode prompts with weights if emphasis syntax is present
-        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
-            initial_prompt,
-            params.get("negative_prompt", ""),
-            pipeline=self.txt2img_pipeline,
-            skip_emphasis=use_negpip,
-        )
+        with generation_timer.phase("text_encode"):
+            prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
+                initial_prompt,
+                params.get("negative_prompt", ""),
+                pipeline=self.txt2img_pipeline,
+                skip_emphasis=use_negpip,
+            )
 
         # Log embedding shapes for debugging
         if prompt_embeds is not None:
@@ -2165,7 +2168,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 else:
                     print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
-            # Call custom sampling loop
+            # Call custom sampling loop. The legacy SD/SDXL path folds VAE decode
+            # into this loop, so denoise and decode are not separable here — the
+            # combined span is recorded as the "denoise" phase.
+            _t_denoise = time.perf_counter()
             image = custom_sampling_loop(
                 pipeline=pipeline_to_use,
                 prompt_embeds=prompt_embeds,
@@ -2222,6 +2228,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
                 **controlnet_kwargs,
             )
+            generation_timer.add("denoise", time.perf_counter() - _t_denoise)
 
         except Exception as e:
             print(f"Generation error: {e}")
@@ -2437,12 +2444,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
         # Encode prompts with weights if emphasis syntax is present
-        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
-            initial_prompt,
-            params.get("negative_prompt", ""),
-            pipeline=pipeline_to_use,
-            skip_emphasis=use_negpip,
-        )
+        with generation_timer.phase("text_encode"):
+            prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
+                initial_prompt,
+                params.get("negative_prompt", ""),
+                pipeline=pipeline_to_use,
+                skip_emphasis=use_negpip,
+            )
 
         # Log embedding shapes for debugging
         if prompt_embeds is not None:
@@ -2762,7 +2770,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
             log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
-            # Call custom img2img sampling loop
+            # Call custom img2img sampling loop. VAE decode is folded into the loop
+            # on this legacy path, so the combined span is recorded as "denoise".
+            _t_denoise = time.perf_counter()
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
                 init_image=init_image,
@@ -2819,6 +2829,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
                 **controlnet_kwargs,
             )
+            generation_timer.add("denoise", time.perf_counter() - _t_denoise)
 
         except Exception as e:
             print(f"Generation error: {e}")
@@ -3040,12 +3051,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
         # Encode initial prompt
-        prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
-            initial_prompt,
-            params.get("negative_prompt", ""),
-            pipeline=pipeline_to_use,
-            skip_emphasis=use_negpip,
-        )
+        with generation_timer.phase("text_encode"):
+            prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds = self._encode_prompt_with_weights(
+                initial_prompt,
+                params.get("negative_prompt", ""),
+                pipeline=pipeline_to_use,
+                skip_emphasis=use_negpip,
+            )
 
         # Log embedding shapes for debugging
         if prompt_embeds is not None:
@@ -3219,7 +3231,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
-        # Use custom inpaint sampling loop
+        # Use custom inpaint sampling loop. VAE decode is folded into the loop on
+        # this legacy path, so the combined span is recorded as "denoise".
+        _t_denoise = time.perf_counter()
         image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
             init_image=init_image,
@@ -3280,6 +3294,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
             **controlnet_kwargs,
         )
+        generation_timer.add("denoise", time.perf_counter() - _t_denoise)
 
         # Restore original attention processors if they were changed
         if self.original_processors is not None:

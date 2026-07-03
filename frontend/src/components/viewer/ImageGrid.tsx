@@ -854,8 +854,8 @@ export default function ImageGrid() {
                 {/* Acceleration / determinism-affecting settings */}
                 {(selectedImage.parameters?.spectrum_enable ||
                   selectedImage.parameters?.fbcache_enable ||
-                  (selectedImage.parameters?.attention_type && selectedImage.parameters.attention_type !== 'normal') ||
-                  (selectedImage.parameters?.attention_impl && selectedImage.parameters.attention_impl !== 'conduit') ||
+                  selectedImage.parameters?.attention_type ||
+                  selectedImage.parameters?.attention_impl ||
                   (selectedImage.parameters?.prompt_chunking_mode && selectedImage.parameters.prompt_chunking_mode !== 'a1111') ||
                   (selectedImage.parameters?.max_prompt_chunks !== undefined && selectedImage.parameters.max_prompt_chunks > 0) ||
                   (selectedImage.parameters?.text_encoder_quantization && selectedImage.parameters.text_encoder_quantization !== 'none') ||
@@ -876,12 +876,12 @@ export default function ImageGrid() {
                           <span className="text-gray-500">FBCache:</span> enabled (threshold: {selectedImage.parameters.fbcache_threshold}, warmup: {selectedImage.parameters.fbcache_warmup_steps}{selectedImage.parameters.fbcache_cache_branch !== undefined ? `, cache_branch: ${selectedImage.parameters.fbcache_cache_branch}` : ''})
                         </div>
                       )}
-                      {selectedImage.parameters?.attention_type && selectedImage.parameters.attention_type !== 'normal' && (
+                      {selectedImage.parameters?.attention_type && (
                         <div>
                           <span className="text-gray-500">Attention type:</span> {selectedImage.parameters.attention_type}
                         </div>
                       )}
-                      {selectedImage.parameters?.attention_impl && selectedImage.parameters.attention_impl !== 'conduit' && (
+                      {selectedImage.parameters?.attention_impl && (
                         <div>
                           <span className="text-gray-500">Attention impl:</span> {selectedImage.parameters.attention_impl}
                         </div>
@@ -909,6 +909,38 @@ export default function ImageGrid() {
                       {(selectedImage.parameters?.original_size_w > 0 || selectedImage.parameters?.original_size_h > 0 || (selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0)) && (
                         <div>
                           <span className="text-gray-500">Original size:</span> {selectedImage.parameters?.original_size_w || 0} x {selectedImage.parameters?.original_size_h || 0}{selectedImage.parameters?.original_size_scale !== undefined && selectedImage.parameters.original_size_scale !== 1.0 ? ` (scale: ${selectedImage.parameters.original_size_scale})` : ''}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Generation timing (informational) */}
+                {(selectedImage.parameters?.generation_time !== undefined ||
+                  selectedImage.parameters?.time_text_encode !== undefined ||
+                  selectedImage.parameters?.time_denoise !== undefined ||
+                  selectedImage.parameters?.time_vae_decode !== undefined) && (
+                  <div className="border-t border-gray-700 pt-3">
+                    <span className="text-gray-400 font-medium">Timing:</span>
+                    <div className="mt-2 space-y-2 text-xs">
+                      {selectedImage.parameters?.generation_time !== undefined && (
+                        <div>
+                          <span className="text-gray-500">Total:</span> {selectedImage.parameters.generation_time}s
+                        </div>
+                      )}
+                      {selectedImage.parameters?.time_text_encode !== undefined && (
+                        <div>
+                          <span className="text-gray-500">Text encode:</span> {selectedImage.parameters.time_text_encode}s
+                        </div>
+                      )}
+                      {selectedImage.parameters?.time_denoise !== undefined && (
+                        <div>
+                          <span className="text-gray-500">Denoise:</span> {selectedImage.parameters.time_denoise}s
+                        </div>
+                      )}
+                      {selectedImage.parameters?.time_vae_decode !== undefined && (
+                        <div>
+                          <span className="text-gray-500">VAE decode:</span> {selectedImage.parameters.time_vae_decode}s
                         </div>
                       )}
                     </div>

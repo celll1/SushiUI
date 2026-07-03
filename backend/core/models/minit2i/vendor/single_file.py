@@ -20,6 +20,7 @@ import torch
 
 from core.models.common.single_file_format import (
     DEFAULT_MAX_SHARD_BYTES,
+    VAE_PREFIX,
     dedup_tensors,
     read_state_dict,
     save_single_file_state,
@@ -121,7 +122,9 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
     model.to("cpu")
 
     te_sd = _transformer_subdict(raw, TEXT_ENCODER_PREFIX) or None
-    return {"transformer": model, "text_encoder_state_dict": te_sd, "variant": variant}
+    vae_sd = _transformer_subdict(raw, VAE_PREFIX) or None
+    return {"transformer": model, "text_encoder_state_dict": te_sd,
+            "vae_state_dict": vae_sd, "variant": variant}
 
 
 def save_single_file(
@@ -129,6 +132,7 @@ def save_single_file(
     transformer: MiniT2IMMJiTModel,
     variant: str,
     text_encoder: Optional[torch.nn.Module] = None,
+    vae: Optional[torch.nn.Module] = None,
     extra_metadata: Optional[Dict[str, str]] = None,
     max_shard_bytes: int = DEFAULT_MAX_SHARD_BYTES,
 ) -> None:
@@ -148,6 +152,9 @@ def save_single_file(
         if text_encoder is not None:
             for k, v in text_encoder.state_dict().items():
                 yield f"{TEXT_ENCODER_PREFIX}{k}", v
+        if vae is not None:
+            for k, v in vae.state_dict().items():
+                yield f"{VAE_PREFIX}{k}", v
 
     state, dropped_tied = dedup_tensors(_named())
 
@@ -161,6 +168,7 @@ def save_single_file(
         "vae_type": str(getattr(cfg, "vae_type", "none")),
         "mmjit_config": json.dumps({k: getattr(cfg, k) for k in cfg_keys}),
         "has_text_encoder": "1" if text_encoder is not None else "0",
+        "component.vae.embedded": "1" if vae is not None else "0",
         "format": "pt",
     }
     if dropped_tied:

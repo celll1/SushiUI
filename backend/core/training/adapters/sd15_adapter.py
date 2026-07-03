@@ -391,9 +391,13 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             for key, value in converted_unet.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save VAE weights: convert diffusers -> CompVis/LDM format
-        if trainer.vae is not None:
-            print(f"[SD15FullParameterAdapter] Collecting VAE weights (diffusers -> CompVis)...")
+        # Save VAE weights: convert diffusers -> CompVis/LDM format (gated on
+        # bundle_vae; per-arch default sd15=True for A1111/ComfyUI compatibility).
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "sd15")
+        vae_embedded = bundle_vae and trainer.vae is not None
+        if vae_embedded:
+            print(f"[SD15FullParameterAdapter] Collecting VAE weights (diffusers -> CompVis, bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             converted_vae = convert_vae_state_dict_to_original(vae_state)
             for key, value in converted_vae.items():
@@ -412,6 +416,7 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "sd15",
+            "component.vae.embedded": "1" if vae_embedded else "0",
             **sd15_modelspec_metadata(trainer),
         }
 

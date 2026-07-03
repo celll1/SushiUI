@@ -379,6 +379,27 @@ class ModelLoader:
         )
 
     @staticmethod
+    def _keys_look_lens(keys) -> bool:
+        """Lens single-file signature: net.*-stripped keys carry both
+        ``.attn.img_qkv.weight`` and ``.attn.txt_qkv.weight`` (dual-stream DiT).
+        Operates on key NAMES only (usable against a shard weight_map)."""
+        stripped = [k[len("net."):] if k.startswith("net.") else k for k in keys]
+        has_img_qkv = any(k.endswith(".attn.img_qkv.weight") for k in stripped)
+        has_txt_qkv = any(k.endswith(".attn.txt_qkv.weight") for k in stripped)
+        return has_img_qkv and has_txt_qkv
+
+    @staticmethod
+    def _keys_look_anima(keys) -> bool:
+        """Anima single-file signature (net.*-stripped ``blocks.*`` DiT with
+        AdaLN-LoRA). Delegates to the anima loader's key-name check so the
+        signature stays defined in one place. Key NAMES only."""
+        try:
+            from core.models.anima.anima_loader import is_anima_state_dict_keys
+            return bool(is_anima_state_dict_keys(list(keys)))
+        except Exception:
+            return False
+
+    @staticmethod
     def _is_krea2_safetensors(model_path: str) -> bool:
         """Open a .safetensors file and check for the Krea 2 key signature."""
         try:
@@ -441,6 +462,13 @@ class ModelLoader:
                     return "minit2i"
                 if ModelLoader._keys_look_krea2(keys, md):
                     return "krea2"
+                # Lens net.* dual-stream DiT signature (runs before Anima; the
+                # two key sets are disjoint but metadata already resolves ties).
+                if ModelLoader._keys_look_lens(keys):
+                    return "lens"
+                # Anima net.* cosmos-style DiT signature.
+                if ModelLoader._keys_look_anima(keys):
+                    return "anima"
                 # FLUX.2 diffusers-layout key signature.
                 if (any(k.startswith("time_guidance_embed.") for k in keys)
                         and any(k.startswith("double_stream_modulation_") for k in keys)):
@@ -544,10 +572,7 @@ class ModelLoader:
                 if _mt == "lens" or _arch == "lens":
                     return "lens"
                 # Key-signature fallback (net.*-prefixed Lens DiT).
-                _lstripped = [k[len("net."):] if k.startswith("net.") else k for k in _lkeys]
-                _has_img_qkv = any(k.endswith(".attn.img_qkv.weight") for k in _lstripped)
-                _has_txt_qkv = any(k.endswith(".attn.txt_qkv.weight") for k in _lstripped)
-                if _has_img_qkv and _has_txt_qkv:
+                if ModelLoader._keys_look_lens(_lkeys):
                     return "lens"
             except Exception as e:
                 print(f"[ModelLoader] Lens detection skipped: {e}")
@@ -956,9 +981,13 @@ class ModelLoader:
             with open(transformer_config_path, 'r') as f:
                 transformer_config = json.load(f)
 
-            # Step 3: Detect actual layer count from safetensors file
+            # Step 3: Detect actual layer count from safetensors file. Read once
+            # via the shared reader so a sharded <stem>.safetensors.index.json
+            # path (full-FT save >10 GB) loads transparently alongside a plain
+            # single-file save.
             print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
-            raw_state_dict = load_file(file_path, device="cpu")
+            from core.models.common.single_file_format import read_state_dict
+            raw_state_dict, _raw_metadata = read_state_dict(file_path)
 
             # Normalize: both genuine Comfy checkpoints AND sushiUI full-FT saves
             # (official-layout keys under model.diffusion_model. + embedded VAE/TE).
@@ -1102,9 +1131,20 @@ class ModelLoader:
                 print(f"[ModelLoader] SDXL VAE loaded: latent_channels={vae.config.latent_channels}, "
                       f"scaling_factor={vae.config.scaling_factor}")
             else:
-                # Load FLUX VAE from base model (16-channel latents)
+                # Load FLUX VAE (16-channel latents). Primary: the model's own vae/
+                # from the base repo (Tongyi Z-Image); fallback: the shared flux1 store
+                # (diffusers/FLUX.1-vae, Apache-2.0) when the own vae/ is absent.
                 print("[ModelLoader] Loading FLUX VAE (16-channel latents)...")
                 vae_path = os.path.join(base_model_path, "vae")
+                if not os.path.isfile(os.path.join(vae_path, "config.json")):
+                    try:
+                        from core.models.common.vae_store import resolve_vae_dir
+                        store_dir = resolve_vae_dir("flux1", model_own_vae=vae_path)
+                        if store_dir and os.path.isdir(store_dir):
+                            print(f"[ModelLoader] FLUX VAE from shared flux1 store: {store_dir}")
+                            vae_path = store_dir
+                    except Exception as _e:
+                        print(f"[ModelLoader] flux1 VAE store resolution failed: {_e}")
                 vae_config_path = os.path.join(vae_path, "config.json")
                 with open(vae_config_path, 'r') as f:
                     vae_config = json.load(f)
@@ -1335,12 +1375,19 @@ class ModelLoader:
 
             print(f"[ModelLoader] Loading FLUX.2 Klein from safetensors: {file_path}")
 
+            # Single consolidated read: handles both a plain <stem>.safetensors
+            # and a sharded <stem>.safetensors.index.json path, returning the
+            # full state dict (CPU) plus the metadata block. All subsequent
+            # key/metadata probes reuse these instead of re-opening the file.
+            from core.models.common.single_file_format import read_state_dict
+            transformer_state_dict, metadata = read_state_dict(file_path)
+            all_keys = list(transformer_state_dict.keys())
+            print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
+
             # Auto-detect base_model_repo from safetensors metadata if not specified
             if base_model_repo is None:
                 print(f"[ModelLoader] Auto-detecting HuggingFace repo from metadata...")
-                with safe_open(file_path, framework="pt", device="cpu") as f:
-                    metadata = f.metadata() or {}
-
+                if True:
                     # Priority 1: Check metadata for base_model_repo (from finetuned models)
                     if "base_model_repo" in metadata:
                         base_model_repo = metadata["base_model_repo"]
@@ -1351,7 +1398,7 @@ class ModelLoader:
                         # Klein 4B (distilled): 24 single layers
                         # Klein 9B (distilled): 36 single layers
                         num_single_layers = None
-                        for key in f.keys():
+                        for key in all_keys:
                             if "single_blocks.47." in key or "single_transformer_blocks.47." in key:
                                 num_single_layers = 48
                                 break
@@ -1379,11 +1426,22 @@ class ModelLoader:
 
                 print(f"[ModelLoader] Using HuggingFace repo: {base_model_repo}")
 
-            # Step 1: Download base components from HuggingFace
+            # Step 1: Download base components from HuggingFace.
+            # LICENSE: the VAE is deliberately EXCLUDED here and resolved separately
+            # from the Apache-2.0 FLUX.2 store (see Step 4) so it never comes from the
+            # FLUX.2-klein-9B repo (FLUX Non-Commercial), regardless of the detected
+            # transformer variant. TE/tokenizer/scheduler still come from
+            # base_model_repo — their cross-variant config compatibility (9B vs 4B)
+            # could NOT be verified: FLUX.2-klein-9B is a gated HF repo (anonymous
+            # and current-token fetches of text_encoder/config.json,
+            # tokenizer/tokenizer_config.json and scheduler/scheduler_config.json
+            # all return 403, checked 2026-07-03), and the 4B TE is Qwen3-4B
+            # (hidden_size 2560) while the 9B variant plausibly pairs a larger
+            # Qwen3 — so they are left per-variant rather than silently swapped.
             print(f"[ModelLoader] Downloading base components from {base_model_repo}...")
             cache_dir = snapshot_download(
                 base_model_repo,
-                allow_patterns=["vae/*", "text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json", "model_index.json"],
+                allow_patterns=["text_encoder/*", "tokenizer/*", "scheduler/*", "transformer/config.json", "model_index.json"],
             )
             print(f"[ModelLoader] Base components downloaded to: {cache_dir}")
 
@@ -1402,8 +1460,8 @@ class ModelLoader:
             # Priority 1: Check safetensors metadata (from finetuned models)
             # Priority 2: Check model_index.json from HuggingFace repo
             is_distilled = False
-            with safe_open(file_path, framework="pt", device="cpu") as f:
-                metadata = f.metadata() or {}
+            if True:
+                # metadata already read once above (read_state_dict).
                 if "is_distilled" in metadata:
                     is_distilled = metadata["is_distilled"].lower() == "true"
                     print(f"  - is_distilled (from metadata): {is_distilled}")
@@ -1416,10 +1474,10 @@ class ModelLoader:
                             is_distilled = model_index.get("is_distilled", False)
                     print(f"  - is_distilled (from model_index.json): {is_distilled}")
 
-            # Step 3: Create transformer and load weights from safetensors
-            print(f"[ModelLoader] Loading FLUX.2 transformer weights from: {file_path}")
-            transformer_state_dict = load_file(file_path)
-            print(f"[ModelLoader] Loaded {len(transformer_state_dict)} tensors from safetensors")
+            # Step 3: Assemble transformer weights (already read once above via
+            # read_state_dict, so no second file open — this also lets a sharded
+            # <stem>.safetensors.index.json path load transparently).
+            print(f"[ModelLoader] Using FLUX.2 transformer weights from: {file_path}")
 
             # Detect state_dict format and convert if needed
             # FLUX.2 state_dict can be in 3 formats:
@@ -1470,13 +1528,26 @@ class ModelLoader:
             transformer = transformer.to(dtype=torch_dtype)
             print(f"[ModelLoader] Transformer loaded with {sum(p.numel() for p in transformer.parameters()):,} parameters")
 
-            # Step 4: Load VAE
-            print(f"[ModelLoader] Loading FLUX.2 VAE...")
-            vae = AutoencoderKLFlux2.from_pretrained(
-                cache_dir,
-                subfolder="vae",
-                torch_dtype=torch.float32  # VAE in fp32 for quality
-            )
+            # Step 4: Load VAE — ALWAYS from the Apache-2.0 FLUX.2 store
+            # (black-forest-labs/FLUX.2-klein-4B subfolder vae), NEVER from the
+            # (possibly 9B) transformer variant repo. Falls back to the 4B repo
+            # subfolder directly if the store cannot be resolved.
+            print(f"[ModelLoader] Loading FLUX.2 VAE (Apache-2.0 store)...")
+            flux2_vae_dir = None
+            try:
+                from core.models.common.vae_store import resolve_vae_dir
+                flux2_vae_dir = resolve_vae_dir("flux2")
+            except Exception as _e:
+                print(f"[ModelLoader] FLUX.2 VAE store resolution failed: {_e}")
+            if flux2_vae_dir and os.path.isdir(flux2_vae_dir):
+                vae = AutoencoderKLFlux2.from_pretrained(
+                    flux2_vae_dir, torch_dtype=torch.float32
+                )
+            else:
+                vae = AutoencoderKLFlux2.from_pretrained(
+                    "black-forest-labs/FLUX.2-klein-4B", subfolder="vae",
+                    torch_dtype=torch.float32,  # VAE in fp32 for quality
+                )
             print(f"[ModelLoader] VAE loaded: latent_channels={vae.config.latent_channels}")
 
             # Reattach the embedded (trained) VAE weights when present, overriding

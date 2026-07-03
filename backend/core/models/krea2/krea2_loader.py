@@ -110,6 +110,28 @@ def _load_qwen3vl_text_encoder(te_dir: str, torch_dtype: torch.dtype):
     return model
 
 
+# Known-good Qwen-Image VAE config (matches the official Qwen-Image repo); used to
+# build the module for embedded-VAE reattach without any download. dim_mult MUST be
+# a list (the encoder ctor does `[1] + dim_mult`).
+_QWEN_IMAGE_VAE_CONFIG = dict(
+    base_dim=96, z_dim=16, dim_mult=[1, 2, 4, 4], num_res_blocks=2,
+    attn_scales=[], temperal_downsample=[False, True, True], dropout=0.0,
+    input_channels=3,
+)
+
+
+def _build_embedded_qwen_image_vae(vae_state_dict, torch_dtype: torch.dtype):
+    """Build an AutoencoderKLQwenImage from the known config and reattach the
+    embedded (trained) weights — no download. Zero-match raises."""
+    from diffusers import AutoencoderKLQwenImage
+    from core.models.common.single_file_format import reattach_embedded_weights
+
+    vae = AutoencoderKLQwenImage(**_QWEN_IMAGE_VAE_CONFIG)
+    reattach_embedded_weights(vae, vae_state_dict, "VAE")
+    vae = vae.to(torch_dtype).to("cpu").eval()
+    return vae
+
+
 def _load_qwen_image_vae(vae_dir: Optional[str], torch_dtype: torch.dtype):
     from diffusers import AutoencoderKLQwenImage
 
@@ -117,10 +139,22 @@ def _load_qwen_image_vae(vae_dir: Optional[str], torch_dtype: torch.dtype):
         print(f"[Krea2Loader] Loading Qwen-Image VAE from: {vae_dir}")
         vae = AutoencoderKLQwenImage.from_pretrained(vae_dir, torch_dtype=torch_dtype, low_cpu_mem_usage=True)
     else:
-        print(f"[Krea2Loader] Loading Qwen-Image VAE from hub: {VAE_HUB_ID} (subfolder=vae)")
-        vae = AutoencoderKLQwenImage.from_pretrained(
-            VAE_HUB_ID, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True
-        )
+        # Shared store (downloads the Apache-2.0 Qwen-Image VAE once, reused across
+        # archs). Falls back to the direct hub load if the store is unavailable.
+        store_dir = None
+        try:
+            from core.models.common.vae_store import resolve_vae_dir
+            store_dir = resolve_vae_dir("qwen_image", env_var="KREA2_VAE_DIR")
+        except Exception as e:
+            print(f"[Krea2Loader] VAE store resolution failed ({e}); falling back to hub")
+        if store_dir and _has_config(store_dir):
+            print(f"[Krea2Loader] Loading Qwen-Image VAE from shared store: {store_dir}")
+            vae = AutoencoderKLQwenImage.from_pretrained(store_dir, torch_dtype=torch_dtype, low_cpu_mem_usage=True)
+        else:
+            print(f"[Krea2Loader] Loading Qwen-Image VAE from hub: {VAE_HUB_ID} (subfolder=vae)")
+            vae = AutoencoderKLQwenImage.from_pretrained(
+                VAE_HUB_ID, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True
+            )
     vae.eval()
     vae.to("cpu")
     return vae
@@ -200,6 +234,7 @@ def load_krea2_components(
     )
 
     embedded_te_sd = None
+    embedded_vae_sd = None
     if is_single_file:
         print(f"[Krea2Loader] Loading single-file: {model_path}")
         bundle = load_single_file(model_path, torch_dtype=torch_dtype)
@@ -207,6 +242,7 @@ def load_krea2_components(
         is_distilled = bundle["is_distilled"]
         config = bundle["config"]
         embedded_te_sd = bundle.get("text_encoder_state_dict")
+        embedded_vae_sd = bundle.get("vae_state_dict")
     else:
         print(f"[Krea2Loader] Loading diffusers directory: {model_path}")
         transformer = _build_transformer_from_dir(model_path, torch_dtype)
@@ -239,7 +275,13 @@ def load_krea2_components(
             text_encoder.to("cpu").eval()
         tokenizer = _load_tokenizer(resolved_te)
 
-    vae = _load_qwen_image_vae(resolved_vae, torch_dtype)
+    # Embedded (trained) VAE from a bundle_vae single-file overrides default
+    # resolution; absent -> resolve companion/store VAE as before.
+    if embedded_vae_sd is not None:
+        print("[Krea2Loader] Using embedded VAE weights from single-file bundle")
+        vae = _build_embedded_qwen_image_vae(embedded_vae_sd, torch_dtype)
+    else:
+        vae = _load_qwen_image_vae(resolved_vae, torch_dtype)
     vae_scale_factor = 2 ** len(vae.temperal_downsample) if hasattr(vae, "temperal_downsample") else 8
 
     select_layers = config.get("text_encoder_select_layers") or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]

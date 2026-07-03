@@ -234,6 +234,17 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
             f"net.{k}": v.detach().to("cpu").contiguous() for k, v in dit_state.items()
         }
 
+        # Optional VAE bundling (default off). Lens uses the comfy-heritage
+        # ``first_stage_model.*`` prefix; the single-file loader splits + reattaches
+        # it into the AutoencoderKLFlux2. Absent -> loader resolves base-dir/store VAE.
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "lens")
+        vae_embedded = bundle_vae and getattr(trainer, "vae", None) is not None
+        if vae_embedded:
+            print(f"[LensFullParameterAdapter] Collecting VAE weights (bundle_vae)...")
+            for k, v in trainer.vae.state_dict().items():
+                combined[f"first_stage_model.{k}"] = v.detach().to("cpu").contiguous()
+
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
@@ -260,7 +271,7 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
             from core.models.common.single_file_format import build_component_metadata
             metadata.update(build_component_metadata(
                 te_type="lens_gpt_oss", te_embedded=False,
-                vae_type="flux2",
+                vae_type="flux2", vae_embedded=vae_embedded,
             ))
         except Exception as _e:
             print(f"[LensFullParameterAdapter] component metadata skipped: {_e}")

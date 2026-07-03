@@ -207,12 +207,14 @@ def load_minit2i_components(
         model_path.endswith(".safetensors") or model_path.endswith(".safetensors.index.json")
     )
 
+    embedded_vae_sd = None
     if is_single_file:
         print(f"[MiniT2ILoader] Loading single-file: {model_path}")
         bundle = load_single_file(model_path, torch_dtype=torch_dtype)
         transformer = bundle["transformer"]
         variant = bundle["variant"] or _detect_variant_name(transformer)
         scheduler = MiniT2IFlowMatchScheduler()  # defaults (lognorm, n_T 100)
+        embedded_vae_sd = bundle.get("vae_state_dict")
 
         te_sd = bundle.get("text_encoder_state_dict")
         flan_loc = _resolve_flan_t5(model_path, flan_t5_path)
@@ -263,6 +265,12 @@ def load_minit2i_components(
     vae_type = getattr(transformer.mmjit_config, "vae_type", "none")
     if is_latent_vae(vae_type):
         vae = load_minit2i_vae(vae_type, torch_dtype=vae_dtype, local_dir=vae_local_dir)
+        # Embedded (trained) VAE from a bundle_vae single-file overrides the base
+        # weights. Absent -> keep the resolved default VAE. Pixel-space never bundles.
+        if embedded_vae_sd is not None:
+            from core.models.common.single_file_format import reattach_embedded_weights
+            reattach_embedded_weights(vae, embedded_vae_sd, "VAE")
+            vae.to(vae_dtype)
         vae.to("cpu")
     print(f"[MiniT2ILoader] Loaded MiniT2I variant={variant} vae_type={vae_type} (FLAN-T5 from {flan_loc})")
 

@@ -130,6 +130,7 @@ def build_component_metadata(
     *,
     vae_type: Optional[str] = None,
     vae_channels=None,
+    vae_embedded: Optional[bool] = None,
     te_type: Optional[str] = None,
     te_dim=None,
     te_embedded: Optional[bool] = None,
@@ -141,6 +142,8 @@ def build_component_metadata(
         md["component.vae.type"] = str(vae_type)
     if vae_channels is not None:
         md["component.vae.channels"] = str(vae_channels)
+    if vae_embedded is not None:
+        md["component.vae.embedded"] = "1" if vae_embedded else "0"
     if te_type is not None:
         md["component.te.type"] = str(te_type)
     if te_dim is not None:
@@ -164,6 +167,8 @@ def parse_component_metadata(metadata: Optional[dict]) -> Dict[str, dict]:
         vae["type"] = metadata["component.vae.type"]
     if "component.vae.channels" in metadata:
         vae["channels"] = metadata["component.vae.channels"]
+    if "component.vae.embedded" in metadata:
+        vae["embedded"] = str(metadata["component.vae.embedded"]).strip().lower() in ("1", "true", "yes")
     if vae:
         out["vae"] = vae
     te: Dict[str, str] = {}
@@ -323,3 +328,33 @@ def load_component_state_dict(component_dir: str, basename: str) -> Dict[str, to
         return load_file(single_path)
 
     raise FileNotFoundError(f"No safetensors found for '{basename}' in {component_dir}")
+
+
+# ---------------------------------------------------------------------------
+# Embedded-weight reattach (zero-match-raises)
+# ---------------------------------------------------------------------------
+
+def reattach_embedded_weights(module, state_dict: Dict[str, torch.Tensor], label: str) -> None:
+    """Load embedded (trained) weights into a freshly built base component.
+
+    Mirrors ``ModelLoader._reattach_embedded_weights`` but lives here so loaders
+    that cannot import ``ModelLoader`` (circular) can reuse it. Raises when NOTHING
+    matched — silently keeping the untrained base weights would reintroduce a lossy
+    roundtrip and hide a key-layout mismatch.
+    """
+    print(f"[SingleFile] Reattaching embedded {label} weights ({len(state_dict)} tensors)")
+    info = module.load_state_dict(state_dict, strict=False)
+    missing = list(getattr(info, "missing_keys", []) or [])
+    unexpected = list(getattr(info, "unexpected_keys", []) or [])
+    matched = len(state_dict) - len(unexpected)
+    if missing:
+        print(f"[SingleFile]   embedded {label} missing: {len(missing)}")
+    if unexpected:
+        print(f"[SingleFile]   embedded {label} unexpected: {len(unexpected)}")
+    if matched <= 0:
+        raise RuntimeError(
+            f"Embedded {label} weights in the checkpoint did not match the base "
+            f"{label} at all ({len(state_dict)} tensors, 0 matched). The checkpoint's "
+            f"{label} section uses an incompatible key layout; refusing to silently "
+            f"fall back to the untrained base {label}."
+        )

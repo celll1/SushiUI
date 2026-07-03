@@ -325,9 +325,13 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             for key, value in unet_state.items():
                 combined_state_dict[f"model.diffusion_model.{key}"] = value.cpu()
 
-        # Save VAE weights with DEUS prefix
-        if trainer.vae is not None:
-            print(f"[DEUSFullParameterAdapter] Collecting VAE weights...")
+        # Save VAE weights with DEUS prefix (gated on bundle_vae; per-arch default
+        # deus=True for comfy-layout checkpoint compatibility).
+        from api.param_defaults import resolve_bundle_vae
+        bundle_vae = resolve_bundle_vae(getattr(trainer, "bundle_vae", None), "deus")
+        vae_embedded = bundle_vae and trainer.vae is not None
+        if vae_embedded:
+            print(f"[DEUSFullParameterAdapter] Collecting VAE weights (bundle_vae)...")
             vae_state = trainer.vae.state_dict()
             for key, value in vae_state.items():
                 combined_state_dict[f"first_stage_model.{key}"] = value.cpu()
@@ -344,6 +348,7 @@ class DEUSFullParameterAdapter(BaseFullParameterAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "deus",
+            "component.vae.embedded": "1" if vae_embedded else "0",
         }
 
         print(f"[DEUSFullParameterAdapter] Saving to {output_path}...")

@@ -27,6 +27,7 @@ from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokeniz
 from safetensors.torch import save_file
 from torch.utils.tensorboard import SummaryWriter
 import json
+import re
 from datetime import datetime
 import numpy as np
 import gc
@@ -39,6 +40,117 @@ from core.attention import (
     resolve_backend,
     to_diffusers_backend,
 )
+
+
+# ============================================================
+# Checkpoint entry helpers (single-file + sushiUI shard-index aware)
+# ============================================================
+
+# A sharded save writes members named "<stem>-00001-of-000NN.safetensors";
+# these belong to their "<stem>.safetensors.index.json" and are never a
+# checkpoint entry on their own.
+_SHARD_MEMBER_RE = re.compile(r"-\d{5}-of-\d{5}\.safetensors$")
+_INDEX_SUFFIX = ".safetensors.index.json"
+_SAFETENSORS_SUFFIX = ".safetensors"
+
+
+def _is_shard_member(name: str) -> bool:
+    """True for a sharded weight member file (not a standalone checkpoint)."""
+    return bool(_SHARD_MEMBER_RE.search(name))
+
+
+def _checkpoint_step_from_name(name: str) -> Optional[int]:
+    """Parse the training step from a checkpoint entry filename.
+
+    Tolerates both the single-file form (``..._step_500.safetensors``), the
+    shard-index form (``..._step_500.safetensors.index.json``) and the training
+    state form (``..._step_500_state.json``). Returns ``None`` when no valid
+    step is present (never raises, never ``int()``s a shard-member suffix).
+    """
+    base = name
+    if base.endswith(_INDEX_SUFFIX):
+        base = base[: -len(_INDEX_SUFFIX)]
+    elif base.endswith(_SAFETENSORS_SUFFIX):
+        base = base[: -len(_SAFETENSORS_SUFFIX)]
+    elif base.endswith("_state.json"):
+        base = base[: -len("_state.json")]
+    elif base.endswith(".json"):
+        base = base[: -len(".json")]
+    m = re.search(r"_step_(\d+)", base)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _checkpoint_aux_base(entry_path: Path) -> str:
+    """Base name used for sibling ``_optimizer.pt`` / ``_state.json`` files.
+
+    ``<run>_step_<n>`` for both the single-file and shard-index entry forms.
+    """
+    name = entry_path.name
+    if name.endswith(_INDEX_SUFFIX):
+        return name[: -len(_INDEX_SUFFIX)]
+    if name.endswith(_SAFETENSORS_SUFFIX):
+        return name[: -len(_SAFETENSORS_SUFFIX)]
+    return entry_path.stem
+
+
+def _list_checkpoint_entries(output_dir: Path, exclude_substr: Optional[str] = None) -> List[Path]:
+    """Return the checkpoint *entry* files under ``output_dir``.
+
+    An entry is either a single-file ``*_step_*.safetensors`` save or a sharded
+    ``*_step_*.safetensors.index.json`` save. Shard MEMBER files
+    (``-NNNNN-of-NNNNN.safetensors``) are excluded — they belong to their index.
+    ``exclude_substr`` drops entries whose name contains it (e.g.
+    ``vision_encoder``).
+    """
+    entries: List[Path] = []
+    for p in output_dir.glob("*_step_*.safetensors.index.json"):
+        if exclude_substr and exclude_substr in p.name:
+            continue
+        entries.append(p)
+    for p in output_dir.glob("*_step_*.safetensors"):
+        if _is_shard_member(p.name):
+            continue
+        if exclude_substr and exclude_substr in p.name:
+            continue
+        entries.append(p)
+    return entries
+
+
+def _checkpoint_member_files(entry_path: Path) -> List[Path]:
+    """All on-disk files that make up a checkpoint entry (delete as a unit).
+
+    Single-file entry -> just itself. Shard-index entry -> the index plus every
+    distinct shard listed in its ``weight_map`` (read from the index), falling
+    back to the ``<stem>-NNNNN-of-NNNNN.safetensors`` glob for orphan tolerance.
+    """
+    name = entry_path.name
+    if not name.endswith(_INDEX_SUFFIX):
+        return [entry_path]
+
+    files: List[Path] = [entry_path]
+    directory = entry_path.parent
+    seen: set = set()
+    try:
+        with open(entry_path, encoding="utf-8") as f:
+            index = json.load(f)
+        for shard in (index.get("weight_map", {}) or {}).values():
+            if shard not in seen:
+                seen.add(shard)
+                files.append(directory / shard)
+    except Exception:
+        pass
+    # Orphan tolerance: also pick up any matching shard members on disk.
+    stem = name[: -len(_INDEX_SUFFIX)]
+    for p in directory.glob(f"{stem}-*-of-*.safetensors"):
+        if p.name not in seen and _is_shard_member(p.name):
+            seen.add(p.name)
+            files.append(p)
+    return files
 
 
 # ============================================================
@@ -825,6 +937,14 @@ class BaseTrainer(ABC):
         # anima_lora_scope / etc. during those calls.
         self.config = dict(train_config) if train_config else {}
 
+        # Full-parameter save: embed the trained VAE into the single-file checkpoint.
+        # Kept as Optional[bool]: None = per-arch default. Each full-FT save adapter
+        # resolves it via api.param_defaults.resolve_bundle_vae(value, arch)
+        # (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True, others False).
+        self.bundle_vae = self.config.get("bundle_vae", None)
+        if self.bundle_vae is not None:
+            self.bundle_vae = bool(self.bundle_vae)
+
         # Legacy dtype for compatibility
         self.dtype = self.weight_dtype
 
@@ -877,16 +997,13 @@ class BaseTrainer(ABC):
         checkpoint_to_load = None
         if self.resume_from_checkpoint:
             if self.resume_from_checkpoint.lower() == "latest":
-                # Find latest checkpoint in output directory
-                checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
+                # Find latest checkpoint in output directory (single-file OR
+                # sharded index; shard members are excluded as entries).
+                checkpoint_files = _list_checkpoint_entries(self.output_dir)
                 if checkpoint_files:
                     # Get latest checkpoint by step number
                     def get_step(path):
-                        try:
-                            step_str = path.stem.split("_step_")[-1]
-                            return int(step_str)
-                        except (ValueError, IndexError):
-                            return 0
+                        return _checkpoint_step_from_name(path.name) or 0
 
                     latest_checkpoint = max(checkpoint_files, key=get_step)
                     checkpoint_to_load = str(latest_checkpoint)
@@ -2419,13 +2536,21 @@ class BaseTrainer(ABC):
             # We can load them as a complete model checkpoint
             from core.model_loader import ModelLoader
 
-            # Detect format (ComfyUI or diffusers)
-            from safetensors import safe_open
-            with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
-                keys = list(f.keys())
-                # ComfyUI format has keys like "model.diffusion_model.x_embedder.proj.weight"
-                # Diffusers format has keys like "transformer.x_embedder.proj.weight"
-                is_comfy_format = any(k.startswith("model.diffusion_model.") for k in keys)
+            # Detect format (ComfyUI or diffusers). Probe key NAMES only — for a
+            # sharded save read them from the index (no tensor load); for a plain
+            # single file use safe_open. ComfyUI format has keys like
+            # "model.diffusion_model.x_embedder.proj.weight"; diffusers format has
+            # keys like "transformer.x_embedder.proj.weight".
+            from core.models.common.single_file_format import is_index_path
+            if is_index_path(checkpoint_path):
+                with open(checkpoint_path, encoding='utf-8') as _idxf:
+                    _idx = json.load(_idxf)
+                keys = list((_idx.get("weight_map") or {}).keys())
+            else:
+                from safetensors import safe_open
+                with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
+                    keys = list(f.keys())
+            is_comfy_format = any(k.startswith("model.diffusion_model.") for k in keys)
 
             if is_comfy_format:
                 # ComfyUI format checkpoint
@@ -2452,10 +2577,11 @@ class BaseTrainer(ABC):
                         torch_dtype=self.weight_dtype
                     )
 
-                    # Load transformer weights from checkpoint file
-                    from safetensors.torch import load_file
+                    # Load transformer weights from checkpoint file. Read via the
+                    # shared reader so a sharded index path loads transparently.
+                    from core.models.common.single_file_format import read_state_dict
                     print(f"{self.log_prefix} Loading transformer weights from: {checkpoint_path}")
-                    transformer_state_dict = load_file(checkpoint_path, device="cpu")
+                    transformer_state_dict, _ = read_state_dict(checkpoint_path)
                     components["transformer"].load_state_dict(transformer_state_dict, strict=False)
                 else:
                     # Single-file checkpoint with all components (full model save)
@@ -3675,8 +3801,9 @@ class BaseTrainer(ABC):
         Returns:
             Tuple of (checkpoint_path, step) or None if no checkpoints exist
         """
-        # Search for checkpoint files with pattern: {run_name}_step_{step}.safetensors
-        checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
+        # Search for checkpoint entries (single-file or sharded index; shard
+        # members excluded) with pattern: {run_name}_step_{step}.safetensors[.index.json]
+        checkpoint_files = _list_checkpoint_entries(self.output_dir)
 
         # Search for training state files with pattern: {run_name}_step_{step}_state.json
         state_files = list(self.output_dir.glob("*_step_*_state.json"))
@@ -3685,15 +3812,9 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} No checkpoints found in {self.output_dir}")
             return None
 
-        # Helper to extract step number from filename
+        # Helper to extract step number from filename (tolerates both forms)
         def get_step(path):
-            try:
-                # Extract step number from filename: {run_name}_step_{step}.safetensors or {run_name}_step_{step}_state.json
-                # Split by "_step_" and take the next part (remove "_state" suffix if present)
-                step_str = path.stem.split("_step_")[-1].replace("_state", "")
-                return int(step_str)
-            except (ValueError, IndexError):
-                return 0
+            return _checkpoint_step_from_name(path.name) or 0
 
         # Find latest step from both sources
         latest_checkpoint_step = 0
@@ -3744,17 +3865,13 @@ class BaseTrainer(ABC):
             List of (checkpoint_path, step_number) tuples, sorted newest first.
             Empty list if no checkpoints exist.
         """
-        checkpoint_files = list(self.output_dir.glob("*_step_*.safetensors"))
+        checkpoint_files = _list_checkpoint_entries(self.output_dir)
 
         if not checkpoint_files:
             return []
 
         def get_step(path):
-            try:
-                step_str = path.stem.split("_step_")[-1]
-                return int(step_str)
-            except (ValueError, IndexError):
-                return 0
+            return _checkpoint_step_from_name(path.name) or 0
 
         # Sort by step number descending (newest first)
         sorted_checkpoints = sorted(checkpoint_files, key=get_step, reverse=True)
@@ -3864,21 +3981,16 @@ class BaseTrainer(ABC):
         if max_step_saves_to_keep <= 0:
             return
 
-        # Find main checkpoint files only (exclude VE checkpoints to avoid double-counting)
-        checkpoint_files = [
-            f for f in self.output_dir.glob("*_step_*.safetensors")
-            if "vision_encoder" not in f.name
-        ]
+        # Find main checkpoint entries only (single-file or sharded index; shard
+        # members are grouped under their index, VE checkpoints excluded to avoid
+        # double-counting).
+        checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr="vision_encoder")
         if len(checkpoint_files) <= max_step_saves_to_keep:
             return
 
         # Sort by step number
         def get_step(path):
-            try:
-                step_str = path.stem.split("_step_")[-1]
-                return int(step_str)
-            except (ValueError, IndexError):
-                return 0
+            return _checkpoint_step_from_name(path.name) or 0
 
         checkpoint_files.sort(key=get_step, reverse=True)
 
@@ -3886,15 +3998,19 @@ class BaseTrainer(ABC):
         checkpoints_to_delete = checkpoint_files[max_step_saves_to_keep:]
         for checkpoint_path in checkpoints_to_delete:
             step_num = get_step(checkpoint_path)
-            # Also delete associated _optimizer.pt file and _state.json file
-            # Pattern: {short_name}_step_{step}.safetensors
-            #          {short_name}_step_{step}_optimizer.pt
-            #          {short_name}_step_{step}_state.json
-            optimizer_pt_path = checkpoint_path.parent / f"{checkpoint_path.stem}_optimizer.pt"
-            state_json_path = checkpoint_path.parent / f"{checkpoint_path.stem}_state.json"
+            # Also delete associated _optimizer.pt file and _state.json file.
+            # Aux base is {short_name}_step_{step} for both single-file and
+            # sharded-index entries.
+            aux_base = _checkpoint_aux_base(checkpoint_path)
+            optimizer_pt_path = checkpoint_path.parent / f"{aux_base}_optimizer.pt"
+            state_json_path = checkpoint_path.parent / f"{aux_base}_state.json"
 
-            print(f"{self.log_prefix} Deleting old checkpoint: {checkpoint_path.name}")
-            self._safe_unlink(checkpoint_path)
+            # A sharded save is deleted as a unit: index.json + every shard file.
+            member_files = _checkpoint_member_files(checkpoint_path)
+            print(f"{self.log_prefix} Deleting old checkpoint: {checkpoint_path.name}"
+                  + (f" (+{len(member_files) - 1} shard file(s))" if len(member_files) > 1 else ""))
+            for member in member_files:
+                self._safe_unlink(member)
 
             if optimizer_pt_path.exists():
                 print(f"{self.log_prefix} Deleting old optimizer state: {optimizer_pt_path.name}")

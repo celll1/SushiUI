@@ -67,6 +67,31 @@ paths:
                 _default: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
                 minit2i: { distribution: logit_normal, mean: -0.8, std: 0.8, min_timestep: 0.0, max_timestep: 1.0 }
                 krea2: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
+  /schema/bundle-vae-defaults-by-arch:
+    get:
+      summary: Per-architecture default bundle_vae values
+      description: |
+        Returns a map of model architecture -> default `bundle_vae` boolean for
+        full-parameter training saves. sd15/sdxl/deus default `true` (their
+        comfy-layout checkpoints are consumed by A1111/ComfyUI, which require the
+        `first_stage_model.*` VAE section); other architectures default `false`.
+        The `_default` key is the global fallback. The frontend applies the selected
+        model's entry when the base model changes (user edits win).
+      tags: [Schema]
+      responses:
+        '200':
+          description: Map of architecture name to default bundle_vae boolean
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: boolean
+              example:
+                _default: false
+                sd15: true
+                sdxl: true
+                deus: true
   /generate/txt2img:
     post:
       tags: [generation]
@@ -2036,6 +2061,19 @@ components:
             to `diffusers` to reproduce prior numerics, and the resolved value is
             persisted back into the run config.
           example: "conduit"
+        bundle_vae:
+          type: boolean
+          nullable: true
+          default: null
+          description: |
+            Full-parameter training only: also embed the VAE weights into the saved
+            single-file checkpoint. `null` (default) resolves to the per-architecture
+            default: `true` for sd15/sdxl/deus (their comfy-layout checkpoints are
+            consumed by A1111/ComfyUI, which require the `first_stage_model.*` VAE
+            section), `false` for all other architectures (their loaders fall back to
+            the default VAE resolution when the section is absent). An explicit
+            boolean always wins. Ignored for LoRA and for pixel-space MiniT2I (no VAE).
+          example: null
         use_flash_attention:
           type: boolean
           default: false

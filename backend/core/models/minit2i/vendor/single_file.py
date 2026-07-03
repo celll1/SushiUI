@@ -17,8 +17,13 @@ import json
 from typing import Dict, Optional, Tuple
 
 import torch
-from safetensors import safe_open
-from safetensors.torch import save_file
+
+from core.models.common.single_file_format import (
+    DEFAULT_MAX_SHARD_BYTES,
+    dedup_tensors,
+    read_state_dict,
+    save_single_file_state,
+)
 
 from .transformer import MiniT2IMMJiTModel
 
@@ -87,13 +92,7 @@ def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16):
     Returns dict: {"transformer": MiniT2IMMJiTModel(cpu, eval),
                    "text_encoder_state_dict": dict|None, "variant": str}.
     """
-    raw: Dict[str, torch.Tensor] = {}
-    metadata: dict = {}
-    with safe_open(path, framework="pt", device="cpu") as f:
-        md = f.metadata() or {}
-        metadata = dict(md)
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
+    raw, metadata = read_state_dict(path)
 
     tf_sd = _transformer_subdict(raw, TRANSFORMER_PREFIX)
     if not tf_sd:
@@ -131,30 +130,26 @@ def save_single_file(
     variant: str,
     text_encoder: Optional[torch.nn.Module] = None,
     extra_metadata: Optional[Dict[str, str]] = None,
+    max_shard_bytes: int = DEFAULT_MAX_SHARD_BYTES,
 ) -> None:
     """Write a MiniT2I single-file (transformer [+ optional FLAN-T5] + metadata).
 
     Tied tensors (e.g. FLAN-T5 shares `shared.weight` with `encoder.embed_tokens.weight`)
     are de-duplicated by storage pointer — safetensors rejects shared memory, and load
     re-ties them. The dropped key is recorded in metadata for transparency.
+
+    Saves as a single file when the total tensor byte size is within
+    ``max_shard_bytes`` (default 10 GB); otherwise writes diffusers-convention
+    shards plus a ``<stem>.safetensors.index.json`` via the shared writer.
     """
-    state: Dict[str, torch.Tensor] = {}
-    seen_ptrs: Dict[int, str] = {}
-    dropped_tied: list = []
+    def _named():
+        for k, v in transformer.state_dict().items():
+            yield f"{TRANSFORMER_PREFIX}{k}", v
+        if text_encoder is not None:
+            for k, v in text_encoder.state_dict().items():
+                yield f"{TEXT_ENCODER_PREFIX}{k}", v
 
-    def _add(key: str, v: torch.Tensor):
-        ptr = v.data_ptr()
-        if ptr in seen_ptrs:
-            dropped_tied.append(key)  # tied to seen_ptrs[ptr]; re-tied on load
-            return
-        seen_ptrs[ptr] = key
-        state[key] = v.detach().to("cpu").contiguous()
-
-    for k, v in transformer.state_dict().items():
-        _add(f"{TRANSFORMER_PREFIX}{k}", v)
-    if text_encoder is not None:
-        for k, v in text_encoder.state_dict().items():
-            _add(f"{TEXT_ENCODER_PREFIX}{k}", v)
+    state, dropped_tied = dedup_tensors(_named())
 
     cfg = transformer.mmjit_config
     # Persist the variant-delta keys + the I/O config (in_channels/patch_size/vae_type/
@@ -172,4 +167,4 @@ def save_single_file(
         metadata["tied_weights_dropped"] = json.dumps(dropped_tied)
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
-    save_file(state, path, metadata=metadata)
+    save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)

@@ -439,10 +439,12 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
         base_model_repo = getattr(trainer, 'base_model_repo', None)
         is_distilled = getattr(trainer, 'is_distilled', False)
 
+        te_embedded = bool(trainer.train_text_encoder and trainer.text_encoder is not None)
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "flux2",
+            "format": "pt",
         }
 
         # Add base model info if available
@@ -450,6 +452,25 @@ class FLUX2FullParameterAdapter(BaseFullParameterAdapter):
             metadata["base_model_repo"] = base_model_repo
         if is_distilled is not None:
             metadata["is_distilled"] = str(is_distilled).lower()
+
+        # Transformer config JSON (declarative; Flux2Transformer2DModel is a ConfigMixin).
+        try:
+            import json as _json
+            cfg = getattr(trainer.transformer, "config", None)
+            if cfg is not None:
+                metadata["transformer_config"] = _json.dumps(dict(cfg))
+        except Exception as _e:
+            print(f"[FLUX2FullParameterAdapter] transformer_config not serialized: {_e}")
+
+        # Component hints: VAE is always embedded here; TE embedded only when trained.
+        try:
+            from core.models.common.single_file_format import build_component_metadata
+            metadata.update(build_component_metadata(
+                te_type="qwen3", te_embedded=te_embedded,
+                vae_type="flux2",
+            ))
+        except Exception as _e:
+            print(f"[FLUX2FullParameterAdapter] component metadata skipped: {_e}")
 
         print(f"[FLUX2FullParameterAdapter] Saving to {output_path}...")
         save_file(combined_state_dict, output_path, metadata=metadata)

@@ -24,6 +24,27 @@ from .state_dict_converter import (
 )
 
 
+def sd15_modelspec_metadata(trainer) -> Dict[str, str]:
+    """Unified SushiUI prediction metadata for a saved SD1.5 model.
+
+    Mirrors sdxl_adapter.sushi_modelspec_metadata for the fields that apply to
+    SD1.5: it records the resolved noise_process / prediction_target so the loader
+    (ModelLoader.detect_prediction_config) can reproduce the training objective
+    (epsilon / velocity / sample) on reload instead of always assuming epsilon.
+    Resolved "auto" values are skipped (the loader then infers as before). SD1.5
+    has no custom VAE / text-encoder swap, so those sushi.* markers are omitted.
+    Keyspace is unchanged — only the safetensors __metadata__ block gains entries.
+    """
+    md: Dict[str, str] = {"modelspec.architecture": "stable-diffusion-v1"}
+    np = str(getattr(trainer, "noise_process", "") or "").strip().lower()
+    pt = str(getattr(trainer, "prediction_target", "") or "").strip().lower()
+    if np and np != "auto":
+        md["modelspec.noise_process"] = np
+    if pt and pt != "auto":
+        md["modelspec.prediction_type"] = pt
+    return md
+
+
 # ============================================================
 # LoRA Linear Layer (shared by all adapters)
 # ============================================================
@@ -391,6 +412,7 @@ class SD15FullParameterAdapter(BaseFullParameterAdapter):
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "sd15",
+            **sd15_modelspec_metadata(trainer),
         }
 
         print(f"[SD15FullParameterAdapter] Saving to {output_path}...")

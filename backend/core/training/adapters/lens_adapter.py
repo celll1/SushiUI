@@ -242,6 +242,29 @@ class LensFullParameterAdapter(BaseFullParameterAdapter):
             "format": "pt",
         }
 
+        # Base Lens directory hint so single-file reload can resolve TE/VAE/tokenizer.
+        base_dir = str(getattr(trainer, "model_path", "") or "")
+        if base_dir:
+            metadata["component.base_dir"] = base_dir
+
+        # Transformer config JSON (declarative; LensTransformer2DModel is a ConfigMixin).
+        try:
+            import json as _json
+            cfg = getattr(trainer.transformer, "config", None)
+            if cfg is not None:
+                metadata["transformer_config"] = _json.dumps(dict(cfg))
+        except Exception as _e:
+            print(f"[LensFullParameterAdapter] transformer_config not serialized: {_e}")
+
+        try:
+            from core.models.common.single_file_format import build_component_metadata
+            metadata.update(build_component_metadata(
+                te_type="lens_gpt_oss", te_embedded=False,
+                vae_type="flux2",
+            ))
+        except Exception as _e:
+            print(f"[LensFullParameterAdapter] component metadata skipped: {_e}")
+
         print(f"[LensFullParameterAdapter] Saving to {output_path}...")
         _save(combined, str(output_path), metadata=metadata)
         total_params = sum(t.numel() for t in combined.values())

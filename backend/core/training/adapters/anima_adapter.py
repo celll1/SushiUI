@@ -294,6 +294,24 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
             "format": "pt",
         }
 
+        # Transformer config JSON (declarative) + component hints. Anima keeps the
+        # DiT-only save convention (TE/VAE are NOT embedded — they are resolved
+        # out-of-band by anima_loader); the hints below aid that resolution.
+        try:
+            import json as _json
+            from core.models.anima.anima_models import ANIMA_DIT_CONFIG
+            metadata["transformer_config"] = _json.dumps(dict(ANIMA_DIT_CONFIG))
+        except Exception as _e:
+            print(f"[AnimaFullParameterAdapter] transformer_config not serialized: {_e}")
+        try:
+            from core.models.common.single_file_format import build_component_metadata
+            metadata.update(build_component_metadata(
+                te_type="qwen3", te_embedded=False,
+                vae_type="qwen_image", vae_channels=16,
+            ))
+        except Exception as _e:
+            print(f"[AnimaFullParameterAdapter] component metadata skipped: {_e}")
+
         print(f"[AnimaFullParameterAdapter] Saving to {output_path}...")
         save_file(combined, str(output_path), metadata=metadata)
         total_params = sum(t.numel() for t in combined.values())

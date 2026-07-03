@@ -322,6 +322,7 @@ export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Reco
 export const generateTxt2Img = async (params: GenerationParams) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
 
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
@@ -331,6 +332,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   const paramsWithImages = {
     ...params,
     attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
     controlnets: controlnets,
   };
 
@@ -366,6 +368,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
+  formData.append("attention_impl", paramsWithImages.attention_impl || "conduit");
 
   // Quantization
   if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
@@ -471,6 +474,8 @@ export const generateTxt2ImgTrainingPreview = async (
   // Attention type honours the local toggle, same as regular generate
   const attentionType = typeof window !== 'undefined'
     ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined'
+    ? localStorage.getItem('attention_impl') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "txt2img_controlnet_collapsed")
     : params.controlnets;
@@ -478,6 +483,7 @@ export const generateTxt2ImgTrainingPreview = async (
   const body = {
     ...params,
     attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
     controlnets: controlnets || [],
     loras: params.loras || [],
   };
@@ -546,12 +552,15 @@ export const generateImg2ImgTrainingPreview = async (
 ): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
   const attentionType = typeof window !== 'undefined'
     ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined'
+    ? localStorage.getItem('attention_impl') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "img2img_controlnet_collapsed")
     : params.controlnets;
   const body = {
     ...params,
     attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
     controlnets: controlnets || [],
     loras: params.loras || [],
   };
@@ -575,12 +584,15 @@ export const generateInpaintTrainingPreview = async (
 ): Promise<{ blob: Blob; seed?: string; runId?: string; requestId?: string; filename?: string }> => {
   const attentionType = typeof window !== 'undefined'
     ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined'
+    ? localStorage.getItem('attention_impl') : null;
   const controlnets = (params.controlnets && params.controlnets.length > 0)
     ? await loadControlNetImages(params.controlnets, "inpaint_controlnet_collapsed")
     : params.controlnets;
   const body = {
     ...params,
     attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
     controlnets: controlnets || [],
     loras: params.loras || [],
   };
@@ -603,6 +615,7 @@ export const generateInpaintTrainingPreview = async (
 export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
 
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
@@ -612,6 +625,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   const paramsWithImages = {
     ...params,
     attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
     controlnets: controlnets,
   };
 
@@ -660,6 +674,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
+  formData.append("attention_impl", paramsWithImages.attention_impl || "conduit");
 
   // Debug log for quantization
   console.log('[API] img2img unet_quantization:', paramsWithImages.unet_quantization);
@@ -723,6 +738,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 export const generateInpaint = async (params: InpaintParams, image: File | string, mask: File | string) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
 
   // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
   const controlnets = (params.controlnets && params.controlnets.length > 0)
@@ -732,6 +748,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   const paramsWithImages = {
     ...params,
     attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
     controlnets: controlnets,
   };
 
@@ -794,6 +811,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
+  formData.append("attention_impl", paramsWithImages.attention_impl || "conduit");
 
   // Debug log for quantization
   console.log('[API] inpaint unet_quantization:', paramsWithImages.unet_quantization);

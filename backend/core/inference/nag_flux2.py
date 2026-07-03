@@ -70,7 +70,30 @@ def _writeback_image(img_hs, guided, img_b, txt_b):
     return out
 
 
+# Process-global conduit switch for the FLUX.2 NAG/NegPip _sdpa choke point.
+# Set by pipeline_backends/flux2.set_flux2_attention_backend when attention_impl=='conduit'
+# (consistent with the existing process-global _attention_backend class attrs; single-worker
+# inference). When True, _sdpa routes through the unified conduit and the `backend` arg it
+# receives (self._attention_backend) holds the CANONICAL string; when False it is the
+# diffusers backend string and dispatch_attention_fn runs (byte-identical legacy path).
+_USE_CONDUIT = False
+
+
+def set_flux2_nag_negpip_conduit(enabled: bool) -> None:
+    """Toggle the conduit route for all six NAG/NegPip _sdpa call sites at once."""
+    global _USE_CONDUIT
+    _USE_CONDUIT = bool(enabled)
+
+
 def _sdpa(query, key, value, attention_mask, backend, parallel_config):
+    if _USE_CONDUIT:
+        # backend is the CANONICAL string here; keep BSHD layout, no GQA (FLUX.2 H_kv==H),
+        # inference mode. flatten(2,3) mirrors dispatch_attention_fn's returned BSHD tensor.
+        from core.attention import AttentionMode, dispatch_attention
+        return dispatch_attention(
+            query, key, value, attn_mask=attention_mask, backend=backend,
+            mode=AttentionMode.INFERENCE, layout="BSHD", enable_gqa=False,
+        ).flatten(2, 3)
     return dispatch_attention_fn(
         query, key, value, attn_mask=attention_mask, backend=backend, parallel_config=parallel_config
     ).flatten(2, 3)

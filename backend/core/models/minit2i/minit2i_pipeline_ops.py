@@ -13,6 +13,7 @@ from typing import List, Optional
 
 import numpy as np
 import torch
+from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
 from PIL import Image
 
@@ -31,6 +32,7 @@ def normalize_resolution(width: int, height: int) -> tuple[int, int]:
 
 
 @torch.no_grad()
+@time_phase("text_encode")
 def encode_prompt(text_encoder, tokenizer, prompt, prompt_length: int, device):
     """FLAN-T5 encode -> (last_hidden_state [B,L,1024], attention_mask [B,L])."""
     if isinstance(prompt, str):
@@ -84,6 +86,7 @@ def vae_encode_image(vae, image: Image.Image, height: int, width: int, device, d
 
 
 @torch.no_grad()
+@time_phase("vae_decode")
 def vae_decode_latent(vae, latent: torch.Tensor) -> Image.Image:
     """Normalized VAE latent [1, C, h, w] -> PIL image."""
     from .minit2i_vae import denormalize_latent
@@ -218,6 +221,7 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cfg_scale,
                  cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
                  progress_callback=None, channels: int = 3, noise_scale: float = NOISE_SCALE,
@@ -234,6 +238,7 @@ def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cf
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask, num_inference_steps,
                          cfg_scale, cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
                          progress_callback=None, noise_scale: float = NOISE_SCALE, clamp_output: bool = True, spectrum_params=None):
@@ -262,6 +267,7 @@ def prepare_mask(mask_image: Image.Image, height, width, device, dtype) -> torch
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strength, text, mask,
                          num_inference_steps, cfg_scale, cfg_interval, device, dtype, seed=None,
                          neg_text=None, neg_mask=None, progress_callback=None,

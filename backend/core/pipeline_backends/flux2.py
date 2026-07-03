@@ -24,6 +24,8 @@ from core.model_loader import ModelLoader, ModelSource
 from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
+import time as _time
+from core.inference.generation_timing import generation_timer
 
 
 def _set_flux2_nag_negpip_backend(diffusers_backend: str) -> None:
@@ -741,6 +743,7 @@ class Flux2Mixin:
             # Stage 3: Denoising Loop
             # ============================================================
             print("[FLUX.2] Stage 3: Denoising loop...")
+            _t_denoise = _time.perf_counter()
 
             # Block Swap setup
             enable_block_swap = params.get("enable_block_swap", False)
@@ -1095,7 +1098,9 @@ class Flux2Mixin:
             # ============================================================
             # Stage 4: VAE Decode
             # ============================================================
+            generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 4: VAE decoding...")
+            _t_decode = _time.perf_counter()
             vae = vae.to(self.device)
 
             # Unpack latents with IDs
@@ -1127,6 +1132,7 @@ class Flux2Mixin:
             vae.to("cpu")
             torch.cuda.empty_cache()
 
+            generation_timer.add("vae_decode", _time.perf_counter() - _t_decode)
             print("[FLUX.2] Generation completed")
             return pil_image, seed, actual_ancestral_seed
 
@@ -1174,6 +1180,7 @@ class Flux2Mixin:
 
         FLUX.2 extracts hidden states from layers 9, 18, 27 of Qwen3 and concatenates them.
         """
+        _t_phase = _time.perf_counter()
         device = text_encoder.device
 
         # Check if Text Encoder has FP8 weights
@@ -1243,6 +1250,7 @@ class Flux2Mixin:
         # Prepare text IDs (4D position coordinates)
         text_ids = self._flux2_prepare_text_ids(prompt_embeds).to(device)
 
+        generation_timer.add("text_encode", _time.perf_counter() - _t_phase)
         return prompt_embeds, text_ids
 
     def _flux2_prepare_text_ids(self, x: torch.Tensor):
@@ -1707,6 +1715,7 @@ class Flux2Mixin:
             # Stage 4: Denoising Loop
             # ============================================================
             print("[FLUX.2] Stage 4: Denoising loop...")
+            _t_denoise = _time.perf_counter()
 
             # Block Swap setup
             enable_block_swap = params.get("enable_block_swap", False)
@@ -2023,7 +2032,9 @@ class Flux2Mixin:
             # ============================================================
             # Stage 5: VAE Decode (img2img)
             # ============================================================
+            generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
+            _t_decode = _time.perf_counter()
             vae = vae.to(self.device)
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
@@ -2049,6 +2060,7 @@ class Flux2Mixin:
             vae.to("cpu")
             torch.cuda.empty_cache()
 
+            generation_timer.add("vae_decode", _time.perf_counter() - _t_decode)
             print("[FLUX.2] img2img generation completed")
             return pil_image, seed, actual_ancestral_seed
 
@@ -2325,6 +2337,7 @@ class Flux2Mixin:
             # Stage 4: Denoising Loop with mask blending
             # ============================================================
             print("[FLUX.2] Stage 4: Denoising loop with mask blending...")
+            _t_denoise = _time.perf_counter()
 
             # Block Swap setup
             enable_block_swap = params.get("enable_block_swap", False)
@@ -2654,7 +2667,9 @@ class Flux2Mixin:
             # ============================================================
             # Stage 5: VAE Decode (inpaint)
             # ============================================================
+            generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
+            _t_decode = _time.perf_counter()
             vae = vae.to(self.device)
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
@@ -2680,6 +2695,7 @@ class Flux2Mixin:
             vae.to("cpu")
             torch.cuda.empty_cache()
 
+            generation_timer.add("vae_decode", _time.perf_counter() - _t_decode)
             print("[FLUX.2] inpaint generation completed")
             return pil_image, seed, actual_ancestral_seed
 

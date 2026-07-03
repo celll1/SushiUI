@@ -282,6 +282,16 @@ def _tq_attn(
             layout="NHD",  # NHD == [B, S, H, D] == canonical BSHD
             is_causal=is_causal,
             sm_scale=scale,
+            # Pin the exact-P Triton backward for training reproducibility.
+            # tq_attention 0.6.0 changed the backward_mode default "triton"->"auto",
+            # which silently switches training gradients to the FA2 composite
+            # backward whenever flash-attn happens to be installed (INT8 / no-QJL /
+            # head_dim in {64,128} -- always true on the conduit tq path). That makes
+            # gradients environment-dependent (flash-attn present or not). Forcing
+            # "triton" preserves the pre-0.6.0 deterministic default so training runs
+            # are reproducible regardless of the local flash-attn install. Inference
+            # (no grad) never touches the backward, so this is a no-op there.
+            backward_mode="triton",
         )
 
         if needs_conversion:

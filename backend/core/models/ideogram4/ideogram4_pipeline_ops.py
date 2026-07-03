@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from core.inference.generation_timing import time_phase
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 from core.inference.spectrum_forecaster import build_output_forecaster
@@ -316,6 +317,7 @@ def build_training_conditioning(
 
 
 @torch.no_grad()
+@time_phase("text_encode")
 def encode_prompt(
     text_encoder,
     tokenizer,
@@ -452,6 +454,7 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
 
 
 @torch.no_grad()
+@time_phase("vae_decode")
 def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int) -> Image.Image:
     """Decode packed latents (1, grid_h*grid_w, 128) -> PIL Image."""
     z = latents.to(vae.dtype)
@@ -740,6 +743,7 @@ def _run_loop(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop(
     transformer,
     unconditional_transformer,
@@ -773,6 +777,7 @@ def denoise_loop(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_img2img(
     transformer,
     unconditional_transformer,
@@ -821,6 +826,7 @@ def denoise_loop_img2img(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_inpaint(
     transformer,
     unconditional_transformer,

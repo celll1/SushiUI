@@ -129,13 +129,17 @@ def save_image_with_metadata(
     if unet_quantization and unet_quantization != "none":
         metadata.add_text("unet_quantization", unet_quantization)
 
-    # Vision Encoder metadata
-    ve_name = params.get("vision_encoder_name", "")
-    ve_hash = params.get("vision_encoder_hash", "")
-    if ve_name:
-        metadata.add_text("vision_encoder_name", ve_name)
-    if ve_hash:
-        metadata.add_text("vision_encoder_hash", ve_hash)
+    # Vision Encoder metadata.
+    # Defensive gate: only record VE info when this generation actually used
+    # reference images. The VE stays loaded ("sticky") across generations, so
+    # stray vision_encoder_* params must not be written when no ref image was used.
+    if params.get("ref_images"):
+        ve_name = params.get("vision_encoder_name", "")
+        ve_hash = params.get("vision_encoder_hash", "")
+        if ve_name:
+            metadata.add_text("vision_encoder_name", ve_name)
+        if ve_hash:
+            metadata.add_text("vision_encoder_hash", ve_hash)
 
     # Save image
     try:

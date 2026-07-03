@@ -17,6 +17,7 @@ from PIL import Image
 
 from .anima_scheduler import AnimaFlowMatchScheduler, calculate_shift_anima
 from core.inference.cancellation import raise_if_cancelled
+from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
 
 
@@ -185,6 +186,7 @@ def _build_emphasis(prompt: str, qwen3_tokenizer, max_length: int):
 
 
 @torch.no_grad()
+@time_phase("text_encode")
 def encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer, prompt: str,
                   device: str = "cuda",
                   dtype: torch.dtype = torch.bfloat16,
@@ -347,6 +349,7 @@ def vae_encode_image(vae, image: Image.Image, device: str, dtype: torch.dtype) -
 
 
 @torch.no_grad()
+@time_phase("vae_decode")
 def vae_decode_latents(vae, latents: torch.Tensor) -> List[Image.Image]:
     """Decode normalized (B, 16, 1, H/8, W/8) latents to PIL images.
 
@@ -449,6 +452,7 @@ def _apply_advanced_cfg(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def sample_txt2img(
     transformer,
     scheduler: AnimaFlowMatchScheduler,
@@ -579,6 +583,7 @@ def sample_txt2img(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def sample_img2img(
     transformer,
     scheduler: AnimaFlowMatchScheduler,
@@ -695,6 +700,7 @@ def sample_img2img(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def sample_inpaint(
     transformer,
     scheduler: AnimaFlowMatchScheduler,

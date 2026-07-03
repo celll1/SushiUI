@@ -61,7 +61,37 @@ def _set_flux2_nag_negpip_backend(diffusers_backend: str) -> None:
         cls._attention_backend = diffusers_backend
 
 
-def set_flux2_attention_backend(transformer, backend) -> str:
+def _install_flux2_conduit_processors(transformer, canonical_backend, mode) -> int:
+    """Install ConduitFlux2* processors on the NON-KV default attention modules.
+
+    Gated on the CURRENT processor type so the reference-image KV-cache processors
+    (Flux2KVAttnProcessor / Flux2KVParallelSelfAttnProcessor) are NOT clobbered --
+    they stay on the diffusers registry (run native after the caller resets the
+    diffusers global). Returns the count of modules migrated.
+    """
+    from diffusers.models.transformers.transformer_flux2 import (
+        Flux2Attention,
+        Flux2AttnProcessor,
+        Flux2ParallelSelfAttention,
+        Flux2ParallelSelfAttnProcessor,
+    )
+    from core.inference.conduit_flux2 import (
+        ConduitFlux2AttnProcessor,
+        ConduitFlux2ParallelSelfAttnProcessor,
+    )
+    migrated = 0
+    for module in transformer.modules():
+        proc = getattr(module, "processor", None)
+        if isinstance(module, Flux2Attention) and type(proc) is Flux2AttnProcessor:
+            module.set_processor(ConduitFlux2AttnProcessor(canonical_backend, mode))
+            migrated += 1
+        elif isinstance(module, Flux2ParallelSelfAttention) and type(proc) is Flux2ParallelSelfAttnProcessor:
+            module.set_processor(ConduitFlux2ParallelSelfAttnProcessor(canonical_backend, mode))
+            migrated += 1
+    return migrated
+
+
+def set_flux2_attention_backend(transformer, backend, attention_impl="diffusers") -> str:
     """Honor the selected attention backend for a FLUX.2 inference run.
 
     FLUX.2 uses diffusers' OWN attention registry (``dispatch_attention_fn``), which we
@@ -89,6 +119,30 @@ def set_flux2_attention_backend(transformer, backend) -> str:
     from core.attention import normalize_backend, to_diffusers_backend
 
     canonical = normalize_backend(backend)
+
+    # attention_impl='conduit' (new default): route the DEFAULT + NAG/NegPip attention
+    # through SushiUI's unified conduit (enables conduit-only backends such as tq on FLUX.2).
+    # attention_impl='diffusers': byte-identical legacy path via diffusers' registry.
+    if attention_impl == "conduit":
+        from core.attention import AttentionMode
+        from core.inference.nag_flux2 import set_flux2_nag_negpip_conduit
+        # Reset diffusers' global active backend to native so any residual KV-cache
+        # (ref-image) processors left on the diffusers registry run deterministically.
+        try:
+            transformer.set_attention_backend("native")
+        except Exception:
+            pass
+        migrated = _install_flux2_conduit_processors(transformer, canonical, AttentionMode.INFERENCE)
+        # NAG/NegPip choke point (_sdpa) -> conduit, reading the CANONICAL string.
+        _set_flux2_nag_negpip_backend(canonical)
+        set_flux2_nag_negpip_conduit(True)
+        print(f"[FLUX.2] Attention impl: conduit backend='{canonical}' "
+              f"(requested '{backend}'); {migrated} default attn modules migrated")
+        return f"conduit:{canonical}"
+
+    # attention_impl='diffusers' (legacy): drive diffusers' own registry.
+    from core.inference.nag_flux2 import set_flux2_nag_negpip_conduit
+    set_flux2_nag_negpip_conduit(False)
     diffusers_backend = to_diffusers_backend(canonical)  # 'native' | 'flash' | 'sage'
 
     # (1) Default processors + diffusers' global active backend.
@@ -540,7 +594,8 @@ class Flux2Mixin:
             # was previously always native (attention_type was ignored). try/except inside
             # the helper falls back to native if the diffusers build rejects flash/sage.
             attention_type = params.get("attention_type", settings.attention_type)
-            set_flux2_attention_backend(transformer, attention_type)
+            attention_impl = params.get("attention_impl", getattr(settings, "attention_impl", "conduit"))
+            set_flux2_attention_backend(transformer, attention_type, attention_impl)
 
             # Prepare generator
             seed = params.get("seed", -1)
@@ -1472,7 +1527,8 @@ class Flux2Mixin:
             # was previously always native (attention_type was ignored). try/except inside
             # the helper falls back to native if the diffusers build rejects flash/sage.
             attention_type = params.get("attention_type", settings.attention_type)
-            set_flux2_attention_backend(transformer, attention_type)
+            attention_impl = params.get("attention_impl", getattr(settings, "attention_impl", "conduit"))
+            set_flux2_attention_backend(transformer, attention_type, attention_impl)
 
             # Prepare generator
             seed = params.get("seed", -1)
@@ -2062,7 +2118,8 @@ class Flux2Mixin:
             # was previously always native (attention_type was ignored). try/except inside
             # the helper falls back to native if the diffusers build rejects flash/sage.
             attention_type = params.get("attention_type", settings.attention_type)
-            set_flux2_attention_backend(transformer, attention_type)
+            attention_impl = params.get("attention_impl", getattr(settings, "attention_impl", "conduit"))
+            set_flux2_attention_backend(transformer, attention_type, attention_impl)
 
             # Prepare generator
             seed = params.get("seed", -1)

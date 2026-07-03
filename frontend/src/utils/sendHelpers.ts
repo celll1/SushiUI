@@ -32,6 +32,7 @@ interface BaseSendParams {
   nag_negative_prompt?: string;
   // Attention processor type
   attention_type?: string;
+  attention_impl?: string;
 }
 
 /**
@@ -137,6 +138,9 @@ export function sendToPanel(
     // Add attention processor type
     if (sourceParams.attention_type !== undefined) {
       targetParams.attention_type = sourceParams.attention_type;
+    }
+    if (sourceParams.attention_impl !== undefined) {
+      targetParams.attention_impl = sourceParams.attention_impl;
     }
 
     if (includeDenoising && sourceParams.denoising_strength !== undefined) {

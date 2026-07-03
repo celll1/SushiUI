@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     max_batch_size: int = 4
     device: str = "cuda"
     attention_type: str = "normal"  # "normal", "sage", "flash"
+    attention_impl: str = "conduit"  # "conduit" | "diffusers" (FLUX.2 inference kernel impl)
 
     # Authentication (optional)
     auth_enabled: bool = False

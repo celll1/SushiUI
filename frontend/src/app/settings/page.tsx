@@ -67,6 +67,7 @@ export default function SettingsPage() {
 
   // Attention type
   const [attentionType, setAttentionType] = useState<"normal" | "sage" | "flash" | "tq">("normal");
+  const [attentionImpl, setAttentionImpl] = useState<"conduit" | "diffusers">("conduit");
 
   // Font size (mobile UI scaling)
   const [fontSize, setFontSize] = useState(100); // 100 = 100% (default)
@@ -199,6 +200,11 @@ export default function SettingsPage() {
       const savedAttentionType = localStorage.getItem('attention_type') as "normal" | "sage" | "flash" | "tq" | null;
       if (savedAttentionType) {
         setAttentionType(savedAttentionType);
+      }
+
+      const savedAttentionImpl = localStorage.getItem('attention_impl') as "conduit" | "diffusers" | null;
+      if (savedAttentionImpl) {
+        setAttentionImpl(savedAttentionImpl);
       }
 
       const savedResolutionStep = localStorage.getItem('resolution_step');
@@ -701,6 +707,28 @@ export default function SettingsPage() {
                   </select>
                   <p className="text-xs text-gray-500 mt-1">
                     Choose attention acceleration method. <strong>Normal</strong>: PyTorch 2.0+ automatically uses Flash Attention when available. <strong>SageAttention</strong>: INT8 quantized attention for 2-5x speedup (requires <code>pip install sageattention</code>). <strong>FlashAttention</strong>: Explicit Flash Attention 2 (requires <code>pip install flash-attn</code>). <strong>TQ</strong>: Triton-Quantized attention; applies to Z-Image, Lens, MiniT2I, Anima, and SDXL inference. Other architectures fall back to native. Changes take effect immediately on next generation.
+                  </p>
+                </div>
+
+                <div>
+                  <label htmlFor="attention_impl" className="block text-sm font-medium text-gray-300">
+                    Attention Implementation (FLUX.2)
+                  </label>
+                  <select
+                    id="attention_impl"
+                    value={attentionImpl}
+                    onChange={(e) => {
+                      const newValue = e.target.value as "conduit" | "diffusers";
+                      setAttentionImpl(newValue);
+                      localStorage.setItem('attention_impl', newValue);
+                    }}
+                    className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-gray-300 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="conduit">Conduit (unified dispatch; enables TQ on FLUX.2)</option>
+                    <option value="diffusers">Diffusers (legacy registry; byte-identical fallback)</option>
+                  </select>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Selects which implementation runs the FLUX.2 attention kernel. <strong>Conduit</strong> routes through SushiUI&apos;s unified dispatch so the Attention Type above (including TQ) applies to FLUX.2. <strong>Diffusers</strong> keeps diffusers&apos; own registry (reproduces the previous behavior). Native output is identical either way; other architectures ignore this.
                   </p>
                 </div>
 

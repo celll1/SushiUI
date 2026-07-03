@@ -62,6 +62,9 @@ def save_image_with_metadata(
         metadata.add_text("nag_tau", str(params.get("nag_tau", 3.5)))
         metadata.add_text("nag_alpha", str(params.get("nag_alpha", 0.25)))
         metadata.add_text("nag_sigma_end", str(params.get("nag_sigma_end", 3.0)))
+        nag_negative_prompt = params.get("nag_negative_prompt", "")
+        if nag_negative_prompt:
+            metadata.add_text("nag_negative_prompt", nag_negative_prompt)
 
     # Add Advanced CFG parameters (can coexist with NAG)
     # Always save cfg_schedule parameters as they may be used even when type is "constant"
@@ -140,6 +143,60 @@ def save_image_with_metadata(
             metadata.add_text("vision_encoder_name", ve_name)
         if ve_hash:
             metadata.add_text("vision_encoder_hash", ve_hash)
+
+    # Prompt chunking (non-default only)
+    prompt_chunking_mode = params.get("prompt_chunking_mode", "a1111")
+    if prompt_chunking_mode and prompt_chunking_mode != "a1111":
+        metadata.add_text("prompt_chunking_mode", prompt_chunking_mode)
+    max_prompt_chunks = params.get("max_prompt_chunks", 0)
+    if max_prompt_chunks and int(max_prompt_chunks) > 0:
+        metadata.add_text("max_prompt_chunks", str(max_prompt_chunks))
+
+    # Attention backend (non-default only)
+    attention_type = params.get("attention_type", "normal")
+    if attention_type and attention_type != "normal":
+        metadata.add_text("attention_type", attention_type)
+    attention_impl = params.get("attention_impl", "conduit")
+    if attention_impl and attention_impl != "conduit":
+        metadata.add_text("attention_impl", attention_impl)
+
+    # Text Encoder quantization (non-default only)
+    text_encoder_quantization = params.get("text_encoder_quantization")
+    if text_encoder_quantization and text_encoder_quantization != "none":
+        metadata.add_text("text_encoder_quantization", text_encoder_quantization)
+
+    # SDXL micro-conditioning original_size override (non-default only)
+    original_size_w = params.get("original_size_w", 0)
+    original_size_h = params.get("original_size_h", 0)
+    original_size_scale = params.get("original_size_scale", 1.0)
+    if original_size_w and int(original_size_w) > 0:
+        metadata.add_text("original_size_w", str(original_size_w))
+    if original_size_h and int(original_size_h) > 0:
+        metadata.add_text("original_size_h", str(original_size_h))
+    if original_size_scale is not None and float(original_size_scale) != 1.0:
+        metadata.add_text("original_size_scale", str(original_size_scale))
+
+    # TIPO prompt upsampling (flag only; effective prompt is already saved as "prompt")
+    if params.get("use_tipo", False):
+        metadata.add_text("use_tipo", "True")
+
+    # Spectrum forecasting (write full family only when enabled)
+    if params.get("spectrum_enable", False):
+        metadata.add_text("spectrum_enable", "True")
+        for k in (
+            "spectrum_w", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
+            "spectrum_window_size", "spectrum_flex_window", "spectrum_tail",
+            "spectrum_feature_mode", "spectrum_cache_branch", "spectrum_max_cache",
+        ):
+            if k in params:
+                metadata.add_text(k, str(params[k]))
+
+    # FBCache (write full family only when enabled)
+    if params.get("fbcache_enable", False):
+        metadata.add_text("fbcache_enable", "True")
+        for k in ("fbcache_threshold", "fbcache_warmup_steps", "fbcache_cache_branch"):
+            if k in params:
+                metadata.add_text(k, str(params[k]))
 
     # Save image
     try:

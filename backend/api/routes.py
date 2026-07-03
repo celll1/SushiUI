@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from pathlib import Path
 import os
+import re
 import sys
 import json
 import subprocess
@@ -2021,6 +2022,11 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
         for item in os.listdir(models_dir):
             item_path = os.path.join(models_dir, item)
 
+            # Hide individual shards of a sharded save; the sibling
+            # <stem>.safetensors.index.json is the single selectable entry.
+            if re.search(r"-\d{5}-of-\d{5}\.safetensors$", item):
+                continue
+
             # Detect model architecture (sd15, sdxl, zimage)
             architecture = ModelLoader.detect_model_type(item_path)
 
@@ -2070,6 +2076,30 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                     "path": item_path,
                     "type": "diffusers",
                     "source_type": "diffusers",
+                    "source_dir": models_dir,
+                    "architecture": architecture
+                })
+            elif item.endswith('.safetensors.index.json'):
+                # Sharded single-file save: one entry, size = sum of its shards.
+                if architecture == "vision_encoder":
+                    continue
+                stem = item[: -len('.safetensors.index.json')]
+                total_bytes = 0
+                try:
+                    with open(item_path, encoding='utf-8') as _idxf:
+                        weight_map = json.load(_idxf).get('weight_map', {}) or {}
+                    for shard in set(weight_map.values()):
+                        shard_path = os.path.join(models_dir, shard)
+                        if os.path.exists(shard_path):
+                            total_bytes += os.path.getsize(shard_path)
+                except Exception:
+                    pass
+                models.append({
+                    "name": stem,
+                    "path": item_path,
+                    "type": "safetensors",
+                    "source_type": "safetensors",
+                    "size_gb": round(total_bytes / (1024**3), 2),
                     "source_dir": models_dir,
                     "architecture": architecture
                 })

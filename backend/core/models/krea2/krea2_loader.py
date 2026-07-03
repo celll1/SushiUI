@@ -195,7 +195,9 @@ def load_krea2_components(
          vae_scale_factor, is_distilled, text_encoder_select_layers, patch_size,
          config}
     """
-    is_single_file = os.path.isfile(model_path) and model_path.endswith(".safetensors")
+    is_single_file = os.path.isfile(model_path) and (
+        model_path.endswith(".safetensors") or model_path.endswith(".safetensors.index.json")
+    )
 
     embedded_te_sd = None
     if is_single_file:

@@ -203,7 +203,9 @@ def load_minit2i_components(
             "vae_scale_factor": VAE_SCALE_FACTOR,
         }
 
-    is_single_file = os.path.isfile(model_path) and model_path.endswith(".safetensors")
+    is_single_file = os.path.isfile(model_path) and (
+        model_path.endswith(".safetensors") or model_path.endswith(".safetensors.index.json")
+    )
 
     if is_single_file:
         print(f"[MiniT2ILoader] Loading single-file: {model_path}")

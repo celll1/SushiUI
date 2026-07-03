@@ -109,7 +109,15 @@ class ModelLoader:
             state_dict_keys = []
 
             # Load metadata and state dict keys
-            if model_path.endswith('.safetensors'):
+            if model_path.endswith('.safetensors.index.json'):
+                # Sharded sushiUI save: metadata and key names live in the index.
+                with open(model_path, 'r', encoding='utf-8') as f:
+                    index = json.load(f)
+                metadata = {k: v for k, v in (index.get("metadata") or {}).items()
+                            if isinstance(v, str)}
+                state_dict_keys = list((index.get("weight_map") or {}).keys())
+
+            elif model_path.endswith('.safetensors'):
                 from safetensors import safe_open
                 with safe_open(model_path, framework="pt", device="cpu") as f:
                     metadata = f.metadata() or {}
@@ -131,6 +139,20 @@ class ModelLoader:
                 return {
                     "noise_process": metadata["modelspec.noise_process"],
                     "prediction_target": metadata.get("modelspec.prediction_type", "epsilon"),
+                    "source": "modelspec"
+                }
+
+            # Priority 1b: ModelSpec prediction_type WITHOUT an explicit noise_process
+            # (a SushiUI SD1.5/SDXL save omits noise_process when it resolved to
+            # "auto"). Honor the prediction_type so a v-pred roundtrip still closes;
+            # default noise_process by architecture family (ddpm for SD/SDXL).
+            if "modelspec.prediction_type" in metadata:
+                pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens") else "ddpm"
+                print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
+                return {
+                    "noise_process": metadata.get("modelspec.noise_process", default_np),
+                    "prediction_target": pred_target,
                     "source": "modelspec"
                 }
 
@@ -307,6 +329,32 @@ class ModelLoader:
         return os.path.exists(os.path.join(path, "model_index.json"))
 
     @staticmethod
+    def _reattach_embedded_weights(module, state_dict, label: str):
+        """Load trained (embedded) weights into a freshly built base component.
+
+        Raises when NOTHING matched — silently keeping the untrained base
+        weights would reintroduce a lossy roundtrip.
+        """
+        print(f"[ModelLoader] Reattaching embedded {label} weights "
+              f"({len(state_dict)} tensors) from checkpoint")
+        info = module.load_state_dict(state_dict, strict=False)
+        missing = list(getattr(info, "missing_keys", []) or [])
+        unexpected = list(getattr(info, "unexpected_keys", []) or [])
+        matched = len(state_dict) - len(unexpected)
+        if missing:
+            print(f"[ModelLoader]   embedded {label} missing: {len(missing)}")
+        if unexpected:
+            print(f"[ModelLoader]   embedded {label} unexpected: {len(unexpected)}")
+        if matched <= 0:
+            raise RuntimeError(
+                f"Embedded {label} weights in the checkpoint did not match the "
+                f"base {label} at all ({len(state_dict)} tensors, 0 matched). "
+                f"The checkpoint's {label} section uses an incompatible key "
+                f"layout; refusing to silently fall back to the untrained base "
+                f"{label}."
+            )
+
+    @staticmethod
     def _keys_look_krea2(keys, metadata) -> bool:
         """Krea 2 single-file signature check.
 
@@ -341,6 +389,26 @@ class ModelLoader:
             return False
 
     @staticmethod
+    def _map_model_type_string(mt: str) -> Optional[str]:
+        """Map a metadata model_type string (incl. aliases) to a ModelType, or None."""
+        mt = (mt or "").strip().lower()
+        if not mt:
+            return None
+        if mt in ("flux2", "flux.2", "flux2-klein", "flux.2-klein"):
+            return "flux2"
+        if mt in ("sdxl", "sd-xl", "stable-diffusion-xl", "stable_diffusion_xl"):
+            return "sdxl"
+        if mt in ("sd15", "sd-1.5", "sd_1.5", "stable-diffusion", "stable_diffusion", "sd"):
+            return "sd15"
+        if mt in ("zimage", "z-image"):
+            return "zimage"
+        if mt in ("minit2i", "krea2", "anima", "lens", "ideogram4"):
+            return mt
+        if mt == "siglip2_vision_encoder":
+            return "vision_encoder"
+        return None
+
+    @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
         """Detect if model is SD1.5, SDXL, Z-Image, DEUS, or FLUX.2 based on config or structure
 
@@ -355,6 +423,35 @@ class ModelLoader:
         # not a filesystem path — handled by the in-memory build path in the loader.
         if isinstance(model_path, str) and model_path.startswith("scratch:minit2i:"):
             return "minit2i"
+
+        # sushiUI shard index (<stem>.safetensors.index.json): read metadata
+        # model_type first; else probe weight_map KEY NAMES (no tensor open).
+        if isinstance(model_path, str) and model_path.endswith(".safetensors.index.json"):
+            try:
+                with open(model_path, encoding="utf-8") as f:
+                    index = json.load(f)
+                md = index.get("metadata", {}) or {}
+                keys = list((index.get("weight_map", {}) or {}).keys())
+                mapped = ModelLoader._map_model_type_string(str(md.get("model_type", "")))
+                if mapped is not None:
+                    return mapped
+                # Key-name signature fallback (minit2i / krea2 shard today).
+                if (any(k.startswith("transformer.model.net.") for k in keys)
+                        or any(k.startswith("model.net.double_blocks.") for k in keys)):
+                    return "minit2i"
+                if ModelLoader._keys_look_krea2(keys, md):
+                    return "krea2"
+                # FLUX.2 diffusers-layout key signature.
+                if (any(k.startswith("time_guidance_embed.") for k in keys)
+                        and any(k.startswith("double_stream_modulation_") for k in keys)):
+                    return "flux2"
+                # Z-Image key signature.
+                zi = ["cap_embedder", "t_embedder", "context_refiner"]
+                if all(any(k.startswith(p) for k in keys) for p in zi):
+                    return "zimage"
+            except Exception as e:
+                print(f"[ModelLoader] Could not read shard index {model_path}: {e}")
+            return "sd15"
 
         # Lens detection (microsoft/Lens diffusers directory or HF repo)
         if os.path.isdir(model_path):
@@ -430,6 +527,30 @@ class ModelLoader:
             # variant dir within 2 levels so the loader can resolve it to a variant.
             if os.path.isdir(model_path) and ModelLoader._dir_contains_minit2i(model_path):
                 return "minit2i"
+
+        # Lens single-file detection (full-FT save: net.* DiT). Metadata-first,
+        # with a net.* key-signature fallback. Runs BEFORE the Anima net.* probe;
+        # Lens keys (transformer_blocks.*.attn.img_qkv/txt_qkv) are disjoint from
+        # Anima's (blocks.*.self_attn/cross_attn), so there is no real ambiguity,
+        # but metadata resolves any edge case deterministically.
+        if isinstance(model_path, str) and model_path.endswith(".safetensors") and os.path.isfile(model_path):
+            try:
+                from safetensors import safe_open
+                with safe_open(model_path, framework="pt", device="cpu") as _lf:
+                    _lmd = _lf.metadata() or {}
+                    _lkeys = list(_lf.keys())
+                _mt = str(_lmd.get("model_type", "")).strip().lower()
+                _arch = str(_lmd.get("modelspec.architecture", "")).strip().lower()
+                if _mt == "lens" or _arch == "lens":
+                    return "lens"
+                # Key-signature fallback (net.*-prefixed Lens DiT).
+                _lstripped = [k[len("net."):] if k.startswith("net.") else k for k in _lkeys]
+                _has_img_qkv = any(k.endswith(".attn.img_qkv.weight") for k in _lstripped)
+                _has_txt_qkv = any(k.endswith(".attn.txt_qkv.weight") for k in _lstripped)
+                if _has_img_qkv and _has_txt_qkv:
+                    return "lens"
+            except Exception as e:
+                print(f"[ModelLoader] Lens detection skipped: {e}")
 
         # Anima detection (split-files layout or single DiT safetensors)
         try:
@@ -691,6 +812,63 @@ class ModelLoader:
         return official_state_dict
 
     @staticmethod
+    def _normalize_zimage_state_dict(raw: dict):
+        """Split a Z-Image single-file save into transformer / VAE / TE sections
+        and detect the transformer key layout.
+
+        Handles BOTH:
+          * genuine ComfyUI checkpoints — fused-qkv layout, unprefixed ``layers.N``
+            keys, single-resolution ``x_embedder`` / ``final_layer``.
+          * sushiUI full-FT saves (ZImageFullParameterAdapter) — OFFICIAL split
+            Q/K/V keys with multi-resolution ``all_x_embedder`` / ``all_final_layer``
+            under a ``model.diffusion_model.`` prefix, plus embedded
+            ``first_stage_model.*`` (VAE) and ``text_encoders.qwen3.*`` (TE)
+            sections.
+
+        Returns ``(transformer_sd, vae_sd, te_sd, layout)`` where ``layout`` is
+        ``"official"`` or ``"comfy"``; ``vae_sd`` / ``te_sd`` are ``None`` when the
+        corresponding section is absent (genuine Comfy files have neither).
+        """
+        vae_sd: dict = {}
+        te_sd: dict = {}
+        transformer_raw: dict = {}
+        for k, v in raw.items():
+            if k.startswith("first_stage_model."):
+                vae_sd[k[len("first_stage_model."):]] = v
+            elif k.startswith("text_encoders."):
+                # Strip ``text_encoders.<name>.`` (e.g. text_encoders.qwen3.).
+                rest = k[len("text_encoders."):]
+                te_sd[rest.split(".", 1)[1] if "." in rest else rest] = v
+            else:
+                transformer_raw[k] = v
+
+        # Strip the ComfyUI-style ``model.diffusion_model.`` prefix if present.
+        prefix = "model.diffusion_model."
+        if any(k.startswith(prefix) for k in transformer_raw):
+            transformer_raw = {
+                (k[len(prefix):] if k.startswith(prefix) else k): v
+                for k, v in transformer_raw.items()
+            }
+
+        # Layout detection by key signature. Official layout has split Q/K/V and/or
+        # multi-resolution embedders; Comfy layout has a fused ``qkv`` projection.
+        has_split_qkv = any(k.endswith(".to_q.weight") for k in transformer_raw)
+        has_multi_res = any(
+            k.startswith("all_x_embedder.") or k.startswith("all_final_layer.")
+            for k in transformer_raw
+        )
+        has_fused_qkv = any(k.endswith(".qkv.weight") for k in transformer_raw)
+        if has_split_qkv or has_multi_res:
+            layout = "official"
+        elif has_fused_qkv:
+            layout = "comfy"
+        else:
+            # Ambiguous: keep the historical Comfy path (no-op conversion is safe).
+            layout = "comfy"
+
+        return transformer_raw, (vae_sd or None), (te_sd or None), layout
+
+    @staticmethod
     def load_zimage_from_comfy_safetensors(
         file_path: str,
         device: str = "cuda",
@@ -780,7 +958,19 @@ class ModelLoader:
 
             # Step 3: Detect actual layer count from safetensors file
             print(f"[ModelLoader] Loading Comfy transformer weights from: {file_path}")
-            comfy_state_dict = load_file(file_path, device="cpu")
+            raw_state_dict = load_file(file_path, device="cpu")
+
+            # Normalize: both genuine Comfy checkpoints AND sushiUI full-FT saves
+            # (official-layout keys under model.diffusion_model. + embedded VAE/TE).
+            # Splits out first_stage_model.* / text_encoders.* so they never pollute
+            # the strict transformer load, strips the prefix, and detects the layout.
+            comfy_state_dict, embedded_vae_sd, embedded_te_sd, zimage_layout = \
+                ModelLoader._normalize_zimage_state_dict(raw_state_dict)
+            del raw_state_dict
+            print(f"[ModelLoader] Z-Image transformer layout detected: {zimage_layout} "
+                  f"({len(comfy_state_dict)} transformer tensors; "
+                  f"embedded VAE={'yes' if embedded_vae_sd else 'no'}, "
+                  f"embedded TE={'yes' if embedded_te_sd else 'no'})")
 
             # Auto-detect layer count from state_dict (supports pruned models)
             layer_indices = set()
@@ -873,14 +1063,19 @@ class ModelLoader:
                     axes_lens=transformer_config["axes_lens"],
                 ).to(torch_dtype)
 
-            # Convert Comfy format (fused QKV) to official format (separate Q/K/V)
-            print("[ModelLoader] Converting Comfy format to official format...")
-            state_dict = ModelLoader._convert_comfy_to_official_state_dict(
-                comfy_state_dict,
-                transformer_config["n_heads"],
-                transformer_config["n_kv_heads"],
-                transformer_config["dim"]
-            )
+            # Convert Comfy format (fused QKV) to official format (separate Q/K/V).
+            # sushiUI full-FT saves are ALREADY in official layout — skip conversion.
+            if zimage_layout == "official":
+                print("[ModelLoader] State dict already in official Z-Image layout; skipping conversion")
+                state_dict = comfy_state_dict
+            else:
+                print("[ModelLoader] Converting Comfy format to official format...")
+                state_dict = ModelLoader._convert_comfy_to_official_state_dict(
+                    comfy_state_dict,
+                    transformer_config["n_heads"],
+                    transformer_config["n_kv_heads"],
+                    transformer_config["dim"]
+                )
             del comfy_state_dict
 
             transformer.load_state_dict(state_dict, strict=True, assign=True)
@@ -939,6 +1134,13 @@ class ModelLoader:
                 print(f"[ModelLoader] FLUX VAE loaded: latent_channels={vae.config.latent_channels}, "
                       f"scaling_factor={vae.config.scaling_factor}")
 
+            # Reattach the embedded (trained) VAE weights when present, overriding
+            # the base VAE downloaded above. Absent => keep the base VAE.
+            if embedded_vae_sd is not None:
+                ModelLoader._reattach_embedded_weights(vae, embedded_vae_sd, "VAE")
+                vae.to(device=device, dtype=torch.float32)
+                vae.eval()
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -952,6 +1154,12 @@ class ModelLoader:
             print(f"[ModelLoader] Moving text encoder to {device}...")
             text_encoder.to(device)
             text_encoder.eval()
+
+            # Reattach the embedded (trained) text encoder weights when present.
+            if embedded_te_sd is not None:
+                ModelLoader._reattach_embedded_weights(text_encoder, embedded_te_sd, "text encoder")
+                text_encoder.to(device)
+                text_encoder.eval()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -1069,6 +1277,33 @@ class ModelLoader:
     #         import traceback
     #         traceback.print_exc()
     #         raise
+
+    @staticmethod
+    def _split_flux2_sushiui_state_dict(raw: dict):
+        """Split a sushiUI FLUX.2 full-FT save into transformer / VAE / TE sub-dicts.
+
+        The adapter writes transformer keys under ``model.diffusion_model.``, VAE
+        under ``first_stage_model.`` and TE under ``text_encoders.qwen3.``. Returns
+        ``(transformer_sd, vae_sd, te_sd)`` with the section prefixes stripped;
+        ``vae_sd`` / ``te_sd`` are empty dicts when absent.
+        """
+        transformer_sd: dict = {}
+        vae_sd: dict = {}
+        te_sd: dict = {}
+        for key, value in raw.items():
+            if key.startswith('model.diffusion_model.'):
+                transformer_sd[key[len('model.diffusion_model.'):]] = value
+            elif key.startswith('first_stage_model.'):
+                vae_sd[key[len('first_stage_model.'):]] = value
+            elif key.startswith('text_encoders.qwen3.'):
+                te_sd[key[len('text_encoders.qwen3.'):]] = value
+            elif key.startswith('text_encoders.'):
+                rest = key[len('text_encoders.'):]
+                te_sd[rest.split('.', 1)[1] if '.' in rest else rest] = value
+            else:
+                # Unprefixed keys (already diffusers-layout transformer) pass through.
+                transformer_sd[key] = value
+        return transformer_sd, vae_sd, te_sd
 
     @staticmethod
     def load_flux2_from_safetensors(
@@ -1195,23 +1430,29 @@ class ModelLoader:
             is_bfl_format = any(k.startswith('double_blocks.') for k in transformer_state_dict.keys())
             is_sushiui_format = any(k.startswith('model.diffusion_model.') for k in transformer_state_dict.keys())
 
+            # Embedded (trained) VAE / TE sections from sushiUI full-FT saves; stay
+            # empty for standard single-file transformer checkpoints.
+            embedded_vae_state_dict: dict = {}
+            embedded_te_state_dict: dict = {}
+
             if is_bfl_format:
                 print(f"[ModelLoader] Detected BFL/Comfy format state_dict, converting to diffusers format...")
                 from diffusers.loaders.single_file_utils import convert_flux2_transformer_checkpoint_to_diffusers
                 transformer_state_dict = convert_flux2_transformer_checkpoint_to_diffusers(transformer_state_dict)
                 print(f"[ModelLoader] Converted to diffusers format ({len(transformer_state_dict)} tensors)")
             elif is_sushiui_format:
-                # SushiUI/musubi training saves with "model.diffusion_model." prefix
-                # Extract only transformer keys (skip VAE "first_stage_model.*" and TE "text_encoders.*")
+                # SushiUI/musubi training saves with "model.diffusion_model." prefix.
+                # Split transformer keys from embedded VAE ("first_stage_model.*")
+                # and TE ("text_encoders.qwen3.*") sections so trained VAE/TE weights
+                # can be reattached below instead of always re-downloading them.
                 print(f"[ModelLoader] Detected SushiUI/musubi training format state_dict, stripping prefix...")
                 original_count = len(transformer_state_dict)
-                new_state_dict = {}
-                for key, value in transformer_state_dict.items():
-                    if key.startswith('model.diffusion_model.'):
-                        new_key = key.replace('model.diffusion_model.', '', 1)
-                        new_state_dict[new_key] = value
-                transformer_state_dict = new_state_dict
-                print(f"[ModelLoader] Extracted {len(transformer_state_dict)} transformer tensors from {original_count} total tensors")
+                transformer_state_dict, embedded_vae_state_dict, embedded_te_state_dict = \
+                    ModelLoader._split_flux2_sushiui_state_dict(transformer_state_dict)
+                print(f"[ModelLoader] Extracted {len(transformer_state_dict)} transformer tensors "
+                      f"from {original_count} total tensors "
+                      f"(embedded VAE={'yes' if embedded_vae_state_dict else 'no'}, "
+                      f"embedded TE={'yes' if embedded_te_state_dict else 'no'})")
             else:
                 print(f"[ModelLoader] State dict is already in diffusers format")
 
@@ -1238,6 +1479,12 @@ class ModelLoader:
             )
             print(f"[ModelLoader] VAE loaded: latent_channels={vae.config.latent_channels}")
 
+            # Reattach the embedded (trained) VAE weights when present, overriding
+            # the base VAE. Absent => keep the downloaded base VAE.
+            if embedded_vae_state_dict:
+                ModelLoader._reattach_embedded_weights(vae, embedded_vae_state_dict, "VAE")
+                vae = vae.to(dtype=torch.float32)
+
             # Step 5: Load Text Encoder (Qwen3)
             print(f"[ModelLoader] Loading Qwen3 text encoder...")
             text_encoder = Qwen3ForCausalLM.from_pretrained(
@@ -1246,6 +1493,11 @@ class ModelLoader:
                 torch_dtype=torch_dtype
             )
             print(f"[ModelLoader] Text encoder loaded: Qwen3ForCausalLM")
+
+            # Reattach the embedded (trained) text encoder weights when present.
+            if embedded_te_state_dict:
+                ModelLoader._reattach_embedded_weights(text_encoder, embedded_te_state_dict, "text encoder")
+                text_encoder = text_encoder.to(dtype=torch_dtype)
 
             # Step 6: Load Tokenizer
             print(f"[ModelLoader] Loading tokenizer...")
@@ -1319,6 +1571,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Anima (Cosmos-Predict2 DiT)")
             return ModelLoader.load_anima_from_files(file_path, device, torch.bfloat16)
 
+        # Lens single-file (full-FT net.* DiT; TE/VAE/tokenizer resolved from dirs)
+        if model_type == "lens":
+            print(f"[ModelLoader] Loading as Lens (single-file DiT)")
+            return ModelLoader.load_lens_from_path(file_path, torch.bfloat16)
+
         # DEUS support removed - architecture no longer maintained
         # if model_type == "deus":
         #     print(f"[ModelLoader] Loading as DEUS (SigLIP-2 text encoder)")
@@ -1341,6 +1598,81 @@ class ModelLoader:
 
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
+        # Reconstruct the SD1.5 / SDXL pipeline (custom-arch aware). Shared with the
+        # training-resume path so both honor SushiUI sushi.* metadata identically.
+        pipeline = ModelLoader.reconstruct_sd_sdxl_pipeline(
+            file_path, model_type, torch_dtype, device
+        )
+
+        # Configure scheduler for v-prediction if detected
+        if is_v_prediction:
+            print(f"[ModelLoader] Configuring scheduler for v-prediction model")
+            ModelLoader._configure_v_prediction_scheduler(pipeline)
+
+        # Move components to device individually (avoid pipeline.to() which can cause issues)
+        print(f"[ModelLoader] Moving pipeline components to {device}...")
+        print(f"[ModelLoader] DEBUG: Before any moves - pipeline.vae is not None: {pipeline.vae is not None}")
+        print(f"[ModelLoader] DEBUG: Before any moves - 'vae' in components: {'vae' in pipeline.components}")
+
+        # Move each component individually
+        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder...")
+            pipeline.text_encoder.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
+            print(f"[ModelLoader] DEBUG: Moving text_encoder_2...")
+            pipeline.text_encoder_2.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After text_encoder_2 move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'unet') and pipeline.unet is not None:
+            print(f"[ModelLoader] DEBUG: Moving unet...")
+            pipeline.unet.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After unet move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
+            print(f"[ModelLoader] DEBUG: Moving vae...")
+            pipeline.vae.to(device, dtype=torch_dtype)
+            print(f"[ModelLoader] DEBUG: After vae move - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        print(f"[ModelLoader] All components moved to {device}")
+        print(f"[ModelLoader] DEBUG: After all moves - pipeline.vae is not None: {pipeline.vae is not None}")
+
+        # Verify VAE exists after moving to device
+        if not hasattr(pipeline, 'vae') or pipeline.vae is None:
+            print(f"[ModelLoader] ERROR: VAE is missing after component move")
+            print(f"[ModelLoader] Pipeline components: {list(pipeline.components.keys())}")
+            raise RuntimeError("VAE is missing after loading model")
+        else:
+            print(f"[ModelLoader] VAE verified: {type(pipeline.vae).__name__}")
+
+        return pipeline
+
+    @staticmethod
+    def reconstruct_sd_sdxl_pipeline(
+        file_path: str,
+        model_type: str,
+        torch_dtype: torch.dtype,
+        device: str = "cuda",
+    ):
+        """Reconstruct an SD1.5 / SDXL pipeline from a single-file checkpoint.
+
+        Honors SushiUI custom-arch metadata:
+        - sushi.vae_type / sushi.in_channels -> swap to a non-standard latent VAE
+          (e.g. FLUX.1 16ch) and resize the U-Net conv_in/conv_out to match.
+        - sushi.te_type (+ sushi.te_*) -> rebuild a swapped text encoder and its
+          bridge adapters and attach them to the pipeline.
+        Absent => standard SD1.5/SDXL via diffusers from_single_file (byte-identical
+        behavior to the legacy inline path).
+
+        Returns the pipeline WITHOUT device placement or v-prediction scheduler
+        configuration so callers (inference load / training resume) finish setup as
+        needed. When a custom text encoder is present it is attached as
+        pipeline._sushi_te / _sushi_te_tokenizer / _sushi_te_adapters /
+        _sushi_te_max_len / _sushi_te_hidden_layer (used by the inference encode
+        path). A summary of the reconstructed architecture is always attached as
+        pipeline._sushi_arch for callers that must rebuild trainer state.
+        """
         # Custom SDXL architecture (SushiUI): non-standard latent VAE (e.g. FLUX.1 16ch).
         # Read sushi.vae_type / sushi.in_channels so the U-Net conv_in/out and the VAE
         # are reconstructed after load. Absent => standard SDXL (unchanged path).
@@ -1518,6 +1850,8 @@ class ModelLoader:
                 pipeline._sushi_te_adapters = adapters
                 pipeline._sushi_te_max_len = custom_te["max_len"]
                 pipeline._sushi_te_hidden_layer = custom_te["hidden_layer"]
+                pipeline._sushi_te_dim = dim
+                pipeline._sushi_te_embedded = bool(custom_te["embedded"])
                 print(f"[ModelLoader] Custom SDXL text encoder attached: {custom_te['te_type']} "
                       f"(dim={dim}, max_len={custom_te['max_len']})")
             except Exception as _te:
@@ -1525,48 +1859,17 @@ class ModelLoader:
                 import traceback
                 traceback.print_exc()
 
-        # Configure scheduler for v-prediction if detected
-        if is_v_prediction:
-            print(f"[ModelLoader] Configuring scheduler for v-prediction model")
-            ModelLoader._configure_v_prediction_scheduler(pipeline)
-
-        # Move components to device individually (avoid pipeline.to() which can cause issues)
-        print(f"[ModelLoader] Moving pipeline components to {device}...")
-        print(f"[ModelLoader] DEBUG: Before any moves - pipeline.vae is not None: {pipeline.vae is not None}")
-        print(f"[ModelLoader] DEBUG: Before any moves - 'vae' in components: {'vae' in pipeline.components}")
-
-        # Move each component individually
-        if hasattr(pipeline, 'text_encoder') and pipeline.text_encoder is not None:
-            print(f"[ModelLoader] DEBUG: Moving text_encoder...")
-            pipeline.text_encoder.to(device, dtype=torch_dtype)
-            print(f"[ModelLoader] DEBUG: After text_encoder move - pipeline.vae is not None: {pipeline.vae is not None}")
-
-        if hasattr(pipeline, 'text_encoder_2') and pipeline.text_encoder_2 is not None:
-            print(f"[ModelLoader] DEBUG: Moving text_encoder_2...")
-            pipeline.text_encoder_2.to(device, dtype=torch_dtype)
-            print(f"[ModelLoader] DEBUG: After text_encoder_2 move - pipeline.vae is not None: {pipeline.vae is not None}")
-
-        if hasattr(pipeline, 'unet') and pipeline.unet is not None:
-            print(f"[ModelLoader] DEBUG: Moving unet...")
-            pipeline.unet.to(device, dtype=torch_dtype)
-            print(f"[ModelLoader] DEBUG: After unet move - pipeline.vae is not None: {pipeline.vae is not None}")
-
-        if hasattr(pipeline, 'vae') and pipeline.vae is not None:
-            print(f"[ModelLoader] DEBUG: Moving vae...")
-            pipeline.vae.to(device, dtype=torch_dtype)
-            print(f"[ModelLoader] DEBUG: After vae move - pipeline.vae is not None: {pipeline.vae is not None}")
-
-        print(f"[ModelLoader] All components moved to {device}")
-        print(f"[ModelLoader] DEBUG: After all moves - pipeline.vae is not None: {pipeline.vae is not None}")
-
-        # Verify VAE exists after moving to device
-        if not hasattr(pipeline, 'vae') or pipeline.vae is None:
-            print(f"[ModelLoader] ERROR: VAE is missing after component move")
-            print(f"[ModelLoader] Pipeline components: {list(pipeline.components.keys())}")
-            raise RuntimeError("VAE is missing after loading model")
-        else:
-            print(f"[ModelLoader] VAE verified: {type(pipeline.vae).__name__}")
-
+        # Architecture summary for callers that must rebuild trainer state (resume).
+        # None for a standard SD1.5/SDXL checkpoint.
+        pipeline._sushi_arch = {
+            "vae_type": custom_vae_type,
+            "in_channels": custom_in_channels,
+            "te_type": (custom_te or {}).get("te_type"),
+            "te_dim": getattr(pipeline, "_sushi_te_dim", None),
+            "te_max_len": (custom_te or {}).get("max_len"),
+            "te_hidden_layer": (custom_te or {}).get("hidden_layer"),
+            "te_embedded": (custom_te or {}).get("embedded"),
+        }
         return pipeline
 
     @staticmethod
@@ -1881,10 +2184,14 @@ class ModelLoader:
         path: str,
         torch_dtype: torch.dtype = torch.bfloat16,
     ) -> dict:
-        """Load Microsoft/Lens from a local diffusers directory or HF Hub ID.
+        """Load Microsoft/Lens from a diffusers directory, HF Hub ID, or a
+        single-file full-FT DiT save (net.* weights).
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
+        if isinstance(path, str) and path.endswith(".safetensors") and os.path.isfile(path):
+            from core.models.lens.lens_loader import load_lens_single_file
+            return load_lens_single_file(dit_path=path, torch_dtype=torch_dtype)
         from core.models.lens.lens_loader import load_lens_components
         return load_lens_components(model_path=path, torch_dtype=torch_dtype)
 

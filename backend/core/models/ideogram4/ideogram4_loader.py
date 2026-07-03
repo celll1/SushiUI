@@ -23,7 +23,6 @@ import os
 import re
 
 import torch
-from safetensors.torch import load_file
 
 from .vendor import (
     Ideogram4Transformer2DModel,
@@ -37,24 +36,11 @@ from .vendor import (
 from .vendor.text_encoder import load_ideogram4_text_encoder
 
 
-def _load_component_state_dict(component_dir: str, basename: str) -> dict:
-    """Load a component's weights, whether sharded (index) or a single file."""
-    index_path = os.path.join(component_dir, f"{basename}.safetensors.index.json")
-    single_path = os.path.join(component_dir, f"{basename}.safetensors")
-
-    if os.path.exists(index_path):
-        with open(index_path, encoding="utf-8") as f:
-            index = json.load(f)
-        shard_files = sorted(set(index["weight_map"].values()))
-        state_dict: dict = {}
-        for shard in shard_files:
-            state_dict.update(load_file(os.path.join(component_dir, shard)))
-        return state_dict
-
-    if os.path.exists(single_path):
-        return load_file(single_path)
-
-    raise FileNotFoundError(f"No safetensors found for '{basename}' in {component_dir}")
+# The sharded-component reader was promoted to core.models.common; this thin
+# re-export keeps the historical import path (krea2_loader imports it from here).
+from core.models.common.single_file_format import (
+    load_component_state_dict as _load_component_state_dict,
+)
 
 
 def _convert_fused_qkv_to_split(state_dict: dict, hidden_size: int) -> dict:

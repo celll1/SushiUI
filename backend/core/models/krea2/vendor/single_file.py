@@ -44,8 +44,13 @@ import re
 from typing import Dict, Optional, Tuple
 
 import torch
-from safetensors import safe_open
-from safetensors.torch import save_file
+
+from core.models.common.single_file_format import (
+    DEFAULT_MAX_SHARD_BYTES,
+    dedup_tensors,
+    read_state_dict,
+    save_single_file_state,
+)
 
 from .transformer import Krea2Transformer2DModel
 
@@ -357,16 +362,15 @@ def build_krea2_transformer(
 
 
 def _read_safetensors(path: str) -> Tuple[Dict[str, torch.Tensor], dict]:
-    raw: Dict[str, torch.Tensor] = {}
-    with safe_open(path, framework="pt", device="cpu") as f:
-        metadata = dict(f.metadata() or {})
-        for k in f.keys():
-            raw[k] = f.get_tensor(k)
-    return raw, metadata
+    """Read a Krea 2 single file or shard index into (state_dict, metadata)."""
+    return read_state_dict(path)
 
 
 def load_single_file(path: str, torch_dtype: torch.dtype = torch.bfloat16) -> dict:
     """Load a Krea 2 single-file safetensors (any of the supported layouts).
+
+    Accepts a ``<stem>.safetensors`` file or a ``<stem>.safetensors.index.json``
+    shard index (routed through the shared reader).
 
     Returns: {"transformer": Krea2Transformer2DModel(cpu, eval),
               "text_encoder_state_dict": dict|None, "is_distilled": bool,
@@ -397,6 +401,7 @@ def save_single_file(
     is_distilled: bool,
     text_encoder: Optional[torch.nn.Module] = None,
     extra_metadata: Optional[Dict[str, str]] = None,
+    max_shard_bytes: int = DEFAULT_MAX_SHARD_BYTES,
 ) -> None:
     """Write a sushiUI Krea 2 single-file (transformer [+ optional Qwen3-VL TE] +
     metadata). Fixed format for Phase B training checkpoints:
@@ -407,25 +412,19 @@ def save_single_file(
                 is_distilled, has_text_encoder, format="pt"
 
     Tied tensors are de-duplicated by storage pointer (safetensors rejects shared
-    memory) and re-tied on load.
+    memory) and re-tied on load. Saves as a single file within ``max_shard_bytes``
+    (default 10 GB); above that, diffusers-convention shards plus a
+    ``<stem>.safetensors.index.json`` are written via the shared writer (the bf16
+    transformer, ~26 GB, shards).
     """
-    state: Dict[str, torch.Tensor] = {}
-    seen_ptrs: Dict[int, str] = {}
-    dropped_tied: list = []
+    def _named():
+        for k, v in transformer.state_dict().items():
+            yield f"{TRANSFORMER_PREFIX}{k}", v
+        if text_encoder is not None:
+            for k, v in text_encoder.state_dict().items():
+                yield f"{TEXT_ENCODER_PREFIX}{k}", v
 
-    def _add(key: str, v: torch.Tensor):
-        ptr = v.data_ptr()
-        if ptr in seen_ptrs:
-            dropped_tied.append(key)
-            return
-        seen_ptrs[ptr] = key
-        state[key] = v.detach().to("cpu").contiguous()
-
-    for k, v in transformer.state_dict().items():
-        _add(f"{TRANSFORMER_PREFIX}{k}", v)
-    if text_encoder is not None:
-        for k, v in text_encoder.state_dict().items():
-            _add(f"{TEXT_ENCODER_PREFIX}{k}", v)
+    state, dropped_tied = dedup_tensors(_named())
 
     config = dict(getattr(transformer, "config", {}) or {})
     metadata = {
@@ -440,4 +439,4 @@ def save_single_file(
         metadata["tied_weights_dropped"] = json.dumps(dropped_tied)
     if extra_metadata:
         metadata.update({k: str(v) for k, v in extra_metadata.items()})
-    save_file(state, path, metadata=metadata)
+    save_single_file_state(state, metadata, path, max_shard_bytes=max_shard_bytes)

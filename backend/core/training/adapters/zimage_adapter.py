@@ -330,11 +330,23 @@ class ZImageFullParameterAdapter(BaseFullParameterAdapter):
                 combined_state_dict[f"text_encoders.qwen3.{key}"] = value.cpu()
 
         # Save to safetensors with metadata
+        te_embedded = bool(trainer.train_text_encoder and trainer.text_encoder is not None)
         metadata = {
             "step": str(step),
             "epoch": str(epoch),
             "model_type": "zimage",
+            "format": "pt",
         }
+        # ZImageTransformer2DModel is a plain nn.Module without a serializable config
+        # object; the loader reconstructs config from the base repo + shape probes, so
+        # no transformer_config JSON is written here. Component hints are declarative.
+        try:
+            from core.models.common.single_file_format import build_component_metadata
+            metadata.update(build_component_metadata(
+                te_type="qwen3", te_embedded=te_embedded,
+            ))
+        except Exception as _e:
+            print(f"[ZImageFullParameterAdapter] component metadata skipped: {_e}")
 
         print(f"[ZImageFullParameterAdapter] Saving to {output_path}...")
         save_file(combined_state_dict, output_path, metadata=metadata)

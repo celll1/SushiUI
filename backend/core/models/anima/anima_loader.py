@@ -422,14 +422,20 @@ def load_anima_components(
     missing = [k for k in ("text_encoder", "vae") if not discovered.get(k)]
     if missing:
         raise FileNotFoundError(
-            "Anima requires companion components but could not locate: "
-            f"{', '.join(missing)}.\n"
-            "Expected one of:\n"
+            "Anima requires companion components (TE / VAE are NOT embedded in the "
+            f"DiT save) but could not locate: {', '.join(missing)}.\n"
+            f"  DiT: {dit_path}\n"
+            "Expected filenames:\n"
             "  - Qwen3 text encoder: " + ", ".join(QWEN3_TE_PATTERNS) + "\n"
             "  - Qwen-Image VAE:     " + ", ".join(QWEN_VAE_PATTERNS) + "\n"
-            f"Searched: split-files layout next to the DiT, plus models_root={models_root}. "
-            "Place files under <models>/text_encoders/ and <models>/vae/, or use the "
-            "official split_files/ HuggingFace layout."
+            "Search order (first hit wins):\n"
+            f"  1. explicit overrides (text_encoder_path={text_encoder_path}, vae_path={vae_path})\n"
+            "  2. split_files/ layout next to the DiT (split_files/text_encoders/, split_files/vae/)\n"
+            f"  3. models_root subdirs: {models_root}/text_encoders/, {models_root}/vae/, "
+            f"{models_root}/anima_components/\n"
+            "  4. the DiT file's sibling directory\n"
+            "Place the files under one of the above, or use the official split_files/ "
+            "HuggingFace layout."
         )
 
     print(f"[AnimaLoader] DiT          : {discovered['dit']}")

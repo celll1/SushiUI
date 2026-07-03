@@ -2559,64 +2559,148 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Loading SD/SDXL checkpoint as base model")
 
             from safetensors import safe_open
+            from core.model_loader import ModelLoader
 
-            # Peek at keys only (reads header, not tensors) to detect model type
+            # Peek at keys + metadata only (reads header, not tensors)
             with safe_open(checkpoint_path, framework='pt', device='cpu') as f:
                 checkpoint_keys = list(f.keys())
+                checkpoint_metadata = f.metadata() or {}
 
             # Detect if SDXL or SD1.5 based on state dict keys
             # SDXL has text_encoder_2 keys
             is_sdxl_model = any("text_model_2" in k or "conditioner.embedders.1" in k for k in checkpoint_keys)
 
-            # Load components using diffusers from_single_file
-            # This properly reconstructs the model from checkpoint state dict
-            if is_sdxl_model:
-                print(f"{self.log_prefix} Detected SDXL checkpoint")
-                from diffusers import StableDiffusionXLPipeline
+            # Detect a SushiUI custom architecture (non-standard latent VAE / swapped
+            # text encoder). Plain from_single_file cannot reconstruct those (conv
+            # channel mismatch / missing TE), so route them through the same
+            # sushi.*-aware reconstruction the inference loader uses.
+            _cvt = (checkpoint_metadata.get("sushi.vae_type") or "").strip().lower()
+            _ctt = (checkpoint_metadata.get("sushi.te_type") or "").strip().lower()
+            is_custom_arch = (
+                (_cvt and _cvt not in ("none", "sdxl"))
+                or (_ctt and _ctt not in ("none", "clip"))
+            )
 
-                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
-                    checkpoint_path,
-                    torch_dtype=self.weight_dtype,
-                    use_safetensors=True,
-                    device_map=None,  # Load to CPU first
-                )
-            else:
-                print(f"{self.log_prefix} Detected SD1.5 checkpoint")
-                from diffusers import StableDiffusionPipeline
-
-                temp_pipeline = StableDiffusionPipeline.from_single_file(
-                    checkpoint_path,
-                    torch_dtype=self.weight_dtype,
-                    use_safetensors=True,
-                    device_map=None,  # Load to CPU first
-                )
-
-            # Extract components
-            self.vae = temp_pipeline.vae
-            self.text_encoder = temp_pipeline.text_encoder
-            self.tokenizer = temp_pipeline.tokenizer
-            self.unet = temp_pipeline.unet
-
-            # Save original scheduler for inference (sample generation)
-            self.original_scheduler = temp_pipeline.scheduler
-
-            # Use DDPMScheduler for training
+            # Build the training noise scheduler honoring the checkpoint's prediction
+            # config (fixes v-pred resume previously hardcoded to epsilon).
+            pred_cfg = ModelLoader.detect_prediction_config(
+                checkpoint_path, "sdxl" if is_sdxl_model else "sd15"
+            )
+            _pt_map = {"epsilon": "epsilon", "velocity": "v_prediction", "sample": "sample"}
+            _sched_pred_type = _pt_map.get(pred_cfg.get("prediction_target", "epsilon"), "epsilon")
+            print(f"{self.log_prefix} Resume prediction config: "
+                  f"{pred_cfg.get('noise_process')} / {pred_cfg.get('prediction_target')} "
+                  f"(scheduler prediction_type={_sched_pred_type}, source={pred_cfg.get('source')})")
             self.noise_scheduler = DDPMScheduler(
                 beta_start=0.00085,
                 beta_end=0.012,
                 beta_schedule="scaled_linear",
                 num_train_timesteps=1000,
                 clip_sample=False,
-                prediction_type="epsilon"
+                prediction_type=_sched_pred_type
             )
 
-            # SDXL-specific components
-            if is_sdxl_model:
-                self.text_encoder_2 = temp_pipeline.text_encoder_2
-                self.tokenizer_2 = temp_pipeline.tokenizer_2
+            # Defaults (overwritten below when a custom arch is reconstructed)
+            self.sdxl_vae_type = "sdxl"
+            self.sdxl_te_type = "none"
+
+            if is_custom_arch:
+                print(f"{self.log_prefix} Detected SushiUI custom-arch SDXL checkpoint "
+                      f"(vae_type={_cvt or 'sdxl'}, te_type={_ctt or 'clip'}); "
+                      f"reconstructing via inference loader")
+                temp_pipeline = ModelLoader.reconstruct_sd_sdxl_pipeline(
+                    checkpoint_path,
+                    "sdxl" if is_sdxl_model else "sd15",
+                    self.weight_dtype,
+                    self.device,
+                )
+                arch = getattr(temp_pipeline, "_sushi_arch", {}) or {}
+
+                # Extract raw components
+                self.vae = temp_pipeline.vae
+                self.text_encoder = temp_pipeline.text_encoder
+                self.tokenizer = temp_pipeline.tokenizer
+                self.unet = temp_pipeline.unet
+                self.original_scheduler = temp_pipeline.scheduler
+                if is_sdxl_model:
+                    self.text_encoder_2 = temp_pipeline.text_encoder_2
+                    self.tokenizer_2 = temp_pipeline.tokenizer_2
+                else:
+                    self.text_encoder_2 = None
+                    self.tokenizer_2 = None
+
+                # Rebuild custom-VAE state
+                if arch.get("vae_type"):
+                    self.sdxl_vae_type = arch["vae_type"]
+                try:
+                    self.vae_latent_channels = int(self.vae.config.latent_channels)
+                except Exception:
+                    self.vae_latent_channels = 4
+
+                # Rebuild custom text-encoder state (swapped encoder + bridge adapters)
+                if arch.get("te_type"):
+                    self.sdxl_te_type = arch["te_type"]
+                    self.te_custom = getattr(temp_pipeline, "_sushi_te", None)
+                    self.te_tokenizer = getattr(temp_pipeline, "_sushi_te_tokenizer", None)
+                    self.te_adapters = getattr(temp_pipeline, "_sushi_te_adapters", None)
+                    self.te_dim = arch.get("te_dim") or 0
+                    self.te_max_len = arch.get("te_max_len") or 256
+                    self.te_hidden_layer = arch.get("te_hidden_layer")
+                    if self.te_hidden_layer is None:
+                        self.te_hidden_layer = -2
+                    self.sdxl_te_train_encoder = bool(
+                        self.config.get("sdxl_te_train_encoder", arch.get("te_embedded", False))
+                    )
+                    # Restore train/eval + requires_grad for continued training
+                    if self.te_adapters is not None:
+                        self.te_adapters.requires_grad_(True); self.te_adapters.train()
+                    if self.te_custom is not None:
+                        if self.sdxl_te_train_encoder:
+                            self.te_custom.requires_grad_(True); self.te_custom.train()
+                        else:
+                            self.te_custom.requires_grad_(False); self.te_custom.eval()
+                    print(f"{self.log_prefix} [SDXL custom] Reconstructed text encoder "
+                          f"'{self.sdxl_te_type}' (dim={self.te_dim}, max_len={self.te_max_len}, "
+                          f"layer={self.te_hidden_layer}, train_encoder={self.sdxl_te_train_encoder})")
             else:
-                self.text_encoder_2 = None
-                self.tokenizer_2 = None
+                # Standard SD1.5 / SDXL: plain from_single_file (unchanged path)
+                if is_sdxl_model:
+                    print(f"{self.log_prefix} Detected SDXL checkpoint")
+                    from diffusers import StableDiffusionXLPipeline
+
+                    temp_pipeline = StableDiffusionXLPipeline.from_single_file(
+                        checkpoint_path,
+                        torch_dtype=self.weight_dtype,
+                        use_safetensors=True,
+                        device_map=None,  # Load to CPU first
+                    )
+                else:
+                    print(f"{self.log_prefix} Detected SD1.5 checkpoint")
+                    from diffusers import StableDiffusionPipeline
+
+                    temp_pipeline = StableDiffusionPipeline.from_single_file(
+                        checkpoint_path,
+                        torch_dtype=self.weight_dtype,
+                        use_safetensors=True,
+                        device_map=None,  # Load to CPU first
+                    )
+
+                # Extract components
+                self.vae = temp_pipeline.vae
+                self.text_encoder = temp_pipeline.text_encoder
+                self.tokenizer = temp_pipeline.tokenizer
+                self.unet = temp_pipeline.unet
+
+                # Save original scheduler for inference (sample generation)
+                self.original_scheduler = temp_pipeline.scheduler
+
+                # SDXL-specific components
+                if is_sdxl_model:
+                    self.text_encoder_2 = temp_pipeline.text_encoder_2
+                    self.tokenizer_2 = temp_pipeline.tokenizer_2
+                else:
+                    self.text_encoder_2 = None
+                    self.tokenizer_2 = None
 
             # Store SDXL flag
             self.is_sdxl = is_sdxl_model

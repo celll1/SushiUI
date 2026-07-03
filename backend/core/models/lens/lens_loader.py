@@ -109,6 +109,102 @@ def load_lens_components(
     }
 
 
+def _resolve_lens_base_dir(dit_path: str, base_dir_hint: str = None) -> str:
+    """Resolve a base Lens diffusers directory (transformer/text_encoder/vae/tokenizer/
+    scheduler subfolders) for a single-file DiT save.
+
+    Search order:
+      1. ``base_dir_hint`` (from the DiT file metadata / caller)
+      2. ``settings.models_dir`` entries whose name contains "lens"
+      3. sibling / ancestor directories of the DiT file (up to 4 levels)
+    A directory qualifies when it contains ``transformer/config.json``.
+    """
+    import os
+
+    def _is_lens_dir(d: str) -> bool:
+        return bool(d) and os.path.isdir(d) and os.path.isfile(
+            os.path.join(d, "transformer", "config.json")
+        )
+
+    searched = []
+    if base_dir_hint:
+        searched.append(base_dir_hint)
+        if _is_lens_dir(base_dir_hint):
+            return base_dir_hint
+
+    models_root = None
+    try:
+        from config.settings import settings
+        models_root = getattr(settings, "models_dir", None)
+    except Exception:
+        models_root = None
+    if models_root and os.path.isdir(models_root):
+        for name in os.listdir(models_root):
+            if "lens" in name.lower():
+                cand = os.path.join(models_root, name)
+                searched.append(cand)
+                if _is_lens_dir(cand):
+                    return cand
+
+    p = os.path.abspath(dit_path)
+    for _ in range(4):
+        p = os.path.dirname(p)
+        if not p:
+            break
+        searched.append(p)
+        if _is_lens_dir(p):
+            return p
+
+    raise FileNotFoundError(
+        "Lens single-file DiT requires a base Lens diffusers directory for its "
+        "text encoder / VAE / tokenizer / scheduler, but none was found.\n"
+        f"  DiT file: {dit_path}\n"
+        "Searched (need a 'transformer/config.json' inside):\n  - "
+        + "\n  - ".join(searched or ["(nothing to search)"])
+        + "\nProvide the original Lens model directory next to the DiT file, "
+        "or under <models_dir>/ with 'lens' in its name."
+    )
+
+
+def load_lens_single_file(
+    dit_path: str,
+    torch_dtype: torch.dtype = torch.bfloat16,
+    base_dir_hint: str = None,
+) -> dict:
+    """Load Lens from a single-file full-FT DiT save (``net.*``-prefixed weights).
+
+    The DiT weights come from ``dit_path``; the text encoder, VAE, tokenizer and
+    scheduler are resolved from a base Lens diffusers directory (see
+    ``_resolve_lens_base_dir``). The base transformer is loaded and then its
+    weights are overridden by the trained single-file DiT.
+    """
+    import os
+    from safetensors import safe_open
+    from safetensors.torch import load_file
+
+    with safe_open(dit_path, framework="pt", device="cpu") as f:
+        md = f.metadata() or {}
+    hint = base_dir_hint or md.get("component.base_dir") or md.get("sushi.base_model_path")
+
+    base_dir = _resolve_lens_base_dir(dit_path, hint)
+    print(f"[LensLoader] Single-file DiT: {dit_path}")
+    print(f"[LensLoader] Resolved base Lens directory: {base_dir}")
+
+    components = load_lens_components(model_path=base_dir, torch_dtype=torch_dtype)
+
+    # Override the base transformer weights with the trained single-file DiT.
+    raw = load_file(dit_path, device="cpu")
+    dit_sd = {(k[len("net."):] if k.startswith("net.") else k): v for k, v in raw.items()}
+    info = components["transformer"].load_state_dict(dit_sd, strict=False)
+    missing = getattr(info, "missing_keys", [])
+    unexpected = getattr(info, "unexpected_keys", [])
+    print(f"[LensLoader] Applied single-file DiT: missing={len(missing)}, unexpected={len(unexpected)}")
+    if unexpected:
+        print(f"[LensLoader]   unexpected (first 5): {list(unexpected)[:5]}")
+    components["transformer"].to(torch_dtype).to("cpu").eval()
+    return components
+
+
 def reload_lens_text_encoder(
     model_path: str,
     torch_dtype: torch.dtype = torch.bfloat16,

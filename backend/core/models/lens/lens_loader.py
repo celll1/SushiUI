@@ -88,10 +88,14 @@ def load_lens_components(
     # Primary: the model's own vae/ subfolder (Lens ships its own). Fallback: the
     # shared Apache-2.0 FLUX.2 store (black-forest-labs/FLUX.2-klein-4B vae).
     own_vae = os.path.join(model_path, "vae") if os.path.isdir(model_path) else None
+    vae_source = None
+    vae_path = None
     if own_vae and os.path.isfile(os.path.join(own_vae, "config.json")):
         vae = AutoencoderKLFlux2.from_pretrained(
             model_path, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True,
         )
+        vae_source = own_vae
+        vae_path = own_vae
     else:
         store_dir = None
         try:
@@ -104,10 +108,15 @@ def load_lens_components(
             vae = AutoencoderKLFlux2.from_pretrained(
                 store_dir, torch_dtype=torch_dtype, low_cpu_mem_usage=True,
             )
+            vae_source = str(store_dir)
+            vae_path = str(store_dir)
         else:
             vae = AutoencoderKLFlux2.from_pretrained(
                 model_path, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True,
             )
+            fallback_vae = os.path.join(model_path, "vae")
+            vae_source = fallback_vae
+            vae_path = fallback_vae if os.path.isdir(fallback_vae) else None
     vae.eval()
     vae.to("cpu")
 
@@ -124,6 +133,8 @@ def load_lens_components(
         "text_encoder": text_encoder,
         "tokenizer": tokenizer,
         "vae": vae,
+        "vae_source": vae_source,
+        "vae_path": vae_path,
         "scheduler": scheduler,
     }
 
@@ -236,6 +247,8 @@ def load_lens_single_file(
         print("[LensLoader] Reattaching embedded VAE weights from single-file bundle")
         reattach_embedded_weights(components["vae"], embedded_vae_sd, "VAE")
         components["vae"].to(torch_dtype).to("cpu").eval()
+        components["vae_source"] = "embedded (checkpoint)"
+        components["vae_path"] = None
 
     return components
 

@@ -150,6 +150,13 @@ class GeneratedImage(GalleryBase):
                 if "vision_encoder_hash" in self.parameters:
                     result["vision_encoder_hash"] = self.parameters["vision_encoder_hash"]
 
+            # VAE identity. The VAE always affects the decoded output, so surface it
+            # unconditionally when recorded (no ref-image gate, unlike the VE above).
+            if "vae_name" in self.parameters:
+                result["vae_name"] = self.parameters["vae_name"]
+            if "vae_hash" in self.parameters:
+                result["vae_hash"] = self.parameters["vae_hash"]
+
         return result
 
 

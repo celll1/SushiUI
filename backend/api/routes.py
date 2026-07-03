@@ -53,6 +53,7 @@ from api.generation_utils import (
     create_lora_step_callback,
     extract_model_info,
     extract_vision_encoder_info,
+    extract_vae_info,
     sanitize_params_for_logging,
     set_prompt_chunking_settings,
     calculate_generation_metadata
@@ -623,6 +624,14 @@ async def generate_txt2img(
                 params["vision_encoder_name"] = ve_name
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
+
+        # Add VAE identity to params. The VAE always participates in decode, so this
+        # is recorded for every generation where it can be determined.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
@@ -1420,6 +1429,14 @@ async def generate_img2img(
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
 
+        # Add VAE identity to params. The VAE always participates in decode, so this
+        # is recorded for every generation where it can be determined.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
+
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(
             result_image,
@@ -1845,6 +1862,14 @@ async def generate_inpaint(
                 params["vision_encoder_name"] = ve_name
             if ve_hash:
                 params["vision_encoder_hash"] = ve_hash
+
+        # Add VAE identity to params. The VAE always participates in decode, so this
+        # is recorded for every generation where it can be determined.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
 
         # Save image with metadata (include model info)
         filename = save_image_with_metadata(

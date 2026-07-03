@@ -1128,6 +1128,8 @@ class ModelLoader:
                 )
                 vae.to(device=device)
                 vae.eval()
+                zimage_vae_source = sdxl_vae_repo
+                zimage_vae_path = None
                 print(f"[ModelLoader] SDXL VAE loaded: latent_channels={vae.config.latent_channels}, "
                       f"scaling_factor={vae.config.scaling_factor}")
             else:
@@ -1171,6 +1173,8 @@ class ModelLoader:
                 del vae_state_dict
                 vae.to(device=device, dtype=torch.float32)  # VAE uses fp32
                 vae.eval()
+                zimage_vae_source = str(vae_path)
+                zimage_vae_path = str(vae_path) if os.path.isdir(str(vae_path)) else None
                 print(f"[ModelLoader] FLUX VAE loaded: latent_channels={vae.config.latent_channels}, "
                       f"scaling_factor={vae.config.scaling_factor}")
 
@@ -1180,6 +1184,8 @@ class ModelLoader:
                 ModelLoader._reattach_embedded_weights(vae, embedded_vae_sd, "VAE")
                 vae.to(device=device, dtype=torch.float32)
                 vae.eval()
+                zimage_vae_source = "embedded (checkpoint)"
+                zimage_vae_path = None
 
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -1234,6 +1240,8 @@ class ModelLoader:
             return {
                 "transformer": transformer,
                 "vae": vae,
+                "vae_source": zimage_vae_source,
+                "vae_path": zimage_vae_path,
                 "text_encoder": text_encoder,
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
@@ -1555,6 +1563,14 @@ class ModelLoader:
             if embedded_vae_state_dict:
                 ModelLoader._reattach_embedded_weights(vae, embedded_vae_state_dict, "VAE")
                 vae = vae.to(dtype=torch.float32)
+                flux2_vae_source = "embedded (checkpoint)"
+                flux2_vae_path = None
+            elif flux2_vae_dir and os.path.isdir(flux2_vae_dir):
+                flux2_vae_source = str(flux2_vae_dir)
+                flux2_vae_path = str(flux2_vae_dir)
+            else:
+                flux2_vae_source = "black-forest-labs/FLUX.2-klein-4B (vae)"
+                flux2_vae_path = None
 
             # Step 5: Load Text Encoder (Qwen3)
             print(f"[ModelLoader] Loading Qwen3 text encoder...")
@@ -1601,6 +1617,8 @@ class ModelLoader:
             return {
                 "transformer": transformer,
                 "vae": vae,
+                "vae_source": flux2_vae_source,
+                "vae_path": flux2_vae_path,
                 "text_encoder": text_encoder,
                 "tokenizer": tokenizer,
                 "scheduler": scheduler,
@@ -1781,17 +1799,20 @@ class ModelLoader:
 
         # Load external VAE only if not embedded
         external_vae = None
+        sushi_vae_source = None  # VAE identity string for generation metadata
         if custom_vae_type:
             # Custom high-spec VAE is registry-referenced (not embedded); load it here.
             from core.models.sdxl_custom_arch import load_alt_vae
             print(f"[ModelLoader] Loading custom registry VAE: {custom_vae_type}")
             external_vae = load_alt_vae(custom_vae_type, torch_dtype=torch_dtype)
             has_vae = False
+            sushi_vae_source = f"custom registry VAE ({custom_vae_type})"
         elif not has_vae:
             if model_type == "sdxl":
                 vae_repo = "madebyollin/sdxl-vae-fp16-fix"
             else:  # SD1.5
                 vae_repo = "stabilityai/sd-vae-ft-mse-original"
+            sushi_vae_source = vae_repo
 
             print(f"[ModelLoader] Model without embedded VAE detected")
             print(f"[ModelLoader] Loading external VAE: {vae_repo}")
@@ -1929,6 +1950,10 @@ class ModelLoader:
                 print(f"[ModelLoader] ERROR reconstructing custom SDXL text encoder: {_te}")
                 import traceback
                 traceback.print_exc()
+
+        # VAE identity for generation metadata. custom/external set above; a bare
+        # embedded-VAE checkpoint leaves sushi_vae_source None -> record "embedded".
+        pipeline._sushi_vae_source = sushi_vae_source or "embedded (checkpoint)"
 
         # Architecture summary for callers that must rebuild trainer state (resume).
         # None for a standard SD1.5/SDXL checkpoint.

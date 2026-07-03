@@ -279,6 +279,8 @@ export interface GeneratedImage {
   ref_images?: string[]; // FLUX.2 Image Edit: Reference image hashes
   vision_encoder_name?: string;   // SigLIP2 Vision Encoder filename
   vision_encoder_hash?: string;   // SHA256 hash of Vision Encoder model
+  vae_name?: string;              // VAE source (dir/repo id, "embedded (checkpoint)", or "none (pixel-space)")
+  vae_hash?: string;              // SHA256 hash of the VAE weight file (when identifiable)
   // Advanced CFG parameters
   cfg_schedule_type?: string;
   cfg_schedule_min?: string;

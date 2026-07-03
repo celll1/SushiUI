@@ -144,6 +144,21 @@ def save_image_with_metadata(
         if ve_hash:
             metadata.add_text("vision_encoder_hash", ve_hash)
 
+    # VAE identity. Recorded whenever known — the VAE always affects the decoded
+    # output (embedded-in-checkpoint, shared store, env override, or model-own).
+    vae_name = params.get("vae_name", "")
+    if vae_name:
+        metadata.add_text("vae_name", vae_name)
+    vae_hash = params.get("vae_hash", "")
+    if vae_hash:
+        metadata.add_text("vae_hash", vae_hash)
+
+    # LoRA weights + hashes (compact JSON). Written only when LoRAs are present.
+    lora_meta = _build_lora_metadata(params.get("loras"))
+    if lora_meta:
+        import json as _json
+        metadata.add_text("loras", _json.dumps(lora_meta, ensure_ascii=False))
+
     # Prompt chunking (non-default only)
     prompt_chunking_mode = params.get("prompt_chunking_mode", "a1111")
     if prompt_chunking_mode and prompt_chunking_mode != "a1111":
@@ -276,6 +291,41 @@ def encode_mask_to_base64(mask_image: Image.Image) -> str:
     mask_image.save(buffer, format='PNG')
     mask_bytes = buffer.getvalue()
     return base64.b64encode(mask_bytes).decode('utf-8')
+
+def _build_lora_metadata(lora_configs) -> list:
+    """Build a compact ``[{name, weight, hash?}]`` list for the PNG ``loras`` chunk.
+
+    ``name`` is the LoRA filename, ``weight`` its applied strength. ``hash`` is added
+    only when the file resolves and its (cached) hash is available — hashing reuses
+    the shared mtime/size-invalidated hash cache, so it is computed at most once per
+    file, never as a new per-generation cost.
+    """
+    if not lora_configs:
+        return []
+    result = []
+    for lora in lora_configs:
+        if not isinstance(lora, dict):
+            continue
+        path = lora.get("path", "")
+        if not path:
+            continue
+        entry = {
+            "name": os.path.basename(path),
+            "weight": lora.get("strength", 1.0),
+        }
+        try:
+            from core.extensions.lora_manager import lora_manager
+            from utils.hash_cache import get_cached_file_hash
+            resolved = lora_manager._resolve_lora_path(path)
+            if resolved is not None:
+                h = get_cached_file_hash(str(resolved))
+                if h:
+                    entry["hash"] = h
+        except Exception as e:
+            print(f"[LoRA Metadata] Hash resolution skipped for {path}: {e}")
+        result.append(entry)
+    return result
+
 
 def extract_lora_names(lora_configs: list) -> str:
     """Extract comma-separated LoRA filenames from configs"""

@@ -85,6 +85,39 @@ VAE_REGISTRY: Dict[str, Dict] = {
 }
 
 
+def vae_identity(vae, embedded: bool = False, pixel_space: bool = False) -> tuple:
+    """Return ``(vae_source, vae_path)`` describing the VAE used at decode time.
+
+    This is a lightweight, string-only reporter for generation metadata — it never
+    downloads or hashes. ``vae_source`` is a human-readable description (a repo id,
+    a resolved directory, ``"embedded (checkpoint)"`` or ``"none (pixel-space)"``);
+    ``vae_path`` is a concrete local directory/file the caller may hash (or None).
+
+    - ``pixel_space=True`` -> ("none (pixel-space)", None); no VAE participates.
+    - ``embedded=True`` -> the VAE weights were bundled in / extracted from the base
+      checkpoint, whose hash is already recorded, so no separate path is reported.
+    - otherwise the effective source is read from ``vae.config._name_or_path``
+      (set by ``from_pretrained``); a local path there is also returned as
+      ``vae_path`` so a concrete weight hash can be computed.
+    """
+    if pixel_space or vae is None:
+        return "none (pixel-space)", None
+    if embedded:
+        return "embedded (checkpoint)", None
+    src = ""
+    cfg = getattr(vae, "config", None)
+    if cfg is not None:
+        try:
+            src = getattr(cfg, "_name_or_path", "") or ""
+        except Exception:
+            src = ""
+    path = src if (src and os.path.exists(src)) else None
+    if not src:
+        # No recorded source (rebuilt module); fall back to the class name.
+        src = type(vae).__name__
+    return src, path
+
+
 def _models_dir() -> Optional[str]:
     try:
         from config.settings import settings

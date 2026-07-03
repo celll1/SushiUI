@@ -16,6 +16,7 @@ from PIL import Image
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.inference.cancellation import raise_if_cancelled
+from core.inference.generation_timing import time_phase
 from core.inference.spectrum_forecaster import build_output_forecaster
 
 
@@ -187,6 +188,7 @@ def _apply_emphasis_lens(
 
 
 @torch.no_grad()
+@time_phase("text_encode")
 def encode_prompt(
     text_encoder, tokenizer, prompt, negative_prompt,
     device, dtype, max_length: int = 512,
@@ -366,6 +368,7 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
 
 
 @torch.no_grad()
+@time_phase("vae_decode")
 def vae_decode(vae, latents: torch.Tensor, latent_h: int, latent_w: int) -> Image.Image:
     """Decode Lens flat-sequence latents → PIL Image.
 
@@ -595,6 +598,7 @@ def _cleanup_lens_fbcache(real_transformer, fbcache):
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop(
     transformer, scheduler, latents: torch.Tensor,
     encoder_features: List[torch.Tensor], encoder_mask: torch.Tensor,
@@ -678,6 +682,7 @@ def denoise_loop(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_img2img(
     transformer, scheduler,
     init_latents: torch.Tensor,
@@ -777,6 +782,7 @@ def denoise_loop_img2img(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_inpaint(
     transformer, scheduler,
     init_latents: torch.Tensor,

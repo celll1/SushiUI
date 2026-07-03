@@ -280,8 +280,12 @@ def load_krea2_components(
     if embedded_vae_sd is not None:
         print("[Krea2Loader] Using embedded VAE weights from single-file bundle")
         vae = _build_embedded_qwen_image_vae(embedded_vae_sd, torch_dtype)
+        vae_embedded = True
     else:
         vae = _load_qwen_image_vae(resolved_vae, torch_dtype)
+        vae_embedded = False
+    from core.models.common.vae_store import vae_identity
+    vae_source, vae_path = vae_identity(vae, embedded=vae_embedded)
     vae_scale_factor = 2 ** len(vae.temperal_downsample) if hasattr(vae, "temperal_downsample") else 8
 
     select_layers = config.get("text_encoder_select_layers") or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
@@ -294,6 +298,8 @@ def load_krea2_components(
         "text_encoder": text_encoder,
         "tokenizer": tokenizer,
         "vae": vae,
+        "vae_source": vae_source,
+        "vae_path": vae_path,
         "vae_scale_factor": vae_scale_factor,
         "is_distilled": bool(is_distilled),
         "text_encoder_select_layers": list(select_layers),

@@ -189,6 +189,8 @@ def load_minit2i_components(
         if is_latent_vae(vae_type):
             vae = load_minit2i_vae(vae_type, torch_dtype=vae_dtype, local_dir=vae_local_dir)
             vae.to("cpu")
+        from core.models.common.vae_store import vae_identity
+        vae_source, vae_path = vae_identity(vae, pixel_space=(vae is None))
         print(f"[MiniT2ILoader] Built scratch MiniT2I variant={variant} vae_type={vae_type} "
               f"(FLAN-T5 from {flan_loc})")
         return {
@@ -199,6 +201,8 @@ def load_minit2i_components(
             "tokenizer": tokenizer,
             "variant": variant,
             "vae": vae,
+            "vae_source": vae_source,
+            "vae_path": vae_path,
             "vae_type": vae_type,
             "vae_scale_factor": VAE_SCALE_FACTOR,
         }
@@ -272,6 +276,10 @@ def load_minit2i_components(
             reattach_embedded_weights(vae, embedded_vae_sd, "VAE")
             vae.to(vae_dtype)
         vae.to("cpu")
+    from core.models.common.vae_store import vae_identity
+    vae_source, vae_path = vae_identity(
+        vae, embedded=(embedded_vae_sd is not None), pixel_space=(vae is None)
+    )
     print(f"[MiniT2ILoader] Loaded MiniT2I variant={variant} vae_type={vae_type} (FLAN-T5 from {flan_loc})")
 
     return {
@@ -282,6 +290,8 @@ def load_minit2i_components(
         "tokenizer": tokenizer,
         "variant": variant,
         "vae": vae,
+        "vae_source": vae_source,
+        "vae_path": vae_path,
         "vae_type": vae_type,
         "vae_scale_factor": VAE_SCALE_FACTOR,
     }

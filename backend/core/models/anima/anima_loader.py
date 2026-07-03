@@ -488,10 +488,15 @@ def load_anima_components(
     )
     t5_tokenizer = load_t5_tokenizer()
 
+    vae_source = None
+    vae_path = None
     if embedded_vae_sd is not None:
         vae = build_qwen_image_vae_from_embedded(embedded_vae_sd, device="cpu", dtype=vae_dtype)
+        vae_source = "embedded (checkpoint)"
     elif discovered.get("vae"):
         vae = load_qwen_image_vae(discovered["vae"], device="cpu", dtype=vae_dtype)
+        vae_source = str(discovered["vae"])
+        vae_path = str(discovered["vae"]) if os.path.isfile(str(discovered["vae"])) else None
     else:
         # New: shared-store hub fallback, AFTER the existing local search order.
         store_dir = resolve_qwen_image_vae_store_dir()
@@ -501,6 +506,8 @@ def load_anima_components(
             vae = AutoencoderKLQwenImage.from_pretrained(
                 store_dir, torch_dtype=vae_dtype, low_cpu_mem_usage=True
             ).to("cpu").eval().requires_grad_(False)
+            vae_source = str(store_dir)
+            vae_path = str(store_dir) if os.path.isdir(str(store_dir)) else None
         else:
             raise FileNotFoundError(
                 "Anima could not locate a Qwen-Image VAE. Not embedded in the DiT save, "
@@ -522,6 +529,8 @@ def load_anima_components(
         "tokenizer": qwen3_tokenizer,
         "t5_tokenizer": t5_tokenizer,
         "vae": vae,
+        "vae_source": vae_source,
+        "vae_path": vae_path,
         "scheduler": scheduler,
         "vae_scale_factor": 8,
         "latent_channels": 16,

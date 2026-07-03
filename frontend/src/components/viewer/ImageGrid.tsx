@@ -786,7 +786,19 @@ export default function ImageGrid() {
                       <span className="text-gray-400">NAG:</span> scale: {selectedImage.nag_scale || 5.0}, tau: {selectedImage.nag_tau || 3.5}, alpha: {selectedImage.nag_alpha || 0.25}, sigma_end: {selectedImage.nag_sigma_end || 3.0}
                     </div>
                   )}
-                  {selectedImage.lora_names && (
+                  {Array.isArray(selectedImage.parameters?.loras) && selectedImage.parameters.loras.length > 0 ? (
+                    <div>
+                      <span className="text-gray-400">LoRA:</span>{' '}
+                      {selectedImage.parameters.loras
+                        .map((l: any) => {
+                          const name = l?.path ? l.path.split(/[\\/]/).pop() : (l?.name || '');
+                          const weight = l?.strength ?? l?.weight;
+                          return weight !== undefined && weight !== null ? `${name} (${weight})` : name;
+                        })
+                        .filter(Boolean)
+                        .join(', ')}
+                    </div>
+                  ) : selectedImage.lora_names && (
                     <div>
                       <span className="text-gray-400">LoRA:</span> {selectedImage.lora_names}
                     </div>
@@ -815,6 +827,20 @@ export default function ImageGrid() {
                       <span className="text-gray-400">VE Hash:</span>{' '}
                       <span className="text-xs text-gray-100 font-mono" title={selectedImage.vision_encoder_hash}>
                         {selectedImage.vision_encoder_hash.substring(0, 16)}...
+                      </span>
+                    </div>
+                  )}
+                  {selectedImage.vae_name && (
+                    <div>
+                      <span className="text-gray-400">VAE:</span>{' '}
+                      <span className="text-xs text-white font-mono" title={selectedImage.vae_name}>{selectedImage.vae_name}</span>
+                    </div>
+                  )}
+                  {selectedImage.vae_hash && (
+                    <div>
+                      <span className="text-gray-400">VAE Hash:</span>{' '}
+                      <span className="text-xs text-gray-100 font-mono" title={selectedImage.vae_hash}>
+                        {selectedImage.vae_hash.substring(0, 16)}...
                       </span>
                     </div>
                   )}

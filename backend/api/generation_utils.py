@@ -419,6 +419,92 @@ def extract_vision_encoder_info(pipeline_manager) -> tuple:
     return ve_name, ve_hash
 
 
+def extract_vae_info(pipeline_manager) -> tuple:
+    """Extract the effective VAE identity used for decode. Returns (vae_name, vae_hash).
+
+    The VAE always participates in the final decode, so this is recorded for every
+    generation where it can be determined. ``vae_name`` is a source description (a
+    resolved directory/repo id, ``"embedded (checkpoint)"``, or ``"none (pixel-space)"``);
+    ``vae_hash`` is the cached hash of a concrete local weight file when one is
+    identifiable, else "" (embedded VAEs are already covered by the model hash).
+    """
+    from utils.hash_cache import get_cached_file_hash
+
+    info = getattr(pipeline_manager, "current_model_info", None) or {}
+    model_type = info.get("type", "")
+
+    # type -> per-arch components dict attribute holding "vae_source"/"vae_path".
+    comp_attr = {
+        "flux2": "flux2_components",
+        "anima": "anima_components",
+        "lens": "lens_components",
+        "ideogram4": "ideogram4_components",
+        "minit2i": "minit2i_components",
+        "krea2": "krea2_components",
+        "zimage": "zimage_components",
+    }.get(model_type)
+
+    vae_source = None
+    vae_path = None
+    if comp_attr:
+        comps = getattr(pipeline_manager, comp_attr, None) or {}
+        vae_source = comps.get("vae_source")
+        vae_path = comps.get("vae_path")
+        # Fallback for arch dicts without an explicit note (e.g. ideogram4).
+        if vae_source is None and comps.get("vae") is not None:
+            try:
+                from core.models.common.vae_store import vae_identity
+                vae_source, vae_path = vae_identity(comps.get("vae"))
+            except Exception:
+                pass
+    else:
+        # Standard SD1.5 / SDXL: the identity is stashed on the loaded pipeline.
+        for attr in ("txt2img_pipeline", "img2img_pipeline", "inpaint_pipeline"):
+            pipe = getattr(pipeline_manager, attr, None)
+            if pipe is not None and getattr(pipe, "_sushi_vae_source", None):
+                vae_source = pipe._sushi_vae_source
+                break
+
+    if not vae_source:
+        return "", ""
+
+    vae_hash = ""
+    if vae_path:
+        try:
+            weight_file = _resolve_primary_vae_weight(vae_path)
+            if weight_file:
+                vae_hash = get_cached_file_hash(weight_file)
+        except Exception as e:
+            print(f"[VAE Metadata] Hash calculation failed: {e}")
+            vae_hash = ""
+    print(f"[VAE Metadata] vae_name={vae_source!r}, vae_hash={vae_hash[:16] if vae_hash else ''!r}")
+    return vae_source, vae_hash
+
+
+def _resolve_primary_vae_weight(vae_path: str) -> Optional[str]:
+    """Return a concrete VAE weight file to hash from a dir or file path (or None).
+
+    Multi-file diffusers VAE dirs are hashed by their primary weight file
+    (``diffusion_pytorch_model.safetensors``), never by every shard.
+    """
+    if not vae_path or not os.path.exists(vae_path):
+        return None
+    if os.path.isfile(vae_path):
+        return vae_path
+    for name in ("diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"):
+        cand = os.path.join(vae_path, name)
+        if os.path.isfile(cand):
+            return cand
+    # Fall back to the first safetensors shard in the directory.
+    try:
+        for name in sorted(os.listdir(vae_path)):
+            if name.endswith(".safetensors"):
+                return os.path.join(vae_path, name)
+    except OSError:
+        pass
+    return None
+
+
 def sanitize_params_for_logging(params: Dict[str, Any]) -> Dict[str, Any]:
     """
     ログ出力用にパラメータをサニタイズ（大きなデータを隠す）

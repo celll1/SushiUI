@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from core.inference.generation_timing import time_phase
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
@@ -117,6 +118,7 @@ def get_text_hidden_states(
 
 
 @torch.no_grad()
+@time_phase("text_encode")
 def encode_prompt(
     text_encoder,
     tokenizer,
@@ -213,6 +215,7 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, patch_size: int
 
 
 @torch.no_grad()
+@time_phase("vae_decode")
 def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int, patch_size: int) -> Image.Image:
     """Decode packed latents (1, grid_h*grid_w, C*p*p) -> PIL Image."""
     z = unpack_latents(latents, grid_h, grid_w, patch_size).to(vae.dtype)
@@ -388,6 +391,7 @@ def _run_loop(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop(
     transformer, scheduler, latents, prompt_embeds, prompt_embeds_mask,
     neg_prompt_embeds, neg_prompt_embeds_mask, guidance, num_inference_steps,
@@ -410,6 +414,7 @@ def denoise_loop(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_img2img(
     transformer, scheduler, init_latents, denoising_strength,
     prompt_embeds, prompt_embeds_mask, neg_prompt_embeds, neg_prompt_embeds_mask,
@@ -444,6 +449,7 @@ def denoise_loop_img2img(
 
 
 @torch.no_grad()
+@time_phase("denoise")
 def denoise_loop_inpaint(
     transformer, scheduler, init_latents, mask_latent, denoising_strength,
     prompt_embeds, prompt_embeds_mask, neg_prompt_embeds, neg_prompt_embeds_mask,

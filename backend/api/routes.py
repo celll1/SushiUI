@@ -241,6 +241,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "flux2": 24.0,
     "ideogram4": 26.0,  # two 9.3B fp8 transformers (cond + uncond) resident during denoise
     "minit2i": 8.0,    # small pixel-space DiT (B/L ~0.3-1.8GB) + FLAN-T5 staged
+    "krea2": 26.0,     # ~12.9B bf16 MMDiT staged on GPU + Qwen3-VL TE + Qwen-Image VAE
     "unknown": 14.0,   # safe default
 }
 
@@ -538,6 +539,8 @@ async def generate_txt2img(
         is_minit2i = pipeline_manager.current_model_info and \
                      pipeline_manager.current_model_info.get("type") == "minit2i"
         minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
+        is_krea2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "krea2"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -553,6 +556,7 @@ async def generate_txt2img(
             is_ideogram4=is_ideogram4,
             is_minit2i=is_minit2i,
             minit2i_vae_type=minit2i_vae_type,
+            is_krea2=is_krea2,
             image_width=params.get("width"),
             image_height=params.get("height"),
             # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
@@ -560,7 +564,7 @@ async def generate_txt2img(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -734,6 +738,7 @@ def _broadcast_training_preview_frame(frame: dict) -> None:
             is_ideogram4=bool(frame.get("is_ideogram4", False)),
             is_minit2i=bool(frame.get("is_minit2i", False)),
             minit2i_vae_type=frame.get("minit2i_vae_type"),
+            is_krea2=bool(frame.get("is_krea2", False)),
             image_width=int(frame.get("image_width", 1024)),
             image_height=int(frame.get("image_height", 1024)),
             preview_decoder=str(frame.get("preview_decoder", "matrix")),
@@ -1324,6 +1329,8 @@ async def generate_img2img(
         is_minit2i = pipeline_manager.current_model_info and \
                      pipeline_manager.current_model_info.get("type") == "minit2i"
         minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
+        is_krea2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "krea2"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1338,6 +1345,7 @@ async def generate_img2img(
             is_lens=is_lens,
             is_ideogram4=is_ideogram4,
             is_minit2i=is_minit2i,
+            is_krea2=is_krea2,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
@@ -1347,7 +1355,7 @@ async def generate_img2img(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -1742,6 +1750,8 @@ async def generate_inpaint(
         is_minit2i = pipeline_manager.current_model_info and \
                      pipeline_manager.current_model_info.get("type") == "minit2i"
         minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
+        is_krea2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "krea2"
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1756,6 +1766,7 @@ async def generate_inpaint(
             is_lens=is_lens,
             is_ideogram4=is_ideogram4,
             is_minit2i=is_minit2i,
+            is_krea2=is_krea2,
             img2img_fix_steps=img2img_fix_steps,
             steps=steps,
             image_width=width,
@@ -1765,7 +1776,7 @@ async def generate_inpaint(
             # pred_x0 = x_t - σ·v shows the model's current clean-image
             # estimate from the very first steps. Any explicit user override
             # via the API still wins.
-            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i),
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
             preview_enabled=params.get("preview_enabled", True),
             preview_interval=params.get("preview_interval", 4),
             preview_decoder=params.get("preview_decoder", "matrix")
@@ -2045,7 +2056,7 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
 
                 # Allow Anima split-files layouts even when there's no model_index.json
                 is_valid = ModelLoader.is_valid_diffusers_directory(item_path)
-                if not is_valid and architecture not in ("anima", "lens"):
+                if not is_valid and architecture not in ("anima", "lens", "krea2"):
                     continue
                 models.append({
                     "name": item,
@@ -2249,7 +2260,8 @@ async def get_samplers():
             pipeline_manager.is_anima_model or
             pipeline_manager.is_lens_model or
             pipeline_manager.is_ideogram4_model or
-            pipeline_manager.is_minit2i_model
+            pipeline_manager.is_minit2i_model or
+            pipeline_manager.is_krea2_model
         )
 
         if is_flow_matching:
@@ -6660,6 +6672,10 @@ class TrainingRunCreateRequest(BaseModel):
     minit2i_flan_t5_path: str = TRAINING_DEFAULTS["minit2i_flan_t5_path"]
     minit2i_scratch_init_from: str = TRAINING_DEFAULTS["minit2i_scratch_init_from"]
     minit2i_inherit_final_layer: bool = TRAINING_DEFAULTS["minit2i_inherit_final_layer"]
+    # Krea 2 (single-stream flow-matching MMDiT) training.
+    krea2_lora_scope: str = TRAINING_DEFAULTS["krea2_lora_scope"]
+    krea2_lr_factor: float = TRAINING_DEFAULTS["krea2_lr_factor"]
+    krea2_discrete_flow_shift: float = TRAINING_DEFAULTS["krea2_discrete_flow_shift"]
     # REPA (Representation Alignment) — MiniT2I only.
     repa_enable: bool = TRAINING_DEFAULTS["repa_enable"]
     repa_encoder_source: str = TRAINING_DEFAULTS["repa_encoder_source"]

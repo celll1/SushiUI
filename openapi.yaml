@@ -66,6 +66,7 @@ paths:
               example:
                 _default: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
                 minit2i: { distribution: logit_normal, mean: -0.8, std: 0.8, min_timestep: 0.0, max_timestep: 1.0 }
+                krea2: { distribution: uniform, min_timestep: 0.0, max_timestep: 1.0 }
   /generate/txt2img:
     post:
       tags: [generation]
@@ -2135,3 +2136,26 @@ components:
           default: 4
           description: Minimum saved-tensor size (MB) to offload to CPU
           example: 4
+        krea2_lora_scope:
+          type: string
+          default: "attn,mlp"
+          description: >-
+            Krea 2 LoRA target scope (comma-separated). Tokens: attn
+            (to_q/to_k/to_v/to_gate/to_out), mlp (SwiGLU ff), text_fusion (internal
+            text-fusion sub-transformer + projector), proj (img_in/txt_in/final_layer/time).
+            The Qwen3-VL text encoder is always frozen.
+          example: "attn,mlp"
+        krea2_lr_factor:
+          type: number
+          format: float
+          default: 1.0
+          description: Krea 2 LoRA learning-rate multiplier applied to unet_lr
+          example: 1.0
+        krea2_discrete_flow_shift:
+          type: number
+          format: float
+          default: 2.5
+          description: >-
+            Krea 2 discrete flow-matching timestep shift applied to the sampled sigma
+            (sigma' = s*sigma / (1 + (s-1)*sigma)). Set <=1 to disable.
+          example: 2.5

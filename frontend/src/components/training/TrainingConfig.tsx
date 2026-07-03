@@ -599,6 +599,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   };
 
 
+  const isKrea2Model = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "krea2";
+  };
+
   const getModelArchitecture = (modelPath: string): string | undefined => {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
     const model = availableModels.find(m => m.path === modelPath);
@@ -650,6 +655,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       minit2i_flan_t5_path: params.minit2i_flan_t5_path,
       minit2i_scratch_init_from: params.minit2i_scratch_init_from,
       minit2i_inherit_final_layer: params.minit2i_inherit_final_layer,
+      // Krea 2 config (sent so UI values reach the backend, not just defaults).
+      krea2_lora_scope: params.krea2_lora_scope,
+      krea2_lr_factor: params.krea2_lr_factor,
+      krea2_discrete_flow_shift: params.krea2_discrete_flow_shift,
       // REPA (Representation Alignment) — MiniT2I only.
       repa_enable: params.repa_enable,
       repa_encoder_source: params.repa_encoder_source,
@@ -970,6 +979,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "latent_encoding_mode", "latent_encoding_swap_interval",
       "minit2i_label_drop_rate", "minit2i_lr_factor", "minit2i_flan_t5_path", "minit2i_scratch_init_from",
       "minit2i_inherit_final_layer",
+      "krea2_lora_scope", "krea2_lr_factor", "krea2_discrete_flow_shift",
       "repa_enable", "repa_encoder_source", "repa_tagger_model_dir", "repa_siglip2_repo",
       "repa_align_depth", "repa_weight", "repa_proj_lr_factor", "repa_encoder_resolution",
       "danbooru_aug_enable", "danbooru_aug_queries", "danbooru_aug_weight_static",
@@ -4371,6 +4381,85 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     step={0.1}
                     className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
                   />
+                </div>
+              </>
+            )}
+
+            {/* Krea 2 (single-stream flow-matching MMDiT) LoRA options */}
+            {isKrea2Model(baseModelPath) && trainingMethod === "lora" && (
+              <>
+                {(() => {
+                  const scopeCsv: string = (params.krea2_lora_scope ?? "attn,mlp");
+                  const scopeSet = new Set(scopeCsv.split(",").map((s: string) => s.trim()).filter(Boolean));
+                  const toggle = (tok: string) => {
+                    const next = new Set(scopeSet);
+                    if (next.has(tok)) next.delete(tok); else next.add(tok);
+                    const ordered = ["attn", "mlp", "text_fusion", "proj"].filter((t) => next.has(t));
+                    updateParam("krea2_lora_scope", ordered.join(","));
+                  };
+                  return (
+                    <div>
+                      <label className="block text-xs text-gray-300 mb-1">
+                        LoRA Scope (Krea 2 DiT module families)
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {[
+                          ["attn", "Attention (Q/K/V/Gate/Out)"],
+                          ["mlp", "MLP (SwiGLU)"],
+                          ["text_fusion", "Text fusion + projector"],
+                          ["proj", "Input/output projections"],
+                        ].map(([tok, label]) => (
+                          <label key={tok} className="flex items-center gap-1.5 text-xs text-gray-300 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={scopeSet.has(tok)}
+                              onChange={() => toggle(tok)}
+                              className="w-3.5 h-3.5"
+                            />
+                            <span>{label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Default: attn + mlp (28 main blocks). Qwen3-VL text encoder is frozen.
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                <div>
+                  <label htmlFor="krea2-lr-factor" className="block text-xs text-gray-300 mb-1">
+                    LoRA LR ×
+                  </label>
+                  <input
+                    type="number"
+                    id="krea2-lr-factor"
+                    value={params.krea2_lr_factor ?? 1.0}
+                    onChange={(e) => updateParam("krea2_lr_factor", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("krea2_lr_factor", 1.0); }}
+                    min={0}
+                    step={0.1}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor="krea2-flow-shift" className="block text-xs text-gray-300 mb-1">
+                    Discrete flow shift
+                  </label>
+                  <input
+                    type="number"
+                    id="krea2-flow-shift"
+                    value={params.krea2_discrete_flow_shift ?? 2.5}
+                    onChange={(e) => updateParam("krea2_discrete_flow_shift", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                    onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("krea2_discrete_flow_shift", 2.5); }}
+                    min={1}
+                    step={0.1}
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Timestep shift applied to sampled sigma. Set to 1 to disable.
+                  </p>
                 </div>
               </>
             )}

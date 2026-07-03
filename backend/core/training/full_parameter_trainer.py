@@ -35,6 +35,7 @@ from .adapters import (
     AnimaFullParameterAdapter,
     LensFullParameterAdapter,
     MiniT2IFullParameterAdapter,
+    Krea2FullParameterAdapter,
 )
 
 
@@ -91,6 +92,8 @@ class FullParameterTrainer(BaseTrainer):
             self.setup_ideogram4_block_swap()
         if hasattr(self, "setup_minit2i_block_swap"):
             self.setup_minit2i_block_swap()
+        if hasattr(self, "setup_krea2_block_swap"):
+            self.setup_krea2_block_swap()
 
         print(f"{self.log_prefix} Initialized")
         # Note: Vision Encoder training status is determined in train() after VE is loaded
@@ -122,6 +125,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_minit2i:
             self.adapter = MiniT2IFullParameterAdapter(self)
             print(f"{self.log_prefix} Using MiniT2IFullParameterAdapter")
+        elif self.is_krea2:
+            self.adapter = Krea2FullParameterAdapter(self)
+            print(f"{self.log_prefix} Using Krea2FullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

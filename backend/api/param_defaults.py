@@ -384,6 +384,19 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # the source model when shapes match. Default off = relearn the head from scratch.
     "minit2i_inherit_final_layer": False,
 
+    # ---- Krea 2 (single-stream flow-matching MMDiT) training ----
+    # LoRA scope tokens: attn (to_q/to_k/to_v/to_gate/to_out), mlp (SwiGLU ff),
+    # text_fusion (internal text-fusion sub-transformer + projector, default off),
+    # proj (img_in/txt_in/final_layer/time embeds, default off). The Qwen3-VL text
+    # encoder is always frozen (no TE LoRA / no TE full-FT). Enumerated by
+    # core/models/krea2/krea2_lora.py.
+    "krea2_lora_scope": "attn,mlp",
+    # LoRA learning-rate multiplier (applied to unet_lr).
+    "krea2_lr_factor": 1.0,
+    # Discrete flow-matching timestep shift applied to the sampled sigma
+    # (sigma' = s*sigma / (1 + (s-1)*sigma)); musubi default 2.5 @1024^2. Set <=1 to disable.
+    "krea2_discrete_flow_shift": 2.5,
+
     # ---- REPA (Representation Alignment) — MiniT2I only ----
     # Aligns a DiT intermediate hidden state with frozen clean-image patch features
     # from a vision encoder (our anime tagger, or off-the-shelf SigLIP2) via a
@@ -505,6 +518,9 @@ TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH: Dict[str, Any] = {
     # MiniT2I: t=1=data convention; mean=-0.8 biases toward the noise side.
     "minit2i": {"distribution": "logit_normal", "mean": -0.8, "std": 0.8,
                 "min_timestep": 0.0, "max_timestep": 1.0},
+    # Krea 2: uniform sigma sampling; the resolution schedule bias comes from the
+    # discrete flow shift (krea2_discrete_flow_shift, applied in train_step_krea2).
+    "krea2": {"distribution": "uniform", "min_timestep": 0.0, "max_timestep": 1.0},
 }
 
 # ---------------------------------------------------------------------------

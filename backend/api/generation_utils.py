@@ -589,3 +589,24 @@ def calculate_generation_metadata(
         metadata["mask_data_base64"] = encode_mask_func(mask_image)
 
     return metadata
+
+
+def apply_generation_timings(params: Dict[str, Any], total_seconds: float) -> None:
+    """Merge generation timing (total wall time + recorded phases) into ``params``.
+
+    Records the total wall time measured around the generation call plus whatever
+    phase breakdown the pipeline layer populated in the process-wide
+    ``generation_timer`` (text encode / denoise / VAE decode). Mutates ``params``
+    in place so the values flow into PNG chunks (``save_image_with_metadata``) and
+    DB parameters (``prepare_params_for_db`` copies ``params``).
+
+    Timing is informational (not reproducibility-affecting); values are seconds
+    rounded to 3 decimals. Phases are only present for architectures/paths that
+    instrument them — total is always recorded.
+    """
+    from core.inference.generation_timing import generation_timer
+
+    params["generation_time"] = round(float(total_seconds), 3)
+    # Phase keys already come back as time_text_encode / time_denoise / time_vae_decode.
+    for key, value in generation_timer.phases_dict().items():
+        params[key] = value

@@ -167,13 +167,23 @@ def save_image_with_metadata(
     if max_prompt_chunks and int(max_prompt_chunks) > 0:
         metadata.add_text("max_prompt_chunks", str(max_prompt_chunks))
 
-    # Attention backend (non-default only)
-    attention_type = params.get("attention_type", "normal")
-    if attention_type and attention_type != "normal":
-        metadata.add_text("attention_type", attention_type)
-    attention_impl = params.get("attention_impl", "conduit")
-    if attention_impl and attention_impl != "conduit":
-        metadata.add_text("attention_impl", attention_impl)
+    # Attention backend. Recorded ALWAYS (including the "normal"/"conduit"
+    # defaults): attention selection affects the produced pixels, so reproduction
+    # needs the actual value that was requested for this generation, not just the
+    # non-default cases. Note: this is the REQUESTED backend; the dispatcher may
+    # transparently downgrade to native per-call when a backend is unavailable for
+    # a given tensor shape (see core/attention/config.py:resolve_backend).
+    attention_type = params.get("attention_type") or "normal"
+    metadata.add_text("attention_type", attention_type)
+    attention_impl = params.get("attention_impl") or "conduit"
+    metadata.add_text("attention_impl", attention_impl)
+
+    # Generation timing (informational, not reproducibility-affecting). Written
+    # whenever present — total wall time is always recorded by the endpoint; the
+    # phase breakdown is present only for instrumented architectures/paths.
+    for _tkey in ("generation_time", "time_text_encode", "time_denoise", "time_vae_decode"):
+        if params.get(_tkey) is not None:
+            metadata.add_text(_tkey, str(params[_tkey]))
 
     # Text Encoder quantization (non-default only)
     text_encoder_quantization = params.get("text_encoder_quantization")

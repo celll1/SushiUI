@@ -207,7 +207,7 @@ class TAESDManager:
             self._log_decode_error("TAEF2", e)
             return None
 
-    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
+    def decode_latent(self, latent: torch.Tensor, is_sdxl: bool = False, is_zimage: bool = False, is_deus: bool = False, is_zimage_sdxl_vae: bool = False, is_flux2: bool = False, is_anima: bool = False, is_lens: bool = False, is_ideogram4: bool = False, is_minit2i: bool = False, minit2i_vae_type: str = "none", is_krea2: bool = False, image_width: Optional[int] = None, image_height: Optional[int] = None, preview_decoder: str = "matrix") -> Optional[Image.Image]:
         """Decode latent to preview image
 
         Args:
@@ -263,6 +263,11 @@ class TAESDManager:
 
         if is_lens:
             return self._decode_lens_latent_preview(latent, image_width, image_height)
+
+        # Krea 2: packed (B, N, 64) Qwen-Image latent (16ch x 2x2 patch); unpack then
+        # project the 16 channels to RGB with the same Wan21 factors as Anima.
+        if is_krea2:
+            return self._decode_krea2_latent_preview(latent, image_width, image_height)
 
         # Anima: 16ch Qwen-Image latent, no compatible TAE; use latent-direct preview
         if is_anima:
@@ -658,6 +663,50 @@ class TAESDManager:
             self._log_decode_error("Anima", e)
             return None
 
+
+    def _decode_krea2_latent_preview(self, latent: torch.Tensor, image_width: Optional[int] = None, image_height: Optional[int] = None) -> Optional[Image.Image]:
+        """Latent -> RGB preview for Krea 2 packed (B, N, 64) Qwen-Image latents.
+
+        Krea 2 packs 16 latent channels into 2x2 patches (channel order C, p1, p2).
+        Unpatchify to (B, 16, gh*2, gw*2) and project to RGB with the Wan21 factors
+        (Qwen-Image VAE), matching the Anima preview path.
+        """
+        try:
+            with torch.no_grad():
+                t = latent.detach().cpu().to(torch.float32)
+                if t.ndim != 3 or t.shape[2] != 64:
+                    return None
+                b, num_tokens, _ = t.shape
+
+                if image_width is not None and image_height is not None:
+                    grid_h = round(image_height / 16)
+                    grid_w = round(image_width / 16)
+                    if grid_h * grid_w != num_tokens:
+                        grid_h, grid_w = self._find_best_factors(num_tokens)
+                else:
+                    grid_h, grid_w = self._find_best_factors(num_tokens)
+
+                # (B, N, 64) -> (B, 16, gh*2, gw*2) with 64 ordered (channel, p1, p2).
+                z = t.view(b, grid_h, grid_w, 16, 2, 2)
+                z = z.permute(0, 3, 1, 4, 2, 5)
+                z = z.reshape(b, 16, grid_h * 2, grid_w * 2)
+
+                rgb_factors = torch.tensor(self._WAN21_LATENT_RGB_FACTORS, dtype=z.dtype)
+                rgb_bias = torch.tensor(self._WAN21_LATENT_RGB_BIAS, dtype=z.dtype)
+                rgb = torch.einsum('bchw,cn->bnhw', z, rgb_factors) + rgb_bias.view(1, 3, 1, 1)
+                rgb = rgb[0]
+                rgb = (rgb.clamp(-1.0, 1.0) + 1.0) / 2.0
+                rgb_np = (rgb.permute(1, 2, 0).numpy() * 255).clip(0, 255).astype(np.uint8)
+
+                preview = Image.fromarray(rgb_np, mode='RGB')
+                preview = preview.resize(
+                    (preview.width * 8, preview.height * 8),
+                    Image.Resampling.BILINEAR,
+                )
+                return preview
+        except Exception as e:
+            self._log_decode_error("Krea2", e)
+            return None
 
     def _find_best_factors(self, num_tokens: int) -> tuple:
         """

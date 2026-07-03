@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -184,6 +184,14 @@ class ModelLoader:
                     "prediction_target": "sample",
                     "source": "inferred"
                 }
+            elif model_type == "krea2":
+                # Krea 2 uses flow matching (rectified flow) with velocity prediction.
+                print(f"[ModelLoader] Inferred prediction config from Krea 2 architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
             # DEUS support removed - architecture no longer maintained
             # elif model_type == "deus":
             #     # DEUS uses DDPM with epsilon prediction (same as SDXL base)
@@ -299,6 +307,40 @@ class ModelLoader:
         return os.path.exists(os.path.join(path, "model_index.json"))
 
     @staticmethod
+    def _keys_look_krea2(keys, metadata) -> bool:
+        """Krea 2 single-file signature check.
+
+        Matches: metadata flag, sushiUI combined save (transformer.text_fusion.*),
+        diffusers keys (text_fusion.* + time_mod_proj.*), official raw keys
+        (txtfusion.* + tmlp.* + first.*), or comfy-prefixed raw keys
+        (model.diffusion_model.<raw keys>).
+        """
+        metadata = metadata or {}
+
+        def _has(*prefixes):
+            return all(
+                any(k.startswith(p) or (".diffusion_model." + p) in k for k in keys)
+                for p in prefixes
+            )
+
+        return (
+            str(metadata.get("model_type", "")).lower() == "krea2"
+            or any(k.startswith("transformer.text_fusion.") for k in keys)
+            or _has("text_fusion.", "time_mod_proj.")
+            or _has("txtfusion.", "tmlp.", "first.")
+        )
+
+    @staticmethod
+    def _is_krea2_safetensors(model_path: str) -> bool:
+        """Open a .safetensors file and check for the Krea 2 key signature."""
+        try:
+            from safetensors import safe_open
+            with safe_open(model_path, framework="pt", device="cpu") as f:
+                return ModelLoader._keys_look_krea2(list(f.keys()), f.metadata())
+        except Exception:
+            return False
+
+    @staticmethod
     def detect_model_type(model_path: str) -> ModelType:
         """Detect if model is SD1.5, SDXL, Z-Image, DEUS, or FLUX.2 based on config or structure
 
@@ -333,6 +375,27 @@ class ModelLoader:
                         tcfg = json.load(f)
                     if "LensTransformer2DModel" in tcfg.get("architectures", []):
                         return "lens"
+                except Exception:
+                    pass
+
+            # Krea 2 detection (diffusers directory: Krea2Pipeline / Krea2Transformer2DModel)
+            if os.path.exists(model_index_path):
+                try:
+                    with open(model_index_path, "r") as f:
+                        idx = json.load(f)
+                    if idx.get("_class_name") == "Krea2Pipeline":
+                        return "krea2"
+                except Exception:
+                    pass
+            if os.path.exists(transformer_config_path):
+                try:
+                    with open(transformer_config_path, "r") as f:
+                        tcfg = json.load(f)
+                    # Krea2 single-stream MMDiT: unique config keys (text fusion + 3-axis rope).
+                    if tcfg.get("_class_name") == "Krea2Transformer2DModel" or (
+                        "Krea2Transformer2DModel" in tcfg.get("architectures", [])
+                    ) or ("num_layerwise_text_blocks" in tcfg and "axes_dims_rope" in tcfg):
+                        return "krea2"
                 except Exception:
                     pass
 
@@ -377,9 +440,12 @@ class ModelLoader:
                 if detect_anima_split_layout(model_path):
                     return "anima"
             elif model_path.endswith(".safetensors"):
-                # If the file is inside a split_files/diffusion_models/ tree, treat as Anima.
+                # If the file is inside a split_files/diffusion_models/ tree, treat as Anima —
+                # but only after ruling out Krea 2 by key signature, since Comfy-Org/Krea-2
+                # also ships under split_files/diffusion_models/.
                 if detect_anima_split_layout(model_path):
-                    return "anima"
+                    if not ModelLoader._is_krea2_safetensors(model_path):
+                        return "anima"
                 # Otherwise inspect keys.
                 if is_anima_safetensors(model_path):
                     return "anima"
@@ -422,6 +488,10 @@ class ModelLoader:
                             or any(k.startswith("transformer.model.net.") for k in keys)
                             or any(k.startswith("model.net.double_blocks.") for k in keys)):
                         return "minit2i"
+
+                    # Krea 2 single-file (see _keys_look_krea2 for the signatures).
+                    if ModelLoader._keys_look_krea2(keys, metadata):
+                        return "krea2"
 
                     # Priority 1: Check metadata for explicit model_type
                     if "model_type" in metadata:
@@ -1264,6 +1334,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as MiniT2I (single-file)")
             return ModelLoader.load_minit2i_from_path(file_path, torch.bfloat16)
 
+        # Krea 2 single-file (diffusers / raw / comfy / sushiUI TE+DiT combined)
+        if model_type == "krea2":
+            print(f"[ModelLoader] Loading as Krea 2 (single-file)")
+            return ModelLoader.load_krea2_from_path(file_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(file_path)
 
         # Custom SDXL architecture (SushiUI): non-standard latent VAE (e.g. FLUX.1 16ch).
@@ -1580,6 +1655,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as MiniT2I (diffusers directory)")
             return ModelLoader.load_minit2i_from_path(model_path, torch.bfloat16)
 
+        # Krea 2 diffusers directory (single-stream MMDiT + Qwen3-VL + Qwen-Image VAE)
+        if model_type == "krea2":
+            print(f"[ModelLoader] Loading as Krea 2 (diffusers directory)")
+            return ModelLoader.load_krea2_from_path(model_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -1831,3 +1911,15 @@ class ModelLoader:
         """
         from core.models.minit2i.minit2i_loader import load_minit2i_components
         return load_minit2i_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_krea2_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load Krea 2 from a diffusers directory or a single-file safetensors.
+
+        Returns a component dict consumed by PipelineManager.load_model().
+        """
+        from core.models.krea2.krea2_loader import load_krea2_components
+        return load_krea2_components(model_path=path, torch_dtype=torch_dtype)

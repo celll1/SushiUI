@@ -2909,9 +2909,13 @@ class BaseTrainer(ABC):
             train["attention_impl"] = self.attention_impl
             with open(config_path, "w", encoding="utf-8") as f:
                 yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
-            print(f"{self.log_prefix} Persisted attention_impl='{self.attention_impl}' to run config")
+            # log_prefix is assigned later in __init__; this method runs before that,
+            # so use a safe fallback to avoid an AttributeError masking the real work.
+            _lp = getattr(self, "log_prefix", "[Trainer]")
+            print(f"{_lp} Persisted attention_impl='{self.attention_impl}' to run config")
         except Exception as e:
-            print(f"{self.log_prefix} [WARN] Could not persist attention_impl to run config: {e}")
+            _lp = getattr(self, "log_prefix", "[Trainer]")
+            print(f"{_lp} [WARN] Could not persist attention_impl to run config: {e}")
 
     def _resolve_training_backend(self, backend: str) -> str:
         """Apply the TRAINING-mode capability guard to a backend string (R4).

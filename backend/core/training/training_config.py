@@ -227,6 +227,11 @@ def _build_train_section(
     train["minit2i_scratch_init_from"] = p.get("minit2i_scratch_init_from", "")
     train["minit2i_inherit_final_layer"] = p.get("minit2i_inherit_final_layer", False)
 
+    # ---- Krea 2 (single-stream flow-matching MMDiT) — other archs ignore. ----
+    train["krea2_lora_scope"] = p.get("krea2_lora_scope", "attn,mlp")
+    train["krea2_lr_factor"] = p.get("krea2_lr_factor", 1.0)
+    train["krea2_discrete_flow_shift"] = p.get("krea2_discrete_flow_shift", 2.5)
+
     # ---- REPA (Representation Alignment) — MiniT2I only. SSoT: param_defaults. ----
     train["repa_enable"] = p.get("repa_enable", False)
     train["repa_encoder_source"] = p.get("repa_encoder_source", "tagger")

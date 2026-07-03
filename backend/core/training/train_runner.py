@@ -49,6 +49,22 @@ from sqlalchemy.orm import Session
 from core.training.caption_processor import process_caption, get_default_caption_processing_config
 
 
+def _is_krea2_base_model(base_model_path: str) -> bool:
+    """Krea 2 base-model check for the bf16 force.
+
+    Path-name match first (cheap, also covers not-yet-downloaded/scratch specs),
+    then key/config-based detection so renamed sushiUI checkpoints are caught.
+    """
+    lowered = base_model_path.lower()
+    if 'krea2' in lowered or 'krea-2' in lowered:
+        return True
+    try:
+        from core.model_loader import ModelLoader
+        return ModelLoader.detect_model_type(base_model_path) == "krea2"
+    except Exception:
+        return False
+
+
 def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str = None):
     """
     Update training run phase progress in database.
@@ -1300,6 +1316,11 @@ def main():
                 print("[TrainRunner] MiniT2I model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+            # Krea 2 (single-stream flow-matching MMDiT) is trained in bf16.
+            if _is_krea2_base_model(run.base_model_path):
+                print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)  # Debug VRAM profiling (default: False)
@@ -1724,6 +1745,11 @@ def main():
                 print("[TrainRunner] MiniT2I model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+            # Krea 2 (single-stream flow-matching MMDiT) is trained in bf16.
+            if _is_krea2_base_model(run.base_model_path):
+                print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)
@@ -2114,6 +2140,11 @@ def main():
             # MiniT2I (pixel-space MM-JiT, flow matching, x0 prediction) is trained in bf16.
             if 'minit2i' in run.base_model_path.lower():
                 print("[TrainRunner] MiniT2I model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+            # Krea 2 (single-stream flow-matching MMDiT) is trained in bf16.
+            if _is_krea2_base_model(run.base_model_path):
+                print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 

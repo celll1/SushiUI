@@ -36,6 +36,7 @@ from .adapters import (
     LensLoRAAdapter,
     Ideogram4LoRAAdapter,
     MiniT2ILoRAAdapter,
+    Krea2LoRAAdapter,
 )
 
 
@@ -108,6 +109,8 @@ class LoRATrainer(BaseTrainer):
             self.setup_ideogram4_block_swap()
         if hasattr(self, "setup_minit2i_block_swap"):
             self.setup_minit2i_block_swap()
+        if hasattr(self, "setup_krea2_block_swap"):
+            self.setup_krea2_block_swap()
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
@@ -163,6 +166,16 @@ class LoRATrainer(BaseTrainer):
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope, te_scope=te_scope,
             )
             print(f"{self.log_prefix} Using MiniT2ILoRAAdapter (scope={scope}, te_scope={te_scope})")
+        elif self.is_krea2:
+            from core.models.krea2.krea2_lora import parse_scope_csv
+            scope_csv = (getattr(self, "krea2_lora_scope", "")
+                          or self.config.get("krea2_lora_scope", "")
+                          or "attn,mlp")
+            scope = parse_scope_csv(scope_csv)
+            self.adapter = Krea2LoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using Krea2LoRAAdapter (scope={scope})")
         elif self.is_anima:
             # Parse scope from config; default to DEFAULT_TRAINING_SCOPE
             # (attention + mlp + llm_adapter, no AdaLN modulation).

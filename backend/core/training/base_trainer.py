@@ -973,6 +973,7 @@ class BaseTrainer(ABC):
         self.is_lens  = (model_type == "lens")
         self.is_ideogram4 = (model_type == "ideogram4")
         self.is_minit2i = (model_type == "minit2i")
+        self.is_krea2 = (model_type == "krea2")
         self.is_sdxl = False
 
         if self.is_zimage:
@@ -990,6 +991,8 @@ class BaseTrainer(ABC):
             self._load_ideogram4_components()
         elif self.is_minit2i:
             self._load_minit2i_components()
+        elif self.is_krea2:
+            self._load_krea2_components()
         else:
             self._load_sd_sdxl_components()
 
@@ -1478,6 +1481,122 @@ class BaseTrainer(ABC):
             self.transformer_uncond._layer_offload_conductor = self.layer_offload_conductor_uncond
             self.layer_offload_conductor_uncond.register_hooks()
         print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Ideogram 4")
+
+    def _load_krea2_components(self):
+        """Load Krea 2 components (single-stream MMDiT + Qwen3-VL TE + Qwen-Image VAE).
+
+        The transformer is trained (LoRA wraps it, or full-FT updates it); the
+        Qwen3-VL text encoder and the VAE are frozen. bf16 base (train_runner forces
+        bf16). Block-swap over ``transformer_blocks`` is deferred until adapter setup.
+        """
+        print(f"{self.log_prefix} Detected Krea 2 model")
+        print(f"{self.log_prefix} Loading Krea 2 components from {self.model_path}")
+
+        from core.models.krea2.krea2_loader import load_krea2_components
+        components = load_krea2_components(
+            model_path=self.model_path,
+            torch_dtype=self.weight_dtype,
+            load_text_encoder=True,
+        )
+
+        self.transformer = components["transformer"]
+        self.transformer_original = self.transformer
+        self.vae = components["vae"]
+        self.text_encoder = components["text_encoder"]
+        self.tokenizer = components["tokenizer"]
+        self.scheduler = components["scheduler"]
+
+        # Krea 2 metadata used by train_step / sample generation.
+        self.krea2_is_distilled = bool(components.get("is_distilled", False))
+        self.krea2_select_layers = list(
+            components.get("text_encoder_select_layers")
+            or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+        )
+        self.krea2_patch_size = int(components.get("patch_size", 2))
+        # Discrete flow-matching timestep shift (musubi default 2.5); config override.
+        self.krea2_discrete_flow_shift = float(self.config.get("krea2_discrete_flow_shift", 2.5))
+
+        # Single-stream DiT: no dual TE / no U-Net.
+        self.text_encoder_2 = None
+        self.tokenizer_2 = None
+        self.t5_tokenizer = None
+        self.unet = None
+        self.noise_scheduler = self.scheduler
+
+        self.vae = self.vae.to(dtype=self.vae_dtype)
+
+        # Gradient checkpointing on the vendored transformer.
+        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+            try:
+                self.transformer.enable_gradient_checkpointing()
+                print(f"{self.log_prefix} Gradient checkpointing enabled for Krea 2 transformer")
+            except Exception as e:
+                print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
+
+        # Freeze VAE + TE; the transformer requires_grad is set by the adapter.
+        self.vae.requires_grad_(False)
+        self.text_encoder.requires_grad_(False)
+        self.transformer.requires_grad_(False)
+
+        # Block-swap deferred until after adapter setup.
+        self.layer_offload_conductor = None
+        if self.blocks_to_swap > 0:
+            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
+                  f"deferred until adapter setup completes")
+
+        print(f"{self.log_prefix} Moving Krea 2 transformer to {self.device}")
+        self.transformer.to(self.device)
+
+        if self.use_flash_attention:
+            self._setup_attention_backend_krea2(self.attention_backend)
+
+        print(f"{self.log_prefix} Krea 2 model loaded successfully (is_distilled={self.krea2_is_distilled})")
+
+    def setup_krea2_block_swap(self):
+        """Initialise LayerOffloadConductor over the Krea 2 ``transformer_blocks``, AFTER adapter setup."""
+        if not getattr(self, "is_krea2", False):
+            return
+        if self.blocks_to_swap <= 0:
+            return
+        if getattr(self, "layer_offload_conductor", None) is not None:
+            return
+        if not hasattr(self.transformer, "transformer_blocks"):
+            raise ValueError("Krea 2 transformer must expose `.transformer_blocks` for block swap")
+
+        from core.memory_management import LayerOffloadConductor
+        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
+              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
+        self.layer_offload_conductor = LayerOffloadConductor(
+            layers=self.transformer.transformer_blocks,
+            blocks_to_swap=self.blocks_to_swap,
+            device=self.device,
+            use_pinned_memory=self.use_pinned_memory,
+            cpu_buffer_size_mb=8192,
+            activation_buffer_size_mb=4096,
+            enable_prefetch=True,
+            enable_activation_offload=False,
+        )
+        self.transformer._layer_offload_conductor = self.layer_offload_conductor
+        self.layer_offload_conductor.register_hooks()
+        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Krea 2")
+
+    def _setup_attention_backend_krea2(self, backend: str):
+        """Set the attention backend for Krea 2 (training hook).
+
+        The vendored transformer's ``forward`` calls ``_stamp_attention_backend()``
+        which fans ``self._attn_backend`` out to every ``Krea2Attention`` module and
+        derives the mode from the autograd state (training -> conduit refuses sage).
+        This hook stamps the canonical backend string, honoring the training guard
+        (``_resolve_training_backend`` maps sage -> native)."""
+        if self.transformer is None:
+            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
+            return
+        b = self._resolve_training_backend(backend)
+        try:
+            self.transformer._attn_backend = b
+            print(f"{self.log_prefix} [OK] Krea 2 attention backend '{b}' stamped on transformer")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to set Krea 2 attention backend '{b}': {e}")
 
     def _load_minit2i_components(self):
         """Load MiniT2I (pixel-space MM-JiT) components for training.
@@ -2167,6 +2286,7 @@ class BaseTrainer(ABC):
         self.is_lens  = (model_type == "lens")
         self.is_ideogram4 = (model_type == "ideogram4")
         self.is_minit2i = (model_type == "minit2i")
+        self.is_krea2 = (model_type == "krea2")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -2422,6 +2542,17 @@ class BaseTrainer(ABC):
             self.model_path = checkpoint_path
             self._load_minit2i_components()
             print(f"{self.log_prefix} MiniT2I checkpoint loaded successfully as base model")
+
+        elif self.is_krea2:
+            # Krea 2 checkpoint resume: the sushiUI single-file (or any supported
+            # layout) carries the transformer + variant/config metadata. Reuse the
+            # normal loader by pointing model_path at the checkpoint — it rebuilds
+            # the transformer, resolves the Qwen3-VL TE / Qwen-Image VAE, sets the
+            # scheduler, enables gradient checkpointing, and moves to device.
+            print(f"{self.log_prefix} Loading Krea 2 checkpoint as base model: {checkpoint_path}")
+            self.model_path = checkpoint_path
+            self._load_krea2_components()
+            print(f"{self.log_prefix} Krea 2 checkpoint loaded successfully as base model")
 
         else:
             # SD/SDXL checkpoint resume
@@ -4456,6 +4587,21 @@ class BaseTrainer(ABC):
         )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
         return stacked.unsqueeze(0).detach(), mask.detach()
 
+    def encode_prompt_krea2(self, prompt: str, max_length: int = 512):
+        """Encode prompt for Krea 2: 12-layer Qwen3-VL hidden-state stack.
+
+        Returns (embeds [1, seq, 12, 2560], mask [seq]) so the cache/batch path
+        produces [B, seq, 12, 2560] / [B, seq]. The DiT fuses the layer axis
+        internally (text_fusion) inside train_step_krea2 / the forward pass.
+        """
+        from core.models.krea2.krea2_pipeline_ops import encode_prompt as _k_encode
+        select_layers = getattr(self, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+        te_device = self.text_encoder.device if hasattr(self.text_encoder, "device") else self.device
+        embeds, mask = _k_encode(
+            self.text_encoder, self.tokenizer, prompt, select_layers, max_length, te_device,
+        )  # embeds [1, seq, 12, 2560], mask [1, seq]
+        return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+
     def encode_prompt_minit2i(self, prompt: str, requires_grad: bool = False):
         """Encode prompt for MiniT2I: FLAN-T5-Large last_hidden_state + attention mask.
 
@@ -4506,6 +4652,8 @@ class BaseTrainer(ABC):
             return self.encode_prompt_ideogram4(caption)
         elif self.is_minit2i:
             return self.encode_prompt_minit2i(caption, requires_grad=requires_grad)
+        elif self.is_krea2:
+            return self.encode_prompt_krea2(caption)
         elif self.is_anima:
             payload = self.encode_prompt_anima(caption)
             # Return the Qwen3 hidden states as the primary embedding plus the
@@ -4632,7 +4780,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -4641,7 +4789,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -4936,6 +5084,15 @@ class BaseTrainer(ABC):
                 from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode as _ig4_vae_encode
                 latents = _ig4_vae_encode(
                     self.vae, image, height=height, width=width,
+                    device=vae_device, dtype=self.vae_dtype,
+                )
+            elif self.is_krea2:
+                # Krea 2 VAE (AutoencoderKLQwenImage): packed normalized latent
+                # (1, N, 64) where N=(H//16)*(W//16); C*p*p = 16*2*2 = 64.
+                from core.models.krea2.krea2_pipeline_ops import vae_encode as _krea2_vae_encode
+                latents = _krea2_vae_encode(
+                    self.vae, image, height=height, width=width,
+                    patch_size=int(getattr(self, "krea2_patch_size", 2)),
                     device=vae_device, dtype=self.vae_dtype,
                 )
             else:
@@ -5421,6 +5578,19 @@ class BaseTrainer(ABC):
             # mnt_text_embeddings: [B, 13, L, 4096]; mnt_attention_mask: [B, L]
             _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
             loss, pred_loss, recon_loss = self.train_step_ideogram4(
+                latents=mnt_latents,
+                encoder_features=mnt_text_embeddings,
+                encoder_mask=mnt_attention_mask,
+                timesteps=timesteps,
+                profile_vram=self.debug_vram,
+                latent_h=_lh,
+                latent_w=_lw,
+            )
+        elif self.is_krea2:
+            # mnt_latents: packed [B, N, 64]; mnt_text_embeddings: [B, seq, 12, 2560];
+            # mnt_attention_mask: [B, seq]
+            _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
+            loss, pred_loss, recon_loss = self.train_step_krea2(
                 latents=mnt_latents,
                 encoder_features=mnt_text_embeddings,
                 encoder_mask=mnt_attention_mask,
@@ -6690,6 +6860,97 @@ class BaseTrainer(ABC):
         # MNT iteration); do not call loss.backward() here.
         del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
         return loss, pred_loss_value, recon_loss_value
+
+    def train_step_krea2(
+        self,
+        latents: torch.Tensor,
+        encoder_features: torch.Tensor,
+        encoder_mask: torch.Tensor,
+        timesteps: Optional[torch.Tensor] = None,
+        profile_vram: bool = False,
+        latent_h: Optional[int] = None,
+        latent_w: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, float, float]:
+        """Single Krea 2 training step (flow matching, velocity prediction).
+
+        Conventions match the inference denoise loop (krea2_pipeline_ops), where
+        ``v = noise - x0`` and the model receives ``timestep = sigma``:
+          x_sigma  = (1 - sigma) * x0 + sigma * noise    (sigma=1 -> pure noise)
+          v_target = noise - x0                          (transformer output sign)
+          timestep = sigma                               (model time in [0, 1])
+        A discrete flow-matching shift (musubi default 2.5) is applied to the
+        sampled sigma to bias the schedule; disable with krea2_discrete_flow_shift<=1.
+
+        Args:
+            latents:          Packed image latents [B, N, 64] (N = latent_h*latent_w).
+            encoder_features: 12-layer Qwen3-VL features [B, seq, 12, 2560].
+            encoder_mask:     Text token mask [B, seq].
+            latent_h/latent_w: latent grid (height//16, width//16).
+        """
+        from core.models.krea2.krea2_pipeline_ops import prepare_position_ids
+
+        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        encoder_features = encoder_features.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
+        encoder_mask = encoder_mask.to(device=self.device, non_blocking=True)
+
+        B, N, _ = latents.shape
+        if latent_h is not None and latent_w is not None:
+            if latent_h * latent_w != N:
+                raise ValueError(
+                    f"[train_step_krea2] latent_h={latent_h}*latent_w={latent_w} != N={N}"
+                )
+        else:
+            side = int(N ** 0.5)
+            if side * side != N:
+                raise ValueError(
+                    f"[train_step_krea2] non-square latent (N={N}); pass latent_h/latent_w"
+                )
+            latent_h = latent_w = side
+
+        if timesteps is None:
+            if self.timestep_sampler is not None:
+                timesteps = self.timestep_sampler.sample(B, self.device)
+            else:
+                timesteps = torch.rand(B, device=self.device)
+        sigma = timesteps.to(self.training_dtype)
+
+        # Discrete flow-matching timestep shift: sigma' = s*sigma / (1 + (s-1)*sigma).
+        shift = float(getattr(self, "krea2_discrete_flow_shift", 2.5) or 0.0)
+        if shift and shift != 1.0:
+            sigma = (shift * sigma) / (1.0 + (shift - 1.0) * sigma)
+        sigma_v = sigma.view(-1, 1, 1)
+
+        noise = torch.randn_like(latents)
+        noisy = (1.0 - sigma_v) * latents + sigma_v * noise   # sigma=1 -> noise
+        v_target = noise - latents                            # Krea convention v = noise - x0
+
+        text_seq_len = encoder_features.shape[1]
+        position_ids = prepare_position_ids(text_seq_len, latent_h, latent_w, self.device)
+
+        t_dtype = self.transformer.dtype
+
+        def _fwd():
+            return self.transformer(
+                hidden_states=noisy.to(t_dtype),
+                encoder_hidden_states=encoder_features.to(t_dtype),
+                timestep=sigma.to(t_dtype),
+                position_ids=position_ids,
+                encoder_attention_mask=encoder_mask,
+                return_dict=False,
+            )[0]
+
+        if self.mixed_precision:
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                out = _fwd()
+        else:
+            out = _fwd()
+
+        v_pred = out.float()
+        loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+        pred_loss_value = loss.item()
+        # Backward is performed by _execute_forward_backward; do not backward here.
+        del noise, noisy, v_pred, v_target
+        return loss, pred_loss_value, 0.0
 
     def train_step_ideogram4(
         self,
@@ -8228,6 +8489,105 @@ class BaseTrainer(ABC):
         finally:
             self.transformer.train()
 
+    def _generate_sample_krea2(
+        self,
+        prompt: str,
+        height: int = 1024,
+        width: int = 1024,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 4.5,
+        seed: int = -1,
+        negative_prompt: str = "",
+    ) -> Image.Image:
+        """Generate a validation sample during Krea 2 training (flow matching).
+
+        Reuses the krea2_pipeline_ops denoise loop. UI ``guidance_scale`` maps to the
+        Krea guidance convention via ``guidance = cfg_scale - 1`` (turbo/distilled
+        checkpoints run with no CFG). Resolution is aligned to a multiple of 16.
+        """
+        from core.models.krea2.krea2_pipeline_ops import (
+            encode_prompt as _k_encode, denoise_loop as _k_denoise,
+            prepare_latents_txt2img as _k_prep, vae_decode as _k_decode,
+        )
+
+        print(f"{self.log_prefix} Generating Krea 2 sample: {prompt[:50]}...")
+        patch_size = int(getattr(self, "krea2_patch_size", 2))
+        width = max(16, (width // 16) * 16)
+        height = max(16, (height // 16) * 16)
+        grid_h = height // 16
+        grid_w = width // 16
+        select_layers = getattr(self, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+        is_distilled = bool(getattr(self, "krea2_is_distilled", False))
+        guidance = 0.0 if is_distilled else max(0.0, float(guidance_scale) - 1.0)
+
+        self.transformer.eval()
+        self.text_encoder.eval()
+        transformer_device = next(self.transformer.parameters()).device
+        t_dtype = self.transformer.dtype
+
+        try:
+            # Offload transformer + optimizer state to CPU during text encoding.
+            self.transformer.to("cpu")
+            optimizer_state_dict = self.optimizer.state_dict()
+            for _pid, state in optimizer_state_dict["state"].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == "cuda":
+                        state[key] = value.cpu()
+            self.optimizer.load_state_dict(optimizer_state_dict)
+            torch.cuda.empty_cache()
+
+            self.text_encoder.to(self.device)
+            prompt_embeds, prompt_mask = _k_encode(
+                self.text_encoder, self.tokenizer, prompt, select_layers, 512, self.device)
+            neg_embeds = neg_mask = None
+            if guidance > 0.0:
+                neg_embeds, neg_mask = _k_encode(
+                    self.text_encoder, self.tokenizer, negative_prompt or "", select_layers, 512, self.device)
+            self.text_encoder.to("cpu")
+            torch.cuda.empty_cache()
+
+            self.transformer.to(transformer_device)
+            torch.cuda.empty_cache()
+
+            z_dim = int(getattr(self.vae.config, "z_dim", 16))
+            latents = _k_prep(
+                z_dim, grid_h, grid_w, patch_size, t_dtype, self.device,
+                seed=seed if seed is not None and seed >= 0 else None,
+            )
+
+            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
+                out = _k_denoise(
+                    self.transformer, self.scheduler, latents,
+                    prompt_embeds.to(t_dtype), prompt_mask,
+                    neg_embeds.to(t_dtype) if neg_embeds is not None else None, neg_mask,
+                    guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, self.device,
+                )
+
+            self.vae.to(self.device)
+            image = _k_decode(self.vae, out.float(), grid_h, grid_w, patch_size)
+            self.vae.to("cpu")
+
+            del prompt_embeds, prompt_mask, out, latents
+            if neg_embeds is not None:
+                del neg_embeds, neg_mask
+            torch.cuda.empty_cache()
+
+            # Restore optimizer state to GPU.
+            from .optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+            from .optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+            if not isinstance(self.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
+                optimizer_state_dict = self.optimizer.state_dict()
+                for _pid, state in optimizer_state_dict["state"].items():
+                    for key, value in state.items():
+                        if isinstance(value, torch.Tensor) and value.device.type == "cpu":
+                            state[key] = value.to(transformer_device)
+                self.optimizer.load_state_dict(optimizer_state_dict)
+            torch.cuda.empty_cache()
+            return image
+
+        finally:
+            self.transformer.train()
+
     # ============================================================
     # FLUX.2 Sample Generation
     # ============================================================
@@ -9056,7 +9416,7 @@ class BaseTrainer(ABC):
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                     # Check auxiliary data file (architecture-specific)
-                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i:
+                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -9095,7 +9455,7 @@ class BaseTrainer(ABC):
                             torch.save(embeds_cpu, embeds_path)
 
                             # Save auxiliary data (architecture-specific)
-                            if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i) and auxiliary_cpu is not None:
+                            if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
@@ -9159,7 +9519,7 @@ class BaseTrainer(ABC):
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
         # Check architecture-specific auxiliary file
-        if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i:
+        if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -9491,6 +9851,7 @@ class BaseTrainer(ABC):
                 "anima" if self.is_anima else
                 "lens" if self.is_lens else
                 "ideogram4" if self.is_ideogram4 else
+                "krea2" if self.is_krea2 else
                 "_default"
             )
             timestep_sampling_config = dict(
@@ -10041,6 +10402,15 @@ class BaseTrainer(ABC):
                 )
             elif self.is_minit2i:
                 sample = self._generate_sample_minit2i(
+                    prompt=step0_prompt,
+                    width=sample_width,
+                    height=sample_height,
+                    num_inference_steps=sample_steps,
+                    guidance_scale=sample_guidance_scale,
+                    seed=sample_seed,
+                )
+            elif self.is_krea2:
+                sample = self._generate_sample_krea2(
                     prompt=step0_prompt,
                     width=sample_width,
                     height=sample_height,
@@ -11150,6 +11520,14 @@ class BaseTrainer(ABC):
                                     print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
                                     print(f"{self.log_prefix}   Regenerating latent...")
                                     latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            elif self.is_krea2:
+                                # Krea 2: packed latent [1, (H//16)*(W//16), 64].
+                                expected_seq_len = (height // 16) * (width // 16)
+                                if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 64:
+                                    print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
+                                    print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 64]  Got: {list(latent.shape)}")
+                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
                             elif not (self.is_lens or self.is_ideogram4):
                                 expected_latent_height = height // 8
                                 expected_latent_width = width // 8
@@ -11446,7 +11824,7 @@ class BaseTrainer(ABC):
                     # These are also reused across MNT iterations
                     attention_mask = None
                     pooled_embeddings = None
-                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i:
+                    if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                         attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
@@ -11592,7 +11970,7 @@ class BaseTrainer(ABC):
                             if self.is_zimage:
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
-                            elif self.is_lens or self.is_ideogram4 or self.is_minit2i:
+                            elif self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                                 # encoder_mask per sample: [L] → stacked to [B, L]
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
@@ -11696,7 +12074,7 @@ class BaseTrainer(ABC):
                         # Lens: pass latent spatial dims so train_step_lens can build img_shapes
                         # correctly for non-square resolutions.  width/height from batch loop.
                         batch_lens_latent_shape = None
-                        if (self.is_lens or self.is_ideogram4) and width and height:
+                        if (self.is_lens or self.is_ideogram4 or self.is_krea2) and width and height:
                             batch_lens_latent_shape = (height // 16, width // 16)
 
                         try:
@@ -12059,6 +12437,16 @@ class BaseTrainer(ABC):
                                 )
                             elif self.is_minit2i:
                                 sample = self._generate_sample_minit2i(
+                                    prompt=positive,
+                                    width=sample_width,
+                                    height=sample_height,
+                                    num_inference_steps=sample_steps,
+                                    guidance_scale=sample_guidance_scale,
+                                    seed=sample_seed,
+                                    negative_prompt=prompt_config.get('negative', ''),
+                                )
+                            elif self.is_krea2:
+                                sample = self._generate_sample_krea2(
                                     prompt=positive,
                                     width=sample_width,
                                     height=sample_height,

@@ -109,7 +109,7 @@ const loadControlNetImages = async (
 export interface ModelInfo {
   source_type: string;
   source: string;
-  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i";  // DEUS support removed
+  type: "sd15" | "sdxl" | "zimage" | "flux2" | "anima" | "lens" | "ideogram4" | "minit2i" | "krea2";  // DEUS support removed
   is_v_prediction: boolean;
   model_hash: string;
   // Model-list entry fields (from GET /models)
@@ -2165,6 +2165,10 @@ export interface TrainingRunCreateRequest {
   minit2i_flan_t5_path?: string;
   minit2i_scratch_init_from?: string;  // from-scratch: inherit weights from this model
   minit2i_inherit_final_layer?: boolean;  // from-scratch: also inherit the output head (final_layer.linear)
+  // Krea 2 (single-stream flow-matching MMDiT)
+  krea2_lora_scope?: string;  // "attn,mlp,text_fusion,proj" tokens; TE always frozen
+  krea2_lr_factor?: number;
+  krea2_discrete_flow_shift?: number;
   // SDXL high-spec VAE migration (swap VAE + resize U-Net conv_in/out). "none"=standard 4ch.
   sdxl_vae_type?: string;
   // SDXL Text Encoder swap (CLIP -> alt encoder + trainable bridge adapters). "none"=CLIP.

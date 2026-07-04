@@ -58,6 +58,7 @@ def build_output_forecaster(params, num_steps, label=""):
         num_basis=int(params.get("spectrum_m", 4)),
         lam=float(params.get("spectrum_lam", 0.1)),
         w=float(params.get("spectrum_w", 0.5)),
+        w_decay=float(params.get("spectrum_w_decay", 1.0)),
         warmup_steps=warmup,
         window_size=int(params.get("spectrum_window_size", 4)),
         flex_window=float(params.get("spectrum_flex_window", 0.75)),
@@ -123,13 +124,20 @@ class SpectrumForecaster:
             out = forecaster.forecast(i)    # skip the forward
     """
 
-    def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5,
+    def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5, w_decay=1.0,
                  warmup_steps=3, window_size=4, flex_window=0.75, tail_fraction=0.12,
                  max_cache=0):
         self.num_steps = int(num_steps)
         self.num_basis = max(1, int(num_basis))
         self.lam = float(lam)
         self.w = float(w)
+        # Per-step decay exponent for the spectral mix weight (M1). w is scaled by
+        # (1 - step_frac)**w_decay so the extrapolated Chebyshev term (evaluated at tau>1)
+        # contributes less at low-noise late steps, where overshoot injects ghosting.
+        # 0.0 disables the decay (M1 off); the overshoot clamp (M2) in forecast()
+        # still applies regardless, so 0.0 is not bit-identical to pre-mitigation
+        # output whenever a forecast overshoots the last anchor's norm.
+        self.w_decay = float(w_decay)
         # Keep only the most recent ``max_cache`` anchors (0 = unlimited). A finite
         # window caps memory (important for the large block-mode features) and makes the
         # fit local, which stabilizes extrapolation beyond the most recent anchor.
@@ -219,11 +227,25 @@ class SpectrumForecaster:
         tau = self._window_tau(step_idx)
         phi = _cheb_row(tau, self._cur_basis, self._device, torch.float32)  # [M1]
         cheb = phi @ self._coeffs                                           # [F] float32
-        if self.w >= 0.999:
+        # M1 -- per-step decay of the spectral mix weight. The Chebyshev term is an
+        # extrapolation (tau>1) whose overshoot grows with |w|; damping w toward the
+        # end of sampling keeps late (low-noise, detail-bearing) steps close to the
+        # stable linear extrapolation. w_decay=0 => w_eff==w (M1 off; M2 below still runs).
+        frac = step_idx / max(1, self.num_steps - 1)
+        w_eff = self.w * (1.0 - frac) ** self.w_decay
+        if w_eff >= 0.999:
             out = cheb
         else:
-            lin = self._linear_extrap(step_idx)
-            out = self.w * cheb + (1.0 - self.w) * lin
+            lin = self._linear_extrap(step_idx).float()
+            out = w_eff * cheb + (1.0 - w_eff) * lin
+        # M2 -- overshoot clamp (shrink-only). Never let the forecast carry more energy
+        # than the most recent real anchor; extrapolation overshoot injects unrenormalized
+        # energy that persists as ghosting at low-noise steps. Only shrinks, never amplifies.
+        if len(self._H) > 0:
+            ref = self._H[-1].float().norm()
+            cur = out.norm()
+            if cur > 0:
+                out = out * torch.clamp(ref / cur, max=1.0)
         self._n_forecast += 1
         return out.reshape(self._shape).to(self._dtype)
 

@@ -209,7 +209,7 @@ def save_image_with_metadata(
     if params.get("spectrum_enable", False):
         metadata.add_text("spectrum_enable", "True")
         for k in (
-            "spectrum_w", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
+            "spectrum_w", "spectrum_w_decay", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
             "spectrum_window_size", "spectrum_flex_window", "spectrum_tail",
             "spectrum_feature_mode", "spectrum_cache_branch", "spectrum_max_cache",
         ):

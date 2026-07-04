@@ -1851,7 +1851,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               ) : (
                 <div>
                   {/* Thumbnail grid with integrated D&D area */}
-                  <div className="grid grid-cols-5 auto-rows-fr gap-2">
+                  <div className="grid grid-cols-3 sm:grid-cols-5 auto-rows-fr gap-2">
                     {refImagePreviews.map((preview, index) => (
                       <div
                         key={index}

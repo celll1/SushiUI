@@ -49,6 +49,10 @@ tags:
     description: LoRA/Full-FT training run and preset management
   - name: tagger-training
     description: Tagger (vision encoder) training run management
+  - name: logs
+    description: Backend console log retrieval
+  - name: debug
+    description: Developer-mode diagnostics (VRAM inspection)
 
 paths:
   /health:
@@ -122,6 +126,32 @@ paths:
                 sd15: true
                 sdxl: true
                 deus: true
+  /schema/generation-defaults:
+    get:
+      summary: Get default parameter values for txt2img/img2img/inpaint generation
+      description: |
+        Single source of truth for generation defaults
+        (`backend/api/param_defaults.py` `GENERATION_DEFAULTS`, split per mode).
+        The frontend fetches this at startup and applies it when no localStorage
+        override is present.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Defaults grouped by generation mode
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txt2img:
+                    type: object
+                    additionalProperties: true
+                  img2img:
+                    type: object
+                    additionalProperties: true
+                  inpaint:
+                    type: object
+                    additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -1107,6 +1137,39 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Resolution failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tag-category/add:
+    post:
+      tags: [tags]
+      summary: Add a tag to a category's taglist JSON file
+      description: Adds the tag to the on-disk `taglist/{category}.json` file, invalidates the taglist cache for that category, and records the addition in `user_tag_additions.json`.
+      operationId: addTagToCategory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddTagRequest'
+      responses:
+        '200':
+          description: Add result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid category
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Taglist file for the category not found
           content:
             application/json:
               schema:
@@ -2979,6 +3042,1318 @@ paths:
                 type: object
                 additionalProperties: true
 
+  /datasets:
+    get:
+      tags: [datasets]
+      summary: List all datasets
+      description: Returns dataset summaries ordered by creation date (descending). Omits the tag_statistics column for speed; use GET /datasets/{dataset_id} for the full payload.
+      responses:
+        '200':
+          description: Dataset list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  datasets:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Dataset'
+                  total:
+                    type: integer
+    post:
+      tags: [datasets]
+      summary: Create a new dataset
+      operationId: createDataset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasetCreateRequest'
+      responses:
+        '201':
+          description: Dataset created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '400':
+          description: Name already exists, or path not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}:
+    get:
+      tags: [datasets]
+      summary: Get dataset by ID
+      description: Returns the full dataset payload including tag_statistics.
+      operationId: getDataset
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Dataset detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [datasets]
+      summary: Delete dataset
+      operationId: deleteDataset
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Dataset deleted
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/caption-processing:
+    patch:
+      tags: [datasets]
+      summary: Update caption processing configuration for a dataset
+      operationId: updateDatasetCaptionProcessing
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionProcessingUpdateRequest'
+      responses:
+        '200':
+          description: Dataset updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/exif-config:
+    patch:
+      tags: [datasets]
+      summary: Toggle EXIF-caption reading for a dataset
+      description: Applied on the next scan; does not retroactively re-read existing items.
+      operationId: updateDatasetExifConfig
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DatasetExifConfigUpdateRequest'
+      responses:
+        '200':
+          description: Dataset updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dataset'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/scan/preview:
+    post:
+      tags: [datasets]
+      summary: Preview dataset structure before importing
+      description: Scans the directory and returns detected file groups, caption suffixes, and format classifications, without writing to the database. Samples up to 500 groups.
+      operationId: previewDatasetScan
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Scan preview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Dataset path not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/scan:
+    post:
+      tags: [datasets]
+      summary: Scan dataset directory and register images/captions
+      description: |
+        Auto-detects reference/target suffix structure on first scan, then registers
+        images and captions found on disk. Also updates cached tag_statistics.
+      operationId: scanDataset
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: incremental
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Training pre-flight rescan mode; updates tag_statistics incrementally instead of recomputing from scratch
+      responses:
+        '200':
+          description: Scan result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Dataset directory not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/items:
+    get:
+      tags: [datasets]
+      summary: List dataset items with pagination and search
+      operationId: listDatasetItems
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Text search in filename (base_name)
+        - name: tags
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated tags; item must contain ALL specified tags (e.g. "1girl,solo")
+      responses:
+        '200':
+          description: Paginated item list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+
+  /datasets/{dataset_id}/items/ids:
+    get:
+      tags: [datasets]
+      summary: Get all matching dataset item IDs (unpaginated)
+      operationId: listDatasetItemIds
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: tags
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: All matching item IDs
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item_ids:
+                    type: array
+                    items:
+                      type: integer
+                  total:
+                    type: integer
+
+  /datasets/{dataset_id}/items/{item_id}:
+    get:
+      tags: [datasets]
+      summary: Get detailed dataset item with captions
+      operationId: getDatasetItem
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Item detail with captions
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/tags:
+    get:
+      tags: [datasets]
+      summary: Get all unique tags used in a dataset
+      description: Aggregates the "tags" caption type across all items in the dataset.
+      operationId: getDatasetTags
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Unique tag list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: string
+
+  /datasets/{dataset_id}/caption-types:
+    get:
+      tags: [datasets]
+      summary: Get available caption types with format detection info
+      operationId: getDatasetCaptionTypes
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Caption type summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  caption_types:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/random-caption:
+    get:
+      tags: [datasets]
+      summary: Get a random processed caption from the dataset
+      description: |
+        Mirrors the training caption pipeline: resolves caption types the same way
+        training does, selects one caption per item by priority, then applies the
+        dataset's caption processing (normalize/shuffle/dropout/category order) so
+        the preview matches the string actually fed to training.
+      operationId: getDatasetRandomCaption
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: caption_types
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated caption types to filter; defaults to the dataset's configured/auto-selected types
+      responses:
+        '200':
+          description: Random processed caption
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/items/{item_id}/captions:
+    patch:
+      tags: [datasets]
+      summary: Update caption for a dataset item
+      description: Creates the caption if it doesn't exist for the given caption_type; keeps the dataset's cached tag_statistics in sync for "tags" captions.
+      operationId: updateDatasetItemCaption
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionUpdateRequest'
+      responses:
+        '200':
+          description: Caption updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/items/{item_id}/reference-images:
+    patch:
+      tags: [datasets]
+      summary: Replace all reference images for a dataset item
+      operationId: updateDatasetItemReferenceImages
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReferenceImagesUpdateRequest'
+      responses:
+        '200':
+          description: Reference images updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: One or more reference image paths do not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Dataset item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [datasets]
+      summary: Remove a single reference image from a dataset item
+      operationId: removeDatasetItemReferenceImage
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: image_path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reference image removed
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset item, or reference image path, not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/items/{item_id}/reference-images/add:
+    post:
+      tags: [datasets]
+      summary: Add a single reference image to a dataset item
+      operationId: addDatasetItemReferenceImage
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [image_path]
+              properties:
+                image_path:
+                  type: string
+                  description: Absolute path to an existing image file
+      responses:
+        '200':
+          description: Reference image added (or already present)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Image file not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Dataset item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/items/{item_id}/save-to-txt:
+    post:
+      tags: [datasets]
+      summary: Save the item's "tags" caption from the DB to its TXT/JSON sidecar file
+      description: Auto-detects existing TXT/JSON sidecar files next to the image and writes to whichever exist; creates a TXT file if neither exists.
+      operationId: saveDatasetItemCaptionToTxt
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Save result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset item not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Failed to write file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/save-all-to-txt:
+    post:
+      tags: [datasets]
+      summary: Save all items' "tags" captions from the DB to TXT sidecar files
+      operationId: saveAllDatasetCaptionsToTxt
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Save result summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  saved_count:
+                    type: integer
+                  failed_count:
+                    type: integer
+                  failed_items:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+        '404':
+          description: Dataset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/items/{item_id}/restore-from-txt:
+    post:
+      tags: [datasets]
+      summary: Restore an item's "tags" caption from its TXT sidecar file into the DB
+      operationId: restoreDatasetItemCaptionFromTxt
+      parameters:
+        - name: item_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Caption restored
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Dataset item not found, or no TXT file exists next to the image
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Failed to read TXT file
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /datasets/{dataset_id}/batch-tagger:
+    post:
+      tags: [datasets]
+      summary: Run tagger inference over multiple dataset items
+      operationId: batchTaggerDataset
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchTaggerRequest'
+      responses:
+        '200':
+          description: Batch operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchOperationResponse'
+
+  /datasets/{dataset_id}/batch-reorder-tags:
+    post:
+      tags: [datasets]
+      summary: Reorder tags by category for multiple dataset items
+      operationId: batchReorderDatasetTags
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchReorderTagsRequest'
+      responses:
+        '200':
+          description: Batch operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchOperationResponse'
+
+  /datasets/{dataset_id}/batch-replace-tag:
+    post:
+      tags: [datasets]
+      summary: Replace a specific tag with another tag across multiple dataset items
+      operationId: batchReplaceDatasetTag
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchReplaceTagRequest'
+      responses:
+        '200':
+          description: Batch operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchOperationResponse'
+
+  /datasets/{dataset_id}/backfill-tag-data:
+    post:
+      tags: [datasets]
+      summary: Populate missing tag_data JSON for tags-format captions in a dataset
+      description: Backfills category info for captions that have comma-separated tags in "content" but tag_data=NULL (e.g. from bulk import).
+      operationId: backfillDatasetTagData
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Batch operation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchOperationResponse'
+
+  /datasets/{dataset_id}/batch-cancel:
+    post:
+      tags: [datasets]
+      summary: Cancel the current batch operation for a dataset
+      operationId: cancelDatasetBatchOperation
+      parameters:
+        - name: dataset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Cancellation requested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+
+  /caption-processing-presets:
+    get:
+      tags: [datasets]
+      summary: List all caption processing presets
+      operationId: listCaptionProcessingPresets
+      responses:
+        '200':
+          description: Preset list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/CaptionProcessingPreset'
+    post:
+      tags: [datasets]
+      summary: Create a caption processing preset
+      operationId: createCaptionProcessingPreset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionProcessingPresetCreateRequest'
+      responses:
+        '200':
+          description: Preset created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptionProcessingPreset'
+        '400':
+          description: A preset with this name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /caption-processing-presets/{preset_id}:
+    get:
+      tags: [datasets]
+      summary: Get caption processing preset by ID
+      operationId: getCaptionProcessingPreset
+      parameters:
+        - name: preset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Preset detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptionProcessingPreset'
+        '404':
+          description: Preset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags: [datasets]
+      summary: Update caption processing preset
+      operationId: updateCaptionProcessingPreset
+      parameters:
+        - name: preset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptionProcessingPresetUpdateRequest'
+      responses:
+        '200':
+          description: Preset updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptionProcessingPreset'
+        '400':
+          description: A preset with the new name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Preset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [datasets]
+      summary: Delete caption processing preset
+      operationId: deleteCaptionProcessingPreset
+      parameters:
+        - name: preset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '204':
+          description: Preset deleted
+        '404':
+          description: Preset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /tag-dictionary:
+    get:
+      tags: [tags]
+      summary: Search the tag dictionary
+      description: Paginated search over the TagDictionary DB table (distinct from the static taglist/{category} JSON caches).
+      operationId: searchTagDictionary
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Matching tags
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tags:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  page_size:
+                    type: integer
+
+  /tag-dictionary/stats:
+    get:
+      tags: [tags]
+      summary: Get tag dictionary row count
+      operationId: getTagDictionaryStats
+      responses:
+        '200':
+          description: Stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  total_tags:
+                    type: integer
+
+  /tags/search:
+    get:
+      tags: [tags]
+      summary: High-speed tag autocomplete with prefix search
+      description: Server-side prefix index over the in-memory taglist cache (~1.5M tags), <10ms typical latency.
+      operationId: searchTags
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Search prefix (minimum 2 characters; shorter values return an empty result)
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+          description: "Category filter: general, character, artist, copyright, meta, model"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Matching tags sorted by count descending
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        tag:
+                          type: string
+                        count:
+                          type: integer
+                        category:
+                          type: string
+
+  /tags/categorize:
+    post:
+      tags: [tags]
+      summary: Batch tag categorization
+      description: Resolves category for each tag via the server-side taglist cache in one call.
+      operationId: categorizeTags
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tags]
+              properties:
+                tags:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        '200':
+          description: Tag -> category map
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  categories:
+                    type: object
+                    additionalProperties:
+                      type: string
+
+  /tags/stats:
+    get:
+      tags: [tags]
+      summary: Get tag statistics summary
+      operationId: getTagStats
+      responses:
+        '200':
+          description: Category -> tag count
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stats:
+                    type: object
+                    additionalProperties: true
+
+  /serve-image:
+    get:
+      tags: [images]
+      summary: Serve an arbitrary image file from the filesystem by path
+      operationId: serveImageByPath
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Image file
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /models/vision_encoders:
+    get:
+      tags: [models]
+      summary: List safetensors files detected as SigLIP2 vision encoders
+      description: Scans the configured model directories directly (no cache) so newly added files are visible immediately.
+      operationId: listVisionEncoders
+      responses:
+        '200':
+          description: Vision encoder list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vision_encoders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        size_gb:
+                          type: number
+                        source_dir:
+                          type: string
+                        architecture:
+                          type: string
+                          example: vision_encoder
+
+  /models/minit2i/create-scratch:
+    post:
+      tags: [models]
+      summary: Create a random-initialized MiniT2I model for from-scratch Full-FT training
+      description: Writes a diffusers directory (transformer + scheduler) that becomes selectable in the model list. Latent variants (vae_type sdxl/flux1) load their VAE by type at train/inference time; the VAE weights are not bundled.
+      operationId: createScratchMiniT2I
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateScratchMiniT2IRequest'
+      responses:
+        '200':
+          description: Scratch model created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  path:
+                    type: string
+                  name:
+                    type: string
+                  variant:
+                    type: string
+                  vae_type:
+                    type: string
+        '400':
+          description: Invalid name/variant/vae_type, target_dir not configured, or path already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Failed to create scratch model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /settings/generation:
+    get:
+      tags: [settings]
+      summary: Get user-configured generation settings
+      operationId: getGenerationSettings
+      responses:
+        '200':
+          description: Generation settings
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  inpaint_use_dedicated_model:
+                    type: boolean
+    post:
+      tags: [settings]
+      summary: Save user-configured generation settings
+      operationId: saveGenerationSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                inpaint_use_dedicated_model:
+                  type: boolean
+      responses:
+        '200':
+          description: Settings saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  settings:
+                    type: object
+                    properties:
+                      inpaint_use_dedicated_model:
+                        type: boolean
+        '500':
+          description: Failed to save settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /debug/vram:
+    get:
+      tags: [debug]
+      summary: Inspect CUDA VRAM usage
+      description: Developer-mode diagnostics endpoint. Lists all live CUDA tensors (grouped by shape/dtype) plus PyTorch memory stats and pipeline component device placement.
+      operationId: debugVramInspect
+      responses:
+        '200':
+          description: VRAM inspection report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memory:
+                    type: object
+                    additionalProperties: true
+                  tensor_count:
+                    type: integer
+                  unique_shapes:
+                    type: integer
+                  tensors:
+                    type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                  components:
+                    type: object
+                    additionalProperties: true
+
+  /debug/vram/release:
+    post:
+      tags: [debug]
+      summary: Force release all cached CUDA memory back to the OS
+      operationId: debugVramRelease
+      responses:
+        '200':
+          description: Release result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /logs:
+    get:
+      tags: [logs]
+      summary: Get captured backend console logs
+      operationId: getLogs
+      parameters:
+        - name: last
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Return only the last N log lines
+      responses:
+        '200':
+          description: Log lines
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logs:
+                    type: array
+                    items:
+                      type: string
+                  total:
+                    type: integer
+    delete:
+      tags: [logs]
+      summary: Clear all captured backend console logs
+      operationId: clearLogs
+      responses:
+        '200':
+          description: Logs cleared
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+
 components:
   securitySchemes:
     bearerAuth:
@@ -3833,6 +5208,239 @@ components:
             type: string
           description: Suffixes identifying caption/instruction files in reference mode (e.g., ["_instruction"])
           example: ["_instruction"]
+
+    AddTagRequest:
+      type: object
+      required: [tag, category]
+      description: Add a tag to a category's static taglist JSON file and invalidate the taglist cache for that category
+      properties:
+        tag:
+          type: string
+        category:
+          type: string
+          enum: [Artist, Character, Copyright, General, Meta, Model, Quality, Rating]
+        count:
+          type: integer
+          default: 1
+
+    DatasetCreateRequest:
+      type: object
+      required: [name, path]
+      description: Register a new dataset pointing at a directory on disk
+      properties:
+        name:
+          type: string
+          example: "Instruct_NL"
+        path:
+          type: string
+          description: Directory path to scan
+          example: "D:\\datasets\\instruct_nl"
+        description:
+          type: string
+          nullable: true
+        recursive:
+          type: boolean
+          default: true
+        read_exif:
+          type: boolean
+          default: false
+
+    CaptionProcessingUpdateRequest:
+      type: object
+      required: [caption_processing]
+      description: Replace the caption processing configuration (normalize/shuffle/dropout/category order) for a dataset
+      properties:
+        caption_processing:
+          type: object
+          additionalProperties: true
+
+    DatasetExifConfigUpdateRequest:
+      type: object
+      description: Toggle EXIF-caption reading for a dataset (applied on the next scan)
+      properties:
+        read_exif:
+          type: boolean
+          nullable: true
+        exif_caption_fields:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: EXIF tags to read as captions; empty/null uses the default field set
+
+    CaptionProcessingPresetCreateRequest:
+      type: object
+      required: [name, config]
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        config:
+          type: object
+          additionalProperties: true
+
+    CaptionProcessingPresetUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        config:
+          type: object
+          nullable: true
+          additionalProperties: true
+
+    CaptionProcessingPreset:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        config:
+          type: object
+          additionalProperties: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ReferenceImagesUpdateRequest:
+      type: object
+      required: [reference_images]
+      description: Replace the full list of reference images for a dataset item
+      properties:
+        reference_images:
+          type: array
+          items:
+            type: string
+          description: Absolute file paths to reference images
+
+    CaptionUpdateRequest:
+      type: object
+      required: [content]
+      properties:
+        caption_type:
+          type: string
+          default: tags
+        content:
+          type: string
+        tag_data:
+          type: array
+          nullable: true
+          items:
+            type: object
+            additionalProperties: true
+          description: 'Per-tag category info, e.g. [{"tag": "1girl", "category": "General"}]'
+
+    BatchTaggerRequest:
+      type: object
+      required: [item_ids]
+      description: Run tagger inference over multiple dataset items
+      properties:
+        item_ids:
+          type: array
+          items:
+            type: integer
+          description: Item IDs to process; empty means all items in the dataset
+        gen_threshold:
+          type: number
+          default: 0.45
+        char_threshold:
+          type: number
+          default: 0.45
+        thresholds:
+          type: object
+          nullable: true
+          additionalProperties:
+            type: number
+        model_version:
+          type: string
+          default: cl_tagger_1_02
+        remove_below_threshold:
+          type: boolean
+          default: true
+        merge_with_existing:
+          type: boolean
+          default: true
+
+    BatchReorderTagsRequest:
+      type: object
+      required: [item_ids, category_order]
+      properties:
+        item_ids:
+          type: array
+          items:
+            type: integer
+        category_order:
+          type: array
+          items:
+            type: string
+
+    BatchReplaceTagRequest:
+      type: object
+      required: [item_ids, from_tag, to_tag]
+      properties:
+        item_ids:
+          type: array
+          items:
+            type: integer
+        from_tag:
+          type: string
+        to_tag:
+          type: string
+        normalize_match:
+          type: boolean
+          default: true
+          description: Match ignoring whitespace/underscore differences
+
+    BatchOperationResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        processed_count:
+          type: integer
+        updated_count:
+          type: integer
+        skipped_count:
+          type: integer
+        failed_count:
+          type: integer
+        message:
+          type: string
+
+    CreateScratchMiniT2IRequest:
+      type: object
+      required: [name]
+      description: Create a random-initialized MiniT2I model for from-scratch Full-FT training
+      properties:
+        variant:
+          type: string
+          enum: [b16, l16]
+          default: b16
+        vae_type:
+          type: string
+          enum: [sdxl, flux1, none]
+          default: sdxl
+          description: "none = pixel-space (no VAE)"
+        name:
+          type: string
+          description: Output directory name
+        target_dir:
+          type: string
+          nullable: true
+          description: Parent directory; defaults to the first configured models dir
 
     Dataset:
       type: object

@@ -11,6 +11,8 @@ info:
     - TIPO tag generation
     - Image tagging
     - Quantization support (FP8, UINT)
+
+    WebSocket progress protocol (`/api/v1/ws/progress`) is documented separately in backend/api/WS_PROTOCOL.md.
   version: 1.0.0
   contact:
     name: SushiUI GitHub

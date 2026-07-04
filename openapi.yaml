@@ -45,6 +45,10 @@ tags:
     description: Authentication (if enabled)
   - name: datasets
     description: Dataset management, scanning, and structure detection
+  - name: training
+    description: LoRA/Full-FT training run and preset management
+  - name: tagger-training
+    description: Tagger (vision encoder) training run management
 
 paths:
   /health:
@@ -118,6 +122,40 @@ paths:
                 sd15: true
                 sdxl: true
                 deus: true
+  /schema/training-defaults:
+    get:
+      summary: Get default parameter values for LoRA / Full-FT training
+      description: |
+        Single source of truth for LoRA/Full-FT training defaults
+        (`backend/api/param_defaults.py` `TRAINING_DEFAULTS`). The frontend
+        fetches this at startup and applies it when no localStorage override
+        is present, so the UI and backend never diverge on default values.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Map of training parameter name to default value
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /schema/tagger-training-defaults:
+    get:
+      summary: Get default parameter values for tagger training
+      description: |
+        Single source of truth for tagger training defaults
+        (`backend/api/param_defaults.py` `TAGGER_TRAINING_DEFAULTS`). The
+        frontend fetches this at startup and applies it when no localStorage
+        override is present.
+      tags: [Schema]
+      responses:
+        '200':
+          description: Map of tagger training parameter name to default value
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
   /generate/txt2img:
     post:
       tags: [generation]
@@ -247,6 +285,222 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate/txt2img/training-preview:
+    post:
+      tags: [training]
+      summary: Preview txt2img using the in-training model
+      description: |
+        Generates a preview image using the CURRENT (in-progress) weights of
+        an active LoRA / Full-FT training run, rather than a saved
+        checkpoint. Body is the same shape as generation params (prompt,
+        steps, cfg_scale, seed, width/height, sampler, schedule_type,
+        optional loras/controlnets) plus `run_id` (optional; required to
+        disambiguate when multiple training runs are active) and
+        `save_to_gallery` (optional; when true, also persists the PNG under
+        outputs/ and inserts a GeneratedImage row tagged
+        `training-preview:<run>@step<N>`). Requires an active training
+        process (404/409 otherwise). Returns the PNG bytes directly, with
+        `X-Preview-*` metadata headers.
+      operationId: previewTxt2ImgTraining
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/GenerationParams'
+                - type: object
+                  properties:
+                    run_id:
+                      type: integer
+                      nullable: true
+                      description: Target training run when multiple are active
+                    save_to_gallery:
+                      type: boolean
+                      default: false
+                      description: Persist the preview PNG into the regular gallery
+      responses:
+        '200':
+          description: Preview PNG
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No active training run (or run_id not active)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Zero or multiple active training runs and run_id not given
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Preview generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Preview request timed out (training busy or stopped)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /generate/img2img/training-preview:
+    post:
+      tags: [training]
+      summary: Preview img2img using the in-training model
+      description: |
+        Same as `/generate/txt2img/training-preview` but adds an init image.
+        Body is JSON (not multipart) with `init_image_base64` (raw or
+        data-URL encoded PNG/JPEG) and `denoising_strength`, plus the fields
+        inherited from the txt2img preview body.
+      operationId: previewImg2ImgTraining
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/GenerationParams'
+                - type: object
+                  required: [init_image_base64]
+                  properties:
+                    run_id:
+                      type: integer
+                      nullable: true
+                    save_to_gallery:
+                      type: boolean
+                      default: false
+                    init_image_base64:
+                      type: string
+                      description: Base64-encoded (raw or data-URL) init image
+                    denoising_strength:
+                      type: number
+                      default: 0.75
+                    inpaint_fill_mode:
+                      type: string
+                      default: original
+                      description: Forwarded for inpaint variants
+                    inpaint_fill_strength:
+                      type: number
+                      default: 1.0
+                    inpaint_blur_strength:
+                      type: number
+                      default: 1.0
+      responses:
+        '200':
+          description: Preview PNG
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No active training run (or run_id not active)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Zero or multiple active training runs and run_id not given
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Preview generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Preview request timed out (training busy or stopped)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /generate/inpaint/training-preview:
+    post:
+      tags: [training]
+      summary: Preview inpaint using the in-training model
+      description: |
+        Same as `/generate/img2img/training-preview` but additionally
+        requires `mask_image_base64` (alpha or grayscale; normalised by the
+        trainer).
+      operationId: previewInpaintTraining
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/GenerationParams'
+                - type: object
+                  required: [init_image_base64, mask_image_base64]
+                  properties:
+                    run_id:
+                      type: integer
+                      nullable: true
+                    save_to_gallery:
+                      type: boolean
+                      default: false
+                    init_image_base64:
+                      type: string
+                      description: Base64-encoded (raw or data-URL) init image
+                    mask_image_base64:
+                      type: string
+                      description: Base64-encoded (alpha or grayscale) mask image
+                    denoising_strength:
+                      type: number
+                      default: 0.75
+                    inpaint_fill_mode:
+                      type: string
+                      default: original
+                    inpaint_fill_strength:
+                      type: number
+                      default: 1.0
+                    inpaint_blur_strength:
+                      type: number
+                      default: 1.0
+      responses:
+        '200':
+          description: Preview PNG
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No active training run (or run_id not active)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Zero or multiple active training runs and run_id not given
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Preview generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: Preview request timed out (training busy or stopped)
           content:
             application/json:
               schema:
@@ -1284,6 +1538,1447 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /training/active:
+    get:
+      tags: [training]
+      summary: Get currently active training run
+      description: Returns the training run currently in progress, or null when none is running.
+      responses:
+        '200':
+          description: Active training run info (or null fields when idle)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /training/runs:
+    post:
+      tags: [training]
+      summary: Create a training run
+      description: Create a new training run record and generate its YAML configuration.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainingRunCreateRequest'
+      responses:
+        '201':
+          description: Training run created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      tags: [training]
+      summary: List training runs
+      responses:
+        '200':
+          description: List of training runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+  /training/runs/{run_id}:
+    get:
+      tags: [training]
+      summary: Get a training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Training run details
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      tags: [training]
+      summary: Update a training run
+      description: Regenerate the run's YAML configuration from parameters. Not allowed while the run is running or starting.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainingRunCreateRequest'
+      responses:
+        '200':
+          description: Training run updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Run is running or parameters invalid
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [training]
+      summary: Delete a training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Training run deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/params:
+    get:
+      tags: [training]
+      summary: Get run parameters in TrainingRunCreateRequest format
+      description: Parses the run's stored YAML configuration back into request-shaped parameters for editing.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Parameters for editing
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/start:
+    post:
+      tags: [training]
+      summary: Start a training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Training started
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/stop:
+    post:
+      tags: [training]
+      summary: Stop a training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Stop requested
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/skip-rescan:
+    post:
+      tags: [training]
+      summary: Skip the pre-training dataset rescan
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkipRescanRequest'
+      responses:
+        '200':
+          description: Rescan skip result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /training/runs/{run_id}/config:
+    patch:
+      tags: [training]
+      summary: Update raw training configuration
+      description: Update configuration fields for a run. Only allowed when the run is not running.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Configuration updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Run is running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/config/reload:
+    post:
+      tags: [training]
+      summary: Reload training configuration from disk
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Configuration reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/status:
+    get:
+      tags: [training]
+      summary: Get training run status
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Run status (state, progress, current step)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/danbooru-metrics:
+    get:
+      tags: [training]
+      summary: Get Danbooru augmentation metrics for a run
+      description: Reads danbooru_metrics.json from the run output directory. Returns enabled=false when the file is missing.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Augmentation metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/danbooru/resume:
+    post:
+      tags: [training]
+      summary: Resume Danbooru augmentation downloads for a run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Resume request result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/tensorboard/start:
+    post:
+      tags: [training]
+      summary: Start TensorBoard for a run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: TensorBoard process info
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/tensorboard/stop:
+    delete:
+      tags: [training]
+      summary: Stop TensorBoard for a run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: TensorBoard stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /training/runs/{run_id}/tensorboard/status:
+    get:
+      tags: [training]
+      summary: Get TensorBoard status for a run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: TensorBoard status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /training/runs/{run_id}/checkpoints:
+    get:
+      tags: [training]
+      summary: List checkpoints saved by a run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Checkpoint list
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/checkpoints/{checkpoint_filename}:
+    get:
+      tags: [training]
+      summary: Download a checkpoint file
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: checkpoint_filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Checkpoint file
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Run or checkpoint not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/debug-latents:
+    get:
+      tags: [training]
+      summary: List debug latent saves for a run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Debug latent entries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/debug-latents/{step}/visualize:
+    get:
+      tags: [training]
+      summary: Visualize debug latents at a step
+      description: Returns base64-encoded visualizations of latents, noisy latents, and predicted noise (no VAE decoding).
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: step
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: timestep
+          in: query
+          required: false
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Base64 visualization images
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Run or latents not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/metrics:
+    get:
+      tags: [training]
+      summary: Get training metrics from TensorBoard event files
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: since_step
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Only return data after this step (incremental updates)
+        - name: max_points
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1000
+      responses:
+        '200':
+          description: Loss and learning-rate series
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/metrics_db:
+    get:
+      tags: [training]
+      summary: Get training metrics from the database
+      description: Returns metrics with uniform step sampling from 0 to the latest step.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: max_points
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 1000
+      responses:
+        '200':
+          description: Sampled metric series
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/samples:
+    get:
+      tags: [training]
+      summary: List sample images generated during training
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Sample image info with step number and file path
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/runs/{run_id}/samples/{filename}:
+    get:
+      tags: [training]
+      summary: Get a training sample image
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: filename
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Sample image file
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Run or sample not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /training/presets:
+    get:
+      tags: [training]
+      summary: List training presets
+      responses:
+        '200':
+          description: Preset list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+    post:
+      tags: [training]
+      summary: Create a training preset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainingPresetCreateRequest'
+      responses:
+        '201':
+          description: Preset created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /training/presets/{preset_id}:
+    get:
+      tags: [training]
+      summary: Get a training preset
+      parameters:
+        - name: preset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Preset details
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Preset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags: [training]
+      summary: Update a training preset
+      parameters:
+        - name: preset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TrainingPresetUpdateRequest'
+      responses:
+        '200':
+          description: Preset updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Preset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [training]
+      summary: Delete a training preset
+      parameters:
+        - name: preset_id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Preset deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Preset not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs:
+    post:
+      tags: [tagger-training]
+      summary: Create a tagger training run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaggerTrainingRunCreateRequest'
+      responses:
+        '200':
+          description: Tagger training run created
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    get:
+      tags: [tagger-training]
+      summary: List tagger training runs
+      responses:
+        '200':
+          description: List of tagger training runs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+  /tagger-training/runs/{run_id}:
+    get:
+      tags: [tagger-training]
+      summary: Get a tagger training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tagger training run details
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      tags: [tagger-training]
+      summary: Update a tagger training run
+      description: Update configuration of a pending, stopped, or failed run.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TaggerTrainingRunCreateRequest'
+      responses:
+        '200':
+          description: Tagger training run updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '400':
+          description: Run is not in an editable state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      tags: [tagger-training]
+      summary: Delete a tagger training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tagger training run deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/vocabulary:
+    get:
+      tags: [tagger-training]
+      summary: Get vocabulary of a tagger training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Vocabulary contents
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Run or vocabulary not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/start:
+    post:
+      tags: [tagger-training]
+      summary: Start a tagger training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tagger training started
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/stop:
+    post:
+      tags: [tagger-training]
+      summary: Stop a tagger training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stop requested
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/skip-rescan:
+    post:
+      tags: [tagger-training]
+      summary: Skip the pre-training dataset rescan for a tagger run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SkipRescanRequest'
+      responses:
+        '200':
+          description: Rescan skip result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger-training/runs/{run_id}/danbooru-metrics:
+    get:
+      tags: [tagger-training]
+      summary: Get Danbooru augmentation metrics for a tagger run
+      description: Reads danbooru_metrics.json from the run output directory. Returns enabled=false when the file is missing.
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Augmentation metrics
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/danbooru/resume:
+    post:
+      tags: [tagger-training]
+      summary: Resume Danbooru augmentation downloads for a tagger run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Resume request result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/runs/{run_id}/metrics:
+    get:
+      tags: [tagger-training]
+      summary: Get per-step metrics for a tagger training run
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: since_step
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+        - name: max_points
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 2000
+          description: Maximum data points returned (uniform decimation). 0 = no limit.
+      responses:
+        '200':
+          description: Metric series
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '404':
+          description: Tagger training run not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger-training/vocabulary-preview:
+    get:
+      tags: [tagger-training]
+      summary: Preview tag vocabulary for datasets
+      description: Returns tag count and category breakdown for the given dataset IDs without the full vocabulary.
+      parameters:
+        - name: dataset_ids
+          in: query
+          required: true
+          schema:
+            type: string
+          description: Comma-separated dataset IDs
+        - name: excluded_categories
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: ban_tags
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: use_gelbooru_categories
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Vocabulary preview
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/load:
+    post:
+      tags: [tagger]
+      summary: Load a SigLIP2 tagger checkpoint
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2LoadRequest'
+      responses:
+        '200':
+          description: Load result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/predict:
+    post:
+      tags: [tagger]
+      summary: Predict tags with the SigLIP2 tagger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2PredictRequest'
+      responses:
+        '200':
+          description: Predicted tags with probabilities
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/build-ood-reference:
+    post:
+      tags: [tagger]
+      summary: Build an out-of-distribution reference set
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2BuildOodReferenceRequest'
+      responses:
+        '200':
+          description: Build result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/status:
+    get:
+      tags: [tagger]
+      summary: Get SigLIP2 tagger status
+      responses:
+        '200':
+          description: Model load status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/vocabulary:
+    get:
+      tags: [tagger]
+      summary: Get vocabulary of the loaded SigLIP2 model
+      responses:
+        '200':
+          description: Vocabulary contents
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/tag-metrics:
+    get:
+      tags: [tagger]
+      summary: Get per-tag metrics of the loaded SigLIP2 model
+      responses:
+        '200':
+          description: Per-tag metrics (thresholds, F1)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/checkpoint-meta:
+    get:
+      tags: [tagger]
+      summary: Read metadata from a SigLIP2 checkpoint file
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Checkpoint metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/unload:
+    post:
+      tags: [tagger]
+      summary: Unload the SigLIP2 tagger model
+      responses:
+        '200':
+          description: Unload result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/calibration:
+    get:
+      tags: [tagger]
+      summary: Get SigLIP2 calibration settings
+      responses:
+        '200':
+          description: Current calibration settings
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      tags: [tagger]
+      summary: Set SigLIP2 calibration settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2CalibrationRequest'
+      responses:
+        '200':
+          description: Calibration updated
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/merge-lora:
+    post:
+      tags: [tagger]
+      summary: Merge LoRA weights into the loaded SigLIP2 model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2MergeLoRARequest'
+      responses:
+        '200':
+          description: Merge result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/export-onnx:
+    post:
+      tags: [tagger]
+      summary: Export the loaded SigLIP2 model to ONNX
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2ExportONNXRequest'
+      responses:
+        '200':
+          description: Export result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/siglip2/extract-encoder:
+    post:
+      tags: [tagger]
+      summary: Extract a vision or text encoder from a HuggingFace repo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SigLIP2ExtractEncoderRequest'
+      responses:
+        '200':
+          description: Extraction result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/browser/set-directory:
+    post:
+      tags: [tagger]
+      summary: Set the tagger browser working directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserSetDirectoryRequest'
+      responses:
+        '200':
+          description: Directory set
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/browser/pick-directory:
+    post:
+      tags: [tagger]
+      summary: Open a native directory picker dialog
+      responses:
+        '200':
+          description: Selected directory (or cancelled)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/browser/list:
+    get:
+      tags: [tagger]
+      summary: List images in the browser directory
+      parameters:
+        - name: recursive
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+        - name: include_tags
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Image entries
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /tagger/browser/image:
+    get:
+      tags: [tagger]
+      summary: Get an image file from the browser directory
+      parameters:
+        - name: rel_path
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: size
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 0
+          description: Thumbnail size in pixels (0 = original)
+      responses:
+        '200':
+          description: Image file
+          content:
+            image/*:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Image not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /tagger/browser/tags:
+    get:
+      tags: [tagger]
+      summary: Read tags from an image's .txt sidecar file
+      parameters:
+        - name: rel_path
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Tags for the image
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+    post:
+      tags: [tagger]
+      summary: Write tags to an image's .txt sidecar file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserSaveTagsRequest'
+      responses:
+        '200':
+          description: Save result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  saved:
+                    type: boolean
+  /tagger/browser/batch-infer:
+    post:
+      tags: [tagger]
+      summary: Run tagger inference over multiple browser images
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BrowserBatchInferRequest'
+      responses:
+        '200':
+          description: Batch inference results
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
 components:
   securitySchemes:
     bearerAuth:
@@ -2296,7 +3991,6 @@ components:
       required:
         - training_method
         - base_model_path
-        - dataset_ids
       properties:
         training_method:
           type: string
@@ -2307,12 +4001,17 @@ components:
           type: string
           description: Path to the base model file
           example: "M:/models/animagine-xl-3.1.safetensors"
-        dataset_ids:
+        dataset_id:
+          type: integer
+          nullable: true
+          description: Single dataset ID (legacy form)
+        dataset_configs:
           type: array
+          nullable: true
           items:
-            type: integer
-          description: List of dataset IDs to use for training
-          example: [1, 2]
+            type: object
+            additionalProperties: true
+          description: Per-dataset configuration objects (dataset_id, caption settings, etc.)
         learning_rate:
           type: number
           format: float
@@ -2321,18 +4020,14 @@ components:
           example: 0.0001
         total_steps:
           type: integer
-          default: 1000
-          description: Total training steps (when use_epochs is false)
+          nullable: true
+          description: Total training steps (mutually exclusive with epochs)
           example: 1000
         epochs:
           type: integer
-          default: 10
-          description: Number of epochs (when use_epochs is true)
+          nullable: true
+          description: Number of epochs (mutually exclusive with total_steps)
           example: 10
-        use_epochs:
-          type: boolean
-          default: false
-          description: Whether to use epoch-based training
         batch_size:
           type: integer
           default: 1
@@ -2545,3 +4240,1064 @@ components:
             Krea 2 discrete flow-matching timestep shift applied to the sampled sigma
             (sigma' = s*sigma / (1 + (s-1)*sigma)). Set <=1 to disable.
           example: 2.5
+        run_name:
+          type: 'string'
+          nullable: true
+        gradient_accumulation_steps:
+          type: 'integer'
+          default: 1
+        max_grad_norm:
+          type: 'number'
+          default: 1.0
+        optimizer_is_paged:
+          type: 'boolean'
+          default: false
+        optimizer_cautious:
+          type: 'boolean'
+          default: false
+        optimizer_beta1:
+          type: 'number'
+          nullable: true
+        optimizer_beta2:
+          type: 'number'
+          nullable: true
+        optimizer_epsilon:
+          type: 'number'
+          nullable: true
+        optimizer_weight_decay:
+          type: 'number'
+          nullable: true
+        optimizer_schedule_free:
+          type: 'boolean'
+          default: false
+        optimizer_schedule_free_r:
+          type: 'number'
+          default: 0.0
+        optimizer_schedule_free_weight_lr_power:
+          type: 'number'
+          default: 2.0
+        optimizer_use_radam:
+          type: 'boolean'
+          default: false
+        optimizer_stochastic_rounding:
+          type: 'boolean'
+          default: false
+        network_type:
+          type: 'string'
+          nullable: true
+          default: 'lora'
+        save_every:
+          type: 'integer'
+          default: 100
+        save_every_unit:
+          type: 'string'
+          default: 'steps'
+        max_step_saves_to_keep:
+          type: 'integer'
+          nullable: true
+        sample_every:
+          type: 'integer'
+          default: 100
+        sample_prompts:
+          type: 'array'
+          items:
+            type: 'object'
+            additionalProperties: true
+        resume_from_checkpoint:
+          type: 'string'
+          nullable: true
+        debug_latents:
+          type: 'boolean'
+          default: false
+        debug_latents_every:
+          type: 'integer'
+          default: 50
+        enable_bucketing:
+          type: 'boolean'
+          default: false
+        base_resolutions:
+          type: 'array'
+          items:
+            type: 'integer'
+          nullable: true
+        bucket_strategy:
+          type: 'string'
+          default: 'resize'
+        multi_resolution_mode:
+          type: 'string'
+          default: 'max'
+        crop_augment_enable:
+          type: 'boolean'
+          default: false
+        crop_full_image_prob:
+          type: 'number'
+          default: 0.7
+        crop_max_bucket_prob:
+          type: 'number'
+          default: 0.7
+        crop_min_area_ratio:
+          type: 'number'
+          default: 0.25
+        crop_min_short_side_px:
+          type: 'integer'
+          default: 512
+        crop_aspect_mode:
+          type: 'string'
+          default: 'source'
+        crop_position_mode:
+          type: 'string'
+          default: 'random'
+        crop_smaller_bucket_mode:
+          type: 'string'
+          default: 'base_res'
+        crop_smaller_scale_range:
+          type: 'array'
+          items:
+            type: 'number'
+          nullable: true
+        full_crop_position_mode:
+          type: 'string'
+          default: 'center'
+        crop_microcond_mode:
+          type: 'string'
+          default: 'kohya'
+        crop_plan_seed:
+          type: 'integer'
+          default: 0
+        cache_latents_to_disk:
+          type: 'boolean'
+          default: false
+        force_recache:
+          type: 'boolean'
+          default: false
+        reconstruction_loss_weight:
+          type: 'number'
+          default: 0.0
+        train_unet:
+          type: 'boolean'
+          default: true
+        train_text_encoder:
+          type: 'boolean'
+          default: false
+        train_image_encoder:
+          type: 'boolean'
+          default: false
+        unet_lr:
+          type: 'number'
+          nullable: true
+        text_encoder_lr:
+          type: 'number'
+          nullable: true
+        text_encoder_1_lr:
+          type: 'number'
+          nullable: true
+        text_encoder_2_lr:
+          type: 'number'
+          nullable: true
+        image_encoder_lr:
+          type: 'number'
+          nullable: true
+        anima_lora_scope:
+          type: 'string'
+          default: 'attention,mlp,llm_adapter'
+        lens_lora_scope:
+          type: 'string'
+          default: 'img_attn,txt_attn,img_mlp,txt_mlp'
+        lens_img_lr_factor:
+          type: 'number'
+          default: 1.0
+        lens_txt_lr_factor:
+          type: 'number'
+          default: 1.0
+        ideogram4_lora_scope:
+          type: 'string'
+          default: 'attn,mlp'
+        ideogram4_train_uncond:
+          type: 'boolean'
+          default: false
+        ideogram4_uncond_loss_weight:
+          type: 'number'
+          default: 1.0
+        ideogram4_lr_factor:
+          type: 'number'
+          default: 1.0
+        train_llm_adapter:
+          type: 'boolean'
+          default: true
+        minit2i_lora_scope:
+          type: 'string'
+          default: 'attn,mlp,txt_embed'
+        minit2i_te_lora_scope:
+          type: 'string'
+          default: 'attn,ff'
+        minit2i_label_drop_rate:
+          type: 'number'
+          default: 0.1
+        minit2i_lr_factor:
+          type: 'number'
+          default: 1.0
+        minit2i_flan_t5_path:
+          type: 'string'
+          default: ''
+        minit2i_scratch_init_from:
+          type: 'string'
+          default: ''
+        minit2i_inherit_final_layer:
+          type: 'boolean'
+          default: false
+        repa_enable:
+          type: 'boolean'
+          default: false
+        repa_encoder_source:
+          type: 'string'
+          default: 'tagger'
+        repa_tagger_model_dir:
+          type: 'string'
+          default: ''
+        repa_siglip2_repo:
+          type: 'string'
+          default: 'google/siglip2-so400m-patch14-384'
+        repa_align_depth:
+          type: 'integer'
+          default: -1
+        repa_weight:
+          type: 'number'
+          default: 0.5
+        repa_proj_lr_factor:
+          type: 'number'
+          default: 1.0
+        repa_encoder_resolution:
+          type: 'integer'
+          default: 0
+        anima_attn_mlp_lr_factor:
+          type: 'number'
+          default: 1.0
+        anima_mod_lr_factor:
+          type: 'number'
+          default: 1.0
+        anima_llm_adapter_lr_factor:
+          type: 'number'
+          default: 1.0
+        cpu_offload_checkpointing:
+          type: 'boolean'
+          default: false
+        async_cpu_offload_checkpointing:
+          type: 'boolean'
+          default: false
+        fp8_base_dtype:
+          type: 'string'
+          nullable: true
+        danbooru_aug_enable:
+          type: 'boolean'
+          default: false
+        danbooru_aug_queries:
+          type: 'string'
+          default: ''
+        danbooru_aug_weight_static:
+          type: 'number'
+          default: 1.0
+        danbooru_aug_deficiency_enable:
+          type: 'boolean'
+          default: true
+        danbooru_aug_deficiency_min_count:
+          type: 'integer'
+          default: 20
+        danbooru_aug_deficiency_top_k:
+          type: 'integer'
+          default: 200
+        danbooru_aug_deficiency_manual:
+          type: 'string'
+          default: ''
+        danbooru_aug_weight_deficiency:
+          type: 'number'
+          default: 1.0
+        danbooru_aug_injection_interval:
+          type: 'integer'
+          default: 4
+        danbooru_aug_injection_ratio:
+          type: 'number'
+          default: 1.0
+        danbooru_aug_min_score:
+          type: 'integer'
+          default: 0
+        danbooru_aug_max_posts_per_query:
+          type: 'integer'
+          default: 200
+        danbooru_aug_api_interval:
+          type: 'number'
+          default: 1.4
+        danbooru_aug_dl_speed_kbps:
+          type: 'integer'
+          default: 500
+        danbooru_speed_check_enable:
+          type: 'boolean'
+          default: true
+        danbooru_speed_degraded_kbps:
+          type: 'integer'
+          default: 250
+        danbooru_speed_min_slow_streak:
+          type: 'integer'
+          default: 8
+        danbooru_speed_min_slow_seconds:
+          type: 'integer'
+          default: 90
+        danbooru_speed_cooldown_seconds:
+          type: 'integer'
+          default: 3600
+        danbooru_aug_buffer_size:
+          type: 'integer'
+          nullable: true
+        danbooru_aug_include_rating_tag:
+          type: 'boolean'
+          default: false
+        danbooru_aug_max_caption_tags:
+          type: 'integer'
+          default: 0
+        danbooru_quality_tag_enable:
+          type: 'boolean'
+          default: false
+        danbooru_quality_tag_thresholds:
+          type: 'string'
+          default: ''
+        danbooru_quality_tag_attach_negative:
+          type: 'boolean'
+          default: false
+        danbooru_aug_shuffle_tags:
+          type: 'boolean'
+          default: false
+        danbooru_aug_shuffle_keep_first_n:
+          type: 'integer'
+          default: 0
+        danbooru_aug_tag_dropout_rate:
+          type: 'number'
+          default: 0.0
+        danbooru_aug_tag_dropout_keep_first_n:
+          type: 'integer'
+          default: 0
+        danbooru_aug_caption_dropout_rate:
+          type: 'number'
+          default: 0.0
+        danbooru_aug_keep_tokens:
+          type: 'integer'
+          default: 0
+        weight_dtype:
+          type: 'string'
+          default: 'fp16'
+        training_dtype:
+          type: 'string'
+          default: 'fp16'
+        output_dtype:
+          type: 'string'
+          default: 'fp32'
+        vae_dtype:
+          type: 'string'
+          default: 'fp16'
+        mixed_precision:
+          type: 'boolean'
+          default: true
+        min_snr_gamma:
+          type: 'number'
+          default: 5.0
+        text_encoding_mode:
+          type: 'string'
+          default: 'swap_onthefly'
+        text_encoding_swap_interval:
+          type: 'integer'
+          default: 256
+        text_encoding_prefetch_depth:
+          type: 'integer'
+          default: 4
+        latent_encoding_mode:
+          type: 'string'
+          default: 'swap_onthefly'
+        latent_encoding_swap_interval:
+          type: 'integer'
+          default: 256
+        blocks_to_swap:
+          type: 'integer'
+          default: 0
+        use_pinned_memory:
+          type: 'boolean'
+          default: false
+        block_swap_h2d_only:
+          type: 'boolean'
+          default: false
+        block_swap_ring_size:
+          type: 'integer'
+          default: 2
+        num_optimizer_groups:
+          type: 'integer'
+          default: 0
+        multi_noise_timesteps:
+          type: 'integer'
+          default: 1
+        multi_noise_mode:
+          type: 'string'
+          default: 'independent'
+        trajectory_blend_alpha:
+          type: 'number'
+          default: 0.7
+        timestep_sampling:
+          type: 'object'
+          additionalProperties: true
+          nullable: true
+        regularization_type:
+          type: 'string'
+          nullable: true
+        snr_regularization_weight:
+          type: 'number'
+          default: 0.1
+        snr_timestep_adaptive:
+          type: 'boolean'
+          default: true
+        snr_penalty_mode:
+          type: 'string'
+          default: 'relu'
+        energy_regularization_weight:
+          type: 'number'
+          default: 0.05
+        energy_timestep_adaptive:
+          type: 'boolean'
+          default: true
+        energy_penalty_mode:
+          type: 'string'
+          default: 'abs'
+        energy_normalize_by_pixels:
+          type: 'boolean'
+          default: true
+        sample_width:
+          type: 'integer'
+          default: 1024
+        sample_height:
+          type: 'integer'
+          default: 1024
+        sample_steps:
+          type: 'integer'
+          default: 28
+        sample_cfg_scale:
+          type: 'number'
+          default: 7.0
+        sample_sampler:
+          type: 'string'
+          default: 'euler'
+        sample_schedule_type:
+          type: 'string'
+          default: 'sgm_uniform'
+        sample_seed:
+          type: 'integer'
+          default: -1
+        noise_process:
+          type: 'string'
+          default: 'auto'
+        prediction_target:
+          type: 'string'
+          default: 'auto'
+        strict_validation:
+          type: 'boolean'
+          default: false
+        sdxl_micro_conditioning:
+          type: 'boolean'
+          default: true
+        sdxl_vae_type:
+          type: 'string'
+          default: 'none'
+        sdxl_te_type:
+          type: 'string'
+          default: 'none'
+        sdxl_te_hidden_layer:
+          type: 'integer'
+          default: -2
+        sdxl_te_max_len:
+          type: 'integer'
+          default: 256
+        sdxl_te_train_encoder:
+          type: 'boolean'
+          default: false
+        gradient_routing_ve:
+          type: 'boolean'
+          default: false
+        param_tracking:
+          type: 'boolean'
+          default: false
+        param_tracking_interval:
+          type: 'integer'
+          default: 100
+        priority_training:
+          type: 'object'
+          additionalProperties: true
+          nullable: true
+        controlnet_type:
+          type: 'string'
+          default: 'standard'
+        controlnet_pretrained_path:
+          type: 'string'
+          nullable: true
+        controlnet_init_from_unet:
+          type: 'boolean'
+          default: true
+        lllite_conditioning_channels:
+          type: 'integer'
+          default: 32
+        lllite_rank:
+          type: 'integer'
+          default: 64
+        condition_preprocessors:
+          type: 'array'
+          items:
+            type: 'string'
+          nullable: true
+        condition_cache_mode:
+          type: 'string'
+          default: 'on_the_fly'
+        rescan_before_training:
+          type: 'object'
+          additionalProperties: true
+    TaggerTrainingRunCreateRequest:
+      type: object
+      properties:
+        run_name:
+          type: string
+          nullable: true
+        vision_encoder_path:
+          type: string
+        dataset_configs:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        training_method:
+          type: string
+          default: 'lora'
+        lora_rank:
+          type: integer
+          default: 32
+        lora_alpha:
+          type: number
+          default: 16.0
+        learning_rate:
+          type: number
+          default: 0.0003
+        head_lr_multiplier:
+          type: number
+          default: 10.0
+        optimizer:
+          type: string
+          default: 'adamw8bit'
+        warmup_steps:
+          type: integer
+          default: 100
+        epochs:
+          type: integer
+          default: 10
+        batch_size:
+          type: integer
+          default: 32
+        num_workers:
+          type: integer
+          default: 4
+        num_workers_override:
+          type: integer
+          nullable: true
+        tag_refresh_enable:
+          type: boolean
+          default: false
+        tag_refresh_interval_seconds:
+          type: integer
+          default: 60
+        save_every_n_steps:
+          type: integer
+          default: 500
+        save_every_n_epochs:
+          type: integer
+          default: 0
+        keep_last_n_checkpoints:
+          type: integer
+          default: 3
+        checkpoint_save_mode:
+          type: string
+          default: 'lora'
+        mixed_precision:
+          type: string
+          default: 'bf16'
+        use_flash_attention:
+          type: boolean
+          default: false
+        gradient_checkpointing:
+          type: boolean
+          default: true
+        weight_decay:
+          type: number
+          default: 0.0001
+        loss_function:
+          type: string
+          default: 'asl'
+        loss_gamma_neg:
+          type: number
+          default: 4.0
+        loss_gamma_pos:
+          type: number
+          default: 1.0
+        loss_clip:
+          type: number
+          default: 0.05
+        loss_gamma0:
+          type: number
+          default: 4.0
+        loss_m0:
+          type: number
+          default: 0.2
+        loss_beta:
+          type: number
+          default: 2.0
+        loss_rho:
+          type: number
+          default: 0.5
+        loss_label_weight:
+          type: string
+          default: 'fisher'
+        validate_every:
+          type: integer
+          default: 1
+        val_split:
+          type: number
+          default: 0.05
+        val_split_mode:
+          type: string
+          default: 'percent'
+        val_fixed_size:
+          type: integer
+          nullable: true
+        save_best_only:
+          type: boolean
+          default: false
+        vocab_min_count:
+          type: integer
+          default: 10
+        vocab_use_gelbooru_categories:
+          type: boolean
+          default: true
+        output_dir:
+          type: string
+          nullable: true
+        excluded_categories:
+          type: array
+          items:
+            type: string
+          nullable: true
+        ban_tags:
+          type: string
+          nullable: true
+        use_tag_aliases:
+          type: boolean
+          default: false
+        save_base_model:
+          type: boolean
+          default: false
+        quality_masking_mode:
+          type: string
+          default: 'intra_group'
+        cls_dim:
+          type: integer
+          nullable: true
+        hidden_proj_dim:
+          type: integer
+          nullable: true
+        init_head_from:
+          type: string
+          nullable: true
+        build_lr_matrix_on_start:
+          type: boolean
+          default: false
+        lr_top_anchors:
+          type: integer
+          default: 10000
+        lr_top_targets:
+          type: integer
+          default: 1000
+        lr_threshold:
+          type: number
+          default: 1.0
+        lr_min_anchor_count:
+          type: integer
+          default: 10
+        rescan_before_training:
+          type: object
+          additionalProperties: true
+        train_f1_eval_every_n_steps:
+          type: integer
+          default: 100
+        train_f1_threshold_search_every_n_steps:
+          type: integer
+          default: 500
+        train_f1_initial_threshold:
+          type: number
+          default: 0.35
+        train_f1_buffer_batches:
+          type: integer
+          default: 16
+        enable_danbooru_augmentation:
+          type: boolean
+          default: false
+        danbooru_query_enable:
+          type: boolean
+          default: true
+        danbooru_query_expand_enable:
+          type: boolean
+          default: false
+        danbooru_query_new_tag_min_count:
+          type: integer
+          default: 200
+        danbooru_query_resolve_top_k:
+          type: integer
+          default: 50
+        danbooru_query_max_expanded_tags:
+          type: integer
+          default: 0
+        danbooru_query_expand_categories:
+          type: array
+          items:
+            type: integer
+        danbooru_query_resolve_interval:
+          type: integer
+          default: 3600
+        danbooru_query_collect_per_epoch:
+          type: integer
+          default: 0
+        danbooru_new_tag_collect_per_epoch:
+          type: integer
+          default: 0
+        danbooru_low_f1_collect_per_epoch:
+          type: integer
+          default: 0
+        danbooru_train_count_enable:
+          type: boolean
+          default: false
+        danbooru_train_count_top_k:
+          type: integer
+          default: 500
+        danbooru_train_count_min_deficit_ratio:
+          type: number
+          default: 0.3
+        danbooru_train_count_min_per_epoch:
+          type: integer
+          default: 10
+        danbooru_train_count_min_posts:
+          type: integer
+          default: 50
+        danbooru_train_count_collect_per_epoch:
+          type: integer
+          default: 0
+        danbooru_query_weight_train_count:
+          type: number
+          default: 1.0
+        danbooru_quality_tag_enable:
+          type: boolean
+          default: false
+        danbooru_quality_tag_thresholds:
+          type: string
+          default: ''
+        danbooru_quality_tag_attach_negative:
+          type: boolean
+          default: false
+        danbooru_tags:
+          type: string
+          nullable: true
+        danbooru_injection_interval:
+          type: integer
+          default: 4
+        danbooru_injection_batch_size_ratio:
+          type: number
+          default: 1.0
+        danbooru_min_score:
+          type: integer
+          default: 0
+        danbooru_max_posts_per_query:
+          type: integer
+          default: 200
+        danbooru_api_interval:
+          type: number
+          default: 1.4
+        danbooru_dl_speed_kbps:
+          type: integer
+          default: 500
+        danbooru_speed_check_enable:
+          type: boolean
+          default: true
+        danbooru_speed_degraded_kbps:
+          type: integer
+          default: 250
+        danbooru_speed_min_slow_streak:
+          type: integer
+          default: 8
+        danbooru_speed_min_slow_seconds:
+          type: integer
+          default: 90
+        danbooru_speed_cooldown_seconds:
+          type: integer
+          default: 3600
+        danbooru_buffer_size:
+          type: integer
+          nullable: true
+        danbooru_vocab_expand:
+          type: boolean
+          default: false
+        danbooru_new_tag_min_count:
+          type: integer
+          default: 200
+        danbooru_new_tag_min_count_by_cat:
+          type: object
+          additionalProperties: true
+        danbooru_new_tag_lookback_days:
+          type: integer
+          default: 90
+        danbooru_new_tag_categories:
+          type: array
+          items:
+            type: integer
+        danbooru_new_tag_survey_interval:
+          type: integer
+          default: 3600
+        danbooru_max_dynamic_tags:
+          type: integer
+          default: 0
+        danbooru_query_weight_static:
+          type: number
+          default: 1.0
+        danbooru_query_weight_new_tag:
+          type: number
+          default: 1.0
+        danbooru_query_weight_low_f1:
+          type: number
+          default: 1.0
+        danbooru_low_f1_enable:
+          type: boolean
+          default: false
+        danbooru_low_f1_threshold:
+          type: number
+          default: 0.5
+        danbooru_low_f1_top_k:
+          type: integer
+          default: 500
+        danbooru_low_f1_min_posts:
+          type: integer
+          default: 50
+        danbooru_cooc_expand_enable:
+          type: boolean
+          default: false
+        danbooru_cooc_min_count:
+          type: integer
+          default: 50
+        danbooru_cooc_categories:
+          type: array
+          items:
+            type: integer
+        danbooru_query_weight_cooc:
+          type: number
+          default: 0.1
+        danbooru_cooc_collect_per_epoch:
+          type: integer
+          default: 50
+        danbooru_cooc_order_random:
+          type: boolean
+          default: true
+        save_tag_metrics:
+          type: boolean
+          default: true
+        hard_rate_lo:
+          type: number
+          default: 0.25
+        hard_rate_hi:
+          type: number
+          default: 0.75
+    TrainingPresetCreateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        training_method:
+          type: string
+        config:
+          type: object
+          additionalProperties: true
+    TrainingPresetUpdateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        config:
+          type: object
+          additionalProperties: true
+          nullable: true
+    SkipRescanRequest:
+      type: object
+      properties:
+        dataset_id:
+          type: integer
+          nullable: true
+          description: Skip only if this matches the dataset currently being rescanned
+    SigLIP2LoadRequest:
+      type: object
+      required: [checkpoint_path]
+      properties:
+        checkpoint_path:
+          type: string
+        vision_encoder_path:
+          type: string
+          default: ''
+        vocab_path:
+          type: string
+          default: ''
+        lora_rank:
+          type: integer
+          default: 32
+        lora_alpha:
+          type: number
+          default: 16.0
+    SigLIP2PredictRequest:
+      type: object
+      required: [image_base64]
+      properties:
+        image_base64:
+          type: string
+        threshold:
+          type: number
+          default: 0.5
+        known_tags_pos:
+          type: array
+          nullable: true
+          items:
+            type: string
+        known_tags_neg:
+          type: array
+          nullable: true
+          items:
+            type: string
+        context_method:
+          type: string
+          enum: ['none', 'head_sim', 'lr_matrix']
+          default: 'none'
+        context_lambda:
+          type: number
+          default: 0.5
+        use_training_model:
+          type: boolean
+          default: false
+          description: Use the currently-training model when available
+        use_calibration:
+          type: boolean
+          default: false
+        use_per_tag_threshold:
+          type: boolean
+          default: false
+        display_calibration:
+          type: boolean
+          default: false
+        min_best_thr:
+          type: number
+          default: 0.30
+        min_best_f1:
+          type: number
+          default: 0.05
+        use_ood_detection:
+          type: boolean
+          default: false
+    SigLIP2BuildOodReferenceRequest:
+      type: object
+      required: [image_dir]
+      properties:
+        image_dir:
+          type: string
+          description: Directory walked for in-distribution reference images
+        max_images:
+          type: integer
+          default: 2000
+    SigLIP2CalibrationRequest:
+      type: object
+      properties:
+        method:
+          type: string
+          enum: ['jeffreys', 'beta_bb']
+          default: 'jeffreys'
+        eps:
+          type: number
+          default: 0.5
+        prior_strength:
+          type: number
+          default: 10.0
+    SigLIP2MergeLoRARequest:
+      type: object
+      required: [output_path]
+      properties:
+        output_path:
+          type: string
+    SigLIP2ExportONNXRequest:
+      type: object
+      required: [output_path]
+      properties:
+        output_path:
+          type: string
+        max_num_patches:
+          type: integer
+          default: 256
+        strip_unknown_tags:
+          type: boolean
+          default: false
+        also_split:
+          type: boolean
+          default: false
+          description: Also emit a split version with sub-models under split_max_bytes
+        split_max_bytes:
+          type: integer
+          default: 1900000000
+        use_model_stem:
+          type: boolean
+          default: false
+    SigLIP2ExtractEncoderRequest:
+      type: object
+      required: [repo_id, output_path]
+      properties:
+        repo_id:
+          type: string
+        output_path:
+          type: string
+        encoder_type:
+          type: string
+          enum: ['vision', 'text']
+          default: 'vision'
+    BrowserSetDirectoryRequest:
+      type: object
+      required: [dir]
+      properties:
+        dir:
+          type: string
+    BrowserSaveTagsRequest:
+      type: object
+      required: [rel_path, tags]
+      properties:
+        rel_path:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+    BrowserBatchInferRequest:
+      type: object
+      required: [rel_paths]
+      properties:
+        rel_paths:
+          type: array
+          items:
+            type: string
+        overwrite:
+          type: boolean
+          default: false
+        use_ood_detection:
+          type: boolean
+          default: false

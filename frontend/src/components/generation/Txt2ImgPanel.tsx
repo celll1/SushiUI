@@ -71,6 +71,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   fbcache_threshold: 0.12,
   fbcache_warmup_steps: 1,
   spectrum_w: 0.5,
+  spectrum_w_decay: 1.0,
   spectrum_m: 4,
   spectrum_lam: 0.1,
   spectrum_warmup_steps: 3,
@@ -1159,6 +1160,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         fbcache_threshold: mainParams.fbcache_threshold,
         fbcache_warmup_steps: mainParams.fbcache_warmup_steps,
         spectrum_w: mainParams.spectrum_w,
+        spectrum_w_decay: mainParams.spectrum_w_decay,
         spectrum_m: mainParams.spectrum_m,
         spectrum_lam: mainParams.spectrum_lam,
         spectrum_warmup_steps: mainParams.spectrum_warmup_steps,
@@ -2577,6 +2579,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 <input type="number" min={0} max={1} step={0.05}
                   value={params.spectrum_w ?? 1.0}
                   onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
+                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+              <label className="text-xs text-gray-400 flex items-center gap-1">
+                Mix w decay
+                <input type="number" min={0} step={0.25}
+                  value={params.spectrum_w_decay ?? 1.0}
+                  onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
                   className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
               </label>
               <label className="text-xs text-gray-400 flex items-center gap-1">

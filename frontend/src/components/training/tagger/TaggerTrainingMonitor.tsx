@@ -864,7 +864,7 @@ export default function TaggerTrainingMonitor({
         )}
 
         {/* Stats */}
-        <section className="grid grid-cols-4 gap-3">
+        <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="bg-gray-800 rounded p-3">
             <div className="text-xs text-gray-400 mb-1">Best F1</div>
             <div className="text-lg font-mono text-green-400">

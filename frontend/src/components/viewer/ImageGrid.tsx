@@ -296,7 +296,7 @@ export default function ImageGrid() {
     if (p.spectrum_enable) {
       target.spectrum_enable = true;
       const keys = [
-        "spectrum_w", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
+        "spectrum_w", "spectrum_w_decay", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
         "spectrum_window_size", "spectrum_flex_window", "spectrum_tail",
         "spectrum_feature_mode", "spectrum_cache_branch", "spectrum_max_cache",
       ];
@@ -711,10 +711,10 @@ export default function ImageGrid() {
               ${isDetailOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
               bg-gray-900 lg:bg-transparent
               p-4 lg:p-0 pt-20 lg:pt-0
-              flex-shrink-0 lg:flex lg:flex-col
+              flex-shrink-0 flex flex-col
             `}>
               {/* Scrollable content area */}
-              <div className="lg:flex-1 lg:overflow-y-auto lg:mb-4">
+              <div className="flex-1 min-h-0 overflow-y-auto mb-4 pb-[env(safe-area-inset-bottom)]">
               <Card title="Image Details">
                 <div className="space-y-3 text-sm">
                   <div>

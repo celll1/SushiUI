@@ -128,6 +128,7 @@ export default function TagDictionaryManager() {
             </p>
           </div>
         ) : (
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-gray-800 text-gray-300">
               <tr>
@@ -161,6 +162,7 @@ export default function TagDictionaryManager() {
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>

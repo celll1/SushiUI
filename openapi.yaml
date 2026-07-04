@@ -1385,14 +1385,12 @@ components:
         max_timestep: 1.0
     GenerationParams:
       type: object
+      description: |
+        Fields shared by all three generation endpoints (txt2img/img2img/inpaint), which
+        are all sent as multipart/form-data. Only `prompt` is required by the backend;
+        every other field has a Form() default and may be omitted.
       required:
         - prompt
-        - sampler
-        - schedule_type
-        - steps
-        - cfg_scale
-        - width
-        - height
       properties:
         prompt:
           type: string
@@ -1401,10 +1399,16 @@ components:
           default: ""
         sampler:
           type: string
+          default: euler
           example: "euler_a"
         schedule_type:
           type: string
+          default: uniform
           example: "karras"
+        developer_mode:
+          type: boolean
+          default: false
+          description: "Enables developer-only fields/behaviors in the generation pipeline."
         steps:
           type: integer
           minimum: 1
@@ -1430,14 +1434,10 @@ components:
           multipleOf: 8
           default: 1024
         loras:
-          type: array
-          items:
-            type: object
-            properties:
-              name:
-                type: string
-              weight:
-                type: number
+          type: string
+          default: "[]"
+          description: "JSON-encoded string (sent via multipart Form) containing an array of LoRA config objects (e.g. name/weight)."
+          example: '[{"name": "my_lora", "weight": 0.8}]'
         prompt_chunking_mode:
           type: string
           enum: [a1111, sd_scripts, nobos]
@@ -1446,35 +1446,17 @@ components:
           type: integer
           default: 0
         controlnets:
-          type: array
-          items:
-            type: object
-            properties:
-              model_path:
-                type: string
-              image_base64:
-                type: string
-              strength:
-                type: number
-                default: 1.0
-              start_step:
-                type: integer
-                default: 0
-              end_step:
-                type: integer
-                default: 1000
-              is_lllite:
-                type: boolean
-                default: false
-              is_reference_guide:
-                type: boolean
-                default: false
-                description: "Reference Guide mode: blend latent toward reference image instead of using ControlNet model"
-              preprocessor:
-                type: string
-              enable_preprocessor:
-                type: boolean
-                default: false
+          type: string
+          default: "[]"
+          description: |
+            JSON-encoded string (sent via multipart Form) containing an array of
+            ControlNet config objects. Each object may include: model_path (string),
+            image_base64 (string), strength (number, default 1.0), start_step
+            (integer, default 0), end_step (integer, default 1000), is_lllite
+            (boolean, default false), is_reference_guide (boolean, default false —
+            blend latent toward the reference image instead of using a ControlNet
+            model), preprocessor (string), enable_preprocessor (boolean, default false).
+          example: '[{"model_path": "controlnet.safetensors", "strength": 1.0}]'
         cfg_schedule_type:
           type: string
           enum: [constant, linear, cosine, exponential]
@@ -1516,7 +1498,12 @@ components:
           default: ""
         unet_quantization:
           type: string
+          nullable: true
           enum: [none, fp8_e4m3fn, fp8_e5m2, uint2, uint3, uint4, uint5, uint6, uint7, uint8]
+        text_encoder_quantization:
+          type: string
+          nullable: true
+          description: "Text encoder quantization mode. None = full precision."
         attention_type:
           type: string
           enum: [normal, sage, flash, tq]
@@ -1640,6 +1627,79 @@ components:
           default: 0
           description: "Sliding-window size for the coefficient fit (0 = unlimited; block mode defaults to 6). A finite window caps memory for the large block features and makes the fit local, stabilizing extrapolation."
           example: 0
+        fbcache_enable:
+          type: boolean
+          default: false
+          description: "First Block Cache (FBCache): dynamic per-step output caching. Mutually exclusive with Spectrum."
+          example: false
+        fbcache_threshold:
+          type: number
+          default: 0.12
+          description: "Relative-L1 first-block residual threshold; higher allows more step skips (faster, more quality risk)."
+          example: 0.12
+        fbcache_warmup_steps:
+          type: integer
+          default: 1
+          description: "Leading steps that always compute a full forward before caching starts."
+          example: 1
+        fbcache_cache_branch:
+          type: integer
+          default: 1
+          description: "U-Net block mode indicator/reuse boundary: indicator = down[branch], reused region = down[branch+1:] + mid."
+          example: 1
+        use_tipo:
+          type: boolean
+          default: false
+          description: "Enable TIPO prompt upsampling before generation."
+        tipo_config:
+          type: string
+          default: "{}"
+          description: "JSON-encoded string (sent via multipart Form) with TIPO configuration (model_name, lengths, etc.)."
+          example: '{"model_name": "KBlueLeaf/TIPO-500M"}'
+        preview_predicted_x0:
+          type: boolean
+          default: false
+          description: "Show the predicted x0 (denoised estimate) instead of the current noisy latent in the live preview."
+        preview_decoder:
+          type: string
+          enum: [matrix, taef2]
+          default: matrix
+          description: "Live-preview decoder used for FLUX.2-VAE models."
+          example: matrix
+        enable_block_swap:
+          type: boolean
+          default: false
+          description: "Enable CPU/GPU block swap offloading for the diffusion backbone."
+        blocks_to_swap:
+          type: integer
+          default: 20
+          description: "Number of transformer/U-Net blocks to offload to CPU when block swap is enabled."
+          example: 20
+        use_pinned_memory:
+          type: boolean
+          default: false
+          description: "Use pinned (page-locked) host memory for block swap transfers."
+        block_swap_h2d_only:
+          type: boolean
+          default: false
+          description: "H2D-only swap mode: weights are copied host-to-device but not evicted device-to-host again."
+        block_swap_ring_size:
+          type: integer
+          default: 2
+          description: "Number of GPU weight-buffer ring slots for block swap (>=1; 2 double-buffers)."
+          example: 2
+        original_size_w:
+          type: integer
+          default: 0
+          description: "SDXL micro-conditioning override: explicit original width for time_ids. 0 = auto."
+        original_size_h:
+          type: integer
+          default: 0
+          description: "SDXL micro-conditioning override: explicit original height for time_ids. 0 = auto."
+        original_size_scale:
+          type: number
+          default: 1.0
+          description: "SDXL micro-conditioning: when original_size_w/h are 0, original_size = output size * this scale."
         vision_encoder_path:
           type: string
           nullable: true
@@ -1657,6 +1717,10 @@ components:
         - $ref: '#/components/schemas/GenerationParams'
         - type: object
           properties:
+            batch_size:
+              type: integer
+              default: 1
+              description: "Number of images to generate in this request."
             controlnet_images:
               type: array
               items:
@@ -1679,9 +1743,22 @@ components:
               minimum: 0
               maximum: 1
               default: 0.75
-            denoising_schedule_type:
+            img2img_fix_steps:
+              type: boolean
+              default: true
+              description: "When true, run the full step count scaled by denoising_strength (fixed number of steps) rather than skipping initial steps."
+            resize_mode:
               type: string
-              default: constant
+              default: image
+              description: "How the input image is resized/cropped to the target width/height."
+            resampling_method:
+              type: string
+              default: lanczos
+              description: "Resampling filter used when resizing the input image."
+            cpu_text_encoding:
+              type: boolean
+              default: false
+              description: "Run text encoding on CPU instead of GPU."
 
     InpaintRequest:
       allOf:
@@ -1702,12 +1779,38 @@ components:
               minimum: 0
               maximum: 1
               default: 0.75
-            denoising_schedule_type:
-              type: string
-              default: constant
+            img2img_fix_steps:
+              type: boolean
+              default: true
+              description: "When true, run the full step count scaled by denoising_strength (fixed number of steps) rather than skipping initial steps."
+            cpu_text_encoding:
+              type: boolean
+              default: false
+              description: "Run text encoding on CPU instead of GPU."
             mask_blur:
               type: integer
               default: 4
+              description: "Gaussian blur radius applied to the mask edges before compositing."
+            inpaint_full_res:
+              type: boolean
+              default: false
+              description: "Process only the masked region at full resolution instead of the whole image."
+            inpaint_full_res_padding:
+              type: integer
+              default: 32
+              description: "Padding (px) added around the masked region when inpaint_full_res is enabled."
+            inpaint_fill_mode:
+              type: string
+              default: original
+              description: "How the masked area is initialized before denoising."
+            inpaint_fill_strength:
+              type: number
+              default: 1.0
+              description: "Strength of the fill applied to the masked area before denoising."
+            inpaint_blur_strength:
+              type: number
+              default: 1.0
+              description: "Strength of the mask-edge blend when compositing the inpainted region back into the original image."
 
     GenerationResponse:
       type: object

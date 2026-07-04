@@ -4,6 +4,18 @@ This document describes the actual behavior of the `/api/v1/ws/progress` WebSock
 endpoint, as implemented in `backend/main.py` and `backend/api/websocket.py`. It is
 written for API-only clients that do not use the bundled Next.js frontend.
 
+**Polling alternative**: a client that does not want to hold a WebSocket connection
+open, or that is affected by the lack of a `complete`/`error` message documented
+below, can instead poll `GET /generation/status` (see `openapi.yaml`,
+`GenerationStatusResponse`). It reports the same per-step state
+(`current_step`/`total_steps`/`phase`) for image generation as the `progress`
+message here, plus an explicit `status` field (`idle` / `running` / `error`) and a
+`last_result` / `last_error` populated when the generation ends — signals this
+WebSocket channel does not provide. It is backed by an in-memory, single-process
+snapshot (`backend/api/generation_status.py`) updated from the same progress
+callback that feeds this WebSocket, so it does not affect WS behavior; it only
+tracks image generation, not training/tagger/dataset-scan progress.
+
 ## Endpoint
 
 ```

@@ -269,6 +269,50 @@ paths:
                   message:
                     type: string
 
+  /generation/status:
+    get:
+      tags: [generation]
+      summary: Poll current image-generation status
+      description: |
+        Returns a snapshot of the most recent txt2img/img2img/inpaint
+        generation state, kept in an in-memory store on the backend
+        process.
+
+        This complements the WebSocket `/api/v1/ws/progress` channel
+        (see `backend/api/WS_PROTOCOL.md`) for clients that do not want to
+        hold a WebSocket connection open. The WS channel is a global,
+        unfiltered broadcast with no dedicated `complete`/`error` message
+        type — a WS-only client can only infer completion or failure from
+        the REST POST response of the request that started the
+        generation. This endpoint instead exposes that same
+        start/step/complete/error lifecycle as a pollable snapshot,
+        updated from the same per-step progress callback that feeds the
+        WebSocket broadcast.
+
+        The snapshot is process-local, single-worker, and reset on
+        backend restart. It reflects only the most recently started
+        generation; if multiple generations were requested concurrently,
+        this endpoint cannot distinguish between them (same limitation as
+        the WS channel).
+      operationId: getGenerationStatus
+      responses:
+        '200':
+          description: Current generation status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationStatusResponse'
+              example:
+                status: "running"
+                generation_type: "txt2img"
+                current_step: 15
+                total_steps: 28
+                phase: "Step 15/28"
+                started_at: "2026-07-04T14:24:28.618027+00:00"
+                updated_at: "2026-07-04T14:24:29.102003+00:00"
+                last_error: null
+                last_result: null
+
   /images:
     get:
       tags: [images]
@@ -1676,6 +1720,66 @@ components:
           type: integer
         metadata:
           type: object
+
+    GenerationStatusResponse:
+      type: object
+      description: |
+        Snapshot returned by `GET /generation/status`. Complements the
+        WebSocket `/api/v1/ws/progress` channel, which has no dedicated
+        completion/error message.
+      required: [status, generation_type, current_step, total_steps, phase, started_at, updated_at, last_error, last_result]
+      properties:
+        status:
+          type: string
+          enum: [idle, running, error]
+          description: Current lifecycle state of the most recently started generation.
+          example: "running"
+        generation_type:
+          type: string
+          nullable: true
+          enum: [txt2img, img2img, inpaint]
+          description: Which endpoint the most recently started generation used; null before any generation has run.
+          example: "txt2img"
+        current_step:
+          type: integer
+          nullable: true
+          description: Current display step of the active generation, from the same per-step callback that feeds the WS `progress` message.
+          example: 15
+        total_steps:
+          type: integer
+          nullable: true
+          description: Total display step count for the active generation.
+          example: 28
+        phase:
+          type: string
+          nullable: true
+          description: Human-readable status text for the current step, matching the WS `progress` message's `message` field.
+          example: "Step 15/28"
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 UTC timestamp when the current/most recent generation started.
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: ISO 8601 UTC timestamp of the last update to this snapshot.
+        last_error:
+          type: string
+          nullable: true
+          description: Error message from the most recent generation, if it ended in `status=error`.
+        last_result:
+          type: object
+          nullable: true
+          description: Result of the most recent successful generation, if any.
+          properties:
+            image_id:
+              type: integer
+            filename:
+              type: string
+            seed:
+              type: integer
 
     GeneratedImage:
       type: object

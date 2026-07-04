@@ -358,6 +358,8 @@ async def generate_txt2img(
 ):
     """Generate image from text"""
     lora_configs = []
+    from api.generation_status import start_generation, complete_generation, fail_generation
+    start_generation("txt2img")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -698,15 +700,18 @@ async def generate_txt2img(
         db.commit()
         db.refresh(db_image)
 
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
-    except GenerationError:
+    except GenerationError as e:
         # Re-raise custom errors as-is
+        fail_generation(str(e))
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
+        fail_generation(str(e))
         raise GenerationError(
             "Text-to-image generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -715,6 +720,22 @@ async def generate_txt2img(
         # Unload LoRAs after generation
         if lora_configs and pipeline_manager.txt2img_pipeline:
             pipeline_manager.txt2img_pipeline = lora_manager.unload_loras(pipeline_manager.txt2img_pipeline)
+
+
+@router.get("/generation/status")
+async def get_generation_status():
+    """Poll the current image-generation status.
+
+    This is a polling-friendly complement to the WebSocket
+    ``/api/v1/ws/progress`` channel (see ``backend/api/WS_PROTOCOL.md``).
+    The WS channel has no dedicated ``complete``/``error`` message type, so a
+    client that does not want to hold a WebSocket connection open can instead
+    poll this endpoint to observe step progress and the final
+    success/failure outcome of the most recent txt2img/img2img/inpaint
+    request.
+    """
+    from api.generation_status import get_snapshot
+    return get_snapshot()
 
 
 # ---------------------------------------------------------------------------
@@ -1187,6 +1208,8 @@ async def generate_img2img(
 ):
     """Generate image from image"""
     lora_configs = []
+    from api.generation_status import start_generation, complete_generation, fail_generation
+    start_generation("img2img")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -1510,15 +1533,18 @@ async def generate_img2img(
         db.commit()
         db.refresh(db_image)
 
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
-    except GenerationError:
+    except GenerationError as e:
         # Re-raise custom errors as-is
+        fail_generation(str(e))
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
+        fail_generation(str(e))
         raise GenerationError(
             "Image-to-image generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
@@ -1610,6 +1636,8 @@ async def generate_inpaint(
 ):
     """Generate inpainted image"""
     lora_configs = []
+    from api.generation_status import start_generation, complete_generation, fail_generation
+    start_generation("inpaint")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
@@ -1954,15 +1982,18 @@ async def generate_inpaint(
         db.commit()
         db.refresh(db_image)
 
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
         return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
 
-    except GenerationError:
+    except GenerationError as e:
         # Re-raise custom errors as-is
+        fail_generation(str(e))
         raise
     except Exception as e:
         # Wrap unexpected errors in GenerationError
         import traceback
         error_detail = traceback.format_exc()
+        fail_generation(str(e))
         raise GenerationError(
             "Inpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"

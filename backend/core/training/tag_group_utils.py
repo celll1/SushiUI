@@ -182,9 +182,12 @@ class TagGroupManager:
             'general', 'sensitive', 'questionable', 'explicit',
             'rating:general', 'rating:sensitive', 'rating:questionable', 'rating:explicit'
         }
+        # NOTE: Must stay aligned with SPECIAL_TAGS.quality in
+        # frontend/src/utils/tagSuggestions.ts (see CLAUDE.md tag-category rule).
         quality_tags = {
-            'best quality', 'high quality', 'great quality', 'normal quality',
-            'low quality', 'worst quality', 'masterpiece', 'amazing quality'
+            'best quality', 'high quality', 'great quality', 'amazing quality',
+            'masterpiece', 'normal quality', 'medium quality', 'low quality',
+            'bad quality', 'worst quality'
         }
 
         self.tag_groups['Rating'] = rating_tags

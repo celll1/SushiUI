@@ -61,6 +61,12 @@ def main():
     # requests sends dict via `data=` as multipart/form-data-compatible
     # url-encoded form when no `files=` is given -- FastAPI's Form() parses
     # either encoding identically, so this matches the server's expectations.
+    #
+    # This call blocks until the image is done. To observe progress from a
+    # second script/thread while it runs, either connect to the WebSocket
+    # (see backend/api/WS_PROTOCOL.md) or, for a frontend-less polling
+    # alternative that doesn't need a persistent connection, poll
+    # GET /api/v1/generation/status (see openapi.yaml, GenerationStatusResponse).
     resp = requests.post(url, data=form_data, timeout=600)
     resp.raise_for_status()
     result = resp.json()

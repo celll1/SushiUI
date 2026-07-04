@@ -197,6 +197,17 @@ def create_progress_callback_factory(
             cfg_metrics=send_metrics
         )
 
+        # Additive: mirror the same step info into the in-memory polling
+        # status store (GET /generation/status), for clients that don't
+        # want to hold a WebSocket connection open. Does not affect the
+        # WS broadcast above. Guarded like the preview block above: status
+        # bookkeeping must never abort the sampling loop.
+        try:
+            from api.generation_status import update_progress
+            update_progress(display_step, display_total, phase=status_text)
+        except Exception as e:
+            print(f"Generation status update error: {e}")
+
     return progress_callback
 
 

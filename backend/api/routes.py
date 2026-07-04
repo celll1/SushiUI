@@ -3028,6 +3028,65 @@ async def get_tag_other_names():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class ResolveCategoriesRequest(BaseModel):
+    """Request body for POST /tags/resolve-categories."""
+    tags: List[str] = Field(
+        ...,
+        description="Tags to resolve. Any format is accepted (underscore or space "
+                    "separated, escaped or plain parentheses).",
+        example=["1girl", "hatsune_miku_(vocaloid)", "masterpiece", "explicit"],
+    )
+
+
+@router.post("/tags/resolve-categories")
+async def resolve_tag_categories(request: ResolveCategoriesRequest):
+    """
+    Resolve the Danbooru-style category for each tag.
+
+    Server-side canonical category resolution for API clients that do not run the
+    frontend. Uses the shared backend resolver (TagGroupManager in
+    core/training/tag_group_utils.py, backed by the TaglistCache singleton), which
+    combines taglist category lookup with the hardcoded Rating/Quality special tags.
+
+    Matching semantics are aligned with frontend/src/utils/tagSuggestions.ts:
+    - Normalization removes backslash escapes, converts underscores to spaces, and
+      lowercases the tag.
+    - Rating/Quality special tags are recognized independently of the taglists.
+
+    Categories returned: General, Character, Artist, Copyright, Meta, Model, Rating,
+    Quality, or Unknown when the tag is not found.
+
+    A maximum of 1000 tags is accepted per request.
+    """
+    if len(request.tags) > 1000:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many tags: {len(request.tags)} (maximum 1000 per request)",
+        )
+
+    try:
+        from core.training.tag_group_utils import (
+            get_tag_group_manager,
+            normalize_tag_for_matching,
+        )
+
+        manager = get_tag_group_manager()
+
+        results = []
+        for tag in request.tags:
+            category = manager.get_tag_group(tag)
+            results.append({
+                "tag": tag,
+                "category": category if category is not None else "Unknown",
+                "normalized": normalize_tag_for_matching(tag),
+            })
+
+        return {"results": results}
+    except Exception as e:
+        print(f"[Tags API] Error resolving tag categories: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ==================== ControlNet Preprocessor Endpoints ====================
 
 @router.get("/controlnet/detect-preprocessor")

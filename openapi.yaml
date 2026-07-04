@@ -755,6 +755,65 @@ paths:
                   items:
                     type: string
 
+  /tags/resolve-categories:
+    post:
+      tags: [tags]
+      summary: Resolve Danbooru categories for tags
+      description: |
+        Resolve the Danbooru-style category for each supplied tag using the
+        server-side canonical resolver. Intended for API clients that do not run
+        the frontend (which resolves categories via
+        frontend/src/utils/tagSuggestions.ts).
+
+        Resolution uses the shared backend resolver
+        (TagGroupManager in backend/core/training/tag_group_utils.py, backed by
+        the TaglistCache singleton): taglist category lookup plus the hardcoded
+        Rating/Quality special tags. Matching normalizes tags by removing
+        backslash escapes, converting underscores to spaces, and lowercasing,
+        matching the frontend normalization.
+
+        A maximum of 1000 tags is accepted per request.
+      operationId: resolveTagCategories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolveCategoriesRequest'
+      responses:
+        '200':
+          description: Resolved categories
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResolveCategoriesResponse'
+              example:
+                results:
+                  - tag: "1girl"
+                    category: "General"
+                    normalized: "1girl"
+                  - tag: "hatsune_miku"
+                    category: "Character"
+                    normalized: "hatsune miku"
+                  - tag: "masterpiece"
+                    category: "Quality"
+                    normalized: "masterpiece"
+                  - tag: "zzz_not_a_tag"
+                    category: "Unknown"
+                    normalized: "zzz not a tag"
+        '400':
+          description: Too many tags (limit 1000)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Resolution failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /taglist/timestamps:
     get:
       tags: [tags]
@@ -1189,6 +1248,44 @@ components:
       bearerFormat: JWT
 
   schemas:
+    ResolveCategoriesRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          maxItems: 1000
+          description: |
+            Tags to resolve. Any format is accepted (underscore or space separated,
+            escaped or plain parentheses). Maximum 1000 tags per request.
+          items:
+            type: string
+          example: ["1girl", "hatsune_miku_(vocaloid)", "masterpiece", "explicit"]
+    ResolveCategoriesResponse:
+      type: object
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ResolvedTagCategory'
+    ResolvedTagCategory:
+      type: object
+      required: [tag, category, normalized]
+      properties:
+        tag:
+          type: string
+          description: The original tag string as supplied in the request.
+          example: "hatsune_miku"
+        category:
+          type: string
+          description: Resolved category, or "Unknown" if the tag is not found.
+          enum: [General, Character, Artist, Copyright, Meta, Model, Rating, Quality, Unknown]
+          example: "Character"
+        normalized:
+          type: string
+          description: The tag normalized for matching (escapes removed, underscores to spaces, lowercased).
+          example: "hatsune miku"
     TimestepSamplingConfig:
       type: object
       description: |

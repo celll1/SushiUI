@@ -272,8 +272,15 @@ class TaglistCache:
                 self._prefix_index[key].sort(key=lambda x: x[1], reverse=True)
 
     def _load_all_categories(self):
-        """Load all category taglists from disk."""
-        categories = ["general", "character", "artist", "copyright", "meta", "model"]
+        """Load all category taglists from disk.
+
+        Load order is significant: _category_map is populated with last-write-wins
+        semantics, so categories are loaded from LOWEST to HIGHEST priority. This
+        makes the winning category for a tag present in multiple taglists match the
+        frontend priority in frontend/src/utils/tagSuggestions.ts
+        (Character > Copyright > Artist > Meta > Model > General). See CLAUDE.md.
+        """
+        categories = ["general", "model", "meta", "artist", "copyright", "character"]
 
         for category in categories:
             if self._should_reload(category):

@@ -34,6 +34,7 @@ print("[PIL] MAX_IMAGE_PIXELS limit removed (can handle large images)")
 
 from api import router, websocket_endpoint
 from api.logs import router as logs_router
+from api.routes import APP_VERSION
 from api.error_handlers import register_error_handlers
 from database import init_db
 from config.settings import settings
@@ -59,7 +60,7 @@ logging.getLogger("uvicorn").addFilter(EndpointFilter())
 init_db()
 
 # Create FastAPI app
-app = FastAPI(title="Stable Diffusion WebUI API", version="0.1.0")
+app = FastAPI(title="Stable Diffusion WebUI API", version=APP_VERSION)
 
 # Register error handlers
 register_error_handlers(app)

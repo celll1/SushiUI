@@ -45,6 +45,30 @@ tags:
     description: Dataset management, scanning, and structure detection
 
 paths:
+  /health:
+    get:
+      summary: Backend liveness check
+      description: |
+        Minimal liveness probe for the backend API. Returns a fixed status
+        string and the running API version.
+      tags: [system]
+      responses:
+        '200':
+          description: Backend is up and responding
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  version:
+                    type: string
+                    example: 0.1.0
+              example:
+                status: ok
+                version: 0.1.0
   /schema/timestep-defaults-by-arch:
     get:
       summary: Per-architecture default timestep_sampling configs

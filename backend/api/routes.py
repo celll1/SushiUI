@@ -69,6 +69,10 @@ from api.error_handlers import (
 
 router = APIRouter()
 
+# Single source of truth for the API version, also used by main.py when
+# constructing the FastAPI() app instance.
+APP_VERSION = "0.1.0"
+
 # Thread pool for running blocking operations
 executor = ThreadPoolExecutor(max_workers=1)
 
@@ -196,6 +200,15 @@ class Txt2ImgRequest(GenerationParams):
 
 class Img2ImgRequest(GenerationParams):
     denoising_strength: float = 0.75
+
+# ---------------------------------------------------------------------------
+# System endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/health", tags=["system"])
+async def health_check():
+    """Liveness check for the backend API."""
+    return {"status": "ok", "version": APP_VERSION}
 
 # ---------------------------------------------------------------------------
 # Schema endpoints — single source of truth for frontend DEFAULT_PARAMS
@@ -4927,7 +4940,6 @@ async def scan_dataset(
     db: Session = Depends(get_datasets_db),
     *,
     incremental: bool = False,
-    should_cancel: Optional[Callable[[], bool]] = None,
 ):
     """Scan dataset directory and register images/captions.
 
@@ -4937,10 +4949,22 @@ async def scan_dataset(
       - Otherwise, tag_statistics is updated by adding/subtracting only
         the counts for new/purged items (Case 2).
     Both modes avoid the O(total_captions) full recomputation.
+
+    Note: this HTTP route has no way to receive a cancellation callback
+    from the client, so cooperative cancellation is always disabled here
+    (``should_cancel=None``). The underlying scan helpers still accept a
+    real callable when invoked internally (see
+    ``core.training.dataset_drift.rescan_dataset_inline``), which is used
+    for the training pre-flight rescan path instead of this route.
     """
     import os
     from PIL import Image
     import warnings
+
+    # HTTP callers can never supply a cancellation callback; kept as a
+    # local so the body below (which threads it into scan helpers) is
+    # unchanged.
+    should_cancel: Optional[Callable[[], bool]] = None
 
     # Suppress PIL warnings for corrupt EXIF data
     warnings.filterwarnings('ignore', category=UserWarning, module='PIL')

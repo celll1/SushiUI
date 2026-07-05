@@ -72,6 +72,7 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "spectrum_enable": False,
     "spectrum_w": 0.5,             # spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     "spectrum_w_decay": 1.0,       # per-step decay exponent for spectrum_w (0 = no decay)
+    "spectrum_delta_cap": 1.25,    # trajectory speed limiter multiplier K (<=0 disables the cap)
     "spectrum_m": 4,               # number of Chebyshev basis
     "spectrum_lam": 0.1,           # ridge regularization
     "spectrum_warmup_steps": 3,    # leading full-eval steps

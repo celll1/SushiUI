@@ -180,6 +180,7 @@ class GenerationParams(BaseModel):
     fbcache_cache_branch: int = GENERATION_DEFAULTS["fbcache_cache_branch"]
     spectrum_w: float = GENERATION_DEFAULTS["spectrum_w"]
     spectrum_w_decay: float = GENERATION_DEFAULTS["spectrum_w_decay"]
+    spectrum_delta_cap: float = GENERATION_DEFAULTS["spectrum_delta_cap"]
     spectrum_m: int = GENERATION_DEFAULTS["spectrum_m"]
     spectrum_lam: float = GENERATION_DEFAULTS["spectrum_lam"]
     spectrum_warmup_steps: int = GENERATION_DEFAULTS["spectrum_warmup_steps"]
@@ -331,6 +332,7 @@ async def generate_txt2img(
     fbcache_cache_branch: int = Form(GENERATION_DEFAULTS["fbcache_cache_branch"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_w_decay: float = Form(GENERATION_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(GENERATION_DEFAULTS["spectrum_delta_cap"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
     spectrum_warmup_steps: int = Form(GENERATION_DEFAULTS["spectrum_warmup_steps"]),
@@ -495,6 +497,7 @@ async def generate_txt2img(
             "fbcache_cache_branch": fbcache_cache_branch,
             "spectrum_w": spectrum_w,
             "spectrum_w_decay": spectrum_w_decay,
+            "spectrum_delta_cap": spectrum_delta_cap,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
             "spectrum_warmup_steps": spectrum_warmup_steps,
@@ -1180,6 +1183,7 @@ async def generate_img2img(
     fbcache_cache_branch: int = Form(GENERATION_DEFAULTS["fbcache_cache_branch"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_w_decay: float = Form(GENERATION_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(GENERATION_DEFAULTS["spectrum_delta_cap"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
     spectrum_warmup_steps: int = Form(GENERATION_DEFAULTS["spectrum_warmup_steps"]),
@@ -1352,6 +1356,7 @@ async def generate_img2img(
             "fbcache_cache_branch": fbcache_cache_branch,
             "spectrum_w": spectrum_w,
             "spectrum_w_decay": spectrum_w_decay,
+            "spectrum_delta_cap": spectrum_delta_cap,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
             "spectrum_warmup_steps": spectrum_warmup_steps,
@@ -1607,6 +1612,7 @@ async def generate_inpaint(
     fbcache_cache_branch: int = Form(GENERATION_DEFAULTS["fbcache_cache_branch"]),
     spectrum_w: float = Form(GENERATION_DEFAULTS["spectrum_w"]),
     spectrum_w_decay: float = Form(GENERATION_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(GENERATION_DEFAULTS["spectrum_delta_cap"]),
     spectrum_m: int = Form(GENERATION_DEFAULTS["spectrum_m"]),
     spectrum_lam: float = Form(GENERATION_DEFAULTS["spectrum_lam"]),
     spectrum_warmup_steps: int = Form(GENERATION_DEFAULTS["spectrum_warmup_steps"]),
@@ -1798,6 +1804,7 @@ async def generate_inpaint(
             "fbcache_cache_branch": fbcache_cache_branch,
             "spectrum_w": spectrum_w,
             "spectrum_w_decay": spectrum_w_decay,
+            "spectrum_delta_cap": spectrum_delta_cap,
             "spectrum_m": spectrum_m,
             "spectrum_lam": spectrum_lam,
             "spectrum_warmup_steps": spectrum_warmup_steps,

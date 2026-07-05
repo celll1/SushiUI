@@ -137,6 +137,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   fbcache_warmup_steps: 1,
   spectrum_w: 0.5,
   spectrum_w_decay: 1.0,
+  spectrum_delta_cap: 1.25,
   spectrum_m: 4,
   spectrum_lam: 0.1,
   spectrum_warmup_steps: 3,
@@ -1528,6 +1529,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         fbcache_warmup_steps: mainParams.fbcache_warmup_steps,
         spectrum_w: mainParams.spectrum_w,
         spectrum_w_decay: mainParams.spectrum_w_decay,
+        spectrum_delta_cap: mainParams.spectrum_delta_cap,
         spectrum_m: mainParams.spectrum_m,
         spectrum_lam: mainParams.spectrum_lam,
         spectrum_warmup_steps: mainParams.spectrum_warmup_steps,
@@ -1724,6 +1726,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         fbcache_warmup_steps: nextItem.params.fbcache_warmup_steps,
         spectrum_w: nextItem.params.spectrum_w,
         spectrum_w_decay: nextItem.params.spectrum_w_decay,
+        spectrum_delta_cap: nextItem.params.spectrum_delta_cap,
         spectrum_m: nextItem.params.spectrum_m,
         spectrum_lam: nextItem.params.spectrum_lam,
         spectrum_warmup_steps: nextItem.params.spectrum_warmup_steps,
@@ -3103,6 +3106,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 <label className="text-xs text-gray-400 flex items-center gap-1">Mix w decay
                   <input type="number" min={0} step={0.25} value={params.spectrum_w_decay ?? 1.0}
                     onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">Delta cap
+                  <input type="number" step={0.25} value={params.spectrum_delta_cap ?? 1.25}
+                    onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
                     className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
                 </label>
                 <label className="text-xs text-gray-400 flex items-center gap-1">Basis m

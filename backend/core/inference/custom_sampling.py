@@ -494,6 +494,7 @@ def custom_sampling_loop(
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     spectrum_w_decay: float = 1.0,  # Per-step decay exponent for spectrum_w (0 = no decay)
+    spectrum_delta_cap: float = 1.25,  # Trajectory speed limiter multiplier K (<=0 disables the cap)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps
@@ -684,6 +685,7 @@ def custom_sampling_loop(
             spectrum = SpectrumForecaster(
                 _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
                 w_decay=spectrum_w_decay,
+                delta_cap=spectrum_delta_cap,
                 warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
                 flex_window=spectrum_flex_window, tail_fraction=spectrum_tail,
                 max_cache=_max_cache,
@@ -1338,6 +1340,7 @@ def custom_img2img_sampling_loop(
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     spectrum_w_decay: float = 1.0,  # Per-step decay exponent for spectrum_w (0 = no decay)
+    spectrum_delta_cap: float = 1.25,  # Trajectory speed limiter multiplier K (<=0 disables the cap)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps
@@ -1577,6 +1580,7 @@ def custom_img2img_sampling_loop(
             spectrum = SpectrumForecaster(
                 _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
                 w_decay=spectrum_w_decay,
+                delta_cap=spectrum_delta_cap,
                 warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
                 flex_window=spectrum_flex_window, tail_fraction=spectrum_tail,
                 max_cache=_max_cache,
@@ -2157,6 +2161,7 @@ def custom_inpaint_sampling_loop(
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
     spectrum_w_decay: float = 1.0,  # Per-step decay exponent for spectrum_w (0 = no decay)
+    spectrum_delta_cap: float = 1.25,  # Trajectory speed limiter multiplier K (<=0 disables the cap)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps
@@ -2453,6 +2458,7 @@ def custom_inpaint_sampling_loop(
             spectrum = SpectrumForecaster(
                 _n_steps, num_basis=spectrum_m, lam=spectrum_lam, w=spectrum_w,
                 w_decay=spectrum_w_decay,
+                delta_cap=spectrum_delta_cap,
                 warmup_steps=spectrum_warmup_steps, window_size=spectrum_window_size,
                 flex_window=spectrum_flex_window, tail_fraction=spectrum_tail,
                 max_cache=_max_cache,

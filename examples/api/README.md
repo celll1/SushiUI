@@ -4,15 +4,17 @@ Frontend-less examples showing how to drive the backend directly with HTTP reque
 
 ## Prerequisites
 
-- Backend running (`python main.py` from `backend/`, or however you normally start it) and
-  reachable at `http://localhost:8000`.
-- venv Python with `requests` installed (verified present: `requests==2.32.5` in
-  `d:/celll1/webui_cl/venv`). All scripts use `requests`, not `urllib`.
+- Backend running and reachable at `http://localhost:8000`. If it is not
+  running, ask the repo owner to start it — agents should not launch servers
+  themselves (see `AGENTS.md`).
+- venv Python with `requests` installed (verified present: `requests==2.32.5`
+  in the repo's `venv/`). All scripts use `requests`, not `urllib`.
 
-Run with the project's venv interpreter:
+Run with the project's venv interpreter, resolved relative to the repo root
+(`venv/Scripts/python.exe` on Windows, `venv/bin/python` on POSIX):
 
 ```
-"d:/celll1/webui_cl/venv/Scripts/python.exe" examples/api/health_and_schema.py
+venv/Scripts/python.exe examples/api/health_and_schema.py
 ```
 
 ## Base URL / route prefix

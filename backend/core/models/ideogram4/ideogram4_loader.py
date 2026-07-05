@@ -91,21 +91,36 @@ def _build_ideogram4_transformer(
     with open(os.path.join(component_dir, "config.json"), encoding="utf-8") as f:
         config = json.load(f)
 
+    state_dict = _load_component_state_dict(component_dir, "diffusion_pytorch_model")
+    return _build_ideogram4_transformer_from_state(config, state_dict, torch_dtype, subfolder)
+
+
+def _build_ideogram4_transformer_from_state(
+    config: dict,
+    state_dict: dict,
+    torch_dtype: torch.dtype,
+    label: str,
+) -> Ideogram4Transformer2DModel:
+    """Build an Ideogram4Transformer2DModel from an explicit config + state_dict.
+
+    Shared by the directory loader (``_build_ideogram4_transformer``) and the
+    single-file loader (``load_ideogram4_single_file``). Detects fused-QKV,
+    nf4 (bitsandbytes) and weight-only FP8 layouts independently.
+    """
     model = Ideogram4Transformer2DModel.from_config(config)
     hidden_size = int(config["attention_head_dim"]) * int(config["num_attention_heads"])
 
-    state_dict = _load_component_state_dict(component_dir, "diffusion_pytorch_model")
     state_dict = _convert_fused_qkv_to_split(state_dict, hidden_size)
 
     if is_bnb4bit_state_dict(state_dict):
         # bitsandbytes nf4 (4-bit) — requires CUDA; load directly to GPU.
         if not torch.cuda.is_available():
             raise RuntimeError(
-                f"[Ideogram4Loader] {subfolder}: nf4 (bitsandbytes) weights require a CUDA device."
+                f"[Ideogram4Loader] {label}: nf4 (bitsandbytes) weights require a CUDA device."
             )
         device = torch.device("cuda")
         swapped = swap_linears_to_bnb4bit(model, compute_dtype=torch_dtype)
-        print(f"[Ideogram4Loader] {subfolder}: swapped {swapped} Linear(s) to Linear4bit (nf4)")
+        print(f"[Ideogram4Loader] {label}: swapped {swapped} Linear(s) to Linear4bit (nf4)")
         load_bnb4bit_state_dict(model, state_dict, device=device, dtype=torch_dtype)
         model.eval()
         return model
@@ -114,10 +129,10 @@ def _build_ideogram4_transformer(
         # Weight-only FP8: cast unquantized params to compute dtype, swap Fp8Linear, load.
         model.to(torch_dtype)
         swapped = swap_linears_to_fp8(model, state_dict, compute_dtype=torch_dtype)
-        print(f"[Ideogram4Loader] {subfolder}: swapped {swapped} Linear(s) to Fp8Linear")
+        print(f"[Ideogram4Loader] {label}: swapped {swapped} Linear(s) to Fp8Linear")
         load_fp8_state_dict(model, state_dict, device=torch.device("cpu"), dtype=torch_dtype)
     else:
-        print(f"[Ideogram4Loader] {subfolder}: loading plain (unquantized) weights")
+        print(f"[Ideogram4Loader] {label}: loading plain (unquantized) weights")
         model.load_state_dict(state_dict)
         model.to(dtype=torch_dtype)
 
@@ -190,6 +205,179 @@ def load_ideogram4_components(
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(model_path, subfolder="scheduler")
 
     print("[Ideogram4Loader] All components loaded successfully.")
+    return {
+        "type": "ideogram4",
+        "transformer": transformer,
+        "unconditional_transformer": unconditional_transformer,
+        "text_encoder": text_encoder,
+        "tokenizer": tokenizer,
+        "vae": vae,
+        "scheduler": scheduler,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Single-file (combined transformers) support
+# ---------------------------------------------------------------------------
+
+# Key prefixes used in the combined single-file save. The conditional branch is
+# stored under ``transformer.`` and the asymmetric-CFG branch under
+# ``unconditional_transformer.`` (both carry bare Ideogram4Transformer2DModel
+# state-dict keys underneath).
+COND_PREFIX = "transformer."
+UNCOND_PREFIX = "unconditional_transformer."
+
+
+def _resolve_ideogram4_base_dir(file_path: str, base_dir_hint: str = None) -> str:
+    """Resolve a base Ideogram 4 diffusers directory (transformer/ + text_encoder/
+    + tokenizer/ + vae/ + scheduler/ subfolders) for a combined single-file save.
+
+    The single file bundles only the two transformers; the text encoder, VAE,
+    tokenizer and scheduler are completed from a base diffusers directory.
+
+    Search order (mirrors the Lens single-file resolver):
+      1. ``base_dir_hint`` (from the file metadata / caller)
+      2. ``settings.models_dir`` entries whose name contains "ideogram"
+      3. ancestor directories of the file (up to 4 levels)
+      4. sibling SUBDIRECTORIES of the file's parent (one level down): a
+         root-level single file at ``M:/model/ideogram4/ideogram4_transformers.safetensors``
+         thus finds the base dir ``M:/model/ideogram4/ideogram4/``.
+    A directory qualifies when it contains ``transformer/config.json`` and a
+    ``text_encoder/`` subfolder.
+    """
+    def _is_ide_dir(d: str) -> bool:
+        return bool(d) and os.path.isdir(d) and os.path.isfile(
+            os.path.join(d, "transformer", "config.json")
+        ) and os.path.isdir(os.path.join(d, "text_encoder"))
+
+    searched = []
+    if base_dir_hint:
+        searched.append(base_dir_hint)
+        if _is_ide_dir(base_dir_hint):
+            return base_dir_hint
+
+    models_root = None
+    try:
+        from config.settings import settings
+        models_root = getattr(settings, "models_dir", None)
+    except Exception:
+        models_root = None
+    if models_root and os.path.isdir(models_root):
+        for name in os.listdir(models_root):
+            if "ideogram" in name.lower():
+                cand = os.path.join(models_root, name)
+                searched.append(cand)
+                if _is_ide_dir(cand):
+                    return cand
+
+    p = os.path.abspath(file_path)
+    for _ in range(4):
+        p = os.path.dirname(p)
+        if not p:
+            break
+        searched.append(p)
+        if _is_ide_dir(p):
+            return p
+
+    parent = os.path.dirname(os.path.abspath(file_path))
+    if parent and os.path.isdir(parent):
+        sibling_matches = []
+        for name in sorted(os.listdir(parent)):
+            cand = os.path.join(parent, name)
+            searched.append(cand)
+            if _is_ide_dir(cand):
+                sibling_matches.append(cand)
+        if sibling_matches:
+            sibling_matches.sort(key=lambda d: 0 if "ideogram" in os.path.basename(d).lower() else 1)
+            return sibling_matches[0]
+
+    raise FileNotFoundError(
+        "Ideogram 4 combined single-file requires a base Ideogram 4 diffusers "
+        "directory for its text encoder / VAE / tokenizer / scheduler, but none "
+        "was found.\n"
+        f"  File: {file_path}\n"
+        "Searched (need 'transformer/config.json' + 'text_encoder/' inside):\n  - "
+        + "\n  - ".join(searched or ["(nothing to search)"])
+    )
+
+
+def load_ideogram4_single_file(
+    file_path: str,
+    torch_dtype: torch.dtype = torch.bfloat16,
+    base_dir_hint: str = None,
+    load_unconditional: bool = True,
+) -> dict:
+    """Load Ideogram 4 from a combined single-file save (both transformers).
+
+    The two transformers come from ``file_path`` (keys split by the
+    ``transformer.`` / ``unconditional_transformer.`` prefixes). Their configs are
+    read from the file metadata (``transformer_config`` / ``unconditional_transformer_config``
+    JSON) when present, else from the resolved base directory. The text encoder,
+    VAE, tokenizer and scheduler are completed from the base diffusers directory
+    (see ``_resolve_ideogram4_base_dir``).
+    """
+    from diffusers import AutoencoderKLFlux2, FlowMatchEulerDiscreteScheduler
+    from transformers import AutoTokenizer
+
+    from core.models.common.single_file_format import read_state_dict, strip_prefix
+
+    raw, md = read_state_dict(file_path)
+    md = md or {}
+    hint = base_dir_hint or md.get("component.base_dir") or md.get("sushi.base_model_path")
+    base_dir = _resolve_ideogram4_base_dir(file_path, hint)
+    print(f"[Ideogram4Loader] Combined single-file: {file_path}")
+    print(f"[Ideogram4Loader] Resolved base Ideogram 4 directory: {base_dir}")
+
+    cond_sd = strip_prefix(raw, COND_PREFIX)
+    uncond_sd = strip_prefix(raw, UNCOND_PREFIX)
+    if not cond_sd:
+        raise ValueError(
+            f"[Ideogram4Loader] No '{COND_PREFIX}*' keys in {file_path}; not a "
+            f"combined Ideogram 4 single-file."
+        )
+
+    def _config_for(meta_key: str, subfolder: str) -> dict:
+        if md.get(meta_key):
+            try:
+                return json.loads(md[meta_key])
+            except Exception:
+                pass
+        with open(os.path.join(base_dir, subfolder, "config.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    print("[Ideogram4Loader] Building transformer (conditional) from single-file...")
+    cond_cfg = _config_for("transformer_config", "transformer")
+    transformer = _build_ideogram4_transformer_from_state(
+        cond_cfg, cond_sd, torch_dtype, "transformer"
+    )
+
+    unconditional_transformer = None
+    if load_unconditional and uncond_sd:
+        print("[Ideogram4Loader] Building unconditional_transformer from single-file...")
+        uncond_cfg = _config_for("unconditional_transformer_config", "unconditional_transformer")
+        unconditional_transformer = _build_ideogram4_transformer_from_state(
+            uncond_cfg, uncond_sd, torch_dtype, "unconditional_transformer"
+        )
+    elif not uncond_sd:
+        print("[Ideogram4Loader] No unconditional_transformer keys in single-file (skipping)")
+
+    print("[Ideogram4Loader] Loading text encoder (Qwen3-VL) from base directory...")
+    text_encoder = load_ideogram4_text_encoder(base_dir, torch_dtype=torch_dtype, device="cpu")
+
+    print("[Ideogram4Loader] Loading tokenizer from base directory...")
+    tokenizer = AutoTokenizer.from_pretrained(os.path.join(base_dir, "tokenizer"))
+
+    print("[Ideogram4Loader] Loading VAE (AutoencoderKLFlux2) from base directory...")
+    vae = AutoencoderKLFlux2.from_pretrained(
+        base_dir, subfolder="vae", torch_dtype=torch_dtype, low_cpu_mem_usage=True
+    )
+    vae.eval()
+    vae.to("cpu")
+
+    print("[Ideogram4Loader] Loading scheduler from base directory...")
+    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(base_dir, subfolder="scheduler")
+
+    print("[Ideogram4Loader] Combined single-file loaded successfully.")
     return {
         "type": "ideogram4",
         "transformer": transformer,

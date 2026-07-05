@@ -389,6 +389,18 @@ class ModelLoader:
         return has_img_qkv and has_txt_qkv
 
     @staticmethod
+    def _keys_look_ideogram4(keys) -> bool:
+        """Ideogram 4 combined single-file signature: the asymmetric-CFG branch is
+        stored under the ``unconditional_transformer.`` prefix alongside the
+        conditional ``transformer.`` branch. The unconditional prefix is unique to
+        Ideogram 4 (no other arch bundles a second transformer), so it disambiguates
+        from minit2i (``transformer.model.net.``) / krea2 (``transformer.text_fusion.``).
+        Key NAMES only (usable against a shard weight_map)."""
+        has_uncond = any(k.startswith("unconditional_transformer.") for k in keys)
+        has_cond = any(k.startswith("transformer.") for k in keys)
+        return has_uncond and has_cond
+
+    @staticmethod
     def _keys_look_anima(keys) -> bool:
         """Anima single-file signature (net.*-stripped ``blocks.*`` DiT with
         AdaLN-LoRA). Delegates to the anima loader's key-name check so the
@@ -456,10 +468,13 @@ class ModelLoader:
                 mapped = ModelLoader._map_model_type_string(str(md.get("model_type", "")))
                 if mapped is not None:
                     return mapped
-                # Key-name signature fallback (minit2i / krea2 shard today).
+                # Key-name signature fallback (minit2i / krea2 / ideogram4 shard).
                 if (any(k.startswith("transformer.model.net.") for k in keys)
                         or any(k.startswith("model.net.double_blocks.") for k in keys)):
                     return "minit2i"
+                # Ideogram 4 combined shard: unique unconditional_transformer. prefix.
+                if ModelLoader._keys_look_ideogram4(keys):
+                    return "ideogram4"
                 if ModelLoader._keys_look_krea2(keys, md):
                     return "krea2"
                 # Lens net.* dual-stream DiT signature (runs before Anima; the
@@ -634,6 +649,12 @@ class ModelLoader:
                             or any(k.startswith("transformer.model.net.") for k in keys)
                             or any(k.startswith("model.net.double_blocks.") for k in keys)):
                         return "minit2i"
+
+                    # Ideogram 4 combined single-file (both transformers bundled;
+                    # unique unconditional_transformer. prefix, or explicit metadata).
+                    if (str(metadata.get("model_type", "")).lower() == "ideogram4"
+                            or ModelLoader._keys_look_ideogram4(keys)):
+                        return "ideogram4"
 
                     # Krea 2 single-file (see _keys_look_krea2 for the signatures).
                     if ModelLoader._keys_look_krea2(keys, metadata):
@@ -1665,6 +1686,12 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Lens (single-file DiT)")
             return ModelLoader.load_lens_from_path(file_path, torch.bfloat16)
 
+        # Ideogram 4 combined single-file (both transformers; TE/VAE/tokenizer/
+        # scheduler resolved from a sibling base diffusers directory)
+        if model_type == "ideogram4":
+            print(f"[ModelLoader] Loading as Ideogram 4 (combined single-file)")
+            return ModelLoader.load_ideogram4_from_path(file_path, torch.bfloat16)
+
         # DEUS support removed - architecture no longer maintained
         # if model_type == "deus":
         #     print(f"[ModelLoader] Loading as DEUS (SigLIP-2 text encoder)")
@@ -2285,7 +2312,9 @@ class ModelLoader:
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
-        if isinstance(path, str) and path.endswith(".safetensors") and os.path.isfile(path):
+        if isinstance(path, str) and (
+            path.endswith(".safetensors") or path.endswith(".safetensors.index.json")
+        ) and os.path.isfile(path):
             from core.models.lens.lens_loader import load_lens_single_file
             return load_lens_single_file(dit_path=path, torch_dtype=torch_dtype)
         from core.models.lens.lens_loader import load_lens_components
@@ -2296,10 +2325,17 @@ class ModelLoader:
         path: str,
         torch_dtype: torch.dtype = torch.bfloat16,
     ) -> dict:
-        """Load Ideogram 4 from a local diffusers directory.
+        """Load Ideogram 4 from a local diffusers directory or a combined
+        single-file save (both transformers bundled; a ``.safetensors`` file or a
+        ``.safetensors.index.json`` shard index).
 
         Returns a component dict consumed by PipelineManager.load_model().
         """
+        if isinstance(path, str) and os.path.isfile(path) and (
+            path.endswith(".safetensors") or path.endswith(".safetensors.index.json")
+        ):
+            from core.models.ideogram4.ideogram4_loader import load_ideogram4_single_file
+            return load_ideogram4_single_file(file_path=path, torch_dtype=torch_dtype)
         from core.models.ideogram4.ideogram4_loader import load_ideogram4_components
         return load_ideogram4_components(model_path=path, torch_dtype=torch_dtype)
 

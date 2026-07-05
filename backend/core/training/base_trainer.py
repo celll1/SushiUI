@@ -12195,6 +12195,17 @@ class BaseTrainer(ABC):
                     # Text embeddings are [1, seq_len, dim], use cat to get [batch_size, seq_len, dim]
                     # IMPORTANT: Pad embeddings to same sequence length if chunking is used
                     if text_embeddings_list:
+                        # Per-item encoders (Anima/Z-Image) drop the batch dim and
+                        # return 2D [L, D]; the collation below assumes 3D [1, L, D]
+                        # (it reads shape[1] as seq and cats on dim 0). Without this
+                        # normalization, cat(dim=0) at batch_size>=2 collapses the
+                        # batch into the sequence axis, yielding a 2D context that the
+                        # Anima LLM-Adapter mis-reshapes (head_dim ends up 16 vs rope
+                        # 64 -> RuntimeError at _adapter_apply_rotary_pos_emb).
+                        text_embeddings_list = [
+                            emb.unsqueeze(0) if emb.dim() == 2 else emb
+                            for emb in text_embeddings_list
+                        ]
                         # Check if all embeddings have same sequence length
                         seq_lengths = [emb.shape[1] for emb in text_embeddings_list]
                         max_seq_len = max(seq_lengths)
@@ -12354,7 +12365,14 @@ class BaseTrainer(ABC):
                                 mnt_text_embeddings_list.append(embeddings)
                                 mnt_auxiliary_data_list.append(auxiliary)
 
-                            # Stack embeddings (handle variable sequence lengths)
+                            # Stack embeddings (handle variable sequence lengths).
+                            # Normalize 2D [L, D] per-item embeds (Anima/Z-Image drop
+                            # the batch dim) to 3D [1, L, D] so cat(dim=0) batches
+                            # correctly instead of collapsing batch into the seq axis.
+                            mnt_text_embeddings_list = [
+                                emb.unsqueeze(0) if emb.dim() == 2 else emb
+                                for emb in mnt_text_embeddings_list
+                            ]
                             seq_lengths = [emb.shape[1] for emb in mnt_text_embeddings_list]
                             max_seq_len = max(seq_lengths)
                             if len(set(seq_lengths)) > 1:

@@ -493,8 +493,8 @@ def custom_sampling_loop(
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
-    spectrum_w_decay: float = 1.0,  # Per-step decay exponent for spectrum_w (0 = no decay)
-    spectrum_delta_cap: float = 1.25,  # Trajectory speed limiter multiplier K (<=0 disables the cap)
+    spectrum_w_decay: float = 0.0,  # OPT-IN per-step decay exponent for spectrum_w (0 = off, default)
+    spectrum_delta_cap: float = 0.0,  # OPT-IN trajectory speed limiter multiplier K (0 = off, default)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps
@@ -1339,8 +1339,8 @@ def custom_img2img_sampling_loop(
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
-    spectrum_w_decay: float = 1.0,  # Per-step decay exponent for spectrum_w (0 = no decay)
-    spectrum_delta_cap: float = 1.25,  # Trajectory speed limiter multiplier K (<=0 disables the cap)
+    spectrum_w_decay: float = 0.0,  # OPT-IN per-step decay exponent for spectrum_w (0 = off, default)
+    spectrum_delta_cap: float = 0.0,  # OPT-IN trajectory speed limiter multiplier K (0 = off, default)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps
@@ -2160,8 +2160,8 @@ def custom_inpaint_sampling_loop(
     negpip_weights: Optional[Dict[str, torch.Tensor]] = None,  # NegPip signed per-token weights {"pos","neg","nag_neg"}; auto-set when prompt has negative weights
     spectrum_enable: bool = False,  # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_w: float = 0.5,  # Spectral/linear mix (1.0 = spectral only; lower = more linear/stable)
-    spectrum_w_decay: float = 1.0,  # Per-step decay exponent for spectrum_w (0 = no decay)
-    spectrum_delta_cap: float = 1.25,  # Trajectory speed limiter multiplier K (<=0 disables the cap)
+    spectrum_w_decay: float = 0.0,  # OPT-IN per-step decay exponent for spectrum_w (0 = off, default)
+    spectrum_delta_cap: float = 0.0,  # OPT-IN trajectory speed limiter multiplier K (0 = off, default)
     spectrum_m: int = 4,  # Number of Chebyshev basis
     spectrum_lam: float = 0.1,  # Ridge regularization
     spectrum_warmup_steps: int = 3,  # Leading full-eval steps

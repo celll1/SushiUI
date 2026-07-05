@@ -4642,14 +4642,14 @@ components:
           example: 0.5
         spectrum_w_decay:
           type: number
-          default: 1.0
-          description: "Exponent of the per-step decay applied to spectrum_w: the effective mix weight is spectrum_w * (1 - step/(steps-1))**spectrum_w_decay, so the spectral term contributes less at later (low-noise) steps. 0 disables the decay (constant spectrum_w)."
-          example: 1.0
+          default: 0.0
+          description: "OPT-IN (default 0 = off). Exponent of the per-step decay applied to spectrum_w: when > 0 the effective mix weight is spectrum_w * (1 - step/(steps-1))**spectrum_w_decay, so the spectral term contributes less at later (low-noise) steps. 0 disables the decay (constant spectrum_w) and reproduces the original forecaster behavior."
+          example: 0.0
         spectrum_delta_cap:
           type: number
-          default: 1.25
-          description: "Multiplier K on the trajectory speed limiter: a forecast may advance past the last real anchor by at most K times the distance implied by the recently-observed real per-step trajectory speed. Lower values keep forecasts closer to the observed trajectory (safer against oversaturation); values <= 0 disable the cap entirely, restoring the uncapped (oversaturation-prone) behavior for users who prefer a punchier look."
-          example: 1.25
+          default: 0.0
+          description: "OPT-IN (default 0 = off). Multiplier K on the trajectory speed limiter: when > 0, a forecast may advance past the last real anchor by at most K times the distance implied by the recently-observed real per-step trajectory speed. Lower positive values keep forecasts closer to the observed trajectory; 0 disables the cap entirely and reproduces the original (uncapped) forecaster behavior."
+          example: 0.0
         spectrum_m:
           type: integer
           default: 4

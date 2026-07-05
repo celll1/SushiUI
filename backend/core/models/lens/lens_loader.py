@@ -136,6 +136,7 @@ def load_lens_components(
         "vae_source": vae_source,
         "vae_path": vae_path,
         "scheduler": scheduler,
+        "base_dir": model_path,
     }
 
 
@@ -147,6 +148,9 @@ def _resolve_lens_base_dir(dit_path: str, base_dir_hint: str = None) -> str:
       1. ``base_dir_hint`` (from the DiT file metadata / caller)
       2. ``settings.models_dir`` entries whose name contains "lens"
       3. sibling / ancestor directories of the DiT file (up to 4 levels)
+      4. sibling SUBDIRECTORIES of the DiT file's parent (one level down): a
+         root-level single file at ``M:/model/lens/lens_transformer.safetensors``
+         thus finds the base dir ``M:/model/lens/microsoft-lens/``.
     A directory qualifies when it contains ``transformer/config.json``.
     """
     import os
@@ -184,6 +188,22 @@ def _resolve_lens_base_dir(dit_path: str, base_dir_hint: str = None) -> str:
         searched.append(p)
         if _is_lens_dir(p):
             return p
+
+    # Step 4: probe the immediate child subdirectories of the DiT file's parent
+    # (one level down). A root-level single file sits next to the base diffusers
+    # dir rather than inside it, so the ancestor walk above cannot reach it.
+    # Prefer a child whose name contains "lens" when several qualify.
+    parent = os.path.dirname(os.path.abspath(dit_path))
+    if parent and os.path.isdir(parent):
+        sibling_matches = []
+        for name in sorted(os.listdir(parent)):
+            cand = os.path.join(parent, name)
+            searched.append(cand)
+            if _is_lens_dir(cand):
+                sibling_matches.append(cand)
+        if sibling_matches:
+            sibling_matches.sort(key=lambda d: 0 if "lens" in os.path.basename(d).lower() else 1)
+            return sibling_matches[0]
 
     raise FileNotFoundError(
         "Lens single-file DiT requires a base Lens diffusers directory for its "

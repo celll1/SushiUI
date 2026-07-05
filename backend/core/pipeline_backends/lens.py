@@ -168,7 +168,7 @@ class LensMixin:
         CUDA memory.
         """
         from core.models.lens.lens_loader import reload_lens_text_encoder
-        model_path = (self.current_model_info or {}).get("source", "")
+        model_path = self.lens_components.get("base_dir") or (self.current_model_info or {}).get("source", "")
         transformer = self.lens_components.get("transformer")
         selected_layers = (
             tuple(transformer.config.selected_layer_index)

@@ -5065,6 +5065,46 @@ class BaseTrainer(ABC):
         except Exception:
             pass
 
+    def _main_model_module(self):
+        """Return the trainable main-model module (Transformer for DiT archs, else U-Net).
+
+        Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
+        consistent. Returns None if the module is not present.
+        """
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+            return getattr(self, "transformer_original", None)
+        return getattr(self, "unet", None)
+
+    def _relocate_main_model_optimizer_state(self, device):
+        """Move the optimizer's state tensors for main-model params to `device`.
+
+        Mirrors _ve_set_device's optimizer-state handling so optimizer steps stay
+        device-consistent when the main model is offloaded for a VAE encode phase.
+        Matches by parameter identity, so it covers both full-finetune (all main-model
+        params trained) and LoRA (only the injected adapter params are in optimizer.state,
+        and those are still parameters of the main model module). It is a no-op until the
+        optimizer exists and has actually been stepped (Adam-family state is allocated
+        lazily on the first gradient), so a fresh run's pre-training encode pays nothing;
+        it matters for resumed runs whose loaded state is GPU-resident.
+        """
+        opt = getattr(self, "optimizer", None)
+        if opt is None:
+            return
+        try:
+            model = self._main_model_module()
+            if model is None:
+                return
+            main_params = set(model.parameters())
+            if not main_params:
+                return
+            for p, st in opt.state.items():
+                if p in main_params:
+                    for k, v in list(st.items()):
+                        if isinstance(v, torch.Tensor):
+                            st[k] = v.to(device)
+        except Exception:
+            pass
+
     # ============================================================
     # Image Encoding
     # ============================================================
@@ -9351,82 +9391,125 @@ class BaseTrainer(ABC):
         total_items = sum(len(dataset.items) for dataset in datasets)
         processed_items = 0
 
-        # Move VAE to GPU (only if not already there)
-        vae_current_device = next(self.vae.parameters()).device
-        if vae_current_device != self.device:
-            print(f"{self.log_prefix} Moving VAE from {vae_current_device} to {self.device}...")
-            self.vae.to(device=self.device, dtype=self.vae_dtype)
-        else:
-            print(f"{self.log_prefix} VAE already on {self.device}, skipping move")
+        # This pre-training VAE encode phase does not need the training stack. If the
+        # main model (U-Net/Transformer) + text encoders are left GPU-resident here they
+        # co-reside with the VAE plus (on resume) the optimizer state — a batch-size-
+        # independent ~47GB VRAM pin observed on SDXL full_finetune at step 0 that spills
+        # into Windows shared memory. Offload them to CPU for the encode, restore in the
+        # finally so an encode failure can never strand the model on CPU. Guards make this
+        # a no-op when a component is already on CPU (e.g. cached-TE / block-swap setups).
+        main_model = self._main_model_module()
+        main_on_gpu = (
+            main_model is not None
+            and next(main_model.parameters()).device.type != "cpu"
+        )
+        te_on_gpu = (
+            self.text_encoder is not None
+            and next(self.text_encoder.parameters()).device.type != "cpu"
+        )
+        te2_on_gpu = (
+            getattr(self, "is_sdxl", False)
+            and getattr(self, "text_encoder_2", None) is not None
+            and next(self.text_encoder_2.parameters()).device.type != "cpu"
+        )
 
-        iteration_count = 0
-        for dataset in datasets:
-            cache = latent_caches[dataset.unique_id]
+        try:
+            if main_on_gpu:
+                print(f"{self.log_prefix} Offloading main model to CPU for VAE encode phase...")
+                self.move_main_model_to_cpu()
+                self._relocate_main_model_optimizer_state("cpu")
+            if te_on_gpu or te2_on_gpu:
+                print(f"{self.log_prefix} Offloading text encoder(s) to CPU for VAE encode phase...")
+                self.move_text_encoder_to_cpu()
+            if (main_on_gpu or te_on_gpu or te2_on_gpu) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
-            # Log to file only (no console spam)
-            log_verbose(f"[Latent Cache] Caching dataset {dataset.unique_id} ({len(dataset.items)} items)...")
+            # Move VAE to GPU (only if not already there)
+            vae_current_device = next(self.vae.parameters()).device
+            if vae_current_device != self.device:
+                print(f"{self.log_prefix} Moving VAE from {vae_current_device} to {self.device}...")
+                self.vae.to(device=self.device, dtype=self.vae_dtype)
+            else:
+                print(f"{self.log_prefix} VAE already on {self.device}, skipping move")
 
-            for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}", disable=True):
-                # Check if already cached (skip if force_recache is False)
-                image_path = item["image_path"]
-                width = item["width"]
-                height = item["height"]
+            iteration_count = 0
+            for dataset in datasets:
+                cache = latent_caches[dataset.unique_id]
 
-                if not force_recache and cache.has_latent(image_path, width, height):
-                    processed_items += 1
-                    continue
+                # Log to file only (no console spam)
+                log_verbose(f"[Latent Cache] Caching dataset {dataset.unique_id} ({len(dataset.items)} items)...")
 
-                # Load and encode image
-                try:
-                    image = Image.open(image_path)
+                for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}", disable=True):
+                    # Check if already cached (skip if force_recache is False)
+                    image_path = item["image_path"]
+                    width = item["width"]
+                    height = item["height"]
 
-                    latent = self.encode_image(
-                        image=image,
-                        target_width=width,
-                        target_height=height,
-                    )
+                    if not force_recache and cache.has_latent(image_path, width, height):
+                        processed_items += 1
+                        continue
 
-                    # Save to cache
-                    cache.save_latent(
-                        image_path=image_path,
-                        width=width,
-                        height=height,
-                        latents=latent,
-                    )
-
-                    iteration_count += 1
-
-                except Exception as e:
-                    # Use repr() to avoid UnicodeEncodeError on Windows (cp932)
-                    safe_path = os.path.basename(image_path)
+                    # Load and encode image
                     try:
-                        print(f"{self.log_prefix} ERROR encoding {safe_path}: {e}")
-                    except UnicodeEncodeError:
-                        # Fallback: encode-safe output
-                        print(f"{self.log_prefix} ERROR encoding image (path contains non-ASCII chars): {e}")
-                finally:
-                    # Clean up to prevent VRAM accumulation
-                    if 'image' in locals():
-                        image.close()
-                        del image
-                    if 'latent' in locals():
-                        del latent
-                    # Clear CUDA cache periodically (every 50 images)
-                    if iteration_count % 50 == 0:
-                        torch.cuda.empty_cache()
+                        image = Image.open(image_path)
 
-                processed_items += 1
+                        latent = self.encode_image(
+                            image=image,
+                            target_width=width,
+                            target_height=height,
+                        )
 
-                # Progress callback
-                if progress_callback:
-                    progress_callback(
-                        phase="latent_cache",
-                        step=processed_items,
-                        total=total_items,
-                    )
+                        # Save to cache
+                        cache.save_latent(
+                            image_path=image_path,
+                            width=width,
+                            height=height,
+                            latents=latent,
+                        )
 
-        # VAE stays on CPU (already there)
-        log_verbose(f"[Latent Cache] Generation complete ({iteration_count} images encoded)")
+                        iteration_count += 1
+
+                    except Exception as e:
+                        # Use repr() to avoid UnicodeEncodeError on Windows (cp932)
+                        safe_path = os.path.basename(image_path)
+                        try:
+                            print(f"{self.log_prefix} ERROR encoding {safe_path}: {e}")
+                        except UnicodeEncodeError:
+                            # Fallback: encode-safe output
+                            print(f"{self.log_prefix} ERROR encoding image (path contains non-ASCII chars): {e}")
+                    finally:
+                        # Clean up to prevent VRAM accumulation
+                        if 'image' in locals():
+                            image.close()
+                            del image
+                        if 'latent' in locals():
+                            del latent
+                        # Clear CUDA cache periodically (every 50 images)
+                        if iteration_count % 50 == 0:
+                            torch.cuda.empty_cache()
+
+                    processed_items += 1
+
+                    # Progress callback
+                    if progress_callback:
+                        progress_callback(
+                            phase="latent_cache",
+                            step=processed_items,
+                            total=total_items,
+                        )
+
+            # VAE stays on CPU (already there)
+            log_verbose(f"[Latent Cache] Generation complete ({iteration_count} images encoded)")
+        finally:
+            # Restore the training stack to its pre-encode devices. In finally so a
+            # failure during encode cannot leave the model/TEs stranded on CPU.
+            if main_on_gpu:
+                self.move_main_model_to_gpu()
+                self._relocate_main_model_optimizer_state(self.device)
+            if te_on_gpu or te2_on_gpu:
+                self.move_text_encoder_to_gpu()
+            if (main_on_gpu or te_on_gpu or te2_on_gpu) and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def _regenerate_single_latent(
         self,
@@ -11238,8 +11321,15 @@ class BaseTrainer(ABC):
 
                     # Move VAE to GPU for encoding
                     self.move_vae_to_gpu()
-                    # Move main model to CPU to free VRAM
+                    # Move main model to CPU to free VRAM. move_main_model_to_cpu moves only
+                    # the weights; relocate the optimizer's GPU-resident state here too so it
+                    # does not co-reside with the VAE during this prefill encode (mirrors
+                    # _ve_set_device). Done at the call site rather than inside
+                    # move_main_model_to_cpu because the mid-training latent/TE swaps that
+                    # also call it must keep optimizer state on the GPU for optimizer.step.
+                    # No-op on fresh runs (optimizer state allocated lazily on first step).
                     self.move_main_model_to_cpu()
+                    self._relocate_main_model_optimizer_state("cpu")
 
                     # Encode images for first interval
                     # Use batches (which have bucket info) instead of all_items
@@ -11277,8 +11367,9 @@ class BaseTrainer(ABC):
 
                     # Move VAE back to CPU
                     self.move_vae_to_cpu()
-                    # Move main model to GPU for training
+                    # Move main model to GPU for training; restore its optimizer state to GPU too.
                     self.move_main_model_to_gpu()
+                    self._relocate_main_model_optimizer_state(self.device)
 
                     next_latent_swap_at_step = latent_encoding_swap_interval
                     print(f"{self.log_prefix} Latent buffer pre-filled with {len(latent_swap_buffer)} latents")

@@ -223,6 +223,18 @@ def save_image_with_metadata(
             if k in params:
                 metadata.add_text(k, str(params[k]))
 
+    # Effective warnings: feature-degradation notices recorded during this
+    # generation (explains any divergence between the requested params above and
+    # what actually ran). Requested values stay unchanged; this only annotates.
+    try:
+        import json
+        from api.generation_status import get_warnings
+        _warnings = get_warnings()
+        if _warnings:
+            metadata.add_text("effective_warnings", json.dumps(_warnings))
+    except Exception:
+        pass
+
     # Save image
     try:
         image.save(filepath, pnginfo=metadata)

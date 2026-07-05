@@ -849,6 +849,23 @@ export default function ImageGrid() {
                       <span className="text-gray-400">U-Net Quantization:</span> {selectedImage.unet_quantization}
                     </div>
                   )}
+                  {selectedImage.effective_warnings && (
+                    <div>
+                      <span className="text-gray-400">Effective Warnings:</span>{' '}
+                      {(() => {
+                        let ws: any = selectedImage.effective_warnings;
+                        if (typeof ws === 'string') { try { ws = JSON.parse(ws); } catch { ws = []; } }
+                        if (!Array.isArray(ws) || ws.length === 0) return null;
+                        return (
+                          <ul className="mt-1 list-disc list-inside text-xs text-amber-300">
+                            {ws.map((w: any, i: number) => (
+                              <li key={i}>{typeof w === 'string' ? w : w.message}</li>
+                            ))}
+                          </ul>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
 
                 {/* Acceleration / determinism-affecting settings */}

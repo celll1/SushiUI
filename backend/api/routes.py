@@ -360,7 +360,8 @@ async def generate_txt2img(
 ):
     """Generate image from text"""
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.arch_capabilities import check_arch_capabilities
     start_generation("txt2img")
     try:
         # Reset cancellation flag before starting new generation
@@ -582,6 +583,10 @@ async def generate_txt2img(
         is_krea2 = pipeline_manager.current_model_info and \
                    pipeline_manager.current_model_info.get("type") == "krea2"
 
+        # Warn about parameters the loaded architecture silently ignores
+        _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        check_arch_capabilities(params, _current_arch)
+
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -683,6 +688,9 @@ async def generate_txt2img(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
 
         # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
@@ -704,7 +712,7 @@ async def generate_txt2img(
         db.refresh(db_image)
 
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
 
     except GenerationError as e:
         # Re-raise custom errors as-is
@@ -1212,7 +1220,8 @@ async def generate_img2img(
 ):
     """Generate image from image"""
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.arch_capabilities import check_arch_capabilities
     start_generation("img2img")
     try:
         # Reset cancellation flag before starting new generation
@@ -1416,6 +1425,10 @@ async def generate_img2img(
         is_krea2 = pipeline_manager.current_model_info and \
                    pipeline_manager.current_model_info.get("type") == "krea2"
 
+        # Warn about parameters the loaded architecture silently ignores
+        _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        check_arch_capabilities(params, _current_arch)
+
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
             taesd_manager,
@@ -1516,6 +1529,9 @@ async def generate_img2img(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
 
         # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
@@ -1539,7 +1555,7 @@ async def generate_img2img(
         db.refresh(db_image)
 
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
 
     except GenerationError as e:
         # Re-raise custom errors as-is
@@ -1642,7 +1658,8 @@ async def generate_inpaint(
 ):
     """Generate inpainted image"""
     lora_configs = []
-    from api.generation_status import start_generation, complete_generation, fail_generation
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.arch_capabilities import check_arch_capabilities
     start_generation("inpaint")
     try:
         # Reset cancellation flag before starting new generation
@@ -1824,6 +1841,14 @@ async def generate_inpaint(
         }
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 
+        # inpaint_full_res is accepted for API compatibility but not implemented.
+        if inpaint_full_res or inpaint_full_res_padding != 32:
+            from api.generation_status import add_warning as _add_warning
+            _add_warning(
+                "inpaint_full_res is accepted but not implemented; it has no effect",
+                code="not_implemented",
+            )
+
         # Set prompt chunking settings
         set_prompt_chunking_settings(
             pipeline_manager,
@@ -1863,6 +1888,10 @@ async def generate_inpaint(
         minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
         is_krea2 = pipeline_manager.current_model_info and \
                    pipeline_manager.current_model_info.get("type") == "krea2"
+
+        # Warn about parameters the loaded architecture silently ignores
+        _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        check_arch_capabilities(params, _current_arch)
 
         # Progress callback to send updates via WebSocket
         progress_callback = create_progress_callback_factory(
@@ -1966,6 +1995,9 @@ async def generate_inpaint(
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
         params_for_db = prepare_params_for_db(params, calculate_image_hash)
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
 
         # Extract model name and hash from current_model_info
         model_name, model_hash = extract_model_info(pipeline_manager)
@@ -1990,7 +2022,7 @@ async def generate_inpaint(
         db.refresh(db_image)
 
         complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
-        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed}
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
 
     except GenerationError as e:
         # Re-raise custom errors as-is

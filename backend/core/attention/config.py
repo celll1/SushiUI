@@ -78,11 +78,25 @@ def normalize_backend(backend: Optional[str]) -> str:
 
 
 def _log_downgrade(backend: str, reason: str) -> None:
-    """Emit a downgrade reason once per (backend, reason) pair."""
+    """Emit a downgrade reason once per (backend, reason) pair.
+
+    The console log is deduped once-per-process, but the per-generation
+    warning is emitted every time (outside the dedup guard) so each
+    generation reports its own attention downgrades. The warning hookup is
+    best-effort and lazily imported so this attention module never
+    hard-depends on the api package at import time.
+    """
     dedup_key = f"{backend}:{reason}"
     if dedup_key not in _downgrade_logged:
         print(f"[Attention] {reason}")
         _downgrade_logged.add(dedup_key)
+
+    # Emit a per-generation warning every call (not deduped).
+    try:
+        from api.generation_status import add_warning
+        add_warning(f"Attention backend downgraded: {reason}", code="attention_downgrade")
+    except Exception:
+        pass
 
 
 def _heads(tensor: torch.Tensor, layout: str) -> int:

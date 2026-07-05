@@ -23,13 +23,11 @@ tensor the caller hands them (here, the raw pre-CFG U-Net output).
 import torch
 
 
-# M2b -- trajectory speed limiter safety factor. A forecast may advance past the last
-# real anchor by at most K times the distance implied by the recently-observed real
-# per-step trajectory speed. Directly bounds time-direction overshoot (the empirically
-# identified oversaturation mechanism) without shrinking toward the anchor. User-tunable
-# via SpectrumForecaster(delta_cap=...); this constant is only the default value. <=0
-# disables the cap entirely (restores pre-cap oversaturation-prone behavior).
-DELTA_CAP_K = 1.25
+# Both forecast mitigations (per-step w-decay and the trajectory delta-cap) are strictly
+# OPT-IN and default OFF. With w_decay=0.0 and delta_cap=0.0 the forecast() output is
+# bit-identical to the original paper-variant behavior (plain w-mix of the Chebyshev
+# forecast and the linear extrapolation, no norm cap, no w clamp). The delta-cap safety
+# factor K is passed in via SpectrumForecaster(delta_cap=K); 0 (the default) disables it.
 
 
 def _cheb_row(tau: float, num_basis: int, device, dtype) -> torch.Tensor:
@@ -67,13 +65,13 @@ def build_output_forecaster(params, num_steps, label=""):
         num_basis=int(params.get("spectrum_m", 4)),
         lam=float(params.get("spectrum_lam", 0.1)),
         w=float(params.get("spectrum_w", 0.5)),
-        w_decay=float(params.get("spectrum_w_decay", 1.0)),
+        w_decay=float(params.get("spectrum_w_decay", 0.0)),
         warmup_steps=warmup,
         window_size=int(params.get("spectrum_window_size", 4)),
         flex_window=float(params.get("spectrum_flex_window", 0.75)),
         tail_fraction=float(params.get("spectrum_tail", 0.12)),
         max_cache=int(max_cache) if int(max_cache) > 0 else 5,
-        delta_cap=float(params.get("spectrum_delta_cap", 1.25)),
+        delta_cap=float(params.get("spectrum_delta_cap", 0.0)),
     )
     print(f"[Spectrum] {label}: enabled (output mode) {len(fc.anchors)}/{num_steps} actual passes")
     return fc
@@ -134,27 +132,27 @@ class SpectrumForecaster:
             out = forecaster.forecast(i)    # skip the forward
     """
 
-    def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5, w_decay=1.0,
+    def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5, w_decay=0.0,
                  warmup_steps=3, window_size=4, flex_window=0.75, tail_fraction=0.12,
-                 max_cache=0, delta_cap=DELTA_CAP_K):
+                 max_cache=0, delta_cap=0.0):
         self.num_steps = int(num_steps)
         self.num_basis = max(1, int(num_basis))
         self.lam = float(lam)
-        # Clamp w to [0,1]: the UI accepts free-typed values, and an out-of-range w flips
-        # the sign of the cheb/linear mix (w<0) or over-weights the extrapolation (w>1).
-        self.w = min(1.0, max(0.0, float(w)))
-        # Per-step decay exponent for the spectral mix weight (M1). w is scaled by
-        # (1 - step_frac)**w_decay so the extrapolated Chebyshev term (evaluated at tau>1)
-        # contributes less at low-noise late steps, where overshoot injects ghosting.
-        # 0.0 disables the decay (M1 off); the overshoot clamp (M2) in forecast()
-        # still applies regardless, so 0.0 is not bit-identical to pre-mitigation
-        # output whenever a forecast overshoots the last anchor's norm.
+        # w is stored as-is (no clamp): out-of-range values are intentionally allowed for
+        # experimentation (w<0 flips the cheb/linear mix sign, w>1 over-weights the
+        # extrapolation). At the default w in [0,1] this behaves as the paper's mix.
+        self.w = float(w)
+        # OPT-IN per-step decay exponent for the spectral mix weight. When > 0, w is scaled
+        # by (1 - step_frac)**w_decay so the extrapolated Chebyshev term (evaluated at
+        # tau>1) contributes less at low-noise late steps. 0.0 (default) disables the decay,
+        # giving the original bit-identical w-mix.
         self.w_decay = float(w_decay)
         # Keep only the most recent ``max_cache`` anchors (0 = unlimited). A finite
         # window caps memory (important for the large block-mode features) and makes the
         # fit local, which stabilizes extrapolation beyond the most recent anchor.
         self.max_cache = int(max_cache)
-        # M2b delta-cap multiplier K (see module comment). <=0 disables the cap entirely.
+        # OPT-IN trajectory delta-cap multiplier K (see module comment). 0.0 (default)
+        # disables the cap entirely.
         self.delta_cap = float(delta_cap)
         self.anchors = build_anchor_schedule(self.num_steps, warmup_steps, window_size,
                                              flex_window, tail_fraction)
@@ -241,32 +239,26 @@ class SpectrumForecaster:
         tau = self._window_tau(step_idx)
         phi = _cheb_row(tau, self._cur_basis, self._device, torch.float32)  # [M1]
         cheb = phi @ self._coeffs                                           # [F] float32
-        # M1 -- per-step decay of the spectral mix weight. The Chebyshev term is an
-        # extrapolation (tau>1) whose overshoot grows with |w|; damping w toward the
-        # end of sampling keeps late (low-noise, detail-bearing) steps close to the
-        # stable linear extrapolation. w_decay=0 => w_eff==w (M1 off; M2 below still runs).
-        frac = step_idx / max(1, self.num_steps - 1)
-        w_eff = self.w * (1.0 - frac) ** self.w_decay
+        # OPT-IN per-step decay of the spectral mix weight. When w_decay > 0 the Chebyshev
+        # term (an extrapolation at tau>1) is damped toward the stable linear extrapolation
+        # over the course of sampling. w_decay == 0 (default) => w_eff == w, reproducing the
+        # original bit-identical w-mix below.
+        if self.w_decay > 0:
+            frac = step_idx / max(1, self.num_steps - 1)
+            w_eff = self.w * (1.0 - frac) ** self.w_decay
+        else:
+            w_eff = self.w
         if w_eff >= 0.999:
             out = cheb
         else:
-            lin = self._linear_extrap(step_idx).float()
+            lin = self._linear_extrap(step_idx)
             out = w_eff * cheb + (1.0 - w_eff) * lin
-        # M2 -- overshoot clamp (shrink-only). Never let the forecast carry more energy
-        # than the most recent real anchor; extrapolation overshoot injects unrenormalized
-        # energy that persists as ghosting at low-noise steps. Only shrinks, never amplifies.
-        if len(self._H) > 0:
-            ref = self._H[-1].float().norm()
-            cur = out.norm()
-            if cur > 0:
-                out = out * torch.clamp(ref / cur, max=1.0)
-        # M2b -- delta-cap (trajectory speed limiter). Bounds how far the forecast may
+        # OPT-IN delta-cap (trajectory speed limiter). Bounds how far the forecast may
         # ADVANCE past the last real anchor relative to the actually-observed trajectory
-        # speed. The norm cap above is inert here (epsilon norm ~constant); the residual
-        # oversaturation is time-direction overshoot -- the Chebyshev extrapolation
-        # effectively predicts eps(t+delta), advancing the trajectory too fast. This caps
-        # the advance distance while PRESERVING direction (unlike shrinking toward the
-        # anchor, so it does not force ghosting-by-staleness).
+        # speed: the Chebyshev extrapolation effectively predicts eps(t+delta), which can
+        # advance the trajectory too fast. This caps the advance distance while PRESERVING
+        # direction (unlike shrinking toward the anchor, so it does not force
+        # ghosting-by-staleness). Enabled only when delta_cap > 0.
         if self.delta_cap > 0 and len(self._H) >= 2:
             s0, s1 = self._steps[-2], self._steps[-1]
             if s1 != s0:

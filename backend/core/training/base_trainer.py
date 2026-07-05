@@ -4905,6 +4905,86 @@ class BaseTrainer(ABC):
             text_emb = self.encode_prompt(caption, requires_grad=requires_grad)
             return text_emb, None
 
+    @staticmethod
+    def _aux_to_cpu(auxiliary_data):
+        """Move caption auxiliary data to CPU, tolerating every arch's shape.
+
+        auxiliary_data is a tensor (SDXL pooled embeds, Z-Image attention mask),
+        a DICT of tensors (Anima: source_mask/t5_input_ids/t5_attn_mask), or
+        None (SD1.5). The swap/prefetch buffers previously assumed a tensor and
+        crashed on Anima with 'dict' object has no attribute 'cpu'.
+        """
+        if auxiliary_data is None:
+            return None
+        if isinstance(auxiliary_data, dict):
+            return {k: (v.cpu() if isinstance(v, torch.Tensor) else v)
+                    for k, v in auxiliary_data.items()}
+        return auxiliary_data.cpu()
+
+    def _aux_to_device(self, auxiliary_data, non_blocking: bool = True):
+        """Inverse of _aux_to_cpu: move auxiliary data to self.device."""
+        if auxiliary_data is None:
+            return None
+        if isinstance(auxiliary_data, dict):
+            return {k: (v.to(self.device, non_blocking=non_blocking)
+                        if isinstance(v, torch.Tensor) else v)
+                    for k, v in auxiliary_data.items()}
+        return auxiliary_data.to(self.device, non_blocking=non_blocking)
+
+    def _collate_anima_aux(self, aux_list):
+        """Collate a list of per-item Anima auxiliary dicts into ONE dict of
+        batched tensors {source_mask, t5_input_ids, t5_attn_mask}, each [B, L].
+
+        Per-item aux tensors are 1D ([L]) as produced by encode_prompt_anima /
+        encode_captions_batched. encode_prompt() pads to a fixed max_length
+        (512) so those lengths are uniform, but encode_prompts_batched() uses
+        'longest' padding, so lengths can differ across prefetch calls that end
+        up in the same training batch. We therefore pad each key independently
+        to the batch max length: masks right-padded with 0, t5_input_ids with
+        the T5 pad id (falling back to 0 when the tokenizer is unavailable).
+        Fails loudly on missing / malformed entries rather than silently
+        dropping items (which would desync the batch dim from the latents).
+        """
+        keys = ("source_mask", "t5_input_ids", "t5_attn_mask")
+        if not aux_list:
+            raise ValueError("[Anima collation] empty auxiliary_data_list")
+        for idx, aux in enumerate(aux_list):
+            if not isinstance(aux, dict):
+                raise ValueError(
+                    f"[Anima collation] item {idx} auxiliary data is "
+                    f"{type(aux).__name__}, expected a dict with keys {keys}"
+                )
+            for k in keys:
+                if k not in aux or not isinstance(aux[k], torch.Tensor):
+                    raise ValueError(
+                        f"[Anima collation] item {idx} is missing tensor key '{k}' "
+                        f"(got keys {list(aux.keys())})"
+                    )
+
+        t5_pad_id = 0
+        t5_tok = getattr(self, "t5_tokenizer", None)
+        if t5_tok is not None and getattr(t5_tok, "pad_token_id", None) is not None:
+            t5_pad_id = int(t5_tok.pad_token_id)
+        pad_values = {"source_mask": 0, "t5_input_ids": t5_pad_id, "t5_attn_mask": 0}
+
+        batched = {}
+        for k in keys:
+            tensors = [aux[k] for aux in aux_list]
+            max_len = max(t.shape[0] for t in tensors)
+            if any(t.shape[0] != max_len for t in tensors):
+                padded = []
+                for t in tensors:
+                    if t.shape[0] < max_len:
+                        pad = torch.full(
+                            (max_len - t.shape[0],), pad_values[k],
+                            dtype=t.dtype, device=t.device,
+                        )
+                        t = torch.cat([t, pad], dim=0)
+                    padded.append(t)
+                tensors = padded
+            batched[k] = torch.stack(tensors, dim=0)
+        return batched
+
     def encode_captions_batched(self, captions, requires_grad: bool = False):
         """Encode a list of captions in one forward pass when possible.
 
@@ -9756,7 +9836,7 @@ class BaseTrainer(ABC):
                         # Encode caption (unified method)
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                         embeds_cpu = embeddings.cpu()
-                        auxiliary_cpu = auxiliary_data.cpu() if auxiliary_data is not None else None
+                        auxiliary_cpu = self._aux_to_cpu(auxiliary_data)
 
                         # Save immediately to disk to avoid memory accumulation
                         caption_hash = hashlib.md5(caption.encode()).hexdigest()
@@ -11284,7 +11364,7 @@ class BaseTrainer(ABC):
                         # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
                         swap_buffer[image_path] = (
                             embeddings.cpu(),
-                            auxiliary_data.cpu() if auxiliary_data is not None else None,
+                            self._aux_to_cpu(auxiliary_data),
                             caption,  # String (CPU memory, minimal overhead)
                         )
 
@@ -11623,7 +11703,7 @@ class BaseTrainer(ABC):
                             # Store on CPU to save GPU VRAM, keyed by image_path
                             swap_buffer[image_path] = (
                                 embeddings.cpu(),
-                                auxiliary_data.cpu() if auxiliary_data is not None else None,
+                                self._aux_to_cpu(auxiliary_data),
                                 caption,  # String (CPU memory, minimal overhead)
                             )
 
@@ -11937,7 +12017,7 @@ class BaseTrainer(ABC):
                                 embeddings_cpu, auxiliary_cpu, buffer_caption = swap_buffer[image_path]
                                 # Transfer to GPU
                                 embeddings = embeddings_cpu.to(self.device, non_blocking=True)
-                                auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
+                                auxiliary = self._aux_to_device(auxiliary_cpu)
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
                                 # Override caption from buffer (correct pairing)
@@ -11959,7 +12039,7 @@ class BaseTrainer(ABC):
                             if cached_result is not None:
                                 embeddings_cpu, auxiliary_cpu = cached_result
                                 embeddings = embeddings_cpu.to(self.device, non_blocking=True)
-                                auxiliary = auxiliary_cpu.to(self.device, non_blocking=True) if auxiliary_cpu is not None else None
+                                auxiliary = self._aux_to_device(auxiliary_cpu)
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
                             else:
@@ -12146,6 +12226,12 @@ class BaseTrainer(ABC):
                     pooled_embeddings = None
                     if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                         attention_mask = torch.stack([aux for aux in auxiliary_data_list if aux is not None], dim=0)
+                    elif self.is_anima:
+                        # Anima aux is a per-item dict {source_mask, t5_input_ids,
+                        # t5_attn_mask}; collate into one dict of batched [B, L]
+                        # tensors carried through attention_mask (the anima
+                        # train-step path reads the dict from mnt_attention_mask).
+                        attention_mask = self._collate_anima_aux(auxiliary_data_list)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
@@ -12294,6 +12380,10 @@ class BaseTrainer(ABC):
                                 # encoder_mask per sample: [L] → stacked to [B, L]
                                 mnt_attention_mask = torch.stack([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_pooled_embeddings = None
+                            elif self.is_anima:
+                                # Anima: per-item dict → one dict of batched [B, L] tensors.
+                                mnt_attention_mask = self._collate_anima_aux(mnt_auxiliary_data_list)
+                                mnt_pooled_embeddings = None
                             elif self.is_sdxl and any(aux is not None for aux in mnt_auxiliary_data_list):
                                 mnt_pooled_embeddings = torch.cat([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)
                                 mnt_attention_mask = None
@@ -12317,7 +12407,14 @@ class BaseTrainer(ABC):
                                 mnt_pooled_embeddings = pooled_embeddings
                             else:
                                 mnt_text_embeddings = text_embeddings.detach() if text_embeddings is not None else None
-                                mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
+                                if isinstance(attention_mask, dict):
+                                    # Anima: dict of batched tensors, detach each entry.
+                                    mnt_attention_mask = {
+                                        k: (v.detach() if isinstance(v, torch.Tensor) else v)
+                                        for k, v in attention_mask.items()
+                                    }
+                                else:
+                                    mnt_attention_mask = attention_mask.detach() if attention_mask is not None else None
                                 mnt_pooled_embeddings = pooled_embeddings.detach() if pooled_embeddings is not None else None
 
                         # === Vision Encoder: per-item encoding (SD1.5/SDXL only) ===

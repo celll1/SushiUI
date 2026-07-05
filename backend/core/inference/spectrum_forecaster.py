@@ -23,6 +23,14 @@ tensor the caller hands them (here, the raw pre-CFG U-Net output).
 import torch
 
 
+# M2b -- trajectory speed limiter safety factor. A forecast may advance past the last
+# real anchor by at most K times the distance implied by the recently-observed real
+# per-step trajectory speed. Directly bounds time-direction overshoot (the empirically
+# identified oversaturation mechanism) without shrinking toward the anchor. Not a user
+# param yet.
+DELTA_CAP_K = 1.25
+
+
 def _cheb_row(tau: float, num_basis: int, device, dtype) -> torch.Tensor:
     """Chebyshev (1st kind) basis row [T0..T_{num_basis-1}] evaluated at tau in [-1,1]."""
     row = torch.empty(num_basis, device=device, dtype=dtype)
@@ -130,7 +138,9 @@ class SpectrumForecaster:
         self.num_steps = int(num_steps)
         self.num_basis = max(1, int(num_basis))
         self.lam = float(lam)
-        self.w = float(w)
+        # Clamp w to [0,1]: the UI accepts free-typed values, and an out-of-range w flips
+        # the sign of the cheb/linear mix (w<0) or over-weights the extrapolation (w>1).
+        self.w = min(1.0, max(0.0, float(w)))
         # Per-step decay exponent for the spectral mix weight (M1). w is scaled by
         # (1 - step_frac)**w_decay so the extrapolated Chebyshev term (evaluated at tau>1)
         # contributes less at low-noise late steps, where overshoot injects ghosting.
@@ -246,6 +256,25 @@ class SpectrumForecaster:
             cur = out.norm()
             if cur > 0:
                 out = out * torch.clamp(ref / cur, max=1.0)
+        # M2b -- delta-cap (trajectory speed limiter). Bounds how far the forecast may
+        # ADVANCE past the last real anchor relative to the actually-observed trajectory
+        # speed. The norm cap above is inert here (epsilon norm ~constant); the residual
+        # oversaturation is time-direction overshoot -- the Chebyshev extrapolation
+        # effectively predicts eps(t+delta), advancing the trajectory too fast. This caps
+        # the advance distance while PRESERVING direction (unlike shrinking toward the
+        # anchor, so it does not force ghosting-by-staleness).
+        if len(self._H) >= 2:
+            s0, s1 = self._steps[-2], self._steps[-1]
+            if s1 != s0:
+                v = (self._H[-1].float() - self._H[-2].float()).norm() / abs(s1 - s0)
+                dist = step_idx - s1
+                if dist > 0 and v > 0:
+                    max_delta = float(v) * dist * DELTA_CAP_K
+                    h_last = self._H[-1].float()
+                    delta = out - h_last
+                    dn = delta.norm()
+                    if dn > max_delta and dn > 0:
+                        out = h_last + delta * (max_delta / dn)
         self._n_forecast += 1
         return out.reshape(self._shape).to(self._dtype)
 

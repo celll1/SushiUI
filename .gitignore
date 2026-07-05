@@ -157,8 +157,10 @@ CLAUDE.md
 memo.md
 **/memo.md
 
-# Claude Code
-.claude/
+# Claude Code: ignore everything under .claude/ except the shared agent
+# definitions (settings.local.json / settings.json / mcp.json etc. stay ignored).
+.claude/*
+!.claude/agents/
 
 # OS
 Thumbs.db

@@ -42,6 +42,18 @@ from core.attention import (
 )
 
 
+def _vramdiag(tag: str):
+    """Compact CUDA-memory snapshot print (used behind the debug_vram flag)."""
+    try:
+        if torch.cuda.is_available():
+            alloc = torch.cuda.memory_allocated() / 1024**3
+            resv = torch.cuda.memory_reserved() / 1024**3
+            peak = torch.cuda.max_memory_allocated() / 1024**3
+            print(f"[VRAMDIAG] {tag}: allocated={alloc:.2f}GB reserved={resv:.2f}GB peak_alloc={peak:.2f}GB", flush=True)
+    except Exception:
+        pass
+
+
 # ============================================================
 # Checkpoint entry helpers (single-file + sushiUI shard-index aware)
 # ============================================================
@@ -3092,6 +3104,8 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
 
         print(f"{self.log_prefix} {'SDXL' if self.is_sdxl else 'SD1.5'} model loaded successfully")
+        if self.debug_vram:
+            _vramdiag("model_load_end")
 
     def _persist_attention_impl(self):
         """Write the resolved ``attention_impl`` back into the run config YAML.
@@ -5179,6 +5193,38 @@ class BaseTrainer(ABC):
                 return
             for p, st in opt.state.items():
                 if p in main_params:
+                    for k, v in list(st.items()):
+                        if isinstance(v, torch.Tensor):
+                            st[k] = v.to(device)
+        except Exception:
+            pass
+
+    def _relocate_text_encoder_optimizer_state(self, device):
+        """Move the optimizer's state tensors for text-encoder params to `device`.
+
+        Companion to _relocate_main_model_optimizer_state for the text encoders
+        (self.text_encoder / self.text_encoder_2 — the same modules
+        move_text_encoder_to_cpu/gpu relocate). Used when the TEs are parked on CPU
+        for a VAE-only encode phase so their Adam/optimizer state (fp32 m/v — as large
+        as the trained params) does not stay pinned on the GPU beside the VAE. Matches
+        by parameter identity, so it is scoped to whatever TE params are actually in the
+        optimizer (full-finetune with train_text_encoder; empty otherwise) and is a
+        no-op until the optimizer exists and has been stepped (Adam-family state is
+        allocated lazily on the first gradient). No-op for frozen / cached-TE setups.
+        """
+        opt = getattr(self, "optimizer", None)
+        if opt is None:
+            return
+        try:
+            te_params = set()
+            if getattr(self, "text_encoder", None) is not None:
+                te_params.update(self.text_encoder.parameters())
+            if getattr(self, "is_sdxl", False) and getattr(self, "text_encoder_2", None) is not None:
+                te_params.update(self.text_encoder_2.parameters())
+            if not te_params:
+                return
+            for p, st in opt.state.items():
+                if p in te_params:
                     for k, v in list(st.items()):
                         if isinstance(v, torch.Tensor):
                             st[k] = v.to(device)
@@ -10429,6 +10475,38 @@ class BaseTrainer(ABC):
                 print(f"{self.log_prefix} Reference image distribution:")
                 print(f"  With reference: {ref_stats['with_reference']} images")
                 print(f"  Without reference: {ref_stats['without_reference']} images")
+        else:
+            # No-bucketing path: item width/height come straight from the dataset DB,
+            # i.e. the ORIGINAL image dimensions — base_resolutions previously fed only
+            # the BucketManager, so without bucketing it was silently ignored and every
+            # VAE encode (swap prefill / disk cache / on-the-fly) plus every training
+            # step ran at the original resolution. Live-measured on a dataset with
+            # 3.76MP-avg / 37MP-max images: a single original-resolution VAE encode
+            # transiently allocated >20GB (torch peak) and pinned ~46.6GB at step 0,
+            # independent of architecture, batch size, and the requested
+            # base_resolutions. Fit oversized items into the base-resolution AREA
+            # (aspect-preserving, /8-aligned) so base_resolutions bounds memory here
+            # exactly as it does in the bucketed path. Items already within the area
+            # are left untouched, so pre-resized datasets keep identical behavior.
+            _nb_base = max(int(r) for r in (base_resolutions or [1024]))
+            _nb_max_area = _nb_base * _nb_base
+            _nb_clamped = 0
+            for dataset in datasets:
+                for item in dataset.items:
+                    w = int(item.get("width") or 0)
+                    h = int(item.get("height") or 0)
+                    if w <= 0 or h <= 0:
+                        item["width"], item["height"] = _nb_base, _nb_base
+                        continue
+                    if w * h > _nb_max_area:
+                        _scale = math.sqrt(_nb_max_area / float(w * h))
+                        item["width"] = max(8, int(w * _scale) // 8 * 8)
+                        item["height"] = max(8, int(h * _scale) // 8 * 8)
+                        _nb_clamped += 1
+            if _nb_clamped:
+                print(f"{self.log_prefix} Bucketing disabled: fitted {_nb_clamped} item(s) "
+                      f"exceeding the base-resolution area into {_nb_base}x{_nb_base} "
+                      f"(aspect-preserving, /8-aligned) to bound VAE-encode/training memory")
 
         # MiniT2I is pixel-space (no VAE): the "latent" is just the resized [-1,1]
         # RGB image, so a disk latent cache would store full-resolution RGB tensors
@@ -11392,12 +11470,35 @@ class BaseTrainer(ABC):
                 # Pre-fill latent swap buffer for first interval
                 if latent_swap_buffer is not None:
                     print(f"{self.log_prefix} Pre-filling latent swap buffer for first {latent_encoding_swap_interval} steps...")
+                    if self.debug_vram:
+                        _vramdiag("prefill_start")
                     if progress_callback:
                         progress_callback(
                             phase="latent_cache",
                             step=0,
                             total=latent_encoding_swap_interval
                         )
+
+                    # This prefill is a VAE-only encode: nothing but the VAE needs to be
+                    # GPU-resident. The main model (offloaded below) is not the whole story
+                    # — when text_encoding_mode is NOT swap_onthefly the TE pre-fill block
+                    # above is skipped, so the text encoder(s) are still on the GPU here and
+                    # co-reside with the VAE. On epoch>=2 / resume their optimizer state
+                    # (fp32 m/v, as large as the trained TE params) is GPU-resident too. The
+                    # pre_encoded_cache path already offloads the TEs for its encode; mirror
+                    # that here so the two latent paths are symmetric and neither pins the
+                    # training stack beside the VAE. Guarded by pre-encode device so it is a
+                    # no-op for swap-TE / cached-TE / frozen-TE setups, and restores only
+                    # what was on the GPU to begin with.
+                    te_on_gpu = (
+                        self.text_encoder is not None
+                        and next(self.text_encoder.parameters()).device.type != "cpu"
+                    )
+                    te2_on_gpu = (
+                        getattr(self, "is_sdxl", False)
+                        and getattr(self, "text_encoder_2", None) is not None
+                        and next(self.text_encoder_2.parameters()).device.type != "cpu"
+                    )
 
                     # Move VAE to GPU for encoding
                     self.move_vae_to_gpu()
@@ -11410,47 +11511,71 @@ class BaseTrainer(ABC):
                     # No-op on fresh runs (optimizer state allocated lazily on first step).
                     self.move_main_model_to_cpu()
                     self._relocate_main_model_optimizer_state("cpu")
+                    if self.debug_vram:
+                        _vramdiag("after_move_main_model_to_cpu")
+                    # Offload the text encoder(s) + their optimizer state too (no-op when
+                    # already on CPU, e.g. swap/cached-TE modes).
+                    if te_on_gpu or te2_on_gpu:
+                        self.move_text_encoder_to_cpu()
+                        self._relocate_text_encoder_optimizer_state("cpu")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                    if self.debug_vram:
+                        _vramdiag("after_te_offload_and_empty_cache")
 
-                    # Encode images for first interval
-                    # Use batches (which have bucket info) instead of all_items
-                    buffer_items = []
-                    for batch in batches[:latent_encoding_swap_interval]:
-                        buffer_items.extend(batch)
-                    for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
-                        image_path = item["image_path"]
-                        caption = item.get("caption", "")
-                        width = item.get("width") or item.get("bucket_width")
-                        height = item.get("height") or item.get("bucket_height")
+                    try:
+                        # Encode images for first interval
+                        # Use batches (which have bucket info) instead of all_items
+                        buffer_items = []
+                        for batch in batches[:latent_encoding_swap_interval]:
+                            buffer_items.extend(batch)
+                        for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
+                            image_path = item["image_path"]
+                            caption = item.get("caption", "")
+                            width = item.get("width") or item.get("bucket_width")
+                            height = item.get("height") or item.get("bucket_height")
 
-                        # Load and encode image
-                        image = Image.open(image_path)
-                        latent = self.encode_image(
-                            image=image,
-                            target_width=width,
-                            target_height=height,
-                            bucket_strategy=bucket_strategy
-                        )
-                        # Store on CPU to save GPU VRAM, keyed by image_path
-                        # This eliminates index-based lookup issues with variable batch sizes
-                        latent_swap_buffer[image_path] = (
-                            latent.cpu(),
-                            caption,  # String (CPU memory, minimal overhead)
-                        )
-
-                        # Send progress update
-                        if progress_callback and idx % 10 == 0:
-                            progress_callback(
-                                phase="latent_cache",
-                                step=idx,
-                                total=len(buffer_items)
+                            # Load and encode image
+                            image = Image.open(image_path)
+                            latent = self.encode_image(
+                                image=image,
+                                target_width=width,
+                                target_height=height,
+                                bucket_strategy=bucket_strategy
+                            )
+                            # Store on CPU to save GPU VRAM, keyed by image_path
+                            # This eliminates index-based lookup issues with variable batch sizes
+                            latent_swap_buffer[image_path] = (
+                                latent.cpu(),
+                                caption,  # String (CPU memory, minimal overhead)
                             )
 
-                    # Move VAE back to CPU
-                    self.move_vae_to_cpu()
-                    # Move main model to GPU for training; restore its optimizer state to GPU too.
-                    self.move_main_model_to_gpu()
-                    self._relocate_main_model_optimizer_state(self.device)
+                            if self.debug_vram and idx % 50 == 0:
+                                _vramdiag(f"prefill_item_{idx}")
 
+                            # Send progress update
+                            if progress_callback and idx % 10 == 0:
+                                progress_callback(
+                                    phase="latent_cache",
+                                    step=idx,
+                                    total=len(buffer_items)
+                                )
+                    finally:
+                        # Restore the training stack in a finally so an encode failure can
+                        # never strand the model / TEs on CPU. Main model always returns to
+                        # GPU (training follows immediately); TEs return only if they were
+                        # on the GPU before this prefill (swap-TE mode wants them on CPU).
+                        self.move_vae_to_cpu()
+                        self.move_main_model_to_gpu()
+                        self._relocate_main_model_optimizer_state(self.device)
+                        if te_on_gpu or te2_on_gpu:
+                            self.move_text_encoder_to_gpu()
+                            self._relocate_text_encoder_optimizer_state(self.device)
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+
+                    if self.debug_vram:
+                        _vramdiag("after_prefill_restore")
                     next_latent_swap_at_step = latent_encoding_swap_interval
                     print(f"{self.log_prefix} Latent buffer pre-filled with {len(latent_swap_buffer)} latents")
 
@@ -12593,6 +12718,8 @@ class BaseTrainer(ABC):
 
                         # Increment global step for each MNT iteration
                         global_step += 1
+                        if self.debug_vram and global_step in (1, 5, 10):
+                            _vramdiag(f"train_step_{global_step}")
 
                         # ============================================================
                         # Per-MNT-iteration logging (for real-time frontend updates)

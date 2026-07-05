@@ -141,9 +141,13 @@ def _build_train_section(
         train["bucket_strategy"] = p.get("bucket_strategy", "resize")
         train["multi_resolution_mode"] = p.get("multi_resolution_mode", "max")
     else:
+        # base_resolutions is meaningful even without bucketing: the no-bucketing
+        # path fits oversized items into the base-resolution area (bounds VAE-encode
+        # and training memory). Emit it always so the trainer does not silently fall
+        # back to its [1024] default when bucketing is off.
+        train["base_resolutions"] = p.get("base_resolutions") or [1024]
         if p.get("enable_bucketing"):
             train["enable_bucketing"] = True
-            train["base_resolutions"] = p.get("base_resolutions") or [1024]
             train["bucket_strategy"] = p.get("bucket_strategy", "resize")
             train["multi_resolution_mode"] = p.get("multi_resolution_mode", "max")
 

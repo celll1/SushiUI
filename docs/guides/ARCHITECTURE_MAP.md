@@ -1,0 +1,75 @@
+# Architecture Map
+
+## Directory tree (top 2 levels + key `backend/core` modules)
+
+```
+webui_cl/
+├── backend/
+│   ├── api/            # FastAPI routes, WS protocol, param defaults
+│   ├── core/            # pipeline orchestration, per-arch backends, training
+│   │   ├── attention/       # unified attention conduit (backend-agnostic)
+│   │   ├── inference/       # sampling loops, NAG, spectrum, schedulers
+│   │   ├── models/common/   # single-file save/load format, VAE store
+│   │   ├── pipeline_backends/ # one file per architecture (mixins)
+│   │   ├── training/        # trainers, adapters, optimizers, losses
+│   │   ├── model_loader.py
+│   │   ├── pipeline.py
+│   │   └── vram_optimization.py
+│   ├── database/        # SQLAlchemy models
+│   └── utils/            # image_utils.py (metadata), misc helpers
+├── frontend/
+│   └── src/
+│       ├── app/           # Next.js App Router pages
+│       ├── components/    # generation/, viewer/, training/, dataset(s)/, common/
+│       ├── contexts/       # StartupContext, GenerationQueueContext, etc.
+│       └── utils/          # api.ts (typed API client)
+├── docs/                 # design docs, this guide set (docs/guides/)
+├── examples/api/         # frontend-less API example scripts
+├── models/, tagger_models/, taglist*/  # model weights and tag dictionaries
+└── *.db                  # gallery.db, datasets.db, training.db (SQLite)
+```
+
+## Backend module responsibilities
+
+| Module | Responsibility |
+|---|---|
+| `backend/core/pipeline.py` | `PipelineManager`: loads/holds the active pipeline, dispatches `generate_txt2img/img2img/inpaint` to the right per-architecture backend. |
+| `backend/core/inference/custom_sampling.py` | The actual sampling loops (txt2img/img2img/inpaint), prompt chunking/editing, ControlNet, NAG, Advanced CFG. |
+| `backend/core/model_loader.py` | Detects model type/architecture from a checkpoint (single-file signature heuristics, e.g. `_keys_look_krea2`), builds and returns the loaded pipeline. |
+| `backend/core/attention/` | The attention conduit: `registry.py` (per-backend capability descriptors: native/flash/sage/tq), `dispatch.py` (routes a call to the resolved backend), `config.py` (capability-based downgrade rules), `backends.py` (kernel callables). Adding a backend is a one-entry change here — see `docs/guides/ADD_A_MODEL_ARCHITECTURE.md`. |
+| `backend/core/pipeline_backends/` | One file per architecture (`zimage.py`, `flux2.py`, `anima.py`, `lens.py`, `krea2.py`, `ideogram4.py`, `minit2i.py`; SD1.5/SDXL are handled by the base `pipeline.py` path) — architecture-specific generation logic as mixins. |
+| `backend/core/training/` | `base_trainer.py` (shared loop, block-swap, optimizer wiring), `lora_trainer.py` / `full_parameter_trainer.py`, `adapters/` (per-architecture training adapters — text encoding, conditioning, time-ids), `optimizers/`, `losses/`, `bucketing.py`, `latent_cache.py`. |
+| `backend/api/routes.py` | All FastAPI endpoints; generation endpoints (`/generate/txt2img|img2img|inpaint`) are `multipart/form-data` (`Form(...)` params), not JSON. |
+| `backend/api/param_defaults.py` | Single source of truth for every default value (`GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, `TAGGER_TRAINING_DEFAULTS`), exposed via `/schema/*`. |
+| `backend/api/websocket.py` | Progress-streaming WebSocket implementation (protocol documented in `backend/api/WS_PROTOCOL.md`). |
+| `backend/utils/image_utils.py` | Saves generated images with embedded PNG metadata (generation parameters). |
+| `backend/database/models.py` | SQLAlchemy models: `UserSettings`, `GeneratedImage`, `Dataset`/`DatasetItem`/`DatasetCaption`, `TrainingRun`/`TrainingMetrics`/`TrainingCheckpoint`, `TaggerTrainingRun`, etc. |
+
+## Frontend structure
+
+| Path | Responsibility |
+|---|---|
+| `frontend/src/components/generation/Txt2ImgPanel.tsx` / `Img2ImgPanel.tsx` / `InpaintPanel.tsx` | The three generation panels: params state, UI controls, loop-generation step params, FormData/apiParams construction. |
+| `frontend/src/components/generation/LoopGenerationPanel.tsx` | Loop-generation queue configuration UI. |
+| `frontend/src/components/viewer/ImageGrid.tsx` | Gallery grid; reads generation metadata off each `GeneratedImage`. |
+| `frontend/src/components/training/` | Training run configuration and monitoring UI. |
+| `frontend/src/contexts/StartupContext.tsx` | Fetches and holds `generationDefaults`/`trainingDefaults`/`taggerTrainingDefaults` from `/schema/*` at startup. |
+| `frontend/src/contexts/GenerationQueueContext.tsx` | Client-side generation/loop queue state. |
+| `frontend/src/utils/api.ts` | Typed API client: request/response interfaces, FormData construction for img2img/inpaint, JSON body for txt2img. |
+
+## Databases
+
+| File | Holds |
+|---|---|
+| `gallery.db` | `GeneratedImage` rows (generated images + parameters + metadata) and `UserSettings` (includes `model_dirs`: additional base-model search directories). |
+| `datasets.db` | `Dataset`, `DatasetItem`, `DatasetCaption`, `tag_dictionary`, caption-processing presets. |
+| `training.db` | `TrainingRun`, `TrainingMetrics`, `TrainingCheckpoint`, `TrainingSamples`, `TaggerTrainingRun`, `TaggerTrainingMetrics`. |
+
+## Where parameters, defaults, and schemas live
+
+- Default values: `backend/api/param_defaults.py` (only place to edit).
+- API contract (request/response schemas, examples): `openapi.yaml`, kept in
+  sync with `backend/api/routes.py`.
+- Runtime schema fetched by the frontend: `GET /api/v1/schema/generation-defaults`,
+  `/schema/training-defaults`, `/schema/tagger-training-defaults`.
+- Full parameter-addition checklist: `docs/guides/ADD_A_PARAMETER.md`.

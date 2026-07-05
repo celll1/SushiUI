@@ -206,6 +206,7 @@ export interface GenerationParams {
   fbcache_warmup_steps?: number;
   spectrum_w?: number;
   spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
   spectrum_m?: number;
   spectrum_lam?: number;
   spectrum_warmup_steps?: number;
@@ -405,6 +406,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
   formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
   formData.append("spectrum_w_decay", String(paramsWithImages.spectrum_w_decay ?? 1.0));
+  formData.append("spectrum_delta_cap", String(paramsWithImages.spectrum_delta_cap ?? 1.25));
   formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
   formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
   formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
@@ -709,6 +711,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
   formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
   formData.append("spectrum_w_decay", String(paramsWithImages.spectrum_w_decay ?? 1.0));
+  formData.append("spectrum_delta_cap", String(paramsWithImages.spectrum_delta_cap ?? 1.25));
   formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
   formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
   formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
@@ -847,6 +850,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
   formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
   formData.append("spectrum_w_decay", String(paramsWithImages.spectrum_w_decay ?? 1.0));
+  formData.append("spectrum_delta_cap", String(paramsWithImages.spectrum_delta_cap ?? 1.25));
   formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
   formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
   formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));

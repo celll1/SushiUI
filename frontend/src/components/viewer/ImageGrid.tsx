@@ -296,7 +296,7 @@ export default function ImageGrid() {
     if (p.spectrum_enable) {
       target.spectrum_enable = true;
       const keys = [
-        "spectrum_w", "spectrum_w_decay", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
+        "spectrum_w", "spectrum_w_decay", "spectrum_delta_cap", "spectrum_m", "spectrum_lam", "spectrum_warmup_steps",
         "spectrum_window_size", "spectrum_flex_window", "spectrum_tail",
         "spectrum_feature_mode", "spectrum_cache_branch", "spectrum_max_cache",
       ];

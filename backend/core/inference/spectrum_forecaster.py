@@ -26,8 +26,9 @@ import torch
 # M2b -- trajectory speed limiter safety factor. A forecast may advance past the last
 # real anchor by at most K times the distance implied by the recently-observed real
 # per-step trajectory speed. Directly bounds time-direction overshoot (the empirically
-# identified oversaturation mechanism) without shrinking toward the anchor. Not a user
-# param yet.
+# identified oversaturation mechanism) without shrinking toward the anchor. User-tunable
+# via SpectrumForecaster(delta_cap=...); this constant is only the default value. <=0
+# disables the cap entirely (restores pre-cap oversaturation-prone behavior).
 DELTA_CAP_K = 1.25
 
 
@@ -72,6 +73,7 @@ def build_output_forecaster(params, num_steps, label=""):
         flex_window=float(params.get("spectrum_flex_window", 0.75)),
         tail_fraction=float(params.get("spectrum_tail", 0.12)),
         max_cache=int(max_cache) if int(max_cache) > 0 else 5,
+        delta_cap=float(params.get("spectrum_delta_cap", 1.25)),
     )
     print(f"[Spectrum] {label}: enabled (output mode) {len(fc.anchors)}/{num_steps} actual passes")
     return fc
@@ -134,7 +136,7 @@ class SpectrumForecaster:
 
     def __init__(self, num_steps, num_basis=4, lam=0.1, w=0.5, w_decay=1.0,
                  warmup_steps=3, window_size=4, flex_window=0.75, tail_fraction=0.12,
-                 max_cache=0):
+                 max_cache=0, delta_cap=DELTA_CAP_K):
         self.num_steps = int(num_steps)
         self.num_basis = max(1, int(num_basis))
         self.lam = float(lam)
@@ -152,6 +154,8 @@ class SpectrumForecaster:
         # window caps memory (important for the large block-mode features) and makes the
         # fit local, which stabilizes extrapolation beyond the most recent anchor.
         self.max_cache = int(max_cache)
+        # M2b delta-cap multiplier K (see module comment). <=0 disables the cap entirely.
+        self.delta_cap = float(delta_cap)
         self.anchors = build_anchor_schedule(self.num_steps, warmup_steps, window_size,
                                              flex_window, tail_fraction)
         # caches of actual passes
@@ -263,13 +267,13 @@ class SpectrumForecaster:
         # effectively predicts eps(t+delta), advancing the trajectory too fast. This caps
         # the advance distance while PRESERVING direction (unlike shrinking toward the
         # anchor, so it does not force ghosting-by-staleness).
-        if len(self._H) >= 2:
+        if self.delta_cap > 0 and len(self._H) >= 2:
             s0, s1 = self._steps[-2], self._steps[-1]
             if s1 != s0:
                 v = (self._H[-1].float() - self._H[-2].float()).norm() / abs(s1 - s0)
                 dist = step_idx - s1
                 if dist > 0 and v > 0:
-                    max_delta = float(v) * dist * DELTA_CAP_K
+                    max_delta = float(v) * dist * self.delta_cap
                     h_last = self._H[-1].float()
                     delta = out - h_last
                     dn = delta.norm()

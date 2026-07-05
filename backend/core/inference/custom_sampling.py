@@ -11,6 +11,19 @@ Based on diffusers' pipeline implementation but with added flexibility.
 import torch
 
 
+def _add_generation_warning(message: str, code: str = None) -> None:
+    """Best-effort: record a feature-degradation warning for the current generation.
+
+    Lazily imported so this inference module never hard-depends on the api
+    package at import time. Never raises.
+    """
+    try:
+        from api.generation_status import add_warning
+        add_warning(message, code=code)
+    except Exception:
+        pass
+
+
 def get_inpaint_use_dedicated_model_setting() -> bool:
     """Get the inpaint_use_dedicated_model setting from database.
 
@@ -672,9 +685,19 @@ def custom_sampling_loop(
         if _spectrum_blocked:
             print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS "
                   "change the output per step; needs stable conditioning)")
+            _add_generation_warning(
+                "Spectrum was requested but disabled: prompt-editing / ControlNet / DEUS "
+                "change the output per step and need stable conditioning",
+                code="feature_auto_disabled",
+            )
         elif _n_steps < spectrum_warmup_steps + 3:
             print(f"[Spectrum] requested but disabled ({_n_steps} steps < warmup+3; "
                   f"little benefit at low step counts)")
+            _add_generation_warning(
+                f"Spectrum was requested but disabled: {_n_steps} steps is below "
+                f"warmup+3 (little benefit at low step counts)",
+                code="feature_auto_disabled",
+            )
         else:
             from core.inference.spectrum_forecaster import SpectrumForecaster
             _block = spectrum_feature_mode == "block"
@@ -716,9 +739,19 @@ def custom_sampling_loop(
         if spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; they share the "
                   "same block interception and are mutually exclusive)")
+            _add_generation_warning(
+                "FBCache was requested but disabled: Spectrum is active and they share the "
+                "same block interception (mutually exclusive)",
+                code="feature_auto_disabled",
+            )
         elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
             print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS "
                   "change the block outputs per step; needs stable conditioning)")
+            _add_generation_warning(
+                "FBCache was requested but disabled: prompt-editing / ControlNet / DEUS "
+                "change the block outputs per step and need stable conditioning",
+                code="feature_auto_disabled",
+            )
         else:
             from core.inference.fbcache_unet import build_unet_fbcache_controller
             fbcache_ctrl = build_unet_fbcache_controller(

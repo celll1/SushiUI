@@ -35,6 +35,26 @@ import torch.nn.functional as F
 
 _HALF_DTYPES = (torch.float16, torch.bfloat16)
 
+# Kernel-fallback warnings are emitted from per-call hot paths, so dedup per
+# process (keyed by message) to avoid flooding the per-generation warning list.
+_warned_kernels: set = set()
+
+
+def _warn_kernel_fallback(message: str) -> None:
+    """Best-effort: surface an attention-kernel fallback once per process.
+
+    Lazily imported so this attention module never hard-depends on the api
+    package at import time. Never raises.
+    """
+    if message in _warned_kernels:
+        return
+    _warned_kernels.add(message)
+    try:
+        from api.generation_status import add_warning
+        add_warning(message, code="attention_kernel_fallback")
+    except Exception:
+        pass
+
 
 def _process_mask(attn_mask: Optional[torch.Tensor], dtype: torch.dtype) -> Optional[torch.Tensor]:
     """
@@ -156,9 +176,11 @@ def _flash_attn(
         return out.contiguous()
     except ImportError:
         print("[Attention] flash_attn not available; falling back to native")
+        _warn_kernel_fallback("flash_attn not available; falling back to native attention")
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
         print(f"[Attention] flash_attn error: {e}; falling back to native")
+        _warn_kernel_fallback(f"flash_attn error ({e}); falling back to native attention")
         return None
 
 
@@ -224,9 +246,11 @@ def _sage_attn(
         return out.contiguous()
     except ImportError:
         print("[Attention] sageattention not available; falling back to native")
+        _warn_kernel_fallback("sageattention not available; falling back to native attention")
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
         print(f"[Attention] sageattention error: {e}; falling back to native")
+        _warn_kernel_fallback(f"sageattention error ({e}); falling back to native attention")
         return None
 
 
@@ -300,7 +324,9 @@ def _tq_attn(
         return out.contiguous()
     except ImportError:
         print("[Attention] tq_attention not available; falling back to native")
+        _warn_kernel_fallback("tq_attention not available; falling back to native attention")
         return None
     except Exception as e:  # noqa: BLE001 - never raise into the model
         print(f"[Attention] tq_attention error: {e}; falling back to native")
+        _warn_kernel_fallback(f"tq_attention error ({e}); falling back to native attention")
         return None

@@ -136,6 +136,11 @@ class GeneratedImage(GalleryBase):
             if "unet_quantization" in self.parameters:
                 result["unet_quantization"] = self.parameters["unet_quantization"]
 
+            # Feature-degradation notices recorded during generation (list of
+            # {"code", "message"} dicts) — kept as a list, not stringified.
+            if "effective_warnings" in self.parameters:
+                result["effective_warnings"] = self.parameters["effective_warnings"]
+
             # FLUX.2 Image Edit: Reference images
             if "ref_images" in self.parameters:
                 result["ref_images"] = self.parameters["ref_images"]

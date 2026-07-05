@@ -14,6 +14,19 @@ from typing import Optional
 import copy
 
 
+def _add_generation_warning(message: str, code: str = None) -> None:
+    """Best-effort: record a feature-degradation warning for the current generation.
+
+    Lazily imported so this module never hard-depends on the api package at
+    import time. Never raises.
+    """
+    try:
+        from api.generation_status import add_warning
+        add_warning(message, code=code)
+    except Exception:
+        pass
+
+
 def log_device_status(stage: str, pipeline, show_details: bool = False, zimage_components: dict = None, vision_encoder=None):
     """Log device status of all pipeline components
 
@@ -202,6 +215,11 @@ def _quantize_unet(unet, quantization: str):
                 print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
                 print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
                 print(f"[Quantization] Falling back to original model without quantization")
+                _add_generation_warning(
+                    f"U-Net quantization '{quantization}' unavailable (PyTorch {torch.__version__} "
+                    f"lacks FP8 support); falling back to full precision",
+                    code="quantization_fallback",
+                )
                 return copy.deepcopy(unet)
 
             try:
@@ -223,17 +241,31 @@ def _quantize_unet(unet, quantization: str):
                 import traceback
                 traceback.print_exc()
                 print(f"[Quantization] Falling back to original model without quantization")
+                _add_generation_warning(
+                    f"U-Net quantization '{quantization}' failed during conversion ({e}); "
+                    f"falling back to full precision",
+                    code="quantization_fallback",
+                )
                 return copy.deepcopy(unet)
 
         else:
             print(f"[Quantization] Unsupported quantization type: {quantization}")
             print(f"[Quantization] Supported types: fp8_e4m3fn, fp8_e5m2")
             print(f"[Quantization] Falling back to original model without quantization")
+            _add_generation_warning(
+                f"U-Net quantization '{quantization}' is not a supported type "
+                f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
+                code="quantization_fallback",
+            )
             return copy.deepcopy(unet)
 
     except Exception as e:
         print(f"[Quantization] Error during quantization: {e}")
         print(f"[Quantization] Falling back to original model without quantization")
+        _add_generation_warning(
+            f"U-Net quantization '{quantization}' failed ({e}); falling back to full precision",
+            code="quantization_fallback",
+        )
         import traceback
         traceback.print_exc()
         return copy.deepcopy(unet)
@@ -493,6 +525,11 @@ def move_zimage_transformer_to_gpu(transformer, quantization: Optional[str] = No
     except Exception as e:
         print(f"[VRAM] Warning: Quantization failed: {e}")
         print(f"[VRAM] Falling back to non-quantized transformer")
+        _add_generation_warning(
+            f"Transformer quantization '{quantization}' failed ({e}); "
+            f"falling back to full precision",
+            code="quantization_fallback",
+        )
         transformer.to('cuda:0', non_blocking=False)
         return transformer
 
@@ -564,6 +601,11 @@ def _quantize_transformer(transformer, quantization: str):
             print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
             print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
             print(f"[Quantization] Falling back to original model without quantization")
+            _add_generation_warning(
+                f"Transformer quantization '{quantization}' unavailable (PyTorch "
+                f"{torch.__version__} lacks FP8 support); falling back to full precision",
+                code="quantization_fallback",
+            )
             return copy.deepcopy(transformer)
 
         try:
@@ -593,12 +635,22 @@ def _quantize_transformer(transformer, quantization: str):
             import traceback
             traceback.print_exc()
             print(f"[Quantization] Falling back to original model without quantization")
+            _add_generation_warning(
+                f"Transformer quantization '{quantization}' failed during conversion ({e}); "
+                f"falling back to full precision",
+                code="quantization_fallback",
+            )
             return copy.deepcopy(transformer)
 
     # Unknown quantization type
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
     print(f"[Quantization] Supported types: fp8_e4m3fn, fp8_e5m2")
     print(f"[Quantization] Falling back to non-quantized transformer")
+    _add_generation_warning(
+        f"Transformer quantization '{quantization}' is not a supported type "
+        f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
+        code="quantization_fallback",
+    )
     return copy.deepcopy(transformer)
 
 
@@ -634,6 +686,11 @@ def _quantize_text_encoder(text_encoder, quantization: str):
             print(f"[Quantization] ERROR: PyTorch version {torch.__version__} does not support FP8")
             print(f"[Quantization] FP8 requires PyTorch >= 2.1.0")
             print(f"[Quantization] Falling back to original model without quantization")
+            _add_generation_warning(
+                f"Text encoder quantization '{quantization}' unavailable (PyTorch "
+                f"{torch.__version__} lacks FP8 support); falling back to full precision",
+                code="quantization_fallback",
+            )
             return copy.deepcopy(text_encoder)
 
         try:
@@ -685,12 +742,22 @@ def _quantize_text_encoder(text_encoder, quantization: str):
             import traceback
             traceback.print_exc()
             print(f"[Quantization] Falling back to original model without quantization")
+            _add_generation_warning(
+                f"Text encoder quantization '{quantization}' failed during conversion ({e}); "
+                f"falling back to full precision",
+                code="quantization_fallback",
+            )
             return copy.deepcopy(text_encoder)
 
     # Unknown quantization type
     print(f"[Quantization] ERROR: Unknown quantization type: {quantization}")
     print(f"[Quantization] Supported types: fp8_e4m3fn, fp8_e5m2")
     print(f"[Quantization] Falling back to non-quantized text encoder")
+    _add_generation_warning(
+        f"Text encoder quantization '{quantization}' is not a supported type "
+        f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
+        code="quantization_fallback",
+    )
     return copy.deepcopy(text_encoder)
 
 
@@ -778,6 +845,11 @@ def move_flux2_transformer_to_gpu(transformer, quantization: Optional[str] = Non
     except Exception as e:
         print(f"[VRAM] Warning: Quantization failed: {e}")
         print(f"[VRAM] Falling back to non-quantized transformer")
+        _add_generation_warning(
+            f"FLUX.2 Transformer quantization '{quantization}' failed ({e}); "
+            f"falling back to full precision",
+            code="quantization_fallback",
+        )
         transformer.to('cuda:0', non_blocking=False)
         return transformer
 
@@ -824,10 +896,20 @@ def _anima_quantize_fp8(model, quantization: str, label: str):
         dtype_name = "FP8 E5M2"
     else:
         print(f"[Quantization] Unsupported {quantization} for Anima; only fp8_e4m3fn/fp8_e5m2 supported")
+        _add_generation_warning(
+            f"Anima {label} quantization '{quantization}' is not a supported type "
+            f"(fp8_e4m3fn, fp8_e5m2); falling back to full precision",
+            code="quantization_fallback",
+        )
         return model
 
     if not hasattr(torch, 'float8_e4m3fn'):
         print(f"[Quantization] PyTorch {torch.__version__} does not support FP8. Skipping.")
+        _add_generation_warning(
+            f"Anima {label} quantization '{quantization}' unavailable (PyTorch "
+            f"{torch.__version__} lacks FP8 support); falling back to full precision",
+            code="quantization_fallback",
+        )
         return model
 
     print(f"[Quantization] Applying {dtype_name} to Anima {label} (on-the-fly dequant)...")
@@ -911,6 +993,11 @@ def move_anima_transformer_to_gpu(transformer, quantization: Optional[str] = Non
         print(f"[VRAM] Warning: Anima quantization failed: {e}")
         import traceback; traceback.print_exc()
         print(f"[VRAM] Falling back to non-quantized transformer")
+        _add_generation_warning(
+            f"Anima Transformer quantization '{quantization}' failed ({e}); "
+            f"falling back to full precision",
+            code="quantization_fallback",
+        )
         transformer.to('cuda:0', non_blocking=False)
         return transformer
 

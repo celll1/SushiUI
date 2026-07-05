@@ -1070,6 +1070,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if getattr(pipeline, "_sushi_te", None) is not None:
             print("[NegPip] Negative weight detected, but a custom text encoder is active -> "
                   "falling back (NegPip needs the standard CLIP path)")
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    "NegPip (negative-weight emphasis) disabled: a custom text encoder is "
+                    "active and NegPip needs the standard CLIP path",
+                    code="feature_auto_disabled",
+                )
+            except Exception:
+                pass
             return False
         if getattr(pipeline, "tokenizer", None) is None:
             return False
@@ -1141,6 +1150,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     controlnet_manager.apply_layer_weights(controlnet, layer_weights)
                 elif is_lllite:
                     print(f"[Pipeline] Skipping layer weights for LLLite model (not supported)")
+                    if layer_weights:
+                        try:
+                            from api.generation_status import add_warning
+                            add_warning(
+                                "ControlNet layer weights are not supported for LLLite models "
+                                "and were ignored",
+                                code="not_implemented",
+                            )
+                        except Exception:
+                            pass
                 else:
                     print(f"[Pipeline] No layer weights specified for this ControlNet")
 

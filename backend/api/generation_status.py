@@ -36,6 +36,7 @@ _state: Dict[str, Any] = {
     "updated_at": None,
     "last_error": None,
     "last_result": None,  # {"image_id", "filename", "seed"} of the last successful generation
+    "warnings": [],  # [{"code", "message"}] feature-degradation notices for the current generation
 }
 
 
@@ -55,6 +56,32 @@ def start_generation(generation_type: str) -> None:
         _state["started_at"] = now
         _state["updated_at"] = now
         _state["last_error"] = None
+        _state["warnings"] = []
+
+
+def add_warning(message: str, code: Optional[str] = None) -> None:
+    """Record a feature-degradation notice for the current generation.
+
+    Only appends while a generation is ``running`` so stray warnings from
+    background work don't leak into an idle/next snapshot. Pure dict ops under
+    the lock — cannot raise for normal string/None inputs.
+    """
+    with _lock:
+        if _state["status"] != "running":
+            return
+        # Warnings are idempotent per generation; attention downgrades fire per
+        # attention call (hundreds-thousands per run), so dedup here bounds the
+        # list for every emitter.
+        entry = {"code": code, "message": message}
+        if entry in _state["warnings"]:
+            return
+        _state["warnings"].append(entry)
+
+
+def get_warnings() -> list:
+    """Return a copy of the warnings recorded for the current generation."""
+    with _lock:
+        return list(_state["warnings"])
 
 
 def update_progress(current_step: int, total_steps: int, phase: Optional[str] = None) -> None:
@@ -81,7 +108,9 @@ def complete_generation(last_result: Optional[Dict[str, Any]] = None) -> None:
         _state["updated_at"] = _now()
         _state["last_error"] = None
         if last_result is not None:
-            _state["last_result"] = last_result
+            result = dict(last_result)
+            result["warnings"] = list(_state["warnings"])
+            _state["last_result"] = result
 
 
 def fail_generation(error_message: str) -> None:

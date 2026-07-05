@@ -278,6 +278,7 @@ export interface GeneratedImage {
   lora_names?: string;
   model_hash?: string;
   unet_quantization?: string;
+  effective_warnings?: string | { code?: string; message: string }[]; // Feature-degradation notices recorded during generation
   ref_images?: string[]; // FLUX.2 Image Edit: Reference image hashes
   vision_encoder_name?: string;   // SigLIP2 Vision Encoder filename
   vision_encoder_hash?: string;   // SHA256 hash of Vision Encoder model

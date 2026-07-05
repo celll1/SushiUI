@@ -155,6 +155,15 @@ def set_flux2_attention_backend(transformer, backend, attention_impl="diffusers"
         if diffusers_backend != "native":
             print(f"[FLUX.2] Attention backend '{diffusers_backend}' unavailable "
                   f"({e}); falling back to native")
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    f"FLUX.2 attention backend '{diffusers_backend}' unavailable "
+                    f"({e}); falling back to native",
+                    code="attention_downgrade",
+                )
+            except Exception:
+                pass
         applied = "native"
         try:
             transformer.set_attention_backend("native")

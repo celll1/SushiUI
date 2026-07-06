@@ -37,8 +37,13 @@ class Flux2ArchHandler(ArchHandler):
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("flux2.encode_prompt: phase P4")
 
-    def vae_encode(self, trainer, image_tensor, *, width, height):
-        raise NotImplementedError("flux2.vae_encode: phase P5")
+    def vae_encode(self, trainer, image_tensor, *, image=None, width=None, height=None,
+                   vae_device=None, debug_preprocessing=False):
+        from core.training.ops import flux2_ops
+        return flux2_ops.vae_encode(
+            trainer, image_tensor, image=image, width=width, height=height,
+            vae_device=vae_device, debug_preprocessing=debug_preprocessing,
+        )
 
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("flux2.vae_decode: phase P5/P7")

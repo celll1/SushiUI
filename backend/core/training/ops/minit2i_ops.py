@@ -205,3 +205,32 @@ def encode_prompt(trainer, prompt: str, requires_grad: bool = False):
     attn = toks.attention_mask.to(te_device)
     embeds = trainer.text_encoder(input_ids=input_ids, attention_mask=attn).last_hidden_state  # [1, L, 1024]
     return embeds, attn[0]  # mask [L]
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """MiniT2I VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM bodies of the TWO ``is_minit2i`` early-return branches (pixel-space
+    no-VAE + latent-space), self->trainer rename only. Unlike the other archs
+    this is FULLY self-contained: the caller dispatches it BEFORE the shared VAE
+    staging (pixel-space has no VAE, so ``next(self.vae.parameters())`` must not
+    run), and it returns the final CPU/training-dtype tensor directly (no shared
+    post-amble). ``minit2i_latent`` selects which sub-branch fires.
+    """
+    if trainer.is_minit2i and not getattr(trainer, "minit2i_latent", False):
+        # Pixel-space: there is no VAE. The "latent" IS the [-1,1] RGB image
+        # [1, 3, H, W]. Stored on CPU in training dtype like every other path.
+        return image_tensor.to(device="cpu", dtype=trainer.training_dtype)
+
+    if trainer.is_minit2i and getattr(trainer, "minit2i_latent", False):
+        # Latent-space: VAE-encode the [-1,1] RGB image to a normalized latent
+        # [1, C, H/vsf, W/vsf]. The frozen VAE is moved to GPU for caching by the
+        # latent-cache pre-pass (move_vae_to_gpu).
+        from core.models.minit2i.minit2i_vae import normalize_latent
+        vae_device = next(trainer.vae.parameters()).device
+        px = image_tensor.to(device=vae_device, dtype=trainer.vae_dtype)
+        with torch.no_grad():
+            sample = trainer.vae.encode(px).latent_dist.sample()
+            latent = normalize_latent(sample, trainer.vae)
+        return latent.to(device="cpu", dtype=trainer.training_dtype)

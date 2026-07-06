@@ -181,3 +181,21 @@ def encode_prompt(trainer, prompt: str, max_length: int = 512):
         trainer.text_encoder, trainer.tokenizer, prompt, max_sequence_length=max_length,
     )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
     return stacked.unsqueeze(0).detach(), mask.detach()
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """Ideogram 4 VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``is_ideogram4`` branch (self->trainer rename only). Uses
+    the PIL ``image`` + ``vae_device`` from the shared pre-amble. Runs inside the
+    caller's ``with torch.no_grad()``; caller does the shared final dtype/CPU move.
+    """
+    # Ideogram 4 VAE (AutoencoderKLFlux2): same flat-sequence latent
+    # (1, N, 128) — BN normalise + 2x2 patchify, shared with Lens space.
+    from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode as _ig4_vae_encode
+    latents = _ig4_vae_encode(
+        trainer.vae, image, height=height, width=width,
+        device=vae_device, dtype=trainer.vae_dtype,
+    )
+    return latents

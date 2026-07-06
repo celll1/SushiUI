@@ -39,8 +39,13 @@ class Ideogram4ArchHandler(ArchHandler):
         from core.training.ops import ideogram4_ops
         return ideogram4_ops.encode_prompt(trainer, prompt)
 
-    def vae_encode(self, trainer, image_tensor, *, width, height):
-        raise NotImplementedError("ideogram4.vae_encode: phase P5")
+    def vae_encode(self, trainer, image_tensor, *, image=None, width=None, height=None,
+                   vae_device=None, debug_preprocessing=False):
+        from core.training.ops import ideogram4_ops
+        return ideogram4_ops.vae_encode(
+            trainer, image_tensor, image=image, width=width, height=height,
+            vae_device=vae_device, debug_preprocessing=debug_preprocessing,
+        )
 
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("ideogram4.vae_decode: phase P5/P7")

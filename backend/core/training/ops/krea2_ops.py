@@ -151,3 +151,22 @@ def encode_prompt(trainer, prompt: str, max_length: int = 512):
         trainer.text_encoder, trainer.tokenizer, prompt, select_layers, max_length, te_device,
     )  # embeds [1, seq, 12, 2560], mask [1, seq]
     return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """Krea 2 VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``is_krea2`` branch (self->trainer rename only). Uses the
+    PIL ``image`` + ``vae_device`` from the shared pre-amble. Runs inside the
+    caller's ``with torch.no_grad()``; caller does the shared final dtype/CPU move.
+    """
+    # Krea 2 VAE (AutoencoderKLQwenImage): packed normalized latent
+    # (1, N, 64) where N=(H//16)*(W//16); C*p*p = 16*2*2 = 64.
+    from core.models.krea2.krea2_pipeline_ops import vae_encode as _krea2_vae_encode
+    latents = _krea2_vae_encode(
+        trainer.vae, image, height=height, width=width,
+        patch_size=int(getattr(trainer, "krea2_patch_size", 2)),
+        device=vae_device, dtype=trainer.vae_dtype,
+    )
+    return latents

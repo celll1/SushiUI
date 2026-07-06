@@ -7286,6 +7286,29 @@ class BaseTrainer(ABC):
                     # Ensure U-Net is on GPU (critical for mid-epoch resume)
                     self.move_main_model_to_gpu()
 
+                # Ensure the main model is GPU-resident before the first training step
+                # of this epoch. The swap_onthefly latent/TE prefills (above) and the
+                # onthefly_gpu block each leave it on the GPU, but a pure
+                # pre_encoded_cache config runs NONE of those prefills and relies solely
+                # on the pre-training VAE-encode phase's *conditional* restore
+                # (`if main_on_gpu`). If any prior phase left the main model on CPU — the
+                # pre-encode offload when the model entered it already on CPU
+                # (main_on_gpu=False, so its finally skips the GPU restore), a step-0
+                # verification sample, or a preview request — the epoch loop would
+                # otherwise start step 0 with the U-Net/Transformer on CPU while latents
+                # are on cuda, crashing in the time-embedding Linear ("mat1 and mat2 must
+                # be on the same device: cuda vs cpu"). Guarded to a no-op when the model
+                # is already on GPU, and skipped under block swap (which intentionally
+                # keeps blocks on CPU and stages them per-forward).
+                if self.blocks_to_swap == 0:
+                    main_model = self._main_model_module()
+                    if main_model is not None and \
+                            next(main_model.parameters()).device.type == "cpu":
+                        print(f"{self.log_prefix} Staging main model to GPU for training "
+                              f"(pre_encoded_cache path had no prefill to stage it)...")
+                        self.move_main_model_to_gpu()
+                        self._relocate_main_model_optimizer_state(self.device)
+
                 # Training loop
                 # Calculate expected steps for this epoch (accounting for MNT and mid-epoch resume)
                 epoch_batches = len(batches)  # After mid-epoch resume slicing

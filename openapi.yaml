@@ -6233,10 +6233,10 @@ components:
           default: 0
         weight_dtype:
           type: 'string'
-          default: 'fp16'
+          default: 'bf16'
         training_dtype:
           type: 'string'
-          default: 'fp16'
+          default: 'bf16'
         output_dtype:
           type: 'string'
           default: 'fp32'

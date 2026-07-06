@@ -240,8 +240,8 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "force_recache": False,
     "reconstruction_loss_weight": 0.0,
     # Precision
-    "weight_dtype": "fp16",
-    "training_dtype": "fp16",
+    "weight_dtype": "bf16",                 # bf16: works for both LoRA and full-FT
+    "training_dtype": "bf16",               # bf16 needs no GradScaler (fp16 full-FT crashes on unscale_)
     "output_dtype": "fp32",
     "vae_dtype": "fp16",                    # Fix: frontend had "fp32"
     # Full-parameter save: also embed the VAE weights into the single-file

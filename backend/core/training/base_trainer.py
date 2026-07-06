@@ -1130,8 +1130,17 @@ class BaseTrainer(ABC):
         self.is_krea2 = (model_type == "krea2")
         self.is_sdxl = False
 
+        # P3a: zimage + sd/sdxl loader BODIES moved to ops/ free functions. They
+        # SET is_sdxl (sd/sdxl) / call attention setup during load — which runs
+        # BEFORE self.arch is bound (:1115) — so the dispatcher CANNOT route via
+        # self.arch here; it calls the shared ops functions directly. The arch
+        # handlers (arch/sd15.py, arch/sdxl.py, arch/zimage.py) call the SAME
+        # functions, so the body is defined exactly once. (lazy import: keeps the
+        # ops module loading AFTER base_trainer is fully defined — ops imports
+        # base_trainer._vramdiag at its top.)
+        from core.training.ops import sd_sdxl_ops, zimage_ops
         if self.is_zimage:
-            self._load_zimage_components()
+            zimage_ops.load_components(self)
         # DEUS support removed
         # elif self.is_deus:
         #     self._load_deus_components()
@@ -1148,114 +1157,7 @@ class BaseTrainer(ABC):
         elif self.is_krea2:
             self._load_krea2_components()
         else:
-            self._load_sd_sdxl_components()
-
-    def _load_zimage_components(self):
-        """Load Z-Image model components."""
-        print(f"{self.log_prefix} Detected Z-Image model")
-        print(f"{self.log_prefix} Loading Z-Image components from {self.model_path}")
-
-        from core.model_loader import ModelLoader
-        components = ModelLoader.load_zimage_from_diffusers(
-            model_path=self.model_path,
-            device="cpu",
-            torch_dtype=self.weight_dtype
-        )
-
-        # Store components
-        self.transformer_original = components["transformer"]
-        self.vae = components["vae"]
-        self.text_encoder = components["text_encoder"]
-        self.tokenizer = components["tokenizer"]
-        self.scheduler = components["scheduler"]
-
-        # Z-Image specific: no text_encoder_2, no unet
-        self.text_encoder_2 = None
-        self.tokenizer_2 = None
-        self.unet = None
-        self.noise_scheduler = self.scheduler
-
-        # Convert VAE to vae_dtype
-        self.vae = self.vae.to(dtype=self.vae_dtype)
-
-        # Wrap transformer with BatchedZImageWrapperOptimized
-        from core.models.batched_zimage_wrapper import BatchedZImageWrapperOptimized
-        print(f"{self.log_prefix} Wrapping Z-Image Transformer with BatchedZImageWrapperOptimized")
-        self.transformer = BatchedZImageWrapperOptimized(self.transformer_original)
-        print(f"{self.log_prefix} Phase 2 optimization: Complete batched processing")
-
-        # Setup attention backend if non-native (use_flash_attention is derived from it)
-        if self.use_flash_attention:
-            self._setup_attention_backend_zimage(self.attention_backend)
-
-        # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
-        if not self.gradient_checkpointing:
-            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Z-Image)")
-        elif hasattr(self.transformer, 'enable_gradient_checkpointing'):
-            self.transformer.enable_gradient_checkpointing()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for Z-Image Transformer")
-        else:
-            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for Z-Image Transformer")
-
-        # Enable gradient checkpointing for Text Encoder
-        if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-            self.text_encoder.gradient_checkpointing_enable()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (Qwen3)")
-
-        # Freeze all base weights (full parameter training will unfreeze specific layers later)
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.transformer.requires_grad_(False)
-
-        # Setup Block Swap if enabled (before moving to GPU)
-        self.layer_offload_conductor = None  # Will be initialized if blocks_to_swap > 0
-
-        if self.blocks_to_swap > 0:
-            print(f"{self.log_prefix} Block Swap enabled for training: {self.blocks_to_swap} blocks")
-            print(f"{self.log_prefix} Using LayerOffloadConductor (Ring Buffer implementation)")
-            print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
-
-            # Import new ring buffer implementation
-            from core.memory_management import LayerOffloadConductor
-
-            # Check if transformer has layers attribute
-            if not hasattr(self.transformer_original, 'layers'):
-                raise ValueError(
-                    f"Transformer must have 'layers' attribute for Block Swap. "
-                    f"Found: {type(self.transformer_original)}"
-                )
-
-            # Initialize Layer Offload Conductor
-            self.layer_offload_conductor = LayerOffloadConductor(
-                layers=self.transformer_original.layers,
-                blocks_to_swap=self.blocks_to_swap,
-                device=self.device,
-                use_pinned_memory=self.use_pinned_memory,
-                cpu_buffer_size_mb=8192,  # 8GB CPU buffer for layer params
-                activation_buffer_size_mb=4096,  # 4GB CPU buffer for activations
-                enable_prefetch=True,  # Enable prefetching next layer
-                enable_activation_offload=False  # Disable for now (experimental)
-            )
-
-            # Attach to transformer for reference
-            self.transformer_original._layer_offload_conductor = self.layer_offload_conductor
-
-            # Register hooks for automatic layer swapping
-            self.layer_offload_conductor.register_hooks()
-
-            print(f"{self.log_prefix} LayerOffloadConductor initialized successfully")
-            print(f"{self.log_prefix} Ring buffer allocation strategy enabled")
-        else:
-            print(f"{self.log_prefix} Block Swap disabled (blocks_to_swap=0)")
-            # Move Transformer to GPU normally
-            print(f"{self.log_prefix} Moving Transformer to {self.device}...")
-            self.transformer_original.to(self.device)
-            # Note: self.transformer.transformer is the same object as self.transformer_original
-            # No need to call self.transformer.to(device) again
-
-        print(f"{self.log_prefix} Z-Image model loaded successfully")
-        print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
-        print(f"{self.log_prefix} VAE latent channels: {self.vae.config.latent_channels}")
+            sd_sdxl_ops.load_components(self)
 
     # ============================================================
     # Anima (Cosmos-Predict2 DiT) component loading and training
@@ -2945,216 +2847,6 @@ class BaseTrainer(ABC):
 
             print(f"{self.log_prefix} {'SDXL' if is_sdxl_model else 'SD1.5'} checkpoint loaded successfully as base model")
 
-    def _load_sd_sdxl_components(self):
-        """Load SD/SDXL model components."""
-        is_safetensors = self.model_path.endswith('.safetensors')
-
-        if is_safetensors:
-            print(f"{self.log_prefix} Loading from safetensors file")
-            # Try SDXL first, fall back to SD1.5
-            try:
-                print(f"{self.log_prefix} Trying SDXL pipeline...")
-                temp_pipeline = StableDiffusionXLPipeline.from_single_file(
-                    self.model_path,
-                    torch_dtype=self.dtype,
-                    use_safetensors=True,
-                )
-                is_sdxl_model = True
-            except Exception as e:
-                print(f"{self.log_prefix} Not SDXL, trying SD1.5 pipeline...")
-                temp_pipeline = StableDiffusionPipeline.from_single_file(
-                    self.model_path,
-                    torch_dtype=self.dtype,
-                    use_safetensors=True,
-                )
-                is_sdxl_model = False
-
-            # Extract components
-            self.vae = temp_pipeline.vae
-            self.text_encoder = temp_pipeline.text_encoder
-            self.tokenizer = temp_pipeline.tokenizer
-            self.unet = temp_pipeline.unet
-
-            # Save original scheduler for inference (sample generation)
-            # This preserves the model's original scheduler config (prediction_type, timestep_spacing, etc.)
-            self.original_scheduler = temp_pipeline.scheduler
-
-            # Use DDPMScheduler for training
-            self.noise_scheduler = DDPMScheduler(
-                beta_start=0.00085,
-                beta_end=0.012,
-                beta_schedule="scaled_linear",
-                num_train_timesteps=1000,
-                clip_sample=False,
-                prediction_type="epsilon"
-            )
-
-            # SDXL-specific components
-            if is_sdxl_model:
-                self.text_encoder_2 = temp_pipeline.text_encoder_2
-                self.tokenizer_2 = temp_pipeline.tokenizer_2
-            else:
-                self.text_encoder_2 = None
-                self.tokenizer_2 = None
-
-            del temp_pipeline
-            self.vae = self.vae.to(dtype=self.vae_dtype)
-
-        else:
-            print(f"{self.log_prefix} Loading from diffusers directory")
-            self.vae = AutoencoderKL.from_pretrained(
-                self.model_path,
-                subfolder="vae",
-                torch_dtype=self.vae_dtype
-            )
-
-            self.text_encoder = CLIPTextModel.from_pretrained(
-                self.model_path,
-                subfolder="text_encoder",
-                torch_dtype=self.dtype
-            )
-
-            self.tokenizer = CLIPTokenizer.from_pretrained(
-                self.model_path,
-                subfolder="tokenizer"
-            )
-
-            self.unet = UNet2DConditionModel.from_pretrained(
-                self.model_path,
-                subfolder="unet",
-                torch_dtype=self.dtype
-            )
-
-            # Save original scheduler for inference (sample generation)
-            from diffusers.schedulers import EulerDiscreteScheduler
-            self.original_scheduler = EulerDiscreteScheduler.from_pretrained(
-                self.model_path,
-                subfolder="scheduler"
-            )
-
-            # Use DDPMScheduler for training
-            self.noise_scheduler = DDPMScheduler.from_pretrained(
-                self.model_path,
-                subfolder="scheduler"
-            )
-
-            # Check for SDXL
-            if (Path(self.model_path) / "text_encoder_2").exists():
-                self.text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
-                    self.model_path,
-                    subfolder="text_encoder_2",
-                    torch_dtype=self.dtype
-                )
-                self.tokenizer_2 = CLIPTokenizer.from_pretrained(
-                    self.model_path,
-                    subfolder="tokenizer_2"
-                )
-                is_sdxl_model = True
-            else:
-                self.text_encoder_2 = None
-                self.tokenizer_2 = None
-                is_sdxl_model = False
-
-        # Store SDXL flag
-        self.is_sdxl = is_sdxl_model
-
-        # Custom architecture (VAE/TE swap) changes the base structure (conv channels /
-        # text encoder) and is LoRA-incompatible — LoRA cannot train the resized conv
-        # layers or the TE bridge adapters, and the LoRA save path does not persist them
-        # (the trained pieces would be silently lost). Require full fine-tune.
-        if self.is_sdxl:
-            _tm = str(self.config.get("training_method", "lora") or "lora").strip().lower()
-            _wants_custom = (
-                str(self.config.get("sdxl_vae_type", "") or "").strip().lower() not in ("", "none", "sdxl")
-                or str(self.config.get("sdxl_te_type", "") or "").strip().lower() not in ("", "none", "clip")
-            )
-            if _wants_custom and _tm == "lora":
-                raise ValueError(
-                    "SDXL custom architecture (sdxl_vae_type / sdxl_te_type) requires "
-                    "training_method='full' — LoRA cannot train the resized conv layers or "
-                    "the text-encoder bridge adapters. Switch to Full Fine-tune."
-                )
-
-        # SDXL high-spec VAE migration (optional): swap the VAE and resize the U-Net
-        # conv_in/conv_out to the new latent channel count (channel-partial copy; the
-        # transformer body is kept and adapts during training). "none"/"sdxl" keeps the
-        # standard 4ch VAE so existing SDXL runs are unchanged.
-        self.sdxl_vae_type = "sdxl"
-        if self.is_sdxl:
-            _svt = str(self.config.get("sdxl_vae_type", "") or "").strip().lower()
-            if _svt and _svt not in ("none", "sdxl"):
-                from core.models.sdxl_custom_arch import (
-                    load_alt_vae, resize_unet_in_out, vae_latent_channels,
-                )
-                C = vae_latent_channels(_svt)
-                print(f"{self.log_prefix} [SDXL custom] Migrating to '{_svt}' VAE ({C}ch) "
-                      f"+ resizing U-Net conv_in/out")
-                self.vae = load_alt_vae(_svt, torch_dtype=self.vae_dtype)
-                resize_unet_in_out(self.unet, C)
-                self.sdxl_vae_type = _svt
-        try:
-            self.vae_latent_channels = int(self.vae.config.latent_channels)
-        except Exception:
-            self.vae_latent_channels = 4
-
-        # Custom SDXL Text Encoder (optional): swap CLIP for an alternative encoder
-        # (SigLIP2 text / FLAN-T5 / Qwen3) + trainable adapters bridging to the fixed
-        # U-Net interface (2048 / 1280). The CLIP TEs stay loaded but unused (encode_prompt
-        # branches to the custom path); "none" keeps standard CLIP behavior unchanged.
-        self.sdxl_te_type = "none"
-        if self.is_sdxl:
-            _tet = str(self.config.get("sdxl_te_type", "") or "").strip().lower()
-            if _tet and _tet not in ("none", "clip"):
-                from core.models.sdxl_te_registry import load_sdxl_te
-                from core.models.sdxl_te_adapter import SDXLTEAdapters
-                self.te_max_len = int(self.config.get("sdxl_te_max_len", 256) or 256)
-                self.te_hidden_layer = int(self.config.get("sdxl_te_hidden_layer", -2))
-                self.sdxl_te_train_encoder = bool(self.config.get("sdxl_te_train_encoder", False))
-                _ad_dtype = getattr(self, "training_dtype", None) or self.dtype
-                self.te_custom, self.te_tokenizer, self.te_dim = load_sdxl_te(
-                    _tet, dtype=self.dtype, device=self.device, max_len=self.te_max_len)
-                if self.sdxl_te_train_encoder:
-                    self.te_custom.requires_grad_(True); self.te_custom.train()
-                else:
-                    self.te_custom.requires_grad_(False); self.te_custom.eval()
-                self.te_adapters = SDXLTEAdapters(self.te_dim).to(device=self.device, dtype=_ad_dtype)
-                self.te_adapters.train()
-                self.sdxl_te_type = _tet
-                print(f"{self.log_prefix} [SDXL custom] Text encoder '{_tet}' "
-                      f"(dim={self.te_dim}, max_len={self.te_max_len}, layer={self.te_hidden_layer}, "
-                      f"train_encoder={self.sdxl_te_train_encoder}) + bridge adapters")
-
-        # No transformer for SD/SDXL
-        self.transformer = None
-        self.transformer_original = None
-
-        # Setup attention backend if non-native (use_flash_attention is derived from it)
-        if self.use_flash_attention:
-            self._setup_attention_backend_sd_sdxl(self.attention_backend)
-
-        # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-        if not self.gradient_checkpointing:
-            print(f"{self.log_prefix} Gradient checkpointing disabled by config (SD/SDXL)")
-        elif hasattr(self.unet, 'enable_gradient_checkpointing'):
-            self.unet.enable_gradient_checkpointing()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
-        else:
-            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
-
-        # Enable gradient checkpointing for Text Encoders
-        if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-            self.text_encoder.gradient_checkpointing_enable()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 1")
-
-        if self.gradient_checkpointing and self.text_encoder_2 is not None:
-            if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
-                self.text_encoder_2.gradient_checkpointing_enable()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
-
-        print(f"{self.log_prefix} {'SDXL' if self.is_sdxl else 'SD1.5'} model loaded successfully")
-        if self.debug_vram:
-            _vramdiag("model_load_end")
-
     def _persist_attention_impl(self):
         """Write the resolved ``attention_impl`` back into the run config YAML.
 
@@ -3207,96 +2899,26 @@ class BaseTrainer(ABC):
         return resolve_backend(backend, AttentionMode.TRAINING, probe, probe)
 
     def _setup_attention_backend_zimage(self, backend: str):
-        """Set the attention backend for Z-Image models.
-
-        Sets ``ZImageAttention._attention_backend`` on BOTH module objects (the
-        importlib-loaded ``sys.modules['zimage_transformer']`` used by the loaded
-        transformer AND ``core.models.zimage_transformer``) so the dual-module
-        hazard cannot leave the two disagreeing (design 2.2).
-
-        Falls back silently (keeps the default backend) if the module can't be
-        resolved, so a missing dependency never aborts training.
-        """
-        import sys
-
-        b = self._resolve_training_backend(backend)
-        applied = False
-        try:
-            # The transformer is loaded via importlib with module name
-            # "zimage_transformer"; set the attr on the ACTUAL module used.
-            if 'zimage_transformer' in sys.modules:
-                zimage_transformer_module = sys.modules['zimage_transformer']
-                zimage_transformer_module.ZImageAttention._attention_backend = b
-                applied = True
-                print(f"{self.log_prefix} Set Z-Image attention backend '{b}' on "
-                      f"module {zimage_transformer_module.__name__}")
-            # Also set on core.models.zimage_transformer so both module objects agree.
-            from core.models.zimage_transformer import ZImageAttention
-            ZImageAttention._attention_backend = b
-            applied = True
-            if b == 'native':
-                print(f"{self.log_prefix} [OK] Z-Image attention backend set to native")
-            else:
-                print(f"{self.log_prefix} [OK] Z-Image attention backend enabled: {b}")
-        except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to set Z-Image attention backend '{b}': {e}")
-            if not applied:
-                print(f"{self.log_prefix} Continuing with the default attention backend "
-                      f"(ensure flash-attn is installed for flash: pip install flash-attn)")
+        """Thin delegator: the body moved VERBATIM to
+        ``ops/zimage_ops.setup_attention_backend`` (plan P3a). Kept on the trainer
+        because it is called from multiple load sites — the moved
+        ``zimage_ops.load_components`` body AND ``_load_checkpoint_as_base``
+        (:2676) — all of which run BEFORE ``self.arch`` is bound (:1115), so they
+        cannot route via the handler. ``arch/zimage.py`` calls the same free
+        function, so the body is defined exactly once."""
+        from core.training.ops import zimage_ops
+        return zimage_ops.setup_attention_backend(self, backend)
 
     def _setup_attention_backend_sd_sdxl(self, backend: str):
-        """Set the attention backend for SD/SDXL models.
-
-        Branches on ``self.attention_impl`` (migration flag, SCOPE LOCK 2026-07-03):
-
-        - ``"conduit"`` (fresh-run default): install the SAME
-          :class:`UnifiedAttnProcessor` that SDXL/SD1.5 INFERENCE already uses on
-          the training UNet via :func:`set_attention_processor`, with
-          ``mode=AttentionMode.TRAINING``. This routes attention through the
-          unified conduit so ALL backends work in training — notably ``tq``, which
-          the diffusers path silently collapses to native via
-          ``to_diffusers_backend``. The training UNet is the same diffusers
-          ``UNet2DConditionModel`` whose attention modules accept a processor
-          object (the exact object SDXL inference patches), so this is a pure
-          attention-only swap; ``added_cond_kwargs`` / ``time_ids`` / pooled
-          embeds are computed OUTSIDE attention and are untouched.
-        - ``"diffusers"``: keep the pre-migration
-          ``unet.set_attention_backend(to_diffusers_backend(b))`` path
-          byte-identical.
-
-        ``_resolve_training_backend`` (R4) runs FIRST in both branches so sage is
-        stripped to native regardless of impl; ``tq`` survives and now trains on
-        SDXL via the conduit branch.
-        """
-        if self.unet is None:
-            print(f"{self.log_prefix} WARNING: UNet not loaded, skipping attention backend setup")
-            return
-
-        b = self._resolve_training_backend(backend)
-
-        if self.attention_impl == "diffusers":
-            # Pre-migration path (byte-identical): diffusers registry dispatch.
-            try:
-                print(f"{self.log_prefix} Setting SD/SDXL UNet attention backend '{b}' (impl=diffusers)...")
-                self.unet.set_attention_backend(to_diffusers_backend(b))
-                print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
-            except Exception as e:
-                print(f"{self.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
-                print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
-            return
-
-        # Conduit path (default): reuse the inference UnifiedAttnProcessor in
-        # TRAINING mode so tq (and every other conduit backend) engages.
-        try:
-            from core.inference.attention_processors import set_attention_processor
-            print(f"{self.log_prefix} Setting SD/SDXL UNet attention via UnifiedAttnProcessor (backend='{b}', impl=conduit, mode=TRAINING)...")
-            self._sdxl_original_attn_processors = set_attention_processor(
-                self.unet, b, mode=AttentionMode.TRAINING
-            )
-            print(f"{self.log_prefix} [OK] Conduit attention processor installed on training UNet (backend='{b}')")
-        except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to install conduit attention processor '{b}': {e}")
-            print(f"{self.log_prefix} Falling back to the diffusers default processor (native attention)")
+        """Thin delegator: the body moved VERBATIM to
+        ``ops/sd_sdxl_ops.setup_attention_backend`` (plan P3a). Kept on the trainer
+        because it is called from multiple load sites — the moved
+        ``sd_sdxl_ops.load_components`` body AND ``_load_checkpoint_as_base``
+        (:2905) — all of which run BEFORE ``self.arch`` is bound (:1115), so they
+        cannot route via the handler. ``arch/sd15.py`` / ``arch/sdxl.py`` call the
+        same free function, so the body is defined exactly once."""
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.setup_attention_backend(self, backend)
 
     def _setup_attention_backend_flux2(self, backend: str):
         """Set the attention backend for FLUX.2 models.

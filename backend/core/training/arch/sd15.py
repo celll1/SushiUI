@@ -17,13 +17,20 @@ class SD15ArchHandler(ArchHandler):
     wiring = SD15_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("sd15.load_components: phase P3")
+        # P3a: ONE loader serves both SD1.5 and SDXL (sets trainer.is_sdxl).
+        # Body lives in ops/sd_sdxl_ops (shared with the base_trainer load-time
+        # dispatcher — see the construction-order note in sd_sdxl_ops).
+        from core.training.ops import sd_sdxl_ops
+        sd_sdxl_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("sd15.setup_block_swap: phase P3")
+        # P3a: SD1.5 has NO dedicated setup_*_block_swap method. No-op.
+        return None
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("sd15.setup_attention_backend: phase P3")
+        # P3a: body lives in ops/sd_sdxl_ops (shared with base_trainer delegator).
+        from core.training.ops import sd_sdxl_ops
+        sd_sdxl_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("sd15.encode_prompt: phase P4")

@@ -17,13 +17,22 @@ class ZImageArchHandler(ArchHandler):
     wiring = ZIMAGE_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("zimage.load_components: phase P3")
+        # P3a: body lives in ops/zimage_ops (shared with the base_trainer
+        # load-time dispatcher, which cannot route via self.arch — see the
+        # construction-order note in zimage_ops).
+        from core.training.ops import zimage_ops
+        zimage_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("zimage.setup_block_swap: phase P3")
+        # P3a: Z-Image has NO dedicated setup_*_block_swap method — block-swap
+        # wiring (LayerOffloadConductor) is done inline inside load_components.
+        # No-op here (nothing to move); block swap is already set up at load.
+        return None
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("zimage.setup_attention_backend: phase P3")
+        # P3a: body lives in ops/zimage_ops (shared with base_trainer delegator).
+        from core.training.ops import zimage_ops
+        zimage_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("zimage.encode_prompt: phase P4")

@@ -17,13 +17,22 @@ class SDXLArchHandler(ArchHandler):
     wiring = SDXL_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("sdxl.load_components: phase P3")
+        # P3a: ONE loader serves both SD1.5 and SDXL; it SETS trainer.is_sdxl.
+        # Body lives in ops/sd_sdxl_ops (shared with the base_trainer load-time
+        # dispatcher, which cannot route via self.arch — is_sdxl is only final
+        # after this returns; see the construction-order note in sd_sdxl_ops).
+        from core.training.ops import sd_sdxl_ops
+        sd_sdxl_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("sdxl.setup_block_swap: phase P3")
+        # P3a: SD/SDXL has NO dedicated setup_*_block_swap method (U-Net path
+        # uses component offload, not the block-swap conductor). No-op.
+        return None
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("sdxl.setup_attention_backend: phase P3")
+        # P3a: body lives in ops/sd_sdxl_ops (shared with base_trainer delegator).
+        from core.training.ops import sd_sdxl_ops
+        sd_sdxl_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("sdxl.encode_prompt: phase P4")

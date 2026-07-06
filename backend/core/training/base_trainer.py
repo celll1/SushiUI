@@ -565,105 +565,9 @@ def predict_original_latent_unified(
 # Parameter Change Tracker
 # ============================================================
 
-class ParameterChangeTracker:
-    """
-    Tracks per-component parameter changes during training.
-
-    Computes two metrics every `interval` optimizer steps:
-      B - Update norm:       ||θ_t - θ_{t-K}||_F  (how much changed in last K steps)
-      C - Cumulative drift:  ||θ_t - θ_0||_F / ||θ_0||_F  (relative change from start)
-
-    All computation and storage happens on CPU (fp16) → zero VRAM overhead.
-    CPU RAM usage: ~2 × sum(component_param_bytes / 2) for full FT SDXL ≈ 14 GB total.
-    """
-
-    def __init__(self, components: Dict[str, torch.nn.Module], interval: int = 100):
-        """
-        Args:
-            components: {name: module} for each trainable component
-                        Keys: 'unet', 'te1', 'te2', 've'
-            interval:   Compute metrics every N optimizer steps
-        """
-        self.components = {k: v for k, v in components.items() if v is not None}
-        self.interval = interval
-
-        # Reference snapshot for C (set once at init, never updated)
-        self._reference: Dict[str, List[torch.Tensor]] = {}
-        self._reference_norms: Dict[str, float] = {}
-
-        # Previous snapshot for B (updated every `interval` steps)
-        self._prev: Dict[str, List[torch.Tensor]] = {}
-
-        self._initialize()
-
-    def _snapshot(self, module: torch.nn.Module) -> List[torch.Tensor]:
-        """Copy all trainable parameters to CPU as fp16 tensors."""
-        return [p.detach().cpu().to(torch.float16)
-                for p in module.parameters() if p.requires_grad]
-
-    @staticmethod
-    def _norm_sq(tensors: List[torch.Tensor]) -> float:
-        """Compute sum of squared L2 norms (returns ||tensors||_F^2)."""
-        total = 0.0
-        for t in tensors:
-            total += t.float().norm(2).item() ** 2
-        return total
-
-    @staticmethod
-    def _delta_norm_sq(curr: List[torch.Tensor], ref: List[torch.Tensor]) -> float:
-        """Compute ||curr - ref||_F^2 parameter-by-parameter to avoid large allocations."""
-        total = 0.0
-        for c, r in zip(curr, ref):
-            delta = c.float() - r.float()
-            total += delta.norm(2).item() ** 2
-        return total
-
-    def _initialize(self):
-        total_params = 0
-        total_bytes = 0
-        for name, module in self.components.items():
-            snap = self._snapshot(module)
-            self._reference[name] = snap
-            self._reference_norms[name] = self._norm_sq(snap) ** 0.5
-            # Deep copy for prev (independent list of cloned tensors)
-            self._prev[name] = [t.clone() for t in snap]
-            n = sum(t.numel() for t in snap)
-            total_params += n
-            total_bytes += n * 2  # fp16 = 2 bytes per element
-            print(f"[ParamTracker]   {name}: {n / 1e6:.1f}M params snapshot stored")
-        print(f"[ParamTracker] Initialized. "
-              f"Total tracked: {total_params / 1e6:.1f}M params, "
-              f"~{total_bytes * 2 / 1e9:.1f} GB CPU RAM (ref + prev snapshots)")
-
-    def compute(self, step: int) -> Optional[Dict[str, Dict[str, float]]]:
-        """
-        Compute B and C metrics if `step` is a multiple of `interval`.
-
-        Returns:
-            {'update_norm': {name: float}, 'cumulative_drift': {name: float}}
-            or None if not at interval boundary.
-        """
-        if step % self.interval != 0 or step == 0:
-            return None
-
-        update_norms: Dict[str, float] = {}
-        cumulative_drifts: Dict[str, float] = {}
-
-        for name, module in self.components.items():
-            curr = self._snapshot(module)
-
-            # B: update norm since last checkpoint
-            update_norms[name] = self._delta_norm_sq(curr, self._prev[name]) ** 0.5
-
-            # C: normalized cumulative drift from reference
-            drift = self._delta_norm_sq(curr, self._reference[name]) ** 0.5
-            ref_norm = self._reference_norms[name]
-            cumulative_drifts[name] = drift / ref_norm if ref_norm > 0 else 0.0
-
-            # Update prev for next B computation
-            self._prev[name] = curr
-
-        return {'update_norm': update_norms, 'cumulative_drift': cumulative_drifts}
+# Split to its own module (plan P8). Re-exported here so existing importers of
+# ``base_trainer.ParameterChangeTracker`` keep working (zero caller churn).
+from core.training.parameter_change_tracker import ParameterChangeTracker
 
 
 # ============================================================
@@ -5078,24 +4982,13 @@ class BaseTrainer(ABC):
         """
         from core.training.latent_cache import build_cache_namespace
 
-        if getattr(self, "is_zimage", False):
-            arch = "zimage"
-        elif getattr(self, "is_flux2", False):
-            arch = "flux2"
-        elif getattr(self, "is_anima", False):
-            arch = "anima"
-        elif getattr(self, "is_lens", False):
-            arch = "lens"
-        elif getattr(self, "is_ideogram4", False):
-            arch = "ideogram4"
-        elif getattr(self, "is_minit2i", False):
-            arch = "minit2i"
-        elif getattr(self, "is_krea2", False):
-            arch = "krea2"
-        elif getattr(self, "is_sdxl", False):
-            arch = "sdxl"
-        else:
-            arch = "sd15"
+        # Arch string derives from the bound handler (plan P8). The handler's
+        # ``name`` is the registry key, which ``resolve_arch_name`` computes from
+        # the SAME ``is_<arch>`` flag-priority chain this method previously
+        # inlined (arch/__init__.py) — and registry keys are asserted byte-equal
+        # to these namespace strings (plan R6). So the emitted namespace is
+        # byte-identical to the pre-P8 chain for every arch/config.
+        arch = self.arch.name
 
         # VAE / TE identity only vary within SDXL (custom-arch swaps); other
         # architectures have an arch-determined VAE and TE.

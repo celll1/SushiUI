@@ -66,4 +66,11 @@ class Ideogram4ArchHandler(ArchHandler):
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):
-        raise NotImplementedError("ideogram4.sample: phase P7")
+        # P7: warned-skip moved verbatim from the old _dispatch_sample ideogram4
+        # branch. Ideogram4 sampling (dual transformer + fp8 + resolution-aware
+        # dual-branch conditioning) is not yet ported to the trainer. Warn and
+        # skip (return None) rather than crash into the SD/SDXL generate_sample
+        # path; callers guard on ``sample is not None`` before saving.
+        print(f"{trainer.log_prefix} WARNING: step-0/periodic sampling is not yet "
+              f"supported for ideogram4 (dual-transformer + fp8); skipping this sample.")
+        return None

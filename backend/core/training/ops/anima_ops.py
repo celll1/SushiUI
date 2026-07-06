@@ -434,3 +434,116 @@ def train_step(
     del noise, noisy_latents, noisy_latents_5d, model_pred, target
     del loss_per_element, loss_per_sample
     return loss, pred_loss_value, recon_loss_value
+
+
+# ============================================================
+# Anima Sample Generation (Qwen3 TE + rectified-flow DiT) (plan P7)
+# ============================================================
+# Verbatim body of BaseTrainer._generate_sample_anima (base_trainer.py), moved
+# out of the spine with the mechanical self.->trainer. receiver rename only.
+# arch/anima.py::sample() unpacks SampleContext into this.
+
+
+def generate_sample(
+    trainer,
+    prompt: str,
+    height: int = 512,
+    width: int = 512,
+    num_inference_steps: int = 28,
+    guidance_scale: float = 4.0,
+    seed: int = -1,
+    negative_prompt: str = "",
+):
+    """Generate a sample image during training (Anima).
+
+    Reuses the Anima inference pipeline ops (encode_prompt / sample_txt2img /
+    vae_decode_latents) directly on the trainer's own components, driven with
+    the trainer's sequential-offload helpers so it survives block-swap /
+    low-VRAM training layouts.  A deep-copied scheduler is used so setting the
+    inference timesteps never mutates the training scheduler.
+    """
+    import copy as _copy
+    import random as _random
+    from core.models.anima.anima_pipeline_ops import (
+        encode_prompt as _anima_encode_prompt,
+        sample_txt2img as _anima_sample_txt2img,
+        vae_decode_latents as _anima_vae_decode,
+    )
+
+    print(f"{trainer.log_prefix} Generating Anima sample: {prompt[:50]}...")
+    device = trainer.device
+    compute_dtype = torch.bfloat16
+
+    # Snap to patch_spatial * vae_scale_factor (matches inference backend).
+    snap = trainer.transformer.patch_spatial * 8
+    height = max(snap, (height // snap) * snap)
+    width = max(snap, (width // snap) * snap)
+
+    trainer.transformer.eval()
+    trainer.vae.eval()
+    if trainer.text_encoder is not None:
+        trainer.text_encoder.eval()
+
+    try:
+        # --- Offload transformer (+ optimizer state) to CPU for TE encode ---
+        trainer.move_main_model_to_cpu()
+        trainer._relocate_main_model_optimizer_state("cpu")
+        torch.cuda.empty_cache()
+
+        # --- Stage 1: text encoding ---
+        trainer.move_text_encoder_to_gpu()
+        cond = _anima_encode_prompt(
+            trainer.text_encoder, trainer.tokenizer, trainer.t5_tokenizer,
+            prompt, device=device, dtype=compute_dtype,
+        )
+        uncond = None
+        if guidance_scale > 1.0:
+            uncond = _anima_encode_prompt(
+                trainer.text_encoder, trainer.tokenizer, trainer.t5_tokenizer,
+                negative_prompt, device=device, dtype=compute_dtype,
+            )
+        trainer.move_text_encoder_to_cpu()
+        torch.cuda.empty_cache()
+
+        # --- Stage 2: denoising ---
+        # Optimizer state stays on CPU for the whole sampling span (it is
+        # never stepped here); it returns to GPU only at the final restore.
+        trainer.move_main_model_to_gpu()
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed if (seed is not None and seed >= 0)
+                              else _random.randint(0, 2**32 - 1))
+        sample_scheduler = _copy.deepcopy(trainer.scheduler)
+        with torch.no_grad():
+            latents = _anima_sample_txt2img(
+                transformer=trainer.transformer, scheduler=sample_scheduler,
+                cond_embeds=cond, uncond_embeds=uncond,
+                height=height, width=width,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                generator=generator, device=str(device), dtype=compute_dtype,
+                spectrum_params={},
+            )
+        del cond, uncond
+
+        # --- Stage 3: VAE decode ---
+        trainer.move_main_model_to_cpu()
+        torch.cuda.empty_cache()
+        trainer.move_vae_to_gpu()
+        with torch.no_grad():
+            # VAE weights are trainer.vae_dtype (may differ from the bf16 compute
+            # dtype used for denoising); match it to avoid a conv dtype mismatch.
+            images = _anima_vae_decode(trainer.vae, latents.to(trainer.vae.dtype))
+        trainer.move_vae_to_cpu()
+        del latents
+
+        # --- Restore transformer to GPU for continued training ---
+        trainer.move_main_model_to_gpu()
+        trainer._relocate_main_model_optimizer_state(device)
+        torch.cuda.empty_cache()
+        return images[0]
+
+    finally:
+        trainer.transformer.train()
+        trainer.vae.train()
+        if trainer.text_encoder is not None:
+            trainer.text_encoder.train()

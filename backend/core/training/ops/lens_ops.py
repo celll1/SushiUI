@@ -328,3 +328,104 @@ def train_step(
     # MNT iteration); do not call loss.backward() here.
     del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
     return loss, pred_loss_value, recon_loss_value
+
+
+# ============================================================
+# Lens Sample Generation (mxfp4 TE + flow-matching DiT) (plan P7)
+# ============================================================
+# Verbatim body of BaseTrainer._generate_sample_lens (base_trainer.py), moved
+# out of the spine with the mechanical self.->trainer. receiver rename only.
+# arch/lens.py::sample() unpacks SampleContext into this.
+
+
+def generate_sample(
+    trainer,
+    prompt: str,
+    height: int = 1024,
+    width: int = 1024,
+    num_inference_steps: int = 28,
+    guidance_scale: float = 4.0,
+    seed: int = -1,
+    negative_prompt: str = "",
+):
+    """Generate a sample image during training (Lens).
+
+    Reuses the Lens inference pipeline ops (encode_prompt / prepare_latents /
+    denoise_loop / vae_decode) on the trainer's components.  move_text_encoder_to_gpu
+    transparently reloads the mxfp4 text encoder if it was freed during training.
+    """
+    import copy as _copy
+    import random as _random
+    from core.models.lens.lens_pipeline_ops import (
+        encode_prompt as _lens_encode_prompt,
+        prepare_latents as _lens_prepare_latents,
+        denoise_loop as _lens_denoise_loop,
+        vae_decode as _lens_vae_decode,
+    )
+    from core.models.lens.lens_resolution import align_to_grid as _lens_align
+
+    print(f"{trainer.log_prefix} Generating Lens sample: {prompt[:50]}...")
+    device = trainer.device
+    dtype = torch.bfloat16
+    max_sequence_length = 512
+
+    width, height = _lens_align(width, height)
+    latent_h = height // 16
+    latent_w = width // 16
+
+    trainer.transformer.eval()
+    trainer.vae.eval()
+
+    try:
+        # --- Offload transformer (+ optimizer state) to CPU for TE encode ---
+        trainer.move_main_model_to_cpu()
+        trainer._relocate_main_model_optimizer_state("cpu")
+        torch.cuda.empty_cache()
+
+        # --- Stage 1: text encoding (reloads mxfp4 TE if freed) ---
+        trainer.move_text_encoder_to_gpu()
+        encoder_features, encoder_mask = _lens_encode_prompt(
+            trainer.text_encoder, trainer.tokenizer, prompt, negative_prompt,
+            device=device, dtype=dtype, max_length=max_sequence_length,
+        )
+        trainer.move_text_encoder_to_cpu()
+        torch.cuda.empty_cache()
+
+        # --- Stage 2: denoising ---
+        # Optimizer state stays on CPU for the whole sampling span (it is
+        # never stepped here); it returns to GPU only at the final restore.
+        trainer.move_main_model_to_gpu()
+        seed_val = seed if (seed is not None and seed >= 0) else _random.randint(0, 2**32 - 1)
+        latents = _lens_prepare_latents(height, width, dtype=dtype, device=device, seed=seed_val)
+        sample_scheduler = _copy.deepcopy(trainer.scheduler)
+        with torch.no_grad():
+            latents = _lens_denoise_loop(
+                transformer=trainer.transformer, scheduler=sample_scheduler,
+                latents=latents, encoder_features=encoder_features,
+                encoder_mask=encoder_mask,
+                guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                latent_h=latent_h, latent_w=latent_w, tokenizer=trainer.tokenizer,
+                spectrum_params={},
+            )
+        del encoder_features, encoder_mask
+
+        # --- Stage 3: VAE decode ---
+        trainer.move_main_model_to_cpu()
+        torch.cuda.empty_cache()
+        trainer.move_vae_to_gpu()
+        with torch.no_grad():
+            image = _lens_vae_decode(trainer.vae, latents, latent_h, latent_w)
+        trainer.move_vae_to_cpu()
+        del latents
+
+        # --- Restore transformer to GPU for continued training ---
+        trainer.move_main_model_to_gpu()
+        trainer._relocate_main_model_optimizer_state(device)
+        torch.cuda.empty_cache()
+        return image
+
+    finally:
+        trainer.transformer.train()
+        trainer.vae.train()
+        if trainer.text_encoder is not None:
+            trainer.text_encoder.train()

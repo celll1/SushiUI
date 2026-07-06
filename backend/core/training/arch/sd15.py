@@ -70,4 +70,19 @@ class SD15ArchHandler(ArchHandler):
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):
-        raise NotImplementedError("sd15.sample: phase P7")
+        # P7: verbatim body in ops/sd_sdxl_ops.generate_sample, reached via the
+        # trainer.generate_sample() method (kept as a thin delegator) so the
+        # ControlNetTrainer.generate_sample override + super() chain is preserved.
+        # Passes the exact kwargs the old _dispatch_sample SD/SDXL branch passed.
+        return trainer.generate_sample(
+            prompt=sample_ctx.prompt,
+            width=sample_ctx.width,
+            height=sample_ctx.height,
+            num_inference_steps=sample_ctx.num_inference_steps,
+            guidance_scale=sample_ctx.guidance_scale,
+            seed=sample_ctx.seed,
+            current_step=sample_ctx.current_step,
+            schedule_type=sample_ctx.schedule_type,
+            condition_image_path=sample_ctx.condition_image_path,
+            reference_image_path=sample_ctx.reference_image_path,
+        )

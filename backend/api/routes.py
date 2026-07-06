@@ -6955,6 +6955,10 @@ class TrainingRunCreateRequest(BaseModel):
     tread_drop_ratio: float = TRAINING_DEFAULTS["tread_drop_ratio"]
     tread_start_block: int = TRAINING_DEFAULTS["tread_start_block"]
     tread_end_block: int = TRAINING_DEFAULTS["tread_end_block"]
+    # Low-rate stochastic depth (per-batch block dropout) — training-only (Anima).
+    block_skip_rate: float = TRAINING_DEFAULTS["block_skip_rate"]
+    block_skip_protect_start: int = TRAINING_DEFAULTS["block_skip_protect_start"]
+    block_skip_protect_end: int = TRAINING_DEFAULTS["block_skip_protect_end"]
     # Full-parameter save: embed the VAE into the single-file checkpoint.
     # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True,
     # others False); an explicit boolean always wins.

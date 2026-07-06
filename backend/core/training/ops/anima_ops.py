@@ -388,6 +388,13 @@ def train_step(
     if tread_cfg is not None:
         inner._tread_config = tread_cfg
 
+    # Low-rate stochastic depth (per-batch block dropout): attach for THIS training
+    # forward only, clear in `finally` so sampling / validation run every block.
+    # The forward additionally gates on self.training, so this is doubly safe.
+    block_skip_cfg = getattr(trainer, "block_skip_config", None)
+    if block_skip_cfg is not None:
+        inner._block_skip_config = block_skip_cfg
+
     # The DiT forward returns velocity in 5D ([B, 16, 1, H, W]).
     try:
         if trainer.mixed_precision:
@@ -414,6 +421,8 @@ def train_step(
     finally:
         if tread_cfg is not None:
             inner._tread_config = None
+        if block_skip_cfg is not None:
+            inner._block_skip_config = None
 
     # Drop the temporal dim back: [B, 16, 1, H, W] -> [B, 16, H, W].
     if model_pred.dim() == 5:

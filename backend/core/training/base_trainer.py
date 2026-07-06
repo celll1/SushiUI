@@ -735,6 +735,33 @@ class BaseTrainer(ABC):
                 print("[TREAD] WARNING: torch_compile is on with routing — expect an "
                       "extra one-time recompile for the routed (reduced-token) shape.")
 
+        # Low-rate stochastic depth (per-batch block dropout) — training-only,
+        # currently wired for the Anima DiT (other archs ignore self.block_skip_config).
+        # Each step, eligible blocks (front/back, outside the protected middle span)
+        # are independently dropped with prob block_skip_rate; executed eligible
+        # blocks rescale their residual by 1/(1-rate). Sampling runs every block.
+        # Default OFF (self.block_skip_config is None).
+        self.block_skip_config = None
+        _skip_rate = float(_tc.get("block_skip_rate", 0.0))
+        if _skip_rate > 0.0:
+            # Cap the rate: high dropout on a pretrained DiT degrades quality fast.
+            if _skip_rate > 0.35:
+                print(f"[BlockSkip] WARNING: block_skip_rate={_skip_rate} exceeds "
+                      f"0.35; clamping to 0.35 (high block dropout on a pretrained "
+                      f"DiT degrades quality).")
+                _skip_rate = 0.35
+            self.block_skip_config = {
+                "skip_rate": _skip_rate,
+                "protect_start": int(_tc.get("block_skip_protect_start", 6)),
+                "protect_end": int(_tc.get("block_skip_protect_end", 22)),
+            }
+            print(f"[BlockSkip] Stochastic depth ENABLED: {self.block_skip_config} "
+                  f"(training-only; sampling runs every block)")
+            if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
+                print("[BlockSkip] WARNING: torch_compile is on with per-batch block "
+                      "dropout — the skip pattern varies each step (dynamic control "
+                      "flow), causing recompiles; prefer torch_compile=off.")
+
         # Per-bucket activation offload dispatcher settings. The dispatcher is
         # created lazily on the first executed step (once static VRAM is known).
         self.activation_dispatch_enable = activation_dispatch_enable

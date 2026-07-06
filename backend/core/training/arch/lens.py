@@ -17,13 +17,22 @@ class LensArchHandler(ArchHandler):
     wiring = LENS_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("lens.load_components: phase P3")
+        # P3b: body lives in ops/lens_ops (shared with the base_trainer
+        # load-time dispatcher, which cannot route via self.arch — self.arch
+        # binds after loading; see the construction-order note in lens_ops).
+        from core.training.ops import lens_ops
+        lens_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("lens.setup_block_swap: phase P3")
+        # P3b: body lives in ops/lens_ops (shared with the base_trainer
+        # setup_lens_block_swap delegator, called late by mode subclasses).
+        from core.training.ops import lens_ops
+        lens_ops.setup_block_swap(trainer)
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("lens.setup_attention_backend: phase P3")
+        # P3b: body lives in ops/lens_ops (shared with base_trainer delegator).
+        from core.training.ops import lens_ops
+        lens_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("lens.encode_prompt: phase P4")

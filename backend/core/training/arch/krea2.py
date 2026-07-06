@@ -51,7 +51,19 @@ class Krea2ArchHandler(ArchHandler):
         raise NotImplementedError("krea2.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("krea2.train_step: phase P6")
+        # P6c: verbatim body in ops/krea2_ops.train_step. ctx fields map 1:1 to
+        # the previous train_step_krea2 kwargs bundle.
+        from core.training.ops import krea2_ops
+        return krea2_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            encoder_features=ctx.encoder_features,
+            encoder_mask=ctx.encoder_mask,
+            timesteps=ctx.timesteps,
+            profile_vram=ctx.profile_vram,
+            latent_h=ctx.latent_h,
+            latent_w=ctx.latent_w,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("krea2.sample: phase P7")

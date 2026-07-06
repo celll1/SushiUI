@@ -19,6 +19,9 @@ cross-arch"); the moved loader body calls ``trainer._setup_repa()``.
 """
 from __future__ import annotations
 
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 import torch
 
 
@@ -234,3 +237,187 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
             sample = trainer.vae.encode(px).latent_dist.sample()
             latent = normalize_latent(sample, trainer.vae)
         return latent.to(device="cpu", dtype=trainer.training_dtype)
+
+
+def train_step(
+    trainer,
+    images: torch.Tensor,
+    text_embeds: torch.Tensor,
+    attention_mask: torch.Tensor,
+    timesteps: Optional[torch.Tensor] = None,
+    profile_vram: bool = False,
+    debug_save_path: Optional[Path] = None,
+    debug_captions: Optional[List[str]] = None,
+    debug_reference_image_paths: Optional[List[Optional[str]]] = None,
+    repa_pixels: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float, float]:
+    """Single MiniT2I training step (pixel-space flow matching, x0 prediction).
+
+    VERBATIM body of ``BaseTrainer.train_step_minit2i`` (P6c; ``self.`` ->
+    ``trainer.`` receiver rename + sanctioned lazy base_trainer import only).
+    See the original docstring for the (0,1) flow convention and CFG label drop.
+    """
+    # Lazy import (sibling-ops pattern): keep base_trainer out of module top level.
+    from core.training.base_trainer import print_vram_usage
+
+    # noise_scale: 2.0 for pixel-space [-1,1] images, 1.0 for unit-variance VAE
+    # latents (from the model config, set per vae_type).
+    noise_scale = float(getattr(trainer, "minit2i_noise_scale", 2.0))
+
+    if profile_vram:
+        print_vram_usage("[train_step_minit2i] Start")
+
+    images = images.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    text_embeds = text_embeds.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    attention_mask = attention_mask.to(device=trainer.device, non_blocking=True)
+
+    B = images.shape[0]
+
+    # Timesteps come from the shared, config-driven sampler (drawn once in the
+    # main loop and passed in) so the UI's timestep_sampling controls MiniT2I too.
+    # MiniT2I's convention is t=1 data, t=0 noise; the per-arch default
+    # (param_defaults.TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH["minit2i"]) is
+    # logit_normal(mean=-0.8, std=0.8), reproducing the reference lognorm schedule
+    # (low t = noise side). Fall back to the vendored scheduler only if no
+    # timesteps were provided (e.g. a direct unit-test call).
+    if timesteps is not None:
+        t = timesteps.to(device=trainer.device, dtype=trainer.training_dtype)
+    else:
+        t = trainer.scheduler.sample_train_timesteps(B, trainer.device, dtype=trainer.training_dtype)
+    t_img = t.view(-1, 1, 1, 1)
+
+    noise = torch.randn_like(images) * noise_scale
+    x_t = images * t_img + noise * (1.0 - t_img)
+    denom = torch.clamp(1.0 - t_img, min=0.05)
+    target = (images - x_t) / denom  # ground-truth velocity
+
+    # CFG label drop: zero the mask -> mask_token uncond for dropped samples.
+    label_drop_rate = float(trainer.config.get("minit2i_label_drop_rate", 0.1))
+    mask_eff = attention_mask
+    if label_drop_rate > 0.0:
+        drop = torch.rand(B, device=trainer.device) < label_drop_rate
+        if drop.any():
+            mask_eff = attention_mask.clone()
+            mask_eff[drop] = 0
+
+    t_dtype = trainer.transformer.dtype
+
+    def _forward():
+        return trainer.transformer(
+            x_t.to(t_dtype),
+            t.to(t_dtype),
+            text_embeds.to(t_dtype),
+            mask_eff,
+        )
+
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            x0_pred = _forward()
+    else:
+        x0_pred = _forward()
+
+    v_pred = (x0_pred.float() - x_t.float()) / denom.float()
+    loss = torch.nn.functional.mse_loss(v_pred, target.float(), reduction="mean")
+
+    pred_loss_value = loss.item()
+    # Reconstruction loss (monitoring only, no gradients): unweighted MSE of the
+    # predicted clean image (x0) vs the target image. This is a cleaner quality
+    # signal than the (1-t)-reweighted velocity objective used for backward.
+    with torch.no_grad():
+        recon_loss_value = torch.nn.functional.mse_loss(
+            x0_pred.float(), images.float(), reduction="mean"
+        ).item()
+
+    # REPA (representation alignment): align the DiT image hidden state captured
+    # at the tap depth with frozen clean-image patch features, via the trainable
+    # projector. Added to the backward loss; pred/recon above stay diffusion-only.
+    # The tap (transformer.model.net._repa_tap_out) is grad-connected (it is the
+    # double-block loop output, gradient-checkpoint safe).
+    trainer._minit2i_last_repa_loss = None
+    if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
+        trainer._ensure_repa_on_device()
+        net = trainer.transformer.model.net
+        tap = getattr(net, "_repa_tap_out", None)
+        if tap is not None:
+            from core.training.repa import encode_repa_targets, repa_loss as _repa_loss_fn
+            patch = int(trainer.transformer.mmjit_config.patch_size)
+            gh = images.shape[2] // patch
+            gw = images.shape[3] // patch
+            targets = encode_repa_targets(
+                trainer.repa_encoder,
+                repa_pixels.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True),
+                gh, gw, trainer.repa_size,
+            )
+            rloss = _repa_loss_fn(tap, targets, trainer.repa_projector)
+            loss = loss + trainer.repa_weight * rloss
+            trainer._minit2i_last_repa_loss = float(rloss.detach().item())
+            del targets
+        # Release the captured graph reference (avoid retaining the activation graph).
+        net._repa_tap_out = None
+
+    # Debug save: dump the first sample's tensors (.pt) so the noising / x0
+    # prediction can be inspected offline. For the latent variant ("latent" is
+    # a VAE code) also decode the target and prediction back to RGB PNGs via
+    # the VAE so the encode/decode round-trip is visually verifiable.
+    if debug_save_path is not None:
+        try:
+            debug_save_path.mkdir(parents=True, exist_ok=True)
+            t_val = float(t[0].item())
+            is_latent = bool(getattr(trainer, "minit2i_latent", False))
+            will_decode = is_latent and getattr(trainer, "vae", None) is not None
+            # .pt always carries the scalar metrics (timestep/losses/caption) the
+            # visualize endpoint reads. When we also write decoded webp previews
+            # (latent variant), the heavy latent tensors are NOT stored — the webp
+            # is the display source, so this keeps debug .pt tiny (~1KB vs ~2MB)
+            # over long runs. Pixel / no-VAE runs keep the tensors so the
+            # false-color latent_to_image fallback still works.
+            debug_data = {
+                "timestep": t_val,
+                "noise_scale": noise_scale,
+                "model_type": "minit2i",
+                "vae_type": getattr(trainer, "minit2i_vae_type", "none"),
+                "is_latent": is_latent,
+                "loss": loss.item(),
+                "recon_loss": recon_loss_value,
+                "batch_size": B,
+            }
+            if not will_decode:
+                # Standard tensor keys the visualize endpoint false-colors
+                # (latents=Target, predicted_latent=Predicted t=0).
+                debug_data["latents"] = images[0:1].detach().cpu()
+                debug_data["noisy_latents"] = x_t[0:1].detach().cpu()
+                debug_data["predicted_latent"] = x0_pred[0:1].detach().cpu()
+                debug_data["predicted_velocity"] = v_pred[0:1].detach().cpu()
+            if debug_captions:
+                debug_data["caption"] = debug_captions[0]
+            if debug_reference_image_paths:
+                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+                if first_ref:
+                    debug_data["reference_image_path"] = first_ref
+            torch.save(debug_data, debug_save_path / f"latents_t{t_val:.4f}.pt")
+
+            if will_decode:
+                # Decode the noisy x_t, the predicted x0, and the target latent to
+                # RGB for a visual sanity check / 3-way comparison (noisy ⇔
+                # predicted ⇔ target). VAE tiling keeps this cheap at any res.
+                from core.models.minit2i.minit2i_vae import denormalize_latent
+                from PIL import Image as _Image
+                vae_dev = next(trainer.vae.parameters()).device
+                with torch.no_grad():
+                    for name, lat in (("noisy", x_t[0:1]), ("target", images[0:1]), ("pred_x0", x0_pred[0:1])):
+                        z = denormalize_latent(lat.to(device=vae_dev, dtype=trainer.vae_dtype), trainer.vae)
+                        img = trainer.vae.decode(z).sample  # [1,3,H,W] in ~[-1,1]
+                        arr = ((img[0].float().clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)
+                        arr = arr.permute(1, 2, 0).cpu().numpy()
+                        # WebP (lossy q80) — debug previews accumulate (every N
+                        # steps x 2 images); far smaller than PNG, fine for visual checks.
+                        _Image.fromarray(arr).save(
+                            debug_save_path / f"decode_t{t_val:.4f}_{name}.webp",
+                            "WEBP", quality=80, method=4,
+                        )
+        except Exception as _dbg_e:
+            print(f"{trainer.log_prefix} [debug_latents] save failed: {_dbg_e}")
+
+    # Backward is performed by _execute_forward_backward; do not backward here.
+    del noise, x_t, target, v_pred, x0_pred, denom
+    return loss, pred_loss_value, recon_loss_value

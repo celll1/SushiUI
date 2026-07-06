@@ -25,7 +25,11 @@ verbatim; behavior unchanged.
 """
 from __future__ import annotations
 
+from pathlib import Path
+from typing import List, Optional, Tuple
+
 import torch
+import torch.nn.functional as F
 
 from core.attention import AttentionMode, to_diffusers_backend
 
@@ -344,3 +348,344 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
 
     del latent_dist
     return latents
+
+
+def train_step(
+    trainer,
+    latents: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    img_ids: torch.Tensor,
+    txt_ids: torch.Tensor,
+    timesteps: Optional[torch.Tensor] = None,
+    guidance: Optional[torch.Tensor] = None,
+    reference_latents_nested: Optional[List[List[torch.Tensor]]] = None,
+    debug_save_path: Optional[Path] = None,
+    debug_captions: Optional[List[str]] = None,
+    debug_reference_image_paths: Optional[List[str]] = None,
+    profile_vram: bool = False,
+    alphas_cumprod_cached: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float, float]:
+    """Perform single training step (FLUX.2 Klein).
+
+    VERBATIM body of ``BaseTrainer.train_step_flux2`` (P6c; ``self.`` ->
+    ``trainer.`` receiver rename + sanctioned lazy base_trainer import only).
+    Packing helpers (``_flux2_pack_latents`` / ``_flux2_prepare_latent_ids`` /
+    ``_flux2_unpack_latents_with_ids``) stay as spine methods (shared with the
+    ctx-build branch, encode paths and P7 sampling) and are called via
+    ``trainer.`` — mirroring the P5 ``_flux2_patchify_latents_for_training``
+    delegator policy. See the original docstring for arg/shape details.
+    """
+    # Lazy import (sibling-ops pattern): keep base_trainer out of module top level.
+    from core.training.base_trainer import (
+        add_noise_unified,
+        get_target_unified,
+        predict_original_latent_unified,
+        print_vram_usage,
+    )
+
+    if profile_vram:
+        print_vram_usage("[train_step_flux2] Start")
+
+    # FLUX.2 uses Flow Matching with velocity prediction
+    noise_process = getattr(trainer, 'noise_process', 'flow')  # FLUX.2 default: flow
+    prediction_target = getattr(trainer, 'prediction_target', 'velocity')  # FLUX.2 default: velocity
+
+    # Move latents to GPU with correct dtype
+    latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    img_ids = img_ids.to(device=trainer.device, non_blocking=True)
+    txt_ids = txt_ids.to(device=trainer.device, non_blocking=True)
+    prompt_embeds = prompt_embeds.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+
+    # Sample random timesteps from [0, 1] if not provided
+    batch_size = latents.shape[0]
+    if timesteps is None:
+        if trainer.timestep_sampler is not None:
+            timesteps = trainer.timestep_sampler.sample(batch_size, trainer.device)
+        else:
+            timesteps = torch.rand(batch_size, device=trainer.device)
+
+    # Set default guidance if not provided
+    if guidance is None:
+        guidance = torch.full((batch_size,), 3.5, device=trainer.device, dtype=trainer.training_dtype)
+
+    # Sample noise (standard normal distribution)
+    noise = torch.randn_like(latents)
+
+    # Add noise using flow matching: noisy = (1 - t) * latents + t * noise
+    noisy_latents = add_noise_unified(
+        noise_process=noise_process,
+        noise_scheduler=trainer.noise_scheduler,
+        latents=latents,
+        noise=noise,
+        timesteps=timesteps,
+    )
+
+    # ============================================================
+    # Reference Image Conditioning (Latent Concatenation)
+    # ============================================================
+    # If reference latents are provided, pack them and concatenate with noisy latents
+    # This allows the model to condition on reference images during training
+    #
+    # Multiple reference images per batch item:
+    # - reference_latents_nested is List[List[Tensor]] where each inner list contains
+    #   reference latents for one batch item
+    # - Each reference image gets T coordinate offset: 10, 20, 30, ...
+    # - All reference latents are packed and concatenated per batch item
+    #
+    # Shape: noisy_latents [B, seq_len, C] + ref_latents [B, ref_seq_len, C]
+    #        -> concatenated [B, seq_len + ref_seq_len, C]
+    # img_ids are also extended with reference position IDs
+    packed_reference_latents = None
+    if reference_latents_nested is not None and len(reference_latents_nested) > 0:
+        # Process each batch item's reference images
+        all_packed_refs = []
+        all_ref_ids = []
+
+        for batch_idx, item_ref_latents in enumerate(reference_latents_nested):
+            item_packed_refs = []
+            item_ref_ids = []
+
+            for ref_idx, ref_latent in enumerate(item_ref_latents):
+                # ref_latent shape: [1, C, H, W] (single reference image)
+                # Pack: (1, C, H, W) -> (1, H*W, C)
+                packed_ref = trainer._flux2_pack_latents(ref_latent)
+                packed_ref = packed_ref.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+                item_packed_refs.append(packed_ref)
+
+                # Prepare position IDs for this reference image
+                ref_img_id = trainer._flux2_prepare_latent_ids(ref_latent).to(trainer.device)
+                # Apply T coordinate offset: T = scale + scale * ref_idx (scale=10)
+                # ref_idx 0 -> T=10, ref_idx 1 -> T=20, ref_idx 2 -> T=30, etc.
+                t_offset = 10 + 10 * ref_idx
+                ref_img_id[..., 0] = ref_img_id[..., 0] + t_offset
+                item_ref_ids.append(ref_img_id)
+
+            # Concatenate all reference latents for this batch item
+            # Shape: (1, total_ref_seq_len, C)
+            item_packed_concat = torch.cat(item_packed_refs, dim=1)
+            item_ids_concat = torch.cat(item_ref_ids, dim=1)
+
+            all_packed_refs.append(item_packed_concat)
+            all_ref_ids.append(item_ids_concat)
+
+        # Stack across batch dimension
+        # All batch items must have same total reference sequence length
+        # (This is guaranteed if all items have same number of reference images with same dimensions)
+        # If dimensions vary, we need padding - for now, assume consistent structure
+        try:
+            packed_reference_latents = torch.cat(all_packed_refs, dim=0)  # [B, ref_seq_len, C]
+            ref_img_ids = torch.cat(all_ref_ids, dim=0)  # [B, ref_seq_len, 4]
+
+            # Concatenate reference latents with noisy latents along sequence dimension
+            noisy_latents = torch.cat([noisy_latents, packed_reference_latents], dim=1)
+
+            # Concatenate reference position IDs with image position IDs
+            img_ids = torch.cat([img_ids, ref_img_ids], dim=1)
+        except RuntimeError as e:
+            # Handle dimension mismatch (different reference image counts/sizes per batch item)
+            print(f"{trainer.log_prefix} WARNING: Reference latent dimension mismatch in batch, skipping reference conditioning: {e}")
+            packed_reference_latents = None
+
+    if profile_vram:
+        print_vram_usage("[train_step_flux2] Before Transformer forward")
+
+    # Predict velocity using FLUX.2 Transformer.
+    # When block swap is active, route the forward through the block-swap wrapper so
+    # it drives the offloader (wait_for_block / submit per block). self.transformer
+    # itself is NOT replaced -> optimizer / LoRA / state_dict keep seeing the raw module.
+    fwd = trainer.flux2_transformer_wrapper if getattr(trainer, "flux2_transformer_wrapper", None) is not None else trainer.transformer
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            output = fwd(
+                hidden_states=noisy_latents,
+                encoder_hidden_states=prompt_embeds,
+                timestep=timesteps,
+                img_ids=img_ids,
+                txt_ids=txt_ids,
+                guidance=guidance,
+                return_dict=False,
+            )
+            model_pred = output[0]
+    else:
+        output = fwd(
+            hidden_states=noisy_latents,
+            encoder_hidden_states=prompt_embeds,
+            timestep=timesteps,
+            img_ids=img_ids,
+            txt_ids=txt_ids,
+            guidance=guidance,
+            return_dict=False,
+        )
+        model_pred = output[0]
+
+    if profile_vram:
+        print_vram_usage("[train_step_flux2] After Transformer forward")
+
+    # ============================================================
+    # Slice output to remove reference latent predictions
+    # ============================================================
+    # If we concatenated reference latents, the model output contains predictions
+    # for both target + reference. We only want predictions for the target latents.
+    original_seq_len = latents.shape[1]  # Original target latent sequence length
+    if packed_reference_latents is not None:
+        # Slice to keep only predictions for target latents
+        model_pred = model_pred[:, :original_seq_len, :]
+        # Also slice noisy_latents for consistency in loss computation
+        noisy_latents = noisy_latents[:, :original_seq_len, :]
+
+    # Get target using unified framework
+    target = get_target_unified(
+        noise_process=noise_process,
+        prediction_target=prediction_target,
+        noise_scheduler=trainer.noise_scheduler,
+        latents=latents,
+        noise=noise,
+        timesteps=timesteps,
+    )
+
+    # Calculate MSE loss (always in fp32)
+    loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+    loss_per_sample = loss_per_element.mean([1, 2])  # Mean over seq_len and channels
+
+    # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
+    mse_loss = loss_per_sample.mean()
+
+    # Add regularization if enabled
+    regularization_loss = torch.tensor(0.0, device=trainer.device)
+
+    # Compute predicted latent once (used by regularization losses and dual loss)
+    predicted_latent_for_reg = None
+    if trainer.snr_regularization_loss is not None or trainer.energy_regularization_loss is not None or trainer.reconstruction_loss_weight > 0:
+        predicted_latent_for_reg = predict_original_latent_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=trainer.noise_scheduler,
+            noisy_latents=noisy_latents,
+            model_pred=model_pred,
+            timesteps=timesteps,
+        )
+
+    # SNR regularization
+    if trainer.snr_regularization_loss is not None:
+        snr_reg_loss = trainer.snr_regularization_loss(
+            predicted_latent_for_reg,
+            latents,
+            timesteps
+        )
+        regularization_loss = regularization_loss + snr_reg_loss
+
+    # Energy regularization
+    if trainer.energy_regularization_loss is not None:
+        energy_reg_loss = trainer.energy_regularization_loss(
+            predicted_latent_for_reg,
+            latents,
+            timesteps
+        )
+        regularization_loss = regularization_loss + energy_reg_loss
+
+    # Calculate reconstruction loss
+    if trainer.reconstruction_loss_weight > 0:
+        if predicted_latent_for_reg is not None:
+            predicted_latent_for_recon = predicted_latent_for_reg
+        else:
+            predicted_latent_for_recon = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=trainer.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
+
+        recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+        recon_loss_per_sample = recon_loss_per_element.mean([1, 2])
+        recon_loss = recon_loss_per_sample.mean()
+
+        alpha = 1.0 - trainer.reconstruction_loss_weight
+        beta = trainer.reconstruction_loss_weight
+        combined_loss = alpha * mse_loss + beta * recon_loss
+
+        loss = combined_loss + regularization_loss
+    else:
+        with torch.no_grad():
+            if predicted_latent_for_reg is not None:
+                predicted_latent_for_recon = predicted_latent_for_reg.detach()
+            else:
+                predicted_latent_for_recon = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=trainer.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
+
+            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+            recon_loss_per_sample = recon_loss_per_element.mean([1, 2])
+            recon_loss = recon_loss_per_sample.mean()
+
+        loss = mse_loss + regularization_loss
+
+    if profile_vram:
+        print_vram_usage("[train_step_flux2] After loss calculation")
+
+    # Debug save if requested
+    if debug_save_path is not None:
+        debug_save_path.mkdir(parents=True, exist_ok=True)
+        timestep_value = timesteps[0].item()
+
+        with torch.no_grad():
+            # FLUX.2 uses standard Flow Matching: x_0 = x_t - t * v
+            t = timesteps.float()
+            while t.dim() < noisy_latents.dim():
+                t = t.unsqueeze(-1)
+            predicted_latent = noisy_latents - t * model_pred
+
+            # Convert packed latents (B, seq_len, C) to (B, C, H, W) for visualization
+            # This makes debug output consistent with other models (SD/SDXL/Z-Image)
+            latents_4d = trainer._flux2_unpack_latents_with_ids(latents[0:1], img_ids[0:1])
+            noisy_latents_4d = trainer._flux2_unpack_latents_with_ids(noisy_latents[0:1], img_ids[0:1])
+            predicted_velocity_4d = trainer._flux2_unpack_latents_with_ids(model_pred[0:1], img_ids[0:1])
+            actual_velocity_4d = trainer._flux2_unpack_latents_with_ids(target[0:1], img_ids[0:1])
+            predicted_latent_4d = trainer._flux2_unpack_latents_with_ids(predicted_latent[0:1], img_ids[0:1])
+
+        debug_data = {
+            'latents': latents_4d.detach().cpu(),
+            'noisy_latents': noisy_latents_4d.detach().cpu(),
+            'predicted_velocity': predicted_velocity_4d.detach().cpu(),
+            'actual_velocity': actual_velocity_4d.detach().cpu(),
+            'predicted_latent': predicted_latent_4d.detach().cpu(),
+            'timestep': timestep_value,
+            'loss': loss_per_sample[0].item(),
+            'loss_batch_mean': loss.item(),
+            'recon_loss': recon_loss_per_sample[0].item(),
+            'recon_loss_batch_mean': recon_loss.item(),
+            'batch_size': batch_size,
+            'scheduler_type': 'FlowMatching',
+            'model_type': 'flux2',
+            'img_ids_shape': list(img_ids.shape),
+            'txt_ids_shape': list(txt_ids.shape),
+            'latent_shape_4d': list(latents_4d.shape),  # Store 4D shape for reference
+        }
+
+        if debug_captions is not None and len(debug_captions) > 0:
+            debug_data['caption'] = debug_captions[0]
+            debug_data['all_captions'] = debug_captions
+
+        if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+            first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+            if first_ref:
+                debug_data['reference_image_path'] = first_ref
+
+        torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
+        del predicted_latent, latents_4d, noisy_latents_4d, predicted_velocity_4d, actual_velocity_4d, predicted_latent_4d
+
+    # Return loss tensor and loss values
+    pred_loss_value = mse_loss.item()
+    recon_loss_value = recon_loss.item()
+
+    # Free intermediate tensors
+    del noise, noisy_latents, model_pred, target
+    del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
+
+    return loss, pred_loss_value, recon_loss_value

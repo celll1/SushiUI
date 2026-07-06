@@ -53,7 +53,22 @@ class MiniT2IArchHandler(ArchHandler):
         raise NotImplementedError("minit2i.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("minit2i.train_step: phase P6")
+        # P6c: verbatim body in ops/minit2i_ops.train_step. ctx fields map 1:1 to
+        # the previous train_step_minit2i kwargs bundle (mnt_latents is the
+        # pixel-space image tensor; text_embeds/attention_mask carry FLAN-T5).
+        from core.training.ops import minit2i_ops
+        return minit2i_ops.train_step(
+            trainer,
+            images=ctx.latents,
+            text_embeds=ctx.text_embeddings,
+            attention_mask=ctx.attention_mask,
+            timesteps=ctx.timesteps,
+            profile_vram=ctx.profile_vram,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
+            repa_pixels=ctx.repa_pixels,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("minit2i.sample: phase P7")

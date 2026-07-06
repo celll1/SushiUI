@@ -811,6 +811,31 @@ class BaseTrainer(ABC):
             self.mixed_precision and
             self.training_dtype == torch.float16  # Only FP16, not BF16
         )
+        # Reject the unsupported FP16 full fine-tune + GradScaler combination.
+        # torch's GradScaler.unscale_() requires FP32 master parameters: when the
+        # trainable params are themselves FP16 it raises
+        # "Attempting to unscale FP16 gradients" at the first optimizer step.
+        # For LoRA/ReLoRA/ControlNet the trainable adapter params are lora_dtype
+        # (FP32 by default) while the FP16 base stays frozen, so unscale_() only
+        # ever touches FP32 grads and is safe. Full-parameter FT trains the base
+        # weights directly, so FP16 weight_dtype + FP16 mixed precision is broken.
+        # Fail loudly at setup (before any GPU work) with an actionable remedy
+        # rather than silently changing numerics.
+        if (
+            type(self).__name__ == "FullParameterTrainer"
+            and self.use_grad_scaler
+            and self.weight_dtype == torch.float16
+        ):
+            raise ValueError(
+                "FP16 full fine-tune is unsupported with mixed precision: "
+                "weight_dtype=fp16 + training_dtype=fp16 + mixed_precision=True "
+                "trains FP16 base weights, but torch's GradScaler requires FP32 "
+                "master parameters and raises 'Attempting to unscale FP16 "
+                "gradients' at step 1. Remedy: set weight_dtype=bf16 and "
+                "training_dtype=bf16 (bf16 needs no gradient scaling and is the "
+                "default for full fine-tune). LoRA is unaffected because its "
+                "trainable adapters are FP32."
+            )
         if self.use_grad_scaler:
             from torch.cuda.amp import GradScaler
 

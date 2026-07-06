@@ -6954,6 +6954,8 @@ class TrainingRunCreateRequest(BaseModel):
     # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True,
     # others False); an explicit boolean always wins.
     bundle_vae: Optional[bool] = TRAINING_DEFAULTS["bundle_vae"]
+    # Gradient checkpointing (activation recompute). Default True = prior behavior.
+    gradient_checkpointing: bool = TRAINING_DEFAULTS["gradient_checkpointing"]
     # Anima Phase D memory optimisations.
     cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["cpu_offload_checkpointing"]
     async_cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["async_cpu_offload_checkpointing"]

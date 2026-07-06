@@ -6091,6 +6091,14 @@ components:
         anima_llm_adapter_lr_factor:
           type: 'number'
           default: 1.0
+        gradient_checkpointing:
+          type: 'boolean'
+          default: true
+          description: |
+            Gradient checkpointing (activation recompute) on the trainable modules.
+            Default true preserves prior behavior (lower VRAM, slightly slower).
+            Set false to trade VRAM for training speed.
+          example: true
         cpu_offload_checkpointing:
           type: 'boolean'
           default: false

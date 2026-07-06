@@ -155,8 +155,8 @@ class ControlNetTrainer(BaseTrainer):
             pretrained_path=self.controlnet_pretrained_path,
         )
 
-        # Enable gradient checkpointing for ControlNet
-        if hasattr(self.controlnet, 'enable_gradient_checkpointing'):
+        # Enable gradient checkpointing for ControlNet (honors the per-run flag)
+        if self.gradient_checkpointing and hasattr(self.controlnet, 'enable_gradient_checkpointing'):
             self.controlnet.enable_gradient_checkpointing()
             print(f"{self.log_prefix} Gradient checkpointing enabled for ControlNet")
 

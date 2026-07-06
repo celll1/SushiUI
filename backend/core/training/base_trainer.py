@@ -7321,7 +7321,12 @@ class BaseTrainer(ABC):
                 # Skip when crop augmentation is active: batch count varies per epoch, so
                 # the exact total comes from CropPlanner.step_offsets (set above), not from
                 # the first epoch's count.
-                if epoch == start_epoch and self._crop_step_offsets is None:
+                # Skip in step-based mode (total_steps is not None): the user requested an
+                # exact global-step bound, so actual_total_steps must stay = total_steps.
+                # Recomputing it here from epoch*steps_per_epoch would override the requested
+                # bound and let training run to an epoch-derived count instead of stopping at
+                # total_steps (the loop stop condition at global_step >= actual_total_steps).
+                if epoch == start_epoch and self._crop_step_offsets is None and total_steps is None:
                     # Calculate actual steps per epoch (before mid-epoch slicing)
                     if bucket_manager:
                         # For bucketing: use the full batch count before resume slicing.

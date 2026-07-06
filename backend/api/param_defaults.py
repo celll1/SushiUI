@@ -326,6 +326,20 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (eligible = first 6 + last 6).
     "block_skip_protect_start": 6,
     "block_skip_protect_end": 22,
+    # Resolution curriculum — training-only, arch-agnostic (data-pipeline feature).
+    # Warm up at a lower resolution, then switch to the target (base_resolutions) at an
+    # epoch boundary. Lower resolution => fewer latent tokens => much cheaper attention
+    # per step (tokens scale with area; attention ~ tokens²), so warmup steps are far
+    # faster. Default OFF. To take effect, set res_curriculum_warmup_steps > 0.
+    "res_curriculum_enable": False,
+    # Number of warmup steps at the scaled resolution. Rounds UP to the end of the epoch
+    # that contains it (switch happens at an epoch boundary, so per-epoch batch planning
+    # stays intact). 0 = no warmup (feature inert even if enabled).
+    "res_curriculum_warmup_steps": 0,
+    # Warmup resolution = base_resolutions * this scale, each snapped to the /64 grid the
+    # bucket table is defined on (reuses the existing bucket-fit logic). 0.5 => half the
+    # linear size => 1/4 the tokens. Must be in (0, 1).
+    "res_curriculum_warmup_scale": 0.5,
     # MNT
     "multi_noise_timesteps": 1,
     "multi_noise_mode": "independent",

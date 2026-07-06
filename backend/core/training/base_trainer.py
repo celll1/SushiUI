@@ -1382,6 +1382,110 @@ class BaseTrainer(ABC):
             if key not in m:
                 m[key] = (int(ow), int(oh))
 
+    # ---- Resolution curriculum helpers (opt-in low-res warmup, arch-agnostic) ----
+    def _rc_scaled_resolutions(self, base_resolutions, scale):
+        """Scale base resolutions for the warmup phase, snapping each to the /64 grid the
+        bucket table (RESOLUTIONS_1024) is defined on. This reuses the existing bucket-fit
+        logic (get_bucket_sizes) — a warmup base snapped to /64 produces the same
+        well-formed (VAE-/8, DiT-patch-safe) buckets a normally-configured base resolution
+        would, so anima's /16-pixel patch constraint and other archs' grids are respected
+        exactly as they are for a hand-set base resolution. Min 64; distinct values kept."""
+        out = []
+        for r in base_resolutions:
+            s = max(64, int(round(int(r) * float(scale) / 64.0)) * 64)
+            if s not in out:
+                out.append(s)
+        return out
+
+    def _rc_apply_bucketing_grid(self, bucket_manager, active_base_resolutions):
+        """Point a BucketManager at a new base-resolution grid (regenerates bucket_lists).
+        Does NOT touch bucket_manager.buckets — callers re-assign items separately."""
+        from core.training.bucketing import get_bucket_sizes
+        bucket_manager.base_resolutions = sorted(active_base_resolutions)
+        bucket_manager.bucket_lists = {
+            res: get_bucket_sizes(res, bucket_manager.divisibility)
+            for res in bucket_manager.base_resolutions
+        }
+
+    def _rc_rebucket_items(self, all_items, bucket_manager, active_base_resolutions):
+        """Rebuild bucket_manager.buckets for a new resolution phase, reading each item's
+        ORIGINAL source size (via the persistent orig-size map, seeded before the first
+        assignment) so a warmup->normal switch can grow dims back — assign_image_to_bucket
+        overwrites item['width']/['height'] with the bucket size each time, so re-selecting
+        from the current (already-bucketed) dims would be lossy."""
+        self._rc_apply_bucketing_grid(bucket_manager, active_base_resolutions)
+        bucket_manager.buckets = {}
+        for item, dataset in all_items:
+            try:
+                ow, oh = self._get_original_size_for_item(item)
+            except Exception:
+                ow, oh = item.get("width", 1024), item.get("height", 1024)
+            reference_images = item.get("reference_images", [])
+            has_reference = len(reference_images) > 0
+            _, image_info = bucket_manager.assign_image_to_bucket(
+                image_path=item["image_path"],
+                width=ow, height=oh,
+                caption=item.get("caption", ""),
+                dataset_unique_id=getattr(dataset, "unique_id", None),
+                has_reference=has_reference,
+                reference_images=reference_images if reference_images else None,
+            )
+            if item.get("_ve_reconstruction_mode"):
+                image_info["_ve_reconstruction_mode"] = True
+            item["width"] = image_info["bucket_width"]
+            item["height"] = image_info["bucket_height"]
+
+    def _rc_count_batches(self, all_items, live_manager, base_res, batch_size):
+        """Count the batches ONE epoch would produce at `base_res`, without mutating the
+        live BucketManager, item dims, or the global RNG stream (throwaway manager +
+        pure select_bucket; originals from the persistent orig-size map). Used by the
+        curriculum-aware total_steps correction: the warmup and normal partitions can
+        have different batch counts (multi-res "max" fit thresholds shift under scaling;
+        divisibility flooring can merge buckets at low res)."""
+        from core.training.bucketing import BucketManager
+        import random as _random
+        tmp = BucketManager(
+            base_resolutions=list(base_res),
+            divisibility=live_manager.divisibility,
+            strategy=live_manager.strategy,
+            multi_resolution_mode=live_manager.multi_resolution_mode,
+            separate_by_reference=live_manager.separate_by_reference,
+        )
+        _rng = _random.Random(0)  # isolated: never touches the global shuffle RNG
+        counts = {}
+        for item, dataset in all_items:
+            try:
+                ow, oh = self._get_original_size_for_item(item)
+            except Exception:
+                ow, oh = item.get("width", 1024), item.get("height", 1024)
+            b = tmp.select_bucket(ow, oh, rng=_rng)
+            key = (b, bool(item.get("reference_images"))) if tmp.separate_by_reference else b
+            counts[key] = counts.get(key, 0) + 1
+        return sum((n + batch_size - 1) // batch_size for n in counts.values())
+
+    def _rc_refit_items(self, all_items, active_base_resolutions):
+        """No-bucketing phase apply: fit each item into the active base-resolution AREA from
+        its ORIGINAL size (mirrors the one-time no-bucketing fit, but re-runnable per phase
+        and non-destructive since it reads the orig-size map). Within-area items keep their
+        original dims (parity with the one-time fit)."""
+        import math as _math
+        nb_base = max(int(r) for r in active_base_resolutions)
+        nb_max_area = nb_base * nb_base
+        for item, dataset in all_items:
+            try:
+                ow, oh = self._get_original_size_for_item(item)
+            except Exception:
+                ow, oh = int(item.get("width") or 0), int(item.get("height") or 0)
+            if ow <= 0 or oh <= 0:
+                item["width"], item["height"] = nb_base, nb_base
+                continue
+            if ow * oh > nb_max_area:
+                sc = _math.sqrt(nb_max_area / float(ow * oh))
+                item["width"] = max(8, int(ow * sc) // 8 * 8)
+                item["height"] = max(8, int(oh * sc) // 8 * 8)
+            else:
+                item["width"], item["height"] = int(ow), int(oh)
+
     def _recompute_sdxl_micro_cond(self, item, bucket_w: int, bucket_h: int, strategy: str):
         """Deterministically recompute SDXL time_ids for an item from its real original
         size + bucket + strategy (used when encode_image did not run for this item, e.g.
@@ -6156,6 +6260,71 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} Steps per epoch (with MNT): {steps_per_epoch}")
         print(f"{self.log_prefix} Total training steps: {actual_total_steps}")
 
+        # ---- Resolution curriculum (opt-in): warm up at a lower resolution, then switch
+        # to the target resolution at an epoch boundary. Arch-agnostic (pure data-pipeline
+        # feature): fewer latent tokens during warmup -> much cheaper attention/step.
+        #
+        # Switch semantics: warmup covers whole epochs [0, switch_epoch) where
+        #   switch_epoch = ceil(warmup_steps / steps_per_epoch), clamped to num_epochs.
+        # So the requested warmup_steps ROUNDS UP to the end of the epoch that contains it
+        # (batches are planned per epoch; a mid-epoch resolution swap would strand the
+        # remaining batches at the wrong dims). This keeps per-epoch batch planning intact.
+        #
+        # Accounting: the aspect-ratio bucket PARTITION is scale-invariant (scaling a base
+        # resolution changes each bucket's pixel dims but not which items share a bucket),
+        # so steps_per_epoch is identical in both phases and total_steps / per-epoch offsets
+        # are unaffected. (Step-based runs skip the per-epoch recalc entirely.)
+        _rc_normal_res = sorted(base_resolutions) if base_resolutions else [1024]
+        self._rc_active = False
+        self._rc_normal_res = _rc_normal_res
+        self._rc_warmup_res = None
+        self._rc_switch_epoch = 0
+        self._rc_current_phase = None  # "warmup" | "normal"
+        _rc_enable = bool(self.config.get("res_curriculum_enable", False))
+        _rc_warmup_steps = int(self.config.get("res_curriculum_warmup_steps", 0) or 0)
+        _rc_scale = float(self.config.get("res_curriculum_warmup_scale", 0.5) or 0.5)
+        if _rc_enable and self.crop_planner is not None:
+            # Crop augmentation owns per-epoch re-bucketing (SDXL); the curriculum's
+            # phase re-bucket would fight it. Disable explicitly instead of logging
+            # ENABLED and silently being overridden.
+            print(f"{self.log_prefix} [ResCurriculum] DISABLED: crop augmentation is "
+                  f"active and owns per-epoch bucketing — the two features do not combine.")
+            _rc_enable = False
+        if _rc_enable and _rc_warmup_steps > 0 and 0.0 < _rc_scale < 1.0:
+            _rc_warmup_res = self._rc_scaled_resolutions(_rc_normal_res, _rc_scale)
+            _rc_switch_epoch = min(
+                num_epochs,
+                (_rc_warmup_steps + steps_per_epoch - 1) // steps_per_epoch,
+            )
+            if _rc_warmup_res == _rc_normal_res:
+                print(f"{self.log_prefix} [ResCurriculum] scale={_rc_scale} leaves the "
+                      f"warmup resolution equal to the target ({_rc_normal_res}) after /64 "
+                      f"snapping — curriculum has no effect, running normally.")
+            elif _rc_switch_epoch <= 0:
+                print(f"{self.log_prefix} [ResCurriculum] warmup_steps={_rc_warmup_steps} "
+                      f"< one epoch worth of steps; no warmup epochs, running normally.")
+            else:
+                self._rc_active = True
+                self._rc_warmup_res = _rc_warmup_res
+                self._rc_switch_epoch = _rc_switch_epoch
+                _rc_effective_warmup_steps = _rc_switch_epoch * steps_per_epoch
+                print(f"{self.log_prefix} [ResCurriculum] ENABLED: warmup {_rc_warmup_res} "
+                      f"(target {_rc_normal_res}), scale={_rc_scale}. Switch at epoch "
+                      f"{_rc_switch_epoch + 1} (warmup_steps={_rc_warmup_steps} rounds up to "
+                      f"{_rc_effective_warmup_steps} steps = epoch end).")
+                if _rc_switch_epoch >= num_epochs:
+                    print(f"{self.log_prefix} [ResCurriculum] WARNING: switch epoch "
+                          f"({_rc_switch_epoch}) >= num_epochs ({num_epochs}) — the entire "
+                          f"run stays in warmup (never reaches the target resolution).")
+                if str(self.config.get("torch_compile", "off")).lower() not in ("off", "", "none"):
+                    print(f"{self.log_prefix} [ResCurriculum] WARNING: torch_compile is on — "
+                          f"the resolution switch changes token shapes and forces a one-time "
+                          f"recompile at the switch epoch.")
+                if latent_encoding_mode == "pre_encoded_cache":
+                    print(f"{self.log_prefix} [ResCurriculum] NOTE: pre_encoded_cache mode "
+                          f"caches BOTH warmup and target latents (keyed per-file by w_h, so "
+                          f"no cache poisoning) — extra disk for the warmup entries.")
+
         # Crop augmentation: batch count varies per epoch (per-epoch re-bucketing), so
         # compute exact per-epoch step offsets up front for accurate total_steps and
         # resume epoch lookup. Header sizes are read once (cached for the encode pass).
@@ -6209,6 +6378,18 @@ class BaseTrainer(ABC):
             lr_scheduler_type=lr_scheduler_type,
             total_steps=actual_total_steps,
         )
+
+        # Resolution curriculum phase-0 setup: seed the original-size map (so a later
+        # warmup->target rebucket can grow dims back), and point the initial bucketing at
+        # the WARMUP grid so the whole up-front assignment/cache pass runs at low res.
+        if self._rc_active:
+            for dataset in datasets:
+                for item in dataset.items:
+                    self._seed_orig_size_from_db(item)
+            self._rc_current_phase = "warmup"
+            if bucket_manager:
+                self._rc_apply_bucketing_grid(bucket_manager, self._rc_warmup_res)
+            print(f"{self.log_prefix} [ResCurriculum] Phase 0 = WARMUP at {self._rc_warmup_res}")
 
         # Apply bucketing to datasets
         if bucket_manager:
@@ -6287,7 +6468,10 @@ class BaseTrainer(ABC):
             # (aspect-preserving, /8-aligned) so base_resolutions bounds memory here
             # exactly as it does in the bucketed path. Items already within the area
             # are left untouched, so pre-resized datasets keep identical behavior.
-            _nb_base = max(int(r) for r in (base_resolutions or [1024]))
+            # Resolution curriculum: phase-0 (warmup) fits into the scaled base area.
+            _nb_res = self._rc_warmup_res if (self._rc_active and self._rc_current_phase == "warmup") \
+                else (base_resolutions or [1024])
+            _nb_base = max(int(r) for r in _nb_res)
             _nb_max_area = _nb_base * _nb_base
             _nb_clamped = 0
             for dataset in datasets:
@@ -6340,6 +6524,25 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Using pre-encoded latent disk cache mode")
             latent_caches = self._setup_latent_caches(datasets)
             self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=force_recache)
+            # Resolution curriculum: the up-front pass above cached the WARMUP-dim latents
+            # (items currently hold warmup dims). Also pre-generate the TARGET-dim latents
+            # now (VAE still resident) so the mid-run switch never re-encodes: rebucket to
+            # the target grid, generate the missing (target-keyed) entries, then restore
+            # warmup dims for epoch 0. Cache keys embed w_h, so the two sets coexist.
+            if self._rc_active and self._rc_switch_epoch < num_epochs:
+                _rc_pairs = [(item, dataset) for dataset in datasets for item in dataset.items]
+                if bucket_manager:
+                    self._rc_rebucket_items(_rc_pairs, bucket_manager, self._rc_normal_res)
+                else:
+                    self._rc_refit_items(_rc_pairs, self._rc_normal_res)
+                print(f"{self.log_prefix} [ResCurriculum] Pre-generating TARGET-resolution "
+                      f"latent cache ({self._rc_normal_res}) up front...")
+                self._validate_and_generate_latent_caches(datasets, latent_caches, progress_callback, force_recache=False)
+                # Restore warmup dims + warmup bucket assignment for epoch 0.
+                if bucket_manager:
+                    self._rc_rebucket_items(_rc_pairs, bucket_manager, self._rc_warmup_res)
+                else:
+                    self._rc_refit_items(_rc_pairs, self._rc_warmup_res)
         elif latent_encoding_mode == "onthefly_gpu":
             print(f"{self.log_prefix} Using on-the-fly GPU latent encoding (no cache)")
             # No cache setup needed
@@ -6878,6 +7081,28 @@ class BaseTrainer(ABC):
                 for dataset in datasets:
                     all_items.extend([(item, dataset) for item in dataset.items])
 
+                # Resolution curriculum: apply this epoch's phase resolution.
+                #   warmup while epoch < switch_epoch, else target.
+                # Bucketing: rebuild bucket assignments only when the phase changes (the
+                #   bucket dicts persist across epochs). No-bucketing: reload reintroduces
+                #   original dims every epoch, so re-fit each epoch to the active area.
+                # Skipped when crop augmentation owns per-epoch re-bucketing (SDXL-only;
+                # crop_planner is fixed at the target grid — the two features don't combine).
+                if self._rc_active and self.crop_planner is None:
+                    _rc_desired = "warmup" if epoch < self._rc_switch_epoch else "normal"
+                    _rc_desired_res = self._rc_warmup_res if _rc_desired == "warmup" else self._rc_normal_res
+                    _rc_changed = (_rc_desired != self._rc_current_phase)
+                    if bucket_manager is not None:
+                        if _rc_changed:
+                            self._rc_rebucket_items(all_items, bucket_manager, _rc_desired_res)
+                    else:
+                        # No-bucketing: dims come straight from all_items each epoch.
+                        self._rc_refit_items(all_items, _rc_desired_res)
+                    if _rc_changed:
+                        print(f"{self.log_prefix} [ResCurriculum] Epoch {epoch + 1}: phase "
+                              f"-> {_rc_desired.upper()} at {_rc_desired_res}")
+                        self._rc_current_phase = _rc_desired
+
                 # Mid-epoch resume: restore random state BEFORE building batches
                 # This ensures batches are shuffled in the same order as the interrupted run
                 if epoch == start_epoch and resume_training_state is not None:
@@ -7415,8 +7640,37 @@ class BaseTrainer(ABC):
                         # For simple batching: calculate from total items
                         full_batch_count = (len(all_items) + batch_size - 1) // batch_size
 
-                    actual_steps_per_epoch = full_batch_count * multi_noise_timesteps
-                    actual_total_steps = actual_steps_per_epoch * num_epochs
+                    if self._rc_active:
+                        # Curriculum-aware two-phase accounting: this epoch's len(batches)
+                        # counts only the CURRENT phase's partition, and the warmup and
+                        # normal partitions can differ (multi-res "max" fit thresholds
+                        # shift under scaling; divisibility flooring can merge buckets at
+                        # low res). Extrapolating one phase across all epochs would let an
+                        # epoch-derived run stop early (or late) mid-normal-phase.
+                        _warm_epochs = min(self._rc_switch_epoch, num_epochs)
+                        if bucket_manager:
+                            if epoch < self._rc_switch_epoch:
+                                _warm_count = full_batch_count
+                                _norm_count = self._rc_count_batches(
+                                    all_items, bucket_manager, self._rc_normal_res, batch_size)
+                            else:  # correcting during the normal phase (resume case)
+                                _norm_count = full_batch_count
+                                _warm_count = self._rc_count_batches(
+                                    all_items, bucket_manager, self._rc_warmup_res, batch_size)
+                        else:
+                            # No-bucketing: batch count is item-count based, phase-invariant.
+                            _warm_count = _norm_count = full_batch_count
+                        actual_total_steps = (
+                            _warm_epochs * _warm_count
+                            + (num_epochs - _warm_epochs) * _norm_count
+                        ) * multi_noise_timesteps
+                        if _warm_count != _norm_count:
+                            print(f"{self.log_prefix} [ResCurriculum] Per-phase batch counts: "
+                                  f"warmup={_warm_count}, normal={_norm_count} "
+                                  f"({_warm_epochs} warmup epoch(s) of {num_epochs})")
+                    else:
+                        actual_steps_per_epoch = full_batch_count * multi_noise_timesteps
+                        actual_total_steps = actual_steps_per_epoch * num_epochs
 
                     # Update DB if actual differs from initial estimate
                     if actual_total_steps != steps_per_epoch * num_epochs:

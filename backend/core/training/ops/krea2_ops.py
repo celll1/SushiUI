@@ -16,6 +16,10 @@ here.
 """
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
+import torch
+
 
 def load_components(trainer) -> None:
     """Load Krea 2 components (single-stream MMDiT + Qwen3-VL TE + Qwen-Image VAE).
@@ -170,3 +174,85 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         device=vae_device, dtype=trainer.vae_dtype,
     )
     return latents
+
+
+def train_step(
+    trainer,
+    latents: torch.Tensor,
+    encoder_features: torch.Tensor,
+    encoder_mask: torch.Tensor,
+    timesteps: Optional[torch.Tensor] = None,
+    profile_vram: bool = False,
+    latent_h: Optional[int] = None,
+    latent_w: Optional[int] = None,
+) -> Tuple[torch.Tensor, float, float]:
+    """Single Krea 2 training step (flow matching, velocity prediction).
+
+    VERBATIM body of ``BaseTrainer.train_step_krea2`` (P6c; ``self.`` ->
+    ``trainer.`` receiver rename only). See the original docstring for the
+    flow-matching conventions (v = noise - x0, timestep = sigma, musubi shift).
+    """
+    from core.models.krea2.krea2_pipeline_ops import prepare_position_ids
+
+    latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    encoder_features = encoder_features.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    encoder_mask = encoder_mask.to(device=trainer.device, non_blocking=True)
+
+    B, N, _ = latents.shape
+    if latent_h is not None and latent_w is not None:
+        if latent_h * latent_w != N:
+            raise ValueError(
+                f"[train_step_krea2] latent_h={latent_h}*latent_w={latent_w} != N={N}"
+            )
+    else:
+        side = int(N ** 0.5)
+        if side * side != N:
+            raise ValueError(
+                f"[train_step_krea2] non-square latent (N={N}); pass latent_h/latent_w"
+            )
+        latent_h = latent_w = side
+
+    if timesteps is None:
+        if trainer.timestep_sampler is not None:
+            timesteps = trainer.timestep_sampler.sample(B, trainer.device)
+        else:
+            timesteps = torch.rand(B, device=trainer.device)
+    sigma = timesteps.to(trainer.training_dtype)
+
+    # Discrete flow-matching timestep shift: sigma' = s*sigma / (1 + (s-1)*sigma).
+    shift = float(getattr(trainer, "krea2_discrete_flow_shift", 2.5) or 0.0)
+    if shift and shift != 1.0:
+        sigma = (shift * sigma) / (1.0 + (shift - 1.0) * sigma)
+    sigma_v = sigma.view(-1, 1, 1)
+
+    noise = torch.randn_like(latents)
+    noisy = (1.0 - sigma_v) * latents + sigma_v * noise   # sigma=1 -> noise
+    v_target = noise - latents                            # Krea convention v = noise - x0
+
+    text_seq_len = encoder_features.shape[1]
+    position_ids = prepare_position_ids(text_seq_len, latent_h, latent_w, trainer.device)
+
+    t_dtype = trainer.transformer.dtype
+
+    def _fwd():
+        return trainer.transformer(
+            hidden_states=noisy.to(t_dtype),
+            encoder_hidden_states=encoder_features.to(t_dtype),
+            timestep=sigma.to(t_dtype),
+            position_ids=position_ids,
+            encoder_attention_mask=encoder_mask,
+            return_dict=False,
+        )[0]
+
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            out = _fwd()
+    else:
+        out = _fwd()
+
+    v_pred = out.float()
+    loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+    pred_loss_value = loss.item()
+    # Backward is performed by _execute_forward_backward; do not backward here.
+    del noise, noisy, v_pred, v_target
+    return loss, pred_loss_value, 0.0

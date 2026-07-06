@@ -49,7 +49,26 @@ class Flux2ArchHandler(ArchHandler):
         raise NotImplementedError("flux2.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("flux2.train_step: phase P6")
+        # P6c: verbatim body in ops/flux2_ops.train_step. The ctx-build branch in
+        # _execute_forward_backward already produced packed latents / img_ids /
+        # txt_ids / detached reference_latents_nested via the spine packing
+        # helpers; ctx fields map 1:1 to the previous train_step_flux2 kwargs.
+        from core.training.ops import flux2_ops
+        return flux2_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            prompt_embeds=ctx.text_embeddings,
+            img_ids=ctx.img_ids,
+            txt_ids=ctx.txt_ids,
+            timesteps=ctx.timesteps,
+            guidance=ctx.guidance,
+            reference_latents_nested=ctx.reference_latents_nested,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
+            profile_vram=ctx.profile_vram,
+            alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("flux2.sample: phase P7")

@@ -7,6 +7,7 @@ import {
   extractSigLIP2Encoder,
   SigLIP2ExtractEncoderResponse,
 } from "@/utils/api";
+import NumberInput from "@/components/common/NumberInput";
 
 interface ModelToolsProps {
   modelLoaded: boolean;
@@ -138,13 +139,13 @@ export default function ModelTools({ modelLoaded, modelType }: ModelToolsProps) 
         </div>
         <div>
           <label className={labelCls}>Max Num Patches</label>
-          <input
-            type="number"
+          <NumberInput
             min={64}
             max={1024}
             step={64}
             value={maxPatches}
-            onChange={(e) => setMaxPatches(parseInt(e.target.value) || 256)}
+            defaultValue={256}
+            onCommit={(v) => setMaxPatches(v)}
             disabled={!modelLoaded}
             className={inputCls}
           />

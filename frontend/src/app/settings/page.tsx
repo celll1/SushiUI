@@ -8,6 +8,7 @@ import DirectorySettings from "@/components/settings/DirectorySettings";
 import GenerationSettings from "@/components/settings/GenerationSettings";
 import ProtectedRoute from "@/components/common/ProtectedRoute";
 import { restartBackend, restartFrontend, restartBoth } from "@/utils/api";
+import NumberInput from "@/components/common/NumberInput";
 
 // Default presets
 const DEFAULT_ASPECT_RATIO_PRESETS = [
@@ -510,15 +511,14 @@ export default function SettingsPage() {
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     Minimum Tag Count
                   </label>
-                  <input
-                    type="number"
-                    min="0"
-                    max="10000"
+                  <NumberInput
+                    min={0}
+                    max={10000}
                     value={tagSuggestionMinCount}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setTagSuggestionMinCount(value === '' ? 0 : parseInt(value));
-                      localStorage.setItem('tag_suggestion_min_count', value === '' ? '0' : value);
+                    defaultValue={0}
+                    onCommit={(v) => {
+                      setTagSuggestionMinCount(v);
+                      localStorage.setItem('tag_suggestion_min_count', String(v));
                     }}
                     className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
                   />
@@ -541,15 +541,14 @@ export default function SettingsPage() {
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     Maximum Images in Gallery
                   </label>
-                  <input
-                    type="number"
-                    min="5"
-                    max="100"
+                  <NumberInput
+                    min={5}
+                    max={100}
                     value={floatingGalleryMaxImages}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setFloatingGalleryMaxImages(value === '' ? 0 : parseInt(value));
-                      localStorage.setItem('floating_gallery_max_images', value === '' ? '0' : value);
+                    defaultValue={0}
+                    onCommit={(v) => {
+                      setFloatingGalleryMaxImages(v);
+                      localStorage.setItem('floating_gallery_max_images', String(v));
                     }}
                     className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
                   />
@@ -595,12 +594,12 @@ export default function SettingsPage() {
                     Resolution slider step size
                   </label>
                   <div className="flex items-center space-x-4">
-                    <input
-                      type="number"
+                    <NumberInput
                       id="resolution_step"
                       value={resolutionStep}
-                      onChange={(e) => {
-                        let value = parseInt(e.target.value);
+                      defaultValue={64}
+                      onCommit={(v) => {
+                        let value = v;
                         // Ensure it's a multiple of 8
                         if (value < 8) value = 8;
                         if (value % 8 !== 0) {
@@ -609,8 +608,8 @@ export default function SettingsPage() {
                         setResolutionStep(value);
                         localStorage.setItem('resolution_step', value.toString());
                       }}
-                      min="8"
-                      step="8"
+                      min={8}
+                      step={8}
                       className="w-24 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
                     />
                     <span className="text-sm text-gray-400">pixels (must be multiple of 8)</span>
@@ -787,20 +786,18 @@ export default function SettingsPage() {
                     Default Scale Value (for Scale mode)
                   </label>
                   <div className="flex items-center space-x-4">
-                    <input
-                      type="number"
+                    <NumberInput
                       id="send_default_scale"
                       value={sendDefaultScale}
-                      onChange={(e) => {
-                        const value = parseFloat(e.target.value);
-                        if (!isNaN(value) && value > 0) {
-                          setSendDefaultScale(value);
-                          localStorage.setItem('send_default_scale', value.toString());
-                        }
+                      defaultValue={1.0}
+                      parse="float"
+                      onCommit={(v) => {
+                        setSendDefaultScale(v);
+                        localStorage.setItem('send_default_scale', v.toString());
                       }}
-                      min="0.1"
-                      max="4.0"
-                      step="0.1"
+                      min={0.1}
+                      max={4.0}
+                      step={0.1}
                       className="w-24 px-3 py-2 bg-gray-700 border border-gray-600 rounded text-gray-100 focus:ring-blue-500 focus:border-blue-500"
                     />
                     <span className="text-sm text-gray-400">×</span>

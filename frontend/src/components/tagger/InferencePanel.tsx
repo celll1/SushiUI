@@ -17,6 +17,7 @@ import {
 } from "@/utils/api";
 import { sendBase64ImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
 import InputWithTagSuggestions from "@/components/common/InputWithTagSuggestions";
+import NumberInput from "@/components/common/NumberInput";
 import TagResultsChart from "./TagResultsChart";
 import TagMetricsAnalysis from "./TagMetricsAnalysis";
 
@@ -745,8 +746,9 @@ function OodReferenceBuilder({ building, buildResult, buildError, onBuild }: Ood
           </div>
           <div className="flex items-center gap-2">
             <label className="text-gray-400 text-[10px] w-14 shrink-0">最大枚数</label>
-            <input type="number" min={100} max={10000} step={100} value={maxImages}
-              onChange={(e) => setMaxImages(parseInt(e.target.value) || 2000)}
+            <NumberInput min={100} max={10000} step={100} value={maxImages}
+              defaultValue={2000}
+              onCommit={(v) => setMaxImages(v)}
               className="w-20 px-2 py-0.5 bg-gray-700 rounded text-gray-200 text-[10px]" />
           </div>
           <button onClick={() => onBuild(dir, maxImages)} disabled={building || !dir.trim()}

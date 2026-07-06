@@ -17,13 +17,22 @@ class MiniT2IArchHandler(ArchHandler):
     wiring = MINIT2I_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("minit2i.load_components: phase P3")
+        # P3c: body lives in ops/minit2i_ops (shared with the base_trainer load-time
+        # dispatcher + _load_checkpoint_as_base, which cannot route via self.arch —
+        # self.arch binds after loading; see the construction-order note in minit2i_ops).
+        from core.training.ops import minit2i_ops
+        minit2i_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("minit2i.setup_block_swap: phase P3")
+        # P3c: body lives in ops/minit2i_ops (shared with the base_trainer
+        # setup_minit2i_block_swap delegator, called late by mode subclasses).
+        from core.training.ops import minit2i_ops
+        minit2i_ops.setup_block_swap(trainer)
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("minit2i.setup_attention_backend: phase P3")
+        # P3c: body lives in ops/minit2i_ops (shared with base_trainer delegator).
+        from core.training.ops import minit2i_ops
+        minit2i_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("minit2i.encode_prompt: phase P4")

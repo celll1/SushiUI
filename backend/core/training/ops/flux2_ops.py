@@ -305,3 +305,42 @@ def setup_attention_backend(trainer, backend: str):
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
         print(f"{trainer.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """FLUX.2 VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``is_flux2`` branch (self->trainer rename only). Runs
+    inside the caller's ``with torch.no_grad()``; caller does the shared final
+    dtype/CPU move. ``trainer._flux2_patchify_latents_for_training`` is a shared
+    trainer method (also used by train_step; kept central, called via trainer).
+    """
+    # FLUX.2 VAE encoding with BatchNorm normalization
+    latent_dist = trainer.vae.encode(image_tensor).latent_dist
+    latents = latent_dist.sample()
+
+    # DEBUG: Log raw latents
+    if debug_preprocessing:
+        print(f"[encode_image DEBUG] FLUX.2 raw latents:")
+        print(f"  Shape: {latents.shape}")
+        print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+
+    # Patchify: (B, 32, H, W) -> (B, 128, H/2, W/2)
+    latents = trainer._flux2_patchify_latents_for_training(latents)
+
+    # Apply BatchNorm normalization (like pipeline.py)
+    latents_bn_mean = trainer.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+    latents_bn_std = torch.sqrt(trainer.vae.bn.running_var.view(1, -1, 1, 1) + trainer.vae.config.batch_norm_eps).to(
+        latents.device, latents.dtype
+    )
+    latents = (latents - latents_bn_mean) / latents_bn_std
+
+    # DEBUG: Log normalized latents
+    if debug_preprocessing:
+        print(f"[encode_image DEBUG] FLUX.2 normalized latents:")
+        print(f"  Shape: {latents.shape}")
+        print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+
+    del latent_dist
+    return latents

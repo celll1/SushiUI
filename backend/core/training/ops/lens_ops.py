@@ -190,3 +190,21 @@ def encode_prompt(trainer, prompt: str, max_length: int = 512):
     # the correct [B, num_layers, L, D] batched tensor.
     stacked = torch.stack(cond_features, dim=0).unsqueeze(0)  # [1, num_layers, L, D]
     return stacked, cond_mask
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """Lens VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``is_lens`` branch (self->trainer rename only). Uses the
+    PIL ``image`` + ``vae_device`` from the shared pre-amble. Runs inside the
+    caller's ``with torch.no_grad()``; caller does the shared final dtype/CPU move.
+    """
+    # Lens VAE (AutoencoderKLFlux2): vae_encode handles resize, patchify,
+    # BN normalise, and rearrange to flat-sequence (1, N, 128).
+    from core.models.lens.lens_pipeline_ops import vae_encode as _lens_vae_encode
+    latents = _lens_vae_encode(
+        trainer.vae, image, height=height, width=width,
+        device=vae_device, dtype=trainer.vae_dtype,
+    )
+    return latents

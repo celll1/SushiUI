@@ -3794,22 +3794,13 @@ class BaseTrainer(ABC):
 
         image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)
 
-        if self.is_minit2i and not getattr(self, "minit2i_latent", False):
-            # Pixel-space: there is no VAE. The "latent" IS the [-1,1] RGB image
-            # [1, 3, H, W]. Stored on CPU in training dtype like every other path.
-            return image_tensor.to(device="cpu", dtype=self.training_dtype)
-
-        if self.is_minit2i and getattr(self, "minit2i_latent", False):
-            # Latent-space: VAE-encode the [-1,1] RGB image to a normalized latent
-            # [1, C, H/vsf, W/vsf]. The frozen VAE is moved to GPU for caching by the
-            # latent-cache pre-pass (move_vae_to_gpu).
-            from core.models.minit2i.minit2i_vae import normalize_latent
-            vae_device = next(self.vae.parameters()).device
-            px = image_tensor.to(device=vae_device, dtype=self.vae_dtype)
-            with torch.no_grad():
-                sample = self.vae.encode(px).latent_dist.sample()
-                latent = normalize_latent(sample, self.vae)
-            return latent.to(device="cpu", dtype=self.training_dtype)
+        # minit2i is dispatched BEFORE the shared VAE staging below: pixel-space has
+        # no VAE, so ``next(self.vae.parameters())`` must not run. Its handler is
+        # fully self-contained (pixel no-VAE + latent early-return paths) and returns
+        # the final CPU/training-dtype tensor directly (no shared post-amble). The two
+        # sub-branch bodies moved VERBATIM to ops/minit2i_ops.vae_encode (P5).
+        if self.is_minit2i:
+            return self.arch.vae_encode(self, image_tensor, image=image, width=width, height=height)
 
         vae_device = next(self.vae.parameters()).device
         # Safeguard: VAE encoding on CPU while training on GPU is a silent, catastrophic
@@ -3832,123 +3823,17 @@ class BaseTrainer(ABC):
             print(f"  Mean: {image_tensor.mean():.6f}, Std: {image_tensor.std():.6f}")
             print(f"  Min: {image_tensor.min():.6f}, Max: {image_tensor.max():.6f}")
 
-        # Encode to latents
+        # Encode to latents. The 7 VAE archs' per-arch branch bodies moved VERBATIM
+        # to ops/<arch>_ops.vae_encode (P5), dispatched through the arch handler. The
+        # branch runs under this no_grad and returns raw latents (still on vae_device);
+        # the shared post-amble below performs the final dtype/CPU move. All
+        # encode_image call sites (cache pre-encode / train loop / sampling) run
+        # post-__init__, so self.arch is always bound here.
         with torch.no_grad():
-            if self.is_flux2:
-                # FLUX.2 VAE encoding with BatchNorm normalization
-                latent_dist = self.vae.encode(image_tensor).latent_dist
-                latents = latent_dist.sample()
-
-                # DEBUG: Log raw latents
-                if debug_preprocessing:
-                    print(f"[encode_image DEBUG] FLUX.2 raw latents:")
-                    print(f"  Shape: {latents.shape}")
-                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
-
-                # Patchify: (B, 32, H, W) -> (B, 128, H/2, W/2)
-                latents = self._flux2_patchify_latents_for_training(latents)
-
-                # Apply BatchNorm normalization (like pipeline.py)
-                latents_bn_mean = self.vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-                latents_bn_std = torch.sqrt(self.vae.bn.running_var.view(1, -1, 1, 1) + self.vae.config.batch_norm_eps).to(
-                    latents.device, latents.dtype
-                )
-                latents = (latents - latents_bn_mean) / latents_bn_std
-
-                # DEBUG: Log normalized latents
-                if debug_preprocessing:
-                    print(f"[encode_image DEBUG] FLUX.2 normalized latents:")
-                    print(f"  Shape: {latents.shape}")
-                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
-
-                del latent_dist
-
-            elif self.is_zimage:
-                # Z-Image VAE
-                h = self.vae.encoder(image_tensor)
-                if self.vae.quant_conv is not None:
-                    h = self.vae.quant_conv(h)
-                mean, logvar = torch.chunk(h, 2, dim=1)
-                latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
-                shift_factor = self.vae.config.shift_factor if self.vae.config.shift_factor is not None else 0.0
-                latents = self.vae.config.scaling_factor * (latents - shift_factor)
-                # Clean up intermediate tensors
-                del h, mean, logvar
-            elif self.is_anima:
-                # Anima uses the Qwen-Image VAE (Wan VAE 2.1 latent space, 16ch).
-                # Encode -> sample posterior -> apply latents_mean / latents_std
-                # normalisation (same as anima_pipeline_ops.vae_encode_image).
-                # AutoencoderKLQwenImage expects [B, C, T, H, W] (T=1 for images).
-                image_tensor_5d = image_tensor.unsqueeze(2)
-                latent_dist = self.vae.encode(image_tensor_5d).latent_dist
-                latents_5d = latent_dist.sample()  # [B, 16, 1, H/8, W/8]
-                from core.models.anima.anima_pipeline_ops import _get_qwen_vae_normalization
-                mean_t, std_t = _get_qwen_vae_normalization(self.vae, latents_5d.device, latents_5d.dtype)
-                latents_5d = (latents_5d - mean_t) / std_t
-                # Drop the temporal dim for storage; train_step_anima re-adds it.
-                latents = latents_5d.squeeze(2)
-                del image_tensor_5d, latent_dist, latents_5d
-            elif self.is_lens:
-                # Lens VAE (AutoencoderKLFlux2): vae_encode handles resize, patchify,
-                # BN normalise, and rearrange to flat-sequence (1, N, 128).
-                from core.models.lens.lens_pipeline_ops import vae_encode as _lens_vae_encode
-                latents = _lens_vae_encode(
-                    self.vae, image, height=height, width=width,
-                    device=vae_device, dtype=self.vae_dtype,
-                )
-            elif self.is_ideogram4:
-                # Ideogram 4 VAE (AutoencoderKLFlux2): same flat-sequence latent
-                # (1, N, 128) — BN normalise + 2x2 patchify, shared with Lens space.
-                from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode as _ig4_vae_encode
-                latents = _ig4_vae_encode(
-                    self.vae, image, height=height, width=width,
-                    device=vae_device, dtype=self.vae_dtype,
-                )
-            elif self.is_krea2:
-                # Krea 2 VAE (AutoencoderKLQwenImage): packed normalized latent
-                # (1, N, 64) where N=(H//16)*(W//16); C*p*p = 16*2*2 = 64.
-                from core.models.krea2.krea2_pipeline_ops import vae_encode as _krea2_vae_encode
-                latents = _krea2_vae_encode(
-                    self.vae, image, height=height, width=width,
-                    patch_size=int(getattr(self, "krea2_patch_size", 2)),
-                    device=vae_device, dtype=self.vae_dtype,
-                )
-            else:
-                # SD/SDXL VAE - 統一された処理フロー
-                from core.models.sdxl_vae_wrapper import SDXLVAEWrapper
-
-                if isinstance(self.vae, SDXLVAEWrapper):
-                    # SDXLVAEWrapperの場合、内部のAutoencoderKLにアクセス
-                    vae_model = self.vae.vae
-                else:
-                    # 標準のAutoencoderKL
-                    vae_model = self.vae
-
-                # 統一されたエンコード処理
-                encoder_output = vae_model.encode(image_tensor)
-                latents = encoder_output.latent_dist.sample()
-
-                # DEBUG: Log raw latents before scaling
-                if debug_preprocessing:
-                    print(f"[encode_image DEBUG] Raw latents (before scaling):")
-                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
-                    print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
-                    print(f"  scaling_factor: {vae_model.config.scaling_factor}")
-
-                # Normalize via (sample - shift) * scale so a swapped high-spec VAE with
-                # a shift_factor (e.g. FLUX.1 0.1159) is handled; standard SDXL has
-                # shift=0 so this is identical to the previous (* scaling_factor).
-                from core.models.minit2i.minit2i_vae import normalize_latent as _normalize_latent
-                latents = _normalize_latent(latents, vae_model)
-
-                # DEBUG: Log scaled latents
-                if debug_preprocessing:
-                    print(f"[encode_image DEBUG] Scaled latents (after * scaling_factor):")
-                    print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
-                    print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
-
-                # Clean up intermediate tensors
-                del encoder_output
+            latents = self.arch.vae_encode(
+                self, image_tensor, image=image, width=width, height=height,
+                vae_device=vae_device, debug_preprocessing=debug_preprocessing,
+            )
 
         # Clean up image_tensor before moving latents to CPU
         del image_tensor

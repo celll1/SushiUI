@@ -39,8 +39,14 @@ class SD15ArchHandler(ArchHandler):
         # dispatcher (no circularity: the dispatcher calls ops, never self.arch).
         return trainer.encode_prompt(prompt, requires_grad=requires_grad)
 
-    def vae_encode(self, trainer, image_tensor, *, width, height):
-        raise NotImplementedError("sd15.vae_encode: phase P5")
+    def vae_encode(self, trainer, image_tensor, *, image=None, width=None, height=None,
+                   vae_device=None, debug_preprocessing=False):
+        # P5: SD1.5 shares the SD/SDXL VAE branch body with SDXL.
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.vae_encode(
+            trainer, image_tensor, image=image, width=width, height=height,
+            vae_device=vae_device, debug_preprocessing=debug_preprocessing,
+        )
 
     def vae_decode(self, trainer, latents, *, latent_h, latent_w):
         raise NotImplementedError("sd15.vae_decode: phase P5/P7")

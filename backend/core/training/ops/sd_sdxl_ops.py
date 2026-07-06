@@ -530,3 +530,51 @@ def encode_prompt_chunked(trainer, prompt: str, requires_grad: bool = False):
         return text_embeddings, pooled_embeddings
     else:
         return text_embeddings
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """SD/SDXL VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``else`` (SD/SDXL) branch, moved with the mechanical
+    ``self.`` -> ``trainer.`` receiver rename only. Runs inside the caller's
+    ``with torch.no_grad()``; the caller performs the shared final
+    dtype/CPU move (post-amble). ``image_tensor`` arrives already moved to the
+    VAE device/dtype by the shared pre-amble.
+    """
+    # SD/SDXL VAE - 統一された処理フロー
+    from core.models.sdxl_vae_wrapper import SDXLVAEWrapper
+
+    if isinstance(trainer.vae, SDXLVAEWrapper):
+        # SDXLVAEWrapperの場合、内部のAutoencoderKLにアクセス
+        vae_model = trainer.vae.vae
+    else:
+        # 標準のAutoencoderKL
+        vae_model = trainer.vae
+
+    # 統一されたエンコード処理
+    encoder_output = vae_model.encode(image_tensor)
+    latents = encoder_output.latent_dist.sample()
+
+    # DEBUG: Log raw latents before scaling
+    if debug_preprocessing:
+        print(f"[encode_image DEBUG] Raw latents (before scaling):")
+        print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+        print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
+        print(f"  scaling_factor: {vae_model.config.scaling_factor}")
+
+    # Normalize via (sample - shift) * scale so a swapped high-spec VAE with
+    # a shift_factor (e.g. FLUX.1 0.1159) is handled; standard SDXL has
+    # shift=0 so this is identical to the previous (* scaling_factor).
+    from core.models.minit2i.minit2i_vae import normalize_latent as _normalize_latent
+    latents = _normalize_latent(latents, vae_model)
+
+    # DEBUG: Log scaled latents
+    if debug_preprocessing:
+        print(f"[encode_image DEBUG] Scaled latents (after * scaling_factor):")
+        print(f"  Mean: {latents.mean():.6f}, Std: {latents.std():.6f}")
+        print(f"  Min: {latents.min():.6f}, Max: {latents.max():.6f}")
+
+    # Clean up intermediate tensors
+    del encoder_output
+    return latents

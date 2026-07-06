@@ -283,3 +283,27 @@ def collate_aux(trainer, aux_list):
             tensors = padded
         batched[k] = torch.stack(tensors, dim=0)
     return batched
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """Anima VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``is_anima`` branch (self->trainer rename only). Runs
+    inside the caller's ``with torch.no_grad()``; caller does the shared final
+    dtype/CPU move.
+    """
+    # Anima uses the Qwen-Image VAE (Wan VAE 2.1 latent space, 16ch).
+    # Encode -> sample posterior -> apply latents_mean / latents_std
+    # normalisation (same as anima_pipeline_ops.vae_encode_image).
+    # AutoencoderKLQwenImage expects [B, C, T, H, W] (T=1 for images).
+    image_tensor_5d = image_tensor.unsqueeze(2)
+    latent_dist = trainer.vae.encode(image_tensor_5d).latent_dist
+    latents_5d = latent_dist.sample()  # [B, 16, 1, H/8, W/8]
+    from core.models.anima.anima_pipeline_ops import _get_qwen_vae_normalization
+    mean_t, std_t = _get_qwen_vae_normalization(trainer.vae, latents_5d.device, latents_5d.dtype)
+    latents_5d = (latents_5d - mean_t) / std_t
+    # Drop the temporal dim for storage; train_step_anima re-adds it.
+    latents = latents_5d.squeeze(2)
+    del image_tensor_5d, latent_dist, latents_5d
+    return latents

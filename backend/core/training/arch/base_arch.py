@@ -195,9 +195,19 @@ class ArchHandler(ABC):
 
     # ---- image / vae ----
     @abstractmethod
-    def vae_encode(self, trainer, image_tensor, *, width: int, height: int) -> torch.Tensor:
-        """The per-arch branch of ``encode_image`` (base_trainer.py:5275-5585).
-        Pixel-space archs (minit2i, latent_channels==0) pass pixels through."""
+    def vae_encode(self, trainer, image_tensor, *, image=None, width: int = None,
+                   height: int = None, vae_device=None, debug_preprocessing: bool = False):
+        """The per-arch branch of ``BaseTrainer.encode_image`` (P5).
+
+        Called by the ``encode_image`` wrapper, which keeps the shared pre-amble
+        (resize/crop/micro-cond stash, numpy->tensor) and shared post-amble
+        (final ``latents.to(training_dtype, cpu)``) VERBATIM. For the 7 VAE archs
+        the wrapper runs this INSIDE ``with torch.no_grad()`` and passes
+        ``image_tensor`` already staged on ``vae_device``/``vae_dtype``; the body
+        returns raw ``latents`` (still on the VAE device). Pixel-space / minit2i
+        (dispatched BEFORE the shared VAE staging, since it may have no VAE) is
+        fully self-contained and returns the final CPU tensor directly.
+        ``image`` (PIL) is used by the Lens/Ideogram4/Krea2 branches."""
         raise NotImplementedError
 
     @abstractmethod

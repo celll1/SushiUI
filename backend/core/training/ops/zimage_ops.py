@@ -220,3 +220,24 @@ def encode_prompt(trainer, prompt: str, max_sequence_length: int = 512):
     del input_ids, encoder_output, prompt_embeds, attention_mask
 
     return result_embeds, result_mask
+
+
+def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
+               vae_device=None, debug_preprocessing=False):
+    """Z-Image VAE-encode branch of ``BaseTrainer.encode_image`` (P5).
+
+    VERBATIM body of the ``is_zimage`` branch (self->trainer rename only). Runs
+    inside the caller's ``with torch.no_grad()``; caller does the shared final
+    dtype/CPU move.
+    """
+    # Z-Image VAE
+    h = trainer.vae.encoder(image_tensor)
+    if trainer.vae.quant_conv is not None:
+        h = trainer.vae.quant_conv(h)
+    mean, logvar = torch.chunk(h, 2, dim=1)
+    latents = mean + torch.exp(0.5 * logvar) * torch.randn_like(mean)
+    shift_factor = trainer.vae.config.shift_factor if trainer.vae.config.shift_factor is not None else 0.0
+    latents = trainer.vae.config.scaling_factor * (latents - shift_factor)
+    # Clean up intermediate tensors
+    del h, mean, logvar
+    return latents

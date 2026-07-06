@@ -1105,6 +1105,68 @@ class Anima(nn.Module):
             p1=self.patch_spatial, p2=self.patch_spatial, t=self.patch_temporal,
         )
 
+    def _blockskip_forward(self, cfg, x0, t_emb, crossattn_emb, attn_params,
+                           use_fp32, rope, adaln, extra_pos):
+        """DiT-BlockSkip two-pass forward over the image stream (arXiv 2603.20755).
+
+        Pass 1 (no_grad, full network): capture residual features
+          Delta_front = f_n - f_0        (over skipped front blocks [0, n))
+          Delta_back  = f_L - f_{L-m}     (over skipped back blocks [L-m, L))
+        where f_i is the input to block i and f_L the input to the final layer.
+
+        Pass 2 (gradient, middle blocks [n, L-m) only):
+          x = f_0 + Delta_front           (== f_n; front is frozen so this is exact)
+          x = middle_blocks(x)            (LoRA-trained, grad flows here)
+          x = x + Delta_back              (== f_L when the middle is unchanged)
+
+        Returns the reconstructed stream (input to the final layer). Deltas are
+        detached constants (no grad), so backprop is confined to the middle blocks.
+        """
+        n = int(cfg["front"])
+        m = int(cfg["back"])
+        L = len(self.blocks)
+        lo = n
+        hi = L - m
+
+        def _run(x, blk):
+            return blk(
+                x, t_emb, crossattn_emb, attn_params, use_fp32,
+                rope_emb_L_1_1_D=rope, adaln_lora_B_T_3D=adaln,
+                extra_per_block_pos_emb=extra_pos,
+            )
+
+        # Pass 1: frozen full forward, capturing span-boundary features.
+        with torch.no_grad():
+            xt = x0
+            f_lo = None
+            f_hi = None
+            for i, blk in enumerate(self.blocks):
+                if i == lo:
+                    f_lo = xt
+                if i == hi:
+                    f_hi = xt
+                xt = _run(xt, blk)
+            f_L = xt
+            if f_lo is None:      # n == 0 (no front skip)
+                f_lo = x0
+            if f_hi is None:      # m == 0 (no back skip): hi == L, never entered
+                f_hi = f_L
+            delta_front = f_lo - x0
+            delta_back = f_L - f_hi
+
+        # Persist + reload the residuals (paper stores one set per iteration; also
+        # the seam for a future separate precompute phase). Lossless round-trip.
+        writer = cfg.get("on_residual")
+        if writer is not None:
+            delta_front, delta_back = writer(delta_front, delta_back)
+
+        # Pass 2: gradient forward over the middle blocks only.
+        x = x0 + delta_front
+        for blk in self.blocks[lo:hi]:
+            x = _run(x, blk)
+        x = x + delta_back
+        return x
+
     def forward_mini_train_dit(self, x_B_C_T_H_W, timesteps_B_T, crossattn_emb,
                                 fps=None, padding_mask=None, source_attention_mask=None,
                                 t5_input_ids=None, t5_attn_mask=None):
@@ -1143,7 +1205,24 @@ class Anima(nn.Module):
         # cache. Mutually exclusive with Spectrum and Block Swap (guarded in the pipeline), so
         # this branch never runs alongside _block_offloader.
         fbcache = getattr(self, "_fbcache", None)
-        if fbcache is not None:
+
+        # DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION. When
+        # the Anima LoRA trainer attaches a config for a training forward, skip the
+        # first `front` and last `back` blocks: a no_grad full pass captures each
+        # skipped span's residual feature Delta (span input->output), and the
+        # gradient pass runs ONLY the middle blocks, re-adding Delta at the span
+        # boundaries. Backprop flows only through the middle blocks (LoRA lives
+        # there), so the skipped blocks retain no backward activations. Gated on
+        # self.training (sampling/validation always run the full network) and never
+        # composes with FBCache (inference-only) or block-swap (guarded off).
+        blockskip = getattr(self, "_blockskip_config", None) if self.training else None
+        if blockskip is not None:
+            x_B_T_H_W_D = self._blockskip_forward(
+                blockskip, x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb,
+                attn_params, use_fp32, rope_emb_L_1_1_D, adaln_lora_B_T_3D,
+                extra_pos_emb,
+            )
+        elif fbcache is not None:
             fbcache_step = getattr(self, "_fbcache_step", 0)
             original = x_B_T_H_W_D
             first_out = self.blocks[0](

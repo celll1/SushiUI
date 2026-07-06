@@ -762,6 +762,68 @@ class BaseTrainer(ABC):
                       "dropout — the skip pattern varies each step (dynamic control "
                       "flow), causing recompiles; prefer torch_compile=off.")
 
+        # DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION for
+        # LoRA fine-tuning. Skips the first `front` and last `back` transformer
+        # blocks; LoRA lives ONLY in the unskipped middle blocks. Each training
+        # step the arch ops attach this dict to the transformer, whose forward
+        # then (a) runs a no_grad full pass to capture the skipped spans' residual
+        # features Delta and (b) runs a gradient pass over ONLY the middle blocks,
+        # re-adding Delta at the span boundaries. Backprop flows only through the
+        # middle blocks, so the skipped blocks retain NO backward activations and
+        # hold NO optimizer state (frozen, no LoRA). Currently wired for the Anima
+        # DiT (other archs ignore self.blockskip_config). Default OFF.
+        self.blockskip_config = None
+        if bool(_tc.get("blockskip_enable", False)):
+            trainer_cls = type(self).__name__
+            if trainer_cls != "LoRATrainer":
+                raise ValueError(
+                    "blockskip_enable is a LoRA-ONLY feature (trainer is "
+                    f"{trainer_cls}). BlockSkip freezes the first/last blocks and "
+                    "trains LoRA only in the middle blocks; full-parameter FT would "
+                    "need to update the frozen skipped blocks, which invalidates the "
+                    "precomputed residual features. See CLAUDE.md / the BlockSkip "
+                    "doc for the partial-FT variant rationale. Disable blockskip_enable "
+                    "or switch to LoRA training."
+                )
+            _bs_front = int(_tc.get("blockskip_front", 4))
+            _bs_back = int(_tc.get("blockskip_back", 4))
+            if _bs_front < 0 or _bs_back < 0:
+                raise ValueError(
+                    f"blockskip_front/back must be >= 0 (got front={_bs_front}, "
+                    f"back={_bs_back})."
+                )
+            # Mutual exclusion: these all rewrite the block loop / stream and cannot
+            # compose with BlockSkip's precompute+reconstruct.
+            if self.tread_config is not None:
+                raise ValueError(
+                    "blockskip_enable is mutually exclusive with tread_enable "
+                    "(both restructure the transformer block loop). Enable only one."
+                )
+            if self.block_skip_config is not None:
+                raise ValueError(
+                    "blockskip_enable is mutually exclusive with block_skip_rate "
+                    "(stochastic depth). Enable only one."
+                )
+            if self.blocks_to_swap > 0:
+                raise ValueError(
+                    "blockskip_enable requires blocks_to_swap=0. BlockSkip already "
+                    "removes the skipped blocks from the backward graph; the "
+                    "block-swap conductor also cannot manage blocks that BlockSkip "
+                    "keeps resident/frozen. Set blocks_to_swap=0."
+                )
+            self.blockskip_config = {
+                "front": _bs_front,
+                "back": _bs_back,
+            }
+            print(f"[BlockSkip] DiT-BlockSkip ENABLED (memory reduction): "
+                  f"skip first {_bs_front} + last {_bs_back} blocks; LoRA in middle "
+                  f"blocks only; residuals kept in memory per step (training-only; "
+                  f"sampling runs the full network).")
+            if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
+                print("[BlockSkip] WARNING: torch_compile is on — BlockSkip runs a "
+                      "two-pass (no_grad full + grad middle) forward with dynamic "
+                      "control flow; prefer torch_compile=off.")
+
         # Per-bucket activation offload dispatcher settings. The dispatcher is
         # created lazily on the first executed step (once static VRAM is known).
         self.activation_dispatch_enable = activation_dispatch_enable

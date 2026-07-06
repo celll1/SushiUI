@@ -240,6 +240,12 @@ def _build_train_section(
     train["block_skip_rate"] = p.get("block_skip_rate", 0.0)
     train["block_skip_protect_start"] = p.get("block_skip_protect_start", 6)
     train["block_skip_protect_end"] = p.get("block_skip_protect_end", 22)
+    # DiT-BlockSkip (arXiv 2603.20755) — training-only memory-reduction for Anima
+    # LoRA. Read unconditionally; base_trainer only builds self.blockskip_config
+    # when blockskip_enable is True. SSoT: api/param_defaults.TRAINING_DEFAULTS.
+    train["blockskip_enable"] = p.get("blockskip_enable", False)
+    train["blockskip_front"] = p.get("blockskip_front", 4)
+    train["blockskip_back"] = p.get("blockskip_back", 4)
     # Resolution curriculum (low-res warmup -> target) — training-only, arch-agnostic.
     # Read unconditionally; inert unless res_curriculum_enable and warmup_steps>0.
     # SSoT: TRAINING_DEFAULTS.

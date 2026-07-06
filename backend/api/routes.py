@@ -6959,6 +6959,10 @@ class TrainingRunCreateRequest(BaseModel):
     block_skip_rate: float = TRAINING_DEFAULTS["block_skip_rate"]
     block_skip_protect_start: int = TRAINING_DEFAULTS["block_skip_protect_start"]
     block_skip_protect_end: int = TRAINING_DEFAULTS["block_skip_protect_end"]
+    # DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION for Anima LoRA.
+    blockskip_enable: bool = TRAINING_DEFAULTS["blockskip_enable"]
+    blockskip_front: int = TRAINING_DEFAULTS["blockskip_front"]
+    blockskip_back: int = TRAINING_DEFAULTS["blockskip_back"]
     # Resolution curriculum (low-res warmup then switch to target) — training-only, arch-agnostic.
     res_curriculum_enable: bool = TRAINING_DEFAULTS["res_curriculum_enable"]
     res_curriculum_warmup_steps: int = TRAINING_DEFAULTS["res_curriculum_warmup_steps"]

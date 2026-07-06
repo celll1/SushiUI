@@ -395,6 +395,27 @@ def train_step(
     if block_skip_cfg is not None:
         inner._block_skip_config = block_skip_cfg
 
+    # DiT-BlockSkip (arXiv 2603.20755): attach the runtime config for THIS training
+    # forward only. The forward runs a no_grad full pass to capture the skipped
+    # spans' residual features for this step's exact tensors (folded precompute -
+    # determinism by construction), then runs the gradient pass over the middle
+    # blocks only. Residuals stay IN MEMORY: persisting one ~33MB file per step
+    # (the paper's separate-phase artifact) is redundant in the folded design and
+    # accumulates unbounded on disk - audit finding, removed. Cleared in `finally`
+    # so sampling/validation run the full network.
+    blockskip_cfg = getattr(trainer, "blockskip_config", None)
+    if blockskip_cfg is not None:
+        def _on_residual(df, db):
+            # Detach so the skipped spans are constants in the backward graph
+            # (the BlockSkip memory/compute trade); no disk round-trip.
+            return df.detach(), db.detach()
+
+        inner._blockskip_config = {
+            "front": int(blockskip_cfg["front"]),
+            "back": int(blockskip_cfg["back"]),
+            "on_residual": _on_residual,
+        }
+
     # The DiT forward returns velocity in 5D ([B, 16, 1, H, W]).
     try:
         if trainer.mixed_precision:
@@ -423,6 +444,8 @@ def train_step(
             inner._tread_config = None
         if block_skip_cfg is not None:
             inner._block_skip_config = None
+        if blockskip_cfg is not None:
+            inner._blockskip_config = None
 
     # Drop the temporal dim back: [B, 16, 1, H, W] -> [B, 16, H, W].
     if model_pred.dim() == 5:

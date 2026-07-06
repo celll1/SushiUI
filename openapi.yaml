@@ -6182,6 +6182,30 @@ components:
           description: |
             End (exclusive) index of the PROTECTED middle block span. Blocks at or
             after this index are back-eligible for dropout.
+        blockskip_enable:
+          type: 'boolean'
+          default: false
+          description: |
+            DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION for
+            LoRA fine-tuning (anima). Skips the first blockskip_front and last
+            blockskip_back transformer blocks; LoRA is injected ONLY into the
+            unskipped middle blocks. Each step, a no_grad full forward captures the
+            skipped spans' residual features (Delta = span input->output), which are
+            re-added during the gradient forward so backprop flows only through the
+            middle blocks — eliminating the skipped blocks' backward-activation
+            memory. LoRA-only (raises for full-parameter FT); mutually exclusive
+            with tread_enable, block_skip_rate and blocks_to_swap. Default off.
+        blockskip_front:
+          type: 'integer'
+          default: 4
+          description: |
+            Number of leading transformer blocks to skip (n). Middle block count
+            (num_blocks - front - back) must be >= 1.
+        blockskip_back:
+          type: 'integer'
+          default: 4
+          description: |
+            Number of trailing transformer blocks to skip (m).
         res_curriculum_enable:
           type: 'boolean'
           default: false

@@ -71,11 +71,42 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
         print(f"[AnimaLoRAAdapter] Injecting LoRA (scope={self.scope}, "
               f"rank={self.lora_rank}, alpha={self.lora_alpha})")
 
+        # DiT-BlockSkip (arXiv 2603.20755): when active, LoRA must live ONLY in the
+        # unskipped MIDDLE DiT blocks [front, num_blocks - back). Skipped front/back
+        # blocks are frozen (no adapter, no optimizer state, no backward graph) and
+        # their contribution is supplied by precomputed residual features. Only the
+        # top-level DiT blocks are gated; llm_adapter.* targets are unaffected.
+        import re as _re
+        _bs = getattr(self.trainer, "blockskip_config", None)
+        _bs_lo = _bs_hi = None
+        if _bs is not None:
+            _num_blocks = len(transformer.blocks)
+            _bs_lo = int(_bs["front"])
+            _bs_hi = _num_blocks - int(_bs["back"])
+            if _bs_hi - _bs_lo < 1:
+                raise ValueError(
+                    f"[AnimaLoRAAdapter] BlockSkip leaves no middle blocks: "
+                    f"num_blocks={_num_blocks}, front={_bs['front']}, back={_bs['back']} "
+                    f"=> middle range [{_bs_lo}, {_bs_hi}). Reduce blockskip_front/back."
+                )
+            print(f"[AnimaLoRAAdapter] BlockSkip active: injecting LoRA only into "
+                  f"middle DiT blocks [{_bs_lo}, {_bs_hi}) of {_num_blocks}.")
+
         count = 0
+        skipped_blockskip = 0
         for module_path, parent, attr, current in iter_anima_lora_targets(transformer, self.scope):
             # Skip if this slot was already wrapped (idempotent / stacking-safe).
             if isinstance(current, LoRALinearLayer):
                 continue
+
+            # BlockSkip: gate top-level DiT block targets to the middle range.
+            if _bs_lo is not None:
+                _m = _re.match(r"^blocks\.(\d+)\.", module_path)
+                if _m is not None:
+                    _bidx = int(_m.group(1))
+                    if _bidx < _bs_lo or _bidx >= _bs_hi:
+                        skipped_blockskip += 1
+                        continue
 
             lora_name = f"lora_unet_{_flatten_to_sdscripts(module_path)}"
             lora_layer = LoRALinearLayer(
@@ -92,6 +123,9 @@ class AnimaLoRAAdapter(BaseLoRAAdapter):
             lora_layers[lora_name] = lora_layer
             count += 1
 
+        if _bs_lo is not None:
+            print(f"[AnimaLoRAAdapter] BlockSkip: excluded {skipped_blockskip} "
+                  f"LoRA target(s) in skipped front/back blocks.")
         print(f"[AnimaLoRAAdapter] Injected {count} LoRA layer(s) into Anima DiT")
         return count
 

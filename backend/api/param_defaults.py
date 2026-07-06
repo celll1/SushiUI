@@ -326,6 +326,24 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (eligible = first 6 + last 6).
     "block_skip_protect_start": 6,
     "block_skip_protect_end": 22,
+    # DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION feature
+    # for LoRA fine-tuning. Skips the FIRST `blockskip_front` and LAST
+    # `blockskip_back` transformer blocks; LoRA is injected ONLY into the
+    # unskipped MIDDLE blocks (which the paper's cross-attention masking study
+    # shows are semantically critical). The skipped blocks are frozen; per step
+    # their contribution is captured once by a no_grad full forward as a residual
+    # feature Delta (input->output of the skipped span) and re-added during the
+    # gradient forward, so backprop only flows through the middle blocks —
+    # eliminating the skipped blocks' backward-activation memory. Currently wired
+    # for the Anima DiT (other archs ignore these keys). Default OFF.
+    # Mutually exclusive with TREAD, block_skip_rate (stochastic depth) and
+    # blocks_to_swap; LoRA-only (raises for full-parameter FT).
+    "blockskip_enable": False,
+    # Number of leading / trailing blocks to skip (n + m). Defaults skip 4 + 4 of
+    # Anima's 28 blocks (~29% skip ratio; the paper evaluates 30/40/50%). The
+    # middle (num_blocks - front - back) blocks must be >= 1.
+    "blockskip_front": 4,
+    "blockskip_back": 4,
     # Resolution curriculum — training-only, arch-agnostic (data-pipeline feature).
     # Warm up at a lower resolution, then switch to the target (base_resolutions) at an
     # epoch boundary. Lower resolution => fewer latent tokens => much cheaper attention

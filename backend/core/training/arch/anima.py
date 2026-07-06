@@ -58,7 +58,22 @@ class AnimaArchHandler(ArchHandler):
         raise NotImplementedError("anima.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("anima.train_step: phase P6")
+        # P6b: verbatim body in ops/anima_ops.train_step. The LLM-adapter payload
+        # rides in ctx.anima_aux (the dispatcher extracts it from mnt_attention_mask
+        # when that is a dict); text tensor is ctx.text_embeddings.
+        from core.training.ops import anima_ops
+        return anima_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            prompt_embeds=ctx.text_embeddings,
+            anima_aux=ctx.anima_aux,
+            timesteps=ctx.timesteps,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
+            profile_vram=ctx.profile_vram,
+            alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("anima.sample: phase P7")

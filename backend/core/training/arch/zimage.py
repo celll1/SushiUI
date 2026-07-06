@@ -53,7 +53,21 @@ class ZImageArchHandler(ArchHandler):
         raise NotImplementedError("zimage.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("zimage.train_step: phase P6")
+        # P6b: verbatim body in ops/zimage_ops.train_step. ctx fields map 1:1 to
+        # the previous train_step_zimage kwargs bundle (attention_mask is a tensor).
+        from core.training.ops import zimage_ops
+        return zimage_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            prompt_embeds=ctx.text_embeddings,
+            attention_mask=ctx.attention_mask,
+            timesteps=ctx.timesteps,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
+            profile_vram=ctx.profile_vram,
+            alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("zimage.sample: phase P7")

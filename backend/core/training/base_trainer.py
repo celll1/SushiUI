@@ -4258,9 +4258,13 @@ class BaseTrainer(ABC):
         """
         # Forward pass (architecture-specific)
         if self.is_zimage:
-            loss, pred_loss, recon_loss = self.train_step_zimage(
+            # P6b: route via the arch handler (registry dispatch). The kwargs
+            # bundle is frozen into TrainStepContext; the handler unpacks it into
+            # ops/zimage_ops.train_step (verbatim body).
+            from core.training.arch.base_arch import TrainStepContext
+            ctx = TrainStepContext(
                 latents=mnt_latents,
-                prompt_embeds=mnt_text_embeddings,
+                text_embeddings=mnt_text_embeddings,
                 attention_mask=mnt_attention_mask,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
@@ -4269,14 +4273,16 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
             )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_anima:
             # Anima carries the LLM-Adapter side payload (source_mask, t5 ids)
             # in mnt_attention_mask, which here holds a dict produced by
             # encode_caption() rather than a single tensor.
+            from core.training.arch.base_arch import TrainStepContext
             anima_aux = mnt_attention_mask if isinstance(mnt_attention_mask, dict) else {}
-            loss, pred_loss, recon_loss = self.train_step_anima(
+            ctx = TrainStepContext(
                 latents=mnt_latents,
-                prompt_embeds=mnt_text_embeddings,
+                text_embeddings=mnt_text_embeddings,
                 anima_aux=anima_aux,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
@@ -4285,11 +4291,13 @@ class BaseTrainer(ABC):
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
             )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_lens:
             # mnt_text_embeddings: [B, num_layers, L, D]
             # mnt_attention_mask:  [B, L] encoder mask
+            from core.training.arch.base_arch import TrainStepContext
             _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
-            loss, pred_loss, recon_loss = self.train_step_lens(
+            ctx = TrainStepContext(
                 latents=mnt_latents,
                 encoder_features=mnt_text_embeddings,
                 encoder_mask=mnt_attention_mask,
@@ -4298,10 +4306,12 @@ class BaseTrainer(ABC):
                 latent_h=_lh,
                 latent_w=_lw,
             )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_ideogram4:
             # mnt_text_embeddings: [B, 13, L, 4096]; mnt_attention_mask: [B, L]
+            from core.training.arch.base_arch import TrainStepContext
             _lh, _lw = lens_latent_shape if lens_latent_shape else (None, None)
-            loss, pred_loss, recon_loss = self.train_step_ideogram4(
+            ctx = TrainStepContext(
                 latents=mnt_latents,
                 encoder_features=mnt_text_embeddings,
                 encoder_mask=mnt_attention_mask,
@@ -4310,6 +4320,7 @@ class BaseTrainer(ABC):
                 latent_h=_lh,
                 latent_w=_lw,
             )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
         elif self.is_krea2:
             # mnt_latents: packed [B, N, 64]; mnt_text_embeddings: [B, seq, 12, 2560];
             # mnt_attention_mask: [B, seq]
@@ -4731,481 +4742,6 @@ class BaseTrainer(ABC):
 
         return loss, pred_loss_value, recon_loss_value
 
-    def train_step_zimage(
-        self,
-        latents: torch.Tensor,
-        prompt_embeds: torch.Tensor,
-        attention_mask: torch.Tensor,
-        timesteps: Optional[torch.Tensor] = None,
-        debug_save_path: Optional[Path] = None,
-        debug_captions: Optional[List[str]] = None,
-        debug_reference_image_paths: Optional[List[str]] = None,
-        profile_vram: bool = False,
-        alphas_cumprod_cached: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, float]:
-        """
-        Perform single training step (Z-Image).
-
-        Args:
-            latents: Image latents [B, C, H, W]
-            prompt_embeds: Prompt embeddings [B, seq_len, 2560]
-            attention_mask: Attention mask [B, seq_len]
-            timesteps: Timesteps for this batch [B]. If None, sampled uniformly from [0, 1]
-            debug_save_path: If provided, save latents for debugging
-            debug_captions: Captions for debug output
-            profile_vram: If True, print VRAM usage
-            alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (unused for Z-Image, included for API consistency)
-
-        Returns:
-            Tuple of (loss tensor, reconstruction loss value)
-        """
-        if profile_vram:
-            print_vram_usage("[train_step_zimage] Start")
-
-        # Z-Image uses Flow Matching with velocity prediction
-        noise_process = getattr(self, 'noise_process', 'flow')  # Z-Image default: flow
-        prediction_target = getattr(self, 'prediction_target', 'velocity')  # Z-Image default: velocity
-
-        # Move latents to GPU with correct dtype
-        # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
-        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-
-        # Sample random timesteps from [0, 1] if not provided
-        batch_size = latents.shape[0]
-        if timesteps is None:
-            if self.timestep_sampler is not None:
-                # Use timestep sampler (returns [0, 1] for flow matching)
-                timesteps = self.timestep_sampler.sample(batch_size, self.device)
-            else:
-                # Legacy behavior: uniform sampling from [0, 1]
-                timesteps = torch.rand(batch_size, device=self.device)
-
-        # Sample noise (standard normal distribution, now on GPU)
-        noise = torch.randn_like(latents)
-
-        # Add noise using unified framework
-        noisy_latents = add_noise_unified(
-            noise_process=noise_process,
-            noise_scheduler=self.noise_scheduler,
-            latents=latents,
-            noise=noise,
-            timesteps=timesteps,
-        )
-
-        if profile_vram:
-            print_vram_usage("[train_step_zimage] Before Transformer forward")
-
-        # Note: Gradient checkpointing automatically manages requires_grad
-        # No need to manually set requires_grad_(True) - PyTorch handles this
-        # prompt_embeds is always detached (from encode_prompt_zimage with no_grad)
-        # attention_mask is bool type, does not need gradients
-
-        # Add frame dimension for Z-Image: [B, C, H, W] -> [B, C, 1, H, W]
-        noisy_latents_4d = noisy_latents.unsqueeze(2)
-
-        # Predict velocity using Z-Image Transformer
-        if self.mixed_precision:
-            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                model_pred, _ = self.transformer(
-                    x=noisy_latents_4d,
-                    t=timesteps,
-                    cap_feats=prompt_embeds,
-                    cap_mask=attention_mask,
-                )
-        else:
-            model_pred, _ = self.transformer(
-                x=noisy_latents_4d,
-                t=timesteps,
-                cap_feats=prompt_embeds,
-                cap_mask=attention_mask,
-            )
-
-        # Remove frame dimension: [B, C, 1, H, W] -> [B, C, H, W]
-        model_pred = model_pred.squeeze(2)
-
-        if profile_vram:
-            print_vram_usage("[train_step_zimage] After Transformer forward")
-
-        # Z-Image uses INVERTED velocity convention: v = latents - noise
-        # This is opposite from standard Flow Matching (v = noise - latents)
-        # diffusers Z-Image pipeline inverts the sign during inference: noise_pred = -model_output
-        # So we train with target = latents - noise to match this convention
-        target = latents - noise
-
-        # Calculate MSE loss (always in fp32)
-        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-        loss_per_sample = loss_per_element.mean([1, 2, 3])
-
-        # Flow Matching doesn't use Min-SNR weighting (uniform timestep distribution)
-        mse_loss = loss_per_sample.mean()
-
-        # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
-        regularization_loss = torch.tensor(0.0, device=self.device)
-
-        # Compute predicted latent once (used by regularization losses and dual loss)
-        # Z-Image inverse velocity: v = latents - noise, so x_0 = x_t + t * v
-        predicted_latent_for_reg = None
-        if self.snr_regularization_loss is not None or self.energy_regularization_loss is not None or self.reconstruction_loss_weight > 0:
-            # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-            t = timesteps.float()
-            while t.dim() < noisy_latents.dim():
-                t = t.unsqueeze(-1)
-            predicted_latent_for_reg = noisy_latents + t * model_pred
-
-        # SNR regularization (周波数領域の過剰デノイズ抑制)
-        if self.snr_regularization_loss is not None:
-            # timesteps are already [0, 1] for flow matching
-            snr_reg_loss = self.snr_regularization_loss(
-                predicted_latent_for_reg,
-                latents,
-                timesteps
-            )
-            regularization_loss = regularization_loss + snr_reg_loss
-
-        # Energy regularization (空間領域のエネルギー保存)
-        if self.energy_regularization_loss is not None:
-            energy_reg_loss = self.energy_regularization_loss(
-                predicted_latent_for_reg,
-                latents,
-                timesteps
-            )
-            regularization_loss = regularization_loss + energy_reg_loss
-
-        # Calculate reconstruction loss (for monitoring or dual loss training)
-        # If reconstruction_loss_weight > 0, compute with gradients for backprop
-        # Otherwise, compute without gradients (monitoring only)
-        if self.reconstruction_loss_weight > 0:
-            # Dual loss training: compute reconstruction loss with gradients
-            # Reuse predicted_latent_for_reg if already computed (has gradients)
-            if predicted_latent_for_reg is not None:
-                predicted_latent_for_recon = predicted_latent_for_reg
-            else:
-                # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-                t = timesteps.float()
-                while t.dim() < noisy_latents.dim():
-                    t = t.unsqueeze(-1)
-                predicted_latent_for_recon = noisy_latents + t * model_pred
-
-            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
-            recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-            recon_loss = recon_loss_per_sample.mean()
-
-            # Normalized dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
-            alpha = 1.0 - self.reconstruction_loss_weight
-            beta = self.reconstruction_loss_weight
-            combined_loss = alpha * mse_loss + beta * recon_loss
-
-            # Total loss with regularization
-            loss = combined_loss + regularization_loss
-        else:
-            # Standard training: prediction loss only
-            # Calculate reconstruction loss for monitoring (no gradients)
-            with torch.no_grad():
-                # Reuse predicted_latent_for_reg if already computed, otherwise compute it
-                if predicted_latent_for_reg is not None:
-                    predicted_latent_for_recon = predicted_latent_for_reg.detach()
-                else:
-                    # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-                    t = timesteps.float()
-                    while t.dim() < noisy_latents.dim():
-                        t = t.unsqueeze(-1)
-                    predicted_latent_for_recon = noisy_latents + t * model_pred
-
-                recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
-                recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
-                recon_loss = recon_loss_per_sample.mean()
-
-            # Total loss (prediction loss + regularization)
-            loss = mse_loss + regularization_loss
-
-        if profile_vram:
-            print_vram_usage("[train_step_zimage] After loss calculation")
-
-        # Debug save if requested
-        if debug_save_path is not None:
-            debug_save_path.mkdir(parents=True, exist_ok=True)
-            timestep_value = timesteps[0].item()
-
-            with torch.no_grad():
-                # Z-Image: x_0 = x_t + t * v (opposite sign from standard flow matching)
-                t = timesteps.float()
-                while t.dim() < noisy_latents.dim():
-                    t = t.unsqueeze(-1)
-                predicted_latent = noisy_latents + t * model_pred
-
-            debug_data = {
-                'latents': latents[0:1].detach().cpu(),
-                'noisy_latents': noisy_latents[0:1].detach().cpu(),
-                'predicted_velocity': model_pred[0:1].detach().cpu(),
-                'actual_velocity': target[0:1].detach().cpu(),
-                'predicted_latent': predicted_latent[0:1].detach().cpu(),
-                'timestep': timestep_value,
-                'loss': loss_per_sample[0].item(),
-                'loss_batch_mean': loss.item(),
-                'recon_loss': recon_loss_per_sample[0].item(),
-                'recon_loss_batch_mean': recon_loss.item(),
-                'batch_size': batch_size,
-                'scheduler_type': 'FlowMatching',
-            }
-
-            if debug_captions is not None and len(debug_captions) > 0:
-                debug_data['caption'] = debug_captions[0]
-                debug_data['all_captions'] = debug_captions
-
-            if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
-                first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
-                if first_ref:
-                    debug_data['reference_image_path'] = first_ref
-
-            torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:.4f}.pt")
-            del predicted_latent
-
-        # Return loss tensor (with gradient), pred_loss value, and recon_loss value
-        # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
-        # The training loop will call .backward() on the loss tensor.
-        pred_loss_value = mse_loss.item()
-        recon_loss_value = recon_loss.item()
-
-        # Free intermediate tensors explicitly to reduce VRAM usage
-        # But keep 'loss' tensor for backward pass
-        del noise, noisy_latents, noisy_latents_4d, model_pred, target
-        del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
-
-        return loss, pred_loss_value, recon_loss_value
-
-    def train_step_anima(
-        self,
-        latents: torch.Tensor,
-        prompt_embeds: torch.Tensor,
-        anima_aux: Dict[str, torch.Tensor],
-        timesteps: Optional[torch.Tensor] = None,
-        debug_save_path: Optional[Path] = None,
-        debug_captions: Optional[List[str]] = None,
-        debug_reference_image_paths: Optional[List[str]] = None,
-        profile_vram: bool = False,
-        alphas_cumprod_cached: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, float, float]:
-        """Single Anima training step (rectified flow / velocity prediction).
-
-        Args:
-            latents:   Normalised Qwen-Image latents [B, 16, H/8, W/8] (the
-                       Anima DiT requires a singleton temporal dim, added below).
-            prompt_embeds: Qwen3 hidden states [B, L_qwen, 1024], zero-masked.
-            anima_aux: dict with {source_mask, t5_input_ids, t5_attn_mask}
-                       as produced by encode_prompt_anima.
-            timesteps: Optional pre-sampled sigma values in [0, 1]; otherwise
-                       sampled via self.timestep_sampler or uniform random.
-
-        Returns:
-            (loss tensor, prediction loss value, reconstruction loss value)
-        """
-        if profile_vram:
-            print_vram_usage("[train_step_anima] Start")
-
-        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-        prompt_embeds = prompt_embeds.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-        source_mask = anima_aux["source_mask"].to(device=self.device, non_blocking=True)
-        t5_input_ids = anima_aux["t5_input_ids"].to(device=self.device, non_blocking=True)
-        t5_attn_mask = anima_aux["t5_attn_mask"].to(device=self.device, non_blocking=True)
-
-        batch_size = latents.shape[0]
-        if timesteps is None:
-            if self.timestep_sampler is not None:
-                timesteps = self.timestep_sampler.sample(batch_size, self.device)
-            else:
-                timesteps = torch.rand(batch_size, device=self.device)
-        timesteps = timesteps.to(self.training_dtype)
-
-        noise = torch.randn_like(latents)
-
-        # Flow-matching forward: x_t = (1 - sigma) * x_0 + sigma * noise
-        sigma_view = timesteps.view(-1, *([1] * (latents.dim() - 1))).to(latents.dtype)
-        noisy_latents = (1.0 - sigma_view) * latents + sigma_view * noise
-
-        # Anima DiT requires a singleton temporal dim: [B, C, H, W] -> [B, C, 1, H, W].
-        noisy_latents_5d = noisy_latents.unsqueeze(2)
-
-        # Padding mask matches latent spatial resolution; all-valid (zeros).
-        latent_h = noisy_latents.shape[-2]
-        latent_w = noisy_latents.shape[-1]
-        padding_mask = torch.zeros(
-            (batch_size, 1, latent_h, latent_w),
-            device=self.device, dtype=self.training_dtype,
-        )
-
-        if profile_vram:
-            print_vram_usage("[train_step_anima] Before DiT forward")
-
-        # The DiT forward returns velocity in 5D ([B, 16, 1, H, W]).
-        if self.mixed_precision:
-            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                model_pred = self.transformer(
-                    x=noisy_latents_5d,
-                    timesteps=timesteps,
-                    context=prompt_embeds,
-                    padding_mask=padding_mask,
-                    target_input_ids=t5_input_ids,
-                    target_attention_mask=t5_attn_mask,
-                    source_attention_mask=source_mask,
-                )
-        else:
-            model_pred = self.transformer(
-                x=noisy_latents_5d,
-                timesteps=timesteps,
-                context=prompt_embeds,
-                padding_mask=padding_mask,
-                target_input_ids=t5_input_ids,
-                target_attention_mask=t5_attn_mask,
-                source_attention_mask=source_mask,
-            )
-
-        # Drop the temporal dim back: [B, 16, 1, H, W] -> [B, 16, H, W].
-        if model_pred.dim() == 5:
-            model_pred = model_pred.squeeze(2)
-
-        if profile_vram:
-            print_vram_usage("[train_step_anima] After DiT forward")
-
-        # Rectified flow target: v = noise - x_0  (sd-scripts anima convention,
-        # matches our inference scheduler which integrates `latents + dt * v`
-        # with dt = sigma_next - sigma < 0).
-        target = noise - latents
-
-        loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
-        loss_per_sample = loss_per_element.mean([1, 2, 3])
-        mse_loss = loss_per_sample.mean()
-
-        loss = mse_loss
-
-        # Reconstruction loss (predicted x0 vs ground-truth x0) — optional.
-        recon_loss_value = 0.0
-        if self.reconstruction_loss_weight > 0:
-            with torch.no_grad():
-                pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
-                recon_loss = F.mse_loss(pred_x0.float(), latents.float())
-                recon_loss_value = recon_loss.item()
-            loss = loss + self.reconstruction_loss_weight * recon_loss
-
-        pred_loss_value = mse_loss.item()
-
-        del noise, noisy_latents, noisy_latents_5d, model_pred, target
-        del loss_per_element, loss_per_sample
-        return loss, pred_loss_value, recon_loss_value
-
-    def train_step_lens(
-        self,
-        latents: torch.Tensor,
-        encoder_features: torch.Tensor,
-        encoder_mask: torch.Tensor,
-        timesteps: Optional[torch.Tensor] = None,
-        profile_vram: bool = False,
-        latent_h: Optional[int] = None,
-        latent_w: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, float, float]:
-        """Single Lens DiT training step (flow-matching, velocity prediction).
-
-        Args:
-            latents:          Flat-sequence latents [B, N, 128].
-            encoder_features: Stacked multi-layer text features [B, num_layers, L, D].
-            encoder_mask:     Bool mask for text tokens [B, L].
-            timesteps:        Optional pre-sampled sigma values in [0, 1].
-            latent_h:         Spatial height of the latent grid (height // 16).
-                              Required for non-square latents; inferred from N for square.
-            latent_w:         Spatial width of the latent grid (width // 16).
-                              Required for non-square latents; inferred from N for square.
-
-        Returns:
-            (loss tensor, prediction loss value, reconstruction loss value)
-        """
-        if profile_vram:
-            print_vram_usage("[train_step_lens] Start")
-
-        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-        encoder_features = encoder_features.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-        encoder_mask = encoder_mask.to(device=self.device, non_blocking=True)
-
-        batch_size = latents.shape[0]
-
-        if timesteps is None:
-            if self.timestep_sampler is not None:
-                timesteps = self.timestep_sampler.sample(batch_size, self.device)
-            else:
-                timesteps = torch.rand(batch_size, device=self.device)
-
-        noise = torch.randn_like(latents)
-
-        # Flow matching forward process: x_t = (1-σ)*x0 + σ*noise
-        sigma = timesteps.to(self.training_dtype)
-        sigma_view = sigma.view(-1, 1, 1)
-        noisy_latents = (1.0 - sigma_view) * latents + sigma_view * noise
-
-        # Velocity target: v = noise - x0
-        v_target = noise - latents
-
-        # Lens timestep convention: transformer receives sigma * 1000
-        timestep_input = (sigma * 1000.0).to(self.training_dtype)
-
-        # img_shapes for positional encoding: single 3-tuple (frame=1, H, W) required by
-        # LensEmbedRope.  Lens supports arbitrary (H, W) multiples of 16; latent_h/latent_w
-        # must be passed explicitly for non-square latents.
-        seq_len = latents.shape[1]  # N = latent_h * latent_w
-        if latent_h is not None and latent_w is not None:
-            if latent_h * latent_w != seq_len:
-                raise ValueError(
-                    f"[train_step_lens] latent_h={latent_h}, latent_w={latent_w} "
-                    f"inconsistent with seq_len={seq_len} (expected {latent_h * latent_w})"
-                )
-        else:
-            # Fall back to square assumption when dims weren't supplied.
-            latent_hw = int(seq_len ** 0.5)
-            if latent_hw * latent_hw != seq_len:
-                raise ValueError(
-                    f"[train_step_lens] Non-square latent (N={seq_len}): pass latent_h "
-                    f"and latent_w explicitly so img_shapes can be set correctly."
-                )
-            latent_h = latent_w = latent_hw
-        img_shapes = [(1, latent_h, latent_w)]
-
-        # encoder_features [B, num_layers, L, D] → list of num_layers tensors each [B, L, D]
-        num_layers = encoder_features.shape[1]
-        encoder_hidden_states_list = [encoder_features[:, i, :, :] for i in range(num_layers)]
-
-        if profile_vram:
-            print_vram_usage("[train_step_lens] Before transformer forward")
-
-        if self.mixed_precision:
-            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                v_pred = self.transformer(
-                    hidden_states=noisy_latents,
-                    encoder_hidden_states=encoder_hidden_states_list,
-                    encoder_hidden_states_mask=encoder_mask,
-                    timestep=timestep_input,
-                    img_shapes=img_shapes,
-                )
-        else:
-            v_pred = self.transformer(
-                hidden_states=noisy_latents,
-                encoder_hidden_states=encoder_hidden_states_list,
-                encoder_hidden_states_mask=encoder_mask,
-                timestep=timestep_input,
-                img_shapes=img_shapes,
-            )
-
-        if profile_vram:
-            print_vram_usage("[train_step_lens] After transformer forward")
-
-        # MSE loss on velocity
-        mse_loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float(), reduction="mean")
-        loss = mse_loss
-
-        pred_loss_value = mse_loss.item()
-        recon_loss_value = 0.0
-
-        # Backward is performed by _execute_forward_backward (single backward per
-        # MNT iteration); do not call loss.backward() here.
-        del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
-        return loss, pred_loss_value, recon_loss_value
-
     def train_step_krea2(
         self,
         latents: torch.Tensor,
@@ -5295,131 +4831,6 @@ class BaseTrainer(ABC):
         pred_loss_value = loss.item()
         # Backward is performed by _execute_forward_backward; do not backward here.
         del noise, noisy, v_pred, v_target
-        return loss, pred_loss_value, 0.0
-
-    def train_step_ideogram4(
-        self,
-        latents: torch.Tensor,
-        encoder_features: torch.Tensor,
-        encoder_mask: torch.Tensor,
-        timesteps: Optional[torch.Tensor] = None,
-        profile_vram: bool = False,
-        latent_h: Optional[int] = None,
-        latent_w: Optional[int] = None,
-    ) -> Tuple[torch.Tensor, float, float]:
-        """Single Ideogram 4 training step (flow-matching, velocity prediction).
-
-        Conventions derived from the inference path (which calls
-        `scheduler.step(-v)`):
-          x_sigma   = (1 - sigma) * x0 + sigma * noise   (sigma=1 -> noise)
-          v_target  = x0 - noise                         (transformer output sign)
-          timestep  = 1 - sigma                          (model time in [0, 1])
-        These satisfy pred_x0 = x_sigma + sigma * v = x0.
-
-        Args:
-            latents:          Packed image latents [B, N, 128].
-            encoder_features: 13-layer Qwen3-VL features [B, 13, L, 4096].
-            encoder_mask:     Text token mask [B, L].
-            latent_h/latent_w: latent grid (height//16, width//16).
-        """
-        from core.models.ideogram4.ideogram4_pipeline_ops import (
-            concat_layer_features, build_training_conditioning,
-        )
-
-        latents = latents.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-        encoder_features = encoder_features.to(device=self.device, dtype=self.training_dtype, non_blocking=True)
-        encoder_mask = encoder_mask.to(device=self.device, non_blocking=True)
-
-        B, N, _ = latents.shape
-        if latent_h is not None and latent_w is not None:
-            if latent_h * latent_w != N:
-                raise ValueError(
-                    f"[train_step_ideogram4] latent_h={latent_h}*latent_w={latent_w} != N={N}"
-                )
-        else:
-            side = int(N ** 0.5)
-            if side * side != N:
-                raise ValueError(
-                    f"[train_step_ideogram4] non-square latent (N={N}); pass latent_h/latent_w"
-                )
-            latent_h = latent_w = side
-
-        if timesteps is None:
-            if self.timestep_sampler is not None:
-                timesteps = self.timestep_sampler.sample(B, self.device)
-            else:
-                timesteps = torch.rand(B, device=self.device)
-        sigma = timesteps.to(self.training_dtype)
-        sigma_v = sigma.view(-1, 1, 1)
-
-        noise = torch.randn_like(latents)
-        noisy = (1.0 - sigma_v) * latents + sigma_v * noise  # sigma=1 -> noise
-        v_target = latents - noise                            # x0 - noise
-        t_model = (1.0 - sigma).to(self.training_dtype)        # model time [0,1]
-
-        # Build packed conditioning (text + image positions/indicator/segment).
-        text_features = concat_layer_features(encoder_features)  # [B, L, 53248]
-        cond = build_training_conditioning(text_features, encoder_mask, latent_h, latent_w)
-        max_text = cond["max_text_tokens"]
-
-        t_dtype = self.transformer.dtype
-        text_z = torch.zeros(B, max_text, latents.shape[-1], dtype=noisy.dtype, device=self.device)
-        pos_z = torch.cat([text_z, noisy], dim=1).to(t_dtype)
-        llm_features = cond["llm_features"].to(t_dtype)
-
-        def _cond_forward():
-            return self.transformer(
-                hidden_states=pos_z,
-                timestep=t_model.to(t_dtype),
-                encoder_hidden_states=llm_features,
-                position_ids=cond["position_ids"],
-                segment_ids=cond["segment_ids"],
-                indicator=cond["indicator"],
-                return_dict=False,
-            )[0]
-
-        if self.mixed_precision:
-            with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                out = _cond_forward()
-        else:
-            out = _cond_forward()
-        v_pred = out[:, max_text:].float()
-        loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
-
-        # Optional auxiliary unconditional branch (image-only, zeroed text).
-        if getattr(self, "ideogram4_train_uncond", False) and getattr(self, "transformer_uncond", None) is not None:
-            uncond = self.transformer_uncond
-            u_dtype = uncond.dtype
-            neg_llm = torch.zeros(
-                B, N, llm_features.shape[-1], dtype=u_dtype, device=self.device
-            )
-            neg_pos = cond["position_ids"][:, max_text:]
-            neg_seg = cond["segment_ids"][:, max_text:]
-            neg_ind = cond["indicator"][:, max_text:]
-            neg_hidden = noisy.to(u_dtype)
-
-            def _uncond_forward():
-                return uncond(
-                    hidden_states=neg_hidden,
-                    timestep=t_model.to(u_dtype),
-                    encoder_hidden_states=neg_llm,
-                    position_ids=neg_pos,
-                    segment_ids=neg_seg,
-                    indicator=neg_ind,
-                    return_dict=False,
-                )[0]
-
-            if self.mixed_precision:
-                with torch.autocast(device_type=self.device.type, dtype=self.training_dtype):
-                    neg_out = _uncond_forward()
-            else:
-                neg_out = _uncond_forward()
-            uncond_loss = torch.nn.functional.mse_loss(neg_out.float(), v_target.float(), reduction="mean")
-            loss = loss + float(getattr(self, "ideogram4_uncond_loss_weight", 1.0)) * uncond_loss
-
-        pred_loss_value = loss.item()
-        # Backward is performed by _execute_forward_backward; do not backward here.
-        del noise, noisy, v_pred, v_target, pos_z, llm_features
         return loss, pred_loss_value, 0.0
 
     def train_step_minit2i(

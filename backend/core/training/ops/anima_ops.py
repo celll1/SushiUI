@@ -17,7 +17,11 @@ Each body is defined exactly once here and stays byte-identical.
 """
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import torch
+import torch.nn.functional as F
 
 
 def load_components(trainer) -> None:
@@ -307,3 +311,126 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     latents = latents_5d.squeeze(2)
     del image_tensor_5d, latent_dist, latents_5d
     return latents
+
+
+def train_step(
+    trainer,
+    latents: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    anima_aux: Dict[str, torch.Tensor],
+    timesteps: Optional[torch.Tensor] = None,
+    debug_save_path: Optional[Path] = None,
+    debug_captions: Optional[List[str]] = None,
+    debug_reference_image_paths: Optional[List[str]] = None,
+    profile_vram: bool = False,
+    alphas_cumprod_cached: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float, float]:
+    """Single Anima training step (rectified flow / velocity prediction).
+
+    Args:
+        latents:   Normalised Qwen-Image latents [B, 16, H/8, W/8] (the
+                   Anima DiT requires a singleton temporal dim, added below).
+        prompt_embeds: Qwen3 hidden states [B, L_qwen, 1024], zero-masked.
+        anima_aux: dict with {source_mask, t5_input_ids, t5_attn_mask}
+                   as produced by encode_prompt_anima.
+        timesteps: Optional pre-sampled sigma values in [0, 1]; otherwise
+                   sampled via trainer.timestep_sampler or uniform random.
+
+    Returns:
+        (loss tensor, prediction loss value, reconstruction loss value)
+    """
+    # Lazy import (sibling-ops pattern): keep base_trainer out of module top level.
+    from core.training.base_trainer import print_vram_usage
+
+    if profile_vram:
+        print_vram_usage("[train_step_anima] Start")
+
+    latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    prompt_embeds = prompt_embeds.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    source_mask = anima_aux["source_mask"].to(device=trainer.device, non_blocking=True)
+    t5_input_ids = anima_aux["t5_input_ids"].to(device=trainer.device, non_blocking=True)
+    t5_attn_mask = anima_aux["t5_attn_mask"].to(device=trainer.device, non_blocking=True)
+
+    batch_size = latents.shape[0]
+    if timesteps is None:
+        if trainer.timestep_sampler is not None:
+            timesteps = trainer.timestep_sampler.sample(batch_size, trainer.device)
+        else:
+            timesteps = torch.rand(batch_size, device=trainer.device)
+    timesteps = timesteps.to(trainer.training_dtype)
+
+    noise = torch.randn_like(latents)
+
+    # Flow-matching forward: x_t = (1 - sigma) * x_0 + sigma * noise
+    sigma_view = timesteps.view(-1, *([1] * (latents.dim() - 1))).to(latents.dtype)
+    noisy_latents = (1.0 - sigma_view) * latents + sigma_view * noise
+
+    # Anima DiT requires a singleton temporal dim: [B, C, H, W] -> [B, C, 1, H, W].
+    noisy_latents_5d = noisy_latents.unsqueeze(2)
+
+    # Padding mask matches latent spatial resolution; all-valid (zeros).
+    latent_h = noisy_latents.shape[-2]
+    latent_w = noisy_latents.shape[-1]
+    padding_mask = torch.zeros(
+        (batch_size, 1, latent_h, latent_w),
+        device=trainer.device, dtype=trainer.training_dtype,
+    )
+
+    if profile_vram:
+        print_vram_usage("[train_step_anima] Before DiT forward")
+
+    # The DiT forward returns velocity in 5D ([B, 16, 1, H, W]).
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            model_pred = trainer.transformer(
+                x=noisy_latents_5d,
+                timesteps=timesteps,
+                context=prompt_embeds,
+                padding_mask=padding_mask,
+                target_input_ids=t5_input_ids,
+                target_attention_mask=t5_attn_mask,
+                source_attention_mask=source_mask,
+            )
+    else:
+        model_pred = trainer.transformer(
+            x=noisy_latents_5d,
+            timesteps=timesteps,
+            context=prompt_embeds,
+            padding_mask=padding_mask,
+            target_input_ids=t5_input_ids,
+            target_attention_mask=t5_attn_mask,
+            source_attention_mask=source_mask,
+        )
+
+    # Drop the temporal dim back: [B, 16, 1, H, W] -> [B, 16, H, W].
+    if model_pred.dim() == 5:
+        model_pred = model_pred.squeeze(2)
+
+    if profile_vram:
+        print_vram_usage("[train_step_anima] After DiT forward")
+
+    # Rectified flow target: v = noise - x_0  (sd-scripts anima convention,
+    # matches our inference scheduler which integrates `latents + dt * v`
+    # with dt = sigma_next - sigma < 0).
+    target = noise - latents
+
+    loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+    loss_per_sample = loss_per_element.mean([1, 2, 3])
+    mse_loss = loss_per_sample.mean()
+
+    loss = mse_loss
+
+    # Reconstruction loss (predicted x0 vs ground-truth x0) — optional.
+    recon_loss_value = 0.0
+    if trainer.reconstruction_loss_weight > 0:
+        with torch.no_grad():
+            pred_x0 = noisy_latents - sigma_view * model_pred  # x_0 = x_t - sigma * v
+            recon_loss = F.mse_loss(pred_x0.float(), latents.float())
+            recon_loss_value = recon_loss.item()
+        loss = loss + trainer.reconstruction_loss_weight * recon_loss
+
+    pred_loss_value = mse_loss.item()
+
+    del noise, noisy_latents, noisy_latents_5d, model_pred, target
+    del loss_per_element, loss_per_sample
+    return loss, pred_loss_value, recon_loss_value

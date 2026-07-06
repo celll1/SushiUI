@@ -64,6 +64,9 @@ export default function ImageGrid() {
   // UI states
   const [gridColumns, setGridColumns] = useState(6);
   const [showFullSizeImage, setShowFullSizeImage] = useState(false);
+  // Collapsed by default so the post-edit strip never covers the enlarged
+  // image; purely internal UI state for the full-size popup below.
+  const [postEditBarExpanded, setPostEditBarExpanded] = useState(false);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
   // Pagination states
@@ -1276,6 +1279,23 @@ export default function ImageGrid() {
               onClick={() => setShowFullSizeImage(false)}
             >
               <div className="relative max-w-full max-h-full">
+                {/* Post-edit toggle: small, unobtrusive, docked with download/close.
+                    A dot indicates a non-neutral edit while collapsed. */}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPostEditBarExpanded((prev) => !prev);
+                  }}
+                  className={`absolute top-4 right-36 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-10 h-10 flex items-center justify-center ${
+                    postEditBarExpanded ? "ring-2 ring-blue-500" : ""
+                  }`}
+                  title="Adjust brightness/saturation"
+                >
+                  <SlidersHorizontal className="h-4 w-4" />
+                  {!postEditBarExpanded && !isNeutral(postEdit) && (
+                    <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-blue-500" />
+                  )}
+                </button>
                 {/* Download button */}
                 <button
                   onClick={(e) => {
@@ -1301,13 +1321,17 @@ export default function ImageGrid() {
                   style={{ filter: buildFilterString(postEdit) }}
                   onClick={(e) => e.stopPropagation()}
                 />
-                {/* Post-edit controls (client-side brightness/saturation) */}
-                <div
-                  className="absolute bottom-4 left-1/2 -translate-x-1/2 w-72 max-w-[90vw] bg-black bg-opacity-70 rounded-lg p-3"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <PostEditControls value={postEdit} onChange={setPostEdit} />
-                </div>
+                {/* Post-edit strip: collapsed by default (just the toggle button
+                    above) so it never covers the image; expanding shows one
+                    compact row flush to the bottom edge. */}
+                {postEditBarExpanded && (
+                  <div
+                    className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 px-3 py-2"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <PostEditControls value={postEdit} onChange={setPostEdit} />
+                  </div>
+                )}
               </div>
             </div>
           )}

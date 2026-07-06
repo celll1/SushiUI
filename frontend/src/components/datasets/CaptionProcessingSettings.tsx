@@ -10,6 +10,7 @@ import {
   getDatasetCaptionTypes,
   CaptionTypeInfo,
 } from "@/utils/api";
+import NumberInput from "../common/NumberInput";
 
 interface CaptionProcessingSettingsProps {
   config: CaptionProcessingConfig;
@@ -508,12 +509,12 @@ export default function CaptionProcessingSettings({
 
               <label className="flex items-center justify-between">
                 <span className="text-sm text-gray-300">Keep First N Tokens</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="20"
+                <NumberInput
+                  min={0}
+                  max={20}
                   value={localConfig.keep_tokens || 0}
-                  onChange={(e) => handleChange("keep_tokens", parseInt(e.target.value))}
+                  defaultValue={0}
+                  onCommit={(v) => handleChange("keep_tokens", v)}
                   disabled={readOnly}
                   className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm"
                 />
@@ -559,12 +560,12 @@ export default function CaptionProcessingSettings({
 
                   <label className="flex items-center justify-between pl-6">
                     <span className="text-sm text-gray-300">Keep First N Tokens Unshuffled</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="20"
+                    <NumberInput
+                      min={0}
+                      max={20}
                       value={localConfig.shuffle_keep_first_n || 0}
-                      onChange={(e) => handleChange("shuffle_keep_first_n", parseInt(e.target.value))}
+                      defaultValue={0}
+                      onCommit={(v) => handleChange("shuffle_keep_first_n", v)}
                       disabled={readOnly}
                       className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm"
                     />
@@ -685,12 +686,12 @@ export default function CaptionProcessingSettings({
 
                   <label className="flex items-center justify-between pl-6">
                     <span className="text-sm text-gray-300">Keep First N Tags</span>
-                    <input
-                      type="number"
-                      min="0"
-                      max="20"
+                    <NumberInput
+                      min={0}
+                      max={20}
                       value={localConfig.tag_dropout_keep_first_n || 0}
-                      onChange={(e) => handleChange("tag_dropout_keep_first_n", parseInt(e.target.value))}
+                      defaultValue={0}
+                      onCommit={(v) => handleChange("tag_dropout_keep_first_n", v)}
                       disabled={readOnly}
                       className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-sm"
                     />

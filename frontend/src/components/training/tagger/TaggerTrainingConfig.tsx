@@ -11,6 +11,7 @@ import {
   TaggerDatasetConfig,
 } from "@/utils/api";
 import { useStartup } from "@/contexts/StartupContext";
+import NumberInput from "../../common/NumberInput";
 
 interface TaggerTrainingConfigProps {
   onClose: () => void;
@@ -617,44 +618,45 @@ export default function TaggerTrainingConfig({
               <div className="mt-2 ml-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Top anchors</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={100}
                     max={97000}
                     value={config.lr_top_anchors ?? 10000}
-                    onChange={(e) => setField("lr_top_anchors", parseInt(e.target.value) || 10000)}
+                    defaultValue={10000}
+                    onCommit={(v) => setField("lr_top_anchors", v)}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
                   />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Top targets / anchor</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={10}
                     max={10000}
                     value={config.lr_top_targets ?? 1000}
-                    onChange={(e) => setField("lr_top_targets", parseInt(e.target.value) || 1000)}
+                    defaultValue={1000}
+                    onCommit={(v) => setField("lr_top_targets", v)}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
                   />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">|LR| threshold</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     step={0.1}
                     min={0}
+                    parse="float"
                     value={config.lr_threshold ?? 1.0}
-                    onChange={(e) => setField("lr_threshold", parseFloat(e.target.value) || 1.0)}
+                    defaultValue={1.0}
+                    onCommit={(v) => setField("lr_threshold", v)}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
                   />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">Min anchor count</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     value={config.lr_min_anchor_count ?? 10}
-                    onChange={(e) => setField("lr_min_anchor_count", parseInt(e.target.value) || 10)}
+                    defaultValue={10}
+                    onCommit={(v) => setField("lr_min_anchor_count", v)}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-blue-500"
                   />
                 </div>
@@ -670,23 +672,23 @@ export default function TaggerTrainingConfig({
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Rank</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   max={256}
                   value={config.lora_rank}
-                  onChange={(e) => setField("lora_rank", parseInt(e.target.value) || 32)}
+                  defaultValue={32}
+                  onCommit={(v) => setField("lora_rank", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Alpha</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   max={256}
                   value={config.lora_alpha}
-                  onChange={(e) => setField("lora_alpha", parseInt(e.target.value) || 16)}
+                  defaultValue={16}
+                  onCommit={(v) => setField("lora_alpha", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -740,36 +742,38 @@ export default function TaggerTrainingConfig({
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
-              <input
-                type="number"
-                step="1e-5"
-                min="1e-6"
-                max="1"
+              <NumberInput
+                step={1e-5}
+                min={1e-6}
+                max={1}
+                parse="float"
                 value={config.learning_rate}
-                onChange={(e) => setField("learning_rate", parseFloat(e.target.value) || 3e-4)}
+                defaultValue={3e-4}
+                onCommit={(v) => setField("learning_rate", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Head LR Multiplier</label>
-              <input
-                type="number"
-                step="0.5"
-                min="0.1"
-                max="100"
+              <NumberInput
+                step={0.5}
+                min={0.1}
+                max={100}
+                parse="float"
                 value={config.head_lr_multiplier}
-                onChange={(e) => setField("head_lr_multiplier", parseFloat(e.target.value) || 10)}
+                defaultValue={10}
+                onCommit={(v) => setField("head_lr_multiplier", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Epochs</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={1000}
                 value={config.epochs}
-                onChange={(e) => setField("epochs", parseInt(e.target.value) || 10)}
+                defaultValue={10}
+                onCommit={(v) => setField("epochs", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -777,33 +781,33 @@ export default function TaggerTrainingConfig({
               <label className="block text-xs text-gray-400 mb-1">
                 Min Tag Count
               </label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 value={config.vocab_min_count}
-                onChange={(e) => setField("vocab_min_count", parseInt(e.target.value) || 1)}
+                defaultValue={1}
+                onCommit={(v) => setField("vocab_min_count", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Batch Size</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={512}
                 value={config.batch_size}
-                onChange={(e) => setField("batch_size", parseInt(e.target.value) || 32)}
+                defaultValue={32}
+                onCommit={(v) => setField("batch_size", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Num Workers</label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={16}
                 value={config.num_workers}
-                onChange={(e) => setField("num_workers", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("num_workers", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -841,12 +845,12 @@ export default function TaggerTrainingConfig({
               {config.tag_refresh_enable && (
                 <div className="flex items-center gap-2 pl-6">
                   <label className="text-[11px] text-gray-400">Poll interval (s)</label>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={5}
                     max={3600}
                     value={config.tag_refresh_interval_seconds}
-                    onChange={(e) => setField("tag_refresh_interval_seconds", parseInt(e.target.value) || 60)}
+                    defaultValue={60}
+                    onCommit={(v) => setField("tag_refresh_interval_seconds", v)}
                     className="w-24 bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                   />
                 </div>
@@ -857,12 +861,12 @@ export default function TaggerTrainingConfig({
                 Save Every N Steps
                 <span className="text-gray-500 ml-1">(0 = disabled)</span>
               </label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 step={100}
                 value={config.save_every_n_steps}
-                onChange={(e) => setField("save_every_n_steps", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("save_every_n_steps", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -871,12 +875,12 @@ export default function TaggerTrainingConfig({
                 Save Every N Epochs
                 <span className="text-gray-500 ml-1">(0 = disabled)</span>
               </label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 step={1}
                 value={config.save_every_n_epochs ?? 0}
-                onChange={(e) => setField("save_every_n_epochs", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("save_every_n_epochs", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -885,11 +889,11 @@ export default function TaggerTrainingConfig({
                 Keep Last N Checkpoints
                 <span className="text-gray-500 ml-1">(0 = keep all)</span>
               </label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 value={config.keep_last_n_checkpoints}
-                onChange={(e) => setField("keep_last_n_checkpoints", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("keep_last_n_checkpoints", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -908,23 +912,23 @@ export default function TaggerTrainingConfig({
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Warmup Steps</label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={10000}
                 value={config.warmup_steps}
-                onChange={(e) => setField("warmup_steps", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("warmup_steps", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Validate Every (epochs)</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={100}
                 value={config.validate_every}
-                onChange={(e) => setField("validate_every", parseInt(e.target.value) || 1)}
+                defaultValue={1}
+                onCommit={(v) => setField("validate_every", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -940,23 +944,23 @@ export default function TaggerTrainingConfig({
                   <option value="fixed">Fixed (samples)</option>
                 </select>
                 {config.val_split_mode === "fixed" ? (
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     step={100}
-                    value={config.val_fixed_size}
-                    onChange={(e) => setField("val_fixed_size", parseInt(e.target.value) || 500)}
+                    value={config.val_fixed_size ?? 500}
+                    defaultValue={500}
+                    onCommit={(v) => setField("val_fixed_size", v)}
                     className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                     placeholder="500"
                   />
                 ) : (
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={50}
                     step={1}
                     value={Math.round((config.val_split ?? 0.05) * 100)}
-                    onChange={(e) => setField("val_split", (parseInt(e.target.value) || 5) / 100)}
+                    defaultValue={5}
+                    onCommit={(v) => setField("val_split", v / 100)}
                     className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                     placeholder="5"
                   />
@@ -968,47 +972,48 @@ export default function TaggerTrainingConfig({
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Training F1 Eval Interval (steps)</label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 step={10}
                 value={config.train_f1_eval_every_n_steps ?? 100}
-                onChange={(e) => setField("train_f1_eval_every_n_steps", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("train_f1_eval_every_n_steps", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Threshold Search Interval (steps)</label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 step={100}
                 value={config.train_f1_threshold_search_every_n_steps ?? 500}
-                onChange={(e) => setField("train_f1_threshold_search_every_n_steps", parseInt(e.target.value) || 0)}
+                defaultValue={0}
+                onCommit={(v) => setField("train_f1_threshold_search_every_n_steps", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Initial Threshold</label>
-              <input
-                type="number"
+              <NumberInput
                 min={0}
                 max={1}
                 step={0.01}
+                parse="float"
                 value={config.train_f1_initial_threshold ?? 0.35}
-                onChange={(e) => setField("train_f1_initial_threshold", parseFloat(e.target.value) || 0.35)}
+                defaultValue={0.35}
+                onCommit={(v) => setField("train_f1_initial_threshold", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
             <div>
               <label className="block text-xs text-gray-400 mb-1">Training F1 Buffer (batches)</label>
-              <input
-                type="number"
+              <NumberInput
                 min={1}
                 max={256}
                 step={1}
                 value={config.train_f1_buffer_batches ?? 16}
-                onChange={(e) => setField("train_f1_buffer_batches", parseInt(e.target.value) || 16)}
+                defaultValue={16}
+                onCommit={(v) => setField("train_f1_buffer_batches", v)}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
               />
             </div>
@@ -1070,37 +1075,40 @@ export default function TaggerTrainingConfig({
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">gamma_neg</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="10"
+                <NumberInput
+                  step={0.5}
+                  min={0}
+                  max={10}
+                  parse="float"
                   value={config.loss_gamma_neg}
-                  onChange={(e) => setField("loss_gamma_neg", parseFloat(e.target.value) || 4)}
+                  defaultValue={4}
+                  onCommit={(v) => setField("loss_gamma_neg", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">gamma_pos</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="10"
+                <NumberInput
+                  step={0.5}
+                  min={0}
+                  max={10}
+                  parse="float"
                   value={config.loss_gamma_pos}
-                  onChange={(e) => setField("loss_gamma_pos", parseFloat(e.target.value) || 1)}
+                  defaultValue={1}
+                  onCommit={(v) => setField("loss_gamma_pos", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">clip</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="0.5"
+                <NumberInput
+                  step={0.01}
+                  min={0}
+                  max={0.5}
+                  parse="float"
                   value={config.loss_clip}
-                  onChange={(e) => setField("loss_clip", parseFloat(e.target.value) || 0)}
+                  defaultValue={0}
+                  onCommit={(v) => setField("loss_clip", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -1117,63 +1125,68 @@ export default function TaggerTrainingConfig({
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs text-gray-400 mb-1">gamma0</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="10"
+                <NumberInput
+                  step={0.5}
+                  min={0}
+                  max={10}
+                  parse="float"
                   value={config.loss_gamma0}
-                  onChange={(e) => setField("loss_gamma0", parseFloat(e.target.value) || 4)}
+                  defaultValue={4}
+                  onCommit={(v) => setField("loss_gamma0", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">m0</label>
-                <input
-                  type="number"
-                  step="0.05"
-                  min="0"
-                  max="1"
+                <NumberInput
+                  step={0.05}
+                  min={0}
+                  max={1}
+                  parse="float"
                   value={config.loss_m0}
-                  onChange={(e) => setField("loss_m0", parseFloat(e.target.value) || 0.2)}
+                  defaultValue={0.2}
+                  onCommit={(v) => setField("loss_m0", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               <div>
                 <label className="block text-xs text-gray-400 mb-1">beta</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="10"
+                <NumberInput
+                  step={0.5}
+                  min={0}
+                  max={10}
+                  parse="float"
                   value={config.loss_beta}
-                  onChange={(e) => setField("loss_beta", parseFloat(e.target.value) || 2)}
+                  defaultValue={2}
+                  onCommit={(v) => setField("loss_beta", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
               {config.loss_function !== "la_s_asl" && (
                 <div>
                   <label className="block text-xs text-gray-400 mb-1">rho</label>
-                  <input
-                    type="number"
-                    step="0.05"
-                    min="0"
-                    max="1"
+                  <NumberInput
+                    step={0.05}
+                    min={0}
+                    max={1}
+                    parse="float"
                     value={config.loss_rho}
-                    onChange={(e) => setField("loss_rho", parseFloat(e.target.value) || 0.5)}
+                    defaultValue={0.5}
+                    onCommit={(v) => setField("loss_rho", v)}
                     className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                   />
                 </div>
               )}
               <div>
                 <label className="block text-xs text-gray-400 mb-1">clip</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="0.5"
+                <NumberInput
+                  step={0.01}
+                  min={0}
+                  max={0.5}
+                  parse="float"
                   value={config.loss_clip}
-                  onChange={(e) => setField("loss_clip", parseFloat(e.target.value) || 0)}
+                  defaultValue={0}
+                  onCommit={(v) => setField("loss_clip", v)}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
@@ -1255,12 +1268,12 @@ export default function TaggerTrainingConfig({
               {/* General augmentation pipeline settings (apply to all modes) */}
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-48">Injection interval (base steps)</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   max={64}
                   value={config.danbooru_injection_interval ?? 4}
-                  onChange={(e) => setField("danbooru_injection_interval", parseInt(e.target.value) || 4)}
+                  defaultValue={4}
+                  onCommit={(v) => setField("danbooru_injection_interval", v)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
                 <span className="text-xs text-gray-500">
@@ -1271,13 +1284,14 @@ export default function TaggerTrainingConfig({
 
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-48">Injection batch size ratio</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={0.1}
                   max={1.0}
                   step={0.05}
+                  parse="float"
                   value={config.danbooru_injection_batch_size_ratio ?? 1.0}
-                  onChange={(e) => setField("danbooru_injection_batch_size_ratio", parseFloat(e.target.value) || 1.0)}
+                  defaultValue={1.0}
+                  onCommit={(v) => setField("danbooru_injection_batch_size_ratio", v)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
                 <span className="text-xs text-gray-500">1.0 = full batch (B), 0.5 = B/2.</span>
@@ -1285,23 +1299,23 @@ export default function TaggerTrainingConfig({
 
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-48">Min post score</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={0}
                   value={config.danbooru_min_score ?? 0}
-                  onChange={(e) => setField("danbooru_min_score", parseInt(e.target.value) || 0)}
+                  defaultValue={0}
+                  onCommit={(v) => setField("danbooru_min_score", v)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
               </div>
 
               <div className="flex items-center gap-3">
                 <label className="text-xs text-gray-400 w-48">Max posts per query</label>
-                <input
-                  type="number"
+                <NumberInput
                   min={1}
                   max={1000}
                   value={config.danbooru_max_posts_per_query ?? 200}
-                  onChange={(e) => setField("danbooru_max_posts_per_query", parseInt(e.target.value) || 200)}
+                  defaultValue={200}
+                  onCommit={(v) => setField("danbooru_max_posts_per_query", v)}
                   className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                 />
                 <span className="text-xs text-gray-500">
@@ -1338,10 +1352,11 @@ export default function TaggerTrainingConfig({
                     ] as const).map(([label, key, def]) => (
                       <div key={key} className="flex items-center gap-3">
                         <label className="text-xs text-gray-400 w-48">{label}</label>
-                        <input
-                          type="number" min={0}
+                        <NumberInput
+                          min={0}
                           value={(config[key] as number) ?? def}
-                          onChange={(e) => setField(key, parseInt(e.target.value) || def)}
+                          defaultValue={def}
+                          onCommit={(v) => setField(key, v)}
                           className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                         />
                       </div>
@@ -1415,51 +1430,51 @@ export default function TaggerTrainingConfig({
                       <div className="pl-6 grid grid-cols-2 gap-2">
                         <div>
                           <label className="block text-xs text-gray-400 mb-1">Min post_count</label>
-                          <input
-                            type="number"
+                          <NumberInput
                             min={0}
                             value={config.danbooru_query_new_tag_min_count ?? 200}
-                            onChange={(e) => setField("danbooru_query_new_tag_min_count", parseInt(e.target.value) || 0)}
+                            defaultValue={0}
+                            onCommit={(v) => setField("danbooru_query_new_tag_min_count", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
                         <div>
                           <label className="block text-xs text-gray-400 mb-1">Top-K per query (0=∞)</label>
-                          <input
-                            type="number"
+                          <NumberInput
                             min={0}
                             value={config.danbooru_query_resolve_top_k ?? 50}
-                            onChange={(e) => setField("danbooru_query_resolve_top_k", parseInt(e.target.value) || 0)}
+                            defaultValue={0}
+                            onCommit={(v) => setField("danbooru_query_resolve_top_k", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
                         <div>
                           <label className="block text-xs text-gray-400 mb-1">Max expanded (run, 0=∞)</label>
-                          <input
-                            type="number"
+                          <NumberInput
                             min={0}
                             value={config.danbooru_query_max_expanded_tags ?? 0}
-                            onChange={(e) => setField("danbooru_query_max_expanded_tags", parseInt(e.target.value) || 0)}
+                            defaultValue={0}
+                            onCommit={(v) => setField("danbooru_query_max_expanded_tags", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
                         <div>
                           <label className="block text-xs text-gray-400 mb-1">Re-resolve interval (s)</label>
-                          <input
-                            type="number"
+                          <NumberInput
                             min={60}
                             value={config.danbooru_query_resolve_interval ?? 3600}
-                            onChange={(e) => setField("danbooru_query_resolve_interval", parseInt(e.target.value) || 3600)}
+                            defaultValue={3600}
+                            onCommit={(v) => setField("danbooru_query_resolve_interval", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
                         <div>
                           <label className="block text-xs text-gray-400 mb-1">Posts/tag/epoch (0=∞)</label>
-                          <input
-                            type="number"
+                          <NumberInput
                             min={0}
                             value={config.danbooru_query_collect_per_epoch ?? 0}
-                            onChange={(e) => setField("danbooru_query_collect_per_epoch", parseInt(e.target.value) || 0)}
+                            defaultValue={0}
+                            onCommit={(v) => setField("danbooru_query_collect_per_epoch", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
                         </div>
@@ -1490,42 +1505,42 @@ export default function TaggerTrainingConfig({
                   <div className="mt-3 space-y-3 pl-7">
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min post count</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={1}
                         value={config.danbooru_new_tag_min_count ?? 200}
-                        onChange={(e) => setField("danbooru_new_tag_min_count", parseInt(e.target.value) || 200)}
+                        defaultValue={200}
+                        onCommit={(v) => setField("danbooru_new_tag_min_count", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Lookback days</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={1}
                         max={365}
                         value={config.danbooru_new_tag_lookback_days ?? 90}
-                        onChange={(e) => setField("danbooru_new_tag_lookback_days", parseInt(e.target.value) || 90)}
+                        defaultValue={90}
+                        onCommit={(v) => setField("danbooru_new_tag_lookback_days", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Survey interval (sec)</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={60}
                         value={config.danbooru_new_tag_survey_interval ?? 3600}
-                        onChange={(e) => setField("danbooru_new_tag_survey_interval", parseInt(e.target.value) || 3600)}
+                        defaultValue={3600}
+                        onCommit={(v) => setField("danbooru_new_tag_survey_interval", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Max dynamic tags</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={0}
                         value={config.danbooru_max_dynamic_tags ?? 0}
-                        onChange={(e) => setField("danbooru_max_dynamic_tags", parseInt(e.target.value) || 0)}
+                        defaultValue={0}
+                        onCommit={(v) => setField("danbooru_max_dynamic_tags", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">
@@ -1535,11 +1550,11 @@ export default function TaggerTrainingConfig({
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Posts/tag/epoch (0=∞)</label>
-                      <input
-                        type="number"
+                      <NumberInput
                         min={0}
                         value={config.danbooru_new_tag_collect_per_epoch ?? 0}
-                        onChange={(e) => setField("danbooru_new_tag_collect_per_epoch", parseInt(e.target.value) || 0)}
+                        defaultValue={0}
+                        onCommit={(v) => setField("danbooru_new_tag_collect_per_epoch", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">
@@ -1648,10 +1663,11 @@ export default function TaggerTrainingConfig({
                           </p>
                           <div className="flex items-center gap-3">
                             <label className="text-xs text-gray-400 w-48">Min co-occurrence count</label>
-                            <input
-                              type="number" min={1}
+                            <NumberInput
+                              min={1}
                               value={config.danbooru_cooc_min_count ?? 50}
-                              onChange={(e) => setField("danbooru_cooc_min_count", parseInt(e.target.value) || 1)}
+                              defaultValue={1}
+                              onCommit={(v) => setField("danbooru_cooc_min_count", v)}
                               className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                             />
                             <span className="text-xs text-gray-500">Times a tag must appear before it is added.</span>
@@ -1695,20 +1711,23 @@ export default function TaggerTrainingConfig({
                             </p>
                             <div className="flex items-center gap-3">
                               <label className="text-xs text-gray-400 w-48">Active weight</label>
-                              <input
-                                type="number" min={0} step={0.05}
+                              <NumberInput
+                                min={0} step={0.05}
+                                parse="float"
                                 value={config.danbooru_query_weight_cooc ?? 0.1}
-                                onChange={(e) => setField("danbooru_query_weight_cooc", parseFloat(e.target.value) || 0)}
+                                defaultValue={0}
+                                onCommit={(v) => setField("danbooru_query_weight_cooc", v)}
                                 className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                               />
                               <span className="text-xs text-gray-500">vs new-tag 1.0. 0 = expand vocab only (no active collection).</span>
                             </div>
                             <div className="flex items-center gap-3">
                               <label className="text-xs text-gray-400 w-48">Collect per epoch (per tag)</label>
-                              <input
-                                type="number" min={0}
+                              <NumberInput
+                                min={0}
                                 value={config.danbooru_cooc_collect_per_epoch ?? 50}
-                                onChange={(e) => setField("danbooru_cooc_collect_per_epoch", parseInt(e.target.value) || 0)}
+                                defaultValue={0}
+                                onCommit={(v) => setField("danbooru_cooc_collect_per_epoch", v)}
                                 className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                               />
                               <span className="text-xs text-gray-500">Balanced quota: max images per cooc tag per epoch.</span>
@@ -1753,40 +1772,45 @@ export default function TaggerTrainingConfig({
                     </p>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">F1 threshold</label>
-                      <input
-                        type="number" min={0} max={1} step={0.01}
+                      <NumberInput
+                        min={0} max={1} step={0.01}
+                        parse="float"
                         value={config.danbooru_low_f1_threshold ?? 0.5}
-                        onChange={(e) => setField("danbooru_low_f1_threshold", parseFloat(e.target.value) || 0)}
+                        defaultValue={0}
+                        onCommit={(v) => setField("danbooru_low_f1_threshold", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Tags below this F1 are targeted.</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Top-K tags</label>
-                      <input
-                        type="number" min={1} step={50}
+                      <NumberInput
+                        min={1} step={50}
                         value={config.danbooru_low_f1_top_k ?? 500}
-                        onChange={(e) => setField("danbooru_low_f1_top_k", parseInt(e.target.value) || 1)}
+                        defaultValue={1}
+                        onCommit={(v) => setField("danbooru_low_f1_top_k", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Max worst-F1 tags to collect.</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min Danbooru posts</label>
-                      <input
-                        type="number" min={1} max={200} step={10}
+                      <NumberInput
+                        min={1} max={200} step={10}
                         value={config.danbooru_low_f1_min_posts ?? 50}
-                        onChange={(e) => setField("danbooru_low_f1_min_posts", parseInt(e.target.value) || 1)}
+                        defaultValue={1}
+                        onCommit={(v) => setField("danbooru_low_f1_min_posts", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Skip tags with fewer page-1 posts than this (≤200).</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Posts/tag/epoch (0=∞)</label>
-                      <input
-                        type="number" min={0}
+                      <NumberInput
+                        min={0}
                         value={config.danbooru_low_f1_collect_per_epoch ?? 0}
-                        onChange={(e) => setField("danbooru_low_f1_collect_per_epoch", parseInt(e.target.value) || 0)}
+                        defaultValue={0}
+                        onCommit={(v) => setField("danbooru_low_f1_collect_per_epoch", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">
@@ -1823,50 +1847,56 @@ export default function TaggerTrainingConfig({
                     </p>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min deficit ratio</label>
-                      <input
-                        type="number" min={0} max={1} step={0.05}
+                      <NumberInput
+                        min={0} max={1} step={0.05}
+                        parse="float"
                         value={config.danbooru_train_count_min_deficit_ratio ?? 0.3}
-                        onChange={(e) => setField("danbooru_train_count_min_deficit_ratio", parseFloat(e.target.value) || 0)}
+                        defaultValue={0}
+                        onCommit={(v) => setField("danbooru_train_count_min_deficit_ratio", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Target tags ≥ this fraction under-exposed (0–1).</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Top-K targeted</label>
-                      <input
-                        type="number" min={1}
+                      <NumberInput
+                        min={1}
                         value={config.danbooru_train_count_top_k ?? 500}
-                        onChange={(e) => setField("danbooru_train_count_top_k", parseInt(e.target.value) || 1)}
+                        defaultValue={1}
+                        onCommit={(v) => setField("danbooru_train_count_top_k", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Cap on number of worst-deficit tags collected.</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min exposures/epoch</label>
-                      <input
-                        type="number" min={1}
+                      <NumberInput
+                        min={1}
                         value={config.danbooru_train_count_min_per_epoch ?? 10}
-                        onChange={(e) => setField("danbooru_train_count_min_per_epoch", parseInt(e.target.value) || 1)}
+                        defaultValue={1}
+                        onCommit={(v) => setField("danbooru_train_count_min_per_epoch", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Noise floor: ignore tags with fewer positives/epoch.</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Min Danbooru posts</label>
-                      <input
-                        type="number" min={1} max={200} step={10}
+                      <NumberInput
+                        min={1} max={200} step={10}
                         value={config.danbooru_train_count_min_posts ?? 50}
-                        onChange={(e) => setField("danbooru_train_count_min_posts", parseInt(e.target.value) || 1)}
+                        defaultValue={1}
+                        onCommit={(v) => setField("danbooru_train_count_min_posts", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">Skip tags with fewer page-1 posts than this (≤200).</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <label className="text-xs text-gray-400 w-48">Posts/tag/epoch (0=∞)</label>
-                      <input
-                        type="number" min={0}
+                      <NumberInput
+                        min={0}
                         value={config.danbooru_train_count_collect_per_epoch ?? 0}
-                        onChange={(e) => setField("danbooru_train_count_collect_per_epoch", parseInt(e.target.value) || 0)}
+                        defaultValue={0}
+                        onCommit={(v) => setField("danbooru_train_count_collect_per_epoch", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
                       <span className="text-xs text-gray-500">
@@ -1927,44 +1957,52 @@ export default function TaggerTrainingConfig({
                 </p>
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">Query weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
+                  <NumberInput
+                    min={0} step={0.1}
+                    parse="float"
                     disabled={!config.danbooru_query_enable}
                     value={config.danbooru_query_enable ? (config.danbooru_query_weight_static ?? 1.0) : 0}
-                    onChange={(e) => setField("danbooru_query_weight_static", parseFloat(e.target.value) || 0)}
+                    defaultValue={0}
+                    onCommit={(v) => setField("danbooru_query_weight_static", v)}
                     className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-40"
                   />
                   <span className="text-xs text-gray-500">User queries (per-tag when Expand is on, else per-string).</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">New-tag weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
+                  <NumberInput
+                    min={0} step={0.1}
+                    parse="float"
                     disabled={!config.danbooru_vocab_expand}
                     value={config.danbooru_vocab_expand ? (config.danbooru_query_weight_new_tag ?? 1.0) : 0}
-                    onChange={(e) => setField("danbooru_query_weight_new_tag", parseFloat(e.target.value) || 0)}
+                    defaultValue={0}
+                    onCommit={(v) => setField("danbooru_query_weight_new_tag", v)}
                     className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <span className="text-xs text-gray-500">Discovered new tags (0 unless Vocab Expansion is enabled).</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">Low-F1 weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
+                  <NumberInput
+                    min={0} step={0.1}
+                    parse="float"
                     disabled={!config.danbooru_low_f1_enable}
                     value={config.danbooru_low_f1_enable ? (config.danbooru_query_weight_low_f1 ?? 1.0) : 0}
-                    onChange={(e) => setField("danbooru_query_weight_low_f1", parseFloat(e.target.value) || 0)}
+                    defaultValue={0}
+                    onCommit={(v) => setField("danbooru_query_weight_low_f1", v)}
                     className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <span className="text-xs text-gray-500">Deficiency collection (0 unless Low-F1 is enabled).</span>
                 </div>
                 <div className="flex items-center gap-3">
                   <label className="text-xs text-gray-400 w-48">Train-count weight</label>
-                  <input
-                    type="number" min={0} step={0.1}
+                  <NumberInput
+                    min={0} step={0.1}
+                    parse="float"
                     disabled={!config.danbooru_train_count_enable}
                     value={config.danbooru_train_count_enable ? (config.danbooru_query_weight_train_count ?? 1.0) : 0}
-                    onChange={(e) => setField("danbooru_query_weight_train_count", parseFloat(e.target.value) || 0)}
+                    defaultValue={0}
+                    onCommit={(v) => setField("danbooru_query_weight_train_count", v)}
                     className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                   />
                   <span className="text-xs text-gray-500">Exposure balancing (0 unless Train-count is enabled).</span>

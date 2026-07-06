@@ -441,6 +441,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "anima_mod_lr_factor": 1.0,
     "anima_llm_adapter_lr_factor": 1.0,
 
+    # Gradient checkpointing (activation recompute) on the trainable modules.
+    # Default True preserves prior unconditional behavior (lower VRAM, ~slower);
+    # set False to trade VRAM for speed. Gated at every enable call site in
+    # base_trainer via self.gradient_checkpointing.
+    "gradient_checkpointing": True,
     # ---- Anima Phase D: memory optimisations ----
     # Gradient-checkpoint mode for the DiT blocks. Both default to False
     # (i.e. standard GPU-resident checkpointing). When both are True the

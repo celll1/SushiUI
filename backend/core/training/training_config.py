@@ -218,6 +218,7 @@ def _build_train_section(
     # others False); an explicit boolean always wins.
     # Read unconditionally; LoRA / pixel-space archs ignore it.
     train["bundle_vae"] = p.get("bundle_vae", None)
+    train["gradient_checkpointing"] = p.get("gradient_checkpointing", True)
     train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)

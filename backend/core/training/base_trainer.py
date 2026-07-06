@@ -957,6 +957,12 @@ class BaseTrainer(ABC):
         if self.bundle_vae is not None:
             self.bundle_vae = bool(self.bundle_vae)
 
+        # Per-run gradient checkpointing toggle. Default True preserves the prior
+        # unconditional behavior; set False to trade VRAM for speed. Gated at every
+        # enable_gradient_checkpointing / gradient_checkpointing_enable call site via
+        # the self.gradient_checkpointing guard.
+        self.gradient_checkpointing = bool(self.config.get("gradient_checkpointing", True))
+
         # Legacy dtype for compatibility
         self.dtype = self.weight_dtype
 
@@ -1164,14 +1170,16 @@ class BaseTrainer(ABC):
             self._setup_attention_backend_zimage(self.attention_backend)
 
         # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
-        if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+        if not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Z-Image)")
+        elif hasattr(self.transformer, 'enable_gradient_checkpointing'):
             self.transformer.enable_gradient_checkpointing()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Z-Image Transformer")
         else:
             print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for Z-Image Transformer")
 
         # Enable gradient checkpointing for Text Encoder
-        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+        if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (Qwen3)")
 
@@ -1281,7 +1289,9 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} WARNING: both cpu_offload_checkpointing and "
                   f"async_cpu_offload_checkpointing are True; using async (faster).")
             cpu_offload_ckpt = False
-        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+        if not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Anima)")
+        elif hasattr(self.transformer, "enable_gradient_checkpointing"):
             self.transformer.enable_gradient_checkpointing(
                 cpu_offload=cpu_offload_ckpt,
                 async_offload=async_offload_ckpt,
@@ -1290,7 +1300,7 @@ class BaseTrainer(ABC):
                           else "cpu_offload" if cpu_offload_ckpt else "standard")
             print(f"{self.log_prefix} Gradient checkpointing enabled for Anima DiT "
                   f"(mode={ckpt_mode})")
-        if hasattr(self.text_encoder, "gradient_checkpointing_enable"):
+        if self.gradient_checkpointing and hasattr(self.text_encoder, "gradient_checkpointing_enable"):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 text encoder")
 
@@ -1426,7 +1436,9 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} WARNING: both cpu_offload_checkpointing and "
                   f"async_cpu_offload_checkpointing are True; using async (faster).")
             cpu_offload_ckpt = False
-        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+        if not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Lens)")
+        elif hasattr(self.transformer, "enable_gradient_checkpointing"):
             self.transformer.enable_gradient_checkpointing(
                 cpu_offload=cpu_offload_ckpt,
                 async_offload=async_offload_ckpt,
@@ -1537,13 +1549,16 @@ class BaseTrainer(ABC):
         self.vae = self.vae.to(dtype=self.vae_dtype)
 
         # Gradient checkpointing.
-        for t in (self.transformer, self.transformer_uncond):
-            if t is not None and hasattr(t, "enable_gradient_checkpointing"):
-                try:
-                    t.enable_gradient_checkpointing()
-                except Exception as e:
-                    print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
-        print(f"{self.log_prefix} Gradient checkpointing enabled for Ideogram 4 transformer(s)")
+        if not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Ideogram 4)")
+        else:
+            for t in (self.transformer, self.transformer_uncond):
+                if t is not None and hasattr(t, "enable_gradient_checkpointing"):
+                    try:
+                        t.enable_gradient_checkpointing()
+                    except Exception as e:
+                        print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
+            print(f"{self.log_prefix} Gradient checkpointing enabled for Ideogram 4 transformer(s)")
 
         # Freeze everything; LoRA adapter wraps the fp8 base (already weight-only-fp8).
         self.vae.requires_grad_(False)
@@ -1655,12 +1670,14 @@ class BaseTrainer(ABC):
         self.vae = self.vae.to(dtype=self.vae_dtype)
 
         # Gradient checkpointing on the vendored transformer.
-        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+        if self.gradient_checkpointing and hasattr(self.transformer, "enable_gradient_checkpointing"):
             try:
                 self.transformer.enable_gradient_checkpointing()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Krea 2 transformer")
             except Exception as e:
                 print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
+        elif not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Krea 2)")
 
         # Freeze VAE + TE; the transformer requires_grad is set by the adapter.
         self.vae.requires_grad_(False)
@@ -1790,12 +1807,14 @@ class BaseTrainer(ABC):
         self.noise_scheduler = self.scheduler
 
         # Gradient checkpointing on the MM-JiT transformer.
-        if hasattr(self.transformer, "enable_gradient_checkpointing"):
+        if self.gradient_checkpointing and hasattr(self.transformer, "enable_gradient_checkpointing"):
             try:
                 self.transformer.enable_gradient_checkpointing()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for MiniT2I transformer")
             except Exception as e:
                 print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
+        elif not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (MiniT2I)")
 
         # Freeze everything; adapters unfreeze what they train.
         self.text_encoder.requires_grad_(False)
@@ -2285,14 +2304,16 @@ class BaseTrainer(ABC):
         self.vae = self.vae.to(dtype=self.vae_dtype)
 
         # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
-        if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+        if not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (FLUX.2)")
+        elif hasattr(self.transformer, 'enable_gradient_checkpointing'):
             self.transformer.enable_gradient_checkpointing()
             print(f"{self.log_prefix} Gradient checkpointing enabled for FLUX.2 Transformer")
         else:
             print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for FLUX.2 Transformer")
 
         # Enable gradient checkpointing for Text Encoder (Qwen3)
-        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+        if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
 
@@ -2454,14 +2475,16 @@ class BaseTrainer(ABC):
             self.vae = self.vae.to(dtype=self.vae_dtype)
 
             # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
-            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+            if not self.gradient_checkpointing:
+                print(f"{self.log_prefix} Gradient checkpointing disabled by config (FLUX.2)")
+            elif hasattr(self.transformer, 'enable_gradient_checkpointing'):
                 self.transformer.enable_gradient_checkpointing()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for FLUX.2 Transformer")
             else:
                 print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for FLUX.2 Transformer")
 
             # Enable gradient checkpointing for Text Encoder (Qwen3)
-            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
                 self.text_encoder.gradient_checkpointing_enable()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
 
@@ -2634,14 +2657,16 @@ class BaseTrainer(ABC):
                 self._setup_attention_backend_zimage(self.attention_backend)
 
             # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
-            if hasattr(self.transformer, 'enable_gradient_checkpointing'):
+            if not self.gradient_checkpointing:
+                print(f"{self.log_prefix} Gradient checkpointing disabled by config (Z-Image)")
+            elif hasattr(self.transformer, 'enable_gradient_checkpointing'):
                 self.transformer.enable_gradient_checkpointing()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Z-Image Transformer")
             else:
                 print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for Z-Image Transformer")
 
             # Enable gradient checkpointing for Text Encoder
-            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
                 self.text_encoder.gradient_checkpointing_enable()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder (Qwen3)")
 
@@ -2861,18 +2886,20 @@ class BaseTrainer(ABC):
                 self._setup_attention_backend_sd_sdxl(self.attention_backend)
 
             # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-            if hasattr(self.unet, 'enable_gradient_checkpointing'):
+            if not self.gradient_checkpointing:
+                print(f"{self.log_prefix} Gradient checkpointing disabled by config (SD/SDXL)")
+            elif hasattr(self.unet, 'enable_gradient_checkpointing'):
                 self.unet.enable_gradient_checkpointing()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
             else:
                 print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
 
             # Enable gradient checkpointing for Text Encoders
-            if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+            if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
                 self.text_encoder.gradient_checkpointing_enable()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 1")
 
-            if self.text_encoder_2 is not None:
+            if self.gradient_checkpointing and self.text_encoder_2 is not None:
                 if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
                     self.text_encoder_2.gradient_checkpointing_enable()
                     print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
@@ -3087,18 +3114,20 @@ class BaseTrainer(ABC):
             self._setup_attention_backend_sd_sdxl(self.attention_backend)
 
         # Enable gradient checkpointing for U-Net (CRITICAL for VRAM reduction)
-        if hasattr(self.unet, 'enable_gradient_checkpointing'):
+        if not self.gradient_checkpointing:
+            print(f"{self.log_prefix} Gradient checkpointing disabled by config (SD/SDXL)")
+        elif hasattr(self.unet, 'enable_gradient_checkpointing'):
             self.unet.enable_gradient_checkpointing()
             print(f"{self.log_prefix} Gradient checkpointing enabled for U-Net")
         else:
             print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for U-Net")
 
         # Enable gradient checkpointing for Text Encoders
-        if hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
+        if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
             self.text_encoder.gradient_checkpointing_enable()
             print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 1")
 
-        if self.text_encoder_2 is not None:
+        if self.gradient_checkpointing and self.text_encoder_2 is not None:
             if hasattr(self.text_encoder_2, 'gradient_checkpointing_enable'):
                 self.text_encoder_2.gradient_checkpointing_enable()
                 print(f"{self.log_prefix} Gradient checkpointing enabled for Text Encoder 2")
@@ -5579,6 +5608,27 @@ class BaseTrainer(ABC):
         except Exception:
             pass
 
+    @staticmethod
+    def _slice_aux(aux, lo, hi):
+        """Slice a per-batch auxiliary payload by [lo:hi] for micro-batching.
+
+        The auxiliary payload (carried in mnt_attention_mask) can be:
+          - None                -> None
+          - a torch.Tensor      -> aux[lo:hi]
+          - a dict of tensors   -> {k: v[lo:hi] if tensor else v}  (anima)
+        Non-tensor dict values are passed through unchanged.
+        """
+        if aux is None:
+            return None
+        if isinstance(aux, dict):
+            return {
+                k: (v[lo:hi] if isinstance(v, torch.Tensor) else v)
+                for k, v in aux.items()
+            }
+        if isinstance(aux, torch.Tensor):
+            return aux[lo:hi]
+        return aux
+
     def _microbatch_two_stage(self, micro_bs: int, eff_bs: int, b: dict):
         """Run a batch (the _execute_forward_backward args in dict ``b``) as
         micro-chunks of size ``micro_bs`` with gradient accumulation, returning
@@ -5614,7 +5664,7 @@ class BaseTrainer(ABC):
             l, p, r = self._execute_forward_backward(
                 mnt_latents=leaves["mnt_latents"],
                 mnt_text_embeddings=leaves["mnt_text_embeddings"],
-                mnt_attention_mask=b["mnt_attention_mask"][lo:hi] if b["mnt_attention_mask"] is not None else None,
+                mnt_attention_mask=self._slice_aux(b["mnt_attention_mask"], lo, hi),
                 mnt_pooled_embeddings=leaves["mnt_pooled_embeddings"],
                 timesteps=b["timesteps"][lo:hi],
                 debug_save_path=b["debug_save_path"] if lo == 0 else None,
@@ -10108,7 +10158,7 @@ class BaseTrainer(ABC):
                     # use_reentrant=False: the pixel inputs don't require grad.
                     try:
                         _ve_model = getattr(self.vision_encoder, "model", None)
-                        if _ve_model is not None and hasattr(_ve_model, "gradient_checkpointing_enable"):
+                        if _ve_model is not None and self.gradient_checkpointing and hasattr(_ve_model, "gradient_checkpointing_enable"):
                             try:
                                 _ve_model.gradient_checkpointing_enable(
                                     gradient_checkpointing_kwargs={"use_reentrant": False}

@@ -18,10 +18,11 @@ keep 2-line delegators on the trainer because they have call sites BOTH in the
 moved loader body AND in ``_load_checkpoint_as_base`` (which stays in the spine);
 each body is defined exactly once here.
 
-NOTE (behavior preservation, plan): ``block_swap_h2d_args`` calls
-``enable_gradient_checkpointing()`` unconditionally as Gate 3 — the H2D
-gradient-checkpointing site the GC-flag work deliberately left ungated. Moved
-verbatim; behavior unchanged.
+NOTE: ``block_swap_h2d_args`` Gate 3 still calls ``enable_gradient_checkpointing()``
+unconditionally -- H2D block swap hard-requires gradient checkpointing by design
+and this is intentionally NOT gated on ``trainer.gradient_checkpointing``. When
+that flag is False, the override is now made visible via a WARNING log instead
+of being silent.
 """
 from __future__ import annotations
 
@@ -74,8 +75,15 @@ def block_swap_h2d_args(trainer):
         )
 
     # Gate 3: requires gradient checkpointing on the transformer (H2D backward
-    # re-reads base weights via recompute). Enable it if the transformer supports
-    # the switch; then verify the attribute the wrapper checks becomes True.
+    # re-reads base weights via recompute). This is a HARD requirement of the
+    # H2D block-swap path, independent of the per-run gradient_checkpointing
+    # config flag (default True) -- H2D swap without grad-ckpt is unsupported
+    # (OOM), so it is force-enabled here even if the flag is False. When the
+    # flag is False, warn loudly so the override is visible instead of silent.
+    if not getattr(trainer, "gradient_checkpointing", True):
+        print(f"{trainer.log_prefix} WARNING: gradient_checkpointing=False in config, "
+              f"but FLUX.2 H2D block swap (block_swap_h2d_only=True) requires gradient "
+              f"checkpointing on the transformer. Force-enabling it for this run.")
     if hasattr(trainer.transformer, "enable_gradient_checkpointing"):
         try:
             trainer.transformer.enable_gradient_checkpointing()

@@ -35,7 +35,16 @@ class AnimaArchHandler(ArchHandler):
         anima_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
-        raise NotImplementedError("anima.encode_prompt: phase P4")
+        # P4: body lives in ops/anima_ops (shared with base_trainer delegator).
+        from core.training.ops import anima_ops
+        return anima_ops.encode_prompt(trainer, prompt)
+
+    def collate_aux(self, trainer, batch) -> dict:
+        # P4: body lives in ops/anima_ops (shared with base_trainer call sites).
+        # Overrides the base_arch no-op default; the train-loop dispatches here
+        # via ``self.arch.collate_aux`` only on the ``is_anima`` branch.
+        from core.training.ops import anima_ops
+        return anima_ops.collate_aux(trainer, batch)
 
     def vae_encode(self, trainer, image_tensor, *, width, height):
         raise NotImplementedError("anima.vae_encode: phase P5")

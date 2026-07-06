@@ -13,6 +13,8 @@ call sites); each body is defined exactly once here.
 """
 from __future__ import annotations
 
+import torch
+
 
 def load_components(trainer) -> None:
     """Load Lens model components for training.
@@ -157,3 +159,34 @@ def setup_attention_backend(trainer, backend: str):
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set Lens attention backend '{b}': {e}")
         print(f"{trainer.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+
+def encode_prompt(trainer, prompt: str, max_length: int = 512):
+    """Encode prompt for Lens using the inference encode_prompt function.
+
+    VERBATIM body of ``BaseTrainer.encode_prompt_lens`` (plan P4), moved out of
+    the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    from core.models.lens.lens_pipeline_ops import encode_prompt as _encode
+    # encode_prompt returns (List[Tensor[1, L, D]], Tensor[1, L]) for a
+    # single prompt. We call it with empty string as neg prompt to get
+    # only the conditional side; the uncond side is discarded.
+    encoder_features, encoder_mask = _encode(
+        text_encoder=trainer.text_encoder,
+        tokenizer=trainer.tokenizer,
+        prompt=prompt,
+        negative_prompt="",
+        device=str(trainer.device),
+        dtype=trainer.training_dtype,
+        max_length=max_length,
+    )
+    # encoder_features: List[Tensor[2, L, D]] (batch of [cond, uncond]);
+    # slice out the conditional (index 0) for each layer.
+    cond_features = [f[0:1].squeeze(0).detach() for f in encoder_features]  # each [L, D]
+    # encoder_mask: [2, L] — take the conditional row.
+    cond_mask = encoder_mask[0].detach()  # [L]
+    # Stack per-layer and add batch dim: [1, num_layers, L, D].
+    # The batch dim allows torch.cat(dim=0) in the training loop to produce
+    # the correct [B, num_layers, L, D] batched tensor.
+    stacked = torch.stack(cond_features, dim=0).unsqueeze(0)  # [1, num_layers, L, D]
+    return stacked, cond_mask

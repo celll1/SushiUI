@@ -168,3 +168,16 @@ def setup_attention_backend(trainer, backend: str):
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set Ideogram4 attention backend '{b}': {e}")
         print(f"{trainer.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+
+def encode_prompt(trainer, prompt: str, max_length: int = 512):
+    """Encode prompt for Ideogram 4: 13-layer Qwen3-VL hidden states.
+
+    VERBATIM body of ``BaseTrainer.encode_prompt_ideogram4`` (plan P4), moved out
+    of the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    from core.models.ideogram4.ideogram4_pipeline_ops import encode_text_layers
+    stacked, mask = encode_text_layers(
+        trainer.text_encoder, trainer.tokenizer, prompt, max_sequence_length=max_length,
+    )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
+    return stacked.unsqueeze(0).detach(), mask.detach()

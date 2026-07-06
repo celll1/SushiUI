@@ -35,7 +35,9 @@ class Krea2ArchHandler(ArchHandler):
         krea2_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
-        raise NotImplementedError("krea2.encode_prompt: phase P4")
+        # P4: body lives in ops/krea2_ops (shared with base_trainer delegator).
+        from core.training.ops import krea2_ops
+        return krea2_ops.encode_prompt(trainer, prompt)
 
     def vae_encode(self, trainer, image_tensor, *, width, height):
         raise NotImplementedError("krea2.vae_encode: phase P5")

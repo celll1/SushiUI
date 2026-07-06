@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import torch
+
 from diffusers import (
     AutoencoderKL,
     DDPMScheduler,
@@ -298,3 +300,233 @@ def setup_attention_backend(trainer, backend: str):
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to install conduit attention processor '{b}': {e}")
         print(f"{trainer.log_prefix} Falling back to the diffusers default processor (native attention)")
+
+
+def encode_prompt_custom_te(trainer, prompt: str, requires_grad: bool = False):
+    """Encode a prompt with the swapped SDXL text encoder + bridge adapters.
+
+    VERBATIM body of ``BaseTrainer._encode_prompt_custom_te`` (plan P4), moved
+    out of the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    import contextlib
+    from core.models.sdxl_te_registry import encode_text
+
+    train_body = bool(getattr(trainer, "sdxl_te_train_encoder", False)) and requires_grad
+    enc_ctx = contextlib.nullcontext() if train_body else torch.no_grad()
+    with enc_ctx:
+        hidden, pooled = encode_text(
+            trainer.te_custom, trainer.te_tokenizer, [prompt],
+            max_len=getattr(trainer, "te_max_len", 256),
+            hidden_layer=getattr(trainer, "te_hidden_layer", -2),
+            device=trainer.device,
+        )
+    ad_dtype = next(trainer.te_adapters.parameters()).dtype
+    enc, pld = trainer.te_adapters(hidden.to(ad_dtype), pooled.to(ad_dtype))  # [1,L,2048], [1,1280]
+    return enc, pld
+
+
+def encode_prompt_simple(trainer, prompt: str, requires_grad: bool = False):
+    """VERBATIM body of ``BaseTrainer._encode_prompt_simple`` (plan P4)."""
+    if trainer.is_sdxl:
+        # SDXL: Two text encoders
+        text_inputs_1 = trainer.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=trainer.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        text_inputs_2 = trainer.tokenizer_2(
+            prompt,
+            padding="max_length",
+            max_length=trainer.tokenizer_2.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+        # Check if text encoders have FP8 weights (requires autocast)
+        has_fp8_weights = trainer._has_fp8_text_encoder()
+
+        with context_manager:
+            # For FP8 quantized text encoders, use autocast for mixed precision
+            # This prevents "ufunc_add_CUDA not implemented for Float8_e4m3fn" errors
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=trainer.training_dtype):
+                    # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
+                    # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
+                    encoder_output_1 = trainer.text_encoder(
+                        text_inputs_1.input_ids.to(trainer.device),
+                        output_hidden_states=True,
+                    )
+                    text_embeddings_1 = encoder_output_1.hidden_states[-2]
+
+                    encoder_output_2 = trainer.text_encoder_2(
+                        text_inputs_2.input_ids.to(trainer.device),
+                        output_hidden_states=True,
+                    )
+                    text_embeddings_2 = encoder_output_2.hidden_states[-2]
+                    pooled_embeddings = encoder_output_2[0]
+            else:
+                # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
+                # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
+                encoder_output_1 = trainer.text_encoder(
+                    text_inputs_1.input_ids.to(trainer.device),
+                    output_hidden_states=True,
+                )
+                text_embeddings_1 = encoder_output_1.hidden_states[-2]
+
+                encoder_output_2 = trainer.text_encoder_2(
+                    text_inputs_2.input_ids.to(trainer.device),
+                    output_hidden_states=True,
+                )
+                text_embeddings_2 = encoder_output_2.hidden_states[-2]
+                pooled_embeddings = encoder_output_2[0]
+
+            text_embeddings = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
+
+            return text_embeddings, pooled_embeddings
+    else:
+        # SD1.5: Single text encoder
+        text_inputs = trainer.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=trainer.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+        # Check if text encoder has FP8 weights (requires autocast)
+        has_fp8_weights = trainer._has_fp8_text_encoder()
+
+        with context_manager:
+            # For FP8 quantized text encoder, use autocast for mixed precision
+            if has_fp8_weights:
+                with torch.autocast(device_type='cuda', dtype=trainer.training_dtype):
+                    text_embeddings = trainer.text_encoder(
+                        text_inputs.input_ids.to(trainer.device),
+                    )[0]
+            else:
+                text_embeddings = trainer.text_encoder(
+                    text_inputs.input_ids.to(trainer.device),
+                )[0]
+
+            return text_embeddings
+
+
+def encode_prompt_chunked(trainer, prompt: str, requires_grad: bool = False):
+    """VERBATIM body of ``BaseTrainer._encode_prompt_chunked`` (plan P4)."""
+    tokenizer = trainer.tokenizer_2 if trainer.is_sdxl else trainer.tokenizer
+    tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+
+    # Split tokens into 75-token chunks
+    chunk_size = 75
+    chunks = []
+    for i in range(0, len(tokens), chunk_size):
+        chunk_tokens = tokens[i:i + chunk_size]
+        chunks.append(chunk_tokens)
+
+    # Limit chunks if max_prompt_chunks is set
+    if trainer.max_prompt_chunks > 0 and len(chunks) > trainer.max_prompt_chunks:
+        chunks = chunks[:trainer.max_prompt_chunks]
+
+    # Encode each chunk
+    chunk_embeds_list = []
+    pooled_embeddings = None
+
+    context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
+
+    with context_manager:
+        for idx, chunk_tokens in enumerate(chunks):
+            # Decode tokens back to text
+            chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+
+            # Encode chunk
+            if trainer.is_sdxl:
+                # SDXL: Encode with both text encoders
+                text_inputs_1 = trainer.tokenizer(
+                    chunk_text,
+                    padding="max_length",
+                    max_length=trainer.tokenizer.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+
+                text_inputs_2 = trainer.tokenizer_2(
+                    chunk_text,
+                    padding="max_length",
+                    max_length=trainer.tokenizer_2.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+
+                encoder_output_1 = trainer.text_encoder(
+                    text_inputs_1.input_ids.to(trainer.device),
+                    output_hidden_states=True,
+                )
+                text_embeddings_1 = encoder_output_1.hidden_states[-2]
+
+                encoder_output_2 = trainer.text_encoder_2(
+                    text_inputs_2.input_ids.to(trainer.device),
+                    output_hidden_states=True,
+                )
+                text_embeddings_2 = encoder_output_2.hidden_states[-2]
+
+                # Use pooled embeddings from first chunk only
+                if idx == 0:
+                    pooled_embeddings = encoder_output_2[0]
+
+                chunk_embeds = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
+                chunk_embeds_list.append(chunk_embeds)
+            else:
+                # SD1.5: Single text encoder
+                text_inputs = trainer.tokenizer(
+                    chunk_text,
+                    padding="max_length",
+                    max_length=trainer.tokenizer.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+
+                text_embeddings = trainer.text_encoder(
+                    text_inputs.input_ids.to(trainer.device),
+                )[0]
+
+                chunk_embeds_list.append(text_embeddings)
+
+    # Concatenate chunks based on chunking mode
+    if trainer.prompt_chunking_mode == "a1111":
+        # A1111 mode: concatenate all chunks as-is
+        text_embeddings = torch.cat(chunk_embeds_list, dim=1)
+    elif trainer.prompt_chunking_mode == "sd_scripts":
+        # sd-scripts mode: strip BOS/EOS between chunks
+        processed_chunks = []
+        for idx, chunk_emb in enumerate(chunk_embeds_list):
+            if len(chunk_embeds_list) == 1:
+                processed_chunks.append(chunk_emb)
+            elif idx == 0:
+                # First chunk: remove EOS (last token before padding)
+                processed_chunks.append(chunk_emb[:, :-1, :])
+            elif idx == len(chunk_embeds_list) - 1:
+                # Last chunk: remove BOS (first token)
+                processed_chunks.append(chunk_emb[:, 1:, :])
+            else:
+                # Middle chunks: remove both BOS and EOS
+                processed_chunks.append(chunk_emb[:, 1:-1, :])
+        text_embeddings = torch.cat(processed_chunks, dim=1)
+    else:  # nobos
+        # NoBOS mode: strip all BOS/EOS tokens
+        processed_chunks = []
+        for chunk_emb in chunk_embeds_list:
+            # Remove first (BOS) and last (EOS) tokens
+            processed_chunks.append(chunk_emb[:, 1:-1, :])
+        text_embeddings = torch.cat(processed_chunks, dim=1)
+
+    if trainer.is_sdxl:
+        return text_embeddings, pooled_embeddings
+    else:
+        return text_embeddings

@@ -180,3 +180,28 @@ def setup_attention_backend(trainer, backend: str):
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set MiniT2I attention backend '{b}': {e}")
         print(f"{trainer.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+
+def encode_prompt(trainer, prompt: str, requires_grad: bool = False):
+    """Encode prompt for MiniT2I: FLAN-T5-Large last_hidden_state + attention mask.
+
+    VERBATIM body of ``BaseTrainer.encode_prompt_minit2i`` (plan P4), moved out of
+    the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    prompt_length = int(trainer.transformer.mmjit_config.prompt_length)
+    te_device = trainer.text_encoder.device if hasattr(trainer.text_encoder, "device") else trainer.device
+
+    if not requires_grad:
+        from core.models.minit2i.minit2i_pipeline_ops import encode_prompt as _encode
+        embeds, mask = _encode(trainer.text_encoder, trainer.tokenizer, prompt, prompt_length, te_device)
+        return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+
+    # TE training: grad-enabled forward (no torch.no_grad), keep on GPU.
+    prompts = [prompt] if isinstance(prompt, str) else list(prompt)
+    toks = trainer.tokenizer(
+        prompts, return_tensors="pt", padding="max_length", truncation=True, max_length=prompt_length,
+    )
+    input_ids = toks.input_ids.to(te_device)
+    attn = toks.attention_mask.to(te_device)
+    embeds = trainer.text_encoder(input_ids=input_ids, attention_mask=attn).last_hidden_state  # [1, L, 1024]
+    return embeds, attn[0]  # mask [L]

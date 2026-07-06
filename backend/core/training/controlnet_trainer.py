@@ -288,6 +288,7 @@ class ControlNetTrainer(BaseTrainer):
         current_step: int = 0,
         schedule_type: str = "uniform",
         condition_image_path: "Optional[str]" = None,
+        reference_image_path: "Optional[str]" = None,
     ) -> "Image.Image":
         """
         Generate sample image during ControlNet training.
@@ -298,6 +299,11 @@ class ControlNetTrainer(BaseTrainer):
         Args:
             condition_image_path: Per-prompt condition image path (optional).
                 If not provided, falls back to dataset's first reference image.
+            reference_image_path: img2img-style reference image path. ControlNet
+                sampling has no use for this itself (it uses condition_image_path
+                for the control signal), so it is only forwarded to base
+                generate_sample() on the no-condition-image fallback path, where
+                the base SD/SDXL implementation decides how to use it.
 
         Standard ControlNet: Sets pipeline.controlnet and passes controlnet_images
         LLLite: Applies patches to UNet before sampling, removes after
@@ -313,6 +319,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 current_step=current_step, schedule_type=schedule_type,
+                reference_image_path=reference_image_path,
             )
 
         # Dispatch to type-specific implementation
@@ -339,6 +346,7 @@ class ControlNetTrainer(BaseTrainer):
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale, seed=seed,
                 current_step=current_step, schedule_type=schedule_type,
+                reference_image_path=reference_image_path,
             )
 
     def _generate_sample_standard(

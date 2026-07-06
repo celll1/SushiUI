@@ -744,7 +744,7 @@ export default function TaggerTrainingConfig({
               <label className="block text-xs text-gray-400 mb-1">Learning Rate</label>
               <NumberInput
                 step={1e-5}
-                min={1e-6}
+                min={0}
                 max={1}
                 parse="float"
                 value={config.learning_rate}
@@ -757,7 +757,7 @@ export default function TaggerTrainingConfig({
               <label className="block text-xs text-gray-400 mb-1">Head LR Multiplier</label>
               <NumberInput
                 step={0.5}
-                min={0.1}
+                min={0}
                 max={100}
                 parse="float"
                 value={config.head_lr_multiplier}
@@ -946,7 +946,7 @@ export default function TaggerTrainingConfig({
                 {config.val_split_mode === "fixed" ? (
                   <NumberInput
                     min={1}
-                    step={100}
+                    step={1}
                     value={config.val_fixed_size ?? 500}
                     defaultValue={500}
                     onCommit={(v) => setField("val_fixed_size", v)}
@@ -1433,7 +1433,7 @@ export default function TaggerTrainingConfig({
                           <NumberInput
                             min={0}
                             value={config.danbooru_query_new_tag_min_count ?? 200}
-                            defaultValue={0}
+                            defaultValue={200}
                             onCommit={(v) => setField("danbooru_query_new_tag_min_count", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
@@ -1443,7 +1443,7 @@ export default function TaggerTrainingConfig({
                           <NumberInput
                             min={0}
                             value={config.danbooru_query_resolve_top_k ?? 50}
-                            defaultValue={0}
+                            defaultValue={50}
                             onCommit={(v) => setField("danbooru_query_resolve_top_k", v)}
                             className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-blue-500"
                           />
@@ -1666,7 +1666,7 @@ export default function TaggerTrainingConfig({
                             <NumberInput
                               min={1}
                               value={config.danbooru_cooc_min_count ?? 50}
-                              defaultValue={1}
+                              defaultValue={50}
                               onCommit={(v) => setField("danbooru_cooc_min_count", v)}
                               className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                             />
@@ -1715,7 +1715,7 @@ export default function TaggerTrainingConfig({
                                 min={0} step={0.05}
                                 parse="float"
                                 value={config.danbooru_query_weight_cooc ?? 0.1}
-                                defaultValue={0}
+                                defaultValue={0.1}
                                 onCommit={(v) => setField("danbooru_query_weight_cooc", v)}
                                 className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                               />
@@ -1726,7 +1726,7 @@ export default function TaggerTrainingConfig({
                               <NumberInput
                                 min={0}
                                 value={config.danbooru_cooc_collect_per_epoch ?? 50}
-                                defaultValue={0}
+                                defaultValue={50}
                                 onCommit={(v) => setField("danbooru_cooc_collect_per_epoch", v)}
                                 className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                               />
@@ -1776,7 +1776,7 @@ export default function TaggerTrainingConfig({
                         min={0} max={1} step={0.01}
                         parse="float"
                         value={config.danbooru_low_f1_threshold ?? 0.5}
-                        defaultValue={0}
+                        defaultValue={0.5}
                         onCommit={(v) => setField("danbooru_low_f1_threshold", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
@@ -1787,7 +1787,7 @@ export default function TaggerTrainingConfig({
                       <NumberInput
                         min={1} step={50}
                         value={config.danbooru_low_f1_top_k ?? 500}
-                        defaultValue={1}
+                        defaultValue={500}
                         onCommit={(v) => setField("danbooru_low_f1_top_k", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
@@ -1798,7 +1798,7 @@ export default function TaggerTrainingConfig({
                       <NumberInput
                         min={1} max={200} step={10}
                         value={config.danbooru_low_f1_min_posts ?? 50}
-                        defaultValue={1}
+                        defaultValue={50}
                         onCommit={(v) => setField("danbooru_low_f1_min_posts", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
@@ -1851,7 +1851,7 @@ export default function TaggerTrainingConfig({
                         min={0} max={1} step={0.05}
                         parse="float"
                         value={config.danbooru_train_count_min_deficit_ratio ?? 0.3}
-                        defaultValue={0}
+                        defaultValue={0.3}
                         onCommit={(v) => setField("danbooru_train_count_min_deficit_ratio", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
@@ -1862,7 +1862,7 @@ export default function TaggerTrainingConfig({
                       <NumberInput
                         min={1}
                         value={config.danbooru_train_count_top_k ?? 500}
-                        defaultValue={1}
+                        defaultValue={500}
                         onCommit={(v) => setField("danbooru_train_count_top_k", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
@@ -1873,7 +1873,7 @@ export default function TaggerTrainingConfig({
                       <NumberInput
                         min={1}
                         value={config.danbooru_train_count_min_per_epoch ?? 10}
-                        defaultValue={1}
+                        defaultValue={10}
                         onCommit={(v) => setField("danbooru_train_count_min_per_epoch", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />
@@ -1884,7 +1884,7 @@ export default function TaggerTrainingConfig({
                       <NumberInput
                         min={1} max={200} step={10}
                         value={config.danbooru_train_count_min_posts ?? 50}
-                        defaultValue={1}
+                        defaultValue={50}
                         onCommit={(v) => setField("danbooru_train_count_min_posts", v)}
                         className="w-24 bg-gray-800 border border-gray-600 rounded px-3 py-1.5 text-sm text-white focus:outline-none focus:border-blue-500"
                       />

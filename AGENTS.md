@@ -56,12 +56,16 @@ subset of repo conventions for coding agents; read it before making changes.
 | Attention backend selection | `backend/core/docs/ATTENTION_PROCESSORS.md`, `backend/core/attention/registry.py` |
 | Block swap / CPU offload during training | `backend/core/memory_management/BLOCK_SWAP.md` |
 | Find any other doc in the repo | `docs/guides/DOC_MAP.md` |
+| Assess a paper/technique before integrating it | `.claude/agents/research-integrator.md` |
 
 ## Reusable subagents
 
 Repo-specific subagent definitions live in `.claude/agents/*.md` (tracked in
 git — see the negated `.gitignore` entries for `.claude/agents/`). Check
-there before writing a one-off agent prompt from scratch.
+there before writing a one-off agent prompt from scratch:
+`arch-maintainer`, `code-auditor`, `api-tester`, `docs-maintainer`,
+`feature-worker`, `orchestrator`, and `research-integrator` (paper/technique
+integration assessment) currently exist.
 
 ## About CLAUDE.md
 

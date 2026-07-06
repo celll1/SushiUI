@@ -9034,6 +9034,284 @@ class BaseTrainer(ABC):
             self.transformer.train()
 
     # ============================================================
+    # Anima Sample Generation (Qwen3 TE + rectified-flow DiT)
+    # ============================================================
+
+    def _generate_sample_anima(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 4.0,
+        seed: int = -1,
+        negative_prompt: str = "",
+    ) -> Image.Image:
+        """Generate a sample image during training (Anima).
+
+        Reuses the Anima inference pipeline ops (encode_prompt / sample_txt2img /
+        vae_decode_latents) directly on the trainer's own components, driven with
+        the trainer's sequential-offload helpers so it survives block-swap /
+        low-VRAM training layouts.  A deep-copied scheduler is used so setting the
+        inference timesteps never mutates the training scheduler.
+        """
+        import copy as _copy
+        import random as _random
+        from core.models.anima.anima_pipeline_ops import (
+            encode_prompt as _anima_encode_prompt,
+            sample_txt2img as _anima_sample_txt2img,
+            vae_decode_latents as _anima_vae_decode,
+        )
+
+        print(f"{self.log_prefix} Generating Anima sample: {prompt[:50]}...")
+        device = self.device
+        compute_dtype = torch.bfloat16
+
+        # Snap to patch_spatial * vae_scale_factor (matches inference backend).
+        snap = self.transformer.patch_spatial * 8
+        height = max(snap, (height // snap) * snap)
+        width = max(snap, (width // snap) * snap)
+
+        self.transformer.eval()
+        self.vae.eval()
+        if self.text_encoder is not None:
+            self.text_encoder.eval()
+
+        try:
+            # --- Offload transformer (+ optimizer state) to CPU for TE encode ---
+            self.move_main_model_to_cpu()
+            self._relocate_main_model_optimizer_state("cpu")
+            torch.cuda.empty_cache()
+
+            # --- Stage 1: text encoding ---
+            self.move_text_encoder_to_gpu()
+            cond = _anima_encode_prompt(
+                self.text_encoder, self.tokenizer, self.t5_tokenizer,
+                prompt, device=device, dtype=compute_dtype,
+            )
+            uncond = None
+            if guidance_scale > 1.0:
+                uncond = _anima_encode_prompt(
+                    self.text_encoder, self.tokenizer, self.t5_tokenizer,
+                    negative_prompt, device=device, dtype=compute_dtype,
+                )
+            self.move_text_encoder_to_cpu()
+            torch.cuda.empty_cache()
+
+            # --- Stage 2: denoising ---
+            # Optimizer state stays on CPU for the whole sampling span (it is
+            # never stepped here); it returns to GPU only at the final restore.
+            self.move_main_model_to_gpu()
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed if (seed is not None and seed >= 0)
+                                  else _random.randint(0, 2**32 - 1))
+            sample_scheduler = _copy.deepcopy(self.scheduler)
+            with torch.no_grad():
+                latents = _anima_sample_txt2img(
+                    transformer=self.transformer, scheduler=sample_scheduler,
+                    cond_embeds=cond, uncond_embeds=uncond,
+                    height=height, width=width,
+                    num_inference_steps=num_inference_steps,
+                    guidance_scale=guidance_scale,
+                    generator=generator, device=str(device), dtype=compute_dtype,
+                    spectrum_params={},
+                )
+            del cond, uncond
+
+            # --- Stage 3: VAE decode ---
+            self.move_main_model_to_cpu()
+            torch.cuda.empty_cache()
+            self.move_vae_to_gpu()
+            with torch.no_grad():
+                # VAE weights are self.vae_dtype (may differ from the bf16 compute
+                # dtype used for denoising); match it to avoid a conv dtype mismatch.
+                images = _anima_vae_decode(self.vae, latents.to(self.vae.dtype))
+            self.move_vae_to_cpu()
+            del latents
+
+            # --- Restore transformer to GPU for continued training ---
+            self.move_main_model_to_gpu()
+            self._relocate_main_model_optimizer_state(device)
+            torch.cuda.empty_cache()
+            return images[0]
+
+        finally:
+            self.transformer.train()
+            self.vae.train()
+            if self.text_encoder is not None:
+                self.text_encoder.train()
+
+    # ============================================================
+    # Lens Sample Generation (mxfp4 TE + flow-matching DiT)
+    # ============================================================
+
+    def _generate_sample_lens(
+        self,
+        prompt: str,
+        height: int = 1024,
+        width: int = 1024,
+        num_inference_steps: int = 28,
+        guidance_scale: float = 4.0,
+        seed: int = -1,
+        negative_prompt: str = "",
+    ) -> Image.Image:
+        """Generate a sample image during training (Lens).
+
+        Reuses the Lens inference pipeline ops (encode_prompt / prepare_latents /
+        denoise_loop / vae_decode) on the trainer's components.  move_text_encoder_to_gpu
+        transparently reloads the mxfp4 text encoder if it was freed during training.
+        """
+        import copy as _copy
+        import random as _random
+        from core.models.lens.lens_pipeline_ops import (
+            encode_prompt as _lens_encode_prompt,
+            prepare_latents as _lens_prepare_latents,
+            denoise_loop as _lens_denoise_loop,
+            vae_decode as _lens_vae_decode,
+        )
+        from core.models.lens.lens_resolution import align_to_grid as _lens_align
+
+        print(f"{self.log_prefix} Generating Lens sample: {prompt[:50]}...")
+        device = self.device
+        dtype = torch.bfloat16
+        max_sequence_length = 512
+
+        width, height = _lens_align(width, height)
+        latent_h = height // 16
+        latent_w = width // 16
+
+        self.transformer.eval()
+        self.vae.eval()
+
+        try:
+            # --- Offload transformer (+ optimizer state) to CPU for TE encode ---
+            self.move_main_model_to_cpu()
+            self._relocate_main_model_optimizer_state("cpu")
+            torch.cuda.empty_cache()
+
+            # --- Stage 1: text encoding (reloads mxfp4 TE if freed) ---
+            self.move_text_encoder_to_gpu()
+            encoder_features, encoder_mask = _lens_encode_prompt(
+                self.text_encoder, self.tokenizer, prompt, negative_prompt,
+                device=device, dtype=dtype, max_length=max_sequence_length,
+            )
+            self.move_text_encoder_to_cpu()
+            torch.cuda.empty_cache()
+
+            # --- Stage 2: denoising ---
+            # Optimizer state stays on CPU for the whole sampling span (it is
+            # never stepped here); it returns to GPU only at the final restore.
+            self.move_main_model_to_gpu()
+            seed_val = seed if (seed is not None and seed >= 0) else _random.randint(0, 2**32 - 1)
+            latents = _lens_prepare_latents(height, width, dtype=dtype, device=device, seed=seed_val)
+            sample_scheduler = _copy.deepcopy(self.scheduler)
+            with torch.no_grad():
+                latents = _lens_denoise_loop(
+                    transformer=self.transformer, scheduler=sample_scheduler,
+                    latents=latents, encoder_features=encoder_features,
+                    encoder_mask=encoder_mask,
+                    guidance_scale=guidance_scale, num_inference_steps=num_inference_steps,
+                    latent_h=latent_h, latent_w=latent_w, tokenizer=self.tokenizer,
+                    spectrum_params={},
+                )
+            del encoder_features, encoder_mask
+
+            # --- Stage 3: VAE decode ---
+            self.move_main_model_to_cpu()
+            torch.cuda.empty_cache()
+            self.move_vae_to_gpu()
+            with torch.no_grad():
+                image = _lens_vae_decode(self.vae, latents, latent_h, latent_w)
+            self.move_vae_to_cpu()
+            del latents
+
+            # --- Restore transformer to GPU for continued training ---
+            self.move_main_model_to_gpu()
+            self._relocate_main_model_optimizer_state(device)
+            torch.cuda.empty_cache()
+            return image
+
+        finally:
+            self.transformer.train()
+            self.vae.train()
+            if self.text_encoder is not None:
+                self.text_encoder.train()
+
+    # ============================================================
+    # Unified sample dispatch (shared by step-0 + periodic sampling)
+    # ============================================================
+
+    def _dispatch_sample(
+        self,
+        prompt: str,
+        *,
+        width: int,
+        height: int,
+        num_inference_steps: int,
+        guidance_scale: float,
+        seed: int,
+        negative_prompt: str = "",
+        reference_image_path: Optional[str] = None,
+        condition_image_path: Optional[str] = None,
+        current_step: int = 0,
+        schedule_type: str = "uniform",
+    ) -> Optional[Image.Image]:
+        """Route a sample request to the correct per-architecture helper.
+
+        Both the step-0 verification block and the periodic sampling block call
+        this single method, so their architecture coverage can never drift apart
+        (the class of bug where an arch was wired into one block but not the
+        other and crashed via the SD/SDXL ``generate_sample`` fallback).
+
+        Returns a PIL image, or ``None`` when the architecture cannot sample yet
+        (ideogram4) — callers must skip saving in that case rather than crash.
+        """
+        if self.is_flux2:
+            return self._generate_sample_flux2(
+                prompt=prompt, width=width, height=height,
+                num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed, reference_image_path=reference_image_path)
+        if self.is_zimage:
+            return self._generate_sample_zimage(
+                prompt=prompt, width=width, height=height,
+                num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed)
+        if self.is_minit2i:
+            return self._generate_sample_minit2i(
+                prompt=prompt, width=width, height=height,
+                num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed, negative_prompt=negative_prompt)
+        if self.is_krea2:
+            return self._generate_sample_krea2(
+                prompt=prompt, width=width, height=height,
+                num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed, negative_prompt=negative_prompt)
+        if self.is_anima:
+            return self._generate_sample_anima(
+                prompt=prompt, width=width, height=height,
+                num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed, negative_prompt=negative_prompt)
+        if self.is_lens:
+            return self._generate_sample_lens(
+                prompt=prompt, width=width, height=height,
+                num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+                seed=seed, negative_prompt=negative_prompt)
+        if self.is_ideogram4:
+            # Ideogram4 sampling (dual transformer + fp8 + resolution-aware
+            # dual-branch conditioning) is not yet ported to the trainer.
+            # Warn and skip rather than crash into the SD/SDXL generate_sample path.
+            print(f"{self.log_prefix} WARNING: step-0/periodic sampling is not yet "
+                  f"supported for ideogram4 (dual-transformer + fp8); skipping this sample.")
+            return None
+        # SD1.5 / SDXL (U-Net) path
+        return self.generate_sample(
+            prompt=prompt, width=width, height=height,
+            num_inference_steps=num_inference_steps, guidance_scale=guidance_scale,
+            seed=seed, current_step=current_step, schedule_type=schedule_type,
+            condition_image_path=condition_image_path,
+            reference_image_path=reference_image_path)
+
+    # ============================================================
     # FLUX.2 Sample Generation
     # ============================================================
 
@@ -10902,59 +11180,23 @@ class BaseTrainer(ABC):
             step0_prompt = self._sample_prompts[0].get('positive', 'a beautiful landscape') if self._sample_prompts else 'a beautiful landscape'
             print(f"{self.log_prefix} [Step 0] Generating sample to verify base model...")
             print(f"{self.log_prefix} [Step 0] Sample params: width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-            if self.is_flux2:
-                sample = self._generate_sample_flux2(
-                    prompt=step0_prompt,
-                    width=sample_width,
-                    height=sample_height,
-                    num_inference_steps=sample_steps,
-                    guidance_scale=sample_guidance_scale,
-                    seed=sample_seed
-                )
-            elif self.is_zimage:
-                sample = self._generate_sample_zimage(
-                    prompt=step0_prompt,
-                    width=sample_width,
-                    height=sample_height,
-                    num_inference_steps=sample_steps,
-                    guidance_scale=sample_guidance_scale,
-                    seed=sample_seed
-                )
-            elif self.is_minit2i:
-                sample = self._generate_sample_minit2i(
-                    prompt=step0_prompt,
-                    width=sample_width,
-                    height=sample_height,
-                    num_inference_steps=sample_steps,
-                    guidance_scale=sample_guidance_scale,
-                    seed=sample_seed,
-                )
-            elif self.is_krea2:
-                sample = self._generate_sample_krea2(
-                    prompt=step0_prompt,
-                    width=sample_width,
-                    height=sample_height,
-                    num_inference_steps=sample_steps,
-                    guidance_scale=sample_guidance_scale,
-                    seed=sample_seed,
-                )
-            else:
-                sample = self.generate_sample(
-                    prompt=step0_prompt,
-                    width=sample_width,
-                    height=sample_height,
-                    num_inference_steps=sample_steps,
-                    guidance_scale=sample_guidance_scale,
-                    seed=sample_seed,
-                    current_step=0,
-                    schedule_type=sample_schedule_type
-                )
+            sample = self._dispatch_sample(
+                step0_prompt,
+                width=sample_width,
+                height=sample_height,
+                num_inference_steps=sample_steps,
+                guidance_scale=sample_guidance_scale,
+                seed=sample_seed,
+                current_step=0,
+                schedule_type=sample_schedule_type,
+            )
 
-            # Save step 0 sample
-            sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
-            sample_path.parent.mkdir(parents=True, exist_ok=True)
-            sample.save(sample_path)
-            print(f"{self.log_prefix} [Step 0] Saved sample to {sample_path.relative_to(self.output_dir)}")
+            # Save step 0 sample (None => architecture can't sample yet; skip)
+            if sample is not None:
+                sample_path = self.output_dir / "samples" / f"step_{0:06d}_sample_0.png"
+                sample_path.parent.mkdir(parents=True, exist_ok=True)
+                sample.save(sample_path)
+                print(f"{self.log_prefix} [Step 0] Saved sample to {sample_path.relative_to(self.output_dir)}")
 
         # ------------------------------------------------------------------
         # Online Danbooru augmentation (image-generation) setup
@@ -13028,58 +13270,22 @@ class BaseTrainer(ABC):
                             reference_image_path = prompt_config.get('reference_image_path') or None
 
                             print(f"{self.log_prefix} Generating sample {sample_idx} with prompt='{positive[:50]}...', width={sample_width}, height={sample_height}, guidance_scale={sample_guidance_scale}, steps={sample_steps}, seed={sample_seed}")
-                            if self.is_flux2:
-                                sample = self._generate_sample_flux2(
-                                    prompt=positive,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed,
-                                    reference_image_path=reference_image_path,
-                                )
-                            elif self.is_zimage:
-                                sample = self._generate_sample_zimage(
-                                    prompt=positive,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed
-                                )
-                            elif self.is_minit2i:
-                                sample = self._generate_sample_minit2i(
-                                    prompt=positive,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed,
-                                    negative_prompt=prompt_config.get('negative', ''),
-                                )
-                            elif self.is_krea2:
-                                sample = self._generate_sample_krea2(
-                                    prompt=positive,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed,
-                                    negative_prompt=prompt_config.get('negative', ''),
-                                )
-                            else:
-                                sample = self.generate_sample(
-                                    prompt=positive,
-                                    width=sample_width,
-                                    height=sample_height,
-                                    num_inference_steps=sample_steps,
-                                    guidance_scale=sample_guidance_scale,
-                                    seed=sample_seed,
-                                    current_step=global_step,
-                                    schedule_type=sample_schedule_type,
-                                    condition_image_path=condition_image_path,
-                                    reference_image_path=reference_image_path,
-                                )
+                            sample = self._dispatch_sample(
+                                positive,
+                                width=sample_width,
+                                height=sample_height,
+                                num_inference_steps=sample_steps,
+                                guidance_scale=sample_guidance_scale,
+                                seed=sample_seed,
+                                negative_prompt=prompt_config.get('negative', ''),
+                                reference_image_path=reference_image_path,
+                                condition_image_path=condition_image_path,
+                                current_step=global_step,
+                                schedule_type=sample_schedule_type,
+                            )
+                            # None => architecture can't sample yet; skip this prompt.
+                            if sample is None:
+                                continue
 
                             # Save sample with format matching API expectations: step_{step:06d}_sample_{i}.png
                             # Use sample_step (which accounts for MNT batch range) for consistent naming

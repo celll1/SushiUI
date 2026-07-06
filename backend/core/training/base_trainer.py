@@ -5561,6 +5561,36 @@ class BaseTrainer(ABC):
             embeddings = torch.load(embeds_path, map_location='cpu')
             if auxiliary_path is not None:
                 auxiliary_data = torch.load(auxiliary_path, map_location='cpu')
+            elif self.is_anima:
+                # Anima's auxiliary payload (source_mask / t5_input_ids /
+                # t5_attn_mask) is NOT persisted alongside the cached Qwen3
+                # hidden states: every element is a pure tokenizer product
+                # (source_mask == qwen3 attention_mask; the T5 tensors are the
+                # T5 tokenizer's input_ids / attention_mask) with a FIXED
+                # max_length=512 padding, so it is deterministically and cheaply
+                # reconstructable from the caption alone. Reconstructing here
+                # (rather than persisting) keeps the on-disk cache format
+                # unchanged, so pre-existing anima embeds-only cache entries
+                # keep working with no regeneration. The reconstructed tensors
+                # match encode_prompt_anima's per-sample shape (batch dim
+                # dropped) so collate_aux batches them identically to the
+                # swap_onthefly / onthefly_gpu live-encode paths.
+                # IMPORTANT: the cached prompt_embeds were produced from the
+                # emphasis-STRIPPED prompt (anima_pipeline_ops.encode_prompt runs
+                # _build_emphasis before tokenizing), so the aux must be rebuilt
+                # from the same clean prompt or source_mask/t5 ids diverge for
+                # any caption containing ( ) [ ] emphasis syntax.
+                from core.models.anima.anima_pipeline_ops import (
+                    _build_emphasis,
+                    tokenize_for_anima,
+                )
+                clean_prompt, _weights = _build_emphasis(caption or "", self.tokenizer, 512)
+                toks = tokenize_for_anima(self.tokenizer, self.t5_tokenizer, clean_prompt)
+                auxiliary_data = {
+                    "source_mask": toks["qwen3_attn_mask"][0],
+                    "t5_input_ids": toks["t5_input_ids"][0],
+                    "t5_attn_mask": toks["t5_attn_mask"][0],
+                }
             else:
                 auxiliary_data = None
             return (embeddings, auxiliary_data)

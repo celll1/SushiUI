@@ -17,13 +17,22 @@ class Ideogram4ArchHandler(ArchHandler):
     wiring = IDEOGRAM4_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("ideogram4.load_components: phase P3")
+        # P3b: body lives in ops/ideogram4_ops (shared with the base_trainer
+        # load-time dispatcher, which cannot route via self.arch — self.arch
+        # binds after loading; see the construction-order note in ideogram4_ops).
+        from core.training.ops import ideogram4_ops
+        ideogram4_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("ideogram4.setup_block_swap: phase P3")
+        # P3b: body lives in ops/ideogram4_ops (shared with the base_trainer
+        # setup_ideogram4_block_swap delegator, called late by mode subclasses).
+        from core.training.ops import ideogram4_ops
+        ideogram4_ops.setup_block_swap(trainer)
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("ideogram4.setup_attention_backend: phase P3")
+        # P3b: body lives in ops/ideogram4_ops (shared with base_trainer delegator).
+        from core.training.ops import ideogram4_ops
+        ideogram4_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("ideogram4.encode_prompt: phase P4")

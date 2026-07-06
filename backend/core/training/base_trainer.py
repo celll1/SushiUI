@@ -5426,10 +5426,16 @@ class BaseTrainer(ABC):
             caption_samples = []
             for item in dataset.items:
                 caption = item.get("caption", "")
-                if caption:
-                    unique_captions.add(caption)
-                    if len(caption_samples) < 3:
-                        caption_samples.append(caption)
+                # Cache EVERY caption, including the empty string. An empty
+                # caption is a legitimate (unconditional) conditioning; skipping
+                # it here would leave those items with no disk cache entry, so at
+                # train time they fall into the pre_encoded on-the-fly fallback
+                # while the Text Encoder is offloaded to CPU -> device-mismatch
+                # crash. md5("") is a valid key and encode_caption("") is the
+                # same unconditional encode the swap_onthefly path already runs.
+                unique_captions.add(caption)
+                if caption and len(caption_samples) < 3:
+                    caption_samples.append(caption)
             dataset_captions[dataset.unique_id] = unique_captions
             total_captions += len(unique_captions)
             print(f"{self.log_prefix} Dataset '{dataset.unique_id}': {len(unique_captions)} unique captions")
@@ -7921,9 +7927,26 @@ class BaseTrainer(ABC):
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
                             else:
-                                # Not in cache, encode on-the-fly (shouldn't happen if cache setup worked)
-                                print(f"{self.log_prefix} WARNING: Caption not in cache, encoding on-the-fly: '{caption[:30]}...'")
-                                embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                # Cache miss in pre_encoded_cache mode. This should
+                                # NOT happen: the cache-generation phase caches every
+                                # caption (including the empty string). A miss here
+                                # therefore signals an incomplete/stale cache -> warn
+                                # loudly. Critically, pre_encoded mode offloads the
+                                # Text Encoder to CPU after the cache phase, so a bare
+                                # encode_caption() would crash with a device mismatch
+                                # (params on CPU, inputs on GPU). Stage the TE to GPU
+                                # on demand, encode, then move it back — a slow but
+                                # correct recovery instead of a hard crash. requires_grad
+                                # is False to match the cache-hit branch (pre_encoded
+                                # mode keeps the TE frozen / grad-free).
+                                print(f"{self.log_prefix} WARNING: Caption not in pre-encoded cache "
+                                      f"(incomplete cache); staging Text Encoder to GPU for a "
+                                      f"one-off on-the-fly encode: '{caption[:30]}...'")
+                                self.move_text_encoder_to_gpu()
+                                try:
+                                    embeddings, auxiliary = self.encode_caption(caption, requires_grad=False)
+                                finally:
+                                    self.move_text_encoder_to_cpu()
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
 

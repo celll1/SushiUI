@@ -1103,6 +1103,17 @@ class BaseTrainer(ABC):
             print(f"{self.log_prefix} Loading model from {model_path}")
             self._load_model_components()
 
+        # Bind the per-architecture handler (composition, plan A.2). Constructed
+        # HERE — at the end of __init__ — rather than earlier, because is_sdxl is
+        # only finalized inside _load_sd_sdxl_components (:2877/:3048), which runs
+        # during the load calls above; the other is_<arch> flags are set in
+        # _load_model_components / _load_checkpoint_as_base (:1111-1120/:2439-2448).
+        # By this point every flag is final, so get_arch_handler resolves the
+        # correct handler. P1: the handler is a stub; the if-chains below still
+        # drive all behavior and nothing calls handler methods yet.
+        from core.training.arch import get_arch_handler
+        self.arch = get_arch_handler(self)
+
     def _load_model_components(self):
         """Load model components (dispatcher for different model types)."""
         # Detect model type

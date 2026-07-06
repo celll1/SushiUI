@@ -54,6 +54,84 @@ def get_cache_base_dir() -> str:
         return "cache/datasets"
 
 
+def _sanitize_ns_token(token: str) -> str:
+    """Make an arbitrary string safe as a single path component."""
+    s = str(token).strip().lower()
+    out = []
+    for ch in s:
+        if ch.isalnum() or ch in ("-", "_", "."):
+            out.append(ch)
+        else:
+            out.append("-")
+    cleaned = "".join(out).strip("-_.")
+    return cleaned or "x"
+
+
+def build_cache_namespace(
+    arch: str,
+    vae_type: Optional[str] = None,
+    te_type: Optional[str] = None,
+    latent_channels: Optional[int] = None,
+    latent_dtype: Optional[str] = None,
+) -> str:
+    """
+    Build a cache namespace token that isolates latent / text-embedding caches
+    by architecture and VAE/TE identity.
+
+    A dataset's cache lives at ``cache/datasets/{dataset_id}/{namespace}/`` so
+    that latents encoded for one model family (e.g. SDXL, 4ch) are NEVER read
+    back for another (e.g. Anima, 16ch) that happens to share the dataset. The
+    old scheme keyed the cache by dataset id ONLY, which allowed a silent (or
+    crashing) cross-architecture / cross-VAE latent mix-up.
+
+    Components (all deterministic for a given run config):
+      - ``arch``: architecture family (sd15/sdxl/zimage/anima/lens/flux2/
+        krea2/minit2i/ideogram4) — same names the trainer uses.
+      - ``vae-<x>``: only when a non-standard VAE is used (SDXL custom VAE),
+        since the same arch can then produce different latent channels/scale.
+      - ``te-<x>``: only when a non-standard text encoder is used (SDXL custom
+        TE), so text-embedding caches don't cross contaminate.
+      - ``c<n>``: VAE latent channel count — directly encodes the latent shape
+        that triggered the reported channel-mismatch crash.
+      - ``dt<dtype>``: latent storage dtype — the "same arch, different VAE
+        dtype/scaling" case called out as a silent-mismatch risk.
+
+    Args:
+        arch: Architecture family name.
+        vae_type: VAE identity (e.g. SDXL ``sdxl_vae_type``); ``None``/``sdxl``
+            means the standard arch VAE and adds no token.
+        te_type: Text-encoder identity (e.g. SDXL ``sdxl_te_type``);
+            ``None``/``clip`` means the standard TE and adds no token.
+        latent_channels: VAE latent channel count (optional safety component).
+        latent_dtype: Latent storage dtype string (optional).
+
+    Returns:
+        A filesystem-safe namespace token (single path component).
+    """
+    parts = [_sanitize_ns_token(arch or "unknown")]
+
+    vt = str(vae_type or "").strip().lower()
+    if vt and vt not in ("none", "sdxl"):
+        parts.append("vae-" + _sanitize_ns_token(vt))
+
+    tt = str(te_type or "").strip().lower()
+    if tt and tt not in ("none", "clip"):
+        parts.append("te-" + _sanitize_ns_token(tt))
+
+    if latent_channels is not None:
+        try:
+            parts.append(f"c{int(latent_channels)}")
+        except (TypeError, ValueError):
+            pass
+
+    if latent_dtype:
+        dt = str(latent_dtype).replace("torch.", "").strip().lower()
+        if dt and dt != "none":
+            parts.append("dt" + _sanitize_ns_token(dt))
+
+    return "__".join(parts)
+
+
 class LatentCache:
     """
     Manages disk cache for VAE latents and optionally text embeddings.
@@ -71,18 +149,30 @@ class LatentCache:
             └── cache_info.json
     """
 
-    def __init__(self, dataset_unique_id: str, base_cache_dir: str = None):
+    def __init__(self, dataset_unique_id: str, base_cache_dir: str = None,
+                 namespace: str = None):
         """
         Initialize latent cache.
 
         Args:
             dataset_unique_id: Dataset unique ID (UUID)
             base_cache_dir: Base directory for cache (default: from user settings or "cache/datasets")
+            namespace: Architecture/VAE identity component (see
+                ``build_cache_namespace``). When provided, the cache lives at
+                ``{base}/{dataset_id}/{namespace}/`` so caches for different
+                model families / VAEs never collide. When ``None`` the legacy
+                ``{base}/{dataset_id}/`` layout is used (kept for callers that
+                do not know the architecture; note such entries are unlabeled
+                and must not be shared across architectures).
         """
         self.dataset_unique_id = dataset_unique_id
+        self.namespace = namespace
         if base_cache_dir is None:
             base_cache_dir = get_cache_base_dir()
-        self.cache_dir = Path(base_cache_dir) / dataset_unique_id
+        if namespace:
+            self.cache_dir = Path(base_cache_dir) / dataset_unique_id / namespace
+        else:
+            self.cache_dir = Path(base_cache_dir) / dataset_unique_id
         self.latents_dir = self.cache_dir / "latents"
         self.embeddings_dir = self.cache_dir / "text_embeddings"
         self.cache_info_path = self.cache_dir / "cache_info.json"

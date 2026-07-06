@@ -741,7 +741,15 @@ def _run_zimage_denoising_loop(
 
     Note: Uses transformer_original (not batched wrapper) for single-image inference.
     """
-    with torch.no_grad():
+    # Autocast the denoise loop to the sampling compute dtype (transformer dtype,
+    # typically bf16). This is unconditional (NOT gated on trainer.mixed_precision):
+    # sampling always runs the DiT in its param dtype (bf16), while LoRA adapters
+    # default to lora_dtype=fp32 on a bf16 base. Without autocast the bf16
+    # activations hit the fp32 LoRA Linear weights and crash with a dtype mismatch
+    # inside the forward — regardless of the mixed_precision flag. Mirrors the
+    # anima/lens fix (a3db4a1); VAE decode stays outside in _decode_zimage_latents.
+    compute_dtype = next(trainer.transformer_original.parameters()).dtype
+    with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=compute_dtype):
         for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
             # Check for stop flag during sample generation (allow graceful shutdown)
             stop_flag_file = trainer.output_dir / ".stop_training"

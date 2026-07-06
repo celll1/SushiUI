@@ -892,7 +892,18 @@ def generate_sample(
         is_distilled = getattr(trainer.transformer.config, "is_distilled", False)
         do_classifier_free_guidance = guidance_scale > 1.0 and not is_distilled
 
-        with torch.no_grad():
+        # Autocast the denoise loop to the sampling compute dtype (transformer dtype,
+        # bf16/fp16). This is unconditional (NOT gated on trainer.mixed_precision):
+        # sampling always runs the DiT in its param dtype, while LoRA adapters default
+        # to lora_dtype=fp32 on a bf16 base. Without autocast the bf16 activations hit
+        # the fp32 LoRA Linear weights and crash with a dtype mismatch inside the
+        # forward — regardless of the mixed_precision flag. Mirrors the anima/lens fix
+        # (a3db4a1); VAE decode stays outside in _decode_flux2_latents below. Sampling
+        # calls trainer.transformer directly (NOT the Flux2BlockSwapWrapper), and flux2
+        # training has no fp8-quantized base path, so autocast has no wrapper/dequant
+        # interactions here — trainer.transformer.dtype is always bf16/fp16.
+        sample_compute_dtype = trainer.transformer.dtype
+        with torch.no_grad(), torch.autocast(device_type=trainer.device.type, dtype=sample_compute_dtype):
             for i, t in enumerate(tqdm(timesteps, desc="Generating")):
                 # Expand timestep
                 timestep = t.expand(latents.shape[0]).to(latents.dtype)

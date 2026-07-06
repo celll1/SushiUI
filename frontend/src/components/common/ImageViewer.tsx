@@ -2,6 +2,8 @@
 
 import { useEffect } from "react";
 import { Download } from "lucide-react";
+import { PostEditState, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
+import PostEditControls from "./PostEditControls";
 
 interface ImageViewerProps {
   imageUrl: string;
@@ -9,9 +11,15 @@ interface ImageViewerProps {
   onNavigate?: (direction: 'prev' | 'next') => void;
   hasPrev?: boolean;
   hasNext?: boolean;
+  // Optional client-side post-edit (brightness/saturation). When both are
+  // provided, controls render in the toolbar, the CSS filter is applied to the
+  // preview, and downloads bake the adjustments. When absent, ImageViewer
+  // behaves exactly as before (e.g. FloatingGallery consumer).
+  postEdit?: PostEditState;
+  onPostEditChange?: (value: PostEditState) => void;
 }
 
-export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, hasNext }: ImageViewerProps) {
+export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange }: ImageViewerProps) {
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -30,11 +38,21 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
         throw new Error(`Download failed: ${response.statusText}`);
       }
 
-      const blob = await response.blob();
+      let blob = await response.blob();
+      let downloadName = filename;
+
+      // Bake post-edit adjustments only when non-neutral. Neutral -> original
+      // blob unchanged (metadata preserved). Baking re-encodes the PNG and
+      // loses embedded metadata (see postEdit.ts).
+      if (postEdit && !isNeutral(postEdit)) {
+        blob = await applyPostEdit(blob, postEdit);
+        downloadName = editedFilename(filename);
+      }
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = filename;
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -83,8 +101,19 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
           src={imageUrl}
           alt="Full size preview"
           className="max-w-full max-h-[95vh] object-contain"
+          style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}
           onClick={(e) => e.stopPropagation()}
         />
+
+        {/* Post-edit controls (only when the consumer opts in) */}
+        {postEdit && onPostEditChange && (
+          <div
+            className="absolute bottom-4 left-1/2 -translate-x-1/2 w-72 max-w-[90vw] bg-black bg-opacity-70 rounded-lg p-3"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <PostEditControls value={postEdit} onChange={onPostEditChange} />
+          </div>
+        )}
 
         {/* Next button */}
         {hasNext && onNavigate && (

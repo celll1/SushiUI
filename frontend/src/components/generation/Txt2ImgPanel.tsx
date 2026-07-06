@@ -17,6 +17,8 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
+import PostEditControls from "../common/PostEditControls";
+import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
@@ -114,6 +116,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [generatedImageParams, setGeneratedImageParams] = useState<GenerationParams | null>(null);
+  // Client-side post-edit (brightness/saturation) for the current preview image.
+  // Never sent to the backend; reset to neutral on each new generated image.
+  const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
+  useEffect(() => {
+    setPostEdit({ ...NEUTRAL_POST_EDIT });
+  }, [generatedImage]);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
@@ -3106,6 +3114,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   src={generatedImage}
                   alt="Generated"
                   className="max-w-full max-h-full rounded-lg"
+                  style={{ filter: buildFilterString(postEdit) }}
                 />
               ) : previewImage ? (
                 <img
@@ -3117,6 +3126,13 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 <p className="text-gray-500">No image generated yet</p>
               )}
             </div>
+
+            {/* Post-Edit controls (client-side brightness/saturation) */}
+            {generatedImage && (
+              <div className="mt-3">
+                <PostEditControls value={postEdit} onChange={setPostEdit} />
+              </div>
+            )}
 
             {/* CFG Metrics Graph (Developer Mode) */}
             {developerMode && cfgMetrics.length > 0 && (
@@ -3204,6 +3220,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         <ImageViewer
           imageUrl={generatedImage}
           onClose={() => setPreviewViewerOpen(false)}
+          postEdit={postEdit}
+          onPostEditChange={setPostEdit}
         />
       )}
 

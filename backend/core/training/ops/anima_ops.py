@@ -379,9 +379,29 @@ def train_step(
     if profile_vram:
         print_vram_usage("[train_step_anima] Before DiT forward")
 
+    # TREAD token routing (arXiv 2501.04765): attach the route config to the
+    # transformer for THIS training forward only, then clear it in `finally` so
+    # sampling / validation always run the full network on all tokens. The
+    # forward additionally gates on self.training, so this is doubly safe.
+    tread_cfg = getattr(trainer, "tread_config", None)
+    inner = getattr(trainer.transformer, "module", trainer.transformer)
+    if tread_cfg is not None:
+        inner._tread_config = tread_cfg
+
     # The DiT forward returns velocity in 5D ([B, 16, 1, H, W]).
-    if trainer.mixed_precision:
-        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+    try:
+        if trainer.mixed_precision:
+            with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                model_pred = trainer.transformer(
+                    x=noisy_latents_5d,
+                    timesteps=timesteps,
+                    context=prompt_embeds,
+                    padding_mask=padding_mask,
+                    target_input_ids=t5_input_ids,
+                    target_attention_mask=t5_attn_mask,
+                    source_attention_mask=source_mask,
+                )
+        else:
             model_pred = trainer.transformer(
                 x=noisy_latents_5d,
                 timesteps=timesteps,
@@ -391,16 +411,9 @@ def train_step(
                 target_attention_mask=t5_attn_mask,
                 source_attention_mask=source_mask,
             )
-    else:
-        model_pred = trainer.transformer(
-            x=noisy_latents_5d,
-            timesteps=timesteps,
-            context=prompt_embeds,
-            padding_mask=padding_mask,
-            target_input_ids=t5_input_ids,
-            target_attention_mask=t5_attn_mask,
-            source_attention_mask=source_mask,
-        )
+    finally:
+        if tread_cfg is not None:
+            inner._tread_config = None
 
     # Drop the temporal dim back: [B, 16, 1, H, W] -> [B, 16, H, W].
     if model_pred.dim() == 5:

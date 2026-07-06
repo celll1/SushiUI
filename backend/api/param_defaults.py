@@ -296,6 +296,21 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "activation_dispatch_seed_coef": 24.0e-6,
     "activation_dispatch_residual_frac": 0.85,
     "activation_dispatch_threshold_mb": 4,
+    # TREAD token routing (arXiv 2501.04765) — training-only acceleration.
+    # Routes a random subset of tokens through a span of transformer blocks;
+    # dropped tokens bypass the span (identity transport) and are restored at
+    # re-entry. Inference/sampling always runs the full network. Currently wired
+    # for the Anima DiT (other archs ignore these keys). Default OFF/neutral.
+    "tread_enable": False,
+    # Fraction of tokens dropped from the routed span, in (0, 1). Paper default
+    # selection rate is 50% (drop_ratio 0.5).
+    "tread_drop_ratio": 0.5,
+    # Route span [start_block, end_block): tokens are dropped at start_block and
+    # reintroduced at end_block. Defaults keep the first/last two of Anima's 28
+    # blocks on all tokens and route the middle span (paper routes the bulk of a
+    # DiT's depth, e.g. DiT-XL uses a single route r_{0,21}).
+    "tread_start_block": 2,
+    "tread_end_block": 26,
     # MNT
     "multi_noise_timesteps": 1,
     "multi_noise_mode": "independent",

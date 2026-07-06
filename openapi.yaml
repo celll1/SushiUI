@@ -6138,6 +6138,26 @@ components:
             varying shapes and recompiles / promotes to dynamic as needed — best
             with bucketing). true = force dynamic from first compile (fewer
             recompiles, slightly slower kernels). false = assume static shapes.
+        tread_enable:
+          type: 'boolean'
+          default: false
+          description: |
+            TREAD token routing (arXiv 2501.04765) for DiT training (anima).
+            During training forwards only, a random token subset bypasses the
+            middle transformer blocks and is reintroduced before the final
+            blocks; sampling always runs the full network.
+        tread_drop_ratio:
+          type: 'number'
+          default: 0.5
+          description: "Fraction of tokens routed around the span (0-1 exclusive)."
+        tread_start_block:
+          type: 'integer'
+          default: 2
+          description: "First block index of the routed span."
+        tread_end_block:
+          type: 'integer'
+          default: 26
+          description: "End (exclusive) block index of the routed span."
         danbooru_aug_enable:
           type: 'boolean'
           default: false

@@ -558,7 +558,14 @@ def generate_sample(
         generator.manual_seed(seed if (seed is not None and seed >= 0)
                               else _random.randint(0, 2**32 - 1))
         sample_scheduler = _copy.deepcopy(trainer.scheduler)
-        with torch.no_grad():
+        # Autocast the denoise loop to the sampling compute dtype (bf16). This is
+        # unconditional (NOT gated on trainer.mixed_precision): sampling always
+        # runs the DiT in bf16 (compute_dtype above), while LoRA adapters default
+        # to lora_dtype=fp32 on a bf16 base. Without autocast the bf16 activations
+        # hit the fp32 LoRA Linear weights and crash with a dtype mismatch inside
+        # the forward — regardless of the mixed_precision flag. The training
+        # forward (train_step) avoids the same crash via its own autocast branch.
+        with torch.no_grad(), torch.autocast(device_type=device.type, dtype=compute_dtype):
             latents = _anima_sample_txt2img(
                 transformer=trainer.transformer, scheduler=sample_scheduler,
                 cond_embeds=cond, uncond_embeds=uncond,

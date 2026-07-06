@@ -13,15 +13,17 @@ AND ``arch/sd15.py`` / ``arch/sdxl.py`` call these free functions so the body is
 defined exactly once and stays byte-identical (plan P3a construction-order note).
 
 Module-level names used by the moved bodies are imported here (import adjustment,
-allowed by the plan); ``_vramdiag`` is imported from base_trainer at module top
+allowed by the plan); base_trainer helpers are imported lazily inside functions
 (this module is only ever imported LAZILY, after base_trainer has fully loaded,
 so there is no import cycle).
 """
 from __future__ import annotations
 
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import torch
+import torch.nn.functional as F
 
 from diffusers import (
     AutoencoderKL,
@@ -33,11 +35,15 @@ from diffusers import (
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
 from core.attention import AttentionMode, to_diffusers_backend
-from core.training.base_trainer import _vramdiag
 
 
 def load_components(trainer) -> None:
     """Load SD/SDXL model components."""
+    # Lazy import (sibling-ops pattern): base_trainer must never be imported at
+    # this module's top level - ops modules load while base_trainer may still
+    # be mid-initialization in some import orders.
+    from core.training.base_trainer import _vramdiag
+
     is_safetensors = trainer.model_path.endswith('.safetensors')
 
     if is_safetensors:
@@ -578,3 +584,431 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
     # Clean up intermediate tensors
     del encoder_output
     return latents
+
+
+def train_step(
+    trainer,
+    latents: torch.Tensor,
+    text_embeddings: torch.Tensor,
+    pooled_embeddings: torch.Tensor = None,
+    time_ids: Optional[torch.Tensor] = None,
+    timesteps: Optional[torch.Tensor] = None,
+    debug_save_path: Optional[Path] = None,
+    debug_captions: Optional[List[str]] = None,
+    debug_reference_image_paths: Optional[List[str]] = None,
+    profile_vram: bool = False,
+    alphas_cumprod_cached: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, float]:
+    """
+    Perform single training step (SD1.5/SDXL).
+
+    Args:
+        latents: Image latents [B, C, H, W]
+        text_embeddings: Text prompt embeddings
+        pooled_embeddings: Pooled text embeddings (SDXL only)
+        timesteps: Optional timesteps tensor. If None, sample uniformly from [0, num_train_timesteps)
+        debug_save_path: If provided, save latents for debugging
+        debug_captions: Captions for debug output
+        profile_vram: If True, print VRAM usage
+        alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU (for SNR weight computation)
+
+    Returns:
+        (loss_tensor, loss_value) - Loss tensor with grad and scalar value
+    """
+    # Lazy import (sibling-ops pattern): keep base_trainer out of module top level.
+    from core.training.base_trainer import (
+        add_noise_unified,
+        apply_snr_weight,
+        get_target_unified,
+        predict_original_latent_unified,
+        print_vram_usage,
+    )
+
+    if profile_vram:
+        print_vram_usage("[train_step] Start")
+
+    # Move latents to GPU with correct dtype
+    # Latents come from cache (CPU, training_dtype) and must be moved to GPU before training
+    latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+
+    # Sample noise (now on GPU)
+    noise = torch.randn_like(latents)
+
+    if profile_vram:
+        print_vram_usage("[train_step] After noise generation")
+
+    # Sample random timestep (or use provided timesteps)
+    batch_size = latents.shape[0]
+
+    # Determine noise process from trainer config (set by train_runner.py)
+    noise_process = getattr(trainer, 'noise_process', 'ddpm')  # Default: ddpm for backward compatibility
+
+    if timesteps is None:
+        if noise_process == "ddpm":
+            # DDPM: sample discrete timesteps [0, num_train_timesteps)
+            if trainer.timestep_sampler is not None:
+                # Use timestep sampler: sample from [0, 1] then scale to discrete timesteps
+                # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+                # DDPM: t=999 (noisy) → t=0 (clean)
+                # Flow: t=0 (noisy) → t=1 (clean)
+                # So we need to flip: YAML [0,1] → DDPM [999,0]
+                # Example: YAML min=0, max=0.2 (want noisy) → DDPM [999, 800] (noisy)
+                timesteps_continuous = trainer.timestep_sampler.sample(batch_size, trainer.device)
+                timesteps = ((1.0 - timesteps_continuous) * trainer.noise_scheduler.config.num_train_timesteps).long()
+                timesteps = timesteps.clamp(0, trainer.noise_scheduler.config.num_train_timesteps - 1)
+            else:
+                # Legacy behavior: sample uniformly from [0, num_train_timesteps)
+                timesteps = torch.randint(
+                    0,
+                    trainer.noise_scheduler.config.num_train_timesteps,
+                    (batch_size,),
+                    device=trainer.device,
+                ).long()
+        elif noise_process == "flow":
+            # Flow Matching: sample continuous timesteps [0, 1]
+            if trainer.timestep_sampler is not None:
+                # Use timestep sampler (already returns [0, 1])
+                timesteps = trainer.timestep_sampler.sample(batch_size, trainer.device)
+            else:
+                # Uniform sampling from [0, 1]
+                timesteps = torch.rand((batch_size,), device=trainer.device)
+    else:
+        # MNT: timesteps provided externally
+        if noise_process == "ddpm":
+            # Convert flow-matching timesteps [0, 1] to discrete timesteps for DDPM
+            # IMPORTANT: DDPM convention is REVERSED from Flow Matching
+            # DDPM: t=999 (noisy) → t=0 (clean)
+            # Flow: t=0 (noisy) → t=1 (clean)
+            # So we need to flip: YAML [0,1] → DDPM [999,0]
+            timesteps = ((1.0 - timesteps) * trainer.noise_scheduler.config.num_train_timesteps).long()
+            timesteps = timesteps.clamp(0, trainer.noise_scheduler.config.num_train_timesteps - 1)
+        elif noise_process == "flow":
+            # Flow matching: timesteps are already [0, 1]
+            pass
+
+    # Add noise to latents using unified framework
+    noisy_latents = add_noise_unified(
+        noise_process=noise_process,
+        noise_scheduler=trainer.noise_scheduler,
+        latents=latents,
+        noise=noise,
+        timesteps=timesteps,
+    )
+
+    # Prepare added_cond_kwargs for SDXL. Per-item time_ids (real original_size /
+    # crop_top_left / target_size from the dataset bucketing) are passed in when
+    # SDXL micro-conditioning is enabled; otherwise fall back to the legacy
+    # all-equal-to-latent-size, crop=(0,0) values.
+    added_cond_kwargs = None
+    if trainer.is_sdxl and pooled_embeddings is not None:
+        if time_ids is not None:
+            add_time_ids = time_ids.to(device=trainer.device, dtype=pooled_embeddings.dtype)
+        else:
+            latent_height, latent_width = latents.shape[2], latents.shape[3]
+            image_height, image_width = latent_height * 8, latent_width * 8
+            add_time_ids = torch.tensor(
+                [[image_height, image_width, 0, 0, image_height, image_width]],
+                dtype=pooled_embeddings.dtype, device=trainer.device,
+            ).repeat(batch_size, 1)
+
+        added_cond_kwargs = {
+            "text_embeds": pooled_embeddings,
+            "time_ids": add_time_ids
+        }
+
+    if profile_vram:
+        print_vram_usage("[train_step] Before UNet forward")
+
+    # Enable gradients for gradient checkpointing
+    noisy_latents.requires_grad_(True)
+    text_embeddings.requires_grad_(True)
+    if pooled_embeddings is not None:
+        pooled_embeddings.requires_grad_(True)
+
+    # Predict noise using UNet
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            if trainer.is_sdxl and added_cond_kwargs is not None:
+                model_pred = trainer.unet(
+                    noisy_latents,
+                    timesteps,
+                    text_embeddings,
+                    added_cond_kwargs=added_cond_kwargs
+                ).sample
+            else:
+                model_pred = trainer.unet(
+                    noisy_latents,
+                    timesteps,
+                    text_embeddings
+                ).sample
+    else:
+        if trainer.is_sdxl and added_cond_kwargs is not None:
+            model_pred = trainer.unet(
+                noisy_latents,
+                timesteps,
+                text_embeddings,
+                added_cond_kwargs=added_cond_kwargs
+            ).sample
+        else:
+            model_pred = trainer.unet(
+                noisy_latents,
+                timesteps,
+                text_embeddings
+            ).sample
+
+    if profile_vram:
+        print_vram_usage("[train_step] After UNet forward")
+
+    # DEUS debug check removed (architecture no longer maintained)
+
+    # Get target based on unified framework
+    prediction_target = getattr(trainer, 'prediction_target', 'epsilon')  # Default: epsilon for backward compatibility
+    target = get_target_unified(
+        noise_process=noise_process,
+        prediction_target=prediction_target,
+        noise_scheduler=trainer.noise_scheduler,
+        latents=latents,
+        noise=noise,
+        timesteps=timesteps,
+    )
+
+    # Calculate loss (always in fp32)
+    # TEMPORARY: .float() is redundant since everything is FP32, but kept for safety
+    loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+    loss_per_sample = loss_per_element.mean([1, 2, 3])
+
+    # Apply Min-SNR gamma weighting (only for epsilon prediction)
+    # Min-SNR was designed for epsilon prediction; applying it to v-prediction is theoretically unsound
+    # When dual loss is enabled (reconstruction_loss_weight > 0), also return weights
+    # to compensate for lost prediction weight by boosting reconstruction weight
+    min_snr_weights = None
+    if trainer.min_snr_gamma > 0 and prediction_target == "epsilon":
+        if trainer.reconstruction_loss_weight > 0:
+            # Return weights for dual loss compensation
+            loss_per_sample_weighted, min_snr_weights = apply_snr_weight(
+                loss_per_sample, timesteps, trainer.noise_scheduler, trainer.min_snr_gamma,
+                return_weights=True, alphas_cumprod_cached=alphas_cumprod_cached
+            )
+        else:
+            loss_per_sample_weighted = apply_snr_weight(
+                loss_per_sample, timesteps, trainer.noise_scheduler, trainer.min_snr_gamma,
+                alphas_cumprod_cached=alphas_cumprod_cached
+            )
+    else:
+        loss_per_sample_weighted = loss_per_sample
+
+    mse_loss = loss_per_sample_weighted.mean()
+
+    # Add SNR and/or Energy regularization if enabled (can use both simultaneously)
+    regularization_loss = torch.tensor(0.0, device=trainer.device)
+
+    # Compute predicted latent once (used by both regularization losses and debug save)
+    predicted_latent_for_reg = None
+    predicted_latent_for_recon = None  # Will be set in reconstruction loss path
+    if trainer.snr_regularization_loss is not None or trainer.energy_regularization_loss is not None:
+        # Compute predicted latent from model_pred (keep gradients for backprop)
+        predicted_latent_for_reg = predict_original_latent_unified(
+            noise_process=noise_process,
+            prediction_target=prediction_target,
+            noise_scheduler=trainer.noise_scheduler,
+            noisy_latents=noisy_latents,
+            model_pred=model_pred,
+            timesteps=timesteps,
+        )
+
+    # SNR regularization (周波数領域の過剰デノイズ抑制)
+    if trainer.snr_regularization_loss is not None:
+        # Convert timesteps to continuous [0, 1] for regularization
+        if noise_process == "ddpm":
+            timesteps_continuous = timesteps.float() / trainer.noise_scheduler.config.num_train_timesteps
+        else:  # flow
+            timesteps_continuous = timesteps.float()  # Already [0, 1]
+
+        snr_reg_loss = trainer.snr_regularization_loss(
+            predicted_latent_for_reg,
+            latents,
+            timesteps_continuous
+        )
+        regularization_loss = regularization_loss + snr_reg_loss
+
+    # Energy regularization (空間領域のエネルギー保存)
+    if trainer.energy_regularization_loss is not None:
+        # Convert timesteps to continuous [0, 1] for regularization
+        if noise_process == "ddpm":
+            timesteps_continuous = timesteps.float() / trainer.noise_scheduler.config.num_train_timesteps
+        else:  # flow
+            timesteps_continuous = timesteps.float()  # Already [0, 1]
+
+        energy_reg_loss = trainer.energy_regularization_loss(
+            predicted_latent_for_reg,
+            latents,
+            timesteps_continuous
+        )
+        regularization_loss = regularization_loss + energy_reg_loss
+
+    # Calculate reconstruction loss (for monitoring or dual loss training)
+    # If reconstruction_loss_weight > 0, compute with gradients for backprop
+    # Otherwise, compute without gradients (monitoring only)
+    if trainer.reconstruction_loss_weight > 0:
+        # Dual loss training: compute reconstruction loss with gradients
+        # Reuse predicted_latent_for_reg if already computed (has gradients)
+        if predicted_latent_for_reg is not None:
+            predicted_latent_for_recon = predicted_latent_for_reg
+        else:
+            predicted_latent_for_recon = predict_original_latent_unified(
+                noise_process=noise_process,
+                prediction_target=prediction_target,
+                noise_scheduler=trainer.noise_scheduler,
+                noisy_latents=noisy_latents,
+                model_pred=model_pred,
+                timesteps=timesteps,
+            )
+
+        recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+        recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+
+        # Dual loss with min-SNR weight compensation
+        # When min_snr_gamma > 0, the prediction loss is reduced by min_snr_weights for clean timesteps.
+        # We compensate for this "lost" weight by boosting the reconstruction loss weight.
+        #
+        # Original dual loss: alpha * pred_loss + beta * recon_loss (alpha + beta = 1.0)
+        # With min-SNR: pred_loss is already weighted by min_snr_weights
+        #
+        # Compensation formula (per-sample):
+        #   lost_weight = (1 - min_snr_weight) * alpha  (weight originally for pred_loss that was reduced)
+        #   effective_beta = beta + lost_weight        (boost recon_loss by lost amount)
+        #   combined_loss = pred_loss_weighted + effective_beta * recon_loss
+        #
+        # Note: pred_loss already has min_snr_weight applied, so we use it directly without alpha multiplier
+
+        alpha = 1.0 - trainer.reconstruction_loss_weight
+        beta = trainer.reconstruction_loss_weight
+
+        if min_snr_weights is not None:
+            # Per-sample compensation: boost recon_loss weight based on how much pred_loss was reduced
+            # lost_weight[i] = (1 - min_snr_weights[i]) * alpha
+            # effective_beta[i] = beta + lost_weight[i]
+            lost_weight = (1.0 - min_snr_weights) * alpha  # [batch_size]
+            effective_beta = beta + lost_weight  # [batch_size]
+
+            # Per-sample combined loss
+            # loss_per_sample_weighted already has min_snr weighting applied
+            combined_loss_per_sample = loss_per_sample_weighted + effective_beta * recon_loss_per_sample
+            combined_loss = combined_loss_per_sample.mean()
+        else:
+            # No min-SNR: standard dual loss
+            recon_loss = recon_loss_per_sample.mean()
+            combined_loss = alpha * mse_loss + beta * recon_loss
+
+        # For return value
+        recon_loss = recon_loss_per_sample.mean()
+
+        # Total loss with regularization
+        loss = combined_loss + regularization_loss
+    else:
+        # Standard training: prediction loss only
+        # Calculate reconstruction loss for monitoring (no gradients)
+        with torch.no_grad():
+            # Reuse predicted_latent_for_reg if already computed, otherwise compute it
+            if predicted_latent_for_reg is not None:
+                predicted_latent_for_recon = predicted_latent_for_reg.detach()
+            else:
+                predicted_latent_for_recon = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=trainer.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
+
+            recon_loss_per_element = F.mse_loss(predicted_latent_for_recon.float(), latents.float(), reduction="none")
+            recon_loss_per_sample = recon_loss_per_element.mean([1, 2, 3])
+            recon_loss = recon_loss_per_sample.mean()
+
+        # Total loss (prediction loss + regularization)
+        loss = mse_loss + regularization_loss
+
+    if profile_vram:
+        print_vram_usage("[train_step] After loss calculation")
+
+    # Debug save if requested
+    if debug_save_path is not None:
+        debug_save_path.mkdir(parents=True, exist_ok=True)
+        timestep_value = timesteps[0].item()
+
+        # Reuse predicted_latent from reconstruction loss calculation if available
+        # This avoids redundant computation (predict_original_latent_unified is expensive)
+        if predicted_latent_for_recon is not None:
+            predicted_latent_for_debug = predicted_latent_for_recon.detach()
+        elif predicted_latent_for_reg is not None:
+            predicted_latent_for_debug = predicted_latent_for_reg.detach()
+        else:
+            # Fallback: compute predicted_latent if not available
+            with torch.no_grad():
+                predicted_latent_for_debug = predict_original_latent_unified(
+                    noise_process=noise_process,
+                    prediction_target=prediction_target,
+                    noise_scheduler=trainer.noise_scheduler,
+                    noisy_latents=noisy_latents,
+                    model_pred=model_pred,
+                    timesteps=timesteps,
+                )
+
+        debug_data = {
+            'latents': latents[0:1].detach().cpu(),
+            'noisy_latents': noisy_latents[0:1].detach().cpu(),
+            'predicted_noise': model_pred[0:1].detach().cpu(),
+            'actual_noise': noise[0:1].detach().cpu(),
+            'predicted_latent': predicted_latent_for_debug[0:1].detach().cpu(),
+            'timestep': timestep_value,
+            'loss': loss_per_sample_weighted[0].item(),
+            'loss_batch_mean': loss.item(),
+            'loss_unweighted': loss_per_sample[0].item(),
+            'recon_loss': recon_loss_per_sample[0].item(),
+            'recon_loss_batch_mean': recon_loss.item(),
+            'batch_size': batch_size,
+            'min_snr_gamma': trainer.min_snr_gamma,
+        }
+
+        if debug_captions is not None and len(debug_captions) > 0:
+            debug_data['caption'] = debug_captions[0]
+            debug_data['all_captions'] = debug_captions
+
+        if debug_reference_image_paths is not None and len(debug_reference_image_paths) > 0:
+            first_ref = next((p for p in debug_reference_image_paths if p is not None), None)
+            if first_ref:
+                debug_data['reference_image_path'] = first_ref
+
+        # SDXL micro-conditioning for this debug sample (item 0): lets the user verify
+        # crop augmentation. time_ids order = [orig_h, orig_w, crop_top, crop_left,
+        # target_h, target_w]. crop_top_left != (0,0) or original_size != target_size
+        # indicates a random crop / scale. Per-item array included for the whole batch.
+        try:
+            if trainer.is_sdxl and add_time_ids is not None:
+                _ti_all = add_time_ids.detach().cpu().to(torch.int64).tolist()  # [B, 6]
+                _t0 = _ti_all[0]
+                debug_data['sdxl_time_ids'] = _t0
+                debug_data['original_size'] = [int(_t0[1]), int(_t0[0])]   # (w, h)
+                debug_data['crop_top_left'] = [int(_t0[3]), int(_t0[2])]   # (left, top) = crop point
+                debug_data['target_size'] = [int(_t0[5]), int(_t0[4])]     # (w, h) = bucket
+                debug_data['sdxl_time_ids_all'] = _ti_all
+        except Exception:
+            pass
+
+        torch.save(debug_data, debug_save_path / f"latents_t{timestep_value:04d}.pt")
+        del predicted_latent_for_debug
+
+    # Return loss tensor (with gradient), pred_loss value, and recon_loss value
+    # IMPORTANT: Do NOT call .item() on loss here - it breaks the computation graph!
+    # The training loop will call .backward() on the loss tensor.
+    pred_loss_value = mse_loss.item()
+    recon_loss_value = recon_loss.item()
+
+    # Free intermediate tensors explicitly to reduce VRAM usage
+    # But keep 'loss' tensor for backward pass
+    del noise, noisy_latents, model_pred, target, recon_loss
+    if trainer.is_sdxl and added_cond_kwargs is not None:
+        del added_cond_kwargs
+
+    return loss, pred_loss_value, recon_loss_value

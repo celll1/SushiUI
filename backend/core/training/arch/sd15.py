@@ -52,7 +52,22 @@ class SD15ArchHandler(ArchHandler):
         raise NotImplementedError("sd15.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("sd15.train_step: phase P6")
+        # P6a: SD1.5 shares the SD/SDXL train_step body with SDXL (verbatim in
+        # ops/sd_sdxl_ops). ctx fields map 1:1 to the previous kwargs bundle.
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            text_embeddings=ctx.text_embeddings,
+            pooled_embeddings=ctx.pooled_embeddings,
+            time_ids=ctx.time_ids,
+            timesteps=ctx.timesteps,
+            debug_save_path=ctx.debug_save_path,
+            debug_captions=ctx.debug_captions,
+            debug_reference_image_paths=ctx.debug_reference_image_paths,
+            profile_vram=ctx.profile_vram,
+            alphas_cumprod_cached=ctx.alphas_cumprod_cached,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("sd15.sample: phase P7")

@@ -1140,6 +1140,7 @@ class BaseTrainer(ABC):
         # base_trainer._vramdiag at its top.)
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
+            minit2i_ops, krea2_ops, flux2_ops,
         )
         if self.is_zimage:
             zimage_ops.load_components(self)
@@ -1147,7 +1148,7 @@ class BaseTrainer(ABC):
         # elif self.is_deus:
         #     self._load_deus_components()
         elif self.is_flux2:
-            self._load_flux2_components()
+            flux2_ops.load_components(self)
         elif self.is_anima:
             anima_ops.load_components(self)
         elif self.is_lens:
@@ -1155,9 +1156,9 @@ class BaseTrainer(ABC):
         elif self.is_ideogram4:
             ideogram4_ops.load_components(self)
         elif self.is_minit2i:
-            self._load_minit2i_components()
+            minit2i_ops.load_components(self)
         elif self.is_krea2:
-            self._load_krea2_components()
+            krea2_ops.load_components(self)
         else:
             sd_sdxl_ops.load_components(self)
 
@@ -1194,226 +1195,24 @@ class BaseTrainer(ABC):
         from core.training.ops import ideogram4_ops
         return ideogram4_ops.setup_block_swap(self)
 
-    def _load_krea2_components(self):
-        """Load Krea 2 components (single-stream MMDiT + Qwen3-VL TE + Qwen-Image VAE).
-
-        The transformer is trained (LoRA wraps it, or full-FT updates it); the
-        Qwen3-VL text encoder and the VAE are frozen. bf16 base (train_runner forces
-        bf16). Block-swap over ``transformer_blocks`` is deferred until adapter setup.
-        """
-        print(f"{self.log_prefix} Detected Krea 2 model")
-        print(f"{self.log_prefix} Loading Krea 2 components from {self.model_path}")
-
-        from core.models.krea2.krea2_loader import load_krea2_components
-        components = load_krea2_components(
-            model_path=self.model_path,
-            torch_dtype=self.weight_dtype,
-            load_text_encoder=True,
-        )
-
-        self.transformer = components["transformer"]
-        self.transformer_original = self.transformer
-        self.vae = components["vae"]
-        self.text_encoder = components["text_encoder"]
-        self.tokenizer = components["tokenizer"]
-        self.scheduler = components["scheduler"]
-
-        # Krea 2 metadata used by train_step / sample generation.
-        self.krea2_is_distilled = bool(components.get("is_distilled", False))
-        self.krea2_select_layers = list(
-            components.get("text_encoder_select_layers")
-            or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
-        )
-        self.krea2_patch_size = int(components.get("patch_size", 2))
-        # Discrete flow-matching timestep shift (musubi default 2.5); config override.
-        self.krea2_discrete_flow_shift = float(self.config.get("krea2_discrete_flow_shift", 2.5))
-
-        # Single-stream DiT: no dual TE / no U-Net.
-        self.text_encoder_2 = None
-        self.tokenizer_2 = None
-        self.t5_tokenizer = None
-        self.unet = None
-        self.noise_scheduler = self.scheduler
-
-        self.vae = self.vae.to(dtype=self.vae_dtype)
-
-        # Gradient checkpointing on the vendored transformer.
-        if self.gradient_checkpointing and hasattr(self.transformer, "enable_gradient_checkpointing"):
-            try:
-                self.transformer.enable_gradient_checkpointing()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for Krea 2 transformer")
-            except Exception as e:
-                print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
-        elif not self.gradient_checkpointing:
-            print(f"{self.log_prefix} Gradient checkpointing disabled by config (Krea 2)")
-
-        # Freeze VAE + TE; the transformer requires_grad is set by the adapter.
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.transformer.requires_grad_(False)
-
-        # Block-swap deferred until after adapter setup.
-        self.layer_offload_conductor = None
-        if self.blocks_to_swap > 0:
-            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
-                  f"deferred until adapter setup completes")
-
-        print(f"{self.log_prefix} Moving Krea 2 transformer to {self.device}")
-        self.transformer.to(self.device)
-
-        if self.use_flash_attention:
-            self._setup_attention_backend_krea2(self.attention_backend)
-
-        print(f"{self.log_prefix} Krea 2 model loaded successfully (is_distilled={self.krea2_is_distilled})")
-
     def setup_krea2_block_swap(self):
-        """Initialise LayerOffloadConductor over the Krea 2 ``transformer_blocks``, AFTER adapter setup."""
-        if not getattr(self, "is_krea2", False):
-            return
-        if self.blocks_to_swap <= 0:
-            return
-        if getattr(self, "layer_offload_conductor", None) is not None:
-            return
-        if not hasattr(self.transformer, "transformer_blocks"):
-            raise ValueError("Krea 2 transformer must expose `.transformer_blocks` for block swap")
-
-        from core.memory_management import LayerOffloadConductor
-        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
-              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
-        self.layer_offload_conductor = LayerOffloadConductor(
-            layers=self.transformer.transformer_blocks,
-            blocks_to_swap=self.blocks_to_swap,
-            device=self.device,
-            use_pinned_memory=self.use_pinned_memory,
-            cpu_buffer_size_mb=8192,
-            activation_buffer_size_mb=4096,
-            enable_prefetch=True,
-            enable_activation_offload=False,
-        )
-        self.transformer._layer_offload_conductor = self.layer_offload_conductor
-        self.layer_offload_conductor.register_hooks()
-        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for Krea 2")
+        """Delegator (plan P3c): body lives in ``ops/krea2_ops.setup_block_swap``.
+        Kept on the trainer because mode subclasses (full_parameter_trainer /
+        lora_trainer) call it LATE via ``hasattr(self, "setup_krea2_block_swap")``
+        after adapter setup; ``arch/krea2.py`` calls the same ops function so the
+        body is defined exactly once.
+        """
+        from core.training.ops import krea2_ops
+        return krea2_ops.setup_block_swap(self)
 
     def _setup_attention_backend_krea2(self, backend: str):
-        """Set the attention backend for Krea 2 (training hook).
-
-        The vendored transformer's ``forward`` calls ``_stamp_attention_backend()``
-        which fans ``self._attn_backend`` out to every ``Krea2Attention`` module and
-        derives the mode from the autograd state (training -> conduit refuses sage).
-        This hook stamps the canonical backend string, honoring the training guard
-        (``_resolve_training_backend`` maps sage -> native)."""
-        if self.transformer is None:
-            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
-            return
-        b = self._resolve_training_backend(backend)
-        try:
-            self.transformer._attn_backend = b
-            print(f"{self.log_prefix} [OK] Krea 2 attention backend '{b}' stamped on transformer")
-        except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to set Krea 2 attention backend '{b}': {e}")
-
-    def _load_minit2i_components(self):
-        """Load MiniT2I (pixel-space MM-JiT) components for training.
-
-        Pixel-space: there is no VAE. The frozen FLAN-T5-Large is the text encoder.
-        The MM-JiT transformer is loaded frozen here; LoRA / full-parameter adapters
-        unfreeze the relevant parameters during setup.
+        """Delegator (plan P3c): body lives in
+        ``ops/krea2_ops.setup_attention_backend``. Kept on the trainer because the
+        (moved) krea2 loader body calls ``trainer._setup_attention_backend_krea2``;
+        ``arch/krea2.py`` calls the same ops function (body defined once).
         """
-        print(f"{self.log_prefix} Detected MiniT2I model")
-        print(f"{self.log_prefix} Loading MiniT2I components from {self.model_path}")
-
-        from core.models.minit2i.minit2i_loader import load_minit2i_components
-        flan_t5_path = self.config.get("minit2i_flan_t5_path") or None
-        components = load_minit2i_components(
-            model_path=self.model_path,
-            torch_dtype=self.weight_dtype,
-            flan_t5_path=flan_t5_path,
-            text_encoder_dtype=self.text_encoder_dtype if hasattr(self, "text_encoder_dtype") else torch.float32,
-            vae_dtype=self.vae_dtype if hasattr(self, "vae_dtype") else torch.float16,
-            # From-scratch only: inherit compatible weights from an existing model
-            # instead of pure random init (ignored for non-scratch model paths).
-            scratch_init_from=(self.config.get("minit2i_scratch_init_from") or None),
-            scratch_inherit_final_layer=bool(self.config.get("minit2i_inherit_final_layer", False)),
-        )
-
-        self.transformer = components["transformer"]
-        self.transformer_original = self.transformer
-        self.transformer_uncond = None
-        self.text_encoder = components["text_encoder"]
-        self.tokenizer = components["tokenizer"]
-        self.scheduler = components["scheduler"]
-        self.minit2i_variant = components.get("variant")
-
-        # vae_type "none" = pixel-space (vae=None, RGB-direct "latent"); "sdxl"/"flux1"
-        # = latent-space (a frozen AutoencoderKL encodes images to latents for training).
-        self.minit2i_vae_type = components.get("vae_type", "none")
-        self.minit2i_latent = self.minit2i_vae_type not in (None, "none")
-        self.minit2i_noise_scale = float(getattr(self.transformer.mmjit_config, "noise_scale", 2.0))
-        self.minit2i_vae_scale_factor = int(components.get("vae_scale_factor", 8))
-        self.vae = components.get("vae")  # None for pixel
-        if self.vae is not None:
-            self.vae = self.vae.to(dtype=self.vae_dtype)
-            self.vae.requires_grad_(False)
-            self.vae.eval()
-            # High-res latent caching encodes full bucket-resolution images (up to
-            # ~2048px) through the VAE. A single fp32 encode at that size peaks at
-            # tens of GB (early full-res conv stages + the bottleneck spatial
-            # self-attention), independent of the tiny transformer step. Tiled
-            # encode/decode splits the image into overlapping tiles so VAE memory
-            # is bounded by the tile size, not the image size.
-            for _m in ("enable_tiling", "enable_slicing"):
-                if hasattr(self.vae, _m):
-                    try:
-                        getattr(self.vae, _m)()
-                    except Exception as _e:
-                        print(f"{self.log_prefix} VAE {_m} failed: {_e}")
-            print(f"{self.log_prefix} MiniT2I VAE tiling/slicing enabled (bounds high-res encode VRAM)")
-        self.text_encoder_2 = None
-        self.tokenizer_2 = None
-        self.t5_tokenizer = None
-        self.unet = None
-        self.noise_scheduler = self.scheduler
-
-        # Gradient checkpointing on the MM-JiT transformer.
-        if self.gradient_checkpointing and hasattr(self.transformer, "enable_gradient_checkpointing"):
-            try:
-                self.transformer.enable_gradient_checkpointing()
-                print(f"{self.log_prefix} Gradient checkpointing enabled for MiniT2I transformer")
-            except Exception as e:
-                print(f"{self.log_prefix} grad checkpoint enable failed: {e}")
-        elif not self.gradient_checkpointing:
-            print(f"{self.log_prefix} Gradient checkpointing disabled by config (MiniT2I)")
-
-        # Freeze everything; adapters unfreeze what they train.
-        self.text_encoder.requires_grad_(False)
-        self.transformer.requires_grad_(False)
-
-        # Keep the transformer in train() mode for the whole run: MM-JiT gates
-        # gradient checkpointing on `self.training`, and it has no dropout/BN so
-        # train mode has no other effect. Without this, checkpointing would only
-        # activate after the first sample (its finally restores train mode), and a
-        # run with samples disabled would store ALL activations -> high-res OOM.
-        # The frozen FLAN-T5 stays in eval() (it has dropout) — loader set it.
-        self.transformer.train()
-
-        # Block-swap deferred until after adapter setup.
-        self.layer_offload_conductor = None
-        if self.blocks_to_swap > 0:
-            print(f"{self.log_prefix} Block Swap requested ({self.blocks_to_swap} blocks); "
-                  f"deferred until adapter setup completes")
-
-        print(f"{self.log_prefix} Moving MiniT2I transformer to {self.device}")
-        self.transformer.to(self.device)
-
-        # Setup attention backend if non-native (use_flash_attention is derived from it)
-        if self.use_flash_attention:
-            self._setup_attention_backend_minit2i(self.attention_backend)
-
-        # REPA (representation alignment): load frozen encoder + build the trainable
-        # projector BEFORE adapter/optimizer setup so its params join the optimizer.
-        self._setup_repa()
-
-        print(f"{self.log_prefix} MiniT2I model loaded successfully (variant={self.minit2i_variant})")
+        from core.training.ops import krea2_ops
+        return krea2_ops.setup_attention_backend(self, backend)
 
     def _discover_default_tagger_dir(self) -> str:
         """Pick a usable tagger model dir under <repo>/tagger_models (newest checkpoint)."""
@@ -1629,31 +1428,14 @@ class BaseTrainer(ABC):
             return (bucket_h, bucket_w, 0, 0, bucket_h, bucket_w)
 
     def setup_minit2i_block_swap(self):
-        """Initialise LayerOffloadConductor over the MM-JiT double_blocks, AFTER adapter setup."""
-        if not self.is_minit2i:
-            return
-        if self.blocks_to_swap <= 0:
-            return
-        if getattr(self, "layer_offload_conductor", None) is not None:
-            return
-        double_blocks = self.transformer.model.net.double_blocks
-
-        from core.memory_management import LayerOffloadConductor
-        print(f"{self.log_prefix} [block-swap] initialising LayerOffloadConductor "
-              f"(blocks_to_swap={self.blocks_to_swap}, pinned_memory={self.use_pinned_memory})")
-        self.layer_offload_conductor = LayerOffloadConductor(
-            layers=double_blocks,
-            blocks_to_swap=self.blocks_to_swap,
-            device=self.device,
-            use_pinned_memory=self.use_pinned_memory,
-            cpu_buffer_size_mb=8192,
-            activation_buffer_size_mb=4096,
-            enable_prefetch=True,
-            enable_activation_offload=False,
-        )
-        self.transformer._layer_offload_conductor = self.layer_offload_conductor
-        self.layer_offload_conductor.register_hooks()
-        print(f"{self.log_prefix} [block-swap] LayerOffloadConductor hooks registered for MiniT2I")
+        """Delegator (plan P3c): body lives in
+        ``ops/minit2i_ops.setup_block_swap``. Kept on the trainer because mode
+        subclasses (full_parameter_trainer / lora_trainer) call it LATE via
+        ``hasattr(self, "setup_minit2i_block_swap")`` after adapter setup;
+        ``arch/minit2i.py`` calls the same ops function (body defined once).
+        """
+        from core.training.ops import minit2i_ops
+        return minit2i_ops.setup_block_swap(self)
 
     # DEUS support removed - architecture no longer maintained
     # def _load_deus_components(self):
@@ -1749,233 +1531,23 @@ class BaseTrainer(ABC):
     #         print(f"{self.log_prefix} U-Net parameters: No inf/nan detected")
 
     def _flux2_block_swap_h2d_args(self):
-        """Policy gate + H2D args for FLUX.2 training block swap.
-
-        FLUX.2 training block swap is supported ONLY via the H2D-only + frozen-base
-        (LoRA) + gradient-checkpointing path. The standard (non-H2D) training swap has
-        a pre-existing index inconsistency and is NOT functional, so anything that
-        would activate it must raise a clear error instead.
-
-        Returns a dict of kwargs to pass to create_flux_block_offloader
-        ({"h2d_only": ..., "ring_size": ...}).
-
-        Raises ValueError if the policy is violated.
+        """Delegator (plan P3c): body lives in
+        ``ops/flux2_ops.block_swap_h2d_args``. Kept on the trainer because it has
+        call sites in BOTH the (moved) flux2 loader body AND
+        ``_load_checkpoint_as_base`` (which stays in the spine); ``arch/flux2.py``
+        routes through the loader, so the body is defined exactly once.
         """
-        # Gate 1: block swap for FLUX.2 training requires h2d_only.
-        if not self.block_swap_h2d_only:
-            raise ValueError(
-                "FLUX.2 training block swap currently requires block_swap_h2d_only=True "
-                "(the standard swap path is not yet functional)."
-            )
-
-        # Gate 2: requires a frozen base (LoRA training, not full-parameter FT).
-        # The training mode is known at setup time via train_config['training_method'];
-        # LoRA adapters are applied after this point, so we key off the mode rather than
-        # inspecting requires_grad here. The offloader also has a lazy Full-FT
-        # auto-detect+disable as a backstop.
-        training_method = str(self.config.get("training_method", "lora") or "lora").strip().lower()
-        if training_method != "lora":
-            raise ValueError(
-                "FLUX.2 training block swap (H2D-only) requires a frozen base, i.e. LoRA "
-                f"training. Current training_method={training_method!r} updates the base "
-                "weights (Full-FT), which needs D2H persistence and cannot use H2D-only "
-                "block swap. Use training_method='lora' or disable Block Swap "
-                "(blocks_to_swap=0)."
-            )
-
-        # Gate 3: requires gradient checkpointing on the transformer (H2D backward
-        # re-reads base weights via recompute). Enable it if the transformer supports
-        # the switch; then verify the attribute the wrapper checks becomes True.
-        if hasattr(self.transformer, "enable_gradient_checkpointing"):
-            try:
-                self.transformer.enable_gradient_checkpointing()
-            except Exception as e:
-                raise ValueError(
-                    "FLUX.2 training block swap (H2D-only) requires gradient checkpointing "
-                    f"on the transformer, but enable_gradient_checkpointing() failed: {e}"
-                )
-        if not getattr(self.transformer, "gradient_checkpointing", False):
-            raise ValueError(
-                "FLUX.2 training block swap (H2D-only) requires gradient checkpointing on "
-                "the transformer (transformer.gradient_checkpointing must be True). The "
-                "current transformer does not support enabling it, so H2D-only block swap "
-                "cannot be used. Disable Block Swap (blocks_to_swap=0) instead."
-            )
-
-        print(f"{self.log_prefix} FLUX.2 block swap H2D-only enabled "
-              f"(ring_size={self.block_swap_ring_size}, LoRA/frozen base, grad-ckpt on)")
-        return {"h2d_only": True, "ring_size": self.block_swap_ring_size}
+        from core.training.ops import flux2_ops
+        return flux2_ops.block_swap_h2d_args(self)
 
     def _wire_flux2_block_swap_driver(self):
-        """Wire the offloader into the FLUX.2 forward/backward after devices are prepared.
-
-        - Wraps self.transformer with Flux2BlockSwapWrapper (drives wait_for_block /
-          submit_move_blocks_forward per block during forward). self.transformer itself
-          is NOT replaced, so optimizer / LoRA / state_dict keep seeing the raw module.
-        - Registers full-backward hooks so recompute-time reads pull blocks resident.
+        """Delegator (plan P3c): body lives in
+        ``ops/flux2_ops.wire_block_swap_driver``. Kept on the trainer because it
+        has call sites in BOTH the (moved) flux2 loader body AND
+        ``_load_checkpoint_as_base`` (which stays in the spine); body defined once.
         """
-        from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
-
-        self.flux2_transformer_wrapper = Flux2BlockSwapWrapper(
-            self.transformer, self.flux2_block_offloader
-        )
-        self.flux2_block_offloader.register_backward_hooks()
-        print(f"{self.log_prefix} FLUX.2 block swap driver wired "
-              f"(wrapper + backward hooks registered)")
-
-    def _load_flux2_components(self):
-        """Load FLUX.2 Klein model components.
-
-        FLUX.2 Klein architecture:
-        - Qwen3 text encoder (Qwen3ForCausalLM)
-        - Flux2Transformer2DModel (8 dual stream + 48 single stream blocks)
-        - AutoencoderKLFlux2 (32ch latent with BatchNorm)
-        - Flow matching with velocity prediction
-        - 4D position coordinates for RoPE (T, H, W, L)
-
-        Key differences from FLUX.1:
-        - Single stream blocks use parallel attention+MLP (fused projections)
-        - VAE uses BatchNorm for latent normalization
-        - Text encoder extracts hidden states from layers 9, 18, 27
-        """
-        print(f"{self.log_prefix} Detected FLUX.2 Klein model")
-        print(f"{self.log_prefix} Loading FLUX.2 components from {self.model_path}")
-
-        from core.model_loader import ModelLoader
-
-        components = ModelLoader.load_flux2_from_safetensors(
-            file_path=self.model_path,
-            device="cpu",
-            torch_dtype=self.weight_dtype
-        )
-
-        # Store components
-        self.transformer = components["transformer"]
-        self.transformer_original = self.transformer  # FLUX.2 doesn't need wrapper
-        self.vae = components["vae"]
-        self.text_encoder = components["text_encoder"]
-        self.tokenizer = components["tokenizer"]
-        self.scheduler = components["scheduler"]
-
-        # FLUX.2 specific: no text_encoder_2, no unet
-        self.text_encoder_2 = None
-        self.tokenizer_2 = None
-        self.unet = None
-        self.noise_scheduler = self.scheduler
-
-        # Save base model info for checkpoint metadata
-        config = components.get("config", {})
-        self.base_model_repo = config.get("base_model_repo", None)
-        self.is_distilled = config.get("is_distilled", False)
-
-        # Convert VAE to vae_dtype
-        self.vae = self.vae.to(dtype=self.vae_dtype)
-
-        # Enable gradient checkpointing for Transformer (CRITICAL for VRAM reduction)
-        if not self.gradient_checkpointing:
-            print(f"{self.log_prefix} Gradient checkpointing disabled by config (FLUX.2)")
-        elif hasattr(self.transformer, 'enable_gradient_checkpointing'):
-            self.transformer.enable_gradient_checkpointing()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for FLUX.2 Transformer")
-        else:
-            print(f"{self.log_prefix} WARNING: Gradient checkpointing not available for FLUX.2 Transformer")
-
-        # Enable gradient checkpointing for Text Encoder (Qwen3)
-        if self.gradient_checkpointing and hasattr(self.text_encoder, 'gradient_checkpointing_enable'):
-            self.text_encoder.gradient_checkpointing_enable()
-            print(f"{self.log_prefix} Gradient checkpointing enabled for Qwen3 Text Encoder")
-
-        # Setup attention backend if non-native (use_flash_attention is derived from it)
-        if self.use_flash_attention:
-            self._setup_attention_backend_flux2(self.attention_backend)
-
-        # Freeze all base weights (full parameter training will unfreeze specific layers later)
-        self.vae.requires_grad_(False)
-        self.text_encoder.requires_grad_(False)
-        self.transformer.requires_grad_(False)
-
-        # Setup Block Swap if enabled (before moving to GPU)
-        self.flux2_block_offloader = None  # FLUX.2 specific offloader
-        self.flux2_transformer_wrapper = None  # Drives the offloader during forward
-
-        if self.blocks_to_swap > 0:
-            print(f"{self.log_prefix} Block Swap enabled for FLUX.2 training: {self.blocks_to_swap} blocks")
-            print(f"{self.log_prefix} Using FluxBlockOffloader (dual-list architecture)")
-            print(f"{self.log_prefix} Pinned memory: {self.use_pinned_memory}")
-
-            # Policy gate: FLUX.2 training block swap requires H2D-only + frozen base
-            # (LoRA) + gradient checkpointing. Raises on any unsupported combination.
-            _h2d_args = self._flux2_block_swap_h2d_args()
-
-            # Import FLUX.2 specific block offloader
-            from core.memory_management import create_flux_block_offloader
-
-            # Check if transformer has required attributes
-            if not hasattr(self.transformer, 'transformer_blocks') or not hasattr(self.transformer, 'single_transformer_blocks'):
-                raise ValueError(
-                    f"FLUX.2 Transformer must have 'transformer_blocks' and 'single_transformer_blocks' attributes for Block Swap. "
-                    f"Found: {type(self.transformer)}"
-                )
-
-            # Initialize FLUX.2 Block Offloader
-            self.flux2_block_offloader = create_flux_block_offloader(
-                transformer=self.transformer,
-                blocks_to_swap=self.blocks_to_swap,
-                device=self.device,
-                target_dtype=self.training_dtype,
-                use_pinned_memory=self.use_pinned_memory,
-                supports_backward=True,  # Training mode
-                **_h2d_args,
-            )
-
-            # Prepare block devices (keep some on GPU, offload rest to CPU)
-            self.flux2_block_offloader.prepare_block_devices_before_forward()
-
-            # Wire the offloader into the forward (wrapper) and backward (hooks).
-            # Without this the offloader is never driven -> device mismatch.
-            self._wire_flux2_block_swap_driver()
-
-            num_dual = len(self.transformer.transformer_blocks)
-            num_single = len(self.transformer.single_transformer_blocks)
-            print(f"{self.log_prefix} FLUX.2 Block Swap initialized:")
-            print(f"{self.log_prefix}   Dual stream blocks: {num_dual}")
-            print(f"{self.log_prefix}   Single stream blocks: {num_single}")
-            print(f"{self.log_prefix}   Total blocks: {num_dual + num_single}")
-            print(f"{self.log_prefix}   Blocks to swap: {self.blocks_to_swap}")
-
-            # Move VAE and Text Encoder to device (Transformer managed by block offloader)
-            print(f"{self.log_prefix} Moving VAE to {self.device}...")
-            self.vae.to(self.device)
-            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
-            self.text_encoder.to(self.device)
-        else:
-            # No Block Swap: move everything to GPU
-            print(f"{self.log_prefix} Moving VAE to {self.device}...")
-            self.vae.to(self.device)
-
-            print(f"{self.log_prefix} Moving Transformer to {self.device}...")
-            self.transformer.to(self.device)
-
-            print(f"{self.log_prefix} Moving Text Encoder to {self.device}...")
-            self.text_encoder.to(self.device)
-
-        print(f"{self.log_prefix} FLUX.2 model loaded successfully")
-        print(f"{self.log_prefix} Transformer: {self.transformer.__class__.__name__}")
-        print(f"{self.log_prefix} Text Encoder: {self.text_encoder.__class__.__name__}")
-        print(f"{self.log_prefix} Scheduler type: {self.scheduler.__class__.__name__}")
-
-        # Debug: Check for inf/nan in Transformer parameters
-        transformer_has_inf = False
-        transformer_has_nan = False
-        for name, param in self.transformer.named_parameters():
-            if torch.isinf(param).any():
-                print(f"{self.log_prefix} WARNING: Transformer param '{name}' contains inf!")
-                transformer_has_inf = True
-            if torch.isnan(param).any():
-                print(f"{self.log_prefix} WARNING: Transformer param '{name}' contains nan!")
-                transformer_has_nan = True
-        if not transformer_has_inf and not transformer_has_nan:
-            print(f"{self.log_prefix} Transformer parameters: No inf/nan detected")
+        from core.training.ops import flux2_ops
+        return flux2_ops.wire_block_swap_driver(self)
 
     def _load_checkpoint_as_base(self, checkpoint_path: str):
         """
@@ -2271,7 +1843,8 @@ class BaseTrainer(ABC):
             # scratch:minit2i sentinel — that would discard trained weights.)
             print(f"{self.log_prefix} Loading MiniT2I checkpoint as base model: {checkpoint_path}")
             self.model_path = checkpoint_path
-            self._load_minit2i_components()
+            from core.training.ops import minit2i_ops
+            minit2i_ops.load_components(self)
             print(f"{self.log_prefix} MiniT2I checkpoint loaded successfully as base model")
 
         elif self.is_krea2:
@@ -2282,7 +1855,8 @@ class BaseTrainer(ABC):
             # scheduler, enables gradient checkpointing, and moves to device.
             print(f"{self.log_prefix} Loading Krea 2 checkpoint as base model: {checkpoint_path}")
             self.model_path = checkpoint_path
-            self._load_krea2_components()
+            from core.training.ops import krea2_ops
+            krea2_ops.load_components(self)
             print(f"{self.log_prefix} Krea 2 checkpoint loaded successfully as base model")
 
         else:
@@ -2568,48 +2142,14 @@ class BaseTrainer(ABC):
         return sd_sdxl_ops.setup_attention_backend(self, backend)
 
     def _setup_attention_backend_flux2(self, backend: str):
-        """Set the attention backend for FLUX.2 models.
-
-        attention_impl='conduit' (default): install ConduitFlux2* processors on the
-        training transformer's NON-KV attention modules so the unified conduit runs
-        the kernel (enables tq training on FLUX.2). attention_impl='diffusers': the
-        legacy set_attention_backend path (byte-identical). ``resolve_backend`` refuses
-        sage for training (R4) in both branches.
+        """Delegator (plan P3c): body lives in
+        ``ops/flux2_ops.setup_attention_backend``. Kept on the trainer because it
+        has call sites in BOTH the (moved) flux2 loader body AND
+        ``_load_checkpoint_as_base`` (P3b audit); ``arch/flux2.py`` calls the same
+        ops function, so the body is defined exactly once.
         """
-        if self.transformer is None:
-            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
-            return
-
-        b = self._resolve_training_backend(backend)
-
-        if getattr(self, "attention_impl", "conduit") == "conduit":
-            try:
-                from core.attention import AttentionMode
-                from core.pipeline_backends.flux2 import _install_flux2_conduit_processors
-                try:
-                    self.transformer.set_attention_backend("native")
-                except Exception:
-                    pass
-                migrated = _install_flux2_conduit_processors(self.transformer, b, AttentionMode.TRAINING)
-                print(f"{self.log_prefix} [OK] FLUX.2 attention impl=conduit backend='{b}' "
-                      f"({migrated} attn modules migrated)")
-            except Exception as e:
-                print(f"{self.log_prefix} WARNING: FLUX.2 conduit install failed ({e}); "
-                      f"falling back to diffusers set_attention_backend")
-                try:
-                    self.transformer.set_attention_backend(to_diffusers_backend(b))
-                except Exception:
-                    pass
-            return
-
-        # attention_impl='diffusers' (legacy, byte-identical)
-        try:
-            print(f"{self.log_prefix} Setting FLUX.2 Transformer attention backend '{b}' (impl=diffusers)...")
-            self.transformer.set_attention_backend(to_diffusers_backend(b))
-            print(f"{self.log_prefix} [OK] Attention backend set via set_attention_backend('{to_diffusers_backend(b)}')")
-        except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to set attention backend '{b}': {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+        from core.training.ops import flux2_ops
+        return flux2_ops.setup_attention_backend(self, backend)
 
     def _setup_attention_backend_anima(self, backend: str):
         """Delegator (plan P3b): body lives in
@@ -2640,31 +2180,14 @@ class BaseTrainer(ABC):
         return ideogram4_ops.setup_attention_backend(self, backend)
 
     def _setup_attention_backend_minit2i(self, backend: str):
-        """Set the attention backend for MiniT2I models (training hook).
-
-        MiniT2I routes all attention through the vendored ``mem_efficient_sdpa``
-        primitive. Stage-B extends that primitive to read a transformer attr and
-        delegate to the unified conduit; this hook stamps the canonical backend
-        string on ``transformer._attn_backend`` for training and honors the
-        training guard (sage -> native).
+        """Delegator (plan P3c): body lives in
+        ``ops/minit2i_ops.setup_attention_backend``. Kept on the trainer because
+        the (moved) minit2i loader body calls
+        ``trainer._setup_attention_backend_minit2i``; ``arch/minit2i.py`` calls the
+        same ops function (body defined once).
         """
-        if self.transformer is None:
-            print(f"{self.log_prefix} WARNING: Transformer not loaded, skipping attention backend setup")
-            return
-        b = self._resolve_training_backend(backend)
-        try:
-            # MMJiT.forward reads the net-level attr (transformer.model.net._attn_backend)
-            # and fans it out to every attention-bearing block; the outer wrapper attr
-            # alone is not consulted. Stamp BOTH (mirrors the inference plumbing in
-            # pipeline_backends/minit2i.py) so flash actually engages in training.
-            self.transformer._attn_backend = b
-            net = getattr(getattr(self.transformer, "model", None), "net", None)
-            if net is not None:
-                net._attn_backend = b
-            print(f"{self.log_prefix} [OK] MiniT2I attention backend set to '{b}'")
-        except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to set MiniT2I attention backend '{b}': {e}")
-            print(f"{self.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+        from core.training.ops import minit2i_ops
+        return minit2i_ops.setup_attention_backend(self, backend)
 
     # ============================================================
     # Abstract Methods (must be implemented by subclasses)

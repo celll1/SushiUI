@@ -17,13 +17,22 @@ class Flux2ArchHandler(ArchHandler):
     wiring = FLUX2_WIRING
 
     def load_components(self, trainer) -> None:
-        raise NotImplementedError("flux2.load_components: phase P3")
+        # P3c: body lives in ops/flux2_ops (shared with the base_trainer load-time
+        # dispatcher, which cannot route via self.arch — self.arch binds after
+        # loading; see the construction-order note in flux2_ops).
+        from core.training.ops import flux2_ops
+        flux2_ops.load_components(trainer)
 
     def setup_block_swap(self, trainer) -> None:
-        raise NotImplementedError("flux2.setup_block_swap: phase P3")
+        # P3c: FLUX.2 has NO dedicated late setup_*_block_swap method — block swap
+        # is wired INSIDE the loader (block_swap_h2d_args + wire_block_swap_driver),
+        # not via a post-adapter conductor call from the mode subclasses. No-op.
+        return None
 
     def setup_attention_backend(self, trainer) -> None:
-        raise NotImplementedError("flux2.setup_attention_backend: phase P3")
+        # P3c: body lives in ops/flux2_ops (shared with base_trainer delegator).
+        from core.training.ops import flux2_ops
+        flux2_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
         raise NotImplementedError("flux2.encode_prompt: phase P4")

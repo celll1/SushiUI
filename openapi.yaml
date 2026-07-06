@@ -6158,6 +6158,30 @@ components:
           type: 'integer'
           default: 26
           description: "End (exclusive) block index of the routed span."
+        block_skip_rate:
+          type: 'number'
+          default: 0.0
+          description: |
+            Low-rate stochastic depth (per-batch block dropout) for DiT training
+            (anima). Training-only regularization: each step, eligible blocks
+            (front/back, outside the protected middle span) are independently
+            dropped with this probability; executed eligible blocks rescale their
+            residual by 1/(1-rate) so the expected contribution matches the full
+            eval network. Sampling always runs every block. 0.0 = off; capped to
+            0.35 (high block dropout on a pretrained DiT degrades quality).
+        block_skip_protect_start:
+          type: 'integer'
+          default: 6
+          description: |
+            Start (inclusive) index of the PROTECTED middle block span that is
+            never dropped. Middle DiT blocks are semantically critical; only
+            blocks before this index are front-eligible for dropout.
+        block_skip_protect_end:
+          type: 'integer'
+          default: 22
+          description: |
+            End (exclusive) index of the PROTECTED middle block span. Blocks at or
+            after this index are back-eligible for dropout.
         danbooru_aug_enable:
           type: 'boolean'
           default: false

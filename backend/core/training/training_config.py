@@ -234,6 +234,12 @@ def _build_train_section(
     train["tread_drop_ratio"] = p.get("tread_drop_ratio", 0.5)
     train["tread_start_block"] = p.get("tread_start_block", 2)
     train["tread_end_block"] = p.get("tread_end_block", 26)
+    # Low-rate stochastic depth (per-batch block dropout) — training-only. Read
+    # unconditionally; non-Anima trainers ignore it (base_trainer only builds
+    # self.block_skip_config when block_skip_rate > 0). SSoT: TRAINING_DEFAULTS.
+    train["block_skip_rate"] = p.get("block_skip_rate", 0.0)
+    train["block_skip_protect_start"] = p.get("block_skip_protect_start", 6)
+    train["block_skip_protect_end"] = p.get("block_skip_protect_end", 22)
 
     # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
     train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")

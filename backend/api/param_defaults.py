@@ -311,6 +311,21 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # DiT's depth, e.g. DiT-XL uses a single route r_{0,21}).
     "tread_start_block": 2,
     "tread_end_block": 26,
+    # Low-rate stochastic depth (per-batch block dropout) — training-only
+    # regularization. Each step, eligible transformer blocks (front/back, outside
+    # a protected middle span) are independently dropped with prob block_skip_rate;
+    # executed eligible blocks rescale their residual by 1/(1-rate) so the expected
+    # contribution matches the full eval network. Sampling always runs every block.
+    # Currently wired for the Anima DiT (other archs ignore these keys). Default OFF.
+    # 0.0 = off; capped to 0.35 (high dropout on a pretrained DiT degrades quality).
+    "block_skip_rate": 0.0,
+    # Protected middle span [protect_start, protect_end): NEVER dropped. Block-removal
+    # studies of pretrained DiTs show middle blocks are semantically critical while
+    # early/late blocks tolerate removal — so only [0, protect_start) U [protect_end,
+    # num_blocks) are eligible. Defaults protect Anima's middle 16 of 28 blocks
+    # (eligible = first 6 + last 6).
+    "block_skip_protect_start": 6,
+    "block_skip_protect_end": 22,
     # MNT
     "multi_noise_timesteps": 1,
     "multi_noise_mode": "independent",

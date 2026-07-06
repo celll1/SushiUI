@@ -1218,9 +1218,49 @@ class Anima(nn.Module):
                 )
                 kept_idx = select_kept_indices(num_tokens, drop_ratio, x_B_T_H_W_D.device)
 
+            # Low-rate stochastic depth (per-batch block dropout): OFF by default
+            # (_block_skip_config is None). Training-only, gated on self.training and
+            # cleared for sampling/validation by the trainer. Each eligible block
+            # (front/back, outside the protected middle span) is independently
+            # dropped this step with prob skip_rate; executed eligible blocks have
+            # their residual DELTA scaled by 1/(1-skip_rate) so the expected
+            # contribution matches the full eval network (torchvision-style inverted
+            # scaling — eval runs every block, unscaled). Block-swap stays correct:
+            # a dropped block still fires the offloader wait/submit (only the compute
+            # is skipped), so the conductor never desyncs. When TREAD routing is
+            # active, in-span blocks are EXCLUDED from dropout (they see the gathered
+            # token subset — mixing the two transforms would be ill-defined), so the
+            # two techniques compose on disjoint block ranges.
+            bskip = getattr(self, "_block_skip_config", None) if self.training else None
+            block_skip_active = False
+            skip_mask = None
+            eligible_set = None
+            inv_keep = 1.0
+            if bskip is not None:
+                skip_rate = float(bskip.get("skip_rate", 0.0))
+                protect_start = int(bskip.get("protect_start", 0))
+                protect_end = int(bskip.get("protect_end", 0))
+                if skip_rate > 0.0:
+                    from core.training.block_dropout import compute_skip_mask
+                    exclude = set(range(start_b, end_b)) if route_active else None
+                    skip_mask, elig = compute_skip_mask(
+                        len(self.blocks), skip_rate, protect_start, protect_end,
+                        x_B_T_H_W_D.device, exclude=exclude,
+                    )
+                    eligible_set = set(elig)
+                    inv_keep = 1.0 / (1.0 - skip_rate)
+                    block_skip_active = True
+
             for block_idx, block in enumerate(self.blocks):
                 if offloader is not None:
                     offloader.wait_for_block(block_idx)
+
+                # Dropped block: identity (skip compute only). Offloader bookkeeping
+                # below still fires so block-swap stays in lock-step.
+                if block_skip_active and skip_mask[block_idx]:
+                    if offloader is not None:
+                        offloader.submit_move_blocks_forward(block_idx)
+                    continue
 
                 if route_active and block_idx == start_b:
                     # Enter route: snapshot the full stream, gather the kept subset
@@ -1238,12 +1278,21 @@ class Anima(nn.Module):
                 cur_rope = rope_span if in_span else rope_emb_L_1_1_D
                 cur_extra = extra_span if in_span else extra_pos_emb
 
+                # Executed eligible block: rescale its residual delta by 1/(1-p) so
+                # E[residual] matches eval. Non-eligible (protected / excluded)
+                # blocks were never subject to dropout, so run them unscaled.
+                scale_delta = block_skip_active and (block_idx in eligible_set)
+                x_before = x_B_T_H_W_D if scale_delta else None
+
                 x_B_T_H_W_D = block(
                     x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32,
                     rope_emb_L_1_1_D=cur_rope,
                     adaln_lora_B_T_3D=adaln_lora_B_T_3D,
                     extra_per_block_pos_emb=cur_extra,
                 )
+
+                if scale_delta:
+                    x_B_T_H_W_D = x_before + (x_B_T_H_W_D - x_before) * inv_keep
 
                 if offloader is not None:
                     offloader.submit_move_blocks_forward(block_idx)

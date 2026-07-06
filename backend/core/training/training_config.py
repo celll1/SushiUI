@@ -222,6 +222,11 @@ def _build_train_section(
     train["cpu_offload_checkpointing"] = p.get("cpu_offload_checkpointing", False)
     train["async_cpu_offload_checkpointing"] = p.get("async_cpu_offload_checkpointing", False)
     train["fp8_base_dtype"] = p.get("fp8_base_dtype", None)
+    # torch.compile (opt-in DiT training acceleration). Persisted so resumes
+    # reproduce the same compile mode. Non-DiT / LoRA / block-swap runs read it
+    # but the trainer no-ops with a warning.
+    train["torch_compile"] = p.get("torch_compile", "off")
+    train["torch_compile_dynamic"] = p.get("torch_compile_dynamic", None)
 
     # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
     train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")

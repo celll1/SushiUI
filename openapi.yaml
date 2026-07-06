@@ -6108,6 +6108,36 @@ components:
         fp8_base_dtype:
           type: 'string'
           nullable: true
+        torch_compile:
+          type: 'string'
+          default: 'off'
+          enum: ['off', 'default', 'reduce-overhead', 'max-autotune-no-cudagraphs']
+          description: |
+            Opt-in torch.compile (Inductor) acceleration for DiT training. The
+            transformer's forward is compiled once, after model/dtype/device and
+            gradient-checkpointing setup, before the training loop (the first
+            step pays a one-time compilation cost).
+
+            - `off` (default): eager, no compile.
+            - `default`: torch.compile(mode="default").
+            - `reduce-overhead`: CUDA-graphs mode (higher VRAM).
+            - `max-autotune-no-cudagraphs`: autotuned kernels, no CUDA graphs.
+
+            Gated to DiT architectures (Anima/Z-Image/Lens/FLUX.2/Krea2/etc.) and
+            full-parameter fine-tuning only; skipped with a log warning for LoRA
+            and when block swap is active (blocks_to_swap > 0). Any Inductor
+            failure at runtime falls back to eager. The forward is replaced
+            in-place, so checkpoint state_dict keys stay unprefixed.
+          example: 'off'
+        torch_compile_dynamic:
+          type: 'boolean'
+          nullable: true
+          default: null
+          description: |
+            Dynamic-shape handling for torch_compile. null = auto (Dynamo detects
+            varying shapes and recompiles / promotes to dynamic as needed — best
+            with bucketing). true = force dynamic from first compile (fewer
+            recompiles, slightly slower kernels). false = assume static shapes.
         danbooru_aug_enable:
           type: 'boolean'
           default: false

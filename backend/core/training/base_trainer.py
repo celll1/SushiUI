@@ -963,6 +963,14 @@ class BaseTrainer(ABC):
         # the self.gradient_checkpointing guard.
         self.gradient_checkpointing = bool(self.config.get("gradient_checkpointing", True))
 
+        # Opt-in torch.compile for DiT training. "off" (default) disables it;
+        # any other value is a torch.compile mode string. Resolved/gated later
+        # by _maybe_compile_transformer() (called once before the training loop).
+        _tc = self.config.get("torch_compile", "off")
+        self.torch_compile = str(_tc) if _tc not in (None, False) else "off"
+        self.torch_compile_dynamic = self.config.get("torch_compile_dynamic", None)
+        self._transformer_compiled = False
+
         # Legacy dtype for compatibility
         self.dtype = self.weight_dtype
 
@@ -10316,6 +10324,113 @@ class BaseTrainer(ABC):
     # Training Loop Infrastructure
     # ============================================================
 
+    def _maybe_compile_transformer(self):
+        """Opt-in torch.compile for DiT training (config key ``torch_compile``).
+
+        Compiles the DiT transformer's ``forward`` IN PLACE (replaces the
+        instance ``forward`` attribute with the compiled callable) rather than
+        wrapping the module in an ``OptimizedModule``. This is deliberate:
+
+          * ``self.transformer`` stays the SAME nn.Module object, so
+            ``state_dict()`` keys remain UNPREFIXED (no ``_orig_mod.``) and every
+            checkpoint save path (e.g. AnimaFullParameterAdapter.save_checkpoint
+            reads ``trainer.transformer.state_dict()``) is byte-for-byte
+            unaffected.
+          * Optimizer parameter references, block-swap attribute access, and the
+            sampling helpers that call ``self.transformer(...)`` all keep working
+            unchanged (nn.Module.__call__ dispatches to the compiled forward).
+
+        Gating (each skip is logged, never raises):
+          * DiT only — ``self.transformer`` must be set (U-Net archs skip).
+          * Full-parameter FT only — LoRA skips (compile over freshly-inserted
+            LoRA wrappers is recompile-heavy and not the measurement target).
+          * Incompatible with block swap (``blocks_to_swap > 0``) — the
+            LayerOffloadConductor's CPU<->GPU hooks and Dynamo conflict; skip.
+
+        Any Inductor / compile failure at call time is caught and the module is
+        left in eager mode (safe fallback). Must be called once, AFTER the model
+        is on device/dtype, AFTER gradient-checkpointing + adapter/optimizer
+        setup, and BEFORE the training loop.
+        """
+        mode = getattr(self, "torch_compile", "off") or "off"
+        if mode == "off":
+            return
+        if self.transformer is None:
+            print(f"{self.log_prefix} torch_compile={mode!r} requested but this "
+                  f"architecture has no DiT transformer (U-Net archs are not "
+                  f"supported yet); skipping compile.")
+            return
+        # Gate to full-parameter FT. training_method is NOT part of the train
+        # config section, so detect via the trainer subclass: only
+        # FullParameterTrainer trains the base DiT weights (LoRA/ReLoRA/ControlNet
+        # trainers freeze the base and train small adapters — compiling over
+        # freshly-inserted adapter wrappers is recompile-heavy and off-target).
+        trainer_cls = type(self).__name__
+        if trainer_cls != "FullParameterTrainer":
+            print(f"{self.log_prefix} torch_compile={mode!r} requested but trainer "
+                  f"is {trainer_cls} (not full-parameter FT); compile is gated to "
+                  f"full-parameter FT — skipping (adapter paths run eager).")
+            return
+        if getattr(self, "blocks_to_swap", 0) > 0:
+            print(f"{self.log_prefix} torch_compile={mode!r} requested but block "
+                  f"swap is active (blocks_to_swap={self.blocks_to_swap}); "
+                  f"incompatible — skipping compile.")
+            return
+        if getattr(self, "_transformer_compiled", False):
+            return
+
+        dynamic = getattr(self, "torch_compile_dynamic", None)
+        try:
+            # Inductor/Triton compilation is LAZY: it runs on the first forward
+            # per input shape, NOT at the torch.compile() call below. Two layers
+            # of fallback so a compile failure never crashes training:
+            #   1. Dynamo suppress_errors: falls back to eager for any graph it
+            #      cannot trace/lower (covers most inductor-lowering failures and
+            #      per-shape recompiles under bucketing).
+            #   2. A guarded forward wrapper: some Triton codegen errors (e.g.
+            #      "CantSplit" on an awkward bucket shape) are raised at kernel
+            #      launch and are NOT intercepted by suppress_errors. The wrapper
+            #      catches ANY exception from the compiled FORWARD path and
+            #      permanently reverts self.transformer.forward to the original
+            #      eager forward, then re-runs the forward eagerly (side-effect-
+            #      free, so a re-run is safe).
+            #      LIMITATION: only the forward is guarded. The AOTAutograd
+            #      backward graph executes inside loss.backward(), outside this
+            #      wrapper — a Triton kernel-launch failure there still crashes
+            #      the run. The feature is opt-in (default "off") precisely for
+            #      this reason.
+            import torch._dynamo
+            torch._dynamo.config.suppress_errors = True
+            orig_forward = self.transformer.forward
+            compiled_forward = torch.compile(orig_forward, mode=mode, dynamic=dynamic)
+            _fb = {"eager": False}
+
+            def _guarded_compiled_forward(*args, **kwargs):
+                if _fb["eager"]:
+                    return orig_forward(*args, **kwargs)
+                try:
+                    return compiled_forward(*args, **kwargs)
+                except Exception as ce:  # Triton/Inductor runtime codegen failure
+                    print(f"{self.log_prefix} WARNING: compiled DiT forward failed "
+                          f"({type(ce).__name__}: {str(ce)[:200]}); permanently "
+                          f"falling back to EAGER for the rest of training.")
+                    _fb["eager"] = True
+                    self._transformer_compiled = False
+                    # Bypass the wrapper on all subsequent calls.
+                    self.transformer.forward = orig_forward
+                    return orig_forward(*args, **kwargs)
+
+            self.transformer.forward = _guarded_compiled_forward
+            self._transformer_compiled = True
+            print(f"{self.log_prefix} torch.compile ENABLED for DiT transformer "
+                  f"(mode={mode!r}, dynamic={dynamic}). First training step will "
+                  f"pay a one-time compilation cost; steady-state should speed up. "
+                  f"(Guarded: any compile failure reverts to eager.)")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: torch.compile(mode={mode!r}) failed "
+                  f"to set up ({type(e).__name__}: {e}); continuing in eager mode.")
+            self._transformer_compiled = False
+
     def train(
         self,
         datasets: List[Any],
@@ -10906,6 +11021,12 @@ class BaseTrainer(ABC):
         if stop_flag_file.exists():
             print(f"{self.log_prefix} Removing stale stop flag from previous run")
             stop_flag_file.unlink()
+
+        # Opt-in torch.compile for DiT training. Runs here — after model
+        # device/dtype + gradient-checkpointing + adapter/optimizer setup, and
+        # after the stop-flag cleanup — but before the first step, so the
+        # one-time compilation cost is paid inside the loop's first iteration.
+        self._maybe_compile_transformer()
 
         # Training loop
         global_step = 0

@@ -17,6 +17,10 @@ attention body; imported here (import adjustment, allowed by the plan).
 """
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
+import torch
+
 from core.attention import to_diffusers_backend
 
 
@@ -199,3 +203,129 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         device=vae_device, dtype=trainer.vae_dtype,
     )
     return latents
+
+
+def train_step(
+    trainer,
+    latents: torch.Tensor,
+    encoder_features: torch.Tensor,
+    encoder_mask: torch.Tensor,
+    timesteps: Optional[torch.Tensor] = None,
+    profile_vram: bool = False,
+    latent_h: Optional[int] = None,
+    latent_w: Optional[int] = None,
+) -> Tuple[torch.Tensor, float, float]:
+    """Single Ideogram 4 training step (flow-matching, velocity prediction).
+
+    Conventions derived from the inference path (which calls
+    `scheduler.step(-v)`):
+      x_sigma   = (1 - sigma) * x0 + sigma * noise   (sigma=1 -> noise)
+      v_target  = x0 - noise                         (transformer output sign)
+      timestep  = 1 - sigma                          (model time in [0, 1])
+    These satisfy pred_x0 = x_sigma + sigma * v = x0.
+
+    Args:
+        latents:          Packed image latents [B, N, 128].
+        encoder_features: 13-layer Qwen3-VL features [B, 13, L, 4096].
+        encoder_mask:     Text token mask [B, L].
+        latent_h/latent_w: latent grid (height//16, width//16).
+    """
+    from core.models.ideogram4.ideogram4_pipeline_ops import (
+        concat_layer_features, build_training_conditioning,
+    )
+
+    latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    encoder_features = encoder_features.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    encoder_mask = encoder_mask.to(device=trainer.device, non_blocking=True)
+
+    B, N, _ = latents.shape
+    if latent_h is not None and latent_w is not None:
+        if latent_h * latent_w != N:
+            raise ValueError(
+                f"[train_step_ideogram4] latent_h={latent_h}*latent_w={latent_w} != N={N}"
+            )
+    else:
+        side = int(N ** 0.5)
+        if side * side != N:
+            raise ValueError(
+                f"[train_step_ideogram4] non-square latent (N={N}); pass latent_h/latent_w"
+            )
+        latent_h = latent_w = side
+
+    if timesteps is None:
+        if trainer.timestep_sampler is not None:
+            timesteps = trainer.timestep_sampler.sample(B, trainer.device)
+        else:
+            timesteps = torch.rand(B, device=trainer.device)
+    sigma = timesteps.to(trainer.training_dtype)
+    sigma_v = sigma.view(-1, 1, 1)
+
+    noise = torch.randn_like(latents)
+    noisy = (1.0 - sigma_v) * latents + sigma_v * noise  # sigma=1 -> noise
+    v_target = latents - noise                            # x0 - noise
+    t_model = (1.0 - sigma).to(trainer.training_dtype)        # model time [0,1]
+
+    # Build packed conditioning (text + image positions/indicator/segment).
+    text_features = concat_layer_features(encoder_features)  # [B, L, 53248]
+    cond = build_training_conditioning(text_features, encoder_mask, latent_h, latent_w)
+    max_text = cond["max_text_tokens"]
+
+    t_dtype = trainer.transformer.dtype
+    text_z = torch.zeros(B, max_text, latents.shape[-1], dtype=noisy.dtype, device=trainer.device)
+    pos_z = torch.cat([text_z, noisy], dim=1).to(t_dtype)
+    llm_features = cond["llm_features"].to(t_dtype)
+
+    def _cond_forward():
+        return trainer.transformer(
+            hidden_states=pos_z,
+            timestep=t_model.to(t_dtype),
+            encoder_hidden_states=llm_features,
+            position_ids=cond["position_ids"],
+            segment_ids=cond["segment_ids"],
+            indicator=cond["indicator"],
+            return_dict=False,
+        )[0]
+
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            out = _cond_forward()
+    else:
+        out = _cond_forward()
+    v_pred = out[:, max_text:].float()
+    loss = torch.nn.functional.mse_loss(v_pred, v_target.float(), reduction="mean")
+
+    # Optional auxiliary unconditional branch (image-only, zeroed text).
+    if getattr(trainer, "ideogram4_train_uncond", False) and getattr(trainer, "transformer_uncond", None) is not None:
+        uncond = trainer.transformer_uncond
+        u_dtype = uncond.dtype
+        neg_llm = torch.zeros(
+            B, N, llm_features.shape[-1], dtype=u_dtype, device=trainer.device
+        )
+        neg_pos = cond["position_ids"][:, max_text:]
+        neg_seg = cond["segment_ids"][:, max_text:]
+        neg_ind = cond["indicator"][:, max_text:]
+        neg_hidden = noisy.to(u_dtype)
+
+        def _uncond_forward():
+            return uncond(
+                hidden_states=neg_hidden,
+                timestep=t_model.to(u_dtype),
+                encoder_hidden_states=neg_llm,
+                position_ids=neg_pos,
+                segment_ids=neg_seg,
+                indicator=neg_ind,
+                return_dict=False,
+            )[0]
+
+        if trainer.mixed_precision:
+            with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                neg_out = _uncond_forward()
+        else:
+            neg_out = _uncond_forward()
+        uncond_loss = torch.nn.functional.mse_loss(neg_out.float(), v_target.float(), reduction="mean")
+        loss = loss + float(getattr(trainer, "ideogram4_uncond_loss_weight", 1.0)) * uncond_loss
+
+    pred_loss_value = loss.item()
+    # Backward is performed by _execute_forward_backward; do not backward here.
+    del noise, noisy, v_pred, v_target, pos_z, llm_features
+    return loss, pred_loss_value, 0.0

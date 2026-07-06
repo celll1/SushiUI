@@ -51,7 +51,19 @@ class Ideogram4ArchHandler(ArchHandler):
         raise NotImplementedError("ideogram4.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("ideogram4.train_step: phase P6")
+        # P6b: verbatim body in ops/ideogram4_ops.train_step. Same ctx contract as
+        # lens (encoder_features / encoder_mask / latent_h / latent_w).
+        from core.training.ops import ideogram4_ops
+        return ideogram4_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            encoder_features=ctx.encoder_features,
+            encoder_mask=ctx.encoder_mask,
+            timesteps=ctx.timesteps,
+            profile_vram=ctx.profile_vram,
+            latent_h=ctx.latent_h,
+            latent_w=ctx.latent_w,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("ideogram4.sample: phase P7")

@@ -51,7 +51,20 @@ class LensArchHandler(ArchHandler):
         raise NotImplementedError("lens.vae_decode: phase P5/P7")
 
     def train_step(self, trainer, ctx: TrainStepContext):
-        raise NotImplementedError("lens.train_step: phase P6")
+        # P6b: verbatim body in ops/lens_ops.train_step. encoder_features rides in
+        # ctx.encoder_features, encoder mask in ctx.encoder_mask, latent geometry in
+        # ctx.latent_h/latent_w (from lens_latent_shape).
+        from core.training.ops import lens_ops
+        return lens_ops.train_step(
+            trainer,
+            latents=ctx.latents,
+            encoder_features=ctx.encoder_features,
+            encoder_mask=ctx.encoder_mask,
+            timesteps=ctx.timesteps,
+            profile_vram=ctx.profile_vram,
+            latent_h=ctx.latent_h,
+            latent_w=ctx.latent_w,
+        )
 
     def sample(self, trainer, sample_ctx: SampleContext):
         raise NotImplementedError("lens.sample: phase P7")

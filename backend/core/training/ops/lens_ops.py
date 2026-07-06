@@ -13,6 +13,8 @@ call sites); each body is defined exactly once here.
 """
 from __future__ import annotations
 
+from typing import Optional, Tuple
+
 import torch
 
 
@@ -208,3 +210,121 @@ def vae_encode(trainer, image_tensor, *, image=None, width=None, height=None,
         device=vae_device, dtype=trainer.vae_dtype,
     )
     return latents
+
+
+def train_step(
+    trainer,
+    latents: torch.Tensor,
+    encoder_features: torch.Tensor,
+    encoder_mask: torch.Tensor,
+    timesteps: Optional[torch.Tensor] = None,
+    profile_vram: bool = False,
+    latent_h: Optional[int] = None,
+    latent_w: Optional[int] = None,
+) -> Tuple[torch.Tensor, float, float]:
+    """Single Lens DiT training step (flow-matching, velocity prediction).
+
+    Args:
+        latents:          Flat-sequence latents [B, N, 128].
+        encoder_features: Stacked multi-layer text features [B, num_layers, L, D].
+        encoder_mask:     Bool mask for text tokens [B, L].
+        timesteps:        Optional pre-sampled sigma values in [0, 1].
+        latent_h:         Spatial height of the latent grid (height // 16).
+                          Required for non-square latents; inferred from N for square.
+        latent_w:         Spatial width of the latent grid (width // 16).
+                          Required for non-square latents; inferred from N for square.
+
+    Returns:
+        (loss tensor, prediction loss value, reconstruction loss value)
+    """
+    # Lazy import (sibling-ops pattern): keep base_trainer out of module top level.
+    from core.training.base_trainer import print_vram_usage
+
+    if profile_vram:
+        print_vram_usage("[train_step_lens] Start")
+
+    latents = latents.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    encoder_features = encoder_features.to(device=trainer.device, dtype=trainer.training_dtype, non_blocking=True)
+    encoder_mask = encoder_mask.to(device=trainer.device, non_blocking=True)
+
+    batch_size = latents.shape[0]
+
+    if timesteps is None:
+        if trainer.timestep_sampler is not None:
+            timesteps = trainer.timestep_sampler.sample(batch_size, trainer.device)
+        else:
+            timesteps = torch.rand(batch_size, device=trainer.device)
+
+    noise = torch.randn_like(latents)
+
+    # Flow matching forward process: x_t = (1-σ)*x0 + σ*noise
+    sigma = timesteps.to(trainer.training_dtype)
+    sigma_view = sigma.view(-1, 1, 1)
+    noisy_latents = (1.0 - sigma_view) * latents + sigma_view * noise
+
+    # Velocity target: v = noise - x0
+    v_target = noise - latents
+
+    # Lens timestep convention: transformer receives sigma * 1000
+    timestep_input = (sigma * 1000.0).to(trainer.training_dtype)
+
+    # img_shapes for positional encoding: single 3-tuple (frame=1, H, W) required by
+    # LensEmbedRope.  Lens supports arbitrary (H, W) multiples of 16; latent_h/latent_w
+    # must be passed explicitly for non-square latents.
+    seq_len = latents.shape[1]  # N = latent_h * latent_w
+    if latent_h is not None and latent_w is not None:
+        if latent_h * latent_w != seq_len:
+            raise ValueError(
+                f"[train_step_lens] latent_h={latent_h}, latent_w={latent_w} "
+                f"inconsistent with seq_len={seq_len} (expected {latent_h * latent_w})"
+            )
+    else:
+        # Fall back to square assumption when dims weren't supplied.
+        latent_hw = int(seq_len ** 0.5)
+        if latent_hw * latent_hw != seq_len:
+            raise ValueError(
+                f"[train_step_lens] Non-square latent (N={seq_len}): pass latent_h "
+                f"and latent_w explicitly so img_shapes can be set correctly."
+            )
+        latent_h = latent_w = latent_hw
+    img_shapes = [(1, latent_h, latent_w)]
+
+    # encoder_features [B, num_layers, L, D] → list of num_layers tensors each [B, L, D]
+    num_layers = encoder_features.shape[1]
+    encoder_hidden_states_list = [encoder_features[:, i, :, :] for i in range(num_layers)]
+
+    if profile_vram:
+        print_vram_usage("[train_step_lens] Before transformer forward")
+
+    if trainer.mixed_precision:
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            v_pred = trainer.transformer(
+                hidden_states=noisy_latents,
+                encoder_hidden_states=encoder_hidden_states_list,
+                encoder_hidden_states_mask=encoder_mask,
+                timestep=timestep_input,
+                img_shapes=img_shapes,
+            )
+    else:
+        v_pred = trainer.transformer(
+            hidden_states=noisy_latents,
+            encoder_hidden_states=encoder_hidden_states_list,
+            encoder_hidden_states_mask=encoder_mask,
+            timestep=timestep_input,
+            img_shapes=img_shapes,
+        )
+
+    if profile_vram:
+        print_vram_usage("[train_step_lens] After transformer forward")
+
+    # MSE loss on velocity
+    mse_loss = torch.nn.functional.mse_loss(v_pred.float(), v_target.float(), reduction="mean")
+    loss = mse_loss
+
+    pred_loss_value = mse_loss.item()
+    recon_loss_value = 0.0
+
+    # Backward is performed by _execute_forward_backward (single backward per
+    # MNT iteration); do not call loss.backward() here.
+    del noise, noisy_latents, v_pred, v_target, encoder_hidden_states_list
+    return loss, pred_loss_value, recon_loss_value

@@ -6959,6 +6959,10 @@ class TrainingRunCreateRequest(BaseModel):
     block_skip_rate: float = TRAINING_DEFAULTS["block_skip_rate"]
     block_skip_protect_start: int = TRAINING_DEFAULTS["block_skip_protect_start"]
     block_skip_protect_end: int = TRAINING_DEFAULTS["block_skip_protect_end"]
+    # Resolution curriculum (low-res warmup then switch to target) — training-only, arch-agnostic.
+    res_curriculum_enable: bool = TRAINING_DEFAULTS["res_curriculum_enable"]
+    res_curriculum_warmup_steps: int = TRAINING_DEFAULTS["res_curriculum_warmup_steps"]
+    res_curriculum_warmup_scale: float = TRAINING_DEFAULTS["res_curriculum_warmup_scale"]
     # Full-parameter save: embed the VAE into the single-file checkpoint.
     # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True,
     # others False); an explicit boolean always wins.

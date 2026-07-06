@@ -240,6 +240,12 @@ def _build_train_section(
     train["block_skip_rate"] = p.get("block_skip_rate", 0.0)
     train["block_skip_protect_start"] = p.get("block_skip_protect_start", 6)
     train["block_skip_protect_end"] = p.get("block_skip_protect_end", 22)
+    # Resolution curriculum (low-res warmup -> target) — training-only, arch-agnostic.
+    # Read unconditionally; inert unless res_curriculum_enable and warmup_steps>0.
+    # SSoT: TRAINING_DEFAULTS.
+    train["res_curriculum_enable"] = p.get("res_curriculum_enable", False)
+    train["res_curriculum_warmup_steps"] = p.get("res_curriculum_warmup_steps", 0)
+    train["res_curriculum_warmup_scale"] = p.get("res_curriculum_warmup_scale", 0.5)
 
     # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
     train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")

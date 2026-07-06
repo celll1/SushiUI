@@ -6182,6 +6182,32 @@ components:
           description: |
             End (exclusive) index of the PROTECTED middle block span. Blocks at or
             after this index are back-eligible for dropout.
+        res_curriculum_enable:
+          type: 'boolean'
+          default: false
+          description: |
+            Resolution curriculum (training-only, arch-agnostic data-pipeline
+            feature): warm up at a lower resolution, then switch to the target
+            (base_resolutions) at an epoch boundary. Lower resolution => fewer
+            latent tokens => cheaper attention per step, so warmup steps are far
+            faster. Default off; requires res_curriculum_warmup_steps > 0 to take
+            effect.
+        res_curriculum_warmup_steps:
+          type: 'integer'
+          default: 0
+          description: |
+            Number of warmup steps at the scaled resolution. Rounds UP to the end
+            of the epoch that contains it (the resolution switch happens at an
+            epoch boundary so per-epoch batch planning stays intact). 0 = no
+            warmup (feature inert even if enabled).
+        res_curriculum_warmup_scale:
+          type: 'number'
+          default: 0.5
+          description: |
+            Warmup resolution = base_resolutions * this scale, each snapped to the
+            /64 grid the bucket table is defined on (reuses the existing bucket-fit
+            logic). 0.5 => half the linear size => ~1/4 the tokens. Must be in
+            (0, 1).
         danbooru_aug_enable:
           type: 'boolean'
           default: false

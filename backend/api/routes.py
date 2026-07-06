@@ -6960,6 +6960,12 @@ class TrainingRunCreateRequest(BaseModel):
     cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["cpu_offload_checkpointing"]
     async_cpu_offload_checkpointing: bool = TRAINING_DEFAULTS["async_cpu_offload_checkpointing"]
     fp8_base_dtype: Optional[str] = TRAINING_DEFAULTS["fp8_base_dtype"]
+    # torch.compile (opt-in DiT training acceleration). "off" (default) |
+    # "default" | "reduce-overhead" | "max-autotune-no-cudagraphs". Gated to
+    # DiT full-parameter FT; skipped for LoRA / block swap; falls back to eager
+    # on Inductor failure. See api/param_defaults.py for semantics.
+    torch_compile: str = TRAINING_DEFAULTS["torch_compile"]
+    torch_compile_dynamic: Optional[bool] = TRAINING_DEFAULTS["torch_compile_dynamic"]
 
     # Online Danbooru augmentation (image-generation). SSOT: TRAINING_DEFAULTS.
     # No vocabulary expansion (diffusion text conditioning is open-vocab);

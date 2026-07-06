@@ -457,6 +457,26 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # (Full FT needs trainable base weights — flag is silently ignored).
     # None | "fp8_e4m3fn" | "fp8_e5m2".
     "fp8_base_dtype": None,
+    # ---- torch.compile (opt-in DiT training acceleration) ----
+    # Wraps the DiT transformer's forward with torch.compile (Inductor) once,
+    # after model/dtype/device + gradient-checkpointing setup, before the loop.
+    # Values:
+    #   "off"                        (default) — eager, no compile
+    #   "default"                    — torch.compile(mode="default")
+    #   "reduce-overhead"            — CUDA-graphs mode (higher VRAM)
+    #   "max-autotune-no-cudagraphs" — autotuned kernels, no CUDA graphs
+    # Gated to DiT archs (transformer is not None) + full-parameter FT;
+    # skipped (with a log warning) for LoRA and when block swap is active
+    # (blocks_to_swap > 0). Any compile/Inductor failure at runtime falls back
+    # to eager. The forward is replaced in-place (module stays the same object),
+    # so state_dict keys remain unprefixed and checkpoint saves are unaffected.
+    "torch_compile": "off",
+    # Dynamic-shape handling for torch.compile. None = auto (Dynamo detects
+    # varying shapes and recompiles / promotes to dynamic as needed — best with
+    # bucketing). True = force dynamic from the first compile (fewer recompiles,
+    # slightly slower kernels). False = assume static (one specialised graph per
+    # shape; more recompiles under bucketing).
+    "torch_compile_dynamic": None,
 
     # ---- Online Danbooru augmentation (image-generation training) ----
     # Diffusion-side counterpart of the tagger's Danbooru augmentation. Text

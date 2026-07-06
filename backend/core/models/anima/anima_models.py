@@ -1168,17 +1168,94 @@ class Anima(nn.Module):
                     )
                 fbcache.store(x_B_T_H_W_D - original)
         else:
+            # TREAD token routing (arXiv 2501.04765): OFF by default (_tread_config
+            # is None). When the Anima trainer attaches a route config for a training
+            # step, a random subset of (1 - drop_ratio) tokens is gathered at
+            # block[start], run through blocks[start:end] ONLY, then scattered back
+            # into the full stream at block[end] (bypassed tokens keep their pre-span
+            # values — the paper's identity/residual transport). Training-only:
+            # gated on self.training AND cleared for sampling/validation, and never
+            # runs alongside FBCache (inference-only, handled above). Block-swap
+            # stays compatible: every block __call__ still fires in index order, so
+            # the offloader wait/submit coupling is preserved — routing only changes
+            # WHICH tokens (and RoPE / extra-pos rows) each block sees.
+            tread = getattr(self, "_tread_config", None) if self.training else None
+            B, T, H, W, D = x_B_T_H_W_D.shape
+            num_tokens = T * H * W
+
+            route_active = False
+            if tread is not None:
+                start_b = int(tread.get("start_block", 0))
+                end_b = int(tread.get("end_block", 0))
+                drop_ratio = float(tread.get("drop_ratio", 0.0))
+                # Route only when the span is valid, drops >=1 token, and the
+                # sequence is a plain image grid (T == 1). adaLN modulation is
+                # per-timestep (broadcast over spatial tokens); with T == 1 the
+                # gathered subset — represented as a [B, 1, 1, keep, D] grid —
+                # shares one modulation, so routing is exact. T > 1 (video) would
+                # need per-token modulation, so it is skipped with a one-time warn.
+                if not (0 <= start_b < end_b <= len(self.blocks) and 0.0 < drop_ratio < 1.0):
+                    if not getattr(self, "_warned_tread_span", False):
+                        print(f"[Anima TREAD] WARNING: invalid route "
+                              f"(start={start_b}, end={end_b}, drop={drop_ratio}, "
+                              f"blocks={len(self.blocks)}); routing disabled")
+                        self._warned_tread_span = True
+                elif T != 1:
+                    if not getattr(self, "_warned_tread_video", False):
+                        print(f"[Anima TREAD] WARNING: token routing requires T==1 "
+                              f"(got T={T}); routing disabled for this run")
+                        self._warned_tread_video = True
+                elif num_tokens > 1:
+                    route_active = True
+
+            kept_idx = None
+            rope_span = None
+            extra_span = None
+            x_flat_full = None
+            if route_active:
+                from core.training.token_routing import (
+                    select_kept_indices, gather_tokens, scatter_tokens,
+                )
+                kept_idx = select_kept_indices(num_tokens, drop_ratio, x_B_T_H_W_D.device)
+
             for block_idx, block in enumerate(self.blocks):
                 if offloader is not None:
                     offloader.wait_for_block(block_idx)
+
+                if route_active and block_idx == start_b:
+                    # Enter route: snapshot the full stream, gather the kept subset
+                    # into a [B, 1, 1, keep, D] pseudo-grid so blocks run unchanged.
+                    x_flat_full = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
+                    x_kept = gather_tokens(x_flat_full, kept_idx)
+                    x_B_T_H_W_D = x_kept[:, None, None, :, :]
+                    if rope_emb_L_1_1_D is not None:
+                        rope_span = rope_emb_L_1_1_D.index_select(0, kept_idx)
+                    if extra_pos_emb is not None:
+                        extra_flat = rearrange(extra_pos_emb, "b t h w d -> b (t h w) d")
+                        extra_span = gather_tokens(extra_flat, kept_idx)[:, None, None, :, :]
+
+                in_span = route_active and (start_b <= block_idx < end_b)
+                cur_rope = rope_span if in_span else rope_emb_L_1_1_D
+                cur_extra = extra_span if in_span else extra_pos_emb
+
                 x_B_T_H_W_D = block(
                     x_B_T_H_W_D, t_embedding_B_T_D, crossattn_emb, attn_params, use_fp32,
-                    rope_emb_L_1_1_D=rope_emb_L_1_1_D,
+                    rope_emb_L_1_1_D=cur_rope,
                     adaln_lora_B_T_3D=adaln_lora_B_T_3D,
-                    extra_per_block_pos_emb=extra_pos_emb,
+                    extra_per_block_pos_emb=cur_extra,
                 )
+
                 if offloader is not None:
                     offloader.submit_move_blocks_forward(block_idx)
+
+                if route_active and block_idx == end_b - 1:
+                    # Exit route: scatter processed tokens back into the full stream
+                    # (bypassed tokens keep their pre-span values), restore grid shape.
+                    x_kept_out = rearrange(x_B_T_H_W_D, "b t h w d -> b (t h w) d")
+                    x_B_T_H_W_D = scatter_tokens(x_flat_full, x_kept_out, kept_idx)
+                    x_B_T_H_W_D = rearrange(
+                        x_B_T_H_W_D, "b (t h w) d -> b t h w d", t=T, h=H, w=W,
+                    )
 
         x_B_T_H_W_O = self.final_layer(
             x_B_T_H_W_D, t_embedding_B_T_D,

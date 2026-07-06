@@ -6950,6 +6950,11 @@ class TrainingRunCreateRequest(BaseModel):
     anima_attn_mlp_lr_factor: float = TRAINING_DEFAULTS["anima_attn_mlp_lr_factor"]
     anima_mod_lr_factor: float = TRAINING_DEFAULTS["anima_mod_lr_factor"]
     anima_llm_adapter_lr_factor: float = TRAINING_DEFAULTS["anima_llm_adapter_lr_factor"]
+    # TREAD token routing (arXiv 2501.04765) — training-only acceleration (Anima).
+    tread_enable: bool = TRAINING_DEFAULTS["tread_enable"]
+    tread_drop_ratio: float = TRAINING_DEFAULTS["tread_drop_ratio"]
+    tread_start_block: int = TRAINING_DEFAULTS["tread_start_block"]
+    tread_end_block: int = TRAINING_DEFAULTS["tread_end_block"]
     # Full-parameter save: embed the VAE into the single-file checkpoint.
     # None = per-arch default (BUNDLE_VAE_DEFAULTS_BY_ARCH: sd15/sdxl/deus True,
     # others False); an explicit boolean always wins.

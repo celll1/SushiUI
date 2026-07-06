@@ -227,6 +227,13 @@ def _build_train_section(
     # but the trainer no-ops with a warning.
     train["torch_compile"] = p.get("torch_compile", "off")
     train["torch_compile_dynamic"] = p.get("torch_compile_dynamic", None)
+    # TREAD token routing (arXiv 2501.04765) — training-only. Read unconditionally;
+    # non-Anima trainers ignore it (base_trainer only builds self.tread_config when
+    # tread_enable is True). SSoT: api/param_defaults.TRAINING_DEFAULTS.
+    train["tread_enable"] = p.get("tread_enable", False)
+    train["tread_drop_ratio"] = p.get("tread_drop_ratio", 0.5)
+    train["tread_start_block"] = p.get("tread_start_block", 2)
+    train["tread_end_block"] = p.get("tread_end_block", 26)
 
     # ---- Ideogram 4 LoRA (flow-matching DiT) — other archs ignore. ----
     train["ideogram4_lora_scope"] = p.get("ideogram4_lora_scope", "attn,mlp")

@@ -715,6 +715,26 @@ class BaseTrainer(ABC):
         self.block_swap_h2d_only = bool(_tc.get("block_swap_h2d_only", False))
         self.block_swap_ring_size = int(_tc.get("block_swap_ring_size", 2))
 
+        # TREAD token routing (arXiv 2501.04765) — training-only, currently wired
+        # for the Anima DiT (other archs ignore self.tread_config). When enabled,
+        # the arch ops attach this dict to the transformer for each training
+        # forward (cleared for sampling). Default OFF (self.tread_config is None).
+        self.tread_config = None
+        if bool(_tc.get("tread_enable", False)):
+            self.tread_config = {
+                "drop_ratio": float(_tc.get("tread_drop_ratio", 0.5)),
+                "start_block": int(_tc.get("tread_start_block", 2)),
+                "end_block": int(_tc.get("tread_end_block", 26)),
+            }
+            print(f"[TREAD] Token routing ENABLED: {self.tread_config} "
+                  f"(training-only; sampling runs the full network)")
+            # torch.compile + routing: the routed span runs a second, smaller token
+            # count, so compile sees two static shapes per bucket (recompiles once
+            # per shape, not per step). Warn so the user expects the extra compile.
+            if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
+                print("[TREAD] WARNING: torch_compile is on with routing — expect an "
+                      "extra one-time recompile for the routed (reduced-token) shape.")
+
         # Per-bucket activation offload dispatcher settings. The dispatcher is
         # created lazily on the first executed step (once static VRAM is known).
         self.activation_dispatch_enable = activation_dispatch_enable

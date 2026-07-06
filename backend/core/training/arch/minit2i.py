@@ -15,6 +15,7 @@ from core.training.components.wiring import MINIT2I_WIRING
 class MiniT2IArchHandler(ArchHandler):
     name = "minit2i"
     wiring = MINIT2I_WIRING
+    pixel_align = 16  # GRID_ALIGN = patch_size(16); pixel-space patchify unit
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/minit2i_ops (shared with the base_trainer load-time

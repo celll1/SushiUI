@@ -15,6 +15,7 @@ from core.training.components.wiring import IDEOGRAM4_WIRING
 class Ideogram4ArchHandler(ArchHandler):
     name = "ideogram4"
     wiring = IDEOGRAM4_WIRING
+    pixel_align = 16  # vae_scale(8) * patch(2) (ideogram4_resolution)
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/ideogram4_ops (shared with the base_trainer

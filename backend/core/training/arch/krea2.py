@@ -15,6 +15,7 @@ from core.training.components.wiring import KREA2_WIRING
 class Krea2ArchHandler(ArchHandler):
     name = "krea2"
     wiring = KREA2_WIRING
+    pixel_align = 16  # vae_scale(8) * patch(2); latent grid = pixel/16
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/krea2_ops (shared with the base_trainer load-time

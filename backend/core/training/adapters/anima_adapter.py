@@ -236,6 +236,39 @@ class AnimaFullParameterAdapter(BaseFullParameterAdapter):
                 trainer.transformer.llm_adapter.requires_grad_(False)
                 trainer.transformer.llm_adapter.eval()
                 print("[AnimaFullParameterAdapter] LLM Adapter frozen (train_llm_adapter=False)")
+
+            # DiT-BlockSkip (arXiv 2603.20755), partial-FT variant: freeze the
+            # skipped front [0, front) and back [num_blocks - back, num_blocks)
+            # transformer blocks so ONLY the middle blocks train with full
+            # parameters. Frozen block params get requires_grad_(False) here and
+            # are consequently excluded from the optimizer (setup_trainable_parameters
+            # filters on p.requires_grad). The BlockSkip forward supplies the frozen
+            # spans' contribution as detached residual features, so the reconstruction
+            # stays exact (identical reasoning to the LoRA variant). All non-block
+            # components (embedders, final layer, adaLN/t-embedding, llm_adapter when
+            # trained) remain trainable — grads reach the embedders through the
+            # identity+delta path and the final layer after the back reconstruction.
+            _bs = getattr(trainer, "blockskip_config", None)
+            if _bs is not None and hasattr(trainer.transformer, "blocks"):
+                _num_blocks = len(trainer.transformer.blocks)
+                _bs_lo = int(_bs["front"])
+                _bs_hi = _num_blocks - int(_bs["back"])
+                if _bs_hi - _bs_lo < 1:
+                    raise ValueError(
+                        f"[AnimaFullParameterAdapter] BlockSkip leaves no middle "
+                        f"blocks: num_blocks={_num_blocks}, front={_bs['front']}, "
+                        f"back={_bs['back']} => middle range [{_bs_lo}, {_bs_hi}). "
+                        f"Reduce blockskip_front/back."
+                    )
+                _frozen = 0
+                for _i, _blk in enumerate(trainer.transformer.blocks):
+                    if _i < _bs_lo or _i >= _bs_hi:
+                        _blk.requires_grad_(False)
+                        _frozen += 1
+                print(f"[AnimaFullParameterAdapter] BlockSkip (full-FT): froze "
+                      f"{_frozen} skipped block(s); full-parameter training limited "
+                      f"to middle DiT blocks [{_bs_lo}, {_bs_hi}) of {_num_blocks} "
+                      f"+ shared non-block components.")
             print("[AnimaFullParameterAdapter] Anima DiT set to train mode")
 
         # Text encoder (Qwen3): always frozen.

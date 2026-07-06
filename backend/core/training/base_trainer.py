@@ -775,15 +775,21 @@ class BaseTrainer(ABC):
         self.blockskip_config = None
         if bool(_tc.get("blockskip_enable", False)):
             trainer_cls = type(self).__name__
-            if trainer_cls != "LoRATrainer":
+            # LoRA variant: LoRA only in the middle blocks (skipped front/back
+            # frozen, no adapter). Partial-FT variant: full parameters on the
+            # middle blocks + all non-block components; skipped front/back blocks
+            # are frozen (requires_grad_(False)) and excluded from the optimizer,
+            # supplied by the precomputed residual features. Both are exact
+            # (the frozen skipped spans make the folded per-step residuals valid).
+            # ReLoRATrainer (subclass of LoRATrainer, exact name "ReLoRATrainer")
+            # and ControlNet are NOT supported.
+            if trainer_cls not in ("LoRATrainer", "FullParameterTrainer"):
                 raise ValueError(
-                    "blockskip_enable is a LoRA-ONLY feature (trainer is "
-                    f"{trainer_cls}). BlockSkip freezes the first/last blocks and "
-                    "trains LoRA only in the middle blocks; full-parameter FT would "
-                    "need to update the frozen skipped blocks, which invalidates the "
-                    "precomputed residual features. See CLAUDE.md / the BlockSkip "
-                    "doc for the partial-FT variant rationale. Disable blockskip_enable "
-                    "or switch to LoRA training."
+                    "blockskip_enable is supported only for LoRA and full "
+                    f"fine-tune training (trainer is {trainer_cls}). BlockSkip "
+                    "freezes the first/last blocks and trains only the middle "
+                    "blocks; ReLoRA and ControlNet are unsupported. Disable "
+                    "blockskip_enable or switch to LoRA / full-parameter training."
                 )
             _bs_front = int(_tc.get("blockskip_front", 4))
             _bs_back = int(_tc.get("blockskip_back", 4))
@@ -815,10 +821,12 @@ class BaseTrainer(ABC):
                 "front": _bs_front,
                 "back": _bs_back,
             }
-            print(f"[BlockSkip] DiT-BlockSkip ENABLED (memory reduction): "
-                  f"skip first {_bs_front} + last {_bs_back} blocks; LoRA in middle "
-                  f"blocks only; residuals kept in memory per step (training-only; "
-                  f"sampling runs the full network).")
+            print(f"[BlockSkip] DiT-BlockSkip ENABLED (memory reduction, "
+                  f"trainer={trainer_cls}): skip first {_bs_front} + last {_bs_back} "
+                  f"blocks; only the middle blocks train (LoRA or full parameters); "
+                  f"skipped blocks frozen + excluded from the optimizer; residuals "
+                  f"kept in memory per step (training-only; sampling runs the full "
+                  f"network).")
             if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
                 print("[BlockSkip] WARNING: torch_compile is on — BlockSkip runs a "
                       "two-pass (no_grad full + grad middle) forward with dynamic "

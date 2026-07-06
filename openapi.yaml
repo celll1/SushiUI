@@ -6187,14 +6187,18 @@ components:
           default: false
           description: |
             DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION for
-            LoRA fine-tuning (anima). Skips the first blockskip_front and last
-            blockskip_back transformer blocks; LoRA is injected ONLY into the
-            unskipped middle blocks. Each step, a no_grad full forward captures the
-            skipped spans' residual features (Delta = span input->output), which are
-            re-added during the gradient forward so backprop flows only through the
-            middle blocks — eliminating the skipped blocks' backward-activation
-            memory. LoRA-only (raises for full-parameter FT); mutually exclusive
-            with tread_enable, block_skip_rate and blocks_to_swap. Default off.
+            LoRA and full fine-tune training (anima). Skips the first blockskip_front
+            and last blockskip_back transformer blocks; only the unskipped middle
+            blocks train (LoRA injected there, or full parameters when
+            training_method=full_finetune — the skipped blocks are frozen and
+            excluded from the optimizer). Each step, a no_grad full forward captures
+            the skipped spans' residual features (Delta = span input->output), which
+            are re-added during the gradient forward so backprop flows only through
+            the middle blocks — eliminating the skipped blocks' backward-activation
+            memory (and, for full-FT, their gradient + optimizer-state memory).
+            Supported for LoRA and full fine-tune; unsupported for ReLoRA and
+            ControlNet. Mutually exclusive with tread_enable, block_skip_rate and
+            blocks_to_swap. Default off.
         blockskip_front:
           type: 'integer'
           default: 4

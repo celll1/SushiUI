@@ -327,17 +327,20 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "block_skip_protect_start": 6,
     "block_skip_protect_end": 22,
     # DiT-BlockSkip (arXiv 2603.20755) — training-only MEMORY-REDUCTION feature
-    # for LoRA fine-tuning. Skips the FIRST `blockskip_front` and LAST
-    # `blockskip_back` transformer blocks; LoRA is injected ONLY into the
-    # unskipped MIDDLE blocks (which the paper's cross-attention masking study
-    # shows are semantically critical). The skipped blocks are frozen; per step
-    # their contribution is captured once by a no_grad full forward as a residual
-    # feature Delta (input->output of the skipped span) and re-added during the
-    # gradient forward, so backprop only flows through the middle blocks —
-    # eliminating the skipped blocks' backward-activation memory. Currently wired
+    # for LoRA and full fine-tune training. Skips the FIRST `blockskip_front` and
+    # LAST `blockskip_back` transformer blocks; only the unskipped MIDDLE blocks
+    # train (LoRA injected there, or full parameters when training_method=
+    # full_finetune) — the paper's cross-attention masking study shows the middle
+    # blocks are semantically critical. The skipped blocks are frozen (LoRA
+    # variant: no adapter; full-FT variant: requires_grad_(False), excluded from
+    # the optimizer); per step their contribution is captured once by a no_grad
+    # full forward as a residual feature Delta (input->output of the skipped span)
+    # and re-added during the gradient forward, so backprop only flows through the
+    # middle blocks — eliminating the skipped blocks' backward-activation memory
+    # (and, for full-FT, their gradient + optimizer-state memory). Currently wired
     # for the Anima DiT (other archs ignore these keys). Default OFF.
     # Mutually exclusive with TREAD, block_skip_rate (stochastic depth) and
-    # blocks_to_swap; LoRA-only (raises for full-parameter FT).
+    # blocks_to_swap; unsupported for ReLoRA and ControlNet.
     "blockskip_enable": False,
     # Number of leading / trailing blocks to skip (n + m). Defaults skip 4 + 4 of
     # Anima's 28 blocks (~29% skip ratio; the paper evaluates 30/40/50%). The

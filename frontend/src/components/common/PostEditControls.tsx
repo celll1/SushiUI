@@ -1,7 +1,8 @@
 "use client";
 
+import { RotateCcw } from "lucide-react";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral } from "@/utils/postEdit";
-import Slider from "./Slider";
+import NumberInput from "./NumberInput";
 
 interface PostEditControlsProps {
   value: PostEditState;
@@ -10,50 +11,109 @@ interface PostEditControlsProps {
   className?: string;
 }
 
+// Shared thumb styling for the bare range inputs (kept in sync with Slider.tsx's
+// look, but this component intentionally does NOT use the shared Slider
+// component -- Slider's own number box has the unclearable-zero anti-pattern
+// (parseInt(...) || 0 on every keystroke), and we don't want to touch Slider
+// globally since other consumers depend on its current behavior).
+const RANGE_CLASSNAME =
+  "flex-1 min-w-0 h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer " +
+  "[&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 " +
+  "[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-600 [&::-webkit-slider-thumb]:cursor-pointer " +
+  "[&::-webkit-slider-thumb]:hover:bg-blue-700 " +
+  "[&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 [&::-moz-range-thumb]:rounded-full " +
+  "[&::-moz-range-thumb]:bg-blue-600 [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:hover:bg-blue-700 " +
+  "[&::-moz-range-thumb]:border-0";
+
 /**
- * Compact two-slider panel (Brightness + Saturation) for client-side image
- * post-editing. Defaults are neutral (100%). A Reset button appears only when
- * the current state is non-neutral. Small footprint, suitable under an image.
+ * Single-line compact post-edit row: `B [slider][num]  S [slider][num]  [reset]`.
+ *
+ * Deliberately NOT built on the shared Slider component (see RANGE_CLASSNAME
+ * comment) -- the number box next to each slider is a plain NumberInput
+ * (common/NumberInput.tsx), which lets the field be freely cleared/retyped
+ * instead of snapping back to a coerced value on every keystroke.
  */
 export default function PostEditControls({ value, onChange, className = "" }: PostEditControlsProps) {
   const nonNeutral = !isNeutral(value);
 
   return (
-    <div className={`space-y-2 ${className}`}>
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">
-          Post-Edit
-        </span>
-        {nonNeutral && (
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onChange({ ...NEUTRAL_POST_EDIT });
-            }}
-            className="text-xs text-blue-400 hover:text-blue-300"
-            title="Reset brightness and saturation"
-          >
-            Reset
-          </button>
-        )}
-      </div>
-      <Slider
-        label="Brightness"
+    <div className={`flex items-center gap-2 ${className}`}>
+      <label
+        htmlFor="post-edit-brightness-range"
+        className="text-xs text-gray-400 font-mono flex-shrink-0"
+        title="Brightness (%)"
+      >
+        B
+      </label>
+      <input
+        id="post-edit-brightness-range"
+        type="range"
         min={0}
         max={200}
         step={1}
         value={value.brightness}
-        onChange={(e) => onChange({ ...value, brightness: parseInt(e.target.value, 10) || 0 })}
+        onChange={(e) => onChange({ ...value, brightness: parseInt(e.target.value, 10) })}
+        className={RANGE_CLASSNAME}
+        title="Brightness (%)"
       />
-      <Slider
-        label="Saturation"
+      <NumberInput
+        label="Brightness (%)"
+        value={value.brightness}
+        onCommit={(brightness) => onChange({ ...value, brightness })}
+        defaultValue={100}
+        min={0}
+        max={200}
+        step={1}
+        parse="int"
+        className="w-14 flex-shrink-0"
+      />
+
+      <label
+        htmlFor="post-edit-saturation-range"
+        className="text-xs text-gray-400 font-mono flex-shrink-0"
+        title="Saturation (%)"
+      >
+        S
+      </label>
+      <input
+        id="post-edit-saturation-range"
+        type="range"
         min={0}
         max={200}
         step={1}
         value={value.saturation}
-        onChange={(e) => onChange({ ...value, saturation: parseInt(e.target.value, 10) || 0 })}
+        onChange={(e) => onChange({ ...value, saturation: parseInt(e.target.value, 10) })}
+        className={RANGE_CLASSNAME}
+        title="Saturation (%)"
       />
+      <NumberInput
+        label="Saturation (%)"
+        value={value.saturation}
+        onCommit={(saturation) => onChange({ ...value, saturation })}
+        defaultValue={100}
+        min={0}
+        max={200}
+        step={1}
+        parse="int"
+        className="w-14 flex-shrink-0"
+      />
+
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange({ ...NEUTRAL_POST_EDIT });
+        }}
+        disabled={!nonNeutral}
+        className={`flex-shrink-0 p-1 rounded ${
+          nonNeutral
+            ? "text-blue-400 hover:text-blue-300 hover:bg-gray-700"
+            : "text-gray-600 cursor-default"
+        }`}
+        title="Reset brightness and saturation"
+      >
+        <RotateCcw className="h-3.5 w-3.5" />
+      </button>
     </div>
   );
 }

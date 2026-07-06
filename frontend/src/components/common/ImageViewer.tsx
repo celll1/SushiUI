@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
-import { Download } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Download, SlidersHorizontal } from "lucide-react";
 import { PostEditState, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import PostEditControls from "./PostEditControls";
 
@@ -20,6 +20,11 @@ interface ImageViewerProps {
 }
 
 export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, hasNext, postEdit, onPostEditChange }: ImageViewerProps) {
+  // Post-edit strip is collapsed by default so it never obscures the image;
+  // this is purely internal UI state (not one of the optional postEdit props).
+  const [postEditExpanded, setPostEditExpanded] = useState(false);
+  const postEditNonNeutral = postEdit ? !isNeutral(postEdit) : false;
+
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
 
@@ -105,10 +110,12 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
           onClick={(e) => e.stopPropagation()}
         />
 
-        {/* Post-edit controls (only when the consumer opts in) */}
-        {postEdit && onPostEditChange && (
+        {/* Post-edit strip: collapsed by default (just the toggle button below)
+            so the image is never obscured. Expanding shows one compact row
+            flush to the bottom edge, which the user can collapse again. */}
+        {postEdit && onPostEditChange && postEditExpanded && (
           <div
-            className="absolute bottom-4 left-1/2 -translate-x-1/2 w-72 max-w-[90vw] bg-black bg-opacity-70 rounded-lg p-3"
+            className="absolute bottom-0 left-0 right-0 bg-black bg-opacity-70 px-3 py-2"
             onClick={(e) => e.stopPropagation()}
           >
             <PostEditControls value={postEdit} onChange={onPostEditChange} />
@@ -126,6 +133,26 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
             title="Next (Right Arrow)"
           >
             ›
+          </button>
+        )}
+
+        {/* Post-edit toggle: small, unobtrusive, docked in the toolbar with
+            download/close. A dot indicates a non-neutral edit while collapsed. */}
+        {postEdit && onPostEditChange && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setPostEditExpanded((prev) => !prev);
+            }}
+            className={`absolute top-4 right-36 text-white bg-black bg-opacity-50 hover:bg-opacity-70 rounded-full w-12 h-12 flex items-center justify-center ${
+              postEditExpanded ? "ring-2 ring-blue-500" : ""
+            }`}
+            title="Adjust brightness/saturation"
+          >
+            <SlidersHorizontal className="h-5 w-5" />
+            {!postEditExpanded && postEditNonNeutral && (
+              <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-blue-500" />
+            )}
           </button>
         )}
 

@@ -3239,232 +3239,31 @@ class BaseTrainer(ABC):
         Returns (embeddings[1,L,2048], pooled[1,1280]). The encoder body is frozen by
         default (run under no_grad); the adapters carry the trainable gradient. When
         sdxl_te_train_encoder is set, the body is also run with grad.
-        """
-        import contextlib
-        from core.models.sdxl_te_registry import encode_text
 
-        train_body = bool(getattr(self, "sdxl_te_train_encoder", False)) and requires_grad
-        enc_ctx = contextlib.nullcontext() if train_body else torch.no_grad()
-        with enc_ctx:
-            hidden, pooled = encode_text(
-                self.te_custom, self.te_tokenizer, [prompt],
-                max_len=getattr(self, "te_max_len", 256),
-                hidden_layer=getattr(self, "te_hidden_layer", -2),
-                device=self.device,
-            )
-        ad_dtype = next(self.te_adapters.parameters()).dtype
-        enc, pld = self.te_adapters(hidden.to(ad_dtype), pooled.to(ad_dtype))  # [1,L,2048], [1,1280]
-        return enc, pld
+        P4: verbatim body moved to ``ops/sd_sdxl_ops.encode_prompt_custom_te``;
+        this stays a thin delegator (called by the ``encode_prompt`` dispatcher).
+        """
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.encode_prompt_custom_te(self, prompt, requires_grad)
 
     def _encode_prompt_simple(self, prompt: str, requires_grad: bool = False):
         """
         Encode short prompt (<=75 tokens) using standard method.
+
+        P4: verbatim body moved to ``ops/sd_sdxl_ops.encode_prompt_simple``.
         """
-        if self.is_sdxl:
-            # SDXL: Two text encoders
-            text_inputs_1 = self.tokenizer(
-                prompt,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-
-            text_inputs_2 = self.tokenizer_2(
-                prompt,
-                padding="max_length",
-                max_length=self.tokenizer_2.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-
-            context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
-
-            # Check if text encoders have FP8 weights (requires autocast)
-            has_fp8_weights = self._has_fp8_text_encoder()
-
-            with context_manager:
-                # For FP8 quantized text encoders, use autocast for mixed precision
-                # This prevents "ufunc_add_CUDA not implemented for Float8_e4m3fn" errors
-                if has_fp8_weights:
-                    with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                        # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
-                        # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
-                        encoder_output_1 = self.text_encoder(
-                            text_inputs_1.input_ids.to(self.device),
-                            output_hidden_states=True,
-                        )
-                        text_embeddings_1 = encoder_output_1.hidden_states[-2]
-
-                        encoder_output_2 = self.text_encoder_2(
-                            text_inputs_2.input_ids.to(self.device),
-                            output_hidden_states=True,
-                        )
-                        text_embeddings_2 = encoder_output_2.hidden_states[-2]
-                        pooled_embeddings = encoder_output_2[0]
-                else:
-                    # CRITICAL: Both text encoders must use hidden_states[-2] (penultimate layer)
-                    # This matches diffusers' StableDiffusionXLPipeline.encode_prompt() implementation
-                    encoder_output_1 = self.text_encoder(
-                        text_inputs_1.input_ids.to(self.device),
-                        output_hidden_states=True,
-                    )
-                    text_embeddings_1 = encoder_output_1.hidden_states[-2]
-
-                    encoder_output_2 = self.text_encoder_2(
-                        text_inputs_2.input_ids.to(self.device),
-                        output_hidden_states=True,
-                    )
-                    text_embeddings_2 = encoder_output_2.hidden_states[-2]
-                    pooled_embeddings = encoder_output_2[0]
-
-                text_embeddings = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
-
-                return text_embeddings, pooled_embeddings
-        else:
-            # SD1.5: Single text encoder
-            text_inputs = self.tokenizer(
-                prompt,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-
-            context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
-
-            # Check if text encoder has FP8 weights (requires autocast)
-            has_fp8_weights = self._has_fp8_text_encoder()
-
-            with context_manager:
-                # For FP8 quantized text encoder, use autocast for mixed precision
-                if has_fp8_weights:
-                    with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                        text_embeddings = self.text_encoder(
-                            text_inputs.input_ids.to(self.device),
-                        )[0]
-                else:
-                    text_embeddings = self.text_encoder(
-                        text_inputs.input_ids.to(self.device),
-                    )[0]
-
-                return text_embeddings
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.encode_prompt_simple(self, prompt, requires_grad)
 
     def _encode_prompt_chunked(self, prompt: str, requires_grad: bool = False):
         """
         Encode long prompt (>75 tokens) using chunking.
         Splits prompt into 75-token chunks and concatenates embeddings.
+
+        P4: verbatim body moved to ``ops/sd_sdxl_ops.encode_prompt_chunked``.
         """
-        tokenizer = self.tokenizer_2 if self.is_sdxl else self.tokenizer
-        tokens = tokenizer(prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
-
-        # Split tokens into 75-token chunks
-        chunk_size = 75
-        chunks = []
-        for i in range(0, len(tokens), chunk_size):
-            chunk_tokens = tokens[i:i + chunk_size]
-            chunks.append(chunk_tokens)
-
-        # Limit chunks if max_prompt_chunks is set
-        if self.max_prompt_chunks > 0 and len(chunks) > self.max_prompt_chunks:
-            chunks = chunks[:self.max_prompt_chunks]
-
-        # Encode each chunk
-        chunk_embeds_list = []
-        pooled_embeddings = None
-
-        context_manager = torch.enable_grad() if requires_grad else torch.no_grad()
-
-        with context_manager:
-            for idx, chunk_tokens in enumerate(chunks):
-                # Decode tokens back to text
-                chunk_text = tokenizer.decode(chunk_tokens, skip_special_tokens=True)
-
-                # Encode chunk
-                if self.is_sdxl:
-                    # SDXL: Encode with both text encoders
-                    text_inputs_1 = self.tokenizer(
-                        chunk_text,
-                        padding="max_length",
-                        max_length=self.tokenizer.model_max_length,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-
-                    text_inputs_2 = self.tokenizer_2(
-                        chunk_text,
-                        padding="max_length",
-                        max_length=self.tokenizer_2.model_max_length,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-
-                    encoder_output_1 = self.text_encoder(
-                        text_inputs_1.input_ids.to(self.device),
-                        output_hidden_states=True,
-                    )
-                    text_embeddings_1 = encoder_output_1.hidden_states[-2]
-
-                    encoder_output_2 = self.text_encoder_2(
-                        text_inputs_2.input_ids.to(self.device),
-                        output_hidden_states=True,
-                    )
-                    text_embeddings_2 = encoder_output_2.hidden_states[-2]
-
-                    # Use pooled embeddings from first chunk only
-                    if idx == 0:
-                        pooled_embeddings = encoder_output_2[0]
-
-                    chunk_embeds = torch.cat([text_embeddings_1, text_embeddings_2], dim=-1)
-                    chunk_embeds_list.append(chunk_embeds)
-                else:
-                    # SD1.5: Single text encoder
-                    text_inputs = self.tokenizer(
-                        chunk_text,
-                        padding="max_length",
-                        max_length=self.tokenizer.model_max_length,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-
-                    text_embeddings = self.text_encoder(
-                        text_inputs.input_ids.to(self.device),
-                    )[0]
-
-                    chunk_embeds_list.append(text_embeddings)
-
-        # Concatenate chunks based on chunking mode
-        if self.prompt_chunking_mode == "a1111":
-            # A1111 mode: concatenate all chunks as-is
-            text_embeddings = torch.cat(chunk_embeds_list, dim=1)
-        elif self.prompt_chunking_mode == "sd_scripts":
-            # sd-scripts mode: strip BOS/EOS between chunks
-            processed_chunks = []
-            for idx, chunk_emb in enumerate(chunk_embeds_list):
-                if len(chunk_embeds_list) == 1:
-                    processed_chunks.append(chunk_emb)
-                elif idx == 0:
-                    # First chunk: remove EOS (last token before padding)
-                    processed_chunks.append(chunk_emb[:, :-1, :])
-                elif idx == len(chunk_embeds_list) - 1:
-                    # Last chunk: remove BOS (first token)
-                    processed_chunks.append(chunk_emb[:, 1:, :])
-                else:
-                    # Middle chunks: remove both BOS and EOS
-                    processed_chunks.append(chunk_emb[:, 1:-1, :])
-            text_embeddings = torch.cat(processed_chunks, dim=1)
-        else:  # nobos
-            # NoBOS mode: strip all BOS/EOS tokens
-            processed_chunks = []
-            for chunk_emb in chunk_embeds_list:
-                # Remove first (BOS) and last (EOS) tokens
-                processed_chunks.append(chunk_emb[:, 1:-1, :])
-            text_embeddings = torch.cat(processed_chunks, dim=1)
-
-        if self.is_sdxl:
-            return text_embeddings, pooled_embeddings
-        else:
-            return text_embeddings
+        from core.training.ops import sd_sdxl_ops
+        return sd_sdxl_ops.encode_prompt_chunked(self, prompt, requires_grad)
 
     def encode_prompt_zimage(
         self,
@@ -3481,57 +3280,10 @@ class BaseTrainer(ABC):
         Returns:
             Tuple of (prompt_embeds, attention_mask)
         """
-        # Format with Qwen chat template
-        messages = [{"role": "user", "content": prompt}]
-        formatted_prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            enable_thinking=True,
-        )
-
-        # Tokenize
-        text_inputs = self.tokenizer(
-            formatted_prompt,
-            padding="max_length",
-            max_length=max_sequence_length,
-            truncation=True,
-            return_tensors="pt",
-        )
-
-        input_ids = text_inputs.input_ids.to(self.device)
-        attention_mask = text_inputs.attention_mask.to(self.device).bool()
-
-        # Encode with penultimate layer
-        # Check if text encoder has FP8 weights (requires autocast)
-        has_fp8_weights = self._has_fp8_text_encoder()
-
-        with torch.no_grad():
-            # For FP8 quantized text encoder, use autocast for mixed precision
-            if has_fp8_weights:
-                with torch.autocast(device_type='cuda', dtype=self.training_dtype):
-                    encoder_output = self.text_encoder(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        output_hidden_states=True,
-                    )
-                    prompt_embeds = encoder_output.hidden_states[-2]
-            else:
-                encoder_output = self.text_encoder(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    output_hidden_states=True,
-                )
-                prompt_embeds = encoder_output.hidden_states[-2]
-
-        # Extract and detach outputs
-        result_embeds = prompt_embeds[0].detach()
-        result_mask = attention_mask[0].detach()
-
-        # Free intermediate tensors to prevent VRAM accumulation
-        del input_ids, encoder_output, prompt_embeds, attention_mask
-
-        return result_embeds, result_mask
+        # P4: verbatim body moved to ``ops/zimage_ops.encode_prompt``. This stays
+        # a thin delegator (called by encode_caption AND the sampling path).
+        from core.training.ops import zimage_ops
+        return zimage_ops.encode_prompt(self, prompt, max_sequence_length)
 
     def encode_prompt_anima(self, prompt: str, qwen3_max_length: int = 512,
                              t5_max_length: int = 512):
@@ -3542,30 +3294,9 @@ class BaseTrainer(ABC):
         (Qwen3 attention mask), t5_input_ids, t5_attn_mask. Caching is
         handled upstream — this method always re-encodes.
         """
-        from core.models.anima.anima_pipeline_ops import encode_prompt as _encode
-
-        # Reuse the inference encode_prompt — it already handles Qwen3 hidden-state
-        # extraction, T5 tokenisation for the LLM Adapter, and zero-masking.
-        # Phase B.1-e added A1111-style emphasis support there which is
-        # intentionally NOT applied during training (captions go through raw).
-        encoded = _encode(
-            text_encoder=self.text_encoder,
-            qwen3_tokenizer=self.tokenizer,
-            t5_tokenizer=self.t5_tokenizer,
-            prompt=prompt,
-            device=str(self.device),
-            dtype=self.training_dtype,
-            qwen3_max_length=qwen3_max_length,
-            t5_max_length=t5_max_length,
-        )
-        # encode_prompt returns batched tensors of shape [1, L, ...]; drop the
-        # batch dim so caches accumulate per-sample. Detach for storage.
-        return {
-            "prompt_embeds": encoded["prompt_embeds"][0].detach(),
-            "source_mask": encoded["source_mask"][0].detach(),
-            "t5_input_ids": encoded["t5_input_ids"][0].detach(),
-            "t5_attn_mask": encoded["t5_attn_mask"][0].detach(),
-        }
+        # P4: verbatim body moved to ``ops/anima_ops.encode_prompt``.
+        from core.training.ops import anima_ops
+        return anima_ops.encode_prompt(self, prompt, qwen3_max_length, t5_max_length)
 
     def encode_prompt_lens(self, prompt: str, max_length: int = 512):
         """Encode prompt for Lens using the inference encode_prompt function.
@@ -3574,29 +3305,9 @@ class BaseTrainer(ABC):
         tensor of shape [num_layers, L, enc_hidden_dim] and encoder_mask is
         [L] bool. Each is detached and stored per-sample in the latent cache.
         """
-        from core.models.lens.lens_pipeline_ops import encode_prompt as _encode
-        # encode_prompt returns (List[Tensor[1, L, D]], Tensor[1, L]) for a
-        # single prompt. We call it with empty string as neg prompt to get
-        # only the conditional side; the uncond side is discarded.
-        encoder_features, encoder_mask = _encode(
-            text_encoder=self.text_encoder,
-            tokenizer=self.tokenizer,
-            prompt=prompt,
-            negative_prompt="",
-            device=str(self.device),
-            dtype=self.training_dtype,
-            max_length=max_length,
-        )
-        # encoder_features: List[Tensor[2, L, D]] (batch of [cond, uncond]);
-        # slice out the conditional (index 0) for each layer.
-        cond_features = [f[0:1].squeeze(0).detach() for f in encoder_features]  # each [L, D]
-        # encoder_mask: [2, L] — take the conditional row.
-        cond_mask = encoder_mask[0].detach()  # [L]
-        # Stack per-layer and add batch dim: [1, num_layers, L, D].
-        # The batch dim allows torch.cat(dim=0) in the training loop to produce
-        # the correct [B, num_layers, L, D] batched tensor.
-        stacked = torch.stack(cond_features, dim=0).unsqueeze(0)  # [1, num_layers, L, D]
-        return stacked, cond_mask
+        # P4: verbatim body moved to ``ops/lens_ops.encode_prompt``.
+        from core.training.ops import lens_ops
+        return lens_ops.encode_prompt(self, prompt, max_length)
 
     def encode_prompt_ideogram4(self, prompt: str, max_length: int = 512):
         """Encode prompt for Ideogram 4: 13-layer Qwen3-VL hidden states.
@@ -3606,11 +3317,9 @@ class BaseTrainer(ABC):
         [B, 13, L, 4096] / [B, L]. The 13 layers are concatenated to the
         53248-dim conditioning inside train_step_ideogram4.
         """
-        from core.models.ideogram4.ideogram4_pipeline_ops import encode_text_layers
-        stacked, mask = encode_text_layers(
-            self.text_encoder, self.tokenizer, prompt, max_sequence_length=max_length,
-        )  # stacked [13, L, 4096] (cpu f32), mask [L] (cpu bool)
-        return stacked.unsqueeze(0).detach(), mask.detach()
+        # P4: verbatim body moved to ``ops/ideogram4_ops.encode_prompt``.
+        from core.training.ops import ideogram4_ops
+        return ideogram4_ops.encode_prompt(self, prompt, max_length)
 
     def encode_prompt_krea2(self, prompt: str, max_length: int = 512):
         """Encode prompt for Krea 2: 12-layer Qwen3-VL hidden-state stack.
@@ -3619,13 +3328,9 @@ class BaseTrainer(ABC):
         produces [B, seq, 12, 2560] / [B, seq]. The DiT fuses the layer axis
         internally (text_fusion) inside train_step_krea2 / the forward pass.
         """
-        from core.models.krea2.krea2_pipeline_ops import encode_prompt as _k_encode
-        select_layers = getattr(self, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
-        te_device = self.text_encoder.device if hasattr(self.text_encoder, "device") else self.device
-        embeds, mask = _k_encode(
-            self.text_encoder, self.tokenizer, prompt, select_layers, max_length, te_device,
-        )  # embeds [1, seq, 12, 2560], mask [1, seq]
-        return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
+        # P4: verbatim body moved to ``ops/krea2_ops.encode_prompt``.
+        from core.training.ops import krea2_ops
+        return krea2_ops.encode_prompt(self, prompt, max_length)
 
     def encode_prompt_minit2i(self, prompt: str, requires_grad: bool = False):
         """Encode prompt for MiniT2I: FLAN-T5-Large last_hidden_state + attention mask.
@@ -3637,23 +3342,9 @@ class BaseTrainer(ABC):
         caching. requires_grad=True (TE training): grad-enabled encode kept on the TE
         device so gradients flow back into FLAN-T5.
         """
-        prompt_length = int(self.transformer.mmjit_config.prompt_length)
-        te_device = self.text_encoder.device if hasattr(self.text_encoder, "device") else self.device
-
-        if not requires_grad:
-            from core.models.minit2i.minit2i_pipeline_ops import encode_prompt as _encode
-            embeds, mask = _encode(self.text_encoder, self.tokenizer, prompt, prompt_length, te_device)
-            return embeds.detach().to("cpu"), mask[0].detach().to("cpu")
-
-        # TE training: grad-enabled forward (no torch.no_grad), keep on GPU.
-        prompts = [prompt] if isinstance(prompt, str) else list(prompt)
-        toks = self.tokenizer(
-            prompts, return_tensors="pt", padding="max_length", truncation=True, max_length=prompt_length,
-        )
-        input_ids = toks.input_ids.to(te_device)
-        attn = toks.attention_mask.to(te_device)
-        embeds = self.text_encoder(input_ids=input_ids, attention_mask=attn).last_hidden_state  # [1, L, 1024]
-        return embeds, attn[0]  # mask [L]
+        # P4: verbatim body moved to ``ops/minit2i_ops.encode_prompt``.
+        from core.training.ops import minit2i_ops
+        return minit2i_ops.encode_prompt(self, prompt, requires_grad=requires_grad)
 
     def encode_caption(self, caption: str, requires_grad: bool = False):
         """
@@ -3727,59 +3418,9 @@ class BaseTrainer(ABC):
                     for k, v in auxiliary_data.items()}
         return auxiliary_data.to(self.device, non_blocking=non_blocking)
 
-    def _collate_anima_aux(self, aux_list):
-        """Collate a list of per-item Anima auxiliary dicts into ONE dict of
-        batched tensors {source_mask, t5_input_ids, t5_attn_mask}, each [B, L].
-
-        Per-item aux tensors are 1D ([L]) as produced by encode_prompt_anima /
-        encode_captions_batched. encode_prompt() pads to a fixed max_length
-        (512) so those lengths are uniform, but encode_prompts_batched() uses
-        'longest' padding, so lengths can differ across prefetch calls that end
-        up in the same training batch. We therefore pad each key independently
-        to the batch max length: masks right-padded with 0, t5_input_ids with
-        the T5 pad id (falling back to 0 when the tokenizer is unavailable).
-        Fails loudly on missing / malformed entries rather than silently
-        dropping items (which would desync the batch dim from the latents).
-        """
-        keys = ("source_mask", "t5_input_ids", "t5_attn_mask")
-        if not aux_list:
-            raise ValueError("[Anima collation] empty auxiliary_data_list")
-        for idx, aux in enumerate(aux_list):
-            if not isinstance(aux, dict):
-                raise ValueError(
-                    f"[Anima collation] item {idx} auxiliary data is "
-                    f"{type(aux).__name__}, expected a dict with keys {keys}"
-                )
-            for k in keys:
-                if k not in aux or not isinstance(aux[k], torch.Tensor):
-                    raise ValueError(
-                        f"[Anima collation] item {idx} is missing tensor key '{k}' "
-                        f"(got keys {list(aux.keys())})"
-                    )
-
-        t5_pad_id = 0
-        t5_tok = getattr(self, "t5_tokenizer", None)
-        if t5_tok is not None and getattr(t5_tok, "pad_token_id", None) is not None:
-            t5_pad_id = int(t5_tok.pad_token_id)
-        pad_values = {"source_mask": 0, "t5_input_ids": t5_pad_id, "t5_attn_mask": 0}
-
-        batched = {}
-        for k in keys:
-            tensors = [aux[k] for aux in aux_list]
-            max_len = max(t.shape[0] for t in tensors)
-            if any(t.shape[0] != max_len for t in tensors):
-                padded = []
-                for t in tensors:
-                    if t.shape[0] < max_len:
-                        pad = torch.full(
-                            (max_len - t.shape[0],), pad_values[k],
-                            dtype=t.dtype, device=t.device,
-                        )
-                        t = torch.cat([t, pad], dim=0)
-                    padded.append(t)
-                tensors = padded
-            batched[k] = torch.stack(tensors, dim=0)
-        return batched
+    # ``_collate_anima_aux`` moved to ``ops/anima_ops.collate_aux`` (plan P4).
+    # Call sites in the train loop now dispatch via ``self.arch.collate_aux``;
+    # only the anima handler overrides the base_arch no-op default.
 
     def encode_captions_batched(self, captions, requires_grad: bool = False):
         """Encode a list of captions in one forward pass when possible.
@@ -11629,7 +11270,7 @@ class BaseTrainer(ABC):
                         # t5_attn_mask}; collate into one dict of batched [B, L]
                         # tensors carried through attention_mask (the anima
                         # train-step path reads the dict from mnt_attention_mask).
-                        attention_mask = self._collate_anima_aux(auxiliary_data_list)
+                        attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
@@ -11787,7 +11428,7 @@ class BaseTrainer(ABC):
                                 mnt_pooled_embeddings = None
                             elif self.is_anima:
                                 # Anima: per-item dict → one dict of batched [B, L] tensors.
-                                mnt_attention_mask = self._collate_anima_aux(mnt_auxiliary_data_list)
+                                mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
                                 mnt_pooled_embeddings = None
                             elif self.is_sdxl and any(aux is not None for aux in mnt_auxiliary_data_list):
                                 mnt_pooled_embeddings = torch.cat([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)

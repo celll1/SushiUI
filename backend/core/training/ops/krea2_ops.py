@@ -136,3 +136,18 @@ def setup_attention_backend(trainer, backend: str):
         print(f"{trainer.log_prefix} [OK] Krea 2 attention backend '{b}' stamped on transformer")
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set Krea 2 attention backend '{b}': {e}")
+
+
+def encode_prompt(trainer, prompt: str, max_length: int = 512):
+    """Encode prompt for Krea 2: 12-layer Qwen3-VL hidden-state stack.
+
+    VERBATIM body of ``BaseTrainer.encode_prompt_krea2`` (plan P4), moved out of
+    the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    from core.models.krea2.krea2_pipeline_ops import encode_prompt as _k_encode
+    select_layers = getattr(trainer, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+    te_device = trainer.text_encoder.device if hasattr(trainer.text_encoder, "device") else trainer.device
+    embeds, mask = _k_encode(
+        trainer.text_encoder, trainer.tokenizer, prompt, select_layers, max_length, te_device,
+    )  # embeds [1, seq, 12, 2560], mask [1, seq]
+    return embeds.detach().to("cpu"), mask[0].detach().to("cpu")

@@ -17,6 +17,8 @@ Each body is defined exactly once here and stays byte-identical.
 """
 from __future__ import annotations
 
+import torch
+
 
 def load_components(trainer) -> None:
     """Load Anima model components for training.
@@ -200,3 +202,84 @@ def setup_attention_backend(trainer, backend: str):
     except Exception as e:
         print(f"{trainer.log_prefix} WARNING: Failed to set Anima attention backend '{b}': {e}")
         print(f"{trainer.log_prefix} Ensure flash-attn is installed for flash: pip install flash-attn")
+
+
+def encode_prompt(trainer, prompt: str, qwen3_max_length: int = 512,
+                  t5_max_length: int = 512):
+    """Encode prompt for Anima using the Phase A/B inference pipeline.
+
+    VERBATIM body of ``BaseTrainer.encode_prompt_anima`` (plan P4), moved out of
+    the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    from core.models.anima.anima_pipeline_ops import encode_prompt as _encode
+
+    # Reuse the inference encode_prompt — it already handles Qwen3 hidden-state
+    # extraction, T5 tokenisation for the LLM Adapter, and zero-masking.
+    # Phase B.1-e added A1111-style emphasis support there which is
+    # intentionally NOT applied during training (captions go through raw).
+    encoded = _encode(
+        text_encoder=trainer.text_encoder,
+        qwen3_tokenizer=trainer.tokenizer,
+        t5_tokenizer=trainer.t5_tokenizer,
+        prompt=prompt,
+        device=str(trainer.device),
+        dtype=trainer.training_dtype,
+        qwen3_max_length=qwen3_max_length,
+        t5_max_length=t5_max_length,
+    )
+    # encode_prompt returns batched tensors of shape [1, L, ...]; drop the
+    # batch dim so caches accumulate per-sample. Detach for storage.
+    return {
+        "prompt_embeds": encoded["prompt_embeds"][0].detach(),
+        "source_mask": encoded["source_mask"][0].detach(),
+        "t5_input_ids": encoded["t5_input_ids"][0].detach(),
+        "t5_attn_mask": encoded["t5_attn_mask"][0].detach(),
+    }
+
+
+def collate_aux(trainer, aux_list):
+    """Collate a list of per-item Anima auxiliary dicts into ONE dict of
+    batched tensors {source_mask, t5_input_ids, t5_attn_mask}, each [B, L].
+
+    VERBATIM body of ``BaseTrainer._collate_anima_aux`` (plan P4), moved out of
+    the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    """
+    keys = ("source_mask", "t5_input_ids", "t5_attn_mask")
+    if not aux_list:
+        raise ValueError("[Anima collation] empty auxiliary_data_list")
+    for idx, aux in enumerate(aux_list):
+        if not isinstance(aux, dict):
+            raise ValueError(
+                f"[Anima collation] item {idx} auxiliary data is "
+                f"{type(aux).__name__}, expected a dict with keys {keys}"
+            )
+        for k in keys:
+            if k not in aux or not isinstance(aux[k], torch.Tensor):
+                raise ValueError(
+                    f"[Anima collation] item {idx} is missing tensor key '{k}' "
+                    f"(got keys {list(aux.keys())})"
+                )
+
+    t5_pad_id = 0
+    t5_tok = getattr(trainer, "t5_tokenizer", None)
+    if t5_tok is not None and getattr(t5_tok, "pad_token_id", None) is not None:
+        t5_pad_id = int(t5_tok.pad_token_id)
+    pad_values = {"source_mask": 0, "t5_input_ids": t5_pad_id, "t5_attn_mask": 0}
+
+    batched = {}
+    for k in keys:
+        tensors = [aux[k] for aux in aux_list]
+        max_len = max(t.shape[0] for t in tensors)
+        if any(t.shape[0] != max_len for t in tensors):
+            padded = []
+            for t in tensors:
+                if t.shape[0] < max_len:
+                    pad = torch.full(
+                        (max_len - t.shape[0],), pad_values[k],
+                        dtype=t.dtype, device=t.device,
+                    )
+                    t = torch.cat([t, pad], dim=0)
+                padded.append(t)
+            tensors = padded
+        batched[k] = torch.stack(tensors, dim=0)
+    return batched

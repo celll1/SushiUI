@@ -33,7 +33,11 @@ class SD15ArchHandler(ArchHandler):
         sd_sdxl_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
-        raise NotImplementedError("sd15.encode_prompt: phase P4")
+        # P4: the SD/SDXL top dispatcher (BaseTrainer.encode_prompt) STAYS in the
+        # spine — it selects custom-TE / simple / chunked and the three bodies
+        # live in ops/sd_sdxl_ops. This handler routes back through that
+        # dispatcher (no circularity: the dispatcher calls ops, never self.arch).
+        return trainer.encode_prompt(prompt, requires_grad=requires_grad)
 
     def vae_encode(self, trainer, image_tensor, *, width, height):
         raise NotImplementedError("sd15.vae_encode: phase P5")

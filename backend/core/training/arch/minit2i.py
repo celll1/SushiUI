@@ -35,7 +35,9 @@ class MiniT2IArchHandler(ArchHandler):
         minit2i_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
-        raise NotImplementedError("minit2i.encode_prompt: phase P4")
+        # P4: body lives in ops/minit2i_ops (shared with base_trainer delegator).
+        from core.training.ops import minit2i_ops
+        return minit2i_ops.encode_prompt(trainer, prompt, requires_grad=requires_grad)
 
     def vae_encode(self, trainer, image_tensor, *, width, height):
         raise NotImplementedError("minit2i.vae_encode: phase P5")

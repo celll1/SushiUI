@@ -12,6 +12,8 @@ the body is defined exactly once and stays byte-identical.
 """
 from __future__ import annotations
 
+import torch
+
 
 def load_components(trainer) -> None:
     """Load Z-Image model components."""
@@ -158,3 +160,63 @@ def setup_attention_backend(trainer, backend: str):
         if not applied:
             print(f"{trainer.log_prefix} Continuing with the default attention backend "
                   f"(ensure flash-attn is installed for flash: pip install flash-attn)")
+
+
+def encode_prompt(trainer, prompt: str, max_sequence_length: int = 512):
+    """Encode prompt using Qwen3 text encoder with chat template (Z-Image).
+
+    VERBATIM body of ``BaseTrainer.encode_prompt_zimage`` (plan P4), moved out of
+    the spine with the mechanical ``self.`` -> ``trainer.`` rename only.
+    Returns (prompt_embeds, attention_mask).
+    """
+    # Format with Qwen chat template
+    messages = [{"role": "user", "content": prompt}]
+    formatted_prompt = trainer.tokenizer.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=True,
+    )
+
+    # Tokenize
+    text_inputs = trainer.tokenizer(
+        formatted_prompt,
+        padding="max_length",
+        max_length=max_sequence_length,
+        truncation=True,
+        return_tensors="pt",
+    )
+
+    input_ids = text_inputs.input_ids.to(trainer.device)
+    attention_mask = text_inputs.attention_mask.to(trainer.device).bool()
+
+    # Encode with penultimate layer
+    # Check if text encoder has FP8 weights (requires autocast)
+    has_fp8_weights = trainer._has_fp8_text_encoder()
+
+    with torch.no_grad():
+        # For FP8 quantized text encoder, use autocast for mixed precision
+        if has_fp8_weights:
+            with torch.autocast(device_type='cuda', dtype=trainer.training_dtype):
+                encoder_output = trainer.text_encoder(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
+                prompt_embeds = encoder_output.hidden_states[-2]
+        else:
+            encoder_output = trainer.text_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+            )
+            prompt_embeds = encoder_output.hidden_states[-2]
+
+    # Extract and detach outputs
+    result_embeds = prompt_embeds[0].detach()
+    result_mask = attention_mask[0].detach()
+
+    # Free intermediate tensors to prevent VRAM accumulation
+    del input_ids, encoder_output, prompt_embeds, attention_mask
+
+    return result_embeds, result_mask

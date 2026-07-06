@@ -35,7 +35,11 @@ class ZImageArchHandler(ArchHandler):
         zimage_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
     def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
-        raise NotImplementedError("zimage.encode_prompt: phase P4")
+        # P4: body lives in ops/zimage_ops (shared with base_trainer delegator).
+        # Z-Image encode is grad-free; requires_grad is unused (matches the
+        # original encode_prompt_zimage signature).
+        from core.training.ops import zimage_ops
+        return zimage_ops.encode_prompt(trainer, prompt)
 
     def vae_encode(self, trainer, image_tensor, *, width, height):
         raise NotImplementedError("zimage.vae_encode: phase P5")

@@ -66,4 +66,15 @@ class Krea2ArchHandler(ArchHandler):
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):
-        raise NotImplementedError("krea2.sample: phase P7")
+        # P7: verbatim body in ops/krea2_ops.generate_sample.
+        from core.training.ops import krea2_ops
+        return krea2_ops.generate_sample(
+            trainer,
+            prompt=sample_ctx.prompt,
+            height=sample_ctx.height,
+            width=sample_ctx.width,
+            num_inference_steps=sample_ctx.num_inference_steps,
+            guidance_scale=sample_ctx.guidance_scale,
+            seed=sample_ctx.seed,
+            negative_prompt=sample_ctx.negative_prompt,
+        )

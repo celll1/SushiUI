@@ -421,3 +421,120 @@ def train_step(
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, x_t, target, v_pred, x0_pred, denom
     return loss, pred_loss_value, recon_loss_value
+
+
+# ============================================================
+# MiniT2I Sample Generation (pixel-space, no VAE) (plan P7)
+# ============================================================
+# Verbatim body of BaseTrainer._generate_sample_minit2i (base_trainer.py), moved
+# out of the spine with the mechanical self.->trainer. receiver rename and the
+# relocated .optimizers -> ..optimizers relative import. arch/minit2i.py::sample()
+# unpacks SampleContext into this.
+
+
+def generate_sample(
+    trainer,
+    prompt: str,
+    height: int = 512,
+    width: int = 512,
+    num_inference_steps: int = 100,
+    guidance_scale: float = 6.0,
+    seed: int = -1,
+    negative_prompt: str = "",
+):
+    """Generate a sample during MiniT2I training (pixel-space flow matching).
+
+    No VAE: the model output IS the [-1,1] RGB image. Aligns the requested
+    resolution to a multiple of 16 (patch size) like the inference path.
+    """
+    from core.models.minit2i.minit2i_pipeline_ops import (
+        encode_prompt as _mt_encode, denoise_loop as _mt_denoise,
+        tensor_to_image as _mt_to_image, normalize_resolution as _mt_norm,
+        vae_decode_latent as _mt_vae_decode,
+    )
+
+    print(f"{trainer.log_prefix} Generating MiniT2I sample: {prompt[:50]}...")
+    width, height = _mt_norm(width, height)
+    is_latent = getattr(trainer, "minit2i_latent", False)
+    vsf = getattr(trainer, "minit2i_vae_scale_factor", 8)
+    noise_scale = float(getattr(trainer, "minit2i_noise_scale", 2.0))
+
+    trainer.transformer.eval()
+    trainer.text_encoder.eval()
+    transformer_device = next(trainer.transformer.parameters()).device
+    text_encoder_device = next(trainer.text_encoder.parameters()).device
+    t_dtype = trainer.transformer.dtype
+    cfg = trainer.transformer.mmjit_config
+    prompt_length = int(cfg.prompt_length)
+    cfg_interval = tuple(cfg.cfg_interval)
+
+    try:
+        # Offload transformer + optimizer state to CPU during text encoding.
+        trainer.transformer.to("cpu")
+        optimizer_state_dict = trainer.optimizer.state_dict()
+        for _pid, state in optimizer_state_dict["state"].items():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor) and value.device.type == "cuda":
+                    state[key] = value.cpu()
+        trainer.optimizer.load_state_dict(optimizer_state_dict)
+        torch.cuda.empty_cache()
+
+        if text_encoder_device != trainer.device:
+            trainer.text_encoder.to(trainer.device)
+        text, mask = _mt_encode(trainer.text_encoder, trainer.tokenizer, prompt, prompt_length, trainer.device)
+        if guidance_scale != 1.0 and negative_prompt:
+            neg_text, neg_mask = _mt_encode(
+                trainer.text_encoder, trainer.tokenizer, negative_prompt, prompt_length, trainer.device)
+        else:
+            neg_text, neg_mask = None, None
+        if text_encoder_device != trainer.device:
+            trainer.text_encoder.to(text_encoder_device)
+        torch.cuda.empty_cache()
+
+        trainer.transformer.to(transformer_device)
+        torch.cuda.empty_cache()
+
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            if is_latent:
+                x = _mt_denoise(
+                    trainer.transformer, text.to(t_dtype), mask,
+                    height // vsf, width // vsf, num_inference_steps, guidance_scale, cfg_interval,
+                    trainer.device, t_dtype, seed=seed if seed >= 0 else None,
+                    neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
+                    neg_mask=neg_mask,
+                    channels=int(cfg.in_channels), noise_scale=noise_scale, clamp_output=False,
+                )
+            else:
+                x = _mt_denoise(
+                    trainer.transformer, text.to(t_dtype), mask,
+                    height, width, num_inference_steps, guidance_scale, cfg_interval,
+                    trainer.device, t_dtype, seed=seed if seed >= 0 else None,
+                    neg_text=neg_text.to(t_dtype) if neg_text is not None else None,
+                    neg_mask=neg_mask,
+                )
+        if is_latent:
+            trainer.vae.to(trainer.device)
+            image = _mt_vae_decode(trainer.vae, x.float())
+            trainer.vae.to("cpu")
+        else:
+            image = _mt_to_image(x.float())
+        del text, mask, x
+        if neg_text is not None:
+            del neg_text, neg_mask
+        torch.cuda.empty_cache()
+
+        # Restore optimizer state to GPU.
+        from ..optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+        from ..optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+        if not isinstance(trainer.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
+            optimizer_state_dict = trainer.optimizer.state_dict()
+            for _pid, state in optimizer_state_dict["state"].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == "cpu":
+                        state[key] = value.to(transformer_device)
+            trainer.optimizer.load_state_dict(optimizer_state_dict)
+        torch.cuda.empty_cache()
+        return image
+
+    finally:
+        trainer.transformer.train()

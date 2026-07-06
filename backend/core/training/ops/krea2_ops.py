@@ -256,3 +256,112 @@ def train_step(
     # Backward is performed by _execute_forward_backward; do not backward here.
     del noise, noisy, v_pred, v_target
     return loss, pred_loss_value, 0.0
+
+
+# ============================================================
+# Krea 2 Sample Generation (plan P7)
+# ============================================================
+# Verbatim body of BaseTrainer._generate_sample_krea2 (base_trainer.py), moved
+# out of the spine with the mechanical self.->trainer. receiver rename and the
+# relocated .optimizers -> ..optimizers relative import. arch/krea2.py::sample()
+# unpacks SampleContext into this.
+
+
+def generate_sample(
+    trainer,
+    prompt: str,
+    height: int = 1024,
+    width: int = 1024,
+    num_inference_steps: int = 28,
+    guidance_scale: float = 4.5,
+    seed: int = -1,
+    negative_prompt: str = "",
+):
+    """Generate a validation sample during Krea 2 training (flow matching).
+
+    Reuses the krea2_pipeline_ops denoise loop. UI ``guidance_scale`` maps to the
+    Krea guidance convention via ``guidance = cfg_scale - 1`` (turbo/distilled
+    checkpoints run with no CFG). Resolution is aligned to a multiple of 16.
+    """
+    from core.models.krea2.krea2_pipeline_ops import (
+        encode_prompt as _k_encode, denoise_loop as _k_denoise,
+        prepare_latents_txt2img as _k_prep, vae_decode as _k_decode,
+    )
+
+    print(f"{trainer.log_prefix} Generating Krea 2 sample: {prompt[:50]}...")
+    patch_size = int(getattr(trainer, "krea2_patch_size", 2))
+    width = max(16, (width // 16) * 16)
+    height = max(16, (height // 16) * 16)
+    grid_h = height // 16
+    grid_w = width // 16
+    select_layers = getattr(trainer, "krea2_select_layers", None) or [2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35]
+    is_distilled = bool(getattr(trainer, "krea2_is_distilled", False))
+    guidance = 0.0 if is_distilled else max(0.0, float(guidance_scale) - 1.0)
+
+    trainer.transformer.eval()
+    trainer.text_encoder.eval()
+    transformer_device = next(trainer.transformer.parameters()).device
+    t_dtype = trainer.transformer.dtype
+
+    try:
+        # Offload transformer + optimizer state to CPU during text encoding.
+        trainer.transformer.to("cpu")
+        optimizer_state_dict = trainer.optimizer.state_dict()
+        for _pid, state in optimizer_state_dict["state"].items():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor) and value.device.type == "cuda":
+                    state[key] = value.cpu()
+        trainer.optimizer.load_state_dict(optimizer_state_dict)
+        torch.cuda.empty_cache()
+
+        trainer.text_encoder.to(trainer.device)
+        prompt_embeds, prompt_mask = _k_encode(
+            trainer.text_encoder, trainer.tokenizer, prompt, select_layers, 512, trainer.device)
+        neg_embeds = neg_mask = None
+        if guidance > 0.0:
+            neg_embeds, neg_mask = _k_encode(
+                trainer.text_encoder, trainer.tokenizer, negative_prompt or "", select_layers, 512, trainer.device)
+        trainer.text_encoder.to("cpu")
+        torch.cuda.empty_cache()
+
+        trainer.transformer.to(transformer_device)
+        torch.cuda.empty_cache()
+
+        z_dim = int(getattr(trainer.vae.config, "z_dim", 16))
+        latents = _k_prep(
+            z_dim, grid_h, grid_w, patch_size, t_dtype, trainer.device,
+            seed=seed if seed is not None and seed >= 0 else None,
+        )
+
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            out = _k_denoise(
+                trainer.transformer, trainer.scheduler, latents,
+                prompt_embeds.to(t_dtype), prompt_mask,
+                neg_embeds.to(t_dtype) if neg_embeds is not None else None, neg_mask,
+                guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, trainer.device,
+            )
+
+        trainer.vae.to(trainer.device)
+        image = _k_decode(trainer.vae, out.float(), grid_h, grid_w, patch_size)
+        trainer.vae.to("cpu")
+
+        del prompt_embeds, prompt_mask, out, latents
+        if neg_embeds is not None:
+            del neg_embeds, neg_mask
+        torch.cuda.empty_cache()
+
+        # Restore optimizer state to GPU.
+        from ..optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+        from ..optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+        if not isinstance(trainer.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
+            optimizer_state_dict = trainer.optimizer.state_dict()
+            for _pid, state in optimizer_state_dict["state"].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == "cpu":
+                        state[key] = value.to(transformer_device)
+            trainer.optimizer.load_state_dict(optimizer_state_dict)
+        torch.cuda.empty_cache()
+        return image
+
+    finally:
+        trainer.transformer.train()

@@ -15,8 +15,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from PIL import Image
+from tqdm import tqdm
 
 
 def load_components(trainer) -> None:
@@ -491,3 +494,345 @@ def train_step(
     del loss_per_element, loss_per_sample, recon_loss_per_element, recon_loss_per_sample, recon_loss
 
     return loss, pred_loss_value, recon_loss_value
+
+
+# ============================================================
+# Z-Image Sample Generation (plan P7)
+# ============================================================
+# Verbatim bodies of BaseTrainer._generate_sample_zimage /
+# _run_zimage_denoising_loop / _decode_zimage_latents (base_trainer.py), moved
+# out of the spine with the mechanical self.->trainer. receiver rename only
+# (generate_sample additionally takes a sanctioned lazy base_trainer import for
+# log_verbose). arch/zimage.py::sample() unpacks SampleContext into this.
+
+
+def generate_sample(
+    trainer,
+    prompt: str,
+    height: int = 1024,
+    width: int = 1024,
+    num_inference_steps: int = 28,
+    guidance_scale: float = 3.5,
+    seed: int = -1,
+) -> Image.Image:
+    """
+    Generate sample image during training (Z-Image).
+
+    Args:
+        prompt: Text prompt
+        height: Image height
+        width: Image width
+        num_inference_steps: Number of denoising steps
+        guidance_scale: CFG scale
+        seed: Random seed (-1 for random)
+
+    Returns:
+        PIL Image
+    """
+    from core.training.base_trainer import log_verbose
+
+    print(f"{trainer.log_prefix} Generating Z-Image sample: {prompt[:50]}...")
+
+    # Set models to eval mode for inference (same as lora_trainer.py.backup:2481-2484)
+    trainer.transformer.eval()
+    trainer.transformer_original.eval()
+    trainer.vae.eval()
+    trainer.text_encoder.eval()
+
+    # Store original devices for restoration
+    text_encoder_device = next(trainer.text_encoder.parameters()).device
+    vae_device = next(trainer.vae.parameters()).device
+    transformer_device = next(trainer.transformer_original.parameters()).device
+
+    try:
+        # ============================================================
+        # Stage 0: Offload Transformer AND Optimizer State to CPU
+        # ============================================================
+        log_verbose(f"{trainer.log_prefix} [Sample] Offloading Transformer and Optimizer state to CPU")
+
+        # Move Transformer to CPU
+        trainer.transformer_original.to("cpu")
+
+        # CRITICAL: Move Optimizer state (gradients, momentum) to CPU
+        # Optimizer state (exp_avg, exp_avg_sq) stays on GPU even after model.to(cpu)
+        # This can consume 2x model size in VRAM (for AdamW: exp_avg + exp_avg_sq)
+        optimizer_state_dict = trainer.optimizer.state_dict()
+        for param_id, state in optimizer_state_dict['state'].items():
+            for key, value in state.items():
+                if isinstance(value, torch.Tensor) and value.device.type == 'cuda':
+                    state[key] = value.cpu()
+        trainer.optimizer.load_state_dict(optimizer_state_dict)
+
+        torch.cuda.empty_cache()
+        log_verbose(f"{trainer.log_prefix} [Sample] Transformer and Optimizer state offloaded to CPU")
+
+        # ============================================================
+        # Stage 1: Text Encoding (Sequential Offloading Pattern)
+        # ============================================================
+        # Move Text Encoder to GPU for encoding
+        if text_encoder_device != trainer.device:
+            log_verbose(f"{trainer.log_prefix} [Sample] Moving Text Encoder to GPU for encoding")
+            trainer.text_encoder.to(trainer.device)
+
+        # Encode prompt
+        prompt_embeds, attention_mask = trainer.encode_prompt_zimage(prompt)
+
+        # Encode unconditional prompt only if CFG is enabled
+        if guidance_scale > 1.0:
+            uncond_embeds, uncond_mask = trainer.encode_prompt_zimage("")
+        else:
+            uncond_embeds, uncond_mask = None, None
+
+        # Move Text Encoder back to CPU to free VRAM
+        if text_encoder_device != trainer.device:
+            log_verbose(f"{trainer.log_prefix} [Sample] Moving Text Encoder back to CPU")
+            trainer.text_encoder.to(text_encoder_device)
+        torch.cuda.empty_cache()
+
+        # ============================================================
+        # Stage 1.5: Move Transformer back to GPU for denoising
+        # ============================================================
+        log_verbose(f"{trainer.log_prefix} [Sample] Moving Transformer to GPU for denoising")
+        trainer.transformer_original.to(transformer_device)
+        torch.cuda.empty_cache()
+
+        # Add batch dimension
+        prompt_embeds = prompt_embeds.unsqueeze(0)
+        attention_mask = attention_mask.unsqueeze(0)
+        if uncond_embeds is not None:
+            uncond_embeds = uncond_embeds.unsqueeze(0)
+            uncond_mask = uncond_mask.unsqueeze(0)
+
+        # ============================================================
+        # Stage 2: Denoising Loop (Transformer already on GPU from training)
+        # ============================================================
+        log_verbose(f"{trainer.log_prefix} [Sample] Running denoising loop (Transformer on GPU)")
+
+        # Prepare latents with seed
+        latent_height = height // 8
+        latent_width = width // 8
+        generator = None
+        if seed >= 0:
+            generator = torch.Generator(device=trainer.device).manual_seed(seed)
+        # Use FP32 for latents initialization (same as pipeline.py for numerical stability)
+        latents = torch.randn(
+            (1, trainer.vae.config.latent_channels, latent_height, latent_width),
+            device=trainer.device,
+            dtype=torch.float32,
+            generator=generator,
+        )
+
+        # Setup scheduler (create new instance with same config)
+        # Note: We cannot use from_config() because Z-Image scheduler.config is not a standard ConfigMixin
+        inference_scheduler = type(trainer.scheduler)(
+            num_train_timesteps=trainer.scheduler.config.get("num_train_timesteps", 1000),
+            shift=trainer.scheduler.config.get("shift", 1.0),
+            use_dynamic_shifting=trainer.scheduler.config.get("use_dynamic_shifting", False),
+        )
+
+        # Calculate dynamic shift for flow matching (same as pipeline.py:964-981)
+        from core.zimage_utils import calculate_shift
+        image_seq_len = (latent_height // 2) * (latent_width // 2)
+        mu = calculate_shift(
+            image_seq_len,
+            trainer.scheduler.config.get("base_image_seq_len", 256),
+            trainer.scheduler.config.get("max_image_seq_len", 4096),
+            trainer.scheduler.config.get("base_shift", 0.5),
+            trainer.scheduler.config.get("max_shift", 1.15),
+        )
+
+        # Set scheduler parameters (same as pipeline.py:977-981)
+        inference_scheduler.sigma_min = 0.0
+        inference_scheduler.set_timesteps(num_inference_steps, device=trainer.device, mu=mu)
+
+        # Denoising loop
+        latents = _run_zimage_denoising_loop(
+            trainer,
+            latents=latents,
+            prompt_embeds=prompt_embeds,
+            attention_mask=attention_mask,
+            uncond_embeds=uncond_embeds,
+            uncond_mask=uncond_mask,
+            guidance_scale=guidance_scale,
+            scheduler=inference_scheduler,
+        )
+
+        # Free prompt embeddings
+        del prompt_embeds, attention_mask
+        if uncond_embeds is not None:
+            del uncond_embeds, uncond_mask
+
+        # ============================================================
+        # Stage 3: Offload Transformer to CPU, move VAE to GPU
+        # ============================================================
+        # Move Transformer to CPU to free VRAM for VAE decode
+        print(f"{trainer.log_prefix} [Sample] Moving Transformer to CPU to free VRAM")
+        trainer.transformer_original.to("cpu")
+        torch.cuda.empty_cache()
+
+        # Move VAE to GPU for decoding
+        if vae_device != trainer.device:
+            print(f"{trainer.log_prefix} [Sample] Moving VAE to GPU for decoding")
+            trainer.vae.to(device=trainer.device, dtype=trainer.vae_dtype)
+
+        # Decode latents
+        image = _decode_zimage_latents(trainer, latents)
+
+        # Move VAE back to CPU
+        if vae_device != trainer.device:
+            print(f"{trainer.log_prefix} [Sample] Moving VAE back to CPU")
+            trainer.vae.to(device=vae_device, dtype=trainer.vae_dtype)
+
+        # Free latents
+        del latents
+        torch.cuda.empty_cache()
+
+        # ============================================================
+        # Stage 4: Restore Transformer and Optimizer State to GPU
+        # ============================================================
+        print(f"{trainer.log_prefix} [Sample] Restoring Transformer and Optimizer state to GPU")
+
+        # Move Transformer back to GPU
+        trainer.transformer_original.to(transformer_device)
+
+        # CRITICAL: Move Optimizer state back to GPU (skip for Ring Buffer optimizers)
+        # AdamW8bit_RingBuffer and Lion8bit_RingBuffer keep states on CPU intentionally
+        from ..optimizers.adamw8bit_ringbuffer import AdamW8bit_RingBuffer
+        from ..optimizers.lion8bit_ringbuffer import Lion8bit_RingBuffer
+        if not isinstance(trainer.optimizer, (AdamW8bit_RingBuffer, Lion8bit_RingBuffer)):
+            # Optimizer state must be on the same device as model parameters for training
+            optimizer_state_dict = trainer.optimizer.state_dict()
+            for param_id, state in optimizer_state_dict['state'].items():
+                for key, value in state.items():
+                    if isinstance(value, torch.Tensor) and value.device.type == 'cpu':
+                        state[key] = value.to(transformer_device)
+            trainer.optimizer.load_state_dict(optimizer_state_dict)
+            print(f"{trainer.log_prefix} [Sample] Optimizer state restored to GPU")
+        else:
+            print(f"{trainer.log_prefix} [Sample] Optimizer state kept on CPU (Ring Buffer)")
+
+        torch.cuda.empty_cache()
+        print(f"{trainer.log_prefix} [Sample] Transformer restored to GPU")
+
+        return image
+
+    finally:
+        # Ensure all models are back to their original devices (safety fallback)
+        # Text Encoder and VAE should already be on CPU from sequential offloading
+        # Transformer should already be on GPU from restoration
+        # But we check anyway in case of exceptions during sample generation
+
+        # Restore models to train mode (same as lora_trainer.py.backup:2638-2639)
+        trainer.transformer.train()
+        trainer.transformer_original.train()
+
+
+def _run_zimage_denoising_loop(
+    trainer,
+    latents: torch.Tensor,
+    prompt_embeds: torch.Tensor,
+    attention_mask: torch.Tensor,
+    uncond_embeds: torch.Tensor,
+    uncond_mask: torch.Tensor,
+    guidance_scale: float,
+    scheduler,
+) -> torch.Tensor:
+    """Run Z-Image denoising loop for sample generation.
+
+    Note: Uses transformer_original (not batched wrapper) for single-image inference.
+    """
+    with torch.no_grad():
+        for i, t in enumerate(tqdm(scheduler.timesteps, desc="Generating")):
+            # Check for stop flag during sample generation (allow graceful shutdown)
+            stop_flag_file = trainer.output_dir / ".stop_training"
+            if stop_flag_file.exists():
+                print(f"\n{trainer.log_prefix} [Sample] Stop flag detected during sample generation, aborting...")
+                raise KeyboardInterrupt("Training stopped by user during sample generation")
+
+            # Skip last step if t=0 (flow matching termination, same as pipeline.py:1001-1004)
+            if t == 0 and i == len(scheduler.timesteps) - 1:
+                continue
+
+            # Prepare input
+            if guidance_scale > 1.0:
+                latent_input = torch.cat([latents] * 2)
+                embeds_input = torch.cat([uncond_embeds, prompt_embeds])
+                mask_input = torch.cat([uncond_mask, attention_mask])
+            else:
+                latent_input = latents
+                embeds_input = prompt_embeds
+                mask_input = attention_mask
+
+            # Predict noise (use original transformer for single-image inference)
+            # Use inference interface: List[Tensor] format, positional args only (no cap_mask)
+
+            # Prepare timestep (expand to batch size, same as inference pipeline)
+            timestep = t.to(trainer.device).expand(latent_input.shape[0])
+
+            # Normalize timestep to [0, 1] (Z-Image expects normalized timesteps)
+            timestep = (1000 - timestep) / 1000
+
+            # Convert latents to transformer dtype (same as inference pipeline:1037-1046)
+            transformer_dtype = next(trainer.transformer_original.parameters()).dtype
+            latent_input = latent_input.to(transformer_dtype)
+
+            # Add channel dimension and convert to list (same as inference pipeline)
+            latent_input_5d = latent_input.unsqueeze(2)  # [B, C, H, W] -> [B, C, 1, H, W]
+            latent_input_list = list(latent_input_5d.unbind(dim=0))  # List of [C, 1, H, W]
+
+            # Convert embeddings to list (each item: [seq_len, 2560])
+            embeds_input_list = list(embeds_input.unbind(dim=0))
+
+            # Call transformer (inference interface: positional args, List format)
+            model_out_list = trainer.transformer_original(
+                latent_input_list,
+                timestep,
+                embeds_input_list,
+            )[0]
+
+            # Apply CFG if enabled (same as stable lora_trainer.py:2474-2492)
+            batch_size = latents.shape[0]
+            if guidance_scale > 1.0:
+                # CFG output order matches input: [negative, positive]
+                neg_out = model_out_list[:batch_size]  # negative (uncond)
+                pos_out = model_out_list[batch_size:]  # positive (cond)
+                noise_pred = []
+                for j in range(batch_size):
+                    neg = neg_out[j].float()
+                    pos = pos_out[j].float()
+                    # Standard CFG formula (consistent with stable version)
+                    # pred = uncond + guidance_scale * (cond - uncond)
+                    pred = neg + guidance_scale * (pos - neg)
+                    noise_pred.append(pred)
+                noise_pred = torch.stack(noise_pred, dim=0)
+            else:
+                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+
+            # Remove frames dimension for scheduler (5D → 4D) and negate (same as stable version)
+            noise_pred = -noise_pred.squeeze(2)
+
+            # Denoise step
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+
+    return latents
+
+
+def _decode_zimage_latents(trainer, latents: torch.Tensor) -> Image.Image:
+    """Decode Z-Image latents to image."""
+    # Unscale latents
+    shift_factor = trainer.vae.config.shift_factor if trainer.vae.config.shift_factor is not None else 0.0
+    latents = (latents / trainer.vae.config.scaling_factor) + shift_factor
+
+    # Decode (convert to VAE dtype to match decoder weights)
+    with torch.no_grad():
+        latents = latents.to(trainer.vae.dtype)
+        if trainer.vae.post_quant_conv is not None:
+            latents = trainer.vae.post_quant_conv(latents)
+        image = trainer.vae.decoder(latents)
+
+    # Convert to PIL
+    image = (image / 2 + 0.5).clamp(0, 1)
+    image = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    image = (image * 255).astype(np.uint8)[0]
+
+    return Image.fromarray(image)

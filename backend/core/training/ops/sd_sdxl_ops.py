@@ -1012,3 +1012,309 @@ def train_step(
         del added_cond_kwargs
 
     return loss, pred_loss_value, recon_loss_value
+
+
+# ============================================================
+# SD1.5 / SDXL Sample Generation (plan P7)
+# ============================================================
+# Verbatim body of BaseTrainer.generate_sample (base_trainer.py), moved out of
+# the spine with the mechanical self.->trainer. receiver rename and a sanctioned
+# lazy base_trainer import for log_verbose. BaseTrainer.generate_sample stays as
+# a thin delegator (ControlNetTrainer overrides it and calls super()), and the
+# sd15/sdxl handlers route sample() through trainer.generate_sample() so the
+# ControlNet override is preserved.
+
+
+def generate_sample(
+    trainer,
+    prompt: str,
+    height: int = 512,
+    width: int = 512,
+    num_inference_steps: int = 28,
+    guidance_scale: float = 3.5,
+    seed: int = -1,
+    current_step: int = 0,
+    schedule_type: str = "uniform",
+    condition_image_path: Optional[str] = None,
+    reference_image_path: Optional[str] = None,
+):
+    """
+    Generate sample image during training (SD/SDXL).
+    Uses custom_sampling_loop() - EXACTLY the same method as normal txt2img generation.
+
+    Args:
+        prompt: Text prompt
+        height: Image height
+        width: Image width
+        num_inference_steps: Number of denoising steps
+        guidance_scale: CFG scale
+        seed: Random seed (-1 for random)
+        current_step: Current training step (for logging)
+        schedule_type: Timestep schedule type (uniform, karras, exponential)
+
+    Returns:
+        PIL Image
+    """
+    from core.training.base_trainer import log_verbose
+
+    from PIL import Image
+    import random
+
+    print(f"{trainer.log_prefix} Generating sample: {prompt[:50]}...")
+
+    # SD/SDXL: Use custom_sampling_loop
+    from core.inference.custom_sampling import custom_sampling_loop
+    from core.inference.schedulers import get_scheduler
+
+    # Set models to eval mode
+    trainer.unet.eval()
+    trainer.vae.eval()
+    trainer.text_encoder.eval()
+    if trainer.text_encoder_2 is not None:
+        trainer.text_encoder_2.eval()
+
+    # Debug: Check if LoRA is applied to U-Net
+    lora_layers_found = 0
+    for name, module in trainer.unet.named_modules():
+        if hasattr(module, 'lora_down') or 'LoRA' in type(module).__name__:
+            lora_layers_found += 1
+    log_verbose(f"{trainer.log_prefix} [Sample] U-Net has {lora_layers_found} LoRA layers")
+
+    try:
+        # ========================================
+        # STEP 1: Create Temporary Pipeline Object
+        # ========================================
+        # custom_sampling_loop() requires a pipeline object with scheduler, unet, vae, etc.
+        # Create a minimal pipeline-like object with necessary components
+
+        if trainer.is_sdxl:
+            from diffusers import StableDiffusionXLPipeline
+            # Create a minimal pipeline object
+            class TempPipeline:
+                def __init__(self, unet, vae, text_encoder, text_encoder_2, scheduler, tokenizer, tokenizer_2):
+                    self.unet = unet
+                    self.vae = vae
+                    self.text_encoder = text_encoder
+                    self.text_encoder_2 = text_encoder_2
+                    self.scheduler = scheduler
+                    self.tokenizer = tokenizer
+                    self.tokenizer_2 = tokenizer_2
+                    # Set default config
+                    self.vae_scale_factor = 8
+                    self.image_processor = None  # Not needed for custom_sampling_loop
+
+            # Map schedule_type (sgm_uniform -> uniform)
+            schedule_type_mapped = schedule_type
+            if schedule_type == "sgm_uniform":
+                schedule_type_mapped = "uniform"
+
+            # Create scheduler using get_scheduler()
+            class SchedulerContainer:
+                def __init__(self, scheduler):
+                    self.scheduler = scheduler
+
+            scheduler_container = SchedulerContainer(trainer.original_scheduler)
+            scheduler = get_scheduler(
+                pipeline=scheduler_container,
+                sampler="euler",
+                schedule_type=schedule_type_mapped
+            )
+
+            # Create temporary pipeline
+            pipeline = TempPipeline(
+                unet=trainer.unet,
+                vae=trainer.vae,
+                text_encoder=trainer.text_encoder,
+                text_encoder_2=trainer.text_encoder_2,
+                scheduler=scheduler,
+                tokenizer=trainer.tokenizer,
+                tokenizer_2=trainer.tokenizer_2
+            )
+        else:
+            from diffusers import StableDiffusionPipeline
+            # Create a minimal pipeline object for SD1.5
+            class TempPipeline:
+                def __init__(self, unet, vae, text_encoder, scheduler, tokenizer):
+                    self.unet = unet
+                    self.vae = vae
+                    self.text_encoder = text_encoder
+                    self.scheduler = scheduler
+                    self.tokenizer = tokenizer
+                    # Set default config
+                    self.vae_scale_factor = 8
+                    self.image_processor = None  # Not needed for custom_sampling_loop
+
+            # Map schedule_type (sgm_uniform -> uniform)
+            schedule_type_mapped = schedule_type
+            if schedule_type == "sgm_uniform":
+                schedule_type_mapped = "uniform"
+
+            # Create scheduler using get_scheduler()
+            class SchedulerContainer:
+                def __init__(self, scheduler):
+                    self.scheduler = scheduler
+
+            scheduler_container = SchedulerContainer(trainer.original_scheduler)
+            scheduler = get_scheduler(
+                pipeline=scheduler_container,
+                sampler="euler",
+                schedule_type=schedule_type_mapped
+            )
+
+            # Create temporary pipeline
+            pipeline = TempPipeline(
+                unet=trainer.unet,
+                vae=trainer.vae,
+                text_encoder=trainer.text_encoder,
+                scheduler=scheduler,
+                tokenizer=trainer.tokenizer
+            )
+
+        # ========================================
+        # STEP 2: Text Encoding
+        # ========================================
+        trainer.move_text_encoder_to_gpu()
+
+        # Encode prompt
+        if trainer.is_sdxl:
+            prompt_embeds, pooled_prompt_embeds = trainer.encode_prompt(prompt, requires_grad=False)
+            negative_prompt_embeds, negative_pooled_prompt_embeds = trainer.encode_prompt("", requires_grad=False)
+        else:
+            prompt_embeds = trainer.encode_prompt(prompt, requires_grad=False)
+            negative_prompt_embeds = trainer.encode_prompt("", requires_grad=False)
+            pooled_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+
+        # Pad negative embeddings to match positive embeddings sequence length (for prompt chunking)
+        if prompt_embeds.shape[1] != negative_prompt_embeds.shape[1]:
+            # Positive prompt has more tokens (chunking applied)
+            # Pad negative embeddings with zeros to match
+            seq_len_diff = prompt_embeds.shape[1] - negative_prompt_embeds.shape[1]
+            padding = torch.zeros(
+                (negative_prompt_embeds.shape[0], seq_len_diff, negative_prompt_embeds.shape[2]),
+                dtype=negative_prompt_embeds.dtype,
+                device=negative_prompt_embeds.device
+            )
+            negative_prompt_embeds = torch.cat([negative_prompt_embeds, padding], dim=1)
+            log_verbose(f"{trainer.log_prefix} [Sample] Padded negative embeddings: {negative_prompt_embeds.shape[1] - seq_len_diff} -> {negative_prompt_embeds.shape[1]} tokens")
+
+        trainer.move_text_encoder_to_cpu()
+        torch.cuda.empty_cache()
+
+        # ========================================
+        # STEP 2.5: Vision Encoder conditioning (if reference image + VE loaded)
+        # ========================================
+        ve_obj = getattr(trainer, 'vision_encoder', None)
+        if reference_image_path and ve_obj is not None:
+            try:
+                from PIL import Image as PILImage
+                ref_img = PILImage.open(reference_image_path).convert("RGB")
+                target_dim = prompt_embeds.shape[-1]
+                train_ve = getattr(trainer, '_train_vision_encoder', False)
+                if not train_ve:
+                    print(f"{trainer.log_prefix} [Sample] Moving Vision Encoder to GPU for sample conditioning")
+                    ve_obj.to(trainer.device)
+                ve_obj.eval()
+                with torch.no_grad():
+                    ve_pos, _ = ve_obj.encode([ref_img], target_dim=target_dim, dtype=prompt_embeds.dtype)
+                ve_pos = ve_pos.to(trainer.device)
+                ve_neg = torch.zeros_like(ve_pos)
+                prompt_embeds = torch.cat([prompt_embeds, ve_pos], dim=1)
+                negative_prompt_embeds = torch.cat([negative_prompt_embeds, ve_neg], dim=1)
+                if not train_ve:
+                    ve_obj.to("cpu")
+                    torch.cuda.empty_cache()
+                    print(f"{trainer.log_prefix} [Sample] Vision Encoder moved back to CPU")
+                print(f"{trainer.log_prefix} [Sample] VE conditioning applied: embeds shape {prompt_embeds.shape}")
+            except Exception as ve_err:
+                print(f"{trainer.log_prefix} [Sample] WARNING: VE conditioning failed: {ve_err}, skipping")
+
+        # ========================================
+        # STEP 3: Create Generator
+        # ========================================
+        if seed < 0:
+            actual_seed = random.randint(0, 2**32 - 1)
+        else:
+            actual_seed = seed
+
+        generator = torch.Generator(device=trainer.device).manual_seed(actual_seed)
+
+        # ========================================
+        # STEP 4: Call custom_sampling_loop (SAME as pipeline.generate_txt2img)
+        # ========================================
+        trainer.move_main_model_to_gpu()
+        trainer.move_vae_to_gpu()
+
+        # Detect v-prediction and apply guidance_rescale if needed
+        is_v_prediction = pipeline.scheduler.config.get("prediction_type") == "v_prediction"
+        guidance_rescale = 0.7 if is_v_prediction else 0.0
+
+        log_verbose(f"{trainer.log_prefix} [Sample] Using custom_sampling_loop()")
+        log_verbose(f"{trainer.log_prefix} [Sample] Scheduler: {type(pipeline.scheduler).__name__}")
+        log_verbose(f"{trainer.log_prefix} [Sample] V-prediction: {is_v_prediction}, guidance_rescale: {guidance_rescale}")
+
+        # Use autocast for sample generation (ensures LoRA dtype compatibility)
+        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+            image = custom_sampling_loop(
+                pipeline=pipeline,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                pooled_prompt_embeds=pooled_prompt_embeds,
+                negative_pooled_prompt_embeds=negative_pooled_prompt_embeds,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                guidance_rescale=guidance_rescale,
+                width=width,
+                height=height,
+                generator=generator,
+                ancestral_generator=None,  # Not needed for training samples
+                latents=None,
+                prompt_embeds_callback=None,  # No prompt editing for training samples
+                progress_callback=None,
+                step_callback=None,
+                developer_mode=False,
+                cfg_schedule_type="constant",  # Simple constant CFG for training samples
+                cfg_schedule_min=1.0,
+                cfg_schedule_max=None,
+                cfg_schedule_power=2.0,
+                cfg_rescale_snr_alpha=0.0,
+                dynamic_threshold_percentile=0.0,
+                dynamic_threshold_mimic_scale=1.0,
+                nag_enable=False,  # No NAG for training samples
+                nag_scale=5.0,
+                nag_tau=3.5,
+                nag_alpha=0.25,
+                nag_sigma_end=0.0,
+                nag_negative_prompt_embeds=None,
+                nag_negative_pooled_prompt_embeds=None,
+                attention_type="normal",  # Normal attention for training samples
+            )
+
+            # Move models back to CPU
+            trainer.move_main_model_to_cpu()
+            trainer.move_vae_to_cpu()
+            torch.cuda.empty_cache()
+
+            log_verbose(f"{trainer.log_prefix} Sample generated successfully (seed: {actual_seed})")
+            return image
+
+    except Exception as e:
+        print(f"{trainer.log_prefix} [Sample] ERROR: {type(e).__name__}: {str(e)}")
+        print(f"{trainer.log_prefix} [Sample] Sample generation failed - this is expected for early training steps")
+        print(f"{trainer.log_prefix} [Sample] Training will continue normally")
+
+        # Return a placeholder image (blank white image)
+        from PIL import Image
+        placeholder = Image.new("RGB", (width, height), color=(255, 255, 255))
+        return placeholder
+
+    finally:
+        # Restore training mode
+        trainer.unet.train()
+        trainer.vae.train()
+        trainer.text_encoder.train()
+        if trainer.text_encoder_2 is not None:
+            trainer.text_encoder_2.train()
+
+        # Ensure U-Net is back on GPU for training continuation
+        trainer.move_main_model_to_gpu()

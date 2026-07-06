@@ -71,4 +71,18 @@ class Flux2ArchHandler(ArchHandler):
         )
 
     def sample(self, trainer, sample_ctx: SampleContext):
-        raise NotImplementedError("flux2.sample: phase P7")
+        # P7: verbatim body in ops/flux2_ops.generate_sample (+ its private
+        # sample helpers). The shared latent-geometry helpers
+        # _flux2_unpack_latents_with_ids / _flux2_unpatchify_latents stay on the
+        # trainer and are called via trainer. inside the ops decode path.
+        from core.training.ops import flux2_ops
+        return flux2_ops.generate_sample(
+            trainer,
+            prompt=sample_ctx.prompt,
+            height=sample_ctx.height,
+            width=sample_ctx.width,
+            num_inference_steps=sample_ctx.num_inference_steps,
+            guidance_scale=sample_ctx.guidance_scale,
+            seed=sample_ctx.seed,
+            reference_image_path=sample_ctx.reference_image_path,
+        )

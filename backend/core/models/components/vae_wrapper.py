@@ -198,11 +198,6 @@ class SDXLVAEWrapper(nn.Module):
         """
         return self.vae(sample, return_dict=return_dict)
 
-    @property
-    def config(self):
-        """Access underlying VAE config."""
-        return self.vae.config
-
     def to(self, device=None, dtype=None, **kwargs):
         """Move VAE to device and/or change dtype."""
         # Extract non_blocking if provided (for compatibility with vram_optimization.py)
@@ -215,7 +210,7 @@ class SDXLVAEWrapper(nn.Module):
 
         if dtype is not None:
             self.vae = self.vae.to(dtype=dtype)
-            self.dtype = dtype
+            self._dtype = dtype  # kept in sync, though the `dtype` getter reads self.vae.dtype directly
 
         return self
 

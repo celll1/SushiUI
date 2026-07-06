@@ -9864,6 +9864,30 @@ class BaseTrainer(ABC):
             latent_dtype=latent_dtype,
         )
 
+    def _check_stop_requested(self):
+        """Abort a long pre-run/encode phase promptly on a user stop request.
+
+        Mirrors the in-loop stop-flag check in the training batch loop (see the
+        ``.stop_training`` handling in train()): the API's
+        ``TrainingProcess.stop()`` touches ``<output_dir>/.stop_training``. When
+        present we remove the flag and raise ``KeyboardInterrupt`` so the user
+        stop propagates through the exact same path a mid-training stop uses —
+        non-zero process exit, which the monitor reports as a user-requested stop
+        (run status 'stopped'), with the checkpoint/cleanup handled by the same
+        ``except KeyboardInterrupt`` block. Already-written cache entries are
+        valid per-file and are intentionally left in place.
+
+        The check is a cheap ``Path.is_file()``; it is safe to call per item.
+        """
+        stop_flag_file = self.output_dir / ".stop_training"
+        if stop_flag_file.is_file():
+            print(f"\n{self.log_prefix} Stop flag detected during pre-encode, aborting...")
+            try:
+                stop_flag_file.unlink()
+            except OSError:
+                pass
+            raise KeyboardInterrupt("Training stopped by user")
+
     def _validate_and_generate_latent_caches(
         self,
         datasets: List[Any],
@@ -9963,6 +9987,10 @@ class BaseTrainer(ABC):
                 log_verbose(f"[Latent Cache] Caching dataset {dataset.unique_id} ({len(dataset.items)} items)...")
 
                 for item in tqdm(dataset.items, desc=f"Caching {dataset.unique_id}", disable=True):
+                    # Abort promptly on user stop (raises KeyboardInterrupt; the
+                    # finally below restores the training stack to its devices).
+                    self._check_stop_requested()
+
                     # Check if already cached (skip if force_recache is False)
                     image_path = item["image_path"]
                     width = item["width"]
@@ -10278,6 +10306,10 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} Dataset '{dataset.unique_id}': Encoding {len(captions_to_encode)}/{len(captions)} captions...")
 
                     for idx, caption in enumerate(tqdm(captions_to_encode, desc=f"Encoding captions [{dataset.unique_id}]")):
+                        # Abort promptly on user stop (raises KeyboardInterrupt; the
+                        # finally below moves the text encoder(s) back to CPU).
+                        self._check_stop_requested()
+
                         # Encode caption (unified method)
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
                         embeds_cpu = embeddings.cpu()
@@ -11911,6 +11943,11 @@ class BaseTrainer(ABC):
                     for batch in batches[:text_encoding_swap_interval]:
                         buffer_items.extend(batch)
                     for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions")):
+                        # Abort promptly on user stop (KeyboardInterrupt is caught by
+                        # train()'s handler; the process exits, so device restoration
+                        # of the swapped-out main model is moot).
+                        self._check_stop_requested()
+
                         caption = item.get("caption", "")
                         image_path = item["image_path"]
                         embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
@@ -12006,6 +12043,10 @@ class BaseTrainer(ABC):
                         for batch in batches[:latent_encoding_swap_interval]:
                             buffer_items.extend(batch)
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding latents")):
+                            # Abort promptly on user stop (raises KeyboardInterrupt; the
+                            # finally below restores the training stack to the GPU).
+                            self._check_stop_requested()
+
                             image_path = item["image_path"]
                             caption = item.get("caption", "")
                             width = item.get("width") or item.get("bucket_width")

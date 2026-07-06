@@ -8,9 +8,69 @@ import asyncio
 import subprocess
 import re
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any
 from datetime import datetime
+
+
+def _is_venv_interpreter(python_path: Path) -> bool:
+    """Best-effort check that *python_path* is a venv interpreter.
+
+    A venv's ``Scripts``/``bin`` directory always contains a ``pyvenv.cfg``
+    one level up (``<venv_root>/pyvenv.cfg``). This is the same marker
+    ``sys.prefix`` vs ``sys.base_prefix`` relies on, but works for an
+    arbitrary interpreter path (not just the currently running one).
+    """
+    try:
+        return (python_path.parent.parent / "pyvenv.cfg").is_file()
+    except OSError:
+        return False
+
+
+def resolve_venv_python() -> str:
+    """Resolve the interpreter to use for spawning the training subprocess.
+
+    Priority:
+      1. If the *currently running* backend process is itself inside a venv
+         (``sys.prefix != sys.base_prefix``), reuse ``sys.executable``. This
+         is the common case and requires no filesystem guessing.
+      2. Otherwise (backend was started with a non-venv interpreter, e.g. a
+         system Python), fall back to ``<repo_root>/venv/Scripts/python.exe``
+         (Windows) or ``<repo_root>/venv/bin/python`` (POSIX), where
+         ``repo_root`` is derived from this file's location
+         (``backend/core/training/training_process.py`` -> repo root is
+         three parents up). No hardcoded absolute path — works regardless
+         of where the repo is cloned.
+
+    Raises:
+        FileNotFoundError: if neither the running interpreter nor the
+            repo-relative venv interpreter can be found. Silently falling
+            back to whatever "python" resolves to on PATH would risk
+            re-introducing the system-Python bug this function fixes.
+    """
+    if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
+        # Running interpreter is already a venv (or virtualenv) Python.
+        return sys.executable
+
+    # Backend itself is not running inside a venv: don't propagate that via
+    # sys.executable. Resolve the repo's own venv by path instead.
+    repo_root = Path(__file__).resolve().parents[3]  # backend/core/training/ -> repo root
+    if sys.platform == "win32":
+        candidate = repo_root / "venv" / "Scripts" / "python.exe"
+    else:
+        candidate = repo_root / "venv" / "bin" / "python"
+
+    if candidate.is_file() and _is_venv_interpreter(candidate):
+        return str(candidate)
+
+    raise FileNotFoundError(
+        "Could not resolve a venv Python interpreter for the training "
+        f"subprocess. sys.executable={sys.executable!r} is not a venv "
+        f"interpreter, and no venv was found at {candidate!r}. Refusing to "
+        "fall back to a bare 'python' on PATH (see CLAUDE.md: always use "
+        "the project venv interpreter)."
+    )
 
 
 class TrainingProcess:
@@ -30,12 +90,16 @@ class TrainingProcess:
             run_id: Training run ID
             config_path: Path to YAML config file
             output_dir: Output directory for checkpoints
-            venv_python: Path to venv Python executable (defaults to d:\\celll1\\webui_cl\\venv\\Scripts\\python.exe)
+            venv_python: Path to venv Python executable. If not given, it is
+                resolved via ``resolve_venv_python()`` (prefers the currently
+                running interpreter if it is itself a venv Python, otherwise
+                falls back to ``<repo_root>/venv/Scripts/python.exe`` /
+                ``venv/bin/python`` derived from this file's location).
         """
         self.run_id = run_id
         self.config_path = config_path
         self.output_dir = output_dir
-        self.venv_python = venv_python or r"d:\celll1\webui_cl\venv\Scripts\python.exe"
+        self.venv_python = venv_python or resolve_venv_python()
 
         self.process: Optional[subprocess.Popen] = None
         self.is_running = False

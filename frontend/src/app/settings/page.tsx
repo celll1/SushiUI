@@ -545,7 +545,7 @@ export default function SettingsPage() {
                     min={5}
                     max={100}
                     value={floatingGalleryMaxImages}
-                    defaultValue={0}
+                    defaultValue={30}
                     onCommit={(v) => {
                       setFloatingGalleryMaxImages(v);
                       localStorage.setItem('floating_gallery_max_images', String(v));

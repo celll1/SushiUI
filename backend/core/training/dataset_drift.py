@@ -431,8 +431,20 @@ def cleanup_orphan_latent_cache(
     from database.models import DatasetItem
     from core.training.latent_cache import LatentCache, get_cache_base_dir
 
-    cache_dir = Path(get_cache_base_dir()) / dataset_unique_id / "latents"
-    if not cache_dir.is_dir():
+    dataset_root = Path(get_cache_base_dir()) / dataset_unique_id
+    if not dataset_root.is_dir():
+        return 0
+
+    # Latents live under per-architecture namespaces:
+    #   {dataset_root}/{namespace}/latents/*.pt
+    # plus the legacy pre-namespace layout {dataset_root}/latents/*.pt.
+    # The orphan hash set is architecture-independent (path + w + h only),
+    # so every latents dir across namespaces is scanned with the same set.
+    latents_dirs = [d for d in dataset_root.glob("*/latents") if d.is_dir()]
+    legacy_dir = dataset_root / "latents"
+    if legacy_dir.is_dir():
+        latents_dirs.append(legacy_dir)
+    if not latents_dirs:
         return 0
 
     # 1) Build set of expected hashes from current DB rows.
@@ -456,14 +468,15 @@ def cleanup_orphan_latent_cache(
         for (w, h) in bucket_resolutions:
             expected.add(LatentCache.compute_image_hash(abs_p, w, h))
 
-    # 2) Iterate cache files; delete any not in expected.
+    # 2) Iterate cache files across every namespace; delete any not in expected.
     removed = 0
-    for entry in cache_dir.glob("*.pt"):
-        stem = entry.stem
-        if stem not in expected:
-            try:
-                entry.unlink()
-                removed += 1
-            except OSError:
-                pass
+    for cache_dir in latents_dirs:
+        for entry in cache_dir.glob("*.pt"):
+            stem = entry.stem
+            if stem not in expected:
+                try:
+                    entry.unlink()
+                    removed += 1
+                except OSError:
+                    pass
     return removed

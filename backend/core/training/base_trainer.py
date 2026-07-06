@@ -9791,17 +9791,78 @@ class BaseTrainer(ABC):
         # Use global cache directory (shared across all training runs)
         # This allows cache reuse when training the same dataset multiple times
         base_cache_dir = get_cache_base_dir()
+        namespace = self._build_cache_namespace()
         print(f"{self.log_prefix} Using global latent cache directory: {base_cache_dir}")
+        print(f"{self.log_prefix} Latent cache namespace (arch/VAE identity): {namespace}")
 
         for dataset in datasets:
             latent_caches[dataset.unique_id] = LatentCache(
                 dataset_unique_id=dataset.unique_id,
                 base_cache_dir=str(base_cache_dir),
+                namespace=namespace,
             )
-            cache_dir = Path(base_cache_dir) / dataset.unique_id
+            cache_dir = Path(base_cache_dir) / dataset.unique_id / namespace
             print(f"{self.log_prefix} Setup latent cache for dataset '{dataset.unique_id}': {cache_dir}")
 
         return latent_caches
+
+    def _build_cache_namespace(self) -> str:
+        """
+        Build the architecture/VAE-identity namespace for this run's disk caches.
+
+        Latents (and text embeddings) are stored under
+        ``{base}/{dataset_id}/{namespace}/`` so that caches encoded for one
+        model family / VAE are never read back for another that shares the
+        dataset. Reuses the trainer's own architecture flags (no parallel
+        naming) — the same names ``ModelLoader.detect_model_type`` produces.
+        """
+        from core.training.latent_cache import build_cache_namespace
+
+        if getattr(self, "is_zimage", False):
+            arch = "zimage"
+        elif getattr(self, "is_flux2", False):
+            arch = "flux2"
+        elif getattr(self, "is_anima", False):
+            arch = "anima"
+        elif getattr(self, "is_lens", False):
+            arch = "lens"
+        elif getattr(self, "is_ideogram4", False):
+            arch = "ideogram4"
+        elif getattr(self, "is_minit2i", False):
+            arch = "minit2i"
+        elif getattr(self, "is_krea2", False):
+            arch = "krea2"
+        elif getattr(self, "is_sdxl", False):
+            arch = "sdxl"
+        else:
+            arch = "sd15"
+
+        # VAE / TE identity only vary within SDXL (custom-arch swaps); other
+        # architectures have an arch-determined VAE and TE.
+        vae_type = getattr(self, "sdxl_vae_type", None) if arch == "sdxl" else None
+        te_type = getattr(self, "sdxl_te_type", None) if arch == "sdxl" else None
+
+        # Latent channel count directly encodes the shape that triggered the
+        # channel-mismatch crash; derive from the loaded VAE when available.
+        latent_channels = getattr(self, "vae_latent_channels", None)
+        if latent_channels is None:
+            try:
+                latent_channels = int(self.vae.config.latent_channels)
+            except Exception:
+                latent_channels = None
+
+        latent_dtype = None
+        vdt = getattr(self, "vae_dtype", None)
+        if vdt is not None:
+            latent_dtype = str(vdt)
+
+        return build_cache_namespace(
+            arch=arch,
+            vae_type=vae_type,
+            te_type=te_type,
+            latent_channels=latent_channels,
+            latent_dtype=latent_dtype,
+        )
 
     def _validate_and_generate_latent_caches(
         self,
@@ -10108,15 +10169,17 @@ class BaseTrainer(ABC):
 
         base_dir = Path(get_cache_base_dir())
         text_encoder_caches = {}
+        namespace = self._build_cache_namespace()
 
         arch_name = ("Z-Image" if self.is_zimage else
                      "Lens" if self.is_lens else
                      ("SDXL" if self.is_sdxl else "SD1.5"))
         print(f"{self.log_prefix} Setting up text encoder cache directories ({arch_name})...")
         print(f"{self.log_prefix} Using global cache directory: {base_dir}")
+        print(f"{self.log_prefix} Text embedding cache namespace (arch identity): {namespace}")
 
         for dataset in datasets:
-            cache_dir = base_dir / dataset.unique_id / "text_embeddings"
+            cache_dir = base_dir / dataset.unique_id / namespace / "text_embeddings"
             cache_dir.mkdir(parents=True, exist_ok=True)
             text_encoder_caches[dataset.unique_id] = cache_dir
             print(f"{self.log_prefix} Setup text encoder cache for dataset '{dataset.unique_id}': {cache_dir}")

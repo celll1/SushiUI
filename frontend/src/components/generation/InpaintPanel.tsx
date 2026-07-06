@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
+import NumberInput from "../common/NumberInput";
 import Textarea from "../common/Textarea";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
@@ -3048,14 +3049,15 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             {params.vae_tiling && (
               <div className="flex items-center gap-2 mt-1 ml-6">
                 <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
-                <input
-                  type="number"
+                <NumberInput
                   id="vae_tile_threshold"
                   min={0}
                   step={128}
                   value={params.vae_tile_threshold ?? 0}
-                  onChange={(e) => setParams({ ...params, vae_tile_threshold: parseInt(e.target.value) || 0 })}
-                  className="w-24 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                  defaultValue={0}
+                  placeholder="0"
+                  onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
+                  className="w-24"
                 />
                 <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
               </div>
@@ -3162,14 +3164,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
             {params.fbcache_enable && (
               <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
                 <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold (higher = more skips)
-                  <input type="number" min={0} step={0.01} value={params.fbcache_threshold ?? 0.12}
-                    onChange={(e) => setParams({ ...params, fbcache_threshold: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
+                    defaultValue={0.12}
+                    placeholder="0.12"
+                    onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
+                    className="w-20" />
                 </label>
                 <label className="text-xs text-gray-400 flex items-center gap-1">Warmup steps
-                  <input type="number" min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
-                    onChange={(e) => setParams({ ...params, fbcache_warmup_steps: parseInt(e.target.value) || 0 })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  <NumberInput min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
+                    defaultValue={1}
+                    placeholder="1"
+                    onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
+                    className="w-20" />
                 </label>
               </div>
             )}

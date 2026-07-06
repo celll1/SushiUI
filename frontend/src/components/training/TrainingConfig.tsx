@@ -6,6 +6,7 @@ import { createTrainingRun, updateTrainingRun, listDatasets, Dataset, TrainingRu
 import { useStartup } from "@/contexts/StartupContext";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
+import NumberInput from "../common/NumberInput";
 import VisionEncoderSelector from "../common/VisionEncoderSelector";
 import TimestepDistributionGraph from "./TimestepDistributionGraph";
 
@@ -5733,20 +5734,24 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Min area ratio</label>
-                        <input
-                          type="number" min={0.01} max={1} step={0.01}
+                        <NumberInput
+                          min={0.01} max={1} step={0.01} parse="float"
                           value={params.crop_min_area_ratio ?? 0.25}
-                          onChange={(e) => updateParam("crop_min_area_ratio", parseFloat(e.target.value) || 0.25)}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                          defaultValue={0.25}
+                          placeholder="0.25"
+                          onCommit={(v) => updateParam("crop_min_area_ratio", v)}
+                          className="w-full px-3 py-2 text-sm"
                         />
                       </div>
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Min short side (px)</label>
-                        <input
-                          type="number" min={64} step={64}
+                        <NumberInput
+                          min={64} step={64}
                           value={params.crop_min_short_side_px ?? 512}
-                          onChange={(e) => updateParam("crop_min_short_side_px", parseInt(e.target.value) || 512)}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                          defaultValue={512}
+                          placeholder="512"
+                          onCommit={(v) => updateParam("crop_min_short_side_px", v)}
+                          className="w-full px-3 py-2 text-sm"
                         />
                       </div>
                     </div>
@@ -5807,31 +5812,37 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                     <div className="grid grid-cols-2 gap-3">
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Smaller scale min</label>
-                        <input
-                          type="number" min={0.1} max={1} step={0.05}
+                        <NumberInput
+                          min={0.1} max={1} step={0.05} parse="float"
                           value={(params.crop_smaller_scale_range ?? [0.5, 0.9])[0]}
-                          onChange={(e) => updateParam("crop_smaller_scale_range", [parseFloat(e.target.value) || 0.5, (params.crop_smaller_scale_range ?? [0.5, 0.9])[1]])}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                          defaultValue={0.5}
+                          placeholder="0.5"
+                          onCommit={(v) => updateParam("crop_smaller_scale_range", [v, (params.crop_smaller_scale_range ?? [0.5, 0.9])[1]])}
+                          className="w-full px-3 py-2 text-sm"
                         />
                       </div>
                       <div>
                         <label className="block text-sm text-gray-400 mb-1">Smaller scale max (≤ 1.0)</label>
-                        <input
-                          type="number" min={0.1} max={1} step={0.05}
+                        <NumberInput
+                          min={0.1} max={1} step={0.05} parse="float"
                           value={(params.crop_smaller_scale_range ?? [0.5, 0.9])[1]}
-                          onChange={(e) => updateParam("crop_smaller_scale_range", [(params.crop_smaller_scale_range ?? [0.5, 0.9])[0], parseFloat(e.target.value) || 0.9])}
-                          className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                          defaultValue={0.9}
+                          placeholder="0.9"
+                          onCommit={(v) => updateParam("crop_smaller_scale_range", [(params.crop_smaller_scale_range ?? [0.5, 0.9])[0], v])}
+                          className="w-full px-3 py-2 text-sm"
                         />
                       </div>
                     </div>
 
                     <div>
                       <label className="block text-sm text-gray-400 mb-1">Plan seed (0 = train seed)</label>
-                      <input
-                        type="number" min={0} step={1}
+                      <NumberInput
+                        min={0} step={1}
                         value={params.crop_plan_seed ?? 0}
-                        onChange={(e) => updateParam("crop_plan_seed", parseInt(e.target.value) || 0)}
-                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm"
+                        defaultValue={0}
+                        placeholder="0"
+                        onCommit={(v) => updateParam("crop_plan_seed", v)}
+                        className="w-full px-3 py-2 text-sm"
                       />
                     </div>
                     <p className="text-xs text-gray-500">

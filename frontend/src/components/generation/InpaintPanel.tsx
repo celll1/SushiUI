@@ -19,6 +19,8 @@ import ImageEditor from "../common/ImageEditor";
 import TIPODialog, { TIPOSettings } from "../common/TIPODialog";
 import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
+import PostEditControls from "../common/PostEditControls";
+import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
@@ -173,6 +175,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [generatedImageParams, setGeneratedImageParams] = useState<InpaintParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  // Client-side post-edit (brightness/saturation) for the current preview image.
+  // Never sent to the backend; reset to neutral on each new generated image.
+  const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
+  useEffect(() => {
+    setPostEdit({ ...NEUTRAL_POST_EDIT });
+  }, [generatedImage]);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [inputImage, setInputImage] = useState<File | null>(null);
@@ -3550,6 +3558,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     src={generatedImage}
                     alt="Generated"
                     className="max-w-full max-h-full rounded-lg"
+                    style={{ filter: buildFilterString(postEdit) }}
                   />
                 ) : previewImage ? (
                   <img
@@ -3561,6 +3570,13 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                   <p className="text-gray-500">No image generated yet</p>
                 )}
               </div>
+
+              {/* Post-Edit controls (client-side brightness/saturation) */}
+              {generatedImage && (
+                <div className="mt-3">
+                  <PostEditControls value={postEdit} onChange={setPostEdit} />
+                </div>
+              )}
 
               {/* CFG Metrics Graph (Developer Mode) */}
               {developerMode && cfgMetrics.length > 0 && (
@@ -3660,6 +3676,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         <ImageViewer
           imageUrl={generatedImage}
           onClose={() => setPreviewViewerOpen(false)}
+          postEdit={postEdit}
+          onPostEditChange={setPostEdit}
         />
       )}
 

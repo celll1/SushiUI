@@ -19,12 +19,21 @@ import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
 import ImageList from "./ImageList";
 import { saveTempImage } from "@/utils/tempImageStorage";
+import PostEditControls from "../common/PostEditControls";
+import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 
 export default function ImageGrid() {
   const router = useRouter();
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null);
+  // Client-side post-edit (brightness/saturation) for the currently selected
+  // gallery image. Never sent to the backend; reset to neutral when the
+  // selected image changes. Output-folder files are never modified.
+  const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
+  useEffect(() => {
+    setPostEdit({ ...NEUTRAL_POST_EDIT });
+  }, [selectedImage?.filename]);
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -262,11 +271,21 @@ export default function ImageGrid() {
         throw new Error(`Download failed: ${response.statusText}`);
       }
 
-      const blob = await response.blob();
+      let blob = await response.blob();
+      let downloadName = image.filename;
+
+      // Bake post-edit adjustments only when non-neutral. Neutral -> original
+      // blob unchanged (metadata preserved). Baking re-encodes the PNG and
+      // loses embedded metadata (see postEdit.ts).
+      if (!isNeutral(postEdit)) {
+        blob = await applyPostEdit(blob, postEdit);
+        downloadName = editedFilename(image.filename);
+      }
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = image.filename;
+      a.download = downloadName;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -1144,6 +1163,11 @@ export default function ImageGrid() {
                       </label>
                     </div>
 
+                    {/* Post-Edit controls (client-side brightness/saturation) */}
+                    <div className="mb-2">
+                      <PostEditControls value={postEdit} onChange={setPostEdit} />
+                    </div>
+
                     {/* Download and Send buttons */}
                     <div className="flex flex-col gap-2">
                       <Button
@@ -1223,6 +1247,7 @@ export default function ImageGrid() {
                   src={`/outputs/${selectedImage.filename}`}
                   alt="Generated"
                   className="max-w-full max-h-full object-contain cursor-pointer"
+                  style={{ filter: buildFilterString(postEdit) }}
                   onDoubleClick={() => setShowFullSizeImage(true)}
                   title="Double-click to view full size"
                 />
@@ -1273,8 +1298,16 @@ export default function ImageGrid() {
                   src={`/outputs/${selectedImage.filename}`}
                   alt="Generated - Full Size"
                   className="max-w-full max-h-[90vh] object-contain"
+                  style={{ filter: buildFilterString(postEdit) }}
                   onClick={(e) => e.stopPropagation()}
                 />
+                {/* Post-edit controls (client-side brightness/saturation) */}
+                <div
+                  className="absolute bottom-4 left-1/2 -translate-x-1/2 w-72 max-w-[90vw] bg-black bg-opacity-70 rounded-lg p-3"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <PostEditControls value={postEdit} onChange={setPostEdit} />
+                </div>
               </div>
             </div>
           )}

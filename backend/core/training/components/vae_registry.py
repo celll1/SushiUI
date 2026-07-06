@@ -1,34 +1,43 @@
-"""
-VAEComponentRegistry — arch-independent VAE component layer.  [SKELETON — P2]
+"""VAEComponentRegistry — training-side re-export (plan A.4, P2).
 
-Generalizes minit2i's ``VAE_REGISTRY`` (+ the ``"none"`` pixel-space sentinel /
-``is_latent_vae``) and ``models/common/vae_store.py``, driven by a
-``ComponentWiringSpec``. Pixel-space is expressed as ``latent_channels == 0`` in
-the spec (branch on the flag, not on ``is_minit2i``).
+The canonical implementation lives in ``core.models.components.vae_registry`` (the
+shared arch-independent layer). This module re-exports it so the training-side API
+surface named in the plan (``core.training.components.vae_registry``) is preserved.
 
-Planned P2 surface:
-    load_vae(spec, path) -> vae | None
-    encode(vae, px, spec) -> latent
-    normalize(latent, vae, spec) -> latent
-
-P0/P1: skeleton only. Do NOT move minit2i code yet.
+Surface: ``load_vae(spec_or_type, ...)`` / ``normalize(latent, vae, spec)`` /
+``is_latent_vae`` (pixel-space = ``latent_channels == 0``), plus the frozen
+minit2i functions (``load_minit2i_vae`` / ``normalize_latent`` /
+``denormalize_latent`` / ``VAE_REGISTRY`` / ``VAE_SCALE_FACTOR``).
 """
 
 from __future__ import annotations
 
+from core.models.components.vae_registry import (  # noqa: F401
+    VAE_REGISTRY,
+    VAE_SCALE_FACTOR,
+    is_latent_vae,
+    vae_latent_channels,
+    preview_decoder_for,
+    load_minit2i_vae,
+    normalize_latent,
+    denormalize_latent,
+    load_vae,
+    normalize,
+    resolve_vae_dir,
+    vae_identity,
+)
 
-def is_latent_vae(spec) -> bool:
-    """True when the arch uses a latent VAE (spec.latent_channels > 0)."""
-    return getattr(spec, "latent_channels", 0) > 0
-
-
-def load_vae(spec, path):  # pragma: no cover - P2
-    raise NotImplementedError("vae_registry.load_vae is implemented in phase P2")
-
-
-def encode(vae, px, spec):  # pragma: no cover - P2
-    raise NotImplementedError("vae_registry.encode is implemented in phase P2")
-
-
-def normalize(latent, vae, spec):  # pragma: no cover - P2
-    raise NotImplementedError("vae_registry.normalize is implemented in phase P2")
+__all__ = [
+    "load_vae",
+    "normalize",
+    "is_latent_vae",
+    "VAE_REGISTRY",
+    "VAE_SCALE_FACTOR",
+    "vae_latent_channels",
+    "preview_decoder_for",
+    "load_minit2i_vae",
+    "normalize_latent",
+    "denormalize_latent",
+    "resolve_vae_dir",
+    "vae_identity",
+]

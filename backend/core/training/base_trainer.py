@@ -1529,8 +1529,12 @@ class BaseTrainer(ABC):
         """No-bucketing phase apply: fit each item into the active base-resolution AREA from
         its ORIGINAL size (mirrors the one-time no-bucketing fit, but re-runnable per phase
         and non-destructive since it reads the orig-size map). Within-area items keep their
-        original dims (parity with the one-time fit)."""
+        aspect, snapped to the arch pixel alignment (parity with the one-time fit)."""
         import math as _math
+        # Align to the ARCH's pixel requirement, not just the VAE /8: patchified
+        # DiTs (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16 and
+        # assert on non-conforming dims (see ArchHandler.pixel_align). SD/SDXL = 8.
+        align = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
         nb_base = max(int(r) for r in active_base_resolutions)
         nb_max_area = nb_base * nb_base
         for item, dataset in all_items:
@@ -1543,10 +1547,14 @@ class BaseTrainer(ABC):
                 continue
             if ow * oh > nb_max_area:
                 sc = _math.sqrt(nb_max_area / float(ow * oh))
-                item["width"] = max(8, int(ow * sc) // 8 * 8)
-                item["height"] = max(8, int(oh * sc) // 8 * 8)
+                item["width"] = max(align, int(ow * sc) // align * align)
+                item["height"] = max(align, int(oh * sc) // align * align)
             else:
-                item["width"], item["height"] = int(ow), int(oh)
+                # Within-area items keep their aspect but still snap to the arch
+                # alignment (no-op for already-aligned / pre-resized datasets;
+                # prevents a non-/16 original from tripping the DiT patchify assert).
+                item["width"] = max(align, int(ow) // align * align)
+                item["height"] = max(align, int(oh) // align * align)
 
     def _recompute_sdxl_micro_cond(self, item, bucket_w: int, bucket_h: int, strategy: str):
         """Deterministically recompute SDXL time_ids for an item from its real original
@@ -6533,6 +6541,10 @@ class BaseTrainer(ABC):
             # Resolution curriculum: phase-0 (warmup) fits into the scaled base area.
             _nb_res = self._rc_warmup_res if (self._rc_active and self._rc_current_phase == "warmup") \
                 else (base_resolutions or [1024])
+            # Align to the ARCH's pixel requirement, not just the VAE /8: patchified
+            # DiTs (anima/lens/krea2/flux2/zimage/minit2i/ideogram4) require /16 and
+            # assert on non-/16 dims (see ArchHandler.pixel_align). SD/SDXL = 8.
+            _nb_align = int(getattr(getattr(self, "arch", None), "pixel_align", 8))
             _nb_base = max(int(r) for r in _nb_res)
             _nb_max_area = _nb_base * _nb_base
             _nb_clamped = 0
@@ -6545,13 +6557,19 @@ class BaseTrainer(ABC):
                         continue
                     if w * h > _nb_max_area:
                         _scale = math.sqrt(_nb_max_area / float(w * h))
-                        item["width"] = max(8, int(w * _scale) // 8 * 8)
-                        item["height"] = max(8, int(h * _scale) // 8 * 8)
+                        item["width"] = max(_nb_align, int(w * _scale) // _nb_align * _nb_align)
+                        item["height"] = max(_nb_align, int(h * _scale) // _nb_align * _nb_align)
                         _nb_clamped += 1
+                    else:
+                        # Within-area items snap to the arch alignment (no-op for
+                        # already-aligned / pre-resized datasets; prevents a non-/16
+                        # original from tripping the DiT patchify assert).
+                        item["width"] = max(_nb_align, w // _nb_align * _nb_align)
+                        item["height"] = max(_nb_align, h // _nb_align * _nb_align)
             if _nb_clamped:
                 print(f"{self.log_prefix} Bucketing disabled: fitted {_nb_clamped} item(s) "
                       f"exceeding the base-resolution area into {_nb_base}x{_nb_base} "
-                      f"(aspect-preserving, /8-aligned) to bound VAE-encode/training memory")
+                      f"(aspect-preserving, /{_nb_align}-aligned) to bound VAE-encode/training memory")
 
         # MiniT2I is pixel-space (no VAE): the "latent" is just the resized [-1,1]
         # RGB image, so a disk latent cache would store full-resolution RGB tensors

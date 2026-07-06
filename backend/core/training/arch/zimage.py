@@ -15,6 +15,7 @@ from core.training.components.wiring import ZIMAGE_WIRING
 class ZImageArchHandler(ArchHandler):
     name = "zimage"
     wiring = ZIMAGE_WIRING
+    pixel_align = 16  # vae_scale(8) * patch(2)
 
     def load_components(self, trainer) -> None:
         # P3a: body lives in ops/zimage_ops (shared with the base_trainer

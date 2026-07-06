@@ -15,6 +15,7 @@ from core.training.components.wiring import FLUX2_WIRING
 class Flux2ArchHandler(ArchHandler):
     name = "flux2"
     wiring = FLUX2_WIRING
+    pixel_align = 16  # vae_scale(8) * patch(2)
 
     def load_components(self, trainer) -> None:
         # P3c: body lives in ops/flux2_ops (shared with the base_trainer load-time

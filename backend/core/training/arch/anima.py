@@ -15,6 +15,7 @@ from core.training.components.wiring import ANIMA_WIRING
 class AnimaArchHandler(ArchHandler):
     name = "anima"
     wiring = ANIMA_WIRING
+    pixel_align = 16  # vae_scale(8) * patch_spatial(2); patchify asserts on non-/16 dims
 
     def load_components(self, trainer) -> None:
         # P3b: body lives in ops/anima_ops (shared with the base_trainer

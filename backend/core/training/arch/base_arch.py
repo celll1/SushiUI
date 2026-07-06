@@ -156,6 +156,16 @@ class ArchHandler(ABC):
     #: Component-wiring spec (components/wiring.py). Placeholder in P0/P1.
     wiring: "ComponentWiringSpec" = None  # type: ignore
 
+    #: Minimum PIXEL-dimension alignment this arch requires, i.e. every training
+    #: image's width/height must be a multiple of this. Default 8 = the VAE
+    #: downscale factor (SD/SDXL, latent = pixel/8). Patchified DiTs additionally
+    #: patchify the latent by patch_spatial (=2), so their pixel dims must be a
+    #: multiple of vae_scale(8) * patch_spatial(2) = 16, and their patchify asserts
+    #: on non-conforming dims (e.g. Anima). Used by the no-bucketing area-fit and
+    #: the resolution-curriculum refit to align dims to the ARCH's requirement,
+    #: not just to /8. Overridden to 16 by every patchified DiT handler below.
+    pixel_align: int = 8
+
     def __init__(self, trainer: Any = None):
         # Optional back-reference (same contract as BaseLoRAAdapter). Canonical
         # methods still take ``trainer`` explicitly; this is a convenience only.

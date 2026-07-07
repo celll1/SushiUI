@@ -123,10 +123,15 @@ export function flattenChroma(imageData: ImageData, strength: number): void {
   const data = imageData.data; // RGBA Uint8ClampedArray
 
   const longSide = Math.max(W, H);
+  // f > 1 (typed diagnostic values above the 0-100 slider range) extrapolates
+  // radius/eps toward "flatten everything"; blend MUST cap at 1.0 - lerp past
+  // the smoothed value would extrapolate chroma beyond q and invert colors.
   let radius = Math.round(lerp(12, 40, f) * (longSide / 1024));
   if (radius < 4) radius = 4;
+  const maxRadius = Math.ceil(longSide / 2);
+  if (radius > maxRadius) radius = maxRadius;
   const eps = lerp(1.5e-3, 8e-3, f);
-  const blend = lerp(0.4, 1.0, f);
+  const blend = Math.min(1.0, lerp(0.4, 1.0, f));
 
   // Decode RGB (linear-in-code [0,1]) and chroma planes.
   const R = new Float32Array(N);

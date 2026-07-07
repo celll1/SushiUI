@@ -1759,6 +1759,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Color Flatten (chroma smoothing) strength for this request; read by all
         # decode funnels via getattr(self, "_color_flatten_strength", 0). <=0 is a no-op.
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
+        # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
+        self._flatten_in_loop = bool(params.get("flatten_in_loop", False))
+        self._flatten_in_loop_last_steps = int(params.get("flatten_in_loop_last_steps", 3) or 3)
+        self._flatten_in_loop_min_region = float(params.get("flatten_in_loop_min_region", 0.02) or 0.02)
         # VAE DC-drift correction is img2img/inpaint only; force off for txt2img.
         self._vae_drift_correction = False
 
@@ -2199,6 +2203,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             image = custom_sampling_loop(
                 pipeline=pipeline_to_use,
                 color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
+                flatten_in_loop=getattr(self, "_flatten_in_loop", False),
+                flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
+                flatten_in_loop_min_region=getattr(self, "_flatten_in_loop_min_region", 0.02),
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
                 pooled_prompt_embeds=pooled_prompt_embeds,
@@ -2322,6 +2329,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
+        # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
+        self._flatten_in_loop = bool(params.get("flatten_in_loop", False))
+        self._flatten_in_loop_last_steps = int(params.get("flatten_in_loop_last_steps", 3) or 3)
+        self._flatten_in_loop_min_region = float(params.get("flatten_in_loop_min_region", 0.02) or 0.02)
         self._vae_drift_correction = bool(params.get("vae_drift_correction", False))
 
         # Z-Image handling
@@ -2805,6 +2816,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
                 color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
+                flatten_in_loop=getattr(self, "_flatten_in_loop", False),
+                flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
+                flatten_in_loop_min_region=getattr(self, "_flatten_in_loop_min_region", 0.02),
                 vae_drift_correction=getattr(self, "_vae_drift_correction", False),
                 init_image=init_image,
                 prompt_embeds=prompt_embeds,
@@ -2936,6 +2950,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
+        # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
+        self._flatten_in_loop = bool(params.get("flatten_in_loop", False))
+        self._flatten_in_loop_last_steps = int(params.get("flatten_in_loop_last_steps", 3) or 3)
+        self._flatten_in_loop_min_region = float(params.get("flatten_in_loop_min_region", 0.02) or 0.02)
         self._vae_drift_correction = bool(params.get("vae_drift_correction", False))
 
         # Z-Image inpaint support
@@ -3273,6 +3291,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             pipeline=pipeline_to_use,
             color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
             vae_drift_correction=getattr(self, "_vae_drift_correction", False),
+            flatten_in_loop=getattr(self, "_flatten_in_loop", False),
+            flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
+            flatten_in_loop_min_region=getattr(self, "_flatten_in_loop_min_region", 0.02),
             init_image=init_image,
             mask_image=mask_image,
             prompt_embeds=prompt_embeds,

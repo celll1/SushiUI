@@ -74,6 +74,19 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # bias the VAE round-trip introduces (mean(decode(encode(input))) - mean(input))
     # from the final decode. Corrects a VAE property, so it is strength-independent.
     "vae_drift_correction": False,
+    # In-loop hard-flatten (SD1.5/SDXL only): on the last N actual denoise steps,
+    # decode the x0 prediction, detect the flat background region (largest connected
+    # low-gradient component touching the border) and replace it with its dominant
+    # colour, then re-encode and inject the correction back into the latents. Gated:
+    # if no confident flat region (area < min_region) the step is a no-op, so
+    # textured backgrounds are protected. DiT archs accept the flag and warn.
+    "flatten_in_loop": False,       # master switch (default off = byte-identical loop)
+    # Number of trailing ACTUAL denoise steps to inject on (relative to the real step
+    # sequence, not a fixed fraction, so it is stable across step counts / accelerators).
+    # Larger N = flatter background but more subject-detail cost (~6-7% wall per injection).
+    "flatten_in_loop_last_steps": 3,
+    # Flat-region area gate as a fraction of the frame. Below this the step is a no-op.
+    "flatten_in_loop_min_region": 0.02,
     # Spectrum: Adaptive Spectral Feature Forecasting (training-free acceleration).
     # Skips U-Net forwards on selected steps by forecasting the output from a Chebyshev
     # fit over actual passes. Most useful at high step counts (>=30); little benefit on

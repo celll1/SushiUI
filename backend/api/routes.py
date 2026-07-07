@@ -173,6 +173,9 @@ class GenerationParams(BaseModel):
     vae_tiling: bool = GENERATION_DEFAULTS["vae_tiling"]  # Tiled VAE decode for large images
     vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (sample_size*1.5)
     color_flatten_strength: int = GENERATION_DEFAULTS["color_flatten_strength"]  # 0-100 chroma smoothing; 0=off
+    flatten_in_loop: bool = GENERATION_DEFAULTS["flatten_in_loop"]  # in-loop hard-flatten of flat bg (SD1.5/SDXL)
+    flatten_in_loop_last_steps: int = GENERATION_DEFAULTS["flatten_in_loop_last_steps"]  # inject on last N actual steps
+    flatten_in_loop_min_region: float = GENERATION_DEFAULTS["flatten_in_loop_min_region"]  # flat-region area gate
     # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_enable: bool = GENERATION_DEFAULTS["spectrum_enable"]
     fbcache_enable: bool = GENERATION_DEFAULTS["fbcache_enable"]
@@ -327,6 +330,9 @@ async def generate_txt2img(
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
+    flatten_in_loop: bool = Form(GENERATION_DEFAULTS["flatten_in_loop"]),
+    flatten_in_loop_last_steps: int = Form(GENERATION_DEFAULTS["flatten_in_loop_last_steps"]),
+    flatten_in_loop_min_region: float = Form(GENERATION_DEFAULTS["flatten_in_loop_min_region"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
@@ -494,6 +500,9 @@ async def generate_txt2img(
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "color_flatten_strength": color_flatten_strength,
+            "flatten_in_loop": flatten_in_loop,
+            "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
+            "flatten_in_loop_min_region": flatten_in_loop_min_region,
             "spectrum_enable": spectrum_enable,
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,
@@ -1188,6 +1197,9 @@ async def generate_img2img(
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
+    flatten_in_loop: bool = Form(GENERATION_DEFAULTS["flatten_in_loop"]),
+    flatten_in_loop_last_steps: int = Form(GENERATION_DEFAULTS["flatten_in_loop_last_steps"]),
+    flatten_in_loop_min_region: float = Form(GENERATION_DEFAULTS["flatten_in_loop_min_region"]),
     vae_drift_correction: bool = Form(GENERATION_DEFAULTS["vae_drift_correction"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
@@ -1364,6 +1376,9 @@ async def generate_img2img(
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "color_flatten_strength": color_flatten_strength,
+            "flatten_in_loop": flatten_in_loop,
+            "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
+            "flatten_in_loop_min_region": flatten_in_loop_min_region,
             "vae_drift_correction": vae_drift_correction,
             "spectrum_enable": spectrum_enable,
             "fbcache_enable": fbcache_enable,
@@ -1629,6 +1644,9 @@ async def generate_inpaint(
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
+    flatten_in_loop: bool = Form(GENERATION_DEFAULTS["flatten_in_loop"]),
+    flatten_in_loop_last_steps: int = Form(GENERATION_DEFAULTS["flatten_in_loop_last_steps"]),
+    flatten_in_loop_min_region: float = Form(GENERATION_DEFAULTS["flatten_in_loop_min_region"]),
     vae_drift_correction: bool = Form(GENERATION_DEFAULTS["vae_drift_correction"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
@@ -1824,6 +1842,9 @@ async def generate_inpaint(
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "color_flatten_strength": color_flatten_strength,
+            "flatten_in_loop": flatten_in_loop,
+            "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
+            "flatten_in_loop_min_region": flatten_in_loop_min_region,
             "vae_drift_correction": vae_drift_correction,
             "spectrum_enable": spectrum_enable,
             "fbcache_enable": fbcache_enable,

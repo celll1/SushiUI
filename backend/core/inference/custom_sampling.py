@@ -46,7 +46,7 @@ def get_inpaint_use_dedicated_model_setting() -> bool:
     except Exception as e:
         print(f"[CustomSampling] Warning: Could not read inpaint_use_dedicated_model setting: {e}")
         return False  # Default: mask blending
-from typing import Optional, Callable, Dict, Any, Union, List
+from typing import Optional, Callable, Dict, Any, Union, List, Tuple
 from diffusers import (
     StableDiffusionPipeline,
     StableDiffusionXLPipeline,
@@ -249,6 +249,100 @@ def compute_vae_dc_bias(pipeline, ref_latents: torch.Tensor, input_mean: torch.T
     except Exception as e:
         print(f"[VAE Drift] Reference decode failed, skipping correction: {e}")
         return None
+
+
+def compute_flatten_inject_steps(num_timesteps: int, last_steps: int) -> set:
+    """Step indices on which the in-loop hard-flatten fires: the last ``last_steps``
+    ACTUAL denoise steps the loop executes (``num_timesteps`` is ``len(timesteps)``,
+    which some schedulers, e.g. DPM2, double). Relative to the real step sequence,
+    NOT a fixed fraction, so it is stable across step counts / accelerators."""
+    n = int(last_steps)
+    if n <= 0 or num_timesteps <= 0:
+        return set()
+    n = min(n, num_timesteps)
+    return set(range(num_timesteps - n, num_timesteps))
+
+
+def _setup_inloop_flatten(pipeline, timesteps, spectrum, fbcache_ctrl,
+                          flatten_in_loop, last_steps, min_region):
+    """Compute the injection step set and, when accelerators are active, force
+    genuine U-Net forwards on those steps. Shared by the three sampling loops.
+
+    Accelerator interplay: Spectrum/FBCache skip or forecast U-Net forwards on
+    some steps, so x0 on such a step would be synthetic. Making the injection
+    steps ANCHORS (spectrum) / forced misses (fbcache) is the minimal correct
+    guard - it keeps each accelerator's own fit/cache consistent (an anchor is
+    recorded, a miss captures the cache) while guaranteeing the hard-flatten sees
+    a real x0. Note spectrum_tail (default 0.12) already forces the tail to real
+    passes, so with default spectrum the last ~3-4 of 28 steps are real anyway;
+    this guard covers larger N, lower spectrum_tail, and FBCache (no tail).
+
+    Returns ``(inject_steps:set, vae_shift:float)``.
+    """
+    if not flatten_in_loop:
+        return set(), 0.0
+    inject = compute_flatten_inject_steps(len(timesteps), last_steps)
+    vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
+    if spectrum is not None:
+        spectrum.anchors = set(spectrum.anchors) | inject
+    if fbcache_ctrl is not None:
+        fbcache_ctrl.force_real_steps = set(fbcache_ctrl.force_real_steps) | inject
+    print(f"[InLoopFlatten] enabled: inject on steps {sorted(inject)} of "
+          f"{len(timesteps)} (min_region={min_region})")
+    return inject, vae_shift
+
+
+def inloop_hard_flatten_step(
+    pipeline,
+    latents: torch.Tensor,
+    pred_original_sample: torch.Tensor,
+    min_region_frac: float,
+    vae_shift: float,
+) -> Tuple[torch.Tensor, bool]:
+    """In-loop hard-flatten latent injection (SD1.5/SDXL, validated in proto2).
+
+    Decode the current x0 prediction (``pred_original_sample``, a SCALED latent) to
+    pixels, detect + hard-replace the flat background region with its dominant
+    colour (feathered - see ``core.inference.inloop_flatten.hard_flatten``), encode
+    the corrected image back, and inject the x0-space delta into the running
+    latents: ``latents += (x0_corrected - x0)`` (EXACTLY the prototype's Euler
+    injection - the x0-space delta maps 1:1 into ``prev_sample``; no scheduler
+    scaling). When no confident flat region is found the step is a complete no-op.
+
+    The VAE is staged to GPU only for this decode/encode and returned to CPU
+    afterwards, matching the loop's existing VRAM discipline (VAE on CPU during
+    U-Net work). Returns ``(latents, applied)``; on any failure the latents are
+    returned unchanged so a bad step can never corrupt the run.
+    """
+    if pred_original_sample is None:
+        return latents, False
+    from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
+    from core.inference.inloop_flatten import hard_flatten
+    scaling = pipeline.vae.config.scaling_factor
+    try:
+        move_vae_to_gpu(pipeline)
+        lat = (pred_original_sample / scaling + vae_shift).to(dtype=pipeline.vae.dtype)
+        with torch.no_grad():
+            img = pipeline.vae.decode(lat, return_dict=True).sample
+        img01 = (img.float() / 2 + 0.5).clamp(0, 1)
+        arr = img01[0].permute(1, 2, 0).cpu().numpy()
+        out_arr, applied = hard_flatten(arr, min_region_frac=min_region_frac)
+        if not applied:
+            return latents, False
+        t = torch.from_numpy(out_arr).permute(2, 0, 1).unsqueeze(0).to(
+            device=pipeline.vae.device, dtype=pipeline.vae.dtype)
+        x = t * 2.0 - 1.0
+        with torch.no_grad():
+            enc = pipeline.vae.encode(x).latent_dist.mode()
+        x0c = ((enc - vae_shift) * scaling)
+        delta = (x0c - pred_original_sample.to(x0c.device, x0c.dtype))
+        latents = latents + delta.to(latents.device, latents.dtype)
+        return latents, True
+    except Exception as e:
+        print(f"[InLoopFlatten] step skipped (decode/encode failed): {e}")
+        return latents, False
+    finally:
+        move_vae_to_cpu(pipeline)
 
 
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
@@ -562,6 +656,9 @@ def custom_sampling_loop(
     fbcache_warmup_steps: int = 1,  # always compute the first N steps
     fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
     color_flatten_strength: int = 0,  # 0-100 post-decode chroma smoothing; 0 = off
+    flatten_in_loop: bool = False,  # in-loop hard-flatten of the flat background (SD1.5/SDXL)
+    flatten_in_loop_last_steps: int = 3,  # inject on the last N ACTUAL denoise steps
+    flatten_in_loop_min_region: float = 0.02,  # flat-region area gate (fraction of frame)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -872,6 +969,11 @@ def custom_sampling_loop(
     # Track previous SNR for SNR-based adaptive CFG
     previous_snr = None
     first_iteration_debug = True
+
+    # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
+    _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
+        pipeline, timesteps, spectrum, fbcache_ctrl,
+        flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -1283,6 +1385,12 @@ def custom_sampling_loop(
                 latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
             )
 
+        # In-loop hard-flatten of the flat background (SD1.5/SDXL, opt-in).
+        if flatten_in_loop and i in _flatten_inject_steps:
+            latents, _ = inloop_hard_flatten_step(
+                pipeline, latents, pred_original_sample,
+                flatten_in_loop_min_region, _flatten_vae_shift)
+
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
         # ============================================================
@@ -1430,6 +1538,9 @@ def custom_img2img_sampling_loop(
     fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
     color_flatten_strength: int = 0,  # 0-100 post-decode chroma smoothing; 0 = off
     vae_drift_correction: bool = False,  # subtract VAE round-trip DC bias (strength-independent)
+    flatten_in_loop: bool = False,  # in-loop hard-flatten of the flat background (SD1.5/SDXL)
+    flatten_in_loop_last_steps: int = 3,  # inject on the last N ACTUAL denoise steps
+    flatten_in_loop_min_region: float = 0.02,  # flat-region area gate (fraction of frame)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1719,6 +1830,11 @@ def custom_img2img_sampling_loop(
     if progress_callback is not None:
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
         progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
+
+    # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
+    _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
+        pipeline, timesteps, spectrum, fbcache_ctrl,
+        flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
     # Denoising loop
     for i, t in enumerate(timesteps):
@@ -2122,6 +2238,12 @@ def custom_img2img_sampling_loop(
                 latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
             )
 
+        # In-loop hard-flatten of the flat background (SD1.5/SDXL, opt-in).
+        if flatten_in_loop and i in _flatten_inject_steps:
+            latents, _ = inloop_hard_flatten_step(
+                pipeline, latents, pred_original_sample,
+                flatten_in_loop_min_region, _flatten_vae_shift)
+
         # ============================================================
         # DEBUG: Latents AFTER scheduler.step() (for comparison with training)
         # ============================================================
@@ -2270,6 +2392,9 @@ def custom_inpaint_sampling_loop(
     fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
     color_flatten_strength: int = 0,  # 0-100 post-decode chroma smoothing; 0 = off
     vae_drift_correction: bool = False,  # subtract VAE round-trip DC bias (strength-independent)
+    flatten_in_loop: bool = False,  # in-loop hard-flatten of the flat background (SD1.5/SDXL)
+    flatten_in_loop_last_steps: int = 3,  # inject on the last N ACTUAL denoise steps
+    flatten_in_loop_min_region: float = 0.02,  # flat-region area gate (fraction of frame)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2615,6 +2740,11 @@ def custom_inpaint_sampling_loop(
     if progress_callback is not None:
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
         progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
+
+    # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
+    _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
+        pipeline, timesteps, spectrum, fbcache_ctrl,
+        flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
     for i, t in enumerate(timesteps):
         # Check for cancellation (only in inference context, not training)
@@ -3004,6 +3134,14 @@ def custom_inpaint_sampling_loop(
             latents, pred_original_sample = apply_reference_guide_blend(
                 latents, pred_original_sample, ref_guides, ref_frac, i, timesteps, scheduler
             )
+
+        # In-loop hard-flatten of the generated background (SD1.5/SDXL, opt-in).
+        # Applied to the running latents before mask blending, so the pristine
+        # original (unmasked) regions are never altered.
+        if flatten_in_loop and i in _flatten_inject_steps:
+            latents, _ = inloop_hard_flatten_step(
+                pipeline, latents, pred_original_sample,
+                flatten_in_loop_min_region, _flatten_vae_shift)
 
         # Apply mask blending ONLY for 4-channel UNets (regular models)
         # 9-channel inpaint UNets handle masking internally via concatenation

@@ -201,6 +201,11 @@ export interface GenerationParams {
   vae_tile_threshold?: number;
   // Color Flatten (chroma-smoothing baked into the saved image at generation time)
   color_flatten_strength?: number;
+  // In-loop background hard-flatten (detects flat background region during
+  // the final denoise steps and replaces it with its solid dominant color; SD/SDXL only)
+  flatten_in_loop?: boolean;
+  flatten_in_loop_last_steps?: number;
+  flatten_in_loop_min_region?: number;
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration
   spectrum_enable?: boolean;
   fbcache_enable?: boolean;
@@ -307,6 +312,10 @@ export interface GeneratedImage {
   // Color Flatten / VAE drift correction
   color_flatten_strength?: string;
   vae_drift_correction?: string;
+  // In-loop background hard-flatten
+  flatten_in_loop?: string;
+  flatten_in_loop_last_steps?: string;
+  flatten_in_loop_min_region?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -410,6 +419,10 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
+  // In-loop background hard-flatten (final-step flat-region solid-color replacement)
+  formData.append("flatten_in_loop", String(paramsWithImages.flatten_in_loop ?? false));
+  formData.append("flatten_in_loop_last_steps", String(paramsWithImages.flatten_in_loop_last_steps ?? 3));
+  formData.append("flatten_in_loop_min_region", String(paramsWithImages.flatten_in_loop_min_region ?? 0.02));
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
@@ -718,6 +731,10 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
+  // In-loop background hard-flatten (final-step flat-region solid-color replacement)
+  formData.append("flatten_in_loop", String(paramsWithImages.flatten_in_loop ?? false));
+  formData.append("flatten_in_loop_last_steps", String(paramsWithImages.flatten_in_loop_last_steps ?? 3));
+  formData.append("flatten_in_loop_min_region", String(paramsWithImages.flatten_in_loop_min_region ?? 0.02));
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
@@ -860,6 +877,10 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
+  // In-loop background hard-flatten (final-step flat-region solid-color replacement)
+  formData.append("flatten_in_loop", String(paramsWithImages.flatten_in_loop ?? false));
+  formData.append("flatten_in_loop_last_steps", String(paramsWithImages.flatten_in_loop_last_steps ?? 3));
+  formData.append("flatten_in_loop_min_region", String(paramsWithImages.flatten_in_loop_min_region ?? 0.02));
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));

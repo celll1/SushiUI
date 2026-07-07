@@ -126,6 +126,9 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   vae_tiling: false,
   vae_tile_threshold: 0,
   color_flatten_strength: 0,
+  flatten_in_loop: false,
+  flatten_in_loop_last_steps: 3,
+  flatten_in_loop_min_region: 0.02,
   spectrum_enable: false,
   fbcache_enable: false,
   fbcache_threshold: 0.12,
@@ -1411,6 +1414,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
         color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
+        flatten_in_loop: mainParams.flatten_in_loop, // Inherit in-loop background flatten setting
+        flatten_in_loop_last_steps: mainParams.flatten_in_loop_last_steps,
+        flatten_in_loop_min_region: mainParams.flatten_in_loop_min_region,
         spectrum_enable: mainParams.spectrum_enable, // Inherit Spectrum acceleration
         fbcache_enable: mainParams.fbcache_enable, // Inherit First Block Cache
         fbcache_threshold: mainParams.fbcache_threshold,
@@ -2822,6 +2828,41 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
               />
             </div>
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="flatten_in_loop_i2i"
+                checked={params.flatten_in_loop || false}
+                onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="flatten_in_loop_i2i" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
+                In-loop background flatten（背景ベタ塗り化）
+              </label>
+            </div>
+            {params.flatten_in_loop && (
+              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
+                  Flatten last N steps
+                  <NumberInput min={1} max={16} step={1}
+                    value={params.flatten_in_loop_last_steps ?? 3}
+                    defaultValue={3}
+                    placeholder="3"
+                    onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
+                    className="w-20" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
+                  Min region fraction
+                  <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+                    value={params.flatten_in_loop_min_region ?? 0.02}
+                    defaultValue={0.02}
+                    placeholder="0.02"
+                    onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
+                    className="w-20" />
+                </label>
+              </div>
+            )}
 
             <div className="flex items-center gap-2 mt-2">
               <input

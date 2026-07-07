@@ -41,6 +41,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "cpu_text_encoding": ["cpu_text_encoding"],
     "attention_impl": ["attention_impl"],
     "vae_drift_correction": ["vae_drift_correction"],
+    "flatten_in_loop": ["flatten_in_loop"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -55,6 +56,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "cpu_text_encoding": "cpu_text_encoding",
     "attention_impl": "attention_impl",
     "vae_drift_correction": "vae_drift_correction (VAE DC-drift correction)",
+    "flatten_in_loop": "flatten_in_loop (in-loop hard background flatten)",
 }
 
 # ---------------------------------------------------------------------------
@@ -122,6 +124,14 @@ for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "k
 for _a in _DIT_ARCHS:
     _add(_a, "vae_drift_correction",
          "VAE DC-drift correction is only implemented for the SD1.5/SDXL img2img/inpaint decode path")
+
+# In-loop hard-flatten: the decode -> flat-region hard-replace -> encode -> latent
+# injection is implemented in the SD1.5/SDXL custom sampling loops (Euler-validated
+# x0 injection). The DiT archs use bespoke flow-matching samplers and PIL-returning
+# decode funnels, so the flag is accepted but not applied there.
+for _a in _DIT_ARCHS:
+    _add(_a, "flatten_in_loop",
+         "in-loop hard background flatten is only implemented for the SD1.5/SDXL sampling loops")
 
 
 def _is_user_set(params: Dict[str, Any], key: str) -> bool:

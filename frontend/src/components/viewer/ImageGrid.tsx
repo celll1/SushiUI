@@ -350,6 +350,9 @@ export default function ImageGrid() {
     if (p.tipo_config !== undefined) target.tipo_config = p.tipo_config;
     if (p.color_flatten_strength !== undefined) target.color_flatten_strength = p.color_flatten_strength;
     if (p.vae_drift_correction !== undefined) target.vae_drift_correction = p.vae_drift_correction;
+    if (p.flatten_in_loop !== undefined) target.flatten_in_loop = p.flatten_in_loop;
+    if (p.flatten_in_loop_last_steps !== undefined) target.flatten_in_loop_last_steps = p.flatten_in_loop_last_steps;
+    if (p.flatten_in_loop_min_region !== undefined) target.flatten_in_loop_min_region = p.flatten_in_loop_min_region;
     // attention_type / attention_impl are read from localStorage by the API layer,
     // not from the params object, so restore them there for reproducibility.
     if (typeof window !== 'undefined') {
@@ -823,6 +826,11 @@ export default function ImageGrid() {
                   {selectedImage.vae_drift_correction === 'True' && (
                     <div>
                       <span className="text-gray-400">VAE Drift Correction:</span> enabled
+                    </div>
+                  )}
+                  {selectedImage.flatten_in_loop === 'True' && (
+                    <div>
+                      <span className="text-gray-400">In-loop Background Flatten:</span> last {selectedImage.flatten_in_loop_last_steps || 3} steps, min region {selectedImage.flatten_in_loop_min_region || 0.02}
                     </div>
                   )}
                   {Array.isArray(selectedImage.parameters?.loras) && selectedImage.parameters.loras.length > 0 ? (

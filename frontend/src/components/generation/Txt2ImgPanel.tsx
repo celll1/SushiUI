@@ -2458,174 +2458,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </div>
 
-          {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
-          {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
-            <>
-              {/* Z-Image/FLUX.2: 2-column layout */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Select
-                  label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
-                  value={params.unet_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    unet_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-                <Select
-                  label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
-                  value={params.text_encoder_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-              </div>
-              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
-                  <p className="text-xs text-blue-200">
-                    💡 Quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"}) is particularly large.
-                  </p>
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <>
-              {/* SD/SDXL: 1-column layout */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Select
-                  label="U-Net Quantization"
-                  value={params.unet_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    unet_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-                <Select
-                  label="Text Encoder Quantization (Z-Image)"
-                  value={params.text_encoder_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-              </div>
-              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
-                  <p className="text-xs text-blue-200">
-                    💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
-                  </p>
-                </div>
-              ) : null}
-            </>
-          )}
-
-          {/* CPU Text Encoding — applies to all model types */}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={params.cpu_text_encoding ?? false}
-              onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
-              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
-            />
-            <span className="text-sm text-gray-300">CPU Text Encoding</span>
-            <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
-          </label>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="vae_tiling"
-              checked={params.vae_tiling || false}
-              onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="vae_tiling" className="text-sm text-gray-300">
-              VAE Tiling
-            </label>
-            <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
-          </div>
-          {params.vae_tiling && (
-            <div className="flex items-center gap-2 mt-1 ml-6">
-              <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
-              <NumberInput
-                id="vae_tile_threshold"
-                min={0}
-                step={128}
-                value={params.vae_tile_threshold ?? 0}
-                defaultValue={0}
-                placeholder="0"
-                onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
-                className="w-24"
-              />
-              <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
-            </div>
-          )}
-
-          <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
-            <Slider
-              label="Color Flatten（色ムラ除去）"
-              min={0}
-              max={100}
-              step={1}
-              value={params.color_flatten_strength ?? 0}
-              onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
-            />
-          </div>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="flatten_in_loop"
-              checked={params.flatten_in_loop || false}
-              onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="flatten_in_loop" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
-              In-loop background flatten（背景ベタ塗り化）
-            </label>
-          </div>
-          {params.flatten_in_loop && (
-            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-              <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
-                Flatten last N steps
-                <NumberInput min={1} max={16} step={1}
-                  value={params.flatten_in_loop_last_steps ?? 3}
-                  defaultValue={3}
-                  placeholder="3"
-                  onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
-                  className="w-20" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
-                Min region fraction
-                <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
-                  value={params.flatten_in_loop_min_region ?? 0.02}
-                  defaultValue={0.02}
-                  placeholder="0.02"
-                  onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
-                  className="w-20" />
-              </label>
-            </div>
-          )}
+          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration（高速化）</div>
 
           <div className="flex items-center gap-2 mt-2">
             <input
@@ -2766,6 +2599,212 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           )}
 
+          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Post-process（色補正）</div>
+
+          <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+            <Slider
+              label="Color Flatten（色ムラ除去）"
+              min={0}
+              max={100}
+              step={1}
+              value={params.color_flatten_strength ?? 0}
+              onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+            />
+          </div>
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="flatten_in_loop"
+              checked={params.flatten_in_loop || false}
+              onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="flatten_in_loop" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
+              In-loop background flatten（背景ベタ塗り化）
+            </label>
+          </div>
+          {params.flatten_in_loop && (
+            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
+                Flatten last N steps
+                <NumberInput min={1} max={16} step={1}
+                  value={params.flatten_in_loop_last_steps ?? 3}
+                  defaultValue={3}
+                  placeholder="3"
+                  onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
+                  className="w-20" />
+              </label>
+              <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
+                Min region fraction
+                <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+                  value={params.flatten_in_loop_min_region ?? 0.02}
+                  defaultValue={0.02}
+                  placeholder="0.02"
+                  onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
+                  className="w-20" />
+              </label>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Select
+              label="Prompt Chunking Mode"
+              options={[
+                { value: "a1111", label: "A1111 (Separate chunks)" },
+                { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
+                { value: "nobos", label: "No BOS/EOS" },
+              ]}
+              value={params.prompt_chunking_mode || "a1111"}
+              onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+            />
+            <Select
+              label="Max Chunks"
+              options={[
+                { value: "0", label: "Unlimited" },
+                { value: "1", label: "1 chunk (75 tokens)" },
+                { value: "2", label: "2 chunks (150 tokens)" },
+                { value: "3", label: "3 chunks (225 tokens)" },
+                { value: "4", label: "4 chunks (300 tokens)" },
+              ]}
+              value={params.max_prompt_chunks?.toString() || "0"}
+              onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
+            />
+          </div>
+
+          {/* Model / Environment（モデル/環境設定） — pipeline-global settings, applied last */}
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-4">
+            <summary className="text-sm font-semibold text-gray-300 cursor-pointer select-none">
+              Model / Environment（モデル/環境設定）
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                モデル全体に適用され、Loop Generationにも常に引き継がれます。
+              </p>
+
+          {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+          {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
+            <>
+              {/* Z-Image/FLUX.2: 2-column layout */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Select
+                  label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                  value={params.unet_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    unet_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                  ]}
+                />
+                <Select
+                  label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                  value={params.text_encoder_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                  ]}
+                />
+              </div>
+              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                  <p className="text-xs text-blue-200">
+                    💡 Quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"}) is particularly large.
+                  </p>
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {/* SD/SDXL: 1-column layout */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Select
+                  label="U-Net Quantization"
+                  value={params.unet_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    unet_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                  ]}
+                />
+                <Select
+                  label="Text Encoder Quantization (Z-Image)"
+                  value={params.text_encoder_quantization || "none"}
+                  onChange={(e) => setParams({
+                    ...params,
+                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                  })}
+                  options={[
+                    { value: "none", label: "None" },
+                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                    { value: "fp8_e5m2", label: "FP8 E5M2" },
+                  ]}
+                />
+              </div>
+              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                  <p className="text-xs text-blue-200">
+                    💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
+                  </p>
+                </div>
+              ) : null}
+            </>
+          )}
+
+          {/* CPU Text Encoding — applies to all model types */}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={params.cpu_text_encoding ?? false}
+              onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
+              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+            />
+            <span className="text-sm text-gray-300">CPU Text Encoding</span>
+            <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
+          </label>
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="vae_tiling"
+              checked={params.vae_tiling || false}
+              onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="vae_tiling" className="text-sm text-gray-300">
+              VAE Tiling
+            </label>
+            <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
+          </div>
+          {params.vae_tiling && (
+            <div className="flex items-center gap-2 mt-1 ml-6">
+              <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
+              <NumberInput
+                id="vae_tile_threshold"
+                min={0}
+                step={128}
+                value={params.vae_tile_threshold ?? 0}
+                defaultValue={0}
+                placeholder="0"
+                onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
+                className="w-24"
+              />
+              <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
+            </div>
+          )}
+
           {developerMode && (
             <>
               <div className="flex items-center gap-2 mt-2">
@@ -2861,31 +2900,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               )}
             </>
           )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Select
-              label="Prompt Chunking Mode"
-              options={[
-                { value: "a1111", label: "A1111 (Separate chunks)" },
-                { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
-                { value: "nobos", label: "No BOS/EOS" },
-              ]}
-              value={params.prompt_chunking_mode || "a1111"}
-              onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
-            />
-            <Select
-              label="Max Chunks"
-              options={[
-                { value: "0", label: "Unlimited" },
-                { value: "1", label: "1 chunk (75 tokens)" },
-                { value: "2", label: "2 chunks (150 tokens)" },
-                { value: "3", label: "3 chunks (225 tokens)" },
-                { value: "4", label: "4 chunks (300 tokens)" },
-              ]}
-              value={params.max_prompt_chunks?.toString() || "0"}
-              onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
-            />
-          </div>
+            </div>
+          </details>
         </Card>
 
         {visibility.lora && (

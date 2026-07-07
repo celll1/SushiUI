@@ -84,6 +84,7 @@ interface Img2ImgParams {
   // Block swap (model-global)
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
+  use_pinned_memory?: boolean;
   block_swap_h2d_only?: boolean;
   block_swap_ring_size?: number;
 }
@@ -158,6 +159,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   // Block swap (model-global; inherited by loop generation). Panel UI pending the Model/Environment section (phase 2).
   enable_block_swap: false,
   blocks_to_swap: 20,
+  use_pinned_memory: false,
   block_swap_h2d_only: false,
   block_swap_ring_size: 2,
 };
@@ -1452,6 +1454,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         text_encoder_quantization: mainParams.text_encoder_quantization,
         enable_block_swap: mainParams.enable_block_swap,
         blocks_to_swap: mainParams.blocks_to_swap,
+        use_pinned_memory: mainParams.use_pinned_memory,
         block_swap_h2d_only: mainParams.block_swap_h2d_only,
         block_swap_ring_size: mainParams.block_swap_ring_size,
       };
@@ -2231,18 +2234,6 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 Do full steps (ensures complete denoising regardless of strength)
               </label>
             </div>
-            <div className="flex items-center space-x-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
-              <input
-                type="checkbox"
-                id="vae_drift_correction"
-                checked={params.vae_drift_correction ?? false}
-                onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
-                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-              />
-              <label htmlFor="vae_drift_correction" className="text-sm text-gray-300">
-                VAE drift correction
-              </label>
-            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Resize Mode"
@@ -2739,161 +2730,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
             </div>
 
-            {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
-            {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
-              <>
-                {/* Z-Image/FLUX.2: 2-column layout */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <Select
-                    label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
-                    value={params.unet_quantization || "none"}
-                    onChange={(e) => setParams({
-                      ...params,
-                      unet_quantization: e.target.value === "none" ? null : e.target.value
-                    })}
-                    options={[
-                      { value: "none", label: "None" },
-                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                      { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    ]}
-                  />
-                  <Select
-                    label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
-                    value={params.text_encoder_quantization || "none"}
-                    onChange={(e) => setParams({
-                      ...params,
-                      text_encoder_quantization: e.target.value === "none" ? null : e.target.value
-                    })}
-                    options={[
-                      { value: "none", label: "None" },
-                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                      { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    ]}
-                  />
-                </div>
-                {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-                  <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
-                    <p className="text-xs text-blue-200">
-                      💡 {currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"} quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2 3.4B"}) is particularly large.
-                    </p>
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <>
-                {/* SD/SDXL: 1-column layout */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <Select
-                    label="U-Net Quantization"
-                    value={params.unet_quantization || "none"}
-                    onChange={(e) => setParams({
-                      ...params,
-                      unet_quantization: e.target.value === "none" ? null : e.target.value
-                    })}
-                    options={[
-                      { value: "none", label: "None" },
-                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                      { value: "fp8_e5m2", label: "FP8 E5M2" },
-                    ]}
-                  />
-                </div>
-                {params.unet_quantization && params.unet_quantization !== "none" && (
-                  <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-                    <p className="text-xs text-yellow-200">
-                      ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* CPU Text Encoding — applies to all model types */}
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={params.cpu_text_encoding ?? false}
-                onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
-                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-300">CPU Text Encoding</span>
-              <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
-            </label>
-
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="checkbox"
-                id="vae_tiling"
-                checked={params.vae_tiling || false}
-                onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
-                className="rounded"
-              />
-              <label htmlFor="vae_tiling" className="text-sm text-gray-300">
-                VAE Tiling
-              </label>
-              <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
-            </div>
-            {params.vae_tiling && (
-              <div className="flex items-center gap-2 mt-1 ml-6">
-                <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
-                <NumberInput
-                  id="vae_tile_threshold"
-                  min={0}
-                  step={128}
-                  value={params.vae_tile_threshold ?? 0}
-                  defaultValue={0}
-                  placeholder="0"
-                  onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
-                  className="w-24"
-                />
-                <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
-              </div>
-            )}
-
-            <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
-              <Slider
-                label="Color Flatten（色ムラ除去）"
-                min={0}
-                max={100}
-                step={1}
-                value={params.color_flatten_strength ?? 0}
-                onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
-              />
-            </div>
-
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="checkbox"
-                id="flatten_in_loop_i2i"
-                checked={params.flatten_in_loop || false}
-                onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
-                className="rounded"
-              />
-              <label htmlFor="flatten_in_loop_i2i" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
-                In-loop background flatten（背景ベタ塗り化）
-              </label>
-            </div>
-            {params.flatten_in_loop && (
-              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-                <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
-                  Flatten last N steps
-                  <NumberInput min={1} max={16} step={1}
-                    value={params.flatten_in_loop_last_steps ?? 3}
-                    defaultValue={3}
-                    placeholder="3"
-                    onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
-                    className="w-20" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
-                  Min region fraction
-                  <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
-                    value={params.flatten_in_loop_min_region ?? 0.02}
-                    defaultValue={0.02}
-                    placeholder="0.02"
-                    onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
-                    className="w-20" />
-                </label>
-              </div>
-            )}
+            <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration（高速化）</div>
 
             <div className="flex items-center gap-2 mt-2">
               <input
@@ -3012,30 +2849,66 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               </div>
             )}
 
-            {developerMode && (
-              <>
-                <div className="flex items-center gap-2 mt-2">
-                  <input
-                    type="checkbox"
-                    id="use_torch_compile"
-                    checked={params.use_torch_compile || false}
-                    onChange={(e) => setParams({ ...params, use_torch_compile: e.target.checked })}
-                    className="rounded"
-                  />
-                  <label htmlFor="use_torch_compile" className="text-sm text-gray-300">
-                    ⚠️ torch.compile (Experimental, slow first run)
-                  </label>
-                </div>
-                {params.use_torch_compile && (
-                  <div className="bg-orange-900/20 border border-orange-600/30 rounded-lg p-3 mt-2">
-                    <p className="text-xs text-orange-200">
-                      ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
-                      Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
-                    </p>
-                  </div>
-                )}
-              </>
+            <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Post-process（色補正）</div>
+
+            <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+              <Slider
+                label="Color Flatten（色ムラ除去）"
+                min={0}
+                max={100}
+                step={1}
+                value={params.color_flatten_strength ?? 0}
+                onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+              />
+            </div>
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="flatten_in_loop_i2i"
+                checked={params.flatten_in_loop || false}
+                onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="flatten_in_loop_i2i" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
+                In-loop background flatten（背景ベタ塗り化）
+              </label>
+            </div>
+            {params.flatten_in_loop && (
+              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
+                  Flatten last N steps
+                  <NumberInput min={1} max={16} step={1}
+                    value={params.flatten_in_loop_last_steps ?? 3}
+                    defaultValue={3}
+                    placeholder="3"
+                    onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
+                    className="w-20" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
+                  Min region fraction
+                  <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+                    value={params.flatten_in_loop_min_region ?? 0.02}
+                    defaultValue={0.02}
+                    placeholder="0.02"
+                    onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
+                    className="w-20" />
+                </label>
+              </div>
             )}
+
+            <div className="flex items-center space-x-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
+              <input
+                type="checkbox"
+                id="vae_drift_correction"
+                checked={params.vae_drift_correction ?? false}
+                onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="vae_drift_correction" className="text-sm text-gray-300">
+                VAE drift correction
+              </label>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
@@ -3061,6 +2934,224 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
               />
             </div>
+
+            {/* Model / Environment（モデル/環境設定） — pipeline-global settings, applied last */}
+            <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-4">
+              <summary className="text-sm font-semibold text-gray-300 cursor-pointer select-none">
+                Model / Environment（モデル/環境設定）
+              </summary>
+              <div className="mt-3 space-y-3">
+                <p className="text-xs text-gray-500">
+                  モデル全体に適用され、Loop Generationにも常に引き継がれます。
+                </p>
+
+            {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+            {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
+              <>
+                {/* Z-Image/FLUX.2: 2-column layout */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Select
+                    label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                    value={params.unet_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      unet_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    ]}
+                  />
+                  <Select
+                    label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                    value={params.text_encoder_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    ]}
+                  />
+                </div>
+                {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+                  <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                    <p className="text-xs text-blue-200">
+                      💡 {currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"} quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2 3.4B"}) is particularly large.
+                    </p>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <>
+                {/* SD/SDXL: 1-column layout */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <Select
+                    label="U-Net Quantization"
+                    value={params.unet_quantization || "none"}
+                    onChange={(e) => setParams({
+                      ...params,
+                      unet_quantization: e.target.value === "none" ? null : e.target.value
+                    })}
+                    options={[
+                      { value: "none", label: "None" },
+                      { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                      { value: "fp8_e5m2", label: "FP8 E5M2" },
+                    ]}
+                  />
+                </div>
+                {params.unet_quantization && params.unet_quantization !== "none" && (
+                  <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+                    <p className="text-xs text-yellow-200">
+                      ⚠️ Quantization reduces VRAM but may affect quality. Original model kept on CPU.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* CPU Text Encoding — applies to all model types */}
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={params.cpu_text_encoding ?? false}
+                onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
+                className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+              />
+              <span className="text-sm text-gray-300">CPU Text Encoding</span>
+              <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
+            </label>
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="vae_tiling"
+                checked={params.vae_tiling || false}
+                onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="vae_tiling" className="text-sm text-gray-300">
+                VAE Tiling
+              </label>
+              <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
+            </div>
+            {params.vae_tiling && (
+              <div className="flex items-center gap-2 mt-1 ml-6">
+                <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
+                <NumberInput
+                  id="vae_tile_threshold"
+                  min={0}
+                  step={128}
+                  value={params.vae_tile_threshold ?? 0}
+                  defaultValue={0}
+                  placeholder="0"
+                  onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
+                  className="w-24"
+                />
+                <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
+              </div>
+            )}
+
+            {developerMode && (
+              <>
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    type="checkbox"
+                    id="use_torch_compile"
+                    checked={params.use_torch_compile || false}
+                    onChange={(e) => setParams({ ...params, use_torch_compile: e.target.checked })}
+                    className="rounded"
+                  />
+                  <label htmlFor="use_torch_compile" className="text-sm text-gray-300">
+                    ⚠️ torch.compile (Experimental, slow first run)
+                  </label>
+                </div>
+                {params.use_torch_compile && (
+                  <div className="bg-orange-900/20 border border-orange-600/30 rounded-lg p-3 mt-2">
+                    <p className="text-xs text-orange-200">
+                      ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
+                      Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
+                    </p>
+                  </div>
+                )}
+
+                {/* Block Swap (Z-Image only) */}
+                <div className="flex items-center gap-2 mt-4">
+                  <input
+                    type="checkbox"
+                    id="enable_block_swap_i2i"
+                    checked={params.enable_block_swap || false}
+                    onChange={(e) => setParams({ ...params, enable_block_swap: e.target.checked })}
+                    className="rounded"
+                  />
+                  <label htmlFor="enable_block_swap_i2i" className="text-sm text-gray-300">
+                    Block Swap (Z-Image Transformer offloading)
+                  </label>
+                </div>
+                {params.enable_block_swap && (
+                  <div className="space-y-3 mt-2 p-3 bg-blue-900/20 border border-blue-600/30 rounded-lg">
+                    <Slider
+                      label="Blocks to Swap"
+                      min={1}
+                      max={29}
+                      step={1}
+                      value={params.blocks_to_swap || 20}
+                      onChange={(e) => setParams({ ...params, blocks_to_swap: parseInt(e.target.value) })}
+                    />
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="use_pinned_memory_i2i"
+                        checked={params.use_pinned_memory || false}
+                        onChange={(e) => setParams({ ...params, use_pinned_memory: e.target.checked })}
+                        className="rounded"
+                      />
+                      <label htmlFor="use_pinned_memory_i2i" className="text-xs text-gray-300">
+                        Use Pinned Memory (faster transfer, more RAM)
+                      </label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        id="block_swap_h2d_only_i2i"
+                        checked={params.block_swap_h2d_only || false}
+                        onChange={(e) => setParams({ ...params, block_swap_h2d_only: e.target.checked })}
+                        className="rounded"
+                      />
+                      <label htmlFor="block_swap_h2d_only_i2i" className="text-xs text-gray-300">
+                        H2D-only (no device-to-host eviction of read-only weights)
+                      </label>
+                    </div>
+                    {params.block_swap_h2d_only && (
+                      <Slider
+                        label="Ring Size (GPU weight buffer slots)"
+                        min={1}
+                        max={4}
+                        step={1}
+                        value={params.block_swap_ring_size || 2}
+                        onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
+                      />
+                    )}
+                    <div className="text-xs text-blue-200">
+                      <p>
+                        <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
+                      </p>
+                      <p className="mt-1">
+                        <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
+                      </p>
+                      <p className="mt-1">
+                        <strong>H2D-only:</strong> Keeps a CPU master copy and only transfers host-to-device (inference / read-only weights). Ring Size 1 = minimum VRAM; 2+ = next block loads during current block compute.
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+              </div>
+            </details>
           </div>
         </Card>
 

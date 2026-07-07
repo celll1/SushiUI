@@ -35,7 +35,7 @@ _GB = 1024 ** 3
 
 @contextlib.contextmanager
 def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
-                        use_pinned: bool = False):
+                        use_pinned: bool = False, stats: dict = None):
     """Offload large saved activations to CPU during forward, restore in backward.
     Synchronous (blocking) copies -- value-exact, so training results are unchanged.
     ``enabled=False`` is a no-op (zero overhead).
@@ -54,6 +54,11 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
     Pageable CPU tensors are freed back to the normal allocator and do not accumulate
     as shared GPU memory. Pinning only pays off with async (non_blocking=True) DMA on
     a dedicated stream, which is a separate follow-up; re-enable use_pinned there.
+
+    ``stats`` (optional): a dict whose ``"bytes"`` key is incremented by the byte
+    volume actually packed to CPU. This is the MEASURED offloadable volume for this
+    step, fed back into ``ActivationDispatcher.record`` so the per-bucket offloadable
+    fit is calibrated from real transfers instead of a fixed residual fraction.
     """
     if not enabled:
         yield
@@ -64,6 +69,8 @@ def offload_activations(enabled: bool, threshold_bytes: int = 4 * 1024 * 1024,
                 and t.numel() * t.element_size() >= threshold_bytes):
             cpu = torch.empty(t.shape, dtype=t.dtype, device="cpu", pin_memory=use_pinned)
             cpu.copy_(t, non_blocking=False)
+            if stats is not None:
+                stats["bytes"] = stats.get("bytes", 0) + t.numel() * t.element_size()
             return ("cpu", cpu, t.device)
         return ("gpu", t)
 
@@ -97,8 +104,11 @@ class ActivationDispatcher:
             margin_gb: Safety headroom kept free to avoid WDDM spill.
             seed_coef: Initial GB per (bs * latent-pixel); self-calibrated from
                 measured peaks so it generalises across the many aspect buckets.
-            residual_frac: Fraction of activation that remains on GPU WITH
-                offload under gradient checkpointing (offload removes ~15-20%).
+            residual_frac: COLD-START FALLBACK ONLY. Fraction of activation assumed
+                to remain on GPU WITH offload, used to estimate offloadable volume
+                (= base_act * (1 - residual_frac)) ONLY until >=2 measured offload
+                samples exist for the 2-term offloadable fit. Once measured samples
+                accumulate, the calibrated per-bucket offloadable model supersedes it.
             threshold_bytes: Min saved-tensor size to offload.
         """
         self.budget = budget_gb
@@ -120,6 +130,14 @@ class ActivationDispatcher:
         # cause needless splitting of mid buckets that actually fit. seed_coef is the
         # slope fallback until >=2 samples exist.
         self._samples = []  # list of (area, act_per_sample_gb)
+        # Measured OFFLOADABLE volume per sample (area, offloadable_GB_per_sample) from
+        # steps that actually ran WITH offload. Fit with the same 2-term model as the
+        # base activation so unseen buckets get a calibrated offloadable estimate
+        # instead of the flat residual_frac assumption. Empty until the first offload
+        # step reports a measured packed-byte volume.
+        self._offload_samples = []  # list of (area, offloadable_per_sample_gb)
+        # Exact per-bucket measured offloadable volume (lh, lw, bs) -> GB.
+        self._offload_cache = {}
 
     def mark_overflow(self, lh: int, lw: int, bs: int) -> None:
         """A step at this bucket overflowed (raised OOM). Its true activation
@@ -129,26 +147,31 @@ class ActivationDispatcher:
         key = (lh, lw, bs)
         self._act_cache[key] = max(self._act_cache.get(key, 0.0), 1.0e6)
 
-    def _fit(self):
-        """Least-squares fit of act_per_sample = a + b*area over recent samples.
-        Returns (a, b), both clamped >= 0. Falls back to (0, seed_coef) until two
-        distinct-area samples exist."""
-        pts = self._samples
+    @staticmethod
+    def _fit_2term(pts, seed_slope):
+        """Least-squares fit of ``y = a + b*area`` over ``pts`` = [(area, y), ...].
+        Returns (a, b), both clamped >= 0. Falls back to (0, seed_slope) until two
+        distinct-area samples exist. Shared by the base-activation fit and the
+        offloadable-volume fit so both predictors use identical machinery."""
         n = len(pts)
         if n < 2:
-            return 0.0, self.seed_coef
+            return 0.0, seed_slope
         sx = sum(a for a, _ in pts)
         sy = sum(y for _, y in pts)
         sxx = sum(a * a for a, _ in pts)
         sxy = sum(a * y for a, y in pts)
         denom = n * sxx - sx * sx
         if denom <= 0:                      # all same area -> use mean as constant
-            return max(0.0, sy / n), self.seed_coef
+            return max(0.0, sy / n), seed_slope
         b = (n * sxy - sx * sy) / denom
         a = (sy - b * sx) / n
         b = max(0.0, b)
         a = max(0.0, a)
         return a, b
+
+    def _fit(self):
+        """Base-activation fit (kept for compatibility); delegates to _fit_2term."""
+        return self._fit_2term(self._samples, self.seed_coef)
 
     def base_act(self, lh: int, lw: int, bs: int) -> float:
         """Predicted base (non-offloaded) activation GB: exact if the bucket was
@@ -156,7 +179,28 @@ class ActivationDispatcher:
         cached = self._act_cache.get((lh, lw, bs))
         if cached is not None:
             return cached
-        a, b = self._fit()
+        a, b = self._fit_2term(self._samples, self.seed_coef)
+        return bs * (a + b * lh * lw)
+
+    def predicted_offloadable(self, lh: int, lw: int, bs: int) -> float:
+        """Predicted GB that activation offload can move to CPU for this bucket.
+
+        - Exact per-bucket measurement if this (lh, lw, bs) ran with offload.
+        - Else the calibrated 2-term offloadable fit once >=2 offload samples exist.
+        - Else (cold start, no measured offload sample yet) the residual_frac
+          fallback: base_act * (1 - residual_frac). This is the ONLY remaining use
+          of residual_frac and is superseded as soon as measurements accumulate.
+        """
+        cached = self._offload_cache.get((lh, lw, bs))
+        if cached is not None:
+            return cached
+        if len(self._offload_samples) < 2:
+            return self.base_act(lh, lw, bs) * max(0.0, 1.0 - self.residual_frac)
+        # Seed slope 0: until the samples have area spread, the fit degenerates to
+        # an area-independent constant (mean offloadable per sample). Extrapolation
+        # to larger buckets stays flat, i.e. UNDER-predicts offloadable, which errs
+        # on the safe (escalate) side rather than promising an offload that fails.
+        a, b = self._fit_2term(self._offload_samples, 0.0)
         return bs * (a + b * lh * lw)
 
     def decide(self, lh: int, lw: int, bs: int, headroom_gb: float) -> str:
@@ -166,7 +210,12 @@ class ActivationDispatcher:
         act = self.base_act(lh, lw, bs)
         if act <= headroom_gb:
             return "fast"
-        if act * self.residual_frac <= headroom_gb:
+        # Prefer pure offload whenever the calibrated post-offload footprint fits:
+        # peak_with_offload ~= base_act - offloadable. Micro-batching (escalate) is
+        # only chosen when even offload leaves the bucket over headroom, because
+        # splitting serializes the batch and lowers per-image throughput.
+        offloadable = self.predicted_offloadable(lh, lw, bs)
+        if act - offloadable <= headroom_gb:
             return "offload"
         return "escalate"
 
@@ -175,7 +224,11 @@ class ActivationDispatcher:
         live headroom. The batch is split into ceil(bs/M) chunks with gradient
         accumulation, keeping the effective (gradient) batch = bs."""
         headroom = headroom_gb
-        per_sample = (self.base_act(lh, lw, bs) / bs) * self.residual_frac
+        # Per-sample post-offload (resident) activation = base - offloadable, using
+        # the calibrated offloadable model (residual_frac only at cold start).
+        base_ps = self.base_act(lh, lw, bs) / bs
+        off_ps = self.predicted_offloadable(lh, lw, bs) / bs
+        per_sample = base_ps - off_ps
         if per_sample <= 0:
             return bs
         if headroom <= 0:
@@ -184,22 +237,61 @@ class ActivationDispatcher:
         return max(1, min(bs, m))
 
     def record(self, lh: int, lw: int, bs: int, mode: str, peak_gb: float,
-               resident_gb: float, executed_bs: int = None) -> None:
-        """Cache the measured base activation for this bucket.
+               resident_gb: float, executed_bs: int = None,
+               offloaded_gb: float = None,
+               measured_threshold_bytes: int = None) -> None:
+        """Cache the measured base activation and offloadable volume for this bucket.
 
-        activation = peak - resident_at_dispatch. ``mode`` is "base" (ran without
-        offload) or "offload" (divide out residual_frac to recover base cost).
+        The GPU-resident activation is ``peak - resident_at_dispatch``. ``mode`` is
+        "base" (ran without offload -> resident activation IS the base cost) or
+        "offload" (resident activation is the part that stayed on GPU).
+
+        ``offloaded_gb`` (from ``offload_activations`` stats) is a WHOLE-STEP
+        quantity: the total volume packed to CPU across the entire nominal batch
+        ``bs`` (the offload context stays active across all micro-chunks of a
+        split step). It is therefore normalized by ``bs`` -- never by
+        ``executed_bs`` -- both for the offloadable fit and for the per-chunk
+        share added back when recovering the base cost. A measured 0 (offload ran
+        but nothing exceeded the threshold) is a valid measurement and is
+        distinguished from ``None`` (no measurement -> residual_frac fallback).
+        Base-cost recovery is value-exact for full-batch offload; for a
+        micro-split it assumes packed volume is uniform across chunks.
+
+        ``measured_threshold_bytes``: the ``threshold_bytes`` the step actually
+        ran with. The offloadable volume depends on the threshold, so
+        measurements taken at a LOWERED threshold (fused-escalate rung, reactive
+        offload retry) must NOT calibrate the default-threshold predictor --
+        otherwise decide() would promise an offload the default threshold cannot
+        deliver and the bucket would oscillate offload->OOM->escalate. Such
+        measurements still recover the base cost (base = resident + offloaded
+        holds at any threshold) but are excluded from the offloadable fit/cache.
+        ``None`` means "measured at the default threshold" (calibrating).
+
         For a micro-split step the peak reflects ``executed_bs`` samples, so scale
         up to the full ``bs`` (activation is ~linear in batch) -- this lets a split
         bucket learn it actually fits and stop splitting next time.
         """
         eb = executed_bs or bs
         area = lh * lw
-        act = peak_gb - resident_gb
+        act = peak_gb - resident_gb                  # GPU-resident activation
         if act <= 0 or eb <= 0 or area <= 0:
             return
-        if mode == "offload" and self.residual_frac > 0:
-            act = act / self.residual_frac           # recover non-offloaded cost
+        if mode == "offload":
+            if offloaded_gb is not None and offloaded_gb >= 0:
+                # Base cost = per-chunk resident activation + this chunk's share of
+                # the whole-step packed volume (offloaded_gb covers all bs samples).
+                act = act + offloaded_gb * (eb / bs)
+                # Calibrate the offloadable fit only from default-threshold runs.
+                at_default = (measured_threshold_bytes is None
+                              or measured_threshold_bytes == self.threshold_bytes)
+                if at_default:
+                    off_ps = offloaded_gb / bs       # whole-step volume / full batch
+                    self._offload_samples.append((area, off_ps))
+                    if len(self._offload_samples) > 128:
+                        self._offload_samples.pop(0)
+                    self._offload_cache[(lh, lw, bs)] = off_ps * bs
+            elif self.residual_frac > 0:
+                act = act / self.residual_frac       # recover non-offloaded cost
         # Feed (area, per-sample activation) into the 2-term fit (unseen-bucket
         # predictor). KEEP spilled measurements: on WDDM a spill makes
         # max_memory_allocated report the real (unified) peak, the very signal that

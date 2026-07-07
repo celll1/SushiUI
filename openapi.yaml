@@ -4624,6 +4624,17 @@ components:
             threshold the decode runs whole; above it, split into threshold-sized
             tiles. Raise it if mid-size images decode fine un-tiled.
           example: 0
+        color_flatten_strength:
+          type: integer
+          minimum: 0
+          maximum: 100
+          default: 0
+          description: |
+            Color Flatten (chroma smoothing): an RGB-guided guided filter applied
+            to the decoded image's YCoCg chroma channels (luma left untouched) right
+            after VAE decode. Removes low-frequency color mottling while preserving
+            luminance detail. 0 = off (zero cost). All modes, all architectures.
+          example: 0
         spectrum_enable:
           type: boolean
           default: false
@@ -4834,6 +4845,17 @@ components:
               type: boolean
               default: false
               description: "Run text encoding on CPU instead of GPU."
+            vae_drift_correction:
+              type: boolean
+              default: false
+              description: |
+                VAE DC-drift correction (img2img/inpaint only). Subtracts the
+                per-channel DC bias the VAE round-trip introduces
+                (mean(decode(encode(input))) - mean(input)) from the final decode,
+                then clips to valid range. Adds ONE reference decode when enabled.
+                Strength-independent (corrects a VAE property, not a denoise
+                property). Implemented for SD1.5/SDXL; accepted-but-ignored (with a
+                warning) on the DiT architectures.
 
     InpaintRequest:
       allOf:
@@ -4862,6 +4884,16 @@ components:
               type: boolean
               default: false
               description: "Run text encoding on CPU instead of GPU."
+            vae_drift_correction:
+              type: boolean
+              default: false
+              description: |
+                VAE DC-drift correction (img2img/inpaint only). Subtracts the
+                per-channel DC bias the VAE round-trip introduces
+                (mean(decode(encode(input))) - mean(input)) from the final decode,
+                then clips to valid range. Adds ONE reference decode when enabled.
+                Strength-independent. Implemented for SD1.5/SDXL; accepted-but-
+                ignored (with a warning) on the DiT architectures.
             mask_blur:
               type: integer
               default: 4

@@ -116,6 +116,12 @@ class GeneratedImage(GalleryBase):
                 if "nag_sigma_end" in self.parameters:
                     result["nag_sigma_end"] = str(self.parameters["nag_sigma_end"])
 
+            # Post-decode options
+            if self.parameters.get("color_flatten_strength"):
+                result["color_flatten_strength"] = str(self.parameters["color_flatten_strength"])
+            if self.parameters.get("vae_drift_correction"):
+                result["vae_drift_correction"] = str(self.parameters["vae_drift_correction"])
+
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:
                 result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]

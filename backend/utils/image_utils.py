@@ -54,6 +54,13 @@ def save_image_with_metadata(
     metadata.add_text("height", str(params.get("height", settings.default_height)))
     metadata.add_text("generation_type", generation_type)
 
+    # Post-decode options (only when applied, to keep metadata lean).
+    color_flatten_strength = params.get("color_flatten_strength", 0) or 0
+    if color_flatten_strength and int(color_flatten_strength) > 0:
+        metadata.add_text("color_flatten_strength", str(int(color_flatten_strength)))
+    if params.get("vae_drift_correction"):
+        metadata.add_text("vae_drift_correction", "true")
+
     # Add NAG (Normalized Attention Guidance) parameters
     nag_enable = params.get("nag_enable", False)
     if nag_enable:

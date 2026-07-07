@@ -1133,6 +1133,10 @@ class Flux2Mixin:
 
             # Convert to PIL
             image = (image / 2 + 0.5).clamp(0, 1)
+            _cf = getattr(self, "_color_flatten_strength", 0)
+            if _cf and _cf > 0:
+                from core.inference.color_flatten import flatten_chroma
+                image = flatten_chroma(image, _cf)
             image = image.cpu().permute(0, 2, 3, 1).float().numpy()
             image = (image[0] * 255).astype(np.uint8)
             pil_image = Image.fromarray(image)
@@ -2062,6 +2066,10 @@ class Flux2Mixin:
                 image = vae.decode(latents, return_dict=False)[0]
 
             image = (image / 2 + 0.5).clamp(0, 1)
+            _cf = getattr(self, "_color_flatten_strength", 0)
+            if _cf and _cf > 0:
+                from core.inference.color_flatten import flatten_chroma
+                image = flatten_chroma(image, _cf)
             image = image.cpu().permute(0, 2, 3, 1).float().numpy()
             image = (image[0] * 255).astype(np.uint8)
             pil_image = Image.fromarray(image)
@@ -2697,6 +2705,10 @@ class Flux2Mixin:
                 image = vae.decode(latents, return_dict=False)[0]
 
             image = (image / 2 + 0.5).clamp(0, 1)
+            _cf = getattr(self, "_color_flatten_strength", 0)
+            if _cf and _cf > 0:
+                from core.inference.color_flatten import flatten_chroma
+                image = flatten_chroma(image, _cf)
             image = image.cpu().permute(0, 2, 3, 1).float().numpy()
             image = (image[0] * 255).astype(np.uint8)
             pil_image = Image.fromarray(image)

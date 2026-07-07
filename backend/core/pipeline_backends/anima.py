@@ -522,7 +522,7 @@ class AnimaMixin:
             # Stage 3: VAE decode
             self._anima_move("vae", device)
             self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
-            images = vae_decode_latents(vae, latents)
+            images = vae_decode_latents(vae, latents, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -688,7 +688,7 @@ class AnimaMixin:
             # Decode
             self._anima_move("vae", device)
             self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
-            images = vae_decode_latents(vae, latents)
+            images = vae_decode_latents(vae, latents, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -867,7 +867,7 @@ class AnimaMixin:
             # Decode
             self._anima_move("vae", device)
             self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
-            images = vae_decode_latents(vae, latents)
+            images = vae_decode_latents(vae, latents, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():

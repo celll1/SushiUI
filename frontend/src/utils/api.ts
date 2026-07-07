@@ -199,6 +199,8 @@ export interface GenerationParams {
   use_torch_compile?: boolean;
   vae_tiling?: boolean;
   vae_tile_threshold?: number;
+  // Color Flatten (chroma-smoothing baked into the saved image at generation time)
+  color_flatten_strength?: number;
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration
   spectrum_enable?: boolean;
   fbcache_enable?: boolean;
@@ -241,6 +243,8 @@ export interface Img2ImgParams extends GenerationParams {
   img2img_fix_steps?: boolean;
   resize_mode?: string;
   resampling_method?: string;
+  // VAE encode/decode round-trip color-bias correction (img2img/inpaint only)
+  vae_drift_correction?: boolean;
 }
 
 export interface InpaintParams extends GenerationParams {
@@ -253,6 +257,8 @@ export interface InpaintParams extends GenerationParams {
   inpaint_fill_strength?: number;
   resize_mode?: string;
   resampling_method?: string;
+  // VAE encode/decode round-trip color-bias correction (img2img/inpaint only)
+  vae_drift_correction?: boolean;
 }
 
 export interface GeneratedImage {
@@ -298,6 +304,9 @@ export interface GeneratedImage {
   nag_tau?: string;
   nag_alpha?: string;
   nag_sigma_end?: string;
+  // Color Flatten / VAE drift correction
+  color_flatten_strength?: string;
+  vae_drift_correction?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +408,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Color Flatten: chroma-smoothing baked into the saved image at generation time
+  formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
@@ -659,6 +670,7 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
+  formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -704,6 +716,8 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Color Flatten: chroma-smoothing baked into the saved image at generation time
+  formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
@@ -792,6 +806,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
   formData.append("denoising_strength", String(paramsWithImages.denoising_strength || 0.75));
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
+  formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
   formData.append("mask_blur", String(paramsWithImages.mask_blur || 4));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
@@ -843,6 +858,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Color Flatten: chroma-smoothing baked into the saved image at generation time
+  formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   // Spectrum (Adaptive Spectral Feature Forecasting) acceleration (txt2img only in v1;
   // img2img/inpaint backends ignore these until wired)
   formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));

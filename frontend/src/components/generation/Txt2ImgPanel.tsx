@@ -70,6 +70,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   use_torch_compile: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
+  color_flatten_strength: 0,
   spectrum_enable: false,
   fbcache_enable: false,
   fbcache_threshold: 0.12,
@@ -1168,6 +1169,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
+        color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
         spectrum_enable: mainParams.spectrum_enable, // Inherit Spectrum acceleration
         fbcache_enable: mainParams.fbcache_enable, // Inherit First Block Cache
         fbcache_threshold: mainParams.fbcache_threshold,
@@ -2551,6 +2553,17 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
             </div>
           )}
+
+          <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+            <Slider
+              label="Color Flatten（色ムラ除去）"
+              min={0}
+              max={100}
+              step={1}
+              value={params.color_flatten_strength ?? 0}
+              onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+            />
+          </div>
 
           <div className="flex items-center gap-2 mt-2">
             <input

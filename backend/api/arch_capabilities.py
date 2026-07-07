@@ -40,6 +40,7 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "text_encoder_quantization": ["text_encoder_quantization"],
     "cpu_text_encoding": ["cpu_text_encoding"],
     "attention_impl": ["attention_impl"],
+    "vae_drift_correction": ["vae_drift_correction"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -53,6 +54,7 @@ FEATURE_LABELS: Dict[str, str] = {
     "text_encoder_quantization": "text_encoder_quantization",
     "cpu_text_encoding": "cpu_text_encoding",
     "attention_impl": "attention_impl",
+    "vae_drift_correction": "vae_drift_correction (VAE DC-drift correction)",
 }
 
 # ---------------------------------------------------------------------------
@@ -112,6 +114,14 @@ for _a in ["zimage", "flux2", "ideogram4", "minit2i", "krea2"]:
 for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "krea2"]:
     _add(_a, "attention_impl",
          "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
+
+# VAE DC-drift correction (img2img/inpaint): the reference round-trip decode is
+# implemented in the SD1.5/SDXL custom img2img/inpaint sampling loops. The DiT
+# archs use bespoke, PIL-returning decode funnels with arch-specific latent
+# normalization, so the correction is accepted but not applied there.
+for _a in _DIT_ARCHS:
+    _add(_a, "vae_drift_correction",
+         "VAE DC-drift correction is only implemented for the SD1.5/SDXL img2img/inpaint decode path")
 
 
 def _is_user_set(params: Dict[str, Any], key: str) -> bool:

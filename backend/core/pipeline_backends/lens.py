@@ -459,7 +459,7 @@ class LensMixin:
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
-            image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            image = vae_decode(vae_gpu, latents, latent_h, latent_w, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -622,7 +622,7 @@ class LensMixin:
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
-            image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            image = vae_decode(vae_gpu, latents, latent_h, latent_w, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -797,7 +797,7 @@ class LensMixin:
             self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
-            image = vae_decode(vae_gpu, latents, latent_h, latent_w)
+            image = vae_decode(vae_gpu, latents, latent_h, latent_w, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._lens_move("vae", "cpu")
             if torch.cuda.is_available():

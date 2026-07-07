@@ -65,6 +65,15 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # = VAE sample_size * 1.5 (e.g. ~1536px for SDXL). Below the threshold the decode
     # runs whole (no quality/speed cost); above it, split into threshold-sized tiles.
     "vae_tile_threshold": 0,
+    # Color Flatten (chroma smoothing): RGB-guided guided filter applied to the
+    # decoded image's YCoCg chroma (luma untouched) right after VAE decode. Removes
+    # low-frequency color mottling while preserving luminance detail. 0-100; 0 = off
+    # (zero cost). All modes, all architectures.
+    "color_flatten_strength": 0,
+    # VAE DC-drift correction (img2img/inpaint only): subtract the per-channel DC
+    # bias the VAE round-trip introduces (mean(decode(encode(input))) - mean(input))
+    # from the final decode. Corrects a VAE property, so it is strength-independent.
+    "vae_drift_correction": False,
     # Spectrum: Adaptive Spectral Feature Forecasting (training-free acceleration).
     # Skips U-Net forwards on selected steps by forecasting the output from a Chebyshev
     # fit over actual passes. Most useful at high step counts (>=30); little benefit on
@@ -119,6 +128,9 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
 # Keys present only in img2img/inpaint (not txt2img)
 _IMG2IMG_ONLY = frozenset({
     "denoising_strength", "img2img_fix_steps", "resize_mode", "resampling_method",
+    # VAE DC-drift correction requires an input image to measure the round-trip
+    # bias, so it exists for img2img + inpaint only (excluded from txt2img).
+    "vae_drift_correction",
 })
 # Keys present only in inpaint (not txt2img or img2img)
 _INPAINT_ONLY = frozenset({

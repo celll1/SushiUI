@@ -101,6 +101,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   height: 1024,
   denoising_strength: 0.75,
   img2img_fix_steps: true,
+  vae_drift_correction: false,
   mask_blur: 4,
   inpaint_full_res: false,
   inpaint_full_res_padding: 32,
@@ -135,6 +136,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   use_torch_compile: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
+  color_flatten_strength: 0,
   spectrum_enable: false,
   fbcache_enable: false,
   fbcache_threshold: 0.12,
@@ -1519,6 +1521,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         height: stepHeight,
         denoising_strength: step.denoisingStrength,
         img2img_fix_steps: step.doFullSteps,
+        vae_drift_correction: mainParams.vae_drift_correction, // Inherit VAE drift correction setting
         resize_mode: step.resizeMode,
         resampling_method: step.resamplingMethod,
         mask_blur: mainParams.mask_blur,
@@ -1535,6 +1538,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
+        color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
         spectrum_enable: mainParams.spectrum_enable, // Inherit Spectrum acceleration
         fbcache_enable: mainParams.fbcache_enable, // Inherit First Block Cache
         fbcache_threshold: mainParams.fbcache_threshold,
@@ -1702,6 +1706,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         width: nextItem.params.width,
         height: nextItem.params.height,
         denoising_strength: nextItem.params.denoising_strength,
+        vae_drift_correction: nextItem.params.vae_drift_correction,
         mask_blur: nextItem.params.mask_blur,
         inpaint_full_res: nextItem.params.inpaint_full_res,
         inpaint_full_res_padding: nextItem.params.inpaint_full_res_padding,
@@ -1748,6 +1753,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         spectrum_feature_mode: nextItem.params.spectrum_feature_mode,
         spectrum_cache_branch: nextItem.params.spectrum_cache_branch,
         spectrum_max_cache: nextItem.params.spectrum_max_cache,
+        color_flatten_strength: nextItem.params.color_flatten_strength,
       };
 
       // Add FLUX.2 Image Edit / Vision Encoder reference images
@@ -2420,6 +2426,18 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 Do full steps (ensures complete denoising regardless of strength)
               </label>
             </div>
+            <div className="flex items-center space-x-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
+              <input
+                type="checkbox"
+                id="vae_drift_correction"
+                checked={params.vae_drift_correction ?? false}
+                onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="vae_drift_correction" className="text-sm text-gray-300">
+                VAE drift correction
+              </label>
+            </div>
 
             <Slider
               label="Mask Blur"
@@ -3073,6 +3091,17 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
               </div>
             )}
+
+            <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+              <Slider
+                label="Color Flatten（色ムラ除去）"
+                min={0}
+                max={100}
+                step={1}
+                value={params.color_flatten_strength ?? 0}
+                onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+              />
+            </div>
 
             <div className="flex items-center gap-2 mt-2">
               <input

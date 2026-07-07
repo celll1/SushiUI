@@ -350,7 +350,7 @@ def vae_encode_image(vae, image: Image.Image, device: str, dtype: torch.dtype) -
 
 @torch.no_grad()
 @time_phase("vae_decode")
-def vae_decode_latents(vae, latents: torch.Tensor) -> List[Image.Image]:
+def vae_decode_latents(vae, latents: torch.Tensor, color_flatten_strength: int = 0) -> List[Image.Image]:
     """Decode normalized (B, 16, 1, H/8, W/8) latents to PIL images.
 
     Reverses the latents_mean / latents_std normalization before calling the
@@ -367,6 +367,9 @@ def vae_decode_latents(vae, latents: torch.Tensor) -> List[Image.Image]:
     if sample.dim() == 5 and sample.shape[2] == 1:
         sample = sample.squeeze(2)
     sample = (sample.float().clamp(-1, 1) + 1) / 2.0
+    if color_flatten_strength and color_flatten_strength > 0:
+        from core.inference.color_flatten import flatten_chroma
+        sample = flatten_chroma(sample, color_flatten_strength)
     sample = (sample * 255.0).round().clamp(0, 255).to(torch.uint8)
     images = []
     for i in range(sample.shape[0]):

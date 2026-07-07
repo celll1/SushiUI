@@ -1756,6 +1756,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # per-architecture handlers dispatched just below).
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
+        # Color Flatten (chroma smoothing) strength for this request; read by all
+        # decode funnels via getattr(self, "_color_flatten_strength", 0). <=0 is a no-op.
+        self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
+        # VAE DC-drift correction is img2img/inpaint only; force off for txt2img.
+        self._vae_drift_correction = False
 
         # Z-Image handling
         if self.is_zimage_model:
@@ -2193,6 +2198,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             _t_denoise = time.perf_counter()
             image = custom_sampling_loop(
                 pipeline=pipeline_to_use,
+                color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
                 pooled_prompt_embeds=pooled_prompt_embeds,
@@ -2315,6 +2321,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
+        self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
+        self._vae_drift_correction = bool(params.get("vae_drift_correction", False))
 
         # Z-Image handling
         if self.is_zimage_model:
@@ -2796,6 +2804,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             _t_denoise = time.perf_counter()
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
+                color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
+                vae_drift_correction=getattr(self, "_vae_drift_correction", False),
                 init_image=init_image,
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=negative_prompt_embeds,
@@ -2925,6 +2935,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
+        self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
+        self._vae_drift_correction = bool(params.get("vae_drift_correction", False))
 
         # Z-Image inpaint support
         if self.is_zimage_model:
@@ -3259,6 +3271,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         _t_denoise = time.perf_counter()
         image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
+            color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
+            vae_drift_correction=getattr(self, "_vae_drift_correction", False),
             init_image=init_image,
             mask_image=mask_image,
             prompt_embeds=prompt_embeds,

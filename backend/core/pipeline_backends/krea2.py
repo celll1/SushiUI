@@ -179,7 +179,7 @@ class Krea2Mixin:
             print("[Krea2] Stage 4: VAE decode...")
             self._krea2_move("vae", device)
             self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"])
+            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             self._krea2_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -242,7 +242,7 @@ class Krea2Mixin:
             print("[Krea2] Stage 4: VAE decode...")
             self._krea2_move("vae", device)
             self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"])
+            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             self._krea2_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -318,7 +318,7 @@ class Krea2Mixin:
             print("[Krea2] Stage 4: VAE decode...")
             self._krea2_move("vae", device)
             self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"])
+            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             self._krea2_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

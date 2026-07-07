@@ -1932,6 +1932,10 @@ class ZImageMixin:
         # Convert to PIL images
         from PIL import Image
         image = (image / 2 + 0.5).clamp(0, 1)
+        _cf = getattr(self, "_color_flatten_strength", 0)
+        if _cf and _cf > 0:
+            from core.inference.color_flatten import flatten_chroma
+            image = flatten_chroma(image, _cf)
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         image = (image * 255).round().astype("uint8")
         images = [Image.fromarray(img) for img in image]

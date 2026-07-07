@@ -4222,6 +4222,32 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [OOM] batch_size={batch_size} already minimal, SKIPPING BATCH "
                           f"(bucket won't fit one sample) ({str(e)[:120]})")
                     return 0.0, 0.0, 0.0, True
+                # OFFLOAD-FIRST rung (mirrors the proactive ordering): before
+                # shrinking the batch, retry the SAME full batch with activation
+                # offload. If the failed attempt already offloaded, retry with a
+                # LOWERED threshold to widen the offloadable set. Micro-batch halving
+                # serializes the batch and lowers per-image throughput, so pure
+                # offload (value-exact) is preferred whenever it can rescue the step.
+                if _disp_info is not None and self.activation_dispatcher is not None:
+                    _new_cm = self._actdispatch_offload_retry_ctx(_disp_cm, _disp_info)
+                    if _new_cm is not None:
+                        _disp_cm = _new_cm  # finally exits the swapped-in context
+                        print(f"{self.log_prefix} [OOM] retrying batch {batch_size} with activation "
+                              f"offload (no split) after: {str(e)[:80]}")
+                        try:
+                            loss, pred_loss, recon_loss = self._execute_forward_backward(
+                                loss_scale=batch_size / eff_bs, **_batch)
+                            # Success: dispatch_end will record the measured offloaded
+                            # volume so the proactive path picks 'offload' next time.
+                            # (info[6]/info[7] already track the swapped-in context.)
+                            self._actdispatch_oom = False
+                            _disp_info[3] = "offload"
+                            return loss, pred_loss, recon_loss, False
+                        except RuntimeError as e_off:
+                            if not self._is_cuda_oom(e_off):
+                                raise
+                            e = e_off
+                            self._oom_recovery_cleanup()
                 for _retry_micro in (max(1, batch_size // 2), 1):
                     if _retry_micro >= batch_size:
                         continue
@@ -4323,11 +4349,20 @@ class BaseTrainer(ABC):
         # splits; fast/offload buckets are never split, so batches that already
         # fit are never slowed down by accumulation.
         micro_bs = None
+        step_threshold = disp.threshold_bytes
         if mode == "escalate":
             if getattr(self, "use_fused_backward", False):
+                # Fused backward cannot micro-split (per-param updates fire during
+                # backward), so the escalate ladder becomes: offload -> offload with a
+                # LOWERED threshold_bytes to widen the offloadable set -> un-fittable.
+                # Offload is value-exact (no gradient error), so pushing more saved
+                # tensors to CPU is the correct lever before declaring the bucket
+                # un-fittable rather than silently spilling.
+                step_threshold = max(256 * 1024, disp.threshold_bytes // 16)
                 _log_once((lh, lw, bs, "fused"),
                           f"{self.log_prefix} [ActDispatch] bucket {lw}x{lh} bs{bs} won't fit; "
-                          f"micro-batch split disabled under fused backward (Block Swap), offload only")
+                          f"micro-batch split disabled under fused backward (Block Swap); "
+                          f"offload with lowered threshold={step_threshold // 1024}KB")
             else:
                 planned = disp.plan_micro_bs(lh, lw, bs, headroom_gb)
                 if planned < bs:
@@ -4348,9 +4383,15 @@ class BaseTrainer(ABC):
             torch.cuda.reset_peak_memory_stats()
         except Exception:
             pass
-        cm = offload_activations(use_offload, threshold_bytes=disp.threshold_bytes)
+        # Measured offloadable volume for this step: offload_activations increments
+        # stats["bytes"] by the byte volume it packs to CPU; _activation_dispatch_end
+        # feeds it back to record() so the per-bucket offloadable fit is calibrated.
+        stats = {"bytes": 0}
+        cm = offload_activations(use_offload, threshold_bytes=step_threshold, stats=stats)
         cm.__enter__()
-        return cm, (lh, lw, bs, mode, micro_bs, resident_gb)
+        # Mutable list so the reactive OOM ladder can swap in an offload retry
+        # context (new mode/stats) and have dispatch_end record it correctly.
+        return cm, [lh, lw, bs, mode, micro_bs, resident_gb, stats, step_threshold]
 
     def _activation_dispatch_end(self, cm, info) -> None:
         """Exit the offload context and self-calibrate from the measured peak."""
@@ -4359,7 +4400,8 @@ class BaseTrainer(ABC):
         cm.__exit__(None, None, None)
         if info is None or self.activation_dispatcher is None:
             return
-        lh, lw, bs, mode, micro_bs, resident_gb = info
+        lh, lw, bs, mode, micro_bs, resident_gb = info[0], info[1], info[2], info[3], info[4], info[5]
+        stats = info[6] if len(info) > 6 else None
         try:
             peak_gb = torch.cuda.max_memory_allocated() / (1024 ** 3)
             if getattr(self, "_actdispatch_oom", False):
@@ -4372,9 +4414,17 @@ class BaseTrainer(ABC):
                 # micro_bs samples; record() scales it back to the full bucket so the
                 # bucket can learn it actually fits and stop splitting next time.
                 record_mode = "base" if mode == "fast" else "offload"
+                # A measured 0 (offload ran but nothing exceeded the threshold) is a
+                # valid measurement, distinct from None (no stats available ->
+                # residual_frac fallback in record()).
+                offloaded_gb = None
+                if record_mode == "offload" and stats is not None:
+                    offloaded_gb = stats.get("bytes", 0) / (1024 ** 3)
                 self.activation_dispatcher.record(
                     lh, lw, bs, record_mode, peak_gb, resident_gb,
-                    executed_bs=(micro_bs if micro_bs is not None else bs))
+                    executed_bs=(micro_bs if micro_bs is not None else bs),
+                    offloaded_gb=offloaded_gb,
+                    measured_threshold_bytes=(info[7] if len(info) > 7 else None))
             if self.debug_vram:
                 extra = f" micro_bs={micro_bs}" if micro_bs is not None else ""
                 cached = self.activation_dispatcher.base_act(lh, lw, bs)
@@ -4382,6 +4432,48 @@ class BaseTrainer(ABC):
                       f"mode={mode}{extra} peak={peak_gb:.2f}GB cached_act={cached:.2f}GB")
         except Exception:
             pass
+
+    def _actdispatch_offload_retry_ctx(self, old_cm, info):
+        """Swap the active offload context for the reactive OOM offload-first rung.
+
+        Exits ``old_cm`` and enters a fresh ``offload_activations`` context for the
+        same batch with offload enabled. If the failed step already offloaded, the
+        threshold is lowered to widen the offloadable set; otherwise the dispatcher's
+        default threshold is used. On swap, ``info[6]`` (stats) and ``info[7]``
+        (threshold) are updated IN PLACE so _activation_dispatch_end always records
+        the volume packed by the ACTIVE context -- even when the retry itself fails
+        and the step falls through to micro-batching inside the swapped-in context.
+        Returns the new context, or None when a retry cannot help (no way to widen
+        an already-minimal offload set).
+        """
+        disp = self.activation_dispatcher
+        if disp is None or info is None:
+            return None
+        prev_mode = info[3]
+        prev_threshold = info[7] if len(info) > 7 else disp.threshold_bytes
+        already_offloading = prev_mode in ("offload", "escalate")
+        if already_offloading:
+            new_threshold = max(64 * 1024, prev_threshold // 16)
+            if new_threshold >= prev_threshold:
+                # Already at the minimum offloadable set -> retry would be identical.
+                return None
+        else:
+            new_threshold = disp.threshold_bytes
+        try:
+            old_cm.__exit__(None, None, None)
+        except Exception:
+            pass
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
+        from core.memory_management import offload_activations
+        new_stats = {"bytes": 0}
+        cm = offload_activations(True, threshold_bytes=new_threshold, stats=new_stats)
+        cm.__enter__()
+        info[6] = new_stats
+        info[7] = new_threshold
+        return cm
 
     def _execute_forward_backward(
         self,

@@ -369,7 +369,7 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
 
 @torch.no_grad()
 @time_phase("vae_decode")
-def vae_decode(vae, latents: torch.Tensor, latent_h: int, latent_w: int) -> Image.Image:
+def vae_decode(vae, latents: torch.Tensor, latent_h: int, latent_w: int, color_flatten_strength: int = 0) -> Image.Image:
     """Decode Lens flat-sequence latents → PIL Image.
 
     Implements vendor/pipeline.py _decode() as a standalone function.
@@ -392,7 +392,11 @@ def vae_decode(vae, latents: torch.Tensor, latent_h: int, latent_w: int) -> Imag
 
     # Convert to PIL
     decoded = decoded.clamp(-1.0, 1.0)
-    decoded = (decoded + 1.0) * (255.0 / 2.0)
+    decoded01 = (decoded + 1.0) / 2.0
+    if color_flatten_strength and color_flatten_strength > 0:
+        from core.inference.color_flatten import flatten_chroma
+        decoded01 = flatten_chroma(decoded01, color_flatten_strength)
+    decoded = (decoded01 * 255.0)
     decoded = decoded.permute(0, 2, 3, 1).to(device="cpu", dtype=torch.uint8).numpy()
     return Image.fromarray(decoded[0])
 

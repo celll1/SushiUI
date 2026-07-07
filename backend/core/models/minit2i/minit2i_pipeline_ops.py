@@ -55,9 +55,12 @@ def image_to_tensor(image: Image.Image, height: int, width: int, device, dtype) 
     return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).to(device=device, dtype=dtype)
 
 
-def tensor_to_image(x: torch.Tensor) -> Image.Image:
-    """[-1,1] RGB tensor [1,3,H,W] -> PIL."""
+def tensor_to_image(x: torch.Tensor, color_flatten_strength: int = 0) -> Image.Image:
+    """[-1,1] RGB tensor [1,3,H,W] -> PIL. Optional post-decode chroma smoothing."""
     x = x.clamp(-1, 1)
+    if color_flatten_strength and color_flatten_strength > 0:
+        from core.inference.color_flatten import flatten_chroma
+        x = flatten_chroma((x + 1.0) / 2.0, color_flatten_strength) * 2.0 - 1.0
     arr = (x[0] * 127.5 + 128.0).clamp(0, 255).permute(1, 2, 0).to(device="cpu", dtype=torch.uint8).numpy()
     return Image.fromarray(arr)
 
@@ -87,12 +90,12 @@ def vae_encode_image(vae, image: Image.Image, height: int, width: int, device, d
 
 @torch.no_grad()
 @time_phase("vae_decode")
-def vae_decode_latent(vae, latent: torch.Tensor) -> Image.Image:
+def vae_decode_latent(vae, latent: torch.Tensor, color_flatten_strength: int = 0) -> Image.Image:
     """Normalized VAE latent [1, C, h, w] -> PIL image."""
     from .minit2i_vae import denormalize_latent
     sample = denormalize_latent(latent.to(vae.dtype), vae)
     img = vae.decode(sample).sample  # [1,3,H,W] in ~[-1,1]
-    return tensor_to_image(img.float())
+    return tensor_to_image(img.float(), color_flatten_strength=color_flatten_strength)
 
 
 @torch.no_grad()

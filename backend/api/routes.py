@@ -172,6 +172,7 @@ class GenerationParams(BaseModel):
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
     vae_tiling: bool = GENERATION_DEFAULTS["vae_tiling"]  # Tiled VAE decode for large images
     vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (sample_size*1.5)
+    color_flatten_strength: int = GENERATION_DEFAULTS["color_flatten_strength"]  # 0-100 chroma smoothing; 0=off
     # Spectrum (Adaptive Spectral Feature Forecasting) acceleration
     spectrum_enable: bool = GENERATION_DEFAULTS["spectrum_enable"]
     fbcache_enable: bool = GENERATION_DEFAULTS["fbcache_enable"]
@@ -325,6 +326,7 @@ async def generate_txt2img(
     use_torch_compile: bool = Form(False),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
@@ -491,6 +493,7 @@ async def generate_txt2img(
             "use_torch_compile": use_torch_compile,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "color_flatten_strength": color_flatten_strength,
             "spectrum_enable": spectrum_enable,
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,
@@ -1184,6 +1187,8 @@ async def generate_img2img(
     use_torch_compile: bool = Form(False),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
+    vae_drift_correction: bool = Form(GENERATION_DEFAULTS["vae_drift_correction"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
@@ -1358,6 +1363,8 @@ async def generate_img2img(
             "use_torch_compile": use_torch_compile,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "color_flatten_strength": color_flatten_strength,
+            "vae_drift_correction": vae_drift_correction,
             "spectrum_enable": spectrum_enable,
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,
@@ -1621,6 +1628,8 @@ async def generate_inpaint(
     use_torch_compile: bool = Form(False),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
+    vae_drift_correction: bool = Form(GENERATION_DEFAULTS["vae_drift_correction"]),
     spectrum_enable: bool = Form(GENERATION_DEFAULTS["spectrum_enable"]),
     fbcache_enable: bool = Form(GENERATION_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(GENERATION_DEFAULTS["fbcache_threshold"]),
@@ -1814,6 +1823,8 @@ async def generate_inpaint(
             "use_torch_compile": use_torch_compile,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "color_flatten_strength": color_flatten_strength,
+            "vae_drift_correction": vae_drift_correction,
             "spectrum_enable": spectrum_enable,
             "fbcache_enable": fbcache_enable,
             "fbcache_threshold": fbcache_threshold,

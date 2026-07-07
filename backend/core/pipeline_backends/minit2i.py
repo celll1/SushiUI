@@ -75,11 +75,12 @@ class MiniT2IMixin:
     def _minit2i_decode(self, x, cfg):
         """Pixel: tensor_to_image. Latent: move VAE to GPU, decode, VAE back to CPU."""
         from core.models.minit2i.minit2i_pipeline_ops import tensor_to_image, vae_decode_latent
+        _cf = getattr(self, "_color_flatten_strength", 0)
         if not cfg["is_latent"]:
-            return tensor_to_image(x)
+            return tensor_to_image(x, color_flatten_strength=_cf)
         vae = self._minit2i_move("vae", self.device)
         try:
-            return vae_decode_latent(vae, x)
+            return vae_decode_latent(vae, x, color_flatten_strength=_cf)
         finally:
             self._minit2i_move("vae", "cpu")
             if torch.cuda.is_available():

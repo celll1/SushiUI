@@ -348,6 +348,8 @@ export default function ImageGrid() {
     if (p.original_size_scale !== undefined) target.original_size_scale = p.original_size_scale;
     if (p.use_tipo !== undefined) target.use_tipo = p.use_tipo;
     if (p.tipo_config !== undefined) target.tipo_config = p.tipo_config;
+    if (p.color_flatten_strength !== undefined) target.color_flatten_strength = p.color_flatten_strength;
+    if (p.vae_drift_correction !== undefined) target.vae_drift_correction = p.vae_drift_correction;
     // attention_type / attention_impl are read from localStorage by the API layer,
     // not from the params object, so restore them there for reproducibility.
     if (typeof window !== 'undefined') {
@@ -811,6 +813,16 @@ export default function ImageGrid() {
                   {selectedImage.nag_enable === 'True' && (
                     <div>
                       <span className="text-gray-400">NAG:</span> scale: {selectedImage.nag_scale || 5.0}, tau: {selectedImage.nag_tau || 3.5}, alpha: {selectedImage.nag_alpha || 0.25}, sigma_end: {selectedImage.nag_sigma_end || 3.0}
+                    </div>
+                  )}
+                  {selectedImage.color_flatten_strength && parseFloat(selectedImage.color_flatten_strength) > 0 && (
+                    <div>
+                      <span className="text-gray-400">Color Flatten:</span> {selectedImage.color_flatten_strength}
+                    </div>
+                  )}
+                  {selectedImage.vae_drift_correction === 'True' && (
+                    <div>
+                      <span className="text-gray-400">VAE Drift Correction:</span> enabled
                     </div>
                   )}
                   {Array.isArray(selectedImage.parameters?.loras) && selectedImage.parameters.loras.length > 0 ? (

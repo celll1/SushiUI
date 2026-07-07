@@ -175,8 +175,18 @@ def apply_reference_guide_blend(
     return latents, pred_original_sample
 
 
-def vae_output_to_pil(image: torch.Tensor) -> Image.Image:
+def vae_output_to_pil(
+    image: torch.Tensor,
+    color_flatten_strength: int = 0,
+    dc_bias: Optional[torch.Tensor] = None,
+) -> Image.Image:
     """Convert VAE decoder output tensor to PIL Image with robust nan/inf handling.
+
+    Optional post-decode passes (both zero-cost when disabled):
+      - ``color_flatten_strength`` (0-100): RGB-guided chroma smoothing applied to
+        the [0,1] image (see core.inference.color_flatten). <=0 = no-op.
+      - ``dc_bias`` [1,C,1,1]: per-channel VAE DC-drift bias subtracted from the
+        image before the final clamp (img2img/inpaint drift correction).
 
     Args:
         image: VAE decoder output tensor [B, C, H, W] in range [-1, 1]
@@ -206,9 +216,39 @@ def vae_output_to_pil(image: torch.Tensor) -> Image.Image:
         image = torch.where(torch.isneginf(image), torch.tensor(0.0, device=image.device, dtype=image.dtype), image)
 
     image = image.clamp(0, 1)
+    if color_flatten_strength and color_flatten_strength > 0:
+        from core.inference.color_flatten import flatten_chroma
+        image = flatten_chroma(image, color_flatten_strength)
+    if dc_bias is not None:
+        # Strength-independent VAE DC-drift correction: subtract the per-channel
+        # round-trip bias, then re-clamp to the valid range.
+        image = image - dc_bias.to(image.device, image.dtype)
+    image = image.clamp(0, 1)
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
     image = (image * 255).round().astype("uint8")
     return Image.fromarray(image[0])
+
+
+def compute_vae_dc_bias(pipeline, ref_latents: torch.Tensor, input_mean: torch.Tensor, vae_shift: float) -> Optional[torch.Tensor]:
+    """Per-channel VAE DC-drift bias = mean(decode(encode(input))) - mean(input), in [0,1].
+
+    ``ref_latents`` are the SCALED init latents (== encode(input), as used for
+    denoising); this reverses the scaling and runs ONE extra reference decode with
+    the VAE still on GPU. Returns a [1,C,1,1] bias to subtract from the final
+    decode, or None on failure. Strength-independent (corrects a VAE property).
+    """
+    if ref_latents is None or input_mean is None:
+        return None
+    try:
+        lat = ref_latents / pipeline.vae.config.scaling_factor + vae_shift
+        lat = lat.to(dtype=pipeline.vae.dtype)
+        with torch.no_grad():
+            ref = pipeline.vae.decode(lat, return_dict=True).sample
+        ref_mean = (ref.float() / 2 + 0.5).clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)
+        return (ref_mean - input_mean.to(ref_mean.device)).float()
+    except Exception as e:
+        print(f"[VAE Drift] Reference decode failed, skipping correction: {e}")
+        return None
 
 
 def calculate_cfg_metrics(noise_pred_uncond: torch.Tensor, noise_pred_text: torch.Tensor, guidance_scale: float, developer_mode: bool = False) -> Optional[Dict]:
@@ -521,6 +561,7 @@ def custom_sampling_loop(
     fbcache_threshold: float = 0.12,  # relative-L1 indicator threshold (higher = more skips/faster)
     fbcache_warmup_steps: int = 1,  # always compute the first N steps
     fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
+    color_flatten_strength: int = 0,  # 0-100 post-decode chroma smoothing; 0 = off
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -1319,7 +1360,7 @@ def custom_sampling_loop(
     move_vae_to_cpu(pipeline)
 
     # Convert to PIL with robust nan/inf handling (moves image tensor to CPU internally)
-    image = vae_output_to_pil(image)
+    image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength)
 
     return image
 
@@ -1387,6 +1428,8 @@ def custom_img2img_sampling_loop(
     fbcache_threshold: float = 0.12,  # relative-L1 indicator threshold (higher = more skips/faster)
     fbcache_warmup_steps: int = 1,  # always compute the first N steps
     fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
+    color_flatten_strength: int = 0,  # 0-100 post-decode chroma smoothing; 0 = off
+    vae_drift_correction: bool = False,  # subtract VAE round-trip DC bias (strength-independent)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1539,6 +1582,18 @@ def custom_img2img_sampling_loop(
         init_latents = (init_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
         # Convert latents back to U-Net dtype for denoising
         init_latents = init_latents.to(dtype=dtype)
+
+        # VAE DC-drift correction: capture the input image's per-channel mean and a
+        # reference latent (== encode(input)) for a round-trip decode near the final
+        # decode. This corrects a fixed VAE property, so it is measured once here and
+        # is strength-independent. Only when the option is enabled (zero cost otherwise).
+        _drift_input_mean = None
+        _drift_ref_latents = None
+        if vae_drift_correction:
+            _drift_input_mean = (
+                init_image.to(device=device, dtype=torch.float32) / 2 + 0.5
+            ).clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)
+            _drift_ref_latents = init_latents.detach().clone()
 
     # Prepare Reference Guide latents while VAE is still on GPU
     ref_guides = []
@@ -2132,11 +2187,16 @@ def custom_img2img_sampling_loop(
     # Free GPU latents before VAE offload
     del latents
 
+    # VAE DC-drift correction (one extra reference decode, VAE still on GPU).
+    _dc_bias = None
+    if vae_drift_correction:
+        _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
+
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
     # Convert to PIL with robust nan/inf handling
-    image = vae_output_to_pil(image)
+    image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength, dc_bias=_dc_bias)
 
     return image
 
@@ -2208,6 +2268,8 @@ def custom_inpaint_sampling_loop(
     fbcache_threshold: float = 0.12,  # relative-L1 indicator threshold (higher = more skips/faster)
     fbcache_warmup_steps: int = 1,  # always compute the first N steps
     fbcache_cache_branch: int = 1,  # indicator = down[branch]; reused region = down[branch+1:]+mid
+    color_flatten_strength: int = 0,  # 0-100 post-decode chroma smoothing; 0 = off
+    vae_drift_correction: bool = False,  # subtract VAE round-trip DC bias (strength-independent)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2358,6 +2420,16 @@ def custom_inpaint_sampling_loop(
         init_latents = (init_latents - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
         # Convert latents back to U-Net dtype for denoising
         init_latents = init_latents.to(dtype=dtype)
+
+        # VAE DC-drift correction: capture input mean + reference latent (see the
+        # img2img loop). Strength-independent; only when enabled.
+        _drift_input_mean = None
+        _drift_ref_latents = None
+        if vae_drift_correction:
+            _drift_input_mean = (
+                init_image_tensor.to(device=device, dtype=torch.float32) / 2 + 0.5
+            ).clamp(0, 1).mean(dim=(0, 2, 3), keepdim=True)
+            _drift_ref_latents = init_latents.detach().clone()
 
     mask_latent = torch.nn.functional.interpolate(
         mask_tensor.to(device=device, dtype=dtype),
@@ -3016,6 +3088,11 @@ def custom_inpaint_sampling_loop(
     # Free GPU latents before VAE offload
     del latents
 
+    # VAE DC-drift correction (one extra reference decode, VAE still on GPU).
+    _dc_bias = None
+    if vae_drift_correction:
+        _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
+
     # Offload VAE to CPU after decoding
     move_vae_to_cpu(pipeline)
 
@@ -3035,6 +3112,14 @@ def custom_inpaint_sampling_loop(
         image = torch.where(torch.isneginf(image), torch.tensor(0.0, device=image.device, dtype=image.dtype), image)
 
     image = image.clamp(0, 1)
+
+    # Post-decode passes on the GENERATED content (before mask blending, so the
+    # pristine original regions are never altered). Both zero-cost when disabled.
+    if color_flatten_strength and color_flatten_strength > 0:
+        from core.inference.color_flatten import flatten_chroma
+        image = flatten_chroma(image, color_flatten_strength)
+    if _dc_bias is not None:
+        image = (image - _dc_bias.to(image.device, image.dtype)).clamp(0, 1)
 
     # Apply pixel-space mask blending for non-inpaint UNets
     # This preserves the original image exactly in non-masked regions

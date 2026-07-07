@@ -95,6 +95,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   height: 1024,
   denoising_strength: 0.75,
   img2img_fix_steps: true,
+  vae_drift_correction: false,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -124,6 +125,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   use_torch_compile: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
+  color_flatten_strength: 0,
   spectrum_enable: false,
   fbcache_enable: false,
   fbcache_threshold: 0.12,
@@ -1397,6 +1399,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         height: stepHeight,
         denoising_strength: step.denoisingStrength,
         img2img_fix_steps: step.doFullSteps,
+        vae_drift_correction: mainParams.vae_drift_correction, // Inherit VAE drift correction setting
         resize_mode: step.resizeMode,
         resampling_method: step.resamplingMethod,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
@@ -1407,6 +1410,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
+        color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
         spectrum_enable: mainParams.spectrum_enable, // Inherit Spectrum acceleration
         fbcache_enable: mainParams.fbcache_enable, // Inherit First Block Cache
         fbcache_threshold: mainParams.fbcache_threshold,
@@ -2190,6 +2194,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 Do full steps (ensures complete denoising regardless of strength)
               </label>
             </div>
+            <div className="flex items-center space-x-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
+              <input
+                type="checkbox"
+                id="vae_drift_correction"
+                checked={params.vae_drift_correction ?? false}
+                onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="vae_drift_correction" className="text-sm text-gray-300">
+                VAE drift correction
+              </label>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <Select
                 label="Resize Mode"
@@ -2795,6 +2811,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                 <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
               </div>
             )}
+
+            <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+              <Slider
+                label="Color Flatten（色ムラ除去）"
+                min={0}
+                max={100}
+                step={1}
+                value={params.color_flatten_strength ?? 0}
+                onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+              />
+            </div>
 
             <div className="flex items-center gap-2 mt-2">
               <input

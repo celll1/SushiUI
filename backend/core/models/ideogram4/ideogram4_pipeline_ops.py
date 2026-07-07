@@ -455,7 +455,7 @@ def vae_encode(vae, image: Image.Image, height: int, width: int, device, dtype) 
 
 @torch.no_grad()
 @time_phase("vae_decode")
-def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int) -> Image.Image:
+def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int, color_flatten_strength: int = 0) -> Image.Image:
     """Decode packed latents (1, grid_h*grid_w, 128) -> PIL Image."""
     z = latents.to(vae.dtype)
     mean, std = _bn_stats(vae, z.device, z.dtype)
@@ -469,7 +469,11 @@ def vae_decode(vae, latents: torch.Tensor, grid_h: int, grid_w: int) -> Image.Im
 
     decoded = vae.decode(z).sample
     decoded = decoded.clamp(-1.0, 1.0)
-    decoded = (decoded + 1.0) * (255.0 / 2.0)
+    decoded01 = (decoded + 1.0) / 2.0
+    if color_flatten_strength and color_flatten_strength > 0:
+        from core.inference.color_flatten import flatten_chroma
+        decoded01 = flatten_chroma(decoded01, color_flatten_strength)
+    decoded = (decoded01 * 255.0)
     decoded = decoded.permute(0, 2, 3, 1).to(device="cpu", dtype=torch.uint8).numpy()
     return Image.fromarray(decoded[0])
 

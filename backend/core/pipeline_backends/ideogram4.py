@@ -557,7 +557,7 @@ class Ideogram4Mixin:
             print("[Ideogram4] Stage 4: VAE decode...")
             self._ideogram4_move("vae", device)
             self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"])
+            image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -643,7 +643,7 @@ class Ideogram4Mixin:
             print("[Ideogram4] Stage 4: VAE decode...")
             self._ideogram4_move("vae", device)
             self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"])
+            image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -743,7 +743,7 @@ class Ideogram4Mixin:
             print("[Ideogram4] Stage 4: VAE decode...")
             self._ideogram4_move("vae", device)
             self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"])
+            image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
             self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available():

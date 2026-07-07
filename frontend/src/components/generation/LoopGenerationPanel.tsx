@@ -23,7 +23,12 @@ export interface LoopGenerationStep {
   // Generation settings
   denoisingStrength: number;
   doFullSteps: boolean;
-  useMainSettings: boolean;
+  useMainSettings: boolean; // Legacy combined toggle (kept for migration; see use_main_* below)
+  // Genre toggles (replace the single useMainSettings). When OFF, the step's
+  // per-genre fields are used, falling back to the CURRENT MAIN VALUES.
+  use_main_sampling?: boolean; // steps / cfg_scale / sampler / schedule / seed / ancestral_seed
+  use_main_cfg_schedule?: boolean; // Advanced CFG (cfg_schedule_*, dynamic thresholding)
+  use_main_nag?: boolean; // NAG (nag_*)
   useMainLoRAs: boolean; // Inherit LoRAs from main generation
   useMainControlNets: boolean; // Inherit ControlNets from main generation
   useMainRefImages: boolean; // Inherit reference images from main generation
@@ -148,6 +153,9 @@ export default function LoopGenerationPanel({
       denoisingStrength: 0.5,
       doFullSteps: true,  // Default ON
       useMainSettings: true,
+      use_main_sampling: true, // Default: inherit sampling from main
+      use_main_cfg_schedule: true, // Default: inherit Advanced CFG from main
+      use_main_nag: true, // Default: inherit NAG from main
       useMainLoRAs: true, // Default: inherit LoRAs
       useMainControlNets: false, // Default: don't inherit ControlNets (use loop image instead)
       useMainRefImages: true, // Default: inherit reference images from main
@@ -505,11 +513,29 @@ export default function LoopGenerationPanel({
                     <div className="flex items-center gap-2">
                       <input
                         type="checkbox"
-                        checked={step.useMainSettings}
-                        onChange={(e) => updateStep(step.id, { useMainSettings: e.target.checked })}
+                        checked={step.use_main_sampling ?? step.useMainSettings ?? true}
+                        onChange={(e) => updateStep(step.id, { use_main_sampling: e.target.checked })}
                         className="cursor-pointer"
                       />
-                      <label className="text-xs text-gray-400">Use Main Settings (steps, CFG, sampler, scheduler, seed)</label>
+                      <label className="text-xs text-gray-400">Use Main Sampling (steps, CFG, sampler, scheduler, seed)</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={step.use_main_cfg_schedule ?? step.useMainSettings ?? true}
+                        onChange={(e) => updateStep(step.id, { use_main_cfg_schedule: e.target.checked })}
+                        className="cursor-pointer"
+                      />
+                      <label className="text-xs text-gray-400">Use Main Advanced CFG</label>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={step.use_main_nag ?? step.useMainSettings ?? true}
+                        onChange={(e) => updateStep(step.id, { use_main_nag: e.target.checked })}
+                        className="cursor-pointer"
+                      />
+                      <label className="text-xs text-gray-400">Use Main NAG</label>
                     </div>
                     <div className="flex items-center gap-2">
                       <input
@@ -540,8 +566,9 @@ export default function LoopGenerationPanel({
                     </div>
                   </div>
 
-                  {!step.useMainSettings && (
+                  {(!step.use_main_sampling || !step.use_main_cfg_schedule || !step.use_main_nag) && (
                     <div className="space-y-3 mt-2">
+                      {!step.use_main_sampling && (
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <Slider
                           label="Steps"
@@ -560,9 +587,10 @@ export default function LoopGenerationPanel({
                           step={0.5}
                         />
                       </div>
+                      )}
 
                       {/* Advanced CFG Settings for Loop Step */}
-                      {showAdvancedCFG && !step.nag_enable && (
+                      {!step.use_main_cfg_schedule && showAdvancedCFG && !step.nag_enable && (
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                           {/* Dynamic CFG Scheduling */}
                           <div className="space-y-3">
@@ -663,7 +691,7 @@ export default function LoopGenerationPanel({
                       )}
 
                       {/* NAG (Normalized Attention Guidance) */}
-                      {showAdvancedCFG && (
+                      {!step.use_main_nag && showAdvancedCFG && (
                         <div className="space-y-3">
                           <div className="flex items-center gap-2">
                             <input
@@ -715,6 +743,8 @@ export default function LoopGenerationPanel({
                         </div>
                       )}
 
+                      {!step.use_main_sampling && (
+                      <>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                         <Select
                           label="Sampler"
@@ -790,6 +820,8 @@ export default function LoopGenerationPanel({
                           </div>
                         </div>
                       </div>
+                      </>
+                      )}
                     </div>
                   )}
                 </div>

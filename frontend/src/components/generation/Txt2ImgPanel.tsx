@@ -23,6 +23,7 @@ import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
+import { migrateLoopGenerationConfig } from "@/utils/loopGenerationInheritance";
 import { generateTxt2Img, generateImg2Img, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -369,7 +370,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     const savedLoopGen = localStorage.getItem(LOOP_GENERATION_STORAGE_KEY);
     if (savedLoopGen) {
       try {
-        setLoopGenerationConfig(JSON.parse(savedLoopGen));
+        setLoopGenerationConfig(migrateLoopGenerationConfig(JSON.parse(savedLoopGen)));
       } catch (e) {
         console.error('Failed to parse loop generation config:', e);
       }
@@ -1195,17 +1196,41 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         attention_type: mainParams.attention_type, // Inherit attention backend (NAG/NegPip)
         preview_predicted_x0: mainParams.preview_predicted_x0, // Inherit preview mode
         preview_decoder: mainParams.preview_decoder, // Inherit preview decoder
+        // Model/Environment (model-global) — always inherited from main. Gap fixes:
+        // text_encoder_quantization + block swap group were previously never copied.
+        text_encoder_quantization: mainParams.text_encoder_quantization,
+        enable_block_swap: mainParams.enable_block_swap,
+        blocks_to_swap: mainParams.blocks_to_swap,
+        block_swap_h2d_only: mainParams.block_swap_h2d_only,
+        block_swap_ring_size: mainParams.block_swap_ring_size,
       };
 
-      // Use custom settings or inherit from main
-      if (step.useMainSettings) {
+      // Genre-based inheritance. Each genre toggle defaults to the legacy combined
+      // flag (then true). When OFF, per-step fields win, falling back to MAIN values
+      // (never hardcoded literals). See utils/loopGenerationInheritance.ts.
+      const useMainSampling = step.use_main_sampling ?? step.useMainSettings ?? true;
+      const useMainCfgSchedule = step.use_main_cfg_schedule ?? step.useMainSettings ?? true;
+      const useMainNag = step.use_main_nag ?? step.useMainSettings ?? true;
+
+      // Sampling genre
+      if (useMainSampling) {
         stepParams.steps = mainParams.steps;
         stepParams.cfg_scale = mainParams.cfg_scale;
         stepParams.sampler = mainParams.sampler;
         stepParams.schedule_type = mainParams.schedule_type;
         stepParams.seed = mainParams.seed;
         stepParams.ancestral_seed = mainParams.ancestral_seed;
-        // Inherit Advanced CFG from main
+      } else {
+        stepParams.steps = step.steps ?? mainParams.steps;
+        stepParams.cfg_scale = step.cfgScale ?? mainParams.cfg_scale;
+        stepParams.sampler = step.sampler || mainParams.sampler;
+        stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
+        stepParams.seed = step.seed ?? mainParams.seed;
+        stepParams.ancestral_seed = step.ancestralSeed ?? mainParams.ancestral_seed;
+      }
+
+      // Advanced CFG genre
+      if (useMainCfgSchedule) {
         stepParams.cfg_schedule_type = mainParams.cfg_schedule_type;
         stepParams.cfg_schedule_min = mainParams.cfg_schedule_min;
         stepParams.cfg_schedule_max = mainParams.cfg_schedule_max;
@@ -1213,7 +1238,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         stepParams.cfg_rescale_snr_alpha = mainParams.cfg_rescale_snr_alpha;
         stepParams.dynamic_threshold_percentile = mainParams.dynamic_threshold_percentile;
         stepParams.dynamic_threshold_mimic_scale = mainParams.dynamic_threshold_mimic_scale;
-        // Inherit NAG from main
+      } else {
+        stepParams.cfg_schedule_type = step.cfg_schedule_type ?? mainParams.cfg_schedule_type;
+        stepParams.cfg_schedule_min = step.cfg_schedule_min ?? mainParams.cfg_schedule_min;
+        stepParams.cfg_schedule_max = step.cfg_schedule_max ?? mainParams.cfg_schedule_max;
+        stepParams.cfg_schedule_power = step.cfg_schedule_power ?? mainParams.cfg_schedule_power;
+        stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? mainParams.cfg_rescale_snr_alpha;
+        stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? mainParams.dynamic_threshold_percentile;
+        stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? mainParams.dynamic_threshold_mimic_scale;
+      }
+
+      // NAG genre
+      if (useMainNag) {
         stepParams.nag_enable = mainParams.nag_enable;
         stepParams.nag_scale = mainParams.nag_scale;
         stepParams.nag_tau = mainParams.nag_tau;
@@ -1221,27 +1257,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         stepParams.nag_sigma_end = mainParams.nag_sigma_end;
         stepParams.nag_negative_prompt = mainParams.nag_negative_prompt;
       } else {
-        stepParams.steps = step.steps || 20;
-        stepParams.cfg_scale = step.cfgScale || 7;
-        stepParams.sampler = step.sampler || mainParams.sampler;
-        stepParams.schedule_type = step.scheduleType || mainParams.schedule_type;
-        stepParams.seed = step.seed ?? -1;
-        stepParams.ancestral_seed = step.ancestralSeed ?? -1;
-        // Use step's Advanced CFG or defaults
-        stepParams.cfg_schedule_type = step.cfg_schedule_type || "constant";
-        stepParams.cfg_schedule_min = step.cfg_schedule_min ?? 1.0;
-        stepParams.cfg_schedule_max = step.cfg_schedule_max;
-        stepParams.cfg_schedule_power = step.cfg_schedule_power ?? 2.0;
-        stepParams.cfg_rescale_snr_alpha = step.cfg_rescale_snr_alpha ?? 0.0;
-        stepParams.dynamic_threshold_percentile = step.dynamic_threshold_percentile ?? 0.0;
-        stepParams.dynamic_threshold_mimic_scale = step.dynamic_threshold_mimic_scale ?? 7.0;
-        // Use step's NAG or defaults
-        stepParams.nag_enable = step.nag_enable ?? false;
-        stepParams.nag_scale = step.nag_scale ?? 5.0;
-        stepParams.nag_tau = step.nag_tau ?? 3.5;
-        stepParams.nag_alpha = step.nag_alpha ?? 0.25;
-        stepParams.nag_sigma_end = step.nag_sigma_end ?? 3.0;
-        stepParams.nag_negative_prompt = step.nag_negative_prompt ?? "";
+        stepParams.nag_enable = step.nag_enable ?? mainParams.nag_enable;
+        stepParams.nag_scale = step.nag_scale ?? mainParams.nag_scale;
+        stepParams.nag_tau = step.nag_tau ?? mainParams.nag_tau;
+        stepParams.nag_alpha = step.nag_alpha ?? mainParams.nag_alpha;
+        stepParams.nag_sigma_end = step.nag_sigma_end ?? mainParams.nag_sigma_end;
+        stepParams.nag_negative_prompt = step.nag_negative_prompt ?? mainParams.nag_negative_prompt;
       }
 
       // Apply LoRA inheritance

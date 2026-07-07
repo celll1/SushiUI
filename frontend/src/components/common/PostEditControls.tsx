@@ -37,7 +37,7 @@ export default function PostEditControls({ value, onChange, className = "" }: Po
   const nonNeutral = !isNeutral(value);
 
   return (
-    <div className={`flex items-center gap-2 ${className}`}>
+    <div className={`flex items-center gap-2 flex-wrap ${className}`}>
       <label
         htmlFor="post-edit-brightness-range"
         className="text-xs text-gray-400 font-mono flex-shrink-0"
@@ -98,6 +98,36 @@ export default function PostEditControls({ value, onChange, className = "" }: Po
         className="w-14 flex-shrink-0"
       />
 
+      <label
+        htmlFor="post-edit-flatten-range"
+        className="text-xs text-gray-400 font-mono flex-shrink-0"
+        title="Color flatten（色ムラ除去）"
+      >
+        F
+      </label>
+      <input
+        id="post-edit-flatten-range"
+        type="range"
+        min={0}
+        max={100}
+        step={1}
+        value={value.flatten}
+        onChange={(e) => onChange({ ...value, flatten: parseInt(e.target.value, 10) })}
+        className={RANGE_CLASSNAME}
+        title="Color flatten（色ムラ除去）"
+      />
+      <NumberInput
+        label="Color flatten（色ムラ除去）"
+        value={value.flatten}
+        onCommit={(flatten) => onChange({ ...value, flatten })}
+        defaultValue={0}
+        min={0}
+        max={100}
+        step={1}
+        parse="int"
+        className="w-14 flex-shrink-0"
+      />
+
       <button
         type="button"
         onClick={(e) => {
@@ -110,7 +140,7 @@ export default function PostEditControls({ value, onChange, className = "" }: Po
             ? "text-blue-400 hover:text-blue-300 hover:bg-gray-700"
             : "text-gray-600 cursor-default"
         }`}
-        title="Reset brightness and saturation"
+        title="Reset brightness, saturation and color flatten"
       >
         <RotateCcw className="h-3.5 w-3.5" />
       </button>

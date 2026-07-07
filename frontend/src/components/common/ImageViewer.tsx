@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Download, SlidersHorizontal } from "lucide-react";
 import { PostEditState, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import PostEditControls from "./PostEditControls";
+import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 
 interface ImageViewerProps {
   imageUrl: string;
@@ -24,6 +25,10 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
   // this is purely internal UI state (not one of the optional postEdit props).
   const [postEditExpanded, setPostEditExpanded] = useState(false);
   const postEditNonNeutral = postEdit ? !isNeutral(postEdit) : false;
+
+  // Color-flatten preview: swaps in a processed object URL when flatten>0.
+  // brightness/saturation stay as a CSS filter layered on top (below).
+  const effectiveImageUrl = usePostEditPreview(imageUrl, postEdit?.flatten ?? 0);
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -103,7 +108,7 @@ export default function ImageViewer({ imageUrl, onClose, onNavigate, hasPrev, ha
         )}
 
         <img
-          src={imageUrl}
+          src={effectiveImageUrl ?? imageUrl}
           alt="Full size preview"
           className="max-w-full max-h-[95vh] object-contain"
           style={postEdit ? { filter: buildFilterString(postEdit) } : undefined}

@@ -21,6 +21,7 @@ import { fixFloatingPointParams } from "@/utils/numberUtils";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
+import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
@@ -164,6 +165,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   // Client-side post-edit (brightness/saturation) for the current preview image.
   // Never sent to the backend; reset to neutral on each new generated image.
   const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
+  // Color-flatten preview for the inline result image (b/s stay as CSS filter).
+  const effectiveGeneratedImage = usePostEditPreview(generatedImage, postEdit.flatten);
   useEffect(() => {
     setPostEdit({ ...NEUTRAL_POST_EDIT });
   }, [generatedImage]);
@@ -3257,7 +3260,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               >
                 {generatedImage ? (
                   <img
-                    src={generatedImage}
+                    src={effectiveGeneratedImage ?? generatedImage}
                     alt="Generated"
                     className="max-w-full max-h-full rounded-lg"
                     style={{ filter: buildFilterString(postEdit) }}

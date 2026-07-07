@@ -86,13 +86,17 @@ export default function PostEditControls({ value, onChange, className = "" }: Po
         className={RANGE_CLASSNAME}
         title="Saturation (%)"
       />
+      {/* Slider stays 0-200 for everyday use, but the number box allows far
+          larger values for diagnostics (e.g. sat 10000 makes residual chroma
+          mottling obvious). A typed value above 200 simply pins the slider
+          thumb at its max while the real value applies. */}
       <NumberInput
         label="Saturation (%)"
         value={value.saturation}
         onCommit={(saturation) => onChange({ ...value, saturation })}
         defaultValue={100}
         min={0}
-        max={200}
+        max={100000}
         step={1}
         parse="int"
         className="w-14 flex-shrink-0"

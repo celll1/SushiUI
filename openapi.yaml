@@ -4635,6 +4635,42 @@ components:
             after VAE decode. Removes low-frequency color mottling while preserving
             luminance detail. 0 = off (zero cost). All modes, all architectures.
           example: 0
+        flatten_in_loop:
+          type: boolean
+          default: false
+          description: |
+            In-loop hard-flatten of the flat background (SD1.5/SDXL only). On the
+            last N actual denoise steps the x0 prediction is decoded, the flat
+            background region (largest connected low-gradient component touching the
+            border) is detected and replaced with its dominant colour (feathered),
+            re-encoded, and the correction injected back into the latents. Gated: if
+            no confident flat region is found (area < flatten_in_loop_min_region) the
+            step is a no-op, so textured backgrounds are protected. DiT architectures
+            accept the flag and emit an unsupported_param warning. Default false =
+            byte-identical loop behaviour.
+          example: false
+        flatten_in_loop_last_steps:
+          type: integer
+          minimum: 1
+          maximum: 16
+          default: 3
+          description: |
+            Number of trailing ACTUAL denoise steps to inject on (relative to the real
+            step sequence the loop executes, not a fixed fraction, so it is stable
+            across step counts and accelerators). Larger N = flatter background but
+            more subject-detail cost (~6-7% wall-time per injection).
+          example: 3
+        flatten_in_loop_min_region:
+          type: number
+          format: float
+          minimum: 0.005
+          maximum: 0.5
+          default: 0.02
+          description: |
+            Flat-region area gate as a fraction of the frame. The detected background
+            region must cover at least this fraction, otherwise the injection step is
+            a no-op (protects textured-background intents).
+          example: 0.02
         spectrum_enable:
           type: boolean
           default: false

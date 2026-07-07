@@ -121,6 +121,12 @@ class GeneratedImage(GalleryBase):
                 result["color_flatten_strength"] = str(self.parameters["color_flatten_strength"])
             if self.parameters.get("vae_drift_correction"):
                 result["vae_drift_correction"] = str(self.parameters["vae_drift_correction"])
+            if self.parameters.get("flatten_in_loop"):
+                result["flatten_in_loop"] = str(self.parameters["flatten_in_loop"])
+                if "flatten_in_loop_last_steps" in self.parameters:
+                    result["flatten_in_loop_last_steps"] = str(self.parameters["flatten_in_loop_last_steps"])
+                if "flatten_in_loop_min_region" in self.parameters:
+                    result["flatten_in_loop_min_region"] = str(self.parameters["flatten_in_loop_min_region"])
 
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:

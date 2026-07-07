@@ -51,6 +51,9 @@ class FBCacheBlockController:
         self.branch = max(1, min(int(cache_branch), self.n_down - 1)) if self.n_down > 1 else 1
         self.threshold = float(threshold)
         self.warmup_steps = int(warmup_steps)
+        # Steps forced to a real (miss) forward regardless of the indicator, so the
+        # in-loop hard-flatten sees a genuine (non-reused) x0 on its injection steps.
+        self.force_real_steps = set()
         self._packer = _Packer()
         self._prev_indicator = None   # previous step's indicator (residual of indicator block)
         self._cache_flat = None       # packed deep features from the last miss
@@ -112,6 +115,7 @@ class FBCacheBlockController:
             indicator = sample.detach()
             reuse = (
                 self._step >= self.warmup_steps
+                and self._step not in self.force_real_steps
                 and self._prev_indicator is not None
                 and self._cache_flat is not None
                 and self._rel_l1(indicator, self._prev_indicator) < self.threshold

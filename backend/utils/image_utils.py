@@ -60,6 +60,10 @@ def save_image_with_metadata(
         metadata.add_text("color_flatten_strength", str(int(color_flatten_strength)))
     if params.get("vae_drift_correction"):
         metadata.add_text("vae_drift_correction", "true")
+    if params.get("flatten_in_loop"):
+        metadata.add_text("flatten_in_loop", "true")
+        metadata.add_text("flatten_in_loop_last_steps", str(int(params.get("flatten_in_loop_last_steps", 3) or 3)))
+        metadata.add_text("flatten_in_loop_min_region", str(params.get("flatten_in_loop_min_region", 0.02)))
 
     # Add NAG (Normalized Attention Guidance) parameters
     nag_enable = params.get("nag_enable", False)

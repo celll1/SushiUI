@@ -56,13 +56,15 @@ export default function PostEditControls({ value, onChange, className = "" }: Po
         className={RANGE_CLASSNAME}
         title="Brightness (%)"
       />
+      {/* Sliders stay at their everyday ranges; the number boxes allow far
+          larger values for diagnostics (see saturation note below). */}
       <NumberInput
         label="Brightness (%)"
         value={value.brightness}
         onCommit={(brightness) => onChange({ ...value, brightness })}
         defaultValue={100}
         min={0}
-        max={200}
+        max={100000}
         step={1}
         parse="int"
         className="w-14 flex-shrink-0"
@@ -120,13 +122,16 @@ export default function PostEditControls({ value, onChange, className = "" }: Po
         className={RANGE_CLASSNAME}
         title="Color flatten（色ムラ除去）"
       />
+      {/* Typed values above 100 extrapolate the smoothing radius/eps for
+          diagnostics (blend is capped at 1.0 inside flattenChroma so chroma
+          never inverts); the slider stays 0-100. */}
       <NumberInput
         label="Color flatten（色ムラ除去）"
         value={value.flatten}
         onCommit={(flatten) => onChange({ ...value, flatten })}
         defaultValue={0}
         min={0}
-        max={100}
+        max={1000}
         step={1}
         parse="int"
         className="w-14 flex-shrink-0"

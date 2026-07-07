@@ -713,6 +713,13 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
   formData.append("attention_impl", paramsWithImages.attention_impl || "conduit");
 
+  // Block swap (CPU offloading)
+  formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
+  formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
+  formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
+  formData.append("block_swap_h2d_only", String(paramsWithImages.block_swap_h2d_only ?? false));
+  formData.append("block_swap_ring_size", String(paramsWithImages.block_swap_ring_size ?? 2));
+
   // Debug log for quantization
   console.log('[API] img2img unet_quantization:', paramsWithImages.unet_quantization);
   if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
@@ -858,6 +865,13 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
   formData.append("attention_type", paramsWithImages.attention_type || "normal");
   formData.append("attention_impl", paramsWithImages.attention_impl || "conduit");
+
+  // Block swap (CPU offloading)
+  formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
+  formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
+  formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
+  formData.append("block_swap_h2d_only", String(paramsWithImages.block_swap_h2d_only ?? false));
+  formData.append("block_swap_ring_size", String(paramsWithImages.block_swap_ring_size ?? 2));
 
   // Debug log for quantization
   console.log('[API] inpaint unet_quantization:', paramsWithImages.unet_quantization);

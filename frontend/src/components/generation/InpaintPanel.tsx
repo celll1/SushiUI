@@ -21,6 +21,7 @@ import FloatingGallery from "../common/FloatingGallery";
 import ImageViewer from "../common/ImageViewer";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
+import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
@@ -178,6 +179,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   // Client-side post-edit (brightness/saturation) for the current preview image.
   // Never sent to the backend; reset to neutral on each new generated image.
   const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
+  // Color-flatten preview for the inline result image (b/s stay as CSS filter).
+  const effectiveGeneratedImage = usePostEditPreview(generatedImage, postEdit.flatten);
   useEffect(() => {
     setPostEdit({ ...NEUTRAL_POST_EDIT });
   }, [generatedImage]);
@@ -3555,7 +3558,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               >
                 {generatedImage ? (
                   <img
-                    src={generatedImage}
+                    src={effectiveGeneratedImage ?? generatedImage}
                     alt="Generated"
                     className="max-w-full max-h-full rounded-lg"
                     style={{ filter: buildFilterString(postEdit) }}

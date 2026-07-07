@@ -21,6 +21,7 @@ import ImageList from "./ImageList";
 import { saveTempImage } from "@/utils/tempImageStorage";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
+import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 
 export default function ImageGrid() {
   const router = useRouter();
@@ -34,6 +35,10 @@ export default function ImageGrid() {
   useEffect(() => {
     setPostEdit({ ...NEUTRAL_POST_EDIT });
   }, [selectedImage?.filename]);
+  // Color-flatten preview for the selected image (detail + full-size popup).
+  // brightness/saturation remain a CSS filter layered on top (below).
+  const selectedImageSrc = selectedImage ? `/outputs/${selectedImage.filename}` : undefined;
+  const effectiveSelectedSrc = usePostEditPreview(selectedImageSrc, postEdit.flatten);
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -1247,7 +1252,7 @@ export default function ImageGrid() {
                 onTouchEnd={handleDetailImageTouchEnd}
               >
                 <img
-                  src={`/outputs/${selectedImage.filename}`}
+                  src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
                   alt="Generated"
                   className="max-w-full max-h-full object-contain cursor-pointer"
                   style={{ filter: buildFilterString(postEdit) }}
@@ -1315,7 +1320,7 @@ export default function ImageGrid() {
                   ×
                 </button>
                 <img
-                  src={`/outputs/${selectedImage.filename}`}
+                  src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
                   alt="Generated - Full Size"
                   className="max-w-full max-h-[90vh] object-contain"
                   style={{ filter: buildFilterString(postEdit) }}

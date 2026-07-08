@@ -247,6 +247,14 @@ export interface GenerationParams {
   // Text encoder override: path to a standalone text encoder to swap in
   // (empty/null = use the loaded model's text encoder). SD1.5/SDXL only server-side.
   text_encoder_path?: string | null;
+  // Video generation fields (used when a video model is loaded; the merged
+  // txt2img/img2img panels carry these and map them into Txt2VidParams/Img2VidParams).
+  num_frames?: number;              // 8k+1 (default 121)
+  frame_rate?: number;              // default 24.0
+  num_inference_steps?: number;     // video sampler steps (default 8, distilled)
+  guidance_scale?: number;          // video guidance (default 1.0)
+  num_videos_per_prompt?: number;   // default 1
+  audio_enable?: boolean;           // default true
 }
 
 export interface Img2ImgParams extends GenerationParams {

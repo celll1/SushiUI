@@ -23,7 +23,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { migrateLoopGenerationConfig } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -102,7 +102,23 @@ const DEFAULT_PARAMS: GenerationParams = {
   vision_encoder_path: null,
   vae_path: null,
   text_encoder_path: null,
+  // Video generation fields (used when a video model is loaded; the panel maps
+  // these into Txt2VidParams for txt2vid requests). Carried alongside the image
+  // params so a single params object drives both modes.
+  num_frames: 121,
+  frame_rate: 24.0,
+  num_inference_steps: 8,
+  guidance_scale: 1.0,
+  num_videos_per_prompt: 1,
+  audio_enable: true,
+  max_sequence_length: 1024,
 };
+
+// num_frames must be 8k+1 (LTX-2.3). Offer common lengths.
+const FRAME_OPTIONS = [9, 17, 25, 33, 49, 65, 81, 97, 121].map((n) => ({
+  value: String(n),
+  label: String(n),
+}));
 
 const STORAGE_KEY = "txt2img_params";
 const PREVIEW_STORAGE_KEY = "txt2img_preview";
@@ -115,11 +131,14 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  // Video output (produced when a video model is loaded / txt2vid queue item).
+  const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [generatedImageParams, setGeneratedImageParams] = useState<GenerationParams | null>(null);
@@ -1112,6 +1131,33 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Create loop group ID if loop generation is enabled
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
 
+    // Video mode: a video model is loaded -> enqueue a txt2vid item built from
+    // the shared params. Video loop-generation is out of scope; enqueue one item.
+    if (isVideo) {
+      const videoParams: Txt2VidParams = {
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+        width: params.width,
+        height: params.height,
+        num_frames: params.num_frames,
+        frame_rate: params.frame_rate,
+        num_inference_steps: params.num_inference_steps,
+        guidance_scale: params.guidance_scale,
+        seed: params.seed,
+        num_videos_per_prompt: params.num_videos_per_prompt,
+        max_sequence_length: params.max_sequence_length,
+        audio_enable: params.audio_enable,
+        vae_path: params.vae_path,
+        text_encoder_path: params.text_encoder_path,
+      };
+      addToQueue({
+        type: "txt2vid",
+        params: videoParams as any,
+        prompt: processedPrompt,
+      });
+      return;
+    }
+
     // Add main generation to queue
     // Debug log for quantization
     if (params.unet_quantization) {
@@ -1447,6 +1493,44 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     console.log("[Txt2Img] Next item from queue:", nextItem);
     if (!nextItem) {
       console.log("[Txt2Img] No items in queue");
+      return;
+    }
+
+    // Video branch: txt2vid item (a video model is loaded). Produces an .mp4
+    // and renders a <video> instead of an <img>. No loop-generation handling.
+    if (nextItem.type === "txt2vid") {
+      setIsGenerating(true);
+      setProgress(0);
+      setTotalSteps((nextItem.params as any).num_inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      try {
+        const result = await generateTxt2Vid(nextItem.params as Txt2VidParams);
+        const videoUrl = `/outputs/${result.image.filename}`;
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoInfo({
+          num_frames: result.image.num_frames,
+          fps: result.image.fps,
+          duration: result.image.duration,
+        });
+        if (onImageGenerated) onImageGenerated(videoUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Txt2Img] txt2vid generation failed:", error);
+        alert("txt2vid generation failed. Please check console for details.");
+        setIsGenerating(false);
+        setProgress(0);
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
       return;
     }
 
@@ -2045,6 +2129,89 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           </div>
         </Card>
 
+        {isVideo && (
+          <Card title="Video">
+            <div className="grid grid-cols-2 gap-2">
+              <NumberInput
+                label="Width (÷32)"
+                value={params.width ?? 768}
+                onCommit={(v) => setParams({ ...params, width: v })}
+                min={32}
+                max={2048}
+                step={32}
+                parse="int"
+              />
+              <NumberInput
+                label="Height (÷32)"
+                value={params.height ?? 512}
+                onCommit={(v) => setParams({ ...params, height: v })}
+                min={32}
+                max={2048}
+                step={32}
+                parse="int"
+              />
+            </div>
+
+            <Select
+              label="Frames (8k+1)"
+              value={String(params.num_frames ?? 121)}
+              onChange={(e) => setParams({ ...params, num_frames: parseInt(e.target.value) })}
+              options={FRAME_OPTIONS}
+            />
+
+            <NumberInput
+              label="Frame Rate (fps)"
+              value={params.frame_rate ?? 24.0}
+              onCommit={(v) => setParams({ ...params, frame_rate: v })}
+              min={1}
+              max={60}
+              step={1}
+              parse="float"
+            />
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
+              <NumberInput
+                label="Steps"
+                value={params.num_inference_steps ?? 8}
+                onCommit={(v) => setParams({ ...params, num_inference_steps: v })}
+                min={1}
+                max={100}
+                step={1}
+                parse="int"
+              />
+              <NumberInput
+                label="Guidance Scale"
+                value={params.guidance_scale ?? 1.0}
+                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+              />
+              <Input
+                type="number"
+                label="Seed"
+                value={params.seed ?? -1}
+                onChange={(e) => {
+                  const parsed = parseInt(e.target.value);
+                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                }}
+              />
+            </div>
+
+            <label className="flex items-center gap-2 cursor-pointer mt-2">
+              <input
+                type="checkbox"
+                checked={params.audio_enable ?? true}
+                onChange={(e) => setParams({ ...params, audio_enable: e.target.checked })}
+                className="rounded"
+              />
+              <span className="text-gray-300 text-sm">Audio</span>
+            </label>
+          </Card>
+        )}
+
+        {!isVideo && (<>
         <Card title="Parameters">
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -2961,6 +3128,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           samplers={samplers}
           scheduleTypes={scheduleTypes}
         />
+        </>)}
       </div>
 
       {/* Preview Panel */}
@@ -3226,7 +3394,26 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 }
               }}
             >
-              {generatedImage ? (
+              {isVideo && generatedVideo ? (
+                <div className="w-full space-y-2">
+                  <video
+                    src={generatedVideo}
+                    className="w-full rounded-lg"
+                    controls
+                    loop
+                    muted
+                    autoPlay
+                    playsInline
+                  />
+                  {generatedVideoInfo && (
+                    <div className="text-xs text-gray-400">
+                      {generatedVideoInfo.num_frames != null && <span>{generatedVideoInfo.num_frames} frames</span>}
+                      {generatedVideoInfo.fps != null && <span> · {generatedVideoInfo.fps} fps</span>}
+                      {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
+                    </div>
+                  )}
+                </div>
+              ) : generatedImage ? (
                 <img
                   src={effectiveGeneratedImage ?? generatedImage}
                   alt="Generated"

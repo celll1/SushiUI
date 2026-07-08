@@ -81,6 +81,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
 
+        # Per-generation component overrides (RP2b). Idempotent, path-keyed. The
+        # ORIGINAL component ref is kept so clearing the override restores WITHOUT
+        # a reload. Applied component is CPU-resident (the vram_optimization
+        # move_vae_to_gpu/cpu funnel stages it per generation).
+        self._override_vae_path: Optional[str] = None
+        self._original_vae: Optional[Any] = None
+        self._override_vae_targets: List[Any] = []
+        self._override_te_path: Optional[str] = None
+        self._original_te: Optional[Dict[str, Any]] = None
+
         # Prompt chunking settings
         self.prompt_chunking_mode: str = "a1111"  # Options: a1111, sd_scripts, nobos
         self.max_prompt_chunks: int = 0  # 0 = unlimited, 1-4 = limit chunks
@@ -146,6 +156,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         if self.current_model == model_id:
             return
+
+        # Clear any TE/VAE override state: the new model replaces the components
+        # the override swapped, so the previous override refs are now stale.
+        self._override_vae_path = None
+        self._original_vae = None
+        self._override_vae_targets = []
+        self._override_te_path = None
+        self._original_te = []
 
         try:
             # === Step 1: Complete cleanup of existing pipelines ===
@@ -910,6 +928,219 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             print("[VisionEncoder] Unloaded.")
+
+    # ------------------------------------------------------------------
+    # Per-generation VAE / TE overrides (RP2b)
+    # ------------------------------------------------------------------
+    def _vae_override_targets(self) -> List[tuple]:
+        """Return the (kind, container, key) slots currently holding the active
+        VAE. ``kind`` is "attr" (setattr) for the diffusers image pipelines or
+        "item" (setitem) for a component-dict arch (zimage/flux2/lens/...)."""
+        targets: List[tuple] = []
+        for pipe in (self.txt2img_pipeline, self.img2img_pipeline, self.inpaint_pipeline):
+            if pipe is not None and getattr(pipe, "vae", None) is not None:
+                targets.append(("attr", pipe, "vae"))
+        for comps in (self.zimage_components, self.flux2_components,
+                      self.anima_components, self.lens_components,
+                      self.ideogram4_components, self.krea2_components):
+            if isinstance(comps, dict) and comps.get("vae") is not None:
+                targets.append(("item", comps, "vae"))
+        return targets
+
+    @staticmethod
+    def _set_slot(kind: str, container: Any, key: str, value: Any) -> None:
+        if kind == "attr":
+            setattr(container, key, value)
+        else:
+            container[key] = value
+
+    def override_vae_identity(self) -> tuple:
+        """Return (source, path) describing the active override VAE, for metadata."""
+        if not self._override_vae_path:
+            return ("none", None)
+        try:
+            from core.models.common.vae_store import vae_identity
+            active = None
+            for kind, container, key in self._vae_override_targets():
+                active = getattr(container, key) if kind == "attr" else container.get(key)
+                break
+            src, path = vae_identity(active)
+            return (src, path or self._override_vae_path)
+        except Exception:
+            return (self._override_vae_path, self._override_vae_path)
+
+    def load_override_vae(self, vae_path: Optional[str]):
+        """Swap the model's VAE for the one at ``vae_path`` (idempotent).
+
+        ``vae_path`` None/empty RESTORES the original VAE (kept in
+        ``self._original_vae``) without a reload. The new VAE is loaded to CPU;
+        the existing move_vae_to_gpu/cpu funnel stages it per generation.
+        """
+        if not vae_path:
+            self._restore_override_vae()
+            return
+        if self._override_vae_path == vae_path:
+            return  # idempotent — already applied
+
+        targets = self._vae_override_targets()
+        if not targets:
+            print("[VAEOverride] No VAE slot on the loaded model; override skipped.")
+            return
+
+        # Resolve the candidate VAE directory + class.
+        from api.generation_overrides import _vae_config_dir, _read_json
+        cfg_dir = _vae_config_dir(vae_path)
+        if cfg_dir is None:
+            raise ValueError(f"No loadable VAE config.json found under: {vae_path}")
+        cfg = _read_json(os.path.join(cfg_dir, "config.json")) or {}
+        class_name = cfg.get("_class_name") or "AutoencoderKL"
+        import diffusers
+        vae_cls = getattr(diffusers, class_name, None)
+        if vae_cls is None:
+            from diffusers import AutoencoderKL as vae_cls  # fallback
+
+        # Snapshot the originals on the FIRST override so a later clear restores.
+        if self._override_vae_path is None:
+            first_kind, first_c, first_k = targets[0]
+            self._original_vae = (getattr(first_c, first_k) if first_kind == "attr"
+                                  else first_c.get(first_k))
+            self._override_vae_targets = targets
+
+        # Match the original VAE's dtype so downstream device/dtype staging is a no-op.
+        dtype = None
+        try:
+            dtype = next(self._original_vae.parameters()).dtype
+        except Exception:
+            dtype = torch.float16
+
+        print(f"[VAEOverride] Loading {class_name} from {cfg_dir} (dtype={dtype})")
+        new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
+        new_vae = new_vae.to("cpu")
+
+        for kind, container, key in targets:
+            self._set_slot(kind, container, key, new_vae)
+        self._override_vae_path = vae_path
+
+    def _restore_override_vae(self):
+        if self._override_vae_path is None:
+            return
+        print("[VAEOverride] Restoring original VAE.")
+        for kind, container, key in self._override_vae_targets:
+            try:
+                self._set_slot(kind, container, key, self._original_vae)
+            except Exception as e:
+                print(f"[VAEOverride] restore slot failed: {e}")
+        self._override_vae_path = None
+        self._original_vae = None
+        self._override_vae_targets = []
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+    def load_override_te(self, te_path: Optional[str]):
+        """Swap the text encoder for SD1.5/SDXL (idempotent).
+
+        Two sound cases (FABLE decision): (1) a custom-TE checkpoint
+        (``pipeline._sushi_te`` present) reloads its encoder body from ``te_path``
+        via ``te_registry.load_te`` while the trained bridge adapters stay; (2) a
+        stock CLIP encoder is substituted. ``te_path`` None RESTORES the original.
+        """
+        if not te_path:
+            self._restore_override_te()
+            return
+        if self._override_te_path == te_path:
+            return
+
+        primary = self.txt2img_pipeline
+        if primary is None:
+            print("[TEOverride] No SD/SDXL pipeline loaded; override skipped.")
+            return
+
+        # SD/SDXL share text-encoder module objects across txt2img/img2img/inpaint,
+        # but each pipeline holds its OWN attribute reference — rebinding one does
+        # not rebind the others. Apply (and snapshot) on every present pipeline so
+        # img2img/inpaint use the override too, not the original.
+        pipes = [p for p in (self.txt2img_pipeline, self.img2img_pipeline,
+                             self.inpaint_pipeline) if p is not None]
+
+        if getattr(primary, "_sushi_te", None) is not None:
+            # Custom-TE checkpoint: reload the encoder body, keep the adapters.
+            arch_info = getattr(primary, "_sushi_arch", {}) or {}
+            te_type = arch_info.get("te_type")
+            if not te_type:
+                raise ValueError("Custom-TE checkpoint has no recorded te_type")
+            from core.models.components.te_registry import load_te
+            dtype = torch.float16
+            try:
+                dtype = next(primary._sushi_te.parameters()).dtype
+            except Exception:
+                pass
+            max_len = getattr(primary, "_sushi_te_max_len", 256)
+            encoder, tokenizer, _dim = load_te(te_type, repo=te_path, dtype=dtype,
+                                               device="cpu", max_len=max_len)
+            encoder.eval()
+            snapshot = self._override_te_path is None
+            for pipe in pipes:
+                if getattr(pipe, "_sushi_te", None) is None:
+                    continue
+                if snapshot:
+                    self._original_te.append({
+                        "mode": "sushi", "pipe": pipe,
+                        "_sushi_te": pipe._sushi_te,
+                        "_sushi_te_tokenizer": pipe._sushi_te_tokenizer,
+                    })
+                pipe._sushi_te = encoder
+                pipe._sushi_te_tokenizer = tokenizer
+        else:
+            # Stock CLIP substitution.
+            from api.generation_overrides import _te_config_dir
+            cfg_dir = _te_config_dir(te_path)
+            if cfg_dir is None:
+                raise ValueError(f"No loadable text_encoder config.json found under: {te_path}")
+            from transformers import CLIPTextModel
+            dtype = torch.float16
+            try:
+                dtype = next(primary.text_encoder.parameters()).dtype
+            except Exception:
+                pass
+            new_te = CLIPTextModel.from_pretrained(cfg_dir, torch_dtype=dtype).to("cpu")
+            snapshot = self._override_te_path is None
+            for pipe in pipes:
+                if getattr(pipe, "text_encoder", None) is None:
+                    continue
+                if snapshot:
+                    self._original_te.append({
+                        "mode": "clip", "pipe": pipe,
+                        "text_encoder": pipe.text_encoder,
+                    })
+                pipe.text_encoder = new_te
+
+        self._override_te_path = te_path
+        print(f"[TEOverride] Applied text-encoder override on {len(pipes)} pipeline(s): {te_path}")
+
+    def _restore_override_te(self):
+        if self._override_te_path is None or not self._original_te:
+            self._override_te_path = None
+            self._original_te = []
+            return
+        print("[TEOverride] Restoring original text encoder.")
+        for orig in self._original_te:
+            pipe = orig.get("pipe")
+            try:
+                if orig.get("mode") == "sushi" and pipe is not None:
+                    pipe._sushi_te = orig["_sushi_te"]
+                    pipe._sushi_te_tokenizer = orig["_sushi_te_tokenizer"]
+                elif orig.get("mode") == "clip" and pipe is not None:
+                    pipe.text_encoder = orig["text_encoder"]
+            except Exception as e:
+                print(f"[TEOverride] restore failed: {e}")
+        self._override_te_path = None
+        self._original_te = []
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     def _apply_vision_encoder(
         self,

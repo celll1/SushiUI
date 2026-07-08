@@ -16,7 +16,7 @@ factual explanation of why the parameter has no effect on that arch.
 ignores, it emits ONE ``add_warning`` when the user set a related parameter
 to a non-default value (compared against ``GENERATION_DEFAULTS``).
 """
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from api.param_defaults import GENERATION_DEFAULTS
 
@@ -42,6 +42,8 @@ FEATURE_PARAMS: Dict[str, List[str]] = {
     "attention_impl": ["attention_impl"],
     "vae_drift_correction": ["vae_drift_correction"],
     "flatten_in_loop": ["flatten_in_loop"],
+    "te_override": ["text_encoder_path"],
+    "vae_override": ["vae_path"],
 }
 
 # Human-readable label used in the warning message for each feature.
@@ -57,6 +59,8 @@ FEATURE_LABELS: Dict[str, str] = {
     "attention_impl": "attention_impl",
     "vae_drift_correction": "vae_drift_correction (VAE DC-drift correction)",
     "flatten_in_loop": "flatten_in_loop (in-loop hard background flatten)",
+    "te_override": "text_encoder_path (text-encoder override)",
+    "vae_override": "vae_path (VAE override)",
 }
 
 # ---------------------------------------------------------------------------
@@ -139,6 +143,31 @@ for _a in _DIT_ARCHS:
 for _a in _DIT_ARCHS:
     _add(_a, "flatten_in_loop",
          "in-loop hard background flatten is only implemented for the SD1.5/SDXL sampling loops")
+
+# TE override: only sound on SD1.5/SDXL, where either a custom-TE checkpoint's
+# trained bridge adapters absorb the swap, or a stock CLIP encoder is substituted
+# for a matching-hidden CLIP. Every DiT arch feeds its text encoder into
+# arch-specific fusion / stacked-layer connectors trained for that exact geometry,
+# with no adapter to absorb a raw TE-file swap.
+for _a in _DIT_ARCHS:
+    _add(_a, "te_override",
+         "text-encoder override is only supported on SD1.5/SDXL; this architecture's text encoder feeds arch-specific fusion trained for that exact geometry")
+
+# VAE override: unsupported on LTX-2.3 (a component swap invalidates the cpu-offload
+# hook chain and there is no compatible 5D VAE) and on MiniT2I (pixel-space, no VAE).
+_add("ltx2", "vae_override",
+     "VAE override is not supported on the LTX-2.3 video model: a component swap invalidates the cpu-offload hook chain and there is no compatible 5D VAE")
+_add("minit2i", "vae_override",
+     "VAE override is not supported on this pixel-space architecture, which has no VAE")
+
+
+def arch_supports_feature(arch: Optional[str], feature: str) -> bool:
+    """True when ``arch`` honors ``feature`` (i.e. it is NOT in the unsupported
+    table). An unknown/None arch is treated as supporting the feature so the
+    override path is not silently dropped for an unrecognized model."""
+    if not arch:
+        return True
+    return feature not in ARCH_UNSUPPORTED.get(arch, {})
 
 
 def _is_user_set(params: Dict[str, Any], key: str) -> bool:

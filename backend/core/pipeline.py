@@ -1394,66 +1394,78 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 device, dtype
             )
 
-        # Encode negative prompt similarly
-        if negative_prompt:
-            neg_tokens = tokenizer(clean_neg_prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
-            neg_chunks = []
-            for i in range(0, len(neg_tokens), chunk_size):
-                neg_chunk_tokens = neg_tokens[i:i + chunk_size]
-                neg_chunks.append(neg_chunk_tokens)
+        # Encode negative prompt similarly. Note: this branch runs even when
+        # negative_prompt is "" — an empty negative prompt must still be encoded
+        # (BOS/EOS-only CLIP embedding) so SD1.5/SDXL CFG sampling never receives
+        # None for the negative embeds (see custom_sampling.py CFG concat sites).
+        neg_tokens = tokenizer(clean_neg_prompt, add_special_tokens=False, return_tensors="pt").input_ids[0]
+        neg_chunks = []
+        for i in range(0, len(neg_tokens), chunk_size):
+            neg_chunk_tokens = neg_tokens[i:i + chunk_size]
+            neg_chunks.append(neg_chunk_tokens)
 
-            if self.max_prompt_chunks > 0 and len(neg_chunks) > self.max_prompt_chunks:
-                neg_chunks = neg_chunks[:self.max_prompt_chunks]
+        if self.max_prompt_chunks > 0 and len(neg_chunks) > self.max_prompt_chunks:
+            neg_chunks = neg_chunks[:self.max_prompt_chunks]
 
-            neg_chunk_embeds_list = []
-            negative_pooled_prompt_embeds = None
+        # Zero-token negative prompt (empty string): keep a single empty chunk so
+        # pipeline.encode_prompt("") still runs and produces the uncond embedding.
+        if not neg_chunks:
+            neg_chunks = [neg_tokens[:0]]
 
-            for idx, neg_chunk_tokens in enumerate(neg_chunks):
-                neg_chunk_text = tokenizer.decode(neg_chunk_tokens, skip_special_tokens=True)
+        neg_chunk_embeds_list = []
+        negative_pooled_prompt_embeds = None
 
-                neg_embeds = pipeline.encode_prompt(
-                    prompt=neg_chunk_text,
-                    device=device,
-                    num_images_per_prompt=1,
-                    do_classifier_free_guidance=False
-                )
+        for idx, neg_chunk_tokens in enumerate(neg_chunks):
+            neg_chunk_text = tokenizer.decode(neg_chunk_tokens, skip_special_tokens=True)
 
-                if is_sdxl and idx == 0:
-                    negative_pooled_prompt_embeds = neg_embeds[2]
+            neg_embeds = pipeline.encode_prompt(
+                prompt=neg_chunk_text,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False
+            )
 
-                neg_chunk_embeds_list.append(neg_embeds[0])
+            if is_sdxl and idx == 0:
+                negative_pooled_prompt_embeds = neg_embeds[2]
 
-            # Concatenate based on mode
-            if self.prompt_chunking_mode == "a1111":
-                negative_prompt_embeds = torch.cat(neg_chunk_embeds_list, dim=1)
-            elif self.prompt_chunking_mode == "sd_scripts":
-                processed_chunks = []
-                for idx, chunk_emb in enumerate(neg_chunk_embeds_list):
-                    if len(neg_chunk_embeds_list) == 1:
-                        processed_chunks.append(chunk_emb)
-                    elif idx == 0:
-                        processed_chunks.append(chunk_emb[:, :-1, :])
-                    elif idx == len(neg_chunk_embeds_list) - 1:
-                        processed_chunks.append(chunk_emb[:, 1:, :])
-                    else:
-                        processed_chunks.append(chunk_emb[:, 1:-1, :])
-                negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
-            else:  # nobos
-                processed_chunks = []
-                for chunk_emb in neg_chunk_embeds_list:
+            neg_chunk_embeds_list.append(neg_embeds[0])
+
+        # Concatenate based on mode
+        if self.prompt_chunking_mode == "a1111":
+            negative_prompt_embeds = torch.cat(neg_chunk_embeds_list, dim=1)
+        elif self.prompt_chunking_mode == "sd_scripts":
+            processed_chunks = []
+            for idx, chunk_emb in enumerate(neg_chunk_embeds_list):
+                if len(neg_chunk_embeds_list) == 1:
+                    # Single chunk (including the empty-string case): keep the
+                    # full BOS+EOS embedding — slicing would zero-length it.
+                    processed_chunks.append(chunk_emb)
+                elif idx == 0:
+                    processed_chunks.append(chunk_emb[:, :-1, :])
+                elif idx == len(neg_chunk_embeds_list) - 1:
+                    processed_chunks.append(chunk_emb[:, 1:, :])
+                else:
                     processed_chunks.append(chunk_emb[:, 1:-1, :])
-                negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
+            negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
+        else:  # nobos
+            processed_chunks = []
+            for chunk_emb in neg_chunk_embeds_list:
+                # Zero-token chunk (empty negative prompt) is BOS+EOS only (len 2);
+                # stripping both would zero-length it, so keep it as-is in that case.
+                # Non-empty chunks keep the pre-existing unconditional strip.
+                if chunk_emb.shape[1] > 2:
+                    processed_chunks.append(chunk_emb[:, 1:-1, :])
+                else:
+                    processed_chunks.append(chunk_emb)
+            negative_prompt_embeds = torch.cat(processed_chunks, dim=1)
 
-            # Apply emphasis weights (skipped for NegPip, which weights V)
-            if has_neg_emphasis and not skip_emphasis:
-                negative_prompt_embeds = apply_emphasis_to_embeds(
-                    negative_prompt, negative_prompt_embeds,
-                    tokenizer,
-                    device, dtype
-                )
-        else:
-            negative_prompt_embeds = None
-            negative_pooled_prompt_embeds = None
+        # Apply emphasis weights (skipped for NegPip, which weights V)
+        if negative_prompt and has_neg_emphasis and not skip_emphasis:
+            negative_prompt_embeds = apply_emphasis_to_embeds(
+                negative_prompt, negative_prompt_embeds,
+                tokenizer,
+                device, dtype
+            )
 
         # Ensure prompt_embeds and negative_prompt_embeds have the same shape
         if prompt_embeds is not None and negative_prompt_embeds is not None:
@@ -1538,32 +1550,32 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 device, dtype
             )
 
-        # Encode negative prompt
-        negative_prompt_embeds = None
-        negative_pooled_prompt_embeds = None
+        # Encode negative prompt. Runs even when negative_prompt is "" — an empty
+        # negative prompt must still be encoded (BOS/EOS-only CLIP embedding) so
+        # SD1.5/SDXL CFG sampling never receives None for the negative embeds
+        # (see custom_sampling.py CFG concat sites).
+        neg_embeds = pipeline.encode_prompt(
+            prompt=negative_prompt,
+            device=device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=False
+        )
 
-        if negative_prompt:
-            neg_embeds = pipeline.encode_prompt(
-                prompt=negative_prompt,
-                device=device,
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=False
+        negative_prompt_embeds = neg_embeds[0]
+        negative_pooled_prompt_embeds = neg_embeds[2] if is_sdxl else None
+
+        # Strip BOS and EOS for NoBOS mode (only if there's more than BOS+EOS,
+        # i.e. skip stripping the empty-prompt case to avoid a zero-length tensor)
+        if negative_prompt_embeds.shape[1] > 2:
+            negative_prompt_embeds = negative_prompt_embeds[:, 1:-1, :]
+
+        # Apply emphasis weights if present (skipped for NegPip, which weights V)
+        if negative_prompt and has_neg_emphasis and not skip_emphasis:
+            negative_prompt_embeds = apply_emphasis_to_embeds(
+                negative_prompt, negative_prompt_embeds,
+                tokenizer,
+                device, dtype
             )
-
-            negative_prompt_embeds = neg_embeds[0]
-            negative_pooled_prompt_embeds = neg_embeds[2] if is_sdxl else None
-
-            # Strip BOS and EOS for NoBOS mode
-            if negative_prompt_embeds.shape[1] > 2:
-                negative_prompt_embeds = negative_prompt_embeds[:, 1:-1, :]
-
-            # Apply emphasis weights if present (skipped for NegPip, which weights V)
-            if has_neg_emphasis and not skip_emphasis:
-                negative_prompt_embeds = apply_emphasis_to_embeds(
-                    negative_prompt, negative_prompt_embeds,
-                    tokenizer,
-                    device, dtype
-                )
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
@@ -1670,20 +1682,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             prompt_embeds = base_embeds[0]
             pooled_prompt_embeds = base_embeds[2] if len(base_embeds) > 2 and is_sdxl else None
 
-            # Encode negative prompt
-            if negative_prompt:
-                neg_embeds = pipeline.encode_prompt(
-                    prompt=negative_prompt,
-                    device=device,
-                    num_images_per_prompt=1,
-                    do_classifier_free_guidance=False
-                )
+            # Encode negative prompt. Runs even when negative_prompt is "" — an
+            # empty negative prompt must still be encoded (BOS/EOS-only CLIP
+            # embedding) so SD1.5/SDXL CFG sampling never receives None for the
+            # negative embeds (see custom_sampling.py CFG concat sites).
+            neg_embeds = pipeline.encode_prompt(
+                prompt=negative_prompt,
+                device=device,
+                num_images_per_prompt=1,
+                do_classifier_free_guidance=False
+            )
 
-                negative_prompt_embeds = neg_embeds[0]
-                negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
-            else:
-                negative_prompt_embeds = None
-                negative_pooled_prompt_embeds = None
+            negative_prompt_embeds = neg_embeds[0]
+            negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
 
             return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 
@@ -1714,30 +1725,29 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 device, dtype
             )
 
-        # Encode negative prompt
-        if negative_prompt:
-            parsed_neg = parse_prompt_attention(negative_prompt) if has_neg_emphasis else [(negative_prompt, 1.0)]
-            clean_neg_prompt = "".join([text for text, _ in parsed_neg])
+        # Encode negative prompt. Runs even when negative_prompt is "" — an empty
+        # negative prompt must still be encoded (BOS/EOS-only CLIP embedding) so
+        # SD1.5/SDXL CFG sampling never receives None for the negative embeds
+        # (see custom_sampling.py CFG concat sites).
+        parsed_neg = parse_prompt_attention(negative_prompt) if has_neg_emphasis else [(negative_prompt, 1.0)]
+        clean_neg_prompt = "".join([text for text, _ in parsed_neg])
 
-            neg_embeds = pipeline.encode_prompt(
-                prompt=clean_neg_prompt,
-                device=device,
-                num_images_per_prompt=1,
-                do_classifier_free_guidance=False
+        neg_embeds = pipeline.encode_prompt(
+            prompt=clean_neg_prompt,
+            device=device,
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=False
+        )
+
+        negative_prompt_embeds = neg_embeds[0]
+        negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
+
+        if negative_prompt and has_neg_emphasis and not skip_emphasis:
+            negative_prompt_embeds = apply_emphasis_to_embeds(
+                negative_prompt, negative_prompt_embeds,
+                pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer,
+                device, dtype
             )
-
-            negative_prompt_embeds = neg_embeds[0]
-            negative_pooled_prompt_embeds = neg_embeds[2] if len(neg_embeds) > 2 and is_sdxl else None
-
-            if has_neg_emphasis and not skip_emphasis:
-                negative_prompt_embeds = apply_emphasis_to_embeds(
-                    negative_prompt, negative_prompt_embeds,
-                    pipeline.tokenizer_2 if is_sdxl else pipeline.tokenizer,
-                    device, dtype
-                )
-        else:
-            negative_prompt_embeds = None
-            negative_pooled_prompt_embeds = None
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
 

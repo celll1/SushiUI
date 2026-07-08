@@ -5938,8 +5938,14 @@ async def scan_dataset(
         print(f"[Dataset Scan] Using existing suffix configuration: "
               f"ref={dataset.reference_suffixes}, target={dataset.target_suffixes}")
 
-    # Supported image extensions
+    # Supported image + video extensions
+    from utils.dataset_scanner import (
+        VIDEO_EXTS as video_exts,
+        probe_video_metadata,
+        extract_poster_frame,
+    )
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    media_exts = image_exts | video_exts
     caption_exts = {".txt", ".json"}
 
     # Load taglist for caption format detection (once at start)
@@ -6195,7 +6201,7 @@ async def scan_dataset(
                         "ref_captions": [], # Reference mode captions (_instruction suffix)
                     }
 
-                if ext_lower in image_exts:
+                if ext_lower in media_exts:
                     if file_type == "reference":
                         file_groups[group_name]["reference"].append(entry_path)
                     elif file_type == "target":
@@ -6308,23 +6314,44 @@ async def scan_dataset(
                             f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
                         )
                 else:
-                    # New image — open it ONCE for dimensions, then register.
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            with Image.open(image_path) as img:
-                                width, height = img.size
-                    except Exception as img_error:
-                        # Skip images that can't be opened (corrupt, unsupported, etc.)
-                        print(f"[Dataset Scan] Skipping corrupt/unsupported image {image_path}: {img_error}")
-                        files_processed += 1
-                        if files_processed % 10 == 0 or total_images < 100:
-                            manager.send_progress_sync(
-                                files_processed,
-                                total_steps,
-                                f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
-                            )
-                        continue
+                    _ext_lower = os.path.splitext(image_path)[1].lower()
+                    is_video = _ext_lower in video_exts
+                    video_meta = None
+
+                    if is_video:
+                        # New video — probe metadata via ffprobe WITHOUT decoding
+                        # all frames. A probe failure skips the file (logged).
+                        video_meta = probe_video_metadata(image_path)
+                        if not video_meta:
+                            print(f"[Dataset Scan] Skipping unreadable video {image_path}")
+                            files_processed += 1
+                            if files_processed % 10 == 0 or total_images < 100:
+                                manager.send_progress_sync(
+                                    files_processed,
+                                    total_steps,
+                                    f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
+                                )
+                            continue
+                        width = video_meta["width"]
+                        height = video_meta["height"]
+                    else:
+                        # New image — open it ONCE for dimensions, then register.
+                        try:
+                            with warnings.catch_warnings():
+                                warnings.simplefilter("ignore", UserWarning)
+                                with Image.open(image_path) as img:
+                                    width, height = img.size
+                        except Exception as img_error:
+                            # Skip images that can't be opened (corrupt, unsupported, etc.)
+                            print(f"[Dataset Scan] Skipping corrupt/unsupported image {image_path}: {img_error}")
+                            files_processed += 1
+                            if files_processed % 10 == 0 or total_images < 100:
+                                manager.send_progress_sync(
+                                    files_processed,
+                                    total_steps,
+                                    f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
+                                )
+                            continue
 
                     file_size = os.path.getsize(image_path)
 
@@ -6336,13 +6363,17 @@ async def scan_dataset(
 
                     item = DatasetItem(
                         dataset_id=dataset_id,
-                        item_type="reference" if use_reference_mode else "single",
+                        # image_path stores the video file path for video items
+                        # (it is just a path string). Per-clip metadata lives in
+                        # exif_data (surfaced as video_meta in to_dict).
+                        item_type="video" if is_video else ("reference" if use_reference_mode else "single"),
                         base_name=base_name,
                         image_path=image_path,
                         width=width,
                         height=height,
                         file_size=file_size,
                         image_hash=None,  # SHA256 no longer computed at scan time
+                        exif_data=video_meta if is_video else None,
                         related_images=related_images_data if related_images_data else None
                     )
                     db.add(item)
@@ -6351,6 +6382,30 @@ async def scan_dataset(
                     items_found += 1
                     files_processed += 1
                     new_item_ids.append(item.id)
+
+                    # Poster thumbnail for videos: extract frame 0 via cv2 and run
+                    # it through the shared PNG+WebP thumbnail generator keyed by
+                    # base_name, so the dataset UI has a preview to show.
+                    if is_video:
+                        try:
+                            import tempfile
+                            poster_tmp = os.path.join(tempfile.gettempdir(), f"_dsposter_{base_name}.png")
+                            if extract_poster_frame(image_path, poster_tmp):
+                                # create_thumbnail keys the output by the source
+                                # basename; rename target so it matches base_name.
+                                poster_named = os.path.join(tempfile.gettempdir(), f"{base_name}.png")
+                                try:
+                                    if poster_tmp != poster_named:
+                                        os.replace(poster_tmp, poster_named)
+                                    create_thumbnail(poster_named)
+                                finally:
+                                    for _p in (poster_tmp, poster_named):
+                                        try:
+                                            os.remove(_p)
+                                        except OSError:
+                                            pass
+                        except Exception as _pe:
+                            print(f"[Dataset Scan] poster thumbnail failed for {image_path}: {_pe}")
 
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(

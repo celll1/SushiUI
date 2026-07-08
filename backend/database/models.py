@@ -386,6 +386,10 @@ class DatasetItem(DatasetBase):
             "file_size": self.file_size,
             "image_hash": self.image_hash,
             "exif_data": self.exif_data,
+            # For item_type="video", per-clip metadata (video_path, fps,
+            # num_frames, duration, width, height, codec) is stored in the
+            # reused exif_data JSON column and surfaced here as video_meta.
+            "video_meta": self.exif_data if self.item_type == "video" else None,
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
             "created_at": self.created_at.isoformat() if self.created_at else None,

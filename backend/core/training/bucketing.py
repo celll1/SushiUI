@@ -476,3 +476,247 @@ class BucketManager:
             "without_reference": without_ref,
             "total": with_ref + without_ref
         }
+
+
+# ============================================================================
+# Temporal (video) bucketing — P4c, ADDITIVE.
+#
+# Everything below is used ONLY by the video-clip training path (LTX-2). It does
+# not touch the image `BucketManager` above, so image bucketing / batching stays
+# byte-for-byte unchanged (running image trainers are unaffected).
+#
+# A video item's bucket is the PAIR:
+#     (spatial bucket ÷32-aligned, clip-length in frames)
+# The clip length is a valid LTX pixel count (8*k + 1). Batches built by
+# `VideoBucketManager.build_batch_indices` are uniform in BOTH the spatial bucket
+# AND the frame count, so the 5D latent tensors [1, C, T, H', W'] can stack.
+# ============================================================================
+
+# LTX temporal compression: a clip of L pixel frames -> (L-1)//8 + 1 latent
+# frames. Valid pixel clip lengths are 8*k + 1.
+_LTX_TEMPORAL_COMPRESSION = 8
+
+# Default allowed clip lengths (all 8*k + 1). Configurable per call.
+DEFAULT_CLIP_LENGTHS: List[int] = [9, 17, 25, 33, 49]
+
+# LTX spatial divisibility (transformer patch / VAE spatial compression is 32).
+LTX_SPATIAL_DIVISIBILITY = 32
+
+
+def is_valid_clip_length(clip_length: int) -> bool:
+    """True if ``clip_length`` is a valid LTX pixel clip length (``8*k + 1``)."""
+    try:
+        cl = int(clip_length)
+    except (TypeError, ValueError):
+        return False
+    return cl >= 1 and (cl - 1) % _LTX_TEMPORAL_COMPRESSION == 0
+
+
+def clip_span(clip_length: int, stride: int) -> int:
+    """Number of SOURCE frames a ``clip_length``-frame clip (with ``stride``)
+    spans: ``(clip_length - 1) * stride + 1``."""
+    return (max(1, int(clip_length)) - 1) * max(1, int(stride)) + 1
+
+
+def pick_clip_length(
+    num_frames: int,
+    stride: int = 1,
+    allowed_clip_lengths: Optional[List[int]] = None,
+) -> int:
+    """Pick the clip length (from ``allowed_clip_lengths``, all 8*k+1) for a video
+    of ``num_frames`` frames sampled at ``stride``.
+
+    Chooses the LARGEST allowed length whose source span fits inside the video
+    (``span <= num_frames``), so short videos get short clips and long videos get
+    the longest configured clip. If no allowed length fits (video shorter than
+    even the smallest span), returns the SMALLEST allowed length — `load_clip`
+    then loop-pads the tail so the clip still has exactly that many frames.
+
+    Args:
+        num_frames: Total frames in the source video.
+        stride: Gap between sampled frames (>= 1).
+        allowed_clip_lengths: Candidate lengths (default DEFAULT_CLIP_LENGTHS).
+
+    Returns:
+        A valid LTX clip length (8*k + 1).
+    """
+    stride = max(1, int(stride))
+    num_frames = max(0, int(num_frames))
+    allowed = allowed_clip_lengths or DEFAULT_CLIP_LENGTHS
+    # Keep only valid 8*k+1 lengths, ascending, deduped.
+    valid = sorted({int(c) for c in allowed if is_valid_clip_length(c)})
+    if not valid:
+        valid = [1]
+
+    fitting = [c for c in valid if clip_span(c, stride) <= num_frames]
+    if fitting:
+        return max(fitting)
+    return valid[0]
+
+
+def get_ltx_spatial_bucket(
+    width: int,
+    height: int,
+    resolution: Optional[int] = None,
+    divisibility: int = LTX_SPATIAL_DIVISIBILITY,
+) -> BucketResolution:
+    """Best ÷32-aligned spatial bucket for a (width, height) clip.
+
+    Reuses the standard aspect-ratio bucket set but forces ÷32 divisibility
+    (LTX requires %32 spatial dims), never the SD ÷8/÷64 sets. Pure function; no
+    state mutation.
+    """
+    return get_bucket_for_image_size(
+        width, height, resolution=resolution, divisibility=divisibility
+    )
+
+
+class VideoBucketManager:
+    """Temporal bucketing for LTX video clips (P4c).
+
+    Buckets are keyed by the PAIR ``(spatial_bucket, clip_length)``. A batch drawn
+    from a single bucket is therefore uniform in BOTH the ÷32 spatial size AND the
+    frame count, which is required for the 5D latents to stack.
+
+    This is a standalone sibling of ``BucketManager`` (it reuses its per-resolution
+    bucket lists for spatial selection) and never mutates the image path.
+    """
+
+    def __init__(
+        self,
+        base_resolutions: List[int],
+        divisibility: int = LTX_SPATIAL_DIVISIBILITY,
+        allowed_clip_lengths: Optional[List[int]] = None,
+        stride: int = 1,
+        multi_resolution_mode: Literal["max", "random"] = "max",
+    ):
+        if divisibility % _LTX_TEMPORAL_COMPRESSION and divisibility not in (8, 16, 32, 64):
+            pass  # allow any divisibility, but LTX callers pass 32
+        self.divisibility = int(divisibility)
+        self.stride = max(1, int(stride))
+        allowed = allowed_clip_lengths or DEFAULT_CLIP_LENGTHS
+        self.allowed_clip_lengths = sorted({int(c) for c in allowed if is_valid_clip_length(c)}) or [1]
+
+        # Reuse BucketManager only for its precomputed ÷div spatial bucket lists.
+        self._bm = BucketManager(
+            base_resolutions=base_resolutions,
+            divisibility=self.divisibility,
+            strategy="crop",
+            multi_resolution_mode=multi_resolution_mode,
+        )
+
+        # Key: (BucketResolution, clip_length) -> list of item dicts.
+        self.buckets: Dict[Tuple[BucketResolution, int], List[Dict]] = {}
+
+    def select_spatial_bucket(
+        self, width: int, height: int, target_resolution: Optional[int] = None,
+    ) -> BucketResolution:
+        """÷div spatial bucket for a clip (no state mutation)."""
+        return self._bm.select_bucket(width, height, target_resolution=target_resolution)
+
+    def pick_clip_length(self, num_frames: int, stride: Optional[int] = None) -> int:
+        """Clip length for a video of ``num_frames`` frames (uses this manager's
+        allowed set + stride)."""
+        return pick_clip_length(
+            num_frames,
+            self.stride if stride is None else stride,
+            self.allowed_clip_lengths,
+        )
+
+    def assign_video_to_bucket(
+        self,
+        video_path: str,
+        width: int,
+        height: int,
+        num_frames: int,
+        caption: str = "",
+        stride: Optional[int] = None,
+        fps: Optional[float] = None,
+        target_resolution: Optional[int] = None,
+        dataset_unique_id: Optional[str] = None,
+    ) -> Tuple[Tuple[BucketResolution, int], Dict]:
+        """Assign a video item to a ``(spatial_bucket, clip_length)`` bucket.
+
+        The chosen spatial bucket (÷div) and clip length flow into the returned
+        info dict so the caller can build the P4b clip cache key (compute_clip_hash)
+        from the ACTUAL window + bucket used.
+
+        Returns ``((BucketResolution, clip_length), video_info)``.
+        """
+        eff_stride = self.stride if stride is None else max(1, int(stride))
+        spatial = self.select_spatial_bucket(width, height, target_resolution=target_resolution)
+        clip_length = self.pick_clip_length(num_frames, eff_stride)
+
+        video_info = {
+            "video_path": video_path,
+            "item_type": "video",
+            "caption": caption,
+            "original_width": int(width),
+            "original_height": int(height),
+            "num_frames": int(num_frames),
+            "bucket_width": spatial.width,
+            "bucket_height": spatial.height,
+            "clip_length": int(clip_length),
+            "stride": int(eff_stride),
+            "fps": (None if fps is None else float(fps)),
+            "target_resolution": target_resolution,
+        }
+        if dataset_unique_id is not None:
+            video_info["dataset_unique_id"] = dataset_unique_id
+
+        key = (spatial, int(clip_length))
+        self.buckets.setdefault(key, []).append(video_info)
+        return key, video_info
+
+    def clip_cache_params(
+        self,
+        video_info: Dict,
+        clip_start: int,
+    ) -> Dict:
+        """Build the argument dict for ``LatentCache.compute_clip_hash`` from a
+        bucket assignment + the sampled window start, so the cache key reflects the
+        ACTUAL window + bucket used this step.
+
+        The returned keys match ``compute_clip_hash`` / ``save_clip_latent`` /
+        ``load_clip_latent`` parameter names exactly.
+        """
+        return {
+            "video_path": video_info["video_path"],
+            "width": int(video_info["bucket_width"]),
+            "height": int(video_info["bucket_height"]),
+            "clip_start": int(clip_start),
+            "clip_length": int(video_info["clip_length"]),
+            "stride": int(video_info["stride"]),
+            "fps": video_info.get("fps"),
+        }
+
+    def get_bucket_counts(self) -> Dict[str, int]:
+        """Count of items per ``WxHxLf`` bucket (for logging)."""
+        result: Dict[str, int] = {}
+        for (spatial, clip_length), items in self.buckets.items():
+            key = f"{spatial.width}x{spatial.height}x{clip_length}f"
+            result[key] = len(items)
+        return result
+
+    def get_items_by_bucket(self) -> Dict[Tuple[BucketResolution, int], List[Dict]]:
+        return self.buckets.copy()
+
+    def shuffle_buckets(self):
+        import random
+        for items in self.buckets.values():
+            random.shuffle(items)
+
+    def build_batch_indices(self, batch_size: int) -> List[List[Dict]]:
+        """Build batches uniform in BOTH spatial bucket AND clip length.
+
+        Each bucket key is ``(spatial_bucket, clip_length)``, so chunking within a
+        bucket can never mix spatial sizes or frame counts — every batch stacks
+        into a single 5D tensor.
+        """
+        batch_list: List[List[Dict]] = []
+        for _key, items in self.buckets.items():
+            for start_idx in range(0, len(items), batch_size):
+                batch_list.append(items[start_idx:start_idx + batch_size])
+        import random
+        random.shuffle(batch_list)
+        return batch_list

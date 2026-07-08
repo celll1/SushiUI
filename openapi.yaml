@@ -320,6 +320,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /generate/upscale:
+    post:
+      tags: [generation]
+      summary: Upscale an image
+      description: |
+        Upscales an input image using one of three backends: a plain PIL
+        resample, a spandrel super-resolution model, or RTX Video Super
+        Resolution (nvvfx).
+
+        **Key parameters:**
+        - `upscaler_backend`: `pil` | `spandrel` | `rtx_vsr`
+        - `upscaler_model`: filename under `models/upscalers/`, required when `upscaler_backend=spandrel`
+        - `scale_factor`: 1.0-8.0; output dimensions = round(input dimensions * scale_factor)
+        - `image`: input image (PNG/JPEG, binary file upload)
+      operationId: generateUpscale
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UpscaleRequest'
+      responses:
+        '200':
+          description: Upscale successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 0
+        '400':
+          description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Upscale failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /generate/txt2img/training-preview:
     post:
       tags: [training]
@@ -4172,6 +4216,34 @@ paths:
                           type: string
                           example: vision_encoder
 
+  /models/upscalers:
+    get:
+      tags: [models]
+      summary: List upscaler model files (.pth/.safetensors) for the spandrel backend
+      description: Scans <models_dir>/upscalers/ (created if missing) and each additional model directory's upscalers/ subdirectory directly (no cache).
+      operationId: listUpscalerModels
+      responses:
+        '200':
+          description: Upscaler model list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  models:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        size_mb:
+                          type: number
+                        source_dir:
+                          type: string
+
   /models/minit2i/create-scratch:
     post:
       tags: [models]
@@ -4954,6 +5026,69 @@ components:
               type: number
               default: 1.0
               description: "Strength of the mask-edge blend when compositing the inpainted region back into the original image."
+
+    UpscaleRequest:
+      type: object
+      required:
+        - image
+      properties:
+        image:
+          type: string
+          format: binary
+          description: "Input image to upscale."
+        upscaler_backend:
+          type: string
+          enum: [pil, spandrel, rtx_vsr]
+          default: spandrel
+          description: "Which upscale backend to run: a PIL resample, a spandrel super-resolution model, or RTX Video Super Resolution (nvvfx)."
+          example: spandrel
+        upscaler_model:
+          type: string
+          nullable: true
+          default: null
+          description: "Filename of the model under models/upscalers/. Required when upscaler_backend=spandrel."
+          example: "4x-UltraSharp.pth"
+        scale_factor:
+          type: number
+          minimum: 1.0
+          maximum: 8.0
+          default: 2.0
+          description: "Output dimensions = round(input dimensions * scale_factor). If the spandrel model's native scale differs, its output is Lanczos-resized to the target."
+          example: 2.0
+        pil_resample:
+          type: string
+          enum: [lanczos, bicubic, nearest]
+          default: lanczos
+          description: "Resampling filter used by the pil backend."
+        tile_size:
+          type: integer
+          default: 512
+          description: "Tile size (px) for spandrel inference. 0 disables tiling (whole image in one pass)."
+        tile_overlap:
+          type: integer
+          default: 32
+          description: "Tile overlap (px) for spandrel inference, feather-blended across tile seams."
+        rtx_vsr_quality:
+          type: string
+          enum: [low, medium, high, ultra]
+          default: high
+          description: "Quality level passed to RTX Video Super Resolution (nvvfx)."
+        unsharp_enable:
+          type: boolean
+          default: false
+          description: "Apply an unsharp mask after upscaling, regardless of backend."
+        unsharp_radius:
+          type: number
+          default: 2.0
+          description: "Unsharp mask radius."
+        unsharp_percent:
+          type: integer
+          default: 100
+          description: "Unsharp mask amount (percent)."
+        unsharp_threshold:
+          type: integer
+          default: 3
+          description: "Unsharp mask threshold."
 
     GenerationResponse:
       type: object

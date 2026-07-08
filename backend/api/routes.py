@@ -41,6 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
+    UPSCALE_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -226,6 +227,7 @@ async def get_generation_defaults():
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
+        "upscale": UPSCALE_DEFAULTS,
     }
 
 @router.get("/schema/training-defaults")
@@ -1596,6 +1598,197 @@ async def generate_img2img(
         # Unload LoRAs after generation
         if lora_configs and pipeline_manager.img2img_pipeline:
             pipeline_manager.img2img_pipeline = lora_manager.unload_loras(pipeline_manager.img2img_pipeline)
+
+def _resolve_upscaler_model_path(model_name: str, db: Session) -> Optional[str]:
+    """Resolve an upscaler_model filename to an absolute path under
+    <models_dir>/upscalers/ or an additional model dir's upscalers/ subdir."""
+    settings_record = db.query(UserSettings).first()
+    additional_model_dirs = settings_record.model_dirs if settings_record else []
+    all_dirs = [settings.models_dir] + list(additional_model_dirs)
+    for base_dir in all_dirs:
+        candidate_dir = os.path.join(base_dir, "upscalers")
+        if not os.path.isdir(candidate_dir):
+            continue
+        candidate = os.path.join(candidate_dir, model_name)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+@router.post("/generate/upscale")
+async def generate_upscale(
+    upscaler_backend: str = Form(UPSCALE_DEFAULTS["upscaler_backend"]),
+    upscaler_model: Optional[str] = Form(UPSCALE_DEFAULTS["upscaler_model"]),
+    scale_factor: float = Form(UPSCALE_DEFAULTS["scale_factor"]),
+    pil_resample: str = Form(UPSCALE_DEFAULTS["pil_resample"]),
+    tile_size: int = Form(UPSCALE_DEFAULTS["tile_size"]),
+    tile_overlap: int = Form(UPSCALE_DEFAULTS["tile_overlap"]),
+    rtx_vsr_quality: str = Form(UPSCALE_DEFAULTS["rtx_vsr_quality"]),
+    unsharp_enable: bool = Form(UPSCALE_DEFAULTS["unsharp_enable"]),
+    unsharp_radius: float = Form(UPSCALE_DEFAULTS["unsharp_radius"]),
+    unsharp_percent: int = Form(UPSCALE_DEFAULTS["unsharp_percent"]),
+    unsharp_threshold: int = Form(UPSCALE_DEFAULTS["unsharp_threshold"]),
+    image: UploadFile = File(...),
+    db: Session = Depends(get_gallery_db)
+):
+    """Upscale an image via PIL resample, a spandrel super-resolution model, or
+    RTX Video Super Resolution (nvvfx)."""
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from core.upscaler import run_upscale
+    start_generation("upscale")
+    try:
+        # Load input image
+        image_data = await image.read()
+        input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+
+        params: Dict[str, Any] = {
+            "seed": 0,
+            "upscaler_backend": upscaler_backend,
+            "upscaler_model": upscaler_model,
+            "scale_factor": scale_factor,
+            "pil_resample": pil_resample,
+            "tile_size": tile_size,
+            "tile_overlap": tile_overlap,
+            "rtx_vsr_quality": rtx_vsr_quality,
+            "unsharp_enable": unsharp_enable,
+            "unsharp_radius": unsharp_radius,
+            "unsharp_percent": unsharp_percent,
+            "unsharp_threshold": unsharp_threshold,
+        }
+        print(f"upscale generation params: {sanitize_params_for_logging(params)}")
+
+        if upscaler_backend == "spandrel":
+            if not upscaler_model:
+                raise CustomValidationError(
+                    "upscaler_model is required when upscaler_backend='spandrel'"
+                )
+            model_path = _resolve_upscaler_model_path(upscaler_model, db)
+            if not model_path:
+                raise NotFoundError(
+                    "Upscaler model not found",
+                    detail=f"model: {upscaler_model}"
+                )
+            params["_upscaler_model_path"] = model_path
+
+        # Progress callback: tiles reported as step/total_steps.
+        # send_progress_sync is thread-safe (called from the executor thread).
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Upscaling tile {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _peak_gb = _estimate_gen_peak_gb(input_image.width, input_image.height, 1, "unknown")
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            result_image, upscale_warnings = await loop.run_in_executor(
+                executor,
+                lambda: run_upscale(params, input_image, progress_callback=progress_callback)
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        for w in upscale_warnings:
+            print(f"[Upscale] Warning: {w}")
+
+        # Calculate metadata first so source_image_hash lands in the PNG text chunk
+        metadata = calculate_generation_metadata(
+            result_image,
+            [],
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=input_image
+        )
+        params["source_image_hash"] = metadata.get("source_image_hash")
+
+        # Save image with metadata
+        filename = save_image_with_metadata(
+            result_image,
+            params,
+            "upscale",
+            model_info=None
+        )
+        image_path = os.path.join(settings.outputs_dir, filename)
+        create_thumbnail(image_path)
+
+        # Remove internal-only keys and non-serializable objects before DB save
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        _effective_warnings = get_warnings() + upscale_warnings
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=0,
+            generation_type="upscale",
+            image_hash=metadata["image_hash"],
+            lora_names=None,
+            model_name=params.get("upscaler_model") or upscaler_backend,
+            model_hash=params.get("upscaler_model_hash", ""),
+            result_image=result_image,
+            source_image_hash=metadata.get("source_image_hash")
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": 0})
+        return {
+            "success": True,
+            "image": db_image.to_dict(),
+            "actual_seed": 0,
+            "warnings": get_warnings() + upscale_warnings,
+        }
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Upscale failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
+@router.get("/models/upscalers")
+async def list_upscaler_models(db: Session = Depends(get_gallery_db)):
+    """List upscaler model files (.pth/.safetensors) under <models_dir>/upscalers/
+    and each additional model dir's upscalers/ subdirectory. Creates the primary
+    directory if missing.
+    """
+    settings_record = db.query(UserSettings).first()
+    additional_model_dirs = settings_record.model_dirs if settings_record else []
+    all_dirs = [settings.models_dir] + list(additional_model_dirs)
+
+    primary_upscalers_dir = os.path.join(settings.models_dir, "upscalers")
+    os.makedirs(primary_upscalers_dir, exist_ok=True)
+
+    upscaler_models = []
+    for base_dir in all_dirs:
+        candidate_dir = os.path.join(base_dir, "upscalers")
+        if not os.path.isdir(candidate_dir):
+            continue
+        for item in os.listdir(candidate_dir):
+            if not (item.endswith(".pth") or item.endswith(".safetensors")):
+                continue
+            item_path = os.path.join(candidate_dir, item)
+            if not os.path.isfile(item_path):
+                continue
+            size_mb = os.path.getsize(item_path) / (1024 ** 2)
+            upscaler_models.append({
+                "name": item,
+                "path": item_path,
+                "size_mb": round(size_mb, 2),
+                "source_dir": candidate_dir,
+            })
+    return {"models": upscaler_models}
+
 
 @router.post("/generate/inpaint")
 async def generate_inpaint(

@@ -6,6 +6,7 @@ import Sidebar from "@/components/common/Sidebar";
 import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
 import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
+import UpscalePanel from "@/components/generation/UpscalePanel";
 import FloatingGallery from "@/components/common/FloatingGallery";
 import GenerationQueue from "@/components/common/GenerationQueue";
 import GPUMonitor from "@/components/common/GPUMonitor";
@@ -23,7 +24,7 @@ export default function GeneratePage() {
 function GeneratePageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint">("txt2img");
+  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint" | "upscale">("txt2img");
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const { setGenerateForever } = useGenerationQueue();
@@ -33,6 +34,8 @@ function GeneratePageContent() {
       setActiveTab("img2img");
     } else if (tabParam === "inpaint") {
       setActiveTab("inpaint");
+    } else if (tabParam === "upscale") {
+      setActiveTab("upscale");
     }
   }, [tabParam]);
 
@@ -91,12 +94,23 @@ function GeneratePageContent() {
           >
             inpaint
           </button>
+          <button
+            onClick={() => setActiveTab("upscale")}
+            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
+              activeTab === "upscale"
+                ? "border-b-2 border-blue-500 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            Upscale
+          </button>
         </div>
 
         {/* Tab Content */}
         {activeTab === "txt2img" && <Txt2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
         {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
         {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
+        {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} />}
       </main>
 
       {/* Floating Gallery - shared across all tabs */}

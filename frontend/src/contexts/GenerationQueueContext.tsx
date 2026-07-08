@@ -2,12 +2,12 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { GenerationParams, Img2ImgParams, InpaintParams } from "@/utils/api";
+import { GenerationParams, Img2ImgParams, InpaintParams, UpscaleParams } from "@/utils/api";
 
 export interface QueueItem {
   id: string;
-  type: "txt2img" | "img2img" | "inpaint";
-  params: GenerationParams | Img2ImgParams | InpaintParams;
+  type: "txt2img" | "img2img" | "inpaint" | "upscale";
+  params: GenerationParams | Img2ImgParams | InpaintParams | UpscaleParams;
   inputImage?: string; // For img2img and inpaint
   maskImage?: string; // For inpaint only
   status: "pending" | "generating" | "completed" | "failed";

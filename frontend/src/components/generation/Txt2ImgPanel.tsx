@@ -30,7 +30,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
-import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -109,7 +109,7 @@ const LOOP_GENERATION_STORAGE_KEY = "txt2img_loop_generation";
 const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
 
 interface Txt2ImgPanelProps {
-  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint") => void;
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "upscale") => void;
   onImageGenerated?: (imageUrl: string) => void;
 }
 
@@ -629,6 +629,23 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Navigate to img2img tab
     if (onTabChange) {
       onTabChange("img2img");
+    }
+  };
+
+  const sendToUpscale = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    try {
+      await sendBase64ImageToUpscale(generatedImage);
+    } catch (error) {
+      console.error("[Txt2Img] Failed to send image to upscale:", error);
+    }
+
+    if (onTabChange) {
+      onTabChange("upscale");
     }
   };
 
@@ -3270,7 +3287,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -3295,6 +3312,14 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     disabled={!sendImage && !sendPrompt && !sendParameters}
                   >
                     Send to inpaint
+                  </Button>
+                  <Button
+                    onClick={sendToUpscale}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!generatedImage}
+                  >
+                    Send to Upscale
                   </Button>
                 </div>
               </div>

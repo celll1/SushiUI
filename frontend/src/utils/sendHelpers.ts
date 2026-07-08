@@ -278,3 +278,47 @@ export async function sendBase64ImageToInpaint(
   localStorage.removeItem(maskStorageKey);
   window.dispatchEvent(new Event("inpaint_input_updated"));
 }
+
+/**
+ * Sends image to upscale panel
+ */
+export async function sendImageToUpscale(
+  imageUrl: string,
+  storageKey: string = "upscale_input_image"
+): Promise<void> {
+  const response = await fetch(imageUrl);
+  const blob = await response.blob();
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      try {
+        const base64data = reader.result as string;
+        const oldRef = localStorage.getItem(storageKey);
+        if (oldRef) {
+          await deleteTempImageRef(oldRef);
+        }
+        const ref = await saveTempImage(base64data);
+        localStorage.setItem(storageKey, ref);
+        window.dispatchEvent(new Event("upscale_input_updated"));
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Sends base64 image to upscale panel (no fetching needed)
+ */
+export async function sendBase64ImageToUpscale(
+  base64Image: string,
+  storageKey: string = "upscale_input_image"
+): Promise<void> {
+  const tempRef = await saveTempImage(base64Image);
+  localStorage.setItem(storageKey, tempRef);
+  window.dispatchEvent(new Event("upscale_input_updated"));
+}

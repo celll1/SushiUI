@@ -162,6 +162,27 @@ IMG2IMG_DEFAULTS: Dict[str, Any] = {
 INPAINT_DEFAULTS: Dict[str, Any] = dict(GENERATION_DEFAULTS)
 
 # ---------------------------------------------------------------------------
+# Upscale (POST /generate/upscale)
+# ---------------------------------------------------------------------------
+# Authoritative source: Form() defaults in generate_upscale route handler.
+# Upscale-only keys — not part of GENERATION_DEFAULTS (no shared txt2img/
+# img2img/inpaint overlap).
+
+UPSCALE_DEFAULTS: Dict[str, Any] = {
+    "upscaler_backend": "spandrel",       # "pil" | "spandrel" | "rtx_vsr"
+    "upscaler_model": None,               # filename in models/upscalers/ (required for spandrel)
+    "scale_factor": 2.0,                  # 1.0-8.0
+    "pil_resample": "lanczos",            # "lanczos" | "bicubic" | "nearest" (pil backend only)
+    "tile_size": 512,                     # spandrel tiling; 0 = no tiling
+    "tile_overlap": 32,                   # spandrel tile overlap px (feather blend)
+    "rtx_vsr_quality": "high",            # "low" | "medium" | "high" | "ultra" (rtx_vsr only)
+    "unsharp_enable": False,
+    "unsharp_radius": 2.0,
+    "unsharp_percent": 100,
+    "unsharp_threshold": 3,
+}
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

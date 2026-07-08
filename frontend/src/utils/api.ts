@@ -358,6 +358,35 @@ export interface GeneratedImage {
   rtx_vsr_quality?: string;
   diffusion_denoising_strength?: string;
   diffusion_pre_upscale_mode?: string;
+  // Video parameters (generation_type === 'txt2vid' / 'img2vid'; filename is an .mp4)
+  is_video?: boolean;
+  num_frames?: number;
+  fps?: number;
+  duration?: number;
+  audio_enable?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Video generation (LTX-2.3) — txt2vid (JSON) / img2vid (multipart keyframe)
+// ---------------------------------------------------------------------------
+
+export interface Txt2VidParams {
+  prompt: string;
+  negative_prompt?: string;
+  width?: number;             // multiple of 32 (default 768)
+  height?: number;            // multiple of 32 (default 512)
+  num_frames?: number;        // 8k+1 (default 121)
+  frame_rate?: number;        // default 24.0
+  num_inference_steps?: number; // default 8 (distilled)
+  guidance_scale?: number;    // default 1.0
+  seed?: number;              // default -1
+  num_videos_per_prompt?: number; // default 1
+  max_sequence_length?: number;   // default 1024
+  audio_enable?: boolean;     // default true
+}
+
+export interface Img2VidParams extends Txt2VidParams {
+  // img2vid additionally uploads a keyframe `image` handled by generateImg2Vid()
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +398,8 @@ export interface GenerationDefaultsResponse {
   img2img: Partial<GenerationParams> & Record<string, unknown>;
   inpaint:  Partial<GenerationParams> & Record<string, unknown>;
   upscale: Partial<UpscaleParams> & Record<string, unknown>;
+  txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
+  img2vid: Partial<Img2VidParams> & Record<string, unknown>;
 }
 
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
@@ -877,6 +908,66 @@ export const generateUpscale = async (params: UpscaleParams, image: File | strin
 
 export const fetchUpscalerModels = async (): Promise<{ models: UpscalerModelInfo[] }> => {
   const response = await api.get("/models/upscalers");
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
+// Video generation (LTX-2.3)
+// ---------------------------------------------------------------------------
+
+// txt2vid: JSON POST /generate/txt2vid. Response is the standard
+// GenerationResponse ({ success, image, actual_seed, warnings }); image.filename
+// is an .mp4 file under /outputs/.
+export const generateTxt2Vid = async (params: Txt2VidParams) => {
+  const body = {
+    prompt: params.prompt,
+    negative_prompt: params.negative_prompt || "",
+    width: params.width ?? 768,
+    height: params.height ?? 512,
+    num_frames: params.num_frames ?? 121,
+    frame_rate: params.frame_rate ?? 24.0,
+    num_inference_steps: params.num_inference_steps ?? 8,
+    guidance_scale: params.guidance_scale ?? 1.0,
+    seed: params.seed ?? -1,
+    num_videos_per_prompt: params.num_videos_per_prompt ?? 1,
+    max_sequence_length: params.max_sequence_length ?? 1024,
+    audio_enable: params.audio_enable ?? true,
+  };
+
+  const response = await api.post("/generate/txt2vid", body);
+  return response.data;
+};
+
+// img2vid: multipart POST /generate/img2vid with an uploaded keyframe `image`.
+// Every IMG2VID field is appended explicitly (CLAUDE.md param-threading).
+export const generateImg2Vid = async (params: Img2VidParams, image: File | string) => {
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs
+  if (typeof image === "string") {
+    const response = await fetch(image);
+    const blob = await response.blob();
+    formData.append("image", blob, "keyframe.png");
+  } else {
+    formData.append("image", image);
+  }
+
+  formData.append("prompt", params.prompt);
+  formData.append("negative_prompt", params.negative_prompt || "");
+  formData.append("width", String(params.width ?? 768));
+  formData.append("height", String(params.height ?? 512));
+  formData.append("num_frames", String(params.num_frames ?? 121));
+  formData.append("frame_rate", String(params.frame_rate ?? 24.0));
+  formData.append("num_inference_steps", String(params.num_inference_steps ?? 8));
+  formData.append("guidance_scale", String(params.guidance_scale ?? 1.0));
+  formData.append("seed", String(params.seed ?? -1));
+  formData.append("num_videos_per_prompt", String(params.num_videos_per_prompt ?? 1));
+  formData.append("max_sequence_length", String(params.max_sequence_length ?? 1024));
+  formData.append("audio_enable", String(params.audio_enable ?? true));
+
+  const response = await api.post("/generate/img2vid", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
   return response.data;
 };
 

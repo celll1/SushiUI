@@ -11,8 +11,7 @@ import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
-import ModelSelector from "../common/ModelSelector";
-import VisionEncoderSelector from "../common/VisionEncoderSelector";
+import ModelLoadSection from "../common/ModelLoadSection";
 import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import ImageEditor from "../common/ImageEditor";
@@ -87,6 +86,9 @@ interface InpaintParams {
   attention_type?: string;
   // SigLIP2 Vision Encoder path
   vision_encoder_path?: string | null;
+  // Component overrides (model-global)
+  vae_path?: string | null;
+  text_encoder_path?: string | null;
   // Block swap (model-global)
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
@@ -168,6 +170,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   feeling_lucky: false,
   attention_type: "normal",
   vision_encoder_path: null,
+  vae_path: null,
+  text_encoder_path: null,
   // Block swap (model-global; inherited by loop generation). Panel UI pending the Model/Environment section (phase 2).
   enable_block_swap: false,
   blocks_to_swap: 20,
@@ -1602,6 +1606,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         use_pinned_memory: mainParams.use_pinned_memory,
         block_swap_h2d_only: mainParams.block_swap_h2d_only,
         block_swap_ring_size: mainParams.block_swap_ring_size,
+        vae_path: mainParams.vae_path, // Inherit VAE override (model-global)
+        text_encoder_path: mainParams.text_encoder_path, // Inherit TE override (model-global)
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1792,6 +1798,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         original_size_scale: nextItem.params.original_size_scale,
         attention_type: nextItem.params.attention_type,
         vision_encoder_path: nextItem.params.vision_encoder_path,
+        vae_path: nextItem.params.vae_path,
+        text_encoder_path: nextItem.params.text_encoder_path,
         // Spectrum acceleration
         spectrum_enable: nextItem.params.spectrum_enable,
         // First Block Cache
@@ -2158,24 +2166,33 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
       <div className="space-y-4">
-        <ModelSelector onModelLoad={async () => {
-          // Reload model info when model changes
-          const modelInfo = await getCurrentModel();
-          setCurrentModelInfo(modelInfo);
-          console.log("[Inpaint] Model changed, updated currentModelInfo:", modelInfo);
+        <ModelLoadSection
+          onModelLoad={async () => {
+            // Reload model info when model changes
+            const modelInfo = await getCurrentModel();
+            setCurrentModelInfo(modelInfo);
+            console.log("[Inpaint] Model changed, updated currentModelInfo:", modelInfo);
 
-          // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
-          const modelType = modelInfo?.model_info?.type;
-          if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
-            // Flow Matching models: use Euler with flow schedule
-            setParams(prev => ({
-              ...prev,
-              sampler: "euler",
-              schedule_type: "flow"
-            }));
-            console.log("[Inpaint] Auto-set sampler=euler, schedule_type=flow for Flow Matching model");
-          }
-        }} />
+            // Auto-adjust sampler/schedule for Flow Matching models (Z-Image, FLUX.2)
+            const modelType = modelInfo?.model_info?.type;
+            if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
+              // Flow Matching models: use Euler with flow schedule
+              setParams(prev => ({
+                ...prev,
+                sampler: "euler",
+                schedule_type: "flow"
+              }));
+              console.log("[Inpaint] Auto-set sampler=euler, schedule_type=flow for Flow Matching model");
+            }
+          }}
+          visionEncoderPath={params.vision_encoder_path ?? null}
+          onVisionEncoderChange={(path) => setParams({ ...params, vision_encoder_path: path })}
+          vaePath={params.vae_path ?? null}
+          onVaePathChange={(path) => setParams({ ...params, vae_path: path })}
+          textEncoderPath={params.text_encoder_path ?? null}
+          onTextEncoderChange={(path) => setParams({ ...params, text_encoder_path: path })}
+          storageKeyPrefix="inpaint"
+        />
 
         <Card
           title="Input Image"
@@ -2283,13 +2300,6 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           </div>
         </Card>
 
-        {/* SigLIP2 Vision Encoder (SDXL/SD1.5 reference image conditioning) */}
-        {currentModelInfo?.model_info?.type !== "flux2" && (
-          <VisionEncoderSelector
-            value={params.vision_encoder_path ?? null}
-            onChange={(path) => setParams({ ...params, vision_encoder_path: path })}
-          />
-        )}
 
         {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
         {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (

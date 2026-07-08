@@ -241,6 +241,12 @@ export interface GenerationParams {
   ref_images?: File[];
   // SigLIP2 Vision Encoder path (SDXL/SD1.5 reference image conditioning)
   vision_encoder_path?: string | null;
+  // VAE override: path to a standalone VAE to swap in for this generation
+  // (empty/null = use the loaded model's VAE).
+  vae_path?: string | null;
+  // Text encoder override: path to a standalone text encoder to swap in
+  // (empty/null = use the loaded model's text encoder). SD1.5/SDXL only server-side.
+  text_encoder_path?: string | null;
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -383,6 +389,9 @@ export interface Txt2VidParams {
   num_videos_per_prompt?: number; // default 1
   max_sequence_length?: number;   // default 1024
   audio_enable?: boolean;     // default true
+  // Component overrides (same plumbing as image gen; empty/null = model default)
+  vae_path?: string | null;
+  text_encoder_path?: string | null;
 }
 
 export interface Img2VidParams extends Txt2VidParams {
@@ -541,6 +550,14 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   // SigLIP2 Vision Encoder path
   if (paramsWithImages.vision_encoder_path) {
     formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
+  }
+
+  // VAE / Text encoder override paths (empty = model default)
+  if (paramsWithImages.vae_path) {
+    formData.append("vae_path", paramsWithImages.vae_path);
+  }
+  if (paramsWithImages.text_encoder_path) {
+    formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
   }
 
   const response = await api.post("/generate/txt2img", formData, {
@@ -855,6 +872,14 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
     formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
   }
 
+  // VAE / Text encoder override paths (empty = model default)
+  if (paramsWithImages.vae_path) {
+    formData.append("vae_path", paramsWithImages.vae_path);
+  }
+  if (paramsWithImages.text_encoder_path) {
+    formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
+  }
+
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
@@ -912,6 +937,36 @@ export const fetchUpscalerModels = async (): Promise<{ models: UpscalerModelInfo
 };
 
 // ---------------------------------------------------------------------------
+// Standalone VAE / Text-Encoder override candidates (RP3)
+// ---------------------------------------------------------------------------
+
+export interface VaeEntry {
+  name: string;
+  path: string;
+  latent_channels?: number | null;
+  vae_class?: string | null;
+  scale_spatial?: number | null;
+  scale_temporal?: number | null;
+}
+
+export interface TextEncoderEntry {
+  name: string;
+  path: string;
+  out_dim?: number | null;
+  te_type?: string | null;
+}
+
+export const fetchVaes = async (): Promise<{ vaes: VaeEntry[] }> => {
+  const response = await api.get("/models/vaes");
+  return response.data;
+};
+
+export const fetchTextEncoders = async (): Promise<{ text_encoders: TextEncoderEntry[] }> => {
+  const response = await api.get("/models/text_encoders");
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
 // Video generation (LTX-2.3)
 // ---------------------------------------------------------------------------
 
@@ -932,6 +987,8 @@ export const generateTxt2Vid = async (params: Txt2VidParams) => {
     num_videos_per_prompt: params.num_videos_per_prompt ?? 1,
     max_sequence_length: params.max_sequence_length ?? 1024,
     audio_enable: params.audio_enable ?? true,
+    vae_path: params.vae_path ?? null,
+    text_encoder_path: params.text_encoder_path ?? null,
   };
 
   const response = await api.post("/generate/txt2vid", body);
@@ -964,6 +1021,12 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
   formData.append("num_videos_per_prompt", String(params.num_videos_per_prompt ?? 1));
   formData.append("max_sequence_length", String(params.max_sequence_length ?? 1024));
   formData.append("audio_enable", String(params.audio_enable ?? true));
+  if (params.vae_path) {
+    formData.append("vae_path", params.vae_path);
+  }
+  if (params.text_encoder_path) {
+    formData.append("text_encoder_path", params.text_encoder_path);
+  }
 
   const response = await api.post("/generate/img2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -1116,6 +1179,14 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   // SigLIP2 Vision Encoder path
   if (paramsWithImages.vision_encoder_path) {
     formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
+  }
+
+  // VAE / Text encoder override paths (empty = model default)
+  if (paramsWithImages.vae_path) {
+    formData.append("vae_path", paramsWithImages.vae_path);
+  }
+  if (paramsWithImages.text_encoder_path) {
+    formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
   }
 
   const response = await api.post("/generate/inpaint", formData, {

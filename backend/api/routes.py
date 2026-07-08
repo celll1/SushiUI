@@ -41,7 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
-    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS,
+    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -262,6 +262,7 @@ async def get_generation_defaults():
         "inpaint":  INPAINT_DEFAULTS,
         "upscale": UPSCALE_DEFAULTS,
         "txt2vid": TXT2VID_DEFAULTS,
+        "img2vid": IMG2VID_DEFAULTS,
     }
 
 @router.get("/schema/training-defaults")
@@ -1967,6 +1968,173 @@ async def generate_txt2vid(
         fail_generation(str(e))
         raise GenerationError(
             "Text-to-video generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
+@router.post("/generate/img2vid")
+async def generate_img2vid(
+    prompt: str = Form(...),
+    negative_prompt: Optional[str] = Form(TXT2VID_DEFAULTS["negative_prompt"]),
+    width: int = Form(TXT2VID_DEFAULTS["width"]),
+    height: int = Form(TXT2VID_DEFAULTS["height"]),
+    num_frames: int = Form(TXT2VID_DEFAULTS["num_frames"]),
+    frame_rate: float = Form(TXT2VID_DEFAULTS["frame_rate"]),
+    num_inference_steps: int = Form(TXT2VID_DEFAULTS["num_inference_steps"]),
+    guidance_scale: float = Form(TXT2VID_DEFAULTS["guidance_scale"]),
+    seed: int = Form(TXT2VID_DEFAULTS["seed"]),
+    num_videos_per_prompt: int = Form(TXT2VID_DEFAULTS["num_videos_per_prompt"]),
+    max_sequence_length: int = Form(TXT2VID_DEFAULTS["max_sequence_length"]),
+    audio_enable: bool = Form(TXT2VID_DEFAULTS["audio_enable"]),
+    image: UploadFile = File(...),
+    db: Session = Depends(get_gallery_db)
+):
+    """Generate a video from a still-image first-frame keyframe (LTX-2.3).
+
+    Multipart form: an uploaded keyframe image plus the txt2vid parameters. The
+    keyframe is VAE-encoded and pinned as frame 0. Produces an H.264 mp4 (with an
+    audio track when audio_enable is true) and a gallery row. Requires an LTX-2.3
+    model to be loaded.
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.video_utils import save_video_with_metadata
+
+    params = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": width,
+        "height": height,
+        "num_frames": num_frames,
+        "frame_rate": frame_rate,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "seed": seed,
+        "num_videos_per_prompt": num_videos_per_prompt,
+        "max_sequence_length": max_sequence_length,
+        "audio_enable": audio_enable,
+    }
+
+    # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
+    if width % 32 != 0 or height % 32 != 0:
+        raise CustomValidationError(
+            "width and height must both be divisible by 32",
+            detail=f"Got width={width}, height={height}. Round each to the nearest multiple of 32.",
+        )
+    if num_frames % 8 != 1:
+        raise CustomValidationError(
+            "num_frames must satisfy (num_frames - 1) % 8 == 0",
+            detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
+        )
+
+    if not getattr(pipeline_manager, "is_ltx2_model", False):
+        raise CustomValidationError(
+            "No LTX-2.3 model loaded",
+            detail="Load an LTX-2.3 video model before calling /generate/img2vid.",
+        )
+
+    # Read the uploaded keyframe.
+    try:
+        image_data = await image.read()
+        input_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to read the uploaded keyframe image",
+            detail=str(e),
+        )
+
+    start_generation("img2vid")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
+
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            frames, audio, audio_sample_rate, actual_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_img2vid(params, input_image, progress_callback=progress_callback)
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        params["seed"] = actual_seed
+
+        # Hash the keyframe (reuses the img2img/upscale metadata helper).
+        metadata = calculate_generation_metadata(
+            Image.fromarray(frames[0]),
+            [],
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=input_image,
+        )
+        params["source_image_hash"] = metadata.get("source_image_hash")
+
+        # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.
+        filename = save_video_with_metadata(
+            frames,
+            audio,
+            audio_sample_rate,
+            params,
+            "img2vid",
+            model_info=pipeline_manager.current_model_info,
+        )
+
+        # Thumbnail from the poster PNG (same base name as the mp4).
+        base_name = os.path.splitext(filename)[0]
+        poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(poster_path):
+            create_thumbnail(poster_path)
+
+        # Record video-specific fields into parameters JSON for the gallery.
+        num_frames_out = int(frames.shape[0])
+        fps_out = float(params.get("frame_rate", 24.0))
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        params_for_db["num_frames"] = num_frames_out
+        params_for_db["fps"] = fps_out
+        params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
+        params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
+        params_for_db["is_video"] = True
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="img2vid",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+            source_image_hash=metadata.get("source_image_hash"),
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Image-to-video generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
         )
 

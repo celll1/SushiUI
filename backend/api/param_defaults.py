@@ -217,6 +217,13 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
 
 TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 
+# Image-to-video (POST /generate/img2vid — LTX-2.3). Same parameter set as
+# txt2vid plus a first-frame keyframe supplied as an uploaded image (multipart).
+# The LTX2ImageToVideoPipeline resizes the keyframe to (width, height) and pins
+# it as frame 0 (conditioning_mask[:, :, 0] = 1); no extra first-frame-strength
+# knob is exposed since the pipeline __call__ does not accept one.
+IMG2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
+
 # ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------

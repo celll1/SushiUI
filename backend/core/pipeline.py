@@ -1851,6 +1851,28 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/txt2vid.",
         )
 
+    def generate_img2vid(self, params: Dict[str, Any], input_image, progress_callback=None, step_callback=None):
+        """Generate a video from a still image first-frame keyframe (LTX-2.3 only).
+
+        Args:
+            params: Generation parameters (see IMG2VID_DEFAULTS).
+            input_image: PIL.Image used as the first-frame keyframe.
+            progress_callback: Called as (step, total_steps) at each denoise step.
+            step_callback: Reserved (unused for LTX-2.3 img2vid).
+
+        Returns:
+            tuple: (frames, audio, audio_sample_rate, actual_seed) — identical
+            contract to generate_txt2vid.
+        """
+        if self.is_ltx2_model:
+            return self._generate_img2vid_ltx2(params, input_image, progress_callback, step_callback)
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Image-to-video generation requires an LTX-2.3 model",
+            detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/img2vid.",
+        )
+
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text
 

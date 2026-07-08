@@ -567,7 +567,7 @@ export default function Img2VidPanel({ onTabChange }: Img2VidPanelProps = {}) {
                 <div className="text-xs text-gray-400">
                   {generatedInfo.num_frames != null && <span>{generatedInfo.num_frames} frames</span>}
                   {generatedInfo.fps != null && <span> · {generatedInfo.fps} fps</span>}
-                  {generatedInfo.duration != null && <span> · {generatedInfo.duration.toFixed(2)}s</span>}
+                  {generatedInfo.duration != null && Number.isFinite(Number(generatedInfo.duration)) && <span> · {Number(generatedInfo.duration).toFixed(2)}s</span>}
                 </div>
               )}
             </div>

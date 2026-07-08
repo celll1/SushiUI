@@ -236,6 +236,58 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /generate/txt2vid:
+    post:
+      tags: [generation]
+      summary: Generate video from text prompt (LTX-2.3)
+      description: |
+        Text-to-video generation using a loaded LTX-2.3 model. Produces an
+        H.264 mp4 (with an audio track when `audio_enable` is true) and a
+        gallery row.
+
+        **Requirements:**
+        - An LTX-2.3 model must be loaded (otherwise 400).
+
+        **Constraints (validated before generation):**
+        - `width` and `height` must both be divisible by 32.
+        - `num_frames` must satisfy (num_frames - 1) % 8 == 0 (e.g. 9, 17, ..., 121).
+
+        **Distilled defaults:** num_inference_steps=8, guidance_scale=1.0,
+        num_frames=121, frame_rate=24.0, height=512, width=768.
+      operationId: generateTxt2Vid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Txt2VidRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 1234567890
+                image:
+                  id: 43
+                  filename: "txt2vid_20260708_120000_1234567890.mp4"
+                  generation_type: "txt2vid"
+        '400':
+          description: Invalid parameters or no LTX-2.3 model loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /generate/img2img:
     post:
       tags: [generation]
@@ -4921,6 +4973,71 @@ components:
                 type: string
                 format: binary
               description: "Optional ControlNet images for direct upload (alternative to base64)"
+
+    Txt2VidRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+          description: "Text prompt describing the video."
+          example: "A cat playing a piano on a stage, warm stage lighting"
+        negative_prompt:
+          type: string
+          default: ""
+          description: "Content to steer away from. Applied only when guidance_scale > 1."
+          example: "worst quality, inconsistent motion, blurry, jittery, distorted"
+        width:
+          type: integer
+          default: 768
+          description: "Video width in pixels. Must be divisible by 32."
+          example: 768
+        height:
+          type: integer
+          default: 512
+          description: "Video height in pixels. Must be divisible by 32."
+          example: 512
+        num_frames:
+          type: integer
+          default: 121
+          description: "Number of frames. Must satisfy (num_frames - 1) % 8 == 0."
+          example: 121
+        frame_rate:
+          type: number
+          default: 24.0
+          description: "Output frames per second."
+          example: 24.0
+        num_inference_steps:
+          type: integer
+          default: 8
+          description: "Number of denoising steps (distilled default: 8)."
+          example: 8
+        guidance_scale:
+          type: number
+          default: 1.0
+          description: "Classifier-free guidance scale. 1.0 disables CFG (distilled default)."
+          example: 1.0
+        seed:
+          type: integer
+          default: -1
+          description: "Random seed. -1 draws a random seed (returned in actual_seed)."
+          example: -1
+        num_videos_per_prompt:
+          type: integer
+          default: 1
+          description: "Number of videos generated per prompt."
+          example: 1
+        max_sequence_length:
+          type: integer
+          default: 1024
+          description: "Maximum prompt token length for the Gemma-3 text encoder."
+          example: 1024
+        audio_enable:
+          type: boolean
+          default: true
+          description: "When true, mux the generated audio track into the mp4."
+          example: true
 
     Img2ImgRequest:
       allOf:

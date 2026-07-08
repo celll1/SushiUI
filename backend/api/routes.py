@@ -41,7 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
-    UPSCALE_DEFAULTS,
+    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -122,6 +122,26 @@ class AddTagRequest(BaseModel):
     tag: str
     category: str
     count: int = 1
+
+class Txt2VidRequest(BaseModel):
+    """Text-to-video generation request (LTX-2.3).
+
+    Constraints (validated server-side): width % 32 == 0, height % 32 == 0,
+    num_frames % 8 == 1.
+    """
+    prompt: str
+    negative_prompt: Optional[str] = TXT2VID_DEFAULTS["negative_prompt"]
+    width: int = TXT2VID_DEFAULTS["width"]
+    height: int = TXT2VID_DEFAULTS["height"]
+    num_frames: int = TXT2VID_DEFAULTS["num_frames"]
+    frame_rate: float = TXT2VID_DEFAULTS["frame_rate"]
+    num_inference_steps: int = TXT2VID_DEFAULTS["num_inference_steps"]
+    guidance_scale: float = TXT2VID_DEFAULTS["guidance_scale"]
+    seed: int = TXT2VID_DEFAULTS["seed"]
+    num_videos_per_prompt: int = TXT2VID_DEFAULTS["num_videos_per_prompt"]
+    max_sequence_length: int = TXT2VID_DEFAULTS["max_sequence_length"]
+    audio_enable: bool = TXT2VID_DEFAULTS["audio_enable"]
+
 
 class GenerationParams(BaseModel):
     prompt: str
@@ -220,6 +240,19 @@ async def health_check():
 # Schema endpoints — single source of truth for frontend DEFAULT_PARAMS
 # ---------------------------------------------------------------------------
 
+def _reject_if_video_model():
+    """Reject an image-generation request when a video model (LTX-2.3) is loaded.
+
+    Raised before the executor so it surfaces as a 4xx ValidationError instead of
+    being re-wrapped as a 500 GenerationError by the route's broad except.
+    """
+    if getattr(pipeline_manager, "is_ltx2_model", False):
+        raise CustomValidationError(
+            "The loaded model is a video model (LTX-2.3); use /generate/txt2vid",
+            detail="LTX-2.3 produces video, not still images. Load an image model for txt2img/img2img/inpaint.",
+        )
+
+
 @router.get("/schema/generation-defaults")
 async def get_generation_defaults():
     """Return default parameter values for all generation modes."""
@@ -228,6 +261,7 @@ async def get_generation_defaults():
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
         "upscale": UPSCALE_DEFAULTS,
+        "txt2vid": TXT2VID_DEFAULTS,
     }
 
 @router.get("/schema/training-defaults")
@@ -370,6 +404,7 @@ async def generate_txt2img(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
+    _reject_if_video_model()
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -1239,6 +1274,7 @@ async def generate_img2img(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from image"""
+    _reject_if_video_model()
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -1812,6 +1848,129 @@ async def generate_upscale(
         )
 
 
+@router.post("/generate/txt2vid")
+async def generate_txt2vid(
+    request: Txt2VidRequest,
+    db: Session = Depends(get_gallery_db)
+):
+    """Generate a video from a text prompt using the loaded LTX-2.3 model.
+
+    Produces an H.264 mp4 (with an audio track when audio_enable is true) and a
+    gallery row. Requires an LTX-2.3 model to be loaded.
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.video_utils import save_video_with_metadata
+
+    params = request.dict()
+
+    # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
+    width = int(params["width"])
+    height = int(params["height"])
+    num_frames = int(params["num_frames"])
+    if width % 32 != 0 or height % 32 != 0:
+        raise CustomValidationError(
+            "width and height must both be divisible by 32",
+            detail=f"Got width={width}, height={height}. Round each to the nearest multiple of 32.",
+        )
+    if num_frames % 8 != 1:
+        raise CustomValidationError(
+            "num_frames must satisfy (num_frames - 1) % 8 == 0",
+            detail=f"Got num_frames={num_frames}. Use values like 9, 17, ..., 121 (8k + 1).",
+        )
+
+    if not getattr(pipeline_manager, "is_ltx2_model", False):
+        raise CustomValidationError(
+            "No LTX-2.3 model loaded",
+            detail="Load an LTX-2.3 video model before calling /generate/txt2vid.",
+        )
+
+    start_generation("txt2vid")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        print(f"txt2vid generation params: {sanitize_params_for_logging(params)}")
+
+        # Progress via the shared WebSocket step broadcast (mirrors the upscale route).
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            frames, audio, audio_sample_rate, actual_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_txt2vid(params, progress_callback=progress_callback)
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        params["seed"] = actual_seed
+
+        # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.
+        filename = save_video_with_metadata(
+            frames,
+            audio,
+            audio_sample_rate,
+            params,
+            "txt2vid",
+            model_info=pipeline_manager.current_model_info,
+        )
+
+        # Thumbnail from the poster PNG (same base name as the mp4).
+        base_name = os.path.splitext(filename)[0]
+        poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(poster_path):
+            create_thumbnail(poster_path)
+
+        # Record video-specific fields into parameters JSON for the gallery.
+        num_frames_out = int(frames.shape[0])
+        fps_out = float(params.get("frame_rate", 24.0))
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        params_for_db["num_frames"] = num_frames_out
+        params_for_db["fps"] = fps_out
+        params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
+        params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
+        params_for_db["is_video"] = True
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="txt2vid",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Text-to-video generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
 @router.get("/models/upscalers")
 async def list_upscaler_models(db: Session = Depends(get_gallery_db)):
     """List upscaler model files (.pth/.safetensors) under <models_dir>/upscalers/
@@ -1933,6 +2092,7 @@ async def generate_inpaint(
     db: Session = Depends(get_gallery_db)
 ):
     """Generate inpainted image"""
+    _reject_if_video_model()
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities

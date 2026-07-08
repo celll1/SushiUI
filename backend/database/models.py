@@ -150,6 +150,22 @@ class GeneratedImage(GalleryBase):
                 if "diffusion_pre_upscale_mode" in self.parameters:
                     result["diffusion_pre_upscale_mode"] = self.parameters["diffusion_pre_upscale_mode"]
 
+            # Video parameters (generation_type == "txt2vid" / "img2vid")
+            if self.parameters.get("is_video"):
+                result["is_video"] = True
+                if "num_frames" in self.parameters:
+                    result["num_frames"] = str(self.parameters["num_frames"])
+                if "fps" in self.parameters:
+                    result["fps"] = str(self.parameters["fps"])
+                if "duration" in self.parameters:
+                    result["duration"] = str(self.parameters["duration"])
+                if "audio_enable" in self.parameters:
+                    result["audio_enable"] = str(self.parameters["audio_enable"])
+                if "guidance_scale" in self.parameters:
+                    result["guidance_scale"] = str(self.parameters["guidance_scale"])
+                if "num_inference_steps" in self.parameters:
+                    result["num_inference_steps"] = str(self.parameters["num_inference_steps"])
+
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:
                 result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]

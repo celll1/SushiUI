@@ -324,11 +324,27 @@ def _run_rtx_vsr(
         progress_callback(0, 1)
 
     device = torch.device("cuda")
-    arr_tensor = _tensor_from_image(image, device).squeeze(0)  # CHW float32 CUDA RGB
+    arr_tensor = _tensor_from_image(image, device).squeeze(0).contiguous()  # CHW float32 CUDA RGB
 
-    with nvvfx.VideoSuperRes(quality=quality, output_width=output_width, output_height=output_height) as effect:
-        out_dl = effect(arr_tensor)
-        out_tensor = torch.from_dlpack(out_dl).clone()
+    quality_levels = nvvfx.VideoSuperRes.QualityLevel
+    quality_map = {
+        "low": quality_levels.LOW,
+        "medium": quality_levels.MEDIUM,
+        "high": quality_levels.HIGH,
+        "ultra": quality_levels.ULTRA,
+    }
+    if quality not in quality_map:
+        raise ValidationError(
+            "Invalid rtx_vsr_quality parameter",
+            detail=f"rtx_vsr_quality must be one of {sorted(quality_map)}, got {quality}"
+        )
+
+    with nvvfx.VideoSuperRes(quality=quality_map[quality]) as effect:
+        effect.output_width = output_width
+        effect.output_height = output_height
+        effect.load()
+        out = effect.run(arr_tensor)
+        out_tensor = torch.from_dlpack(out.image).clone()
 
     if progress_callback:
         progress_callback(1, 1)

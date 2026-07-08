@@ -4323,6 +4323,82 @@ paths:
                           type: string
                           example: vision_encoder
 
+  /models/vaes:
+    get:
+      tags: [models]
+      summary: List standalone VAE candidates for the per-generation VAE override
+      description: |
+        Scans the shared VAE store (models_dir/vae) and the configured model
+        directories. A candidate is a diffusers vae/ directory or a model whose
+        component-registry record has a VAE present and no backbone. Dims come
+        from the component registry (header/config reads only, no weight load).
+        Unclassifiable entries are skipped (best-effort).
+      operationId: listVaes
+      responses:
+        '200':
+          description: VAE candidate list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vaes:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        latent_channels:
+                          type: integer
+                          nullable: true
+                        vae_class:
+                          type: string
+                          nullable: true
+                          example: AutoencoderKL
+                        scale_spatial:
+                          type: integer
+                          nullable: true
+                        scale_temporal:
+                          type: integer
+                          nullable: true
+
+  /models/text_encoders:
+    get:
+      tags: [models]
+      summary: List standalone text-encoder candidates for the per-generation TE override
+      description: |
+        Same scan surface as /models/vaes. A candidate is a standalone text
+        encoder directory or a model whose component-registry record has a text
+        encoder present and no backbone. Dims (out_dim/te_type) come from the
+        component registry. Best-effort; unclassifiable entries are skipped.
+      operationId: listTextEncoders
+      responses:
+        '200':
+          description: Text-encoder candidate list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  text_encoders:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        path:
+                          type: string
+                        out_dim:
+                          type: integer
+                          nullable: true
+                        te_type:
+                          type: string
+                          nullable: true
+
   /models/upscalers:
     get:
       tags: [models]
@@ -5006,6 +5082,27 @@ components:
           nullable: true
           description: "Path to SigLIP2 vision encoder safetensors file. When set, reference images are encoded via SigLIP2 and concatenated to text embeddings."
           example: "models/siglip2_base_vision_encoder.safetensors"
+        vae_path:
+          type: string
+          nullable: true
+          description: |
+            Per-generation VAE override. Path to a standalone VAE (diffusers vae/
+            dir or a model dir) whose VAE replaces the loaded model's VAE for this
+            generation. Validated for compatibility (latent_channels, latent_ndim,
+            VAE class family, scale factor) against the loaded model; a HARD
+            mismatch returns 400. Supported on every image architecture except
+            ltx2 and minit2i (accepted-but-ignored with a warning there). None uses
+            the loaded model's own VAE.
+          example: "models/vae/sdxl"
+        text_encoder_path:
+          type: string
+          nullable: true
+          description: |
+            Per-generation text-encoder override (SD1.5/SDXL only). Path to a
+            standalone text encoder. On other architectures it is
+            accepted-but-ignored with a warning. None uses the loaded model's own
+            text encoder.
+          example: "models/text_encoders/clip-vit-large"
         ref_images:
           type: array
           items:
@@ -5093,6 +5190,14 @@ components:
           default: true
           description: "When true, mux the generated audio track into the mp4."
           example: true
+        vae_path:
+          type: string
+          nullable: true
+          description: "Per-generation VAE override. Unsupported on the LTX-2.3 video model: accepted-but-ignored with a warning."
+        text_encoder_path:
+          type: string
+          nullable: true
+          description: "Per-generation text-encoder override. Unsupported on the LTX-2.3 video model: accepted-but-ignored with a warning."
 
     Img2VidRequest:
       allOf:

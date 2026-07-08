@@ -70,6 +70,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.krea2_components: Optional[Dict[str, Any]] = None
         self.is_krea2_model: bool = False
 
+        # LTX-2.3 components (joint audio+video MM-DiT + Gemma-3 + LTX2 VAEs). Video
+        # model; flow matching. P1a: loadable/slot-switchable only. Video generation
+        # (txt2vid/img2vid) is P1b — image endpoints reject a loaded LTX-2.3 model.
+        self.ltx2_components: Optional[Dict[str, Any]] = None
+        self.is_ltx2_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -113,6 +119,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "minit2i"
         if self.is_krea2_model:
             return "krea2"
+        if self.is_ltx2_model:
+            return "ltx2"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -274,6 +282,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.krea2_components = None
                 self.is_krea2_model = False
+
+            # Clean up LTX-2.3 components
+            if self.ltx2_components is not None:
+                print("[Pipeline] Cleaning up LTX-2.3 components...")
+                for comp_name, comp in self.ltx2_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        try:
+                            comp.to('cpu')
+                        except Exception:
+                            pass
+                    del comp
+                self.ltx2_components = None
+                self.is_ltx2_model = False
 
             # Force garbage collection
             gc.collect()
@@ -568,6 +589,59 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] Krea 2 model loaded successfully")
+                return
+
+            # Check if LTX-2.3 (joint audio+video MM-DiT). Before the generic Z-Image
+            # check (which matches any dict carrying a "transformer" key). P1a:
+            # loadable/slot-switchable only; video generation is P1b.
+            if isinstance(model_result, dict) and model_result.get("type") == "ltx2":
+                print("[Pipeline] LTX-2.3 video model detected (component-based dict returned)")
+                self.ltx2_components = model_result
+                self.is_ltx2_model = True
+                self.is_krea2_model = False
+                self.is_minit2i_model = False
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                # Keep components on CPU (VRAM discipline; GPU staging is P1b).
+                for comp_name in ("text_encoder", "connectors", "transformer",
+                                  "vae", "audio_vae", "vocoder"):
+                    comp = self.ltx2_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] LTX-2.3 components on CPU. GPU staging happens at generate time (P1b).")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "ltx2",
+                    "is_v_prediction": False,  # flow matching, velocity prediction
+                    "model_hash": model_hash,
+                    "is_video": True,
+                    "latent_channels": self.ltx2_components.get("latent_channels", 128),
+                    "vae_scale_factor_spatial": self.ltx2_components.get("vae_scale_factor_spatial", 32),
+                    "vae_scale_factor_temporal": self.ltx2_components.get("vae_scale_factor_temporal", 8),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] LTX-2.3 model loaded successfully")
                 return
 
             # Check if Z-Image
@@ -1802,6 +1876,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.is_krea2_model:
             return self._generate_txt2img_krea2(params, progress_callback, step_callback)
 
+        # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
+        # /generate/txt2vid, /generate/img2vid).
+        if self.is_ltx2_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "LTX-2.3 is a video model — use /generate/txt2vid or /generate/img2vid",
+                detail="The currently loaded model is LTX-2.3, which produces video, not still images.",
+            )
+
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
@@ -2368,6 +2451,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_img2img_minit2i(params, init_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_img2img_krea2(params, init_image, progress_callback, step_callback)
+
+        # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
+        # /generate/txt2vid, /generate/img2vid).
+        if self.is_ltx2_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "LTX-2.3 is a video model — use /generate/txt2vid or /generate/img2vid",
+                detail="The currently loaded model is LTX-2.3, which produces video, not still images.",
+            )
 
         # If img2img pipeline is not loaded, create it from txt2img pipeline
         if not self.img2img_pipeline:
@@ -2991,6 +3083,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return self._generate_inpaint_minit2i(params, init_image, mask_image, progress_callback, step_callback)
         if self.is_krea2_model:
             return self._generate_inpaint_krea2(params, init_image, mask_image, progress_callback, step_callback)
+
+        # LTX-2.3 is a video model — image endpoints must not run it (P1b adds
+        # /generate/txt2vid, /generate/img2vid).
+        if self.is_ltx2_model:
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "LTX-2.3 is a video model — use /generate/txt2vid or /generate/img2vid",
+                detail="The currently loaded model is LTX-2.3, which produces video, not still images.",
+            )
 
         # If inpaint pipeline is not loaded, create it from txt2img pipeline
         if not self.inpaint_pipeline:

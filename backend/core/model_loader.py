@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -148,7 +148,7 @@ class ModelLoader:
             # default noise_process by architecture family (ddpm for SD/SDXL).
             if "modelspec.prediction_type" in metadata:
                 pred_target = str(metadata["modelspec.prediction_type"]).strip().lower()
-                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens") else "ddpm"
+                default_np = "flow" if model_type in ("zimage", "flux2", "minit2i", "krea2", "anima", "lens", "ltx2") else "ddpm"
                 print(f"[ModelLoader] Detected prediction_type from ModelSpec metadata: {pred_target}")
                 return {
                     "noise_process": metadata.get("modelspec.noise_process", default_np),
@@ -209,6 +209,14 @@ class ModelLoader:
             elif model_type == "krea2":
                 # Krea 2 uses flow matching (rectified flow) with velocity prediction.
                 print(f"[ModelLoader] Inferred prediction config from Krea 2 architecture")
+                return {
+                    "noise_process": "flow",
+                    "prediction_target": "velocity",
+                    "source": "inferred"
+                }
+            elif model_type == "ltx2":
+                # LTX-2.3 video model: flow matching (FlowMatchEuler) with velocity prediction.
+                print(f"[ModelLoader] Inferred prediction config from LTX-2.3 architecture")
                 return {
                     "noise_process": "flow",
                     "prediction_target": "velocity",
@@ -515,6 +523,19 @@ class ModelLoader:
                         tcfg = json.load(f)
                     if "LensTransformer2DModel" in tcfg.get("architectures", []):
                         return "lens"
+                except Exception:
+                    pass
+
+            # LTX-2.3 detection (diffusers directory only: model_index.json with
+            # _class_name == "LTX2Pipeline"). Unique class name, so it cannot
+            # collide with the other archs' diffusers-dir signatures. Base repo
+            # is diffusers-dir only — no single-file variant.
+            if os.path.exists(model_index_path):
+                try:
+                    with open(model_index_path, "r") as f:
+                        idx = json.load(f)
+                    if idx.get("_class_name") == "LTX2Pipeline":
+                        return "ltx2"
                 except Exception:
                     pass
 
@@ -2086,6 +2107,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as Krea 2 (diffusers directory)")
             return ModelLoader.load_krea2_from_path(model_path, torch.bfloat16)
 
+        # LTX-2.3 diffusers directory (joint audio+video MM-DiT + Gemma-3 + LTX2 VAEs)
+        if model_type == "ltx2":
+            print(f"[ModelLoader] Loading as LTX-2.3 (diffusers directory)")
+            return ModelLoader.load_ltx2_from_path(model_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -2362,3 +2388,16 @@ class ModelLoader:
         """
         from core.models.krea2.krea2_loader import load_krea2_components
         return load_krea2_components(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_ltx2_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load LTX-2.3 from a diffusers directory (model_index.json + subfolders).
+
+        Returns a component dict consumed by PipelineManager.load_model()
+        (type == "ltx2"). bf16 by default to halve the fp32 Gemma-3 text encoder.
+        """
+        from core.models.ltx2.loader import load_ltx2_from_diffusers
+        return load_ltx2_from_diffusers(model_path=path, torch_dtype=torch_dtype)

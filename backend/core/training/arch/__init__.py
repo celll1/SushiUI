@@ -29,6 +29,7 @@ from core.training.arch.ideogram4 import Ideogram4ArchHandler
 from core.training.arch.minit2i import MiniT2IArchHandler
 from core.training.arch.krea2 import Krea2ArchHandler
 from core.training.arch.flux2 import Flux2ArchHandler
+from core.training.arch.ltx2 import Ltx2ArchHandler
 
 ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
     "sd15": SD15ArchHandler,
@@ -40,12 +41,13 @@ ARCH_REGISTRY: Dict[str, Type[ArchHandler]] = {
     "minit2i": MiniT2IArchHandler,
     "krea2": Krea2ArchHandler,
     "flux2": Flux2ArchHandler,
+    "ltx2": Ltx2ArchHandler,
 }
 
 # R6 invariant: registry keys == _build_cache_namespace arch strings.
 _EXPECTED_ARCH_KEYS = {
     "sd15", "sdxl", "zimage", "anima", "lens",
-    "ideogram4", "minit2i", "krea2", "flux2",
+    "ideogram4", "minit2i", "krea2", "flux2", "ltx2",
 }
 assert set(ARCH_REGISTRY) == _EXPECTED_ARCH_KEYS, (
     f"ARCH_REGISTRY keys {set(ARCH_REGISTRY)} != expected {_EXPECTED_ARCH_KEYS} "
@@ -59,6 +61,8 @@ def resolve_arch_name(trainer: Any) -> str:
 
     Falls through to ``"sd15"`` (today's ``else`` behavior — SD1.5/SDXL share the
     flag set; ``is_sdxl`` distinguishes SDXL, everything else is SD1.5)."""
+    if getattr(trainer, "is_ltx2", False):
+        return "ltx2"
     if getattr(trainer, "is_zimage", False):
         return "zimage"
     if getattr(trainer, "is_flux2", False):

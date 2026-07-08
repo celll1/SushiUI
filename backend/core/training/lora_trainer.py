@@ -37,6 +37,7 @@ from .adapters import (
     Ideogram4LoRAAdapter,
     MiniT2ILoRAAdapter,
     Krea2LoRAAdapter,
+    Ltx2LoRAAdapter,
 )
 
 
@@ -111,6 +112,8 @@ class LoRATrainer(BaseTrainer):
             self.setup_minit2i_block_swap()
         if hasattr(self, "setup_krea2_block_swap"):
             self.setup_krea2_block_swap()
+        if hasattr(self, "setup_ltx2_block_swap"):
+            self.setup_ltx2_block_swap()
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
@@ -199,6 +202,22 @@ class LoRATrainer(BaseTrainer):
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
             )
             print(f"{self.log_prefix} Using AnimaLoRAAdapter (scope={scope})")
+        elif self.is_ltx2:
+            # Parse scope from config; default to attention-only (video LoRA).
+            scope_csv = (getattr(self, "ltx2_lora_scope", "")
+                          or self.config.get("ltx2_lora_scope", "")
+                          or "attention")
+            wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
+            scope = {
+                "attention": wanted.get("attention", True),
+                "ff": wanted.get("ff", False),
+                "audio": wanted.get("audio", False),
+                "av_cross": wanted.get("av_cross", False),
+            }
+            self.adapter = Ltx2LoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using Ltx2LoRAAdapter (scope={scope})")
         elif self.is_sdxl:
             self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SDXLLoRAAdapter")

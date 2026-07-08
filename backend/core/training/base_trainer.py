@@ -1174,6 +1174,7 @@ class BaseTrainer(ABC):
         self.is_ideogram4 = (model_type == "ideogram4")
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
+        self.is_ltx2 = (model_type == "ltx2")
         self.is_sdxl = False
 
         # P3a: zimage + sd/sdxl loader BODIES moved to ops/ free functions. They
@@ -1186,9 +1187,11 @@ class BaseTrainer(ABC):
         # base_trainer._vramdiag at its top.)
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
-            minit2i_ops, krea2_ops, flux2_ops,
+            minit2i_ops, krea2_ops, flux2_ops, ltx2_ops,
         )
-        if self.is_zimage:
+        if self.is_ltx2:
+            ltx2_ops.load_components(self)
+        elif self.is_zimage:
             zimage_ops.load_components(self)
         # DEUS support removed
         # elif self.is_deus:
@@ -1250,6 +1253,16 @@ class BaseTrainer(ABC):
         """
         from core.training.ops import krea2_ops
         return krea2_ops.setup_block_swap(self)
+
+    def setup_ltx2_block_swap(self):
+        """Delegator (plan P5): body lives in ``ops/ltx2_ops.setup_block_swap``.
+        Kept on the trainer because mode subclasses (full_parameter_trainer /
+        lora_trainer) call it LATE via ``hasattr(self, "setup_ltx2_block_swap")``
+        after adapter setup; ``arch/ltx2.py`` calls the same ops function so the
+        body is defined exactly once.
+        """
+        from core.training.ops import ltx2_ops
+        return ltx2_ops.setup_block_swap(self)
 
     def _setup_attention_backend_krea2(self, backend: str):
         """Delegator (plan P3c): body lives in
@@ -1735,6 +1748,7 @@ class BaseTrainer(ABC):
         self.is_ideogram4 = (model_type == "ideogram4")
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
+        self.is_ltx2 = (model_type == "ltx2")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -3538,6 +3552,13 @@ class BaseTrainer(ABC):
                 "t5_input_ids": payload["t5_input_ids"],
                 "t5_attn_mask": payload["t5_attn_mask"],
             }
+        elif self.is_ltx2:
+            # LTX-2.3: post-connector video text embedding + aux dict
+            # {audio_text_embedding, mask} handed to train_step_ltx2 as a bundle
+            # (mirrors anima's payload contract).
+            from core.training.ops import ltx2_ops
+            video_emb, aux = ltx2_ops.encode_prompt(self, caption)
+            return video_emb, aux
         elif self.is_flux2:
             # FLUX.2: Use Qwen3 text encoder with hidden state extraction
             # Note: text_ids are generated dynamically in train_step_flux2, not cached
@@ -3684,7 +3705,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -3693,7 +3714,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -3746,7 +3767,7 @@ class BaseTrainer(ABC):
         Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
         consistent. Returns None if the module is not present.
         """
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2:
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
 
@@ -4044,6 +4065,27 @@ class BaseTrainer(ABC):
             torch.cuda.empty_cache()
         except Exception:
             pass
+
+    @staticmethod
+    def _ltx2_batch_fps_tensor(batch):
+        """Build the per-sample LTX-2.3 clip fps tensor ``[B]`` from the batch
+        ITEMS (aligned to batch/latent order).
+
+        fps is a property of the VIDEO CLIP, not the caption, so it is threaded
+        from the dataset item -> batch -> collated aux -> TrainStepContext here
+        (NOT via the per-caption ``_ltx2aux.pt`` text cache). VideoBucketManager
+        groups by (spatial_bucket, clip_length) — NOT by fps — so a batch may
+        mix fps; this yields the real per-sample value. Stills / items without a
+        recorded fps fall back to the LTX default (24.0), which is irrelevant to
+        a T=1 clip's single temporal RoPE position. Carried as a torch.Tensor so
+        the OOM micro-batch splitter (``_slice_aux``) slices it by [lo:hi].
+        """
+        from core.training.ops.ltx2_ops import _DEFAULT_FPS
+        vals = []
+        for item, _dataset in batch:
+            v = item.get("fps")
+            vals.append(float(v) if v else _DEFAULT_FPS)
+        return torch.tensor(vals, dtype=torch.float32)
 
     @staticmethod
     def _slice_aux(aux, lo, hi):
@@ -4534,6 +4576,24 @@ class BaseTrainer(ABC):
                 latents=mnt_latents,
                 text_embeddings=mnt_text_embeddings,
                 anima_aux=anima_aux,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_ltx2:
+            # LTX-2.3 carries the audio-text embedding + mask (+ fps) in
+            # mnt_attention_mask as a dict (produced by collate_aux), same
+            # pattern as anima. latents are 5D [B, 128, T_lat, H', W'].
+            from core.training.arch.base_arch import TrainStepContext
+            ltx2_aux = mnt_attention_mask if isinstance(mnt_attention_mask, dict) else {}
+            ctx = TrainStepContext(
+                latents=mnt_latents,
+                text_embeddings=mnt_text_embeddings,
+                anima_aux=ltx2_aux,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -5490,6 +5550,43 @@ class BaseTrainer(ABC):
                     # finally below restores the training stack to its devices).
                     self._check_stop_requested()
 
+                    # Video-clip item (P4/P5): item_type=="video" carries a
+                    # video_path + clip window; encode a 5D clip latent via the
+                    # LTX video VAE (encode_and_cache_clip seam). item_type=="single"
+                    # (stills) fall through to the still encode below, which for
+                    # LTX2 also yields a 5D T=1 latent (same train_step).
+                    if self.is_ltx2 and item.get("item_type") == "video":
+                        try:
+                            from core.training.video_loader import encode_and_cache_clip
+                            v_path = item.get("video_path") or item["image_path"]
+                            v_w = int(item.get("bucket_width", item["width"]))
+                            v_h = int(item.get("bucket_height", item["height"]))
+                            clip_length = int(item["clip_length"])
+                            stride = int(item.get("stride", 1))
+                            fps = item.get("fps")
+                            from core.training.video_loader import sample_clip_window
+                            clip_start = sample_clip_window(
+                                int(item.get("num_frames", clip_length)),
+                                clip_length, stride, training=True,
+                            )
+                            encode_and_cache_clip(
+                                cache=cache,
+                                video_path=v_path,
+                                width=v_w, height=v_h,
+                                clip_start=clip_start,
+                                clip_length=clip_length,
+                                stride=stride,
+                                vae_encode_clip=lambda clip: self.arch.vae_encode_clip(self, clip),
+                                fps=fps,
+                                device=str(self.device),
+                            )
+                            iteration_count += 1
+                            processed_items += 1
+                        except Exception as e:  # noqa: BLE001
+                            print(f"{self.log_prefix} WARNING: video clip encode failed "
+                                  f"({os.path.basename(str(item.get('video_path', '')))}): {e}")
+                        continue
+
                     # Check if already cached (skip if force_recache is False)
                     image_path = item["image_path"]
                     width = item["width"]
@@ -5560,6 +5657,111 @@ class BaseTrainer(ABC):
                 self.move_text_encoder_to_gpu()
             if (main_on_gpu or te_on_gpu or te2_on_gpu) and torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+    def _annotate_ltx2_video_items(self, datasets, base_resolutions) -> int:
+        """Route LTX-2.3 video items through VideoBucketManager (P5 video wiring).
+
+        For every ``item_type=="video"`` item, assigns a (÷32 spatial bucket,
+        clip_length) via ``VideoBucketManager.assign_video_to_bucket`` and copies
+        the resulting fields (``bucket_width``/``bucket_height``/``clip_length``/
+        ``stride``/``num_frames``/``fps``/``item_type``/``video_path``) onto the item
+        dict in place. These are exactly the keys the 5 video encode-site guards +
+        ``_encode_ltx2_video_clip`` read. Image items are untouched (this only runs
+        for LTX-2.3 and only visits item_type=="video" items), so image bucketing is
+        byte-for-byte unchanged.
+
+        Returns the number of video items annotated.
+        """
+        if not self.is_ltx2:
+            return 0
+
+        from core.training.bucketing import VideoBucketManager, DEFAULT_CLIP_LENGTHS
+
+        base_res = base_resolutions or [1024]
+        allowed = (
+            self.config.get("ltx2_clip_lengths")
+            or self.config.get("allowed_clip_lengths")
+            or DEFAULT_CLIP_LENGTHS
+        )
+        stride = int(
+            self.config.get("ltx2_clip_stride",
+                            self.config.get("clip_stride", 1)) or 1
+        )
+
+        vbm = VideoBucketManager(
+            base_resolutions=list(base_res),
+            allowed_clip_lengths=list(allowed),
+            stride=stride,
+        )
+
+        count = 0
+        for dataset in datasets:
+            for item in dataset.items:
+                if item.get("item_type") != "video":
+                    continue
+                v_path = item.get("video_path") or item.get("image_path")
+                width = int(item.get("width") or 0) or 1024
+                height = int(item.get("height") or 0) or 1024
+                num_frames = int(item.get("num_frames") or 0)
+                _, video_info = vbm.assign_video_to_bucket(
+                    video_path=v_path,
+                    width=width,
+                    height=height,
+                    num_frames=num_frames,
+                    caption=item.get("caption", ""),
+                    fps=item.get("fps"),
+                    dataset_unique_id=getattr(dataset, "unique_id", None),
+                )
+                # Copy the bucket-derived fields onto the training item dict.
+                item["item_type"] = "video"
+                item["video_path"] = video_info["video_path"]
+                item["bucket_width"] = video_info["bucket_width"]
+                item["bucket_height"] = video_info["bucket_height"]
+                item["clip_length"] = video_info["clip_length"]
+                item["stride"] = video_info["stride"]
+                item["num_frames"] = video_info["num_frames"]
+                if video_info.get("fps") is not None:
+                    item["fps"] = video_info["fps"]
+                # Keep width/height consistent with the chosen ÷32 spatial bucket so
+                # any code reading item["width"]/["height"] agrees with the encode.
+                item["width"] = video_info["bucket_width"]
+                item["height"] = video_info["bucket_height"]
+                count += 1
+
+        if count:
+            print(f"{self.log_prefix} [LTX2 video] Assigned {count} video item(s) to "
+                  f"(spatial÷32, clip_length) buckets: {vbm.get_bucket_counts()}")
+        return count
+
+    def _encode_ltx2_video_clip(self, item: Dict[str, Any]) -> torch.Tensor:
+        """Encode an LTX-2.3 video-clip item to a 5D latent ``[1, 128, T_lat, H', W']``.
+
+        Mirrors the video-clip branch in ``_generate_latent_cache_with_offloading``
+        (~L5558) but returns the latent directly (no cache write) so the swap /
+        on-the-fly latent paths can route ``item_type=="video"`` items through the
+        LTX video VAE instead of ``PIL.Image.open`` (which cannot read ``.webm``).
+
+        Uses ``video_loader.sample_clip_window`` + ``load_clip`` (clip window from
+        the item's VideoBucketManager params) and ``arch.vae_encode_clip`` (LTX VAE
+        + latents_mean/std normalisation). The VAE is assumed already GPU-resident
+        (callers move it before the encode loop, same as the still path).
+        """
+        from core.training.video_loader import load_clip, sample_clip_window
+
+        v_path = item.get("video_path") or item["image_path"]
+        v_w = int(item.get("bucket_width", item.get("width")))
+        v_h = int(item.get("bucket_height", item.get("height")))
+        clip_length = int(item["clip_length"])
+        stride = int(item.get("stride", 1))
+        clip_start = sample_clip_window(
+            int(item.get("num_frames", clip_length)),
+            clip_length, stride, training=True,
+        )
+        clip = load_clip(
+            v_path, clip_length, clip_start, stride, target_w=v_w, target_h=v_h,
+        )  # [T, C, H, W]
+        # arch.vae_encode_clip(trainer, clip) -> [1, 128, T_lat, H', W'] (normalised).
+        return self.arch.vae_encode_clip(self, clip)
 
     def _regenerate_single_latent(
         self,
@@ -5788,10 +5990,14 @@ class BaseTrainer(ABC):
                     # Check auxiliary data file (architecture-specific)
                     if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
                         auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
+                    elif self.is_ltx2:
+                        # LTX-2.3 aux is a dict {audio_text_embedding, mask, fps};
+                        # persisted (cannot be cheaply reconstructed like anima).
+                        auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
                     else:
-                        auxiliary_path = None  # SD1.5 has no auxiliary data
+                        auxiliary_path = None  # SD1.5 / anima have no persisted auxiliary data
 
                     # Check if all required files exist
                     if auxiliary_path is not None:
@@ -5832,6 +6038,9 @@ class BaseTrainer(ABC):
                             if (self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2) and auxiliary_cpu is not None:
                                 mask_path = cache_dir / f"{caption_hash}_mask.pt"
                                 torch.save(auxiliary_cpu, mask_path)
+                            elif self.is_ltx2 and auxiliary_cpu is not None:
+                                ltx2aux_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
+                                torch.save(auxiliary_cpu, ltx2aux_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
                                 pooled_path = cache_dir / f"{caption_hash}_pooled.pt"
                                 torch.save(auxiliary_cpu, pooled_path)
@@ -5895,10 +6104,12 @@ class BaseTrainer(ABC):
         # Check architecture-specific auxiliary file
         if self.is_zimage or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2:
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
+        elif self.is_ltx2:
+            auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
         else:
-            auxiliary_path = None  # SD1.5 has no auxiliary data
+            auxiliary_path = None  # SD1.5 / anima have no persisted auxiliary data
 
         # Check if required files exist
         if auxiliary_path is not None:
@@ -6314,6 +6525,14 @@ class BaseTrainer(ABC):
             bucket_manager = None
             print(f"{self.log_prefix} Bucketing disabled")
 
+        # LTX-2.3 VIDEO items: route through VideoBucketManager to attach
+        # clip_length/stride/bucket dims/fps BEFORE the image bucketing loop below
+        # (which skips item_type=="video"). Runs regardless of enable_bucketing so
+        # video items always gain the keys _encode_ltx2_video_clip reads. No-op for
+        # non-LTX2 and for datasets without video items.
+        if self.is_ltx2:
+            self._annotate_ltx2_video_items(datasets, base_resolutions)
+
         # Epoch-dynamic crop planner (SDXL only). Re-buckets each item per epoch from a
         # constrained random crop (scale/crop extrapolation). Requires bucketing + SDXL.
         # When disabled (default), the code path below is unchanged.
@@ -6360,6 +6579,7 @@ class BaseTrainer(ABC):
                 "zimage" if self.is_zimage else
                 "flux2" if self.is_flux2 else
                 "anima" if self.is_anima else
+                "ltx2" if self.is_ltx2 else
                 "lens" if self.is_lens else
                 "ideogram4" if self.is_ideogram4 else
                 "krea2" if self.is_krea2 else
@@ -6574,6 +6794,11 @@ class BaseTrainer(ABC):
             _bucket_done = 0
             for dataset in datasets:
                 for item in dataset.items:
+                    # LTX-2.3 video items already bucketed by VideoBucketManager
+                    # (÷32 spatial + clip_length); never run them through the image
+                    # BucketManager (would overwrite bucket dims / drop clip fields).
+                    if self.is_ltx2 and item.get("item_type") == "video":
+                        continue
                     # For ve_reconstruction_mode items: inject reference_images BEFORE bucketing
                     # so bucket_manager records has_reference=True and includes reference_images
                     # in image_info. This must happen here, not in the epoch loop, because
@@ -6650,6 +6875,10 @@ class BaseTrainer(ABC):
             _nb_clamped = 0
             for dataset in datasets:
                 for item in dataset.items:
+                    # LTX-2.3 video items keep their VideoBucketManager ÷32 dims
+                    # (do not re-fit into the still base-area path).
+                    if self.is_ltx2 and item.get("item_type") == "video":
+                        continue
                     w = int(item.get("width") or 0)
                     h = int(item.get("height") or 0)
                     if w <= 0 or h <= 0:
@@ -7718,6 +7947,22 @@ class BaseTrainer(ABC):
                             width = item.get("width") or item.get("bucket_width")
                             height = item.get("height") or item.get("bucket_height")
 
+                            # LTX-2.3 video clip: item_type=="video" carries a .webm
+                            # video_path (never a still image); encode a 5D clip
+                            # latent via the LTX video VAE instead of Image.open.
+                            if self.is_ltx2 and item.get("item_type") == "video":
+                                latent = self._encode_ltx2_video_clip(item)
+                                latent_swap_buffer[image_path] = (latent.cpu(), caption)
+                                if self.debug_vram and idx % 50 == 0:
+                                    _vramdiag(f"prefill_item_{idx}")
+                                if progress_callback and idx % 10 == 0:
+                                    progress_callback(
+                                        phase="latent_cache",
+                                        step=idx,
+                                        total=len(buffer_items)
+                                    )
+                                continue
+
                             # Load and encode image
                             image = Image.open(image_path)
                             latent = self.encode_image(
@@ -8125,6 +8370,18 @@ class BaseTrainer(ABC):
 
                             # Load and encode image with corruption handling
                             try:
+                                # LTX-2.3 video clip: encode a 5D clip latent via the
+                                # LTX video VAE (Image.open cannot read .webm).
+                                if self.is_ltx2 and item.get("item_type") == "video":
+                                    latent = self._encode_ltx2_video_clip(item)
+                                    latent_swap_buffer[image_path] = (latent.cpu(), caption)
+                                    if progress_callback and idx % 10 == 0:
+                                        progress_callback(
+                                            phase="latent_cache",
+                                            step=idx,
+                                            total=len(buffer_items)
+                                        )
+                                    continue
                                 _danb_b = item.get("_danbooru_image_bytes")
                                 if _danb_b is not None:
                                     # Online Danbooru sample — decode the in-memory
@@ -8229,24 +8486,32 @@ class BaseTrainer(ABC):
                                 print(f"{self.log_prefix} WARNING: Image not in latent swap buffer, encoding on-the-fly: {image_path}")
                                 try:
                                     self.move_vae_to_gpu()
-                                    _danb_b = item.get("_danbooru_image_bytes")
-                                    if _danb_b is not None:
-                                        image = Image.open(BytesIO(_danb_b))
+                                    # LTX-2.3 video clip: encode a 5D clip latent via
+                                    # the LTX video VAE (Image.open cannot read .webm).
+                                    if self.is_ltx2 and item.get("item_type") == "video":
+                                        latent = self._encode_ltx2_video_clip(item)
+                                        latent = latent.to(self.device)
+                                        latents_list.append(latent)
+                                        self.move_vae_to_cpu()
                                     else:
-                                        image = Image.open(image_path)
-                                    image.load()  # Force load to detect truncated images
-                                    latent = self.encode_image(
-                                        image=image,
-                                        target_width=width,
-                                        target_height=height,
-                                        bucket_strategy=bucket_strategy
-                                    )
-                                    # Ensure latent is on training device
-                                    latent = latent.to(self.device)
-                                    latents_list.append(latent)
-                                    self.move_vae_to_cpu()
-                                    if _danb_b is not None:
-                                        item["_danbooru_image_bytes"] = None
+                                        _danb_b = item.get("_danbooru_image_bytes")
+                                        if _danb_b is not None:
+                                            image = Image.open(BytesIO(_danb_b))
+                                        else:
+                                            image = Image.open(image_path)
+                                        image.load()  # Force load to detect truncated images
+                                        latent = self.encode_image(
+                                            image=image,
+                                            target_width=width,
+                                            target_height=height,
+                                            bucket_strategy=bucket_strategy
+                                        )
+                                        # Ensure latent is on training device
+                                        latent = latent.to(self.device)
+                                        latents_list.append(latent)
+                                        self.move_vae_to_cpu()
+                                        if _danb_b is not None:
+                                            item["_danbooru_image_bytes"] = None
                                 except Exception as img_error:
                                     # Corrupted image - log and skip entire batch
                                     print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {image_path}")
@@ -8322,27 +8587,32 @@ class BaseTrainer(ABC):
                             # VAE is already on GPU, so the per-item guard is cheap.
                             self.move_vae_to_gpu()
                             try:
-                                _danb_b = item.get("_danbooru_image_bytes")
-                                if _danb_b is not None:
-                                    image = Image.open(BytesIO(_danb_b))
+                                # LTX-2.3 video clip: encode a 5D clip latent via the
+                                # LTX video VAE (Image.open cannot read .webm).
+                                if self.is_ltx2 and item.get("item_type") == "video":
+                                    latents_list.append(self._encode_ltx2_video_clip(item))
                                 else:
-                                    image = Image.open(item["image_path"])
-                                image.load()  # Force load to detect truncated images
-                                # Crop augmentation: use the per-(item,epoch) crop_box +
-                                # kohya time_ids from the planner (pixel <-> time_ids
-                                # consistency for both full and cropped cases).
-                                _spec = item.get("_crop_spec")
-                                latent = self.encode_image(
-                                    image=image,
-                                    target_width=width,
-                                    target_height=height,
-                                    bucket_strategy=bucket_strategy,
-                                    crop_box=_spec.crop_box if _spec is not None else None,
-                                    time_ids_override=_spec.time_ids if _spec is not None else None,
-                                )
-                                latents_list.append(latent)
-                                if _danb_b is not None:
-                                    item["_danbooru_image_bytes"] = None
+                                    _danb_b = item.get("_danbooru_image_bytes")
+                                    if _danb_b is not None:
+                                        image = Image.open(BytesIO(_danb_b))
+                                    else:
+                                        image = Image.open(item["image_path"])
+                                    image.load()  # Force load to detect truncated images
+                                    # Crop augmentation: use the per-(item,epoch) crop_box +
+                                    # kohya time_ids from the planner (pixel <-> time_ids
+                                    # consistency for both full and cropped cases).
+                                    _spec = item.get("_crop_spec")
+                                    latent = self.encode_image(
+                                        image=image,
+                                        target_width=width,
+                                        target_height=height,
+                                        bucket_strategy=bucket_strategy,
+                                        crop_box=_spec.crop_box if _spec is not None else None,
+                                        time_ids_override=_spec.time_ids if _spec is not None else None,
+                                    )
+                                    latents_list.append(latent)
+                                    if _danb_b is not None:
+                                        item["_danbooru_image_bytes"] = None
                             except Exception as img_error:
                                 # Corrupted image - log and skip entire batch
                                 print(f"{self.log_prefix} [CORRUPTED IMAGE] Batch skipped due to: {item['image_path']}")
@@ -8625,6 +8895,14 @@ class BaseTrainer(ABC):
                         # tensors carried through attention_mask (the anima
                         # train-step path reads the dict from mnt_attention_mask).
                         attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
+                    elif self.is_ltx2:
+                        # LTX-2.3 aux is a per-item dict {audio_text_embedding,
+                        # mask}; collate into one dict carried through
+                        # attention_mask (train_step_ltx2 reads it). fps is a
+                        # per-CLIP property (not per-caption), so inject a
+                        # per-sample fps tensor [B] from the batch items here.
+                        attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
+                        attention_mask["fps"] = self._ltx2_batch_fps_tensor(batch)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
@@ -8783,6 +9061,13 @@ class BaseTrainer(ABC):
                             elif self.is_anima:
                                 # Anima: per-item dict → one dict of batched [B, L] tensors.
                                 mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
+                                mnt_pooled_embeddings = None
+                            elif self.is_ltx2:
+                                # LTX-2.3: per-item dict → one collated aux dict.
+                                # fps is per-CLIP: inject per-sample fps [B] from
+                                # the batch items (not the per-caption text aux).
+                                mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
+                                mnt_attention_mask["fps"] = self._ltx2_batch_fps_tensor(batch)
                                 mnt_pooled_embeddings = None
                             elif self.is_sdxl and any(aux is not None for aux in mnt_auxiliary_data_list):
                                 mnt_pooled_embeddings = torch.cat([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)

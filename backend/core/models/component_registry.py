@@ -312,6 +312,14 @@ _UNET_CONVOUT_SUFFIXES = [
     "unet.conv_out.weight",
 ]
 
+# VAE class -> default latent_channels, used ONLY as a fallback when a diffusers
+# vae/config.json omits the ``latent_channels`` key (some VAE classes bake it in
+# as a class default rather than serializing it). Verified on-disk:
+#   * AutoencoderKLQwenImage (krea2): config lacks latent_channels -> class default 16.
+_VAE_CLASS_DEFAULT_LATENT_CHANNELS = {
+    "AutoencoderKLQwenImage": 16,
+}
+
 
 def _empty_components() -> Dict[str, Any]:
     return {
@@ -371,7 +379,11 @@ def _extract_from_header(components: Dict[str, Any], header: Dict[str, Any],
     has_vae = any(("vae." in k) or k.startswith("first_stage_model.") for k in keys)
     has_te = any(k.startswith(("text_encoder", "conditioner.", "te.")) for k in keys)
     has_backbone = any(k.startswith(("transformer.", "model.diffusion_model.",
-                                     "unet.", "diffusion_model.", "net.")) for k in keys)
+                                     "unet.", "diffusion_model.", "net.",
+                                     # FLUX-style top-level DiT keys (lens/krea2 sharded)
+                                     "img_in.", "transformer_blocks.",
+                                     # ideogram4 dual-transformer second backbone
+                                     "unconditional_transformer.")) for k in keys)
 
     # VAE latent channels from decoder conv-in (shape[1])
     if has_vae:
@@ -456,6 +468,10 @@ def _scan_diffusers(path: str, arch: str, components: Dict[str, Any]) -> None:
         components["vae"]["present"] = True
         components["vae"]["embedded"] = True
         lc = vae_cfg.get("latent_channels")
+        if lc is None:
+            # some VAE classes omit latent_channels (baked as a class default)
+            cls_name = vae_cfg.get("_class_name")
+            lc = _VAE_CLASS_DEFAULT_LATENT_CHANNELS.get(cls_name)
         if lc is not None:
             components["vae"]["latent_channels"] = int(lc)
         ss = vae_cfg.get("spatial_compression_ratio")
@@ -640,7 +656,9 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 # Bump when the record shape or the content-hash formula changes, so cached
 # entries from an older format are recomputed instead of served stale.
 # v2: diffusers content_hash uses safetensors header identity (mtime-free).
-_REGISTRY_SCHEMA_VERSION = 2
+# v3: backbone detection extended (img_in./transformer_blocks./unconditional_transformer.);
+#     VAE latent_channels class-default fallback; lens/ideogram4/flux2 wiring latent=32.
+_REGISTRY_SCHEMA_VERSION = 3
 
 
 class ComponentRegistryCache:

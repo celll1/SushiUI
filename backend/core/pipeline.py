@@ -26,11 +26,11 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -75,6 +75,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # (txt2vid/img2vid) is P1b — image endpoints reject a loaded LTX-2.3 model.
         self.ltx2_components: Optional[Dict[str, Any]] = None
         self.is_ltx2_model: bool = False
+        self._ltx2_offload_enabled: bool = False
 
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
@@ -295,6 +296,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     del comp
                 self.ltx2_components = None
                 self.is_ltx2_model = False
+                # Reset offload guard so a later LTX-2.3 load re-attaches the
+                # cpu-offload hooks on the fresh pipeline.
+                self._ltx2_offload_enabled = False
 
             # Force garbage collection
             gc.collect()
@@ -1824,6 +1828,28 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             )
 
         return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds
+
+    def generate_txt2vid(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
+        """Generate a video from text (LTX-2.3 only).
+
+        Args:
+            params: Generation parameters (see TXT2VID_DEFAULTS).
+            progress_callback: Called as (step, total_steps) at each denoise step.
+            step_callback: Reserved (unused for LTX-2.3 txt2vid).
+
+        Returns:
+            tuple: (frames, audio, audio_sample_rate, actual_seed) where frames is
+            a np.uint8 array [T, H, W, 3] and audio is a torch.FloatTensor
+            [channels, samples] on CPU (or None when audio disabled).
+        """
+        if self.is_ltx2_model:
+            return self._generate_txt2vid_ltx2(params, progress_callback, step_callback)
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Text-to-video generation requires an LTX-2.3 model",
+            detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/txt2vid.",
+        )
 
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text

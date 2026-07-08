@@ -193,6 +193,31 @@ UPSCALE_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Video generation (POST /generate/txt2vid — LTX-2.3)
+# ---------------------------------------------------------------------------
+# Video-only keys, kept out of GENERATION_DEFAULTS (no overlap with the
+# image txt2img/img2img/inpaint parameter set). Distilled LTX-2.3 defaults.
+# Constraints enforced server-side: width % 32 == 0, height % 32 == 0,
+# num_frames % 8 == 1.
+
+VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
+    "prompt": "",
+    "negative_prompt": "",
+    "width": 768,                    # divisible by 32
+    "height": 512,                   # divisible by 32
+    "num_frames": 121,               # (num_frames - 1) % 8 == 0
+    "frame_rate": 24.0,              # output FPS
+    "num_inference_steps": 8,        # distilled default
+    "guidance_scale": 1.0,           # distilled default (CFG effectively off)
+    "seed": -1,                      # -1 = random
+    "num_videos_per_prompt": 1,
+    "max_sequence_length": 1024,     # Gemma-3 prompt token budget
+    "audio_enable": True,            # mux the generated audio track into the mp4
+}
+
+TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

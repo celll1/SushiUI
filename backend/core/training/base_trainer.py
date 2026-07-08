@@ -7613,6 +7613,41 @@ class BaseTrainer(ABC):
                               f"{len(all_items) - _crop_count} full); "
                               f"{len(bucket_manager.get_bucket_counts())} buckets{_unfit_note}")
 
+                # LTX-2.3 VIDEO batching (P6): the image bucket_manager SKIPS
+                # item_type=="video" items (P5 skip-guards), so for a video dataset it
+                # yields ZERO batches -> "Buffer pre-filled with 0 latents" -> 0 steps.
+                # Build video batches directly from the annotated video item dicts (fields
+                # set by _annotate_ltx2_video_items), grouping by
+                # (bucket_width, bucket_height, clip_length) so each batch is UNIFORM in
+                # (spatial, frame-count) -- required for the 5D latents to stack (P4c).
+                # Each emitted batch has the SAME shape as the image path: [(item, dataset), ...].
+                # Grouped from the annotated item dicts directly (not VBM.build_batch_indices)
+                # so item["image_path"] stays the real training key and there is no coupling
+                # to VideoBucketManager internals. No-op (empty) for non-LTX2 and for
+                # image-only datasets, so the image path stays byte-for-byte unchanged.
+                ltx2_video_batches = []
+                if self.is_ltx2:
+                    from collections import OrderedDict as _OD
+                    _vgroups = _OD()
+                    for _item, _dataset in all_items:
+                        if _item.get("item_type") != "video":
+                            continue
+                        _vkey = (_item.get("bucket_width"),
+                                 _item.get("bucket_height"),
+                                 _item.get("clip_length"))
+                        _vgroups.setdefault(_vkey, []).append((_item, _dataset))
+                    for _vkey, _members in _vgroups.items():
+                        for _i in range(0, len(_members), batch_size):
+                            ltx2_video_batches.append(_members[_i:_i + batch_size])
+                _has_ltx2_video = bool(ltx2_video_batches)
+                # When video items are present, exclude them from the IMAGE-side batching
+                # (priority classify + simple sequential chunking) so they are not
+                # double-counted or placed into ÷8 image buckets.
+                _image_all_items = (
+                    [x for x in all_items if x[0].get("item_type") != "video"]
+                    if _has_ltx2_video else all_items
+                )
+
                 # Create batches
                 if bucket_manager:
                     # BucketManager only manages items, we need to pair with datasets
@@ -7623,8 +7658,10 @@ class BaseTrainer(ABC):
                             path_to_dataset[item["image_path"]] = dataset
 
                     if priority_config and priority_config.entries:
-                        # Priority training: split items, build priority batches first
-                        priority_items, normal_items = classify_items(all_items, priority_config)
+                        # Priority training: split items, build priority batches first.
+                        # LTX-2.3 video items are excluded here (batched separately below)
+                        # so they are not routed through the ÷8 image bucket manager.
+                        priority_items, normal_items = classify_items(_image_all_items, priority_config)
 
                         # Build priority batches (sorted by entry index, bucketed by resolution)
                         priority_batches = build_priority_batches(
@@ -7657,11 +7694,12 @@ class BaseTrainer(ABC):
                             ]
                             normal_batches.append(batch_with_dataset)
 
-                        # Combine: priority x multiplier + normal
-                        batches = priority_batches * priority_config.multiplier + normal_batches
+                        # Combine: priority x multiplier + normal + LTX-2.3 video
+                        batches = priority_batches * priority_config.multiplier + normal_batches + ltx2_video_batches
                         print(f"{self.log_prefix} [PriorityTraining] Epoch batch structure: "
                               f"{len(priority_batches)} priority batches x {priority_config.multiplier} "
-                              f"+ {len(normal_batches)} normal batches = {len(batches)} total")
+                              f"+ {len(normal_batches)} normal batches "
+                              f"+ {len(ltx2_video_batches)} video batches = {len(batches)} total")
                     else:
                         # Standard bucketed batching (no priority)
                         item_batches = bucket_manager.build_batch_indices(batch_size)
@@ -7672,19 +7710,25 @@ class BaseTrainer(ABC):
                                 for item in item_batch
                             ]
                             batches.append(batch_with_dataset)
+                        # Append LTX-2.3 video batches (empty for image-only datasets).
+                        batches = batches + ltx2_video_batches
                 else:
-                    # Simple sequential batching
+                    # Simple sequential batching. LTX-2.3 video items are batched
+                    # separately (grouped by (spatial, clip_length)) and appended, so
+                    # video-only datasets still get non-empty, uniform batches here.
                     if priority_config and priority_config.entries:
-                        priority_items, normal_items = classify_items(all_items, priority_config)
+                        priority_items, normal_items = classify_items(_image_all_items, priority_config)
                         p_items = [(item, dataset) for item, dataset, _ in priority_items]
                         priority_batches = [p_items[i:i+batch_size] for i in range(0, len(p_items), batch_size)]
                         normal_batches = [normal_items[i:i+batch_size] for i in range(0, len(normal_items), batch_size)]
-                        batches = priority_batches * priority_config.multiplier + normal_batches
+                        batches = priority_batches * priority_config.multiplier + normal_batches + ltx2_video_batches
                         print(f"{self.log_prefix} [PriorityTraining] Epoch batch structure: "
                               f"{len(priority_batches)} priority x {priority_config.multiplier} "
-                              f"+ {len(normal_batches)} normal = {len(batches)} total")
+                              f"+ {len(normal_batches)} normal "
+                              f"+ {len(ltx2_video_batches)} video = {len(batches)} total")
                     else:
-                        batches = [all_items[i:i+batch_size] for i in range(0, len(all_items), batch_size)]
+                        batches = [_image_all_items[i:i+batch_size] for i in range(0, len(_image_all_items), batch_size)]
+                        batches = batches + ltx2_video_batches
 
                 # Drop batches whose resolution bucket previously OOM'd at even one
                 # sample (un-fittable on this hardware/config). Covers the non-crop

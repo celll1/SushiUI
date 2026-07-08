@@ -358,6 +358,191 @@ def _run_rtx_vsr(
 
 
 # ---------------------------------------------------------------------------
+# diffusion tile upscale backend
+# ---------------------------------------------------------------------------
+
+def _compute_tile_boxes(width: int, height: int, tile_size: int, tile_overlap: int) -> List[Tuple[int, int, int, int]]:
+    """Compute tile crop boxes covering (width, height) in output-pixel space.
+
+    Tile dims are snapped to a multiple of 8. Edge tiles are pulled inward
+    (rather than padded) so every tile is a real crop of the image; edge
+    tiles may overlap their neighbor more than `tile_overlap`.
+    """
+    if tile_size <= 0:
+        return [(0, 0, width, height)]
+
+    tile_size = max(8, int(round(tile_size / 8)) * 8)
+    tile_w = min(tile_size, (width // 8) * 8 or width)
+    tile_h = min(tile_size, (height // 8) * 8 or height)
+    tile_w = max(8, tile_w)
+    tile_h = max(8, tile_h)
+
+    step_x = max(1, tile_w - tile_overlap)
+    step_y = max(1, tile_h - tile_overlap)
+
+    xs = list(range(0, max(1, width - tile_w) + 1, step_x))
+    if not xs or xs[-1] != width - tile_w:
+        xs.append(max(0, width - tile_w))
+    ys = list(range(0, max(1, height - tile_h) + 1, step_y))
+    if not ys or ys[-1] != height - tile_h:
+        ys.append(max(0, height - tile_h))
+    xs = sorted(set(max(0, min(x, width - tile_w)) for x in xs))
+    ys = sorted(set(max(0, min(y, height - tile_h)) for y in ys))
+
+    boxes = []
+    for y in ys:
+        for x in xs:
+            boxes.append((x, y, x + tile_w, y + tile_h))
+    return boxes
+
+
+def _feather_blend_tiles(
+    width: int,
+    height: int,
+    boxes: List[Tuple[int, int, int, int]],
+    tile_images: List[Image.Image],
+    tile_overlap: int,
+) -> Image.Image:
+    """Blend tile_images (aligned with boxes) back into a (width, height) canvas
+    using a linear feather ramp proportional to tile_overlap."""
+    import numpy as np
+
+    canvas = np.zeros((height, width, 3), dtype="float32")
+    weight = np.zeros((height, width, 1), dtype="float32")
+
+    for (x1, y1, x2, y2), tile_img in zip(boxes, tile_images):
+        tw, th = x2 - x1, y2 - y1
+        arr = np.asarray(tile_img.convert("RGB"), dtype="float32")
+        if arr.shape[0] != th or arr.shape[1] != tw:
+            tile_img = tile_img.resize((tw, th), resample=Image.Resampling.LANCZOS)
+            arr = np.asarray(tile_img.convert("RGB"), dtype="float32")
+
+        feather_px = max(0, int(tile_overlap))
+        ramp_y = np.ones(th, dtype="float32")
+        ramp_x = np.ones(tw, dtype="float32")
+        n = min(feather_px, th // 2)
+        if n > 0:
+            ramp = np.linspace(0.0, 1.0, n, dtype="float32")
+            ramp_y[:n] = ramp
+            ramp_y[-n:] = ramp[::-1]
+        n = min(feather_px, tw // 2)
+        if n > 0:
+            ramp = np.linspace(0.0, 1.0, n, dtype="float32")
+            ramp_x[:n] = ramp
+            ramp_x[-n:] = ramp[::-1]
+        w_mask = (ramp_y[:, None] * ramp_x[None, :])[:, :, None]
+
+        canvas[y1:y2, x1:x2, :] += arr * w_mask
+        weight[y1:y2, x1:x2, :] += w_mask
+
+    weight = np.clip(weight, 1e-6, None)
+    result = canvas / weight
+    result = (result + 0.5).clip(0, 255).astype("uint8")
+    return Image.fromarray(result, mode="RGB")
+
+
+def run_diffusion_upscale(
+    params: Dict[str, Any],
+    input_image: Image.Image,
+    pipeline_manager,
+    progress_callback: Optional[Callable] = None,
+) -> Tuple[Image.Image, List[str]]:
+    """Diffusion tile upscale: pre-upscale to target dims, split into
+    overlapping tiles, run img2img on each tile via pipeline_manager, and
+    feather-blend the results back together.
+
+    Mutates `params` with resolved values (seed, pre-upscale mode, etc.).
+    Returns (result_image, warnings).
+    """
+    import random
+
+    warnings: List[str] = []
+
+    if pipeline_manager.current_model_info is None:
+        raise ValidationError(
+            "No diffusion model loaded",
+            detail="Load a model before using upscaler_backend='diffusion'."
+        )
+
+    denoising_strength = float(params.get("diffusion_denoising_strength", 0.3))
+    if denoising_strength < 0.05 or denoising_strength > 0.9:
+        raise ValidationError(
+            "Invalid diffusion_denoising_strength parameter",
+            detail=f"diffusion_denoising_strength must be between 0.05 and 0.9, got {denoising_strength}"
+        )
+    params["diffusion_denoising_strength"] = denoising_strength
+
+    pre_upscale_mode = params.get("diffusion_pre_upscale_mode", "pil")
+    if pre_upscale_mode not in ("pil", "model"):
+        warnings.append(f"Unknown diffusion_pre_upscale_mode '{pre_upscale_mode}', falling back to pil.")
+        pre_upscale_mode = "pil"
+    params["diffusion_pre_upscale_mode"] = pre_upscale_mode
+
+    target_w, target_h = _resolve_target_dims(input_image.width, input_image.height, params.get("scale_factor", 2.0))
+
+    # --- Pre-upscale to target dims ---
+    if pre_upscale_mode == "model":
+        spandrel_params = dict(params)
+        pre_image, spandrel_warnings = _run_spandrel(input_image, spandrel_params, progress_callback=None)
+        warnings.extend(spandrel_warnings)
+        # _run_spandrel already resizes to the target dims when native scale differs.
+        params["upscaler_model_hash"] = spandrel_params.get("upscaler_model_hash")
+    else:
+        resample_name = params.get("pil_resample", "lanczos")
+        resample = _PIL_RESAMPLE_MAP.get(resample_name)
+        if resample is None:
+            warnings.append(f"Unknown pil_resample '{resample_name}', falling back to lanczos.")
+            resample = Image.Resampling.LANCZOS
+            resample_name = "lanczos"
+        params["pil_resample"] = resample_name
+        pre_image = input_image.resize((target_w, target_h), resample=resample)
+
+    if pre_image.width != target_w or pre_image.height != target_h:
+        pre_image = pre_image.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+
+    # --- Resolve seed (same base seed for all tiles, offset by tile index) ---
+    seed = int(params.get("seed", -1))
+    if seed < 0:
+        seed = random.randint(0, 2**32 - 1)
+    params["seed"] = seed
+
+    # --- Tile split + per-tile img2img ---
+    tile_size = int(params.get("tile_size", 512) or 0)
+    tile_overlap = int(params.get("tile_overlap", 32) or 0)
+    boxes = _compute_tile_boxes(pre_image.width, pre_image.height, tile_size, tile_overlap)
+    total_tiles = len(boxes)
+
+    tile_images: List[Image.Image] = []
+    for idx, (x1, y1, x2, y2) in enumerate(boxes):
+        if progress_callback:
+            progress_callback(idx, total_tiles)
+
+        tile_crop = pre_image.crop((x1, y1, x2, y2))
+        tile_params: Dict[str, Any] = {
+            "prompt": params.get("prompt", ""),
+            "negative_prompt": params.get("negative_prompt", ""),
+            "steps": params.get("steps"),
+            "cfg_scale": params.get("cfg_scale"),
+            "sampler": params.get("sampler"),
+            "schedule_type": params.get("schedule_type"),
+            "seed": seed + idx,
+            "denoising_strength": denoising_strength,
+            "width": tile_crop.width,
+            "height": tile_crop.height,
+        }
+        tile_result, _tile_seed, _tile_ancestral_seed = pipeline_manager.generate_img2img(
+            tile_params, tile_crop, progress_callback=None, step_callback=None
+        )
+        tile_images.append(tile_result)
+
+    if progress_callback:
+        progress_callback(total_tiles, total_tiles)
+
+    result = _feather_blend_tiles(pre_image.width, pre_image.height, boxes, tile_images, tile_overlap)
+    return result, warnings
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -365,6 +550,7 @@ def run_upscale(
     params: Dict[str, Any],
     input_image: Image.Image,
     progress_callback: Optional[Callable] = None,
+    pipeline_manager=None,
 ) -> Tuple[Image.Image, List[str]]:
     """Run the configured upscale backend on input_image.
 
@@ -390,10 +576,16 @@ def run_upscale(
         result, warnings = _run_spandrel(input_image, params, progress_callback)
     elif backend == "rtx_vsr":
         result, warnings = _run_rtx_vsr(input_image, params, progress_callback)
+    elif backend == "diffusion":
+        if pipeline_manager is None:
+            raise ValidationError(
+                "Diffusion upscale requires a pipeline_manager",
+            )
+        result, warnings = run_diffusion_upscale(params, input_image, pipeline_manager, progress_callback)
     else:
         raise ValidationError(
             "Invalid upscaler_backend parameter",
-            detail=f"upscaler_backend must be 'pil', 'spandrel' or 'rtx_vsr', got '{backend}'"
+            detail=f"upscaler_backend must be 'pil', 'spandrel', 'rtx_vsr' or 'diffusion', got '{backend}'"
         )
 
     if params.get("unsharp_enable"):

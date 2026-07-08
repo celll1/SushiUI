@@ -145,6 +145,10 @@ class GeneratedImage(GalleryBase):
                     result["tile_overlap"] = str(self.parameters["tile_overlap"])
                 if "rtx_vsr_quality" in self.parameters:
                     result["rtx_vsr_quality"] = self.parameters["rtx_vsr_quality"]
+                if "diffusion_denoising_strength" in self.parameters:
+                    result["diffusion_denoising_strength"] = str(self.parameters["diffusion_denoising_strength"])
+                if "diffusion_pre_upscale_mode" in self.parameters:
+                    result["diffusion_pre_upscale_mode"] = self.parameters["diffusion_pre_upscale_mode"]
 
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:

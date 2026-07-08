@@ -129,6 +129,13 @@ def save_image_with_metadata(
             metadata.add_text("tile_overlap", str(params.get("tile_overlap", 0)))
         if upscaler_backend == "rtx_vsr" and params.get("rtx_vsr_quality"):
             metadata.add_text("rtx_vsr_quality", params["rtx_vsr_quality"])
+        if upscaler_backend == "diffusion":
+            # prompt/negative_prompt/steps/cfg_scale/sampler/seed are already written
+            # unconditionally above (they're present at the top level of `params`
+            # for diffusion upscale). Only the diffusion-specific fields need adding.
+            metadata.add_text("diffusion_denoising_strength", str(params.get("diffusion_denoising_strength", 0.3)))
+            metadata.add_text("schedule_type", params.get("schedule_type", "uniform"))
+            metadata.add_text("diffusion_pre_upscale_mode", params.get("diffusion_pre_upscale_mode", "pil"))
         if params.get("unsharp_enable"):
             metadata.add_text("unsharp_enable", "true")
             metadata.add_text("unsharp_radius", str(params.get("unsharp_radius", 2.0)))

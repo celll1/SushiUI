@@ -6,11 +6,15 @@ import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import NumberInput from "../common/NumberInput";
+import Textarea from "../common/Textarea";
+import Input from "../common/Input";
 import GenerationQueue from "../common/GenerationQueue";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import {
   generateUpscale,
   fetchUpscalerModels,
+  getSamplers,
+  getScheduleTypes,
   UpscaleParams,
   UpscalerModelInfo,
 } from "@/utils/api";
@@ -32,6 +36,16 @@ const DEFAULT_PARAMS: UpscaleParams = {
   unsharp_radius: 2.0,
   unsharp_percent: 100,
   unsharp_threshold: 3,
+  // Diffusion tile upscale (upscaler_backend === "diffusion")
+  prompt: "",
+  negative_prompt: "",
+  diffusion_denoising_strength: 0.3,
+  steps: 20,
+  cfg_scale: 7.0,
+  sampler: "euler",
+  schedule_type: "uniform",
+  seed: -1,
+  diffusion_pre_upscale_mode: "pil",
 };
 
 const STORAGE_KEY = "upscale_params";
@@ -62,6 +76,8 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
   const [generatedImageParams, setGeneratedImageParams] = useState<UpscaleParams | null>(null);
 
   const [upscalerModels, setUpscalerModels] = useState<UpscalerModelInfo[]>([]);
+  const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
+  const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
 
   const [sendImage, setSendImage] = useState(true);
 
@@ -142,6 +158,41 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
   useEffect(() => {
     loadUpscalerModels();
   }, [loadUpscalerModels]);
+
+  // Fetch samplers / schedule types (diffusion backend, reused from Img2ImgPanel source)
+  useEffect(() => {
+    const loadSamplers = async () => {
+      try {
+        const data = await getSamplers();
+        setSamplers(data.samplers);
+      } catch (error) {
+        console.error("[Upscale] Failed to load samplers:", error);
+        setSamplers([
+          { id: "euler", name: "Euler" },
+          { id: "euler_ancestral", name: "Euler Ancestral" },
+          { id: "heun", name: "Heun" },
+          { id: "dpm_2", name: "DPM2" },
+          { id: "dpm_2_ancestral", name: "DPM2 Ancestral" },
+          { id: "lms", name: "LMS" },
+          { id: "dpm_pp_2s_ancestral", name: "DPM++ 2S Ancestral" },
+          { id: "dpm_pp_sde", name: "DPM++ SDE" },
+          { id: "dpm_pp_2m", name: "DPM++ 2M" },
+          { id: "dpm_pp_2m_sde", name: "DPM++ 2M SDE" },
+          { id: "dpm_pp_3m_sde", name: "DPM++ 3M SDE" },
+        ]);
+      }
+    };
+    const loadScheduleTypes = async () => {
+      try {
+        const data = await getScheduleTypes();
+        setScheduleTypes(data.schedule_types);
+      } catch (error) {
+        console.error("[Upscale] Failed to load schedule types:", error);
+      }
+    };
+    loadSamplers();
+    loadScheduleTypes();
+  }, []);
 
   // Reload input image when notified from other panels / gallery
   useEffect(() => {
@@ -446,6 +497,12 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
     { value: "pil", label: "PIL resize (no model)" },
     { value: "spandrel", label: "GAN/transformer model (.pth/.safetensors)" },
     { value: "rtx_vsr", label: "NVIDIA Video Effects SDK" },
+    { value: "diffusion", label: "Diffusion (img2img tile)" },
+  ];
+
+  const diffusionPreUpscaleModeOptions = [
+    { value: "pil", label: "PIL resize (uses Resample Filter below)" },
+    { value: "model", label: "Model (uses Upscaler Model)" },
   ];
 
   const pilResampleOptions = [
@@ -517,7 +574,8 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
             options={backendOptions}
           />
 
-          {params.upscaler_backend === "spandrel" && (
+          {(params.upscaler_backend === "spandrel" ||
+            (params.upscaler_backend === "diffusion" && params.diffusion_pre_upscale_mode === "model")) && (
             <Select
               label="Model"
               value={params.upscaler_model || ""}
@@ -543,7 +601,8 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
             </div>
           )}
 
-          {params.upscaler_backend === "pil" && (
+          {(params.upscaler_backend === "pil" ||
+            (params.upscaler_backend === "diffusion" && params.diffusion_pre_upscale_mode === "pil")) && (
             <Select
               label="Resample Filter"
               value={params.pil_resample || "lanczos"}
@@ -552,7 +611,7 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
             />
           )}
 
-          {params.upscaler_backend === "spandrel" && (
+          {(params.upscaler_backend === "spandrel" || params.upscaler_backend === "diffusion") && (
             <div className="grid grid-cols-2 gap-2">
               <NumberInput
                 label="Tile Size"
@@ -584,6 +643,83 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
             />
           )}
         </Card>
+
+        {params.upscaler_backend === "diffusion" && (
+          <Card title="Diffusion Tile Upscale">
+            <p className="text-xs text-gray-500 mb-2">
+              Uses the currently loaded checkpoint for per-tile img2img.
+            </p>
+            <Select
+              label="Pre-upscale Mode"
+              value={params.diffusion_pre_upscale_mode || "pil"}
+              onChange={(e) => setParams({ ...params, diffusion_pre_upscale_mode: e.target.value })}
+              options={diffusionPreUpscaleModeOptions}
+            />
+            <Textarea
+              label="Prompt"
+              value={params.prompt || ""}
+              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+              rows={3}
+            />
+            <Textarea
+              label="Negative Prompt"
+              value={params.negative_prompt || ""}
+              onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+              rows={2}
+            />
+            <Slider
+              label="Denoising Strength"
+              min={0.05}
+              max={0.9}
+              step={0.01}
+              value={params.diffusion_denoising_strength ?? 0.3}
+              onChange={(e) => setParams({ ...params, diffusion_denoising_strength: parseFloat(e.target.value) })}
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label="Sampler"
+                options={samplers.map(s => ({ value: s.id, label: s.name }))}
+                value={params.sampler || "euler"}
+                onChange={(e) => setParams({ ...params, sampler: e.target.value })}
+              />
+              <Select
+                label="Schedule Type"
+                options={scheduleTypes.map(s => ({ value: s.id, label: s.name }))}
+                value={params.schedule_type || "uniform"}
+                onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <NumberInput
+                label="Steps"
+                value={params.steps ?? 20}
+                onCommit={(v) => setParams({ ...params, steps: v })}
+                min={1}
+                max={150}
+                step={1}
+                parse="int"
+              />
+              <NumberInput
+                label="CFG Scale"
+                value={params.cfg_scale ?? 7.0}
+                onCommit={(v) => setParams({ ...params, cfg_scale: v })}
+                min={1.0}
+                max={30.0}
+                step={0.1}
+                parse="float"
+              />
+              <Input
+                type="number"
+                label="Seed"
+                value={params.seed ?? -1}
+                onChange={(e) => {
+                  const parsed = parseInt(e.target.value);
+                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                }}
+              />
+            </div>
+          </Card>
+        )}
 
         <Card title="Unsharp Mask" collapsible defaultCollapsed={!params.unsharp_enable}>
           <label className="flex items-center gap-2 cursor-pointer mb-2">

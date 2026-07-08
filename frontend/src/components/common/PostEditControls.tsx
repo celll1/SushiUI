@@ -9,6 +9,14 @@ interface PostEditControlsProps {
   onChange: (value: PostEditState) => void;
   /** Optional extra classes for the container. */
   className?: string;
+  /**
+   * Layout variant:
+   * - "compact" (default): single wrapping row `B [slider][num] S ... [reset]`.
+   *   Used in space-constrained overlays (full-size image popup).
+   * - "stacked": each control is a full-width labeled row with a larger touch
+   *   target. Used in the gallery detail sidebar.
+   */
+  variant?: "compact" | "stacked";
 }
 
 // Shared thumb styling for the bare range inputs (kept in sync with Slider.tsx's
@@ -33,8 +41,84 @@ const RANGE_CLASSNAME =
  * (common/NumberInput.tsx), which lets the field be freely cleared/retyped
  * instead of snapping back to a coerced value on every keystroke.
  */
-export default function PostEditControls({ value, onChange, className = "" }: PostEditControlsProps) {
+export default function PostEditControls({ value, onChange, className = "", variant = "compact" }: PostEditControlsProps) {
   const nonNeutral = !isNeutral(value);
+
+  if (variant === "stacked") {
+    const resetButton = (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onChange({ ...NEUTRAL_POST_EDIT });
+        }}
+        disabled={!nonNeutral}
+        className={`flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs ${
+          nonNeutral
+            ? "text-blue-400 hover:text-blue-300 hover:bg-gray-700"
+            : "text-gray-600 cursor-default"
+        }`}
+        title="Reset brightness, saturation and color flatten"
+      >
+        <RotateCcw className="h-3.5 w-3.5" />
+        Reset
+      </button>
+    );
+
+    const rows: {
+      id: string;
+      label: string;
+      title: string;
+      sliderMax: number;
+      numberMax: number;
+      numberDefault: number;
+      valueKey: "brightness" | "saturation" | "flatten";
+    }[] = [
+      { id: "post-edit-brightness-range", label: "Brightness (%)", title: "Brightness (%)", sliderMax: 200, numberMax: 100000, numberDefault: 100, valueKey: "brightness" },
+      { id: "post-edit-saturation-range", label: "Saturation (%)", title: "Saturation (%)", sliderMax: 200, numberMax: 100000, numberDefault: 100, valueKey: "saturation" },
+      { id: "post-edit-flatten-range", label: "Color flatten（色ムラ除去）", title: "Color flatten（色ムラ除去）", sliderMax: 100, numberMax: 1000, numberDefault: 0, valueKey: "flatten" },
+    ];
+
+    return (
+      <div className={`space-y-3 ${className}`}>
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-gray-300">Post-edit</span>
+          {resetButton}
+        </div>
+        {rows.map((row) => (
+          <div key={row.id} className="space-y-1">
+            <label htmlFor={row.id} className="block text-xs text-gray-400" title={row.title}>
+              {row.label}
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id={row.id}
+                type="range"
+                min={0}
+                max={row.sliderMax}
+                step={1}
+                value={value[row.valueKey]}
+                onChange={(e) => onChange({ ...value, [row.valueKey]: parseInt(e.target.value, 10) })}
+                className="flex-1 min-w-0 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-600 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:hover:bg-blue-700 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-blue-600 [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:hover:bg-blue-700 [&::-moz-range-thumb]:border-0"
+                title={row.title}
+              />
+              <NumberInput
+                label={row.title}
+                value={value[row.valueKey]}
+                onCommit={(v) => onChange({ ...value, [row.valueKey]: v })}
+                defaultValue={row.numberDefault}
+                min={0}
+                max={row.numberMax}
+                step={1}
+                parse="int"
+                className="w-16 flex-shrink-0"
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div className={`flex items-center gap-2 flex-wrap ${className}`}>

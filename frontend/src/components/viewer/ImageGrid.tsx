@@ -801,17 +801,17 @@ export default function ImageGrid() {
               flex-shrink-0 flex flex-col
             `}>
               {/* Scrollable content area */}
-              <div className="flex-1 min-h-0 overflow-y-auto mb-4 pb-[env(safe-area-inset-bottom)]">
+              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden mb-4 pb-[env(safe-area-inset-bottom)]">
               <Card title="Image Details">
-                <div className="space-y-3 text-sm">
+                <div className="space-y-3 text-sm min-w-0 break-words">
                   <div>
                     <span className="text-gray-400">Prompt:</span>
-                    <p className="text-gray-100">{selectedImage.prompt}</p>
+                    <p className="text-gray-100 break-words">{selectedImage.prompt}</p>
                   </div>
                 {selectedImage.negative_prompt && (
                   <div>
                     <span className="text-gray-400">Negative Prompt:</span>
-                    <p className="text-gray-100">{selectedImage.negative_prompt}</p>
+                    <p className="text-gray-100 break-words">{selectedImage.negative_prompt}</p>
                   </div>
                 )}
                 <div className="space-y-2">
@@ -1275,57 +1275,46 @@ export default function ImageGrid() {
               </Card>
               </div>
 
-              {/* Fixed Send Options and Buttons - Desktop only */}
+              {/* Fixed action panel - Desktop only. Two clearly separated
+                  groups: "Send to" (checkboxes select what to carry over, then
+                  the 4 destination buttons) and "Post-edit" (brightness /
+                  saturation / color-flatten sliders + Download, which bakes the
+                  active edits into the saved file). */}
               <div className="hidden lg:block lg:flex-shrink-0">
                 <Card>
-                  <div className="space-y-3">
-                    {/* Send options in one line */}
-                    <div className="flex items-center gap-3 text-sm">
-                      <label className="flex items-center gap-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={sendImage}
-                          onChange={(e) => setSendImage(e.target.checked)}
-                          className="rounded"
-                        />
-                        <span className="text-gray-300">Image</span>
-                      </label>
-                      <label className="flex items-center gap-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={sendPrompt}
-                          onChange={(e) => setSendPrompt(e.target.checked)}
-                          className="rounded"
-                        />
-                        <span className="text-gray-300">Prompt</span>
-                      </label>
-                      <label className="flex items-center gap-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={sendParameters}
-                          onChange={(e) => setSendParameters(e.target.checked)}
-                          className="rounded"
-                        />
-                        <span className="text-gray-300">Params</span>
-                      </label>
-                    </div>
-
-                    {/* Post-Edit controls (client-side brightness/saturation) */}
-                    <div className="mb-2">
-                      <PostEditControls value={postEdit} onChange={setPostEdit} />
-                    </div>
-
-                    {/* Download and Send buttons */}
-                    <div className="flex flex-col gap-2">
-                      <Button
-                        onClick={() => handleDownload(selectedImage)}
-                        variant="primary"
-                        size="sm"
-                        className="flex items-center justify-center"
-                      >
-                        <Download className="h-4 w-4 mr-2" />
-                        Download
-                      </Button>
+                  <div className="space-y-4">
+                    {/* Send to section */}
+                    <div className="space-y-2">
+                      <span className="text-xs font-medium text-gray-300">Send to</span>
+                      <div className="flex items-center gap-3 text-sm">
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sendImage}
+                            onChange={(e) => setSendImage(e.target.checked)}
+                            className="rounded"
+                          />
+                          <span className="text-gray-300">Image</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sendPrompt}
+                            onChange={(e) => setSendPrompt(e.target.checked)}
+                            className="rounded"
+                          />
+                          <span className="text-gray-300">Prompt</span>
+                        </label>
+                        <label className="flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sendParameters}
+                            onChange={(e) => setSendParameters(e.target.checked)}
+                            className="rounded"
+                          />
+                          <span className="text-gray-300">Params</span>
+                        </label>
+                      </div>
                       <div className="grid grid-cols-2 gap-2">
                         <Button
                           onClick={() => sendToTxt2Img(selectedImage)}
@@ -1360,6 +1349,21 @@ export default function ImageGrid() {
                           Upscale
                         </Button>
                       </div>
+                    </div>
+
+                    {/* Post-edit section (Download bakes these edits into the file) */}
+                    <div className="border-t border-gray-700 pt-3 space-y-3">
+                      <PostEditControls value={postEdit} onChange={setPostEdit} variant="stacked" />
+                      <Button
+                        onClick={() => handleDownload(selectedImage)}
+                        variant="primary"
+                        size="sm"
+                        className="w-full flex items-center justify-center"
+                        title="Download the image with the post-edit adjustments above baked in"
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Download
+                      </Button>
                     </div>
                   </div>
                 </Card>

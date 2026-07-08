@@ -200,6 +200,44 @@ class LatentCache:
         return hashlib.md5(key.encode()).hexdigest()
 
     @staticmethod
+    def compute_clip_hash(
+        video_path: str,
+        width: int,
+        height: int,
+        clip_start: int,
+        clip_length: int,
+        stride: int,
+        fps: Optional[float] = None,
+    ) -> str:
+        """
+        Compute hash for a VIDEO CLIP cache key (P4b, 5D temporal latents).
+
+        Distinct clip WINDOWS of the same video (different start / length /
+        stride) must cache under DISTINCT keys, so the window parameters are all
+        part of the key. This is intentionally separate from
+        ``compute_image_hash`` so the existing 4D image cache is untouched.
+
+        Args:
+            video_path: Path to the source video.
+            width: Target clip width.
+            height: Target clip height.
+            clip_start: First source frame index of the clip.
+            clip_length: Number of sampled frames (LTX ``8*k + 1``).
+            stride: Gap between sampled frames.
+            fps: Source frames-per-second (optional; folded in when provided so a
+                re-encoded/resampled source does not collide).
+
+        Returns:
+            Hash string.
+        """
+        fps_token = "" if fps is None else f"_{float(fps):.3f}"
+        key = (
+            f"{video_path}_{width}_{height}"
+            f"_s{int(clip_start)}_l{int(clip_length)}_st{int(stride)}{fps_token}"
+        )
+        return hashlib.md5(key.encode()).hexdigest()
+
+    @staticmethod
     def compute_caption_hash(caption: str) -> str:
         """
         Compute hash for caption cache key.
@@ -300,6 +338,107 @@ class LatentCache:
             return data['latents']
         except Exception as e:
             print(f"[LatentCache] Warning: Failed to load cached latent {cache_path}: {e}")
+            return None
+
+    def save_clip_latent(
+        self,
+        video_path: str,
+        width: int,
+        height: int,
+        clip_start: int,
+        clip_length: int,
+        stride: int,
+        latents: torch.Tensor,
+        fps: Optional[float] = None,
+        skip_existing: bool = True,
+    ) -> bool:
+        """
+        Save a 5D temporal VAE latent for a video clip (P4b).
+
+        ADDITIVE: shares the same ``latents/`` dir and safetensors/torch.save
+        mechanism as the 4D image path, but keys by ``compute_clip_hash`` so
+        image and clip entries never collide.
+
+        Args:
+            video_path: Source video path.
+            width/height: Target clip dimensions.
+            clip_start/clip_length/stride: Clip window parameters (part of key).
+            latents: 5D latent tensor ``[1, C, T, H', W']`` (LTX: C=128,
+                H'=H/32, W'=W/32, T=(clip_length-1)//8+1).
+            fps: Source fps (folded into the key when provided).
+            skip_existing: Skip write if the cache file already exists.
+
+        Returns:
+            True if written, False if skipped.
+        """
+        cache_hash = self.compute_clip_hash(
+            video_path, width, height, clip_start, clip_length, stride, fps
+        )
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+
+        if skip_existing and cache_path.exists():
+            return False
+
+        torch.save({
+            'latents': latents.cpu(),
+            'video_path': video_path,
+            'width': width,
+            'height': height,
+            'clip_start': int(clip_start),
+            'clip_length': int(clip_length),
+            'stride': int(stride),
+            'fps': (None if fps is None else float(fps)),
+            'is_video_clip': True,
+            'created_at': datetime.utcnow().isoformat(),
+        }, cache_path)
+        return True
+
+    def has_clip_latent(
+        self,
+        video_path: str,
+        width: int,
+        height: int,
+        clip_start: int,
+        clip_length: int,
+        stride: int,
+        fps: Optional[float] = None,
+    ) -> bool:
+        """Check if a 5D clip latent exists in cache without loading it."""
+        cache_hash = self.compute_clip_hash(
+            video_path, width, height, clip_start, clip_length, stride, fps
+        )
+        return (self.latents_dir / f"{cache_hash}.pt").exists()
+
+    def load_clip_latent(
+        self,
+        video_path: str,
+        width: int,
+        height: int,
+        clip_start: int,
+        clip_length: int,
+        stride: int,
+        fps: Optional[float] = None,
+        device: str = 'cuda',
+    ) -> Optional[torch.Tensor]:
+        """
+        Load a 5D temporal VAE latent for a video clip (P4b).
+
+        Returns the 5D latent tensor ``[1, C, T, H', W']`` or None if not cached.
+        """
+        cache_hash = self.compute_clip_hash(
+            video_path, width, height, clip_start, clip_length, stride, fps
+        )
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+
+        if not cache_path.exists():
+            return None
+
+        try:
+            data = torch.load(cache_path, map_location=device)
+            latents = data['latents'] if isinstance(data, dict) else data
+            return latents
+        except Exception as e:
+            print(f"[LatentCache] Warning: Failed to load cached clip latent {cache_path}: {e}")
             return None
 
     def save_text_embeddings(
@@ -528,18 +667,28 @@ class LatentCache:
                     # Legacy format: tensor directly saved
                     latent = data
 
-                # Check shape
-                if latent.dim() != 4:
-                    print(f"[LatentCache] VALIDATION FAILED: Expected 4D tensor, got {latent.dim()}D")
-                    return False
-
-                # Check channels (B, C, H, W)
-                if latent.shape[1] != expected_channels:
-                    print(f"[LatentCache] VALIDATION FAILED: Expected {expected_channels} channels, got {latent.shape[1]}")
+                # Check shape.
+                #   4D  [B, C, H, W]        -> existing image archs (unchanged).
+                #   5D  [B, C, T, H', W']   -> video/temporal archs (P4b, LTX).
+                # BOTH are accepted; the 4D contract is NOT tightened.
+                is_clip = isinstance(data, dict) and data.get('is_video_clip')
+                if latent.dim() == 4:
+                    # Existing image-latent path.
+                    if latent.shape[1] != expected_channels:
+                        print(f"[LatentCache] VALIDATION FAILED: Expected {expected_channels} channels, got {latent.shape[1]}")
+                        return False
+                elif latent.dim() == 5:
+                    # Temporal (video clip) path. Channel dim is still index 1.
+                    if latent.shape[1] != expected_channels:
+                        print(f"[LatentCache] VALIDATION FAILED: Expected {expected_channels} channels, got {latent.shape[1]} (5D clip)")
+                        return False
+                else:
+                    print(f"[LatentCache] VALIDATION FAILED: Expected 4D or 5D tensor, got {latent.dim()}D")
                     return False
 
                 # Log sample info
-                print(f"[LatentCache]   Sample: shape={latent.shape}, dtype={latent.dtype}")
+                kind = "5D-clip" if latent.dim() == 5 or is_clip else "4D-image"
+                print(f"[LatentCache]   Sample ({kind}): shape={latent.shape}, dtype={latent.dtype}")
 
             except Exception as e:
                 print(f"[LatentCache] VALIDATION FAILED: Error loading {latent_file.name}: {e}")

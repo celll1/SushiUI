@@ -10,15 +10,16 @@
  * - Loading state is handled within ImageList to avoid full re-render
  */
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize } from "lucide-react";
+import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize, Camera } from "lucide-react";
 import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
 import ImageList from "./ImageList";
 import { saveTempImage } from "@/utils/tempImageStorage";
+import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid } from "@/utils/sendHelpers";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
@@ -50,6 +51,15 @@ export default function ImageGrid() {
   // brightness/saturation remain a CSS filter layered on top (below).
   const selectedImageSrc = selectedImage ? `/outputs/${selectedImage.filename}` : undefined;
   const effectiveSelectedSrc = usePostEditPreview(selectedImageSrc, postEdit.flatten);
+  // Ref to the <video> element in the video detail view, used for frame-grab.
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  // Whether the selected item is a video (mp4/webm or is_video flag / video type).
+  const isSelectedVideo = !!selectedImage && (
+    selectedImage.is_video === true ||
+    /\.(mp4|webm)$/i.test(selectedImage.filename) ||
+    selectedImage.generation_type === "txt2vid" ||
+    selectedImage.generation_type === "img2vid"
+  );
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -63,6 +73,8 @@ export default function ImageGrid() {
   const [filterTxt2Img, setFilterTxt2Img] = useState(true);
   const [filterImg2Img, setFilterImg2Img] = useState(true);
   const [filterInpaint, setFilterInpaint] = useState(true);
+  const [filterTxt2Vid, setFilterTxt2Vid] = useState(true);
+  const [filterImg2Vid, setFilterImg2Vid] = useState(true);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [widthRange, setWidthRange] = useState<[number, number]>([0, 2048]);
@@ -99,6 +111,8 @@ export default function ImageGrid() {
       if (filterTxt2Img) types.push("txt2img");
       if (filterImg2Img) types.push("img2img");
       if (filterInpaint) types.push("inpaint");
+      if (filterTxt2Vid) types.push("txt2vid");
+      if (filterImg2Vid) types.push("img2vid");
 
       const filters: ImageFilters = {
         skip: (currentPage - 1) * imagesPerPage,
@@ -120,12 +134,12 @@ export default function ImageGrid() {
     } finally {
       setLoading(false);
     }
-  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Reset to page 1 when filters change, then load images
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Load images when filters or page change
   useEffect(() => {
@@ -693,6 +707,66 @@ export default function ImageGrid() {
     router.push("/generate?tab=upscale");
   };
 
+  // Send a still image to the img2vid panel as a keyframe.
+  const sendToImg2Vid = async (image: GeneratedImage) => {
+    try {
+      await sendImageToImg2Vid(`/outputs/${image.filename}`);
+    } catch (error) {
+      console.error("[ImageGrid] Failed to send image to img2vid:", error);
+    }
+    router.push("/generate?tab=img2vid");
+  };
+
+  // Grab the current frame of the selected video via a canvas. Same-origin
+  // /outputs source means the canvas is not tainted, so toDataURL succeeds.
+  const captureCurrentFrame = (): string | null => {
+    const video = videoRef.current;
+    if (!video) return null;
+    const width = video.videoWidth;
+    const height = video.videoHeight;
+    if (!width || !height) return null;
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(video, 0, 0, width, height);
+    try {
+      return canvas.toDataURL("image/png");
+    } catch (error) {
+      console.error("[ImageGrid] Frame capture failed (canvas tainted?):", error);
+      return null;
+    }
+  };
+
+  const captureFrameToImg2Img = async () => {
+    const dataUrl = captureCurrentFrame();
+    if (!dataUrl) {
+      alert("Could not capture the current frame. Wait for the video to load, then try again.");
+      return;
+    }
+    try {
+      await sendBase64ImageToImg2Img(dataUrl);
+    } catch (error) {
+      console.error("[ImageGrid] Failed to send captured frame to img2img:", error);
+    }
+    router.push("/generate?tab=img2img");
+  };
+
+  const captureFrameToImg2Vid = async () => {
+    const dataUrl = captureCurrentFrame();
+    if (!dataUrl) {
+      alert("Could not capture the current frame. Wait for the video to load, then try again.");
+      return;
+    }
+    try {
+      await sendBase64ImageToImg2Vid(dataUrl);
+    } catch (error) {
+      console.error("[ImageGrid] Failed to send captured frame to img2vid:", error);
+    }
+    router.push("/generate?tab=img2vid");
+  };
+
   // Swipe gesture handlers for gallery pagination
   const minSwipeDistance = 50; // Minimum distance for a swipe
 
@@ -832,22 +906,52 @@ export default function ImageGrid() {
                   <div>
                     <span className="text-gray-400">Created:</span> {new Date(selectedImage.created_at).toLocaleString()}
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-gray-400">Steps:</span> {selectedImage.steps}
-                    </div>
-                    <div>
-                      <span className="text-gray-400">CFG Scale:</span> {selectedImage.cfg_scale}
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-gray-400">Sampler:</span> {selectedImage.parameters?.sampler || selectedImage.sampler}
-                    </div>
-                    <div>
-                      <span className="text-gray-400">Scheduler:</span> {selectedImage.parameters?.schedule_type || 'uniform'}
-                    </div>
-                  </div>
+                  {/* Video rows: show video-relevant fields and suppress the
+                      image-only steps/cfg/sampler/scheduler (which carry
+                      meaningless defaults for video). */}
+                  {isSelectedVideo ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-gray-400">Frames:</span>{' '}
+                          {selectedImage.num_frames ?? selectedImage.parameters?.num_frames}
+                        </div>
+                        <div>
+                          <span className="text-gray-400">FPS:</span>{' '}
+                          {selectedImage.fps ?? selectedImage.parameters?.fps}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-gray-400">Duration:</span>{' '}
+                          {selectedImage.duration ?? selectedImage.parameters?.duration}s
+                        </div>
+                        <div>
+                          <span className="text-gray-400">Audio:</span>{' '}
+                          {(selectedImage.audio_enable ?? selectedImage.parameters?.audio_enable) ? 'on' : 'off'}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-gray-400">Steps:</span> {selectedImage.steps}
+                        </div>
+                        <div>
+                          <span className="text-gray-400">CFG Scale:</span> {selectedImage.cfg_scale}
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-gray-400">Sampler:</span> {selectedImage.parameters?.sampler || selectedImage.sampler}
+                        </div>
+                        <div>
+                          <span className="text-gray-400">Scheduler:</span> {selectedImage.parameters?.schedule_type || 'uniform'}
+                        </div>
+                      </div>
+                    </>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <span className="text-gray-400">Size:</span> {selectedImage.width}x{selectedImage.height}
@@ -1359,7 +1463,41 @@ export default function ImageGrid() {
                         >
                           Upscale
                         </Button>
+                        <Button
+                          onClick={() => sendToImg2Vid(selectedImage)}
+                          variant="secondary"
+                          size="sm"
+                          disabled={isSelectedVideo}
+                          title={isSelectedVideo ? "Use Capture frame for videos" : "Send image to img2vid as a keyframe"}
+                        >
+                          img2vid
+                        </Button>
                       </div>
+
+                      {/* Video: capture the current frame and send it onward */}
+                      {isSelectedVideo && (
+                        <div className="border-t border-gray-700 pt-3 space-y-2">
+                          <span className="text-xs font-medium text-gray-300">Capture frame</span>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Button
+                              onClick={captureFrameToImg2Img}
+                              variant="secondary"
+                              size="sm"
+                            >
+                              <Camera className="h-4 w-4 mr-1" />
+                              img2img
+                            </Button>
+                            <Button
+                              onClick={captureFrameToImg2Vid}
+                              variant="secondary"
+                              size="sm"
+                            >
+                              <Camera className="h-4 w-4 mr-1" />
+                              img2vid
+                            </Button>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {/* Post-edit section (Download bakes these edits into the file) */}
@@ -1418,14 +1556,26 @@ export default function ImageGrid() {
                 onTouchMove={handleDetailImageTouchMove}
                 onTouchEnd={handleDetailImageTouchEnd}
               >
-                <img
-                  src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
-                  alt="Generated"
-                  className="max-w-full max-h-full object-contain cursor-pointer"
-                  style={{ filter: buildFilterString(postEdit) }}
-                  onDoubleClick={() => setShowFullSizeImage(true)}
-                  title="Double-click to view full size"
-                />
+                {isSelectedVideo ? (
+                  // Same-origin /outputs path so the canvas frame-grab is not tainted.
+                  <video
+                    ref={videoRef}
+                    src={`/outputs/${selectedImage.filename}`}
+                    className="max-w-full max-h-full object-contain"
+                    controls
+                    loop
+                    playsInline
+                  />
+                ) : (
+                  <img
+                    src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
+                    alt="Generated"
+                    className="max-w-full max-h-full object-contain cursor-pointer"
+                    style={{ filter: buildFilterString(postEdit) }}
+                    onDoubleClick={() => setShowFullSizeImage(true)}
+                    title="Double-click to view full size"
+                  />
+                )}
               </div>
 
               {/* Next Image Button - Desktop only */}
@@ -1581,6 +1731,34 @@ export default function ImageGrid() {
               >
                 Upscale
               </button>
+              {isSelectedVideo ? (
+                <>
+                  <button
+                    onClick={captureFrameToImg2Img}
+                    className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded flex items-center gap-1"
+                    title="Capture current frame to img2img"
+                  >
+                    <Camera className="h-4 w-4" />
+                    img2img
+                  </button>
+                  <button
+                    onClick={captureFrameToImg2Vid}
+                    className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded flex items-center gap-1"
+                    title="Capture current frame to img2vid"
+                  >
+                    <Camera className="h-4 w-4" />
+                    img2vid
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => sendToImg2Vid(selectedImage)}
+                  className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded"
+                  title="Send image to img2vid as a keyframe"
+                >
+                  img2vid
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1620,6 +1798,10 @@ export default function ImageGrid() {
             setFilterImg2Img={setFilterImg2Img}
             filterInpaint={filterInpaint}
             setFilterInpaint={setFilterInpaint}
+            filterTxt2Vid={filterTxt2Vid}
+            setFilterTxt2Vid={setFilterTxt2Vid}
+            filterImg2Vid={filterImg2Vid}
+            setFilterImg2Vid={setFilterImg2Vid}
             dateFrom={dateFrom}
             setDateFrom={setDateFrom}
             dateTo={dateTo}

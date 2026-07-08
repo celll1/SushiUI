@@ -280,6 +280,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "ideogram4": 26.0,  # two 9.3B fp8 transformers (cond + uncond) resident during denoise
     "minit2i": 8.0,    # small pixel-space DiT (B/L ~0.3-1.8GB) + FLAN-T5 staged
     "krea2": 26.0,     # ~12.9B bf16 MMDiT staged on GPU + Qwen3-VL TE + Qwen-Image VAE
+    "ltx2": 40.0,      # ~19B bf16 video MM-DiT + Gemma-3 TE + LTX2 VAEs, cpu-offload staged
     "unknown": 14.0,   # safe default
 }
 

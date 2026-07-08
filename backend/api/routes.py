@@ -141,6 +141,10 @@ class Txt2VidRequest(BaseModel):
     num_videos_per_prompt: int = TXT2VID_DEFAULTS["num_videos_per_prompt"]
     max_sequence_length: int = TXT2VID_DEFAULTS["max_sequence_length"]
     audio_enable: bool = TXT2VID_DEFAULTS["audio_enable"]
+    # Per-generation component overrides (RP2b). Unsupported on the LTX-2.3 video
+    # arch: accepted-but-ignored with a warning (see check_arch_capabilities).
+    vae_path: Optional[str] = TXT2VID_DEFAULTS["vae_path"]
+    text_encoder_path: Optional[str] = TXT2VID_DEFAULTS["text_encoder_path"]
 
 
 class GenerationParams(BaseModel):
@@ -399,6 +403,8 @@ async def generate_txt2img(
     block_swap_ring_size: int = Form(GENERATION_DEFAULTS["block_swap_ring_size"]),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
+    vae_path: Optional[str] = Form(GENERATION_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
+    text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -409,6 +415,10 @@ async def generate_txt2img(
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
+    from api.generation_overrides import plan_overrides, apply_overrides
+    # Compatibility gate for VAE/TE overrides runs BEFORE start_generation so a
+    # HARD mismatch raises ValidationError (HTTP 400) without opening a run.
+    _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
     start_generation("txt2img")
     try:
         # Reset cancellation flag before starting new generation
@@ -500,6 +510,9 @@ async def generate_txt2img(
             # No VE path supplied — keep existing VE if already loaded (allows sticky sessions)
             pass
 
+        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
+        _override_meta = apply_overrides(pipeline_manager, _override_plan)
+
         # Generate image
         params = {
             "prompt": prompt,
@@ -566,7 +579,10 @@ async def generate_txt2img(
             "block_swap_ring_size": block_swap_ring_size,
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
+            "vae_path": vae_path,
+            "text_encoder_path": text_encoder_path,
         }
+        params.update(_override_meta)
 
         # Log params without large base64 data
         print(f"txt2img generation params: {sanitize_params_for_logging(params)}")
@@ -1267,6 +1283,8 @@ async def generate_img2img(
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
+    vae_path: Optional[str] = Form(GENERATION_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
+    text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -1279,6 +1297,8 @@ async def generate_img2img(
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
+    from api.generation_overrides import plan_overrides, apply_overrides
+    _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
     start_generation("img2img")
     try:
         # Reset cancellation flag before starting new generation
@@ -1372,9 +1392,14 @@ async def generate_img2img(
         if vision_encoder_path and not is_flux2:
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
+        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
+        _override_meta = apply_overrides(pipeline_manager, _override_plan)
+
         # Generate image
         params = {
             "prompt": prompt,
+            "vae_path": vae_path,
+            "text_encoder_path": text_encoder_path,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
@@ -1445,6 +1470,7 @@ async def generate_img2img(
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
+        params.update(_override_meta)
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
 
         # Set prompt chunking settings
@@ -1889,6 +1915,16 @@ async def generate_txt2vid(
     try:
         pipeline_manager.reset_cancel_flag()
 
+        # VAE/TE overrides are unsupported on LTX-2.3 (accepted-but-ignored). The
+        # plan drops them (arch gating) and check_arch_capabilities warns; the
+        # apply call clears any stale override from a previous image generation.
+        from api.arch_capabilities import check_arch_capabilities
+        from api.generation_overrides import plan_overrides, apply_overrides
+        _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
+        apply_overrides(pipeline_manager, _override_plan)
+        _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
+        check_arch_capabilities(params, _ltx2_arch)
+
         print(f"txt2vid generation params: {sanitize_params_for_logging(params)}")
 
         # Progress via the shared WebSocket step broadcast (mirrors the upscale route).
@@ -1986,6 +2022,8 @@ async def generate_img2vid(
     num_videos_per_prompt: int = Form(TXT2VID_DEFAULTS["num_videos_per_prompt"]),
     max_sequence_length: int = Form(TXT2VID_DEFAULTS["max_sequence_length"]),
     audio_enable: bool = Form(TXT2VID_DEFAULTS["audio_enable"]),
+    vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
+    text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
     image: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
@@ -2012,6 +2050,8 @@ async def generate_img2vid(
         "num_videos_per_prompt": num_videos_per_prompt,
         "max_sequence_length": max_sequence_length,
         "audio_enable": audio_enable,
+        "vae_path": vae_path,
+        "text_encoder_path": text_encoder_path,
     }
 
     # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
@@ -2045,6 +2085,13 @@ async def generate_img2vid(
     start_generation("img2vid")
     try:
         pipeline_manager.reset_cancel_flag()
+
+        from api.arch_capabilities import check_arch_capabilities
+        from api.generation_overrides import plan_overrides, apply_overrides
+        _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
+        apply_overrides(pipeline_manager, _override_plan)
+        _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
+        check_arch_capabilities(params, _ltx2_arch)
 
         print(f"img2vid generation params: {sanitize_params_for_logging(params)}")
 
@@ -2251,6 +2298,8 @@ async def generate_inpaint(
     preview_predicted_x0: bool = Form(False),  # Show predicted x0 in preview instead of current latent
     preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
+    vae_path: Optional[str] = Form(GENERATION_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
+    text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -2264,6 +2313,8 @@ async def generate_inpaint(
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
+    from api.generation_overrides import plan_overrides, apply_overrides
+    _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
     start_generation("inpaint")
     try:
         # Reset cancellation flag before starting new generation
@@ -2371,9 +2422,14 @@ async def generate_inpaint(
         if vision_encoder_path and not is_flux2:
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
+        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
+        _override_meta = apply_overrides(pipeline_manager, _override_plan)
+
         # Generate image
         params = {
             "prompt": prompt,
+            "vae_path": vae_path,
+            "text_encoder_path": text_encoder_path,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
@@ -2448,6 +2504,7 @@ async def generate_inpaint(
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
         }
+        params.update(_override_meta)
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
 
         # inpaint_full_res is accepted for API compatibility but not implemented.
@@ -2948,6 +3005,116 @@ async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
                     "architecture": "vision_encoder",
                 })
     return {"vision_encoders": vision_encoders}
+
+
+def _override_scan_dirs(db: Session) -> List[str]:
+    """Configured model dirs plus the shared VAE store dir, de-duplicated."""
+    settings_record = db.query(UserSettings).first()
+    additional_model_dirs = settings_record.model_dirs if settings_record else []
+    dirs = [settings.models_dir] + list(additional_model_dirs or [])
+    vae_store = os.path.join(settings.models_dir, "vae")
+    if vae_store not in dirs:
+        dirs.append(vae_store)
+    # unique, existing
+    seen, out = set(), []
+    for d in dirs:
+        if d and d not in seen and os.path.isdir(d):
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+@router.get("/models/vaes")
+async def list_vaes(db: Session = Depends(get_gallery_db)):
+    """List standalone VAE candidates usable as a per-generation VAE override.
+
+    Scans the shared VAE store (models_dir/vae) and the configured model dirs.
+    A candidate is a diffusers ``vae/`` dir or a model whose registry record has
+    a VAE present and no backbone. Dims come from the component registry
+    (header/config reads only). Unclassifiable entries are skipped (best-effort).
+    """
+    from api.generation_overrides import classify_vae_candidate
+
+    results: List[Dict[str, Any]] = []
+    seen_paths = set()
+
+    def _consider(path: str):
+        if not path or path in seen_paths:
+            return
+        try:
+            cand = classify_vae_candidate(path)
+        except Exception as e:
+            print(f"[VAEs] classify failed for {path}: {e}")
+            return
+        if cand is not None:
+            seen_paths.add(path)
+            results.append(cand)
+
+    for scan_dir in _override_scan_dirs(db):
+        try:
+            entries = os.listdir(scan_dir)
+        except OSError:
+            continue
+        for name in entries:
+            item_path = os.path.join(scan_dir, name)
+            if os.path.isdir(item_path):
+                # a diffusers model dir OR a standalone VAE dir; classifier decides
+                _consider(item_path)
+                # one level of nesting (e.g. models_dir/vae/<subdir>)
+                try:
+                    for sub in os.listdir(item_path):
+                        _consider(os.path.join(item_path, sub))
+                except OSError:
+                    pass
+            elif name.endswith(".safetensors"):
+                _consider(item_path)
+
+    return {"vaes": results}
+
+
+@router.get("/models/text_encoders")
+async def list_text_encoders(db: Session = Depends(get_gallery_db)):
+    """List standalone text-encoder candidates usable as a TE override.
+
+    Same scan surface as ``/models/vaes``; a candidate is a standalone TE dir or
+    a model whose registry record has a text encoder present and no backbone.
+    Dims (out_dim/te_type) come from the component registry. Best-effort.
+    """
+    from api.generation_overrides import classify_te_candidate
+
+    results: List[Dict[str, Any]] = []
+    seen_paths = set()
+
+    def _consider(path: str):
+        if not path or path in seen_paths:
+            return
+        try:
+            cand = classify_te_candidate(path)
+        except Exception as e:
+            print(f"[TextEncoders] classify failed for {path}: {e}")
+            return
+        if cand is not None:
+            seen_paths.add(path)
+            results.append(cand)
+
+    for scan_dir in _override_scan_dirs(db):
+        try:
+            entries = os.listdir(scan_dir)
+        except OSError:
+            continue
+        for name in entries:
+            item_path = os.path.join(scan_dir, name)
+            if os.path.isdir(item_path):
+                _consider(item_path)
+                try:
+                    for sub in os.listdir(item_path):
+                        _consider(os.path.join(item_path, sub))
+                except OSError:
+                    pass
+            elif name.endswith(".safetensors"):
+                _consider(item_path)
+
+    return {"text_encoders": results}
 
 
 class CreateScratchMiniT2IRequest(BaseModel):

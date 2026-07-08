@@ -119,6 +119,11 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "block_swap_ring_size": 2,      # GPU weight-buffer ring slots (>=1; 2 double-buffers)
     # Vision encoder
     "vision_encoder_path": None,
+    # Per-generation component overrides (RP2b). Both default to None = use the
+    # loaded model's own component. VAE override supported on all image archs
+    # except ltx2/minit2i; TE override supported on sd15/sdxl only.
+    "vae_path": None,
+    "text_encoder_path": None,
     # SDXL micro-conditioning override (inference). original_size for time_ids:
     # explicit w/h (0 = auto), else output size * scale. crop stays (0,0).
     "original_size_w": 0,
@@ -213,6 +218,11 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     "num_videos_per_prompt": 1,
     "max_sequence_length": 1024,     # Gemma-3 prompt token budget
     "audio_enable": True,            # mux the generated audio track into the mp4
+    # Per-generation component overrides (RP2b). Both unsupported on the LTX-2.3
+    # video arch (accepted-but-ignored with a warning); kept here so the video
+    # request schema carries the same keys as the image routes.
+    "vae_path": None,
+    "text_encoder_path": None,
 }
 
 TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)

@@ -105,6 +105,10 @@ backend/cache/
 cache/datasets/
 **/cache_info.json
 *.latent
+
+# Per-machine model component registry cache (RP1) — machine-local paths/hashes
+cache/model_component_registry.json
+backend/model_hash_cache.json
 *.npz
 
 # デバッグスクリプト

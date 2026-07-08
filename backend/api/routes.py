@@ -2882,6 +2882,29 @@ async def get_models(db: Session = Depends(get_gallery_db), force_rescan: bool =
                     "architecture": architecture
                 })
 
+    # Enrich each entry with component-registry data (lazy + persistently cached;
+    # header/config-only reads, no weight load). Failures are swallowed per-model
+    # so a single bad model never breaks the listing.
+    try:
+        from core.models.component_registry import get_or_scan as _cr_get_or_scan
+    except Exception as _cr_e:
+        _cr_get_or_scan = None
+        print(f"[Models] Component registry unavailable: {_cr_e}")
+
+    if _cr_get_or_scan is not None:
+        for m in models:
+            try:
+                rec = _cr_get_or_scan(m["path"], m.get("source_type"))
+                comps = rec.get("components", {}) or {}
+                m["components"] = comps
+                m["is_video"] = rec.get("is_video", False)
+                m["latent_channels"] = (comps.get("vae", {}) or {}).get("latent_channels")
+                m["te_out_dim"] = (comps.get("text_encoder", {}) or {}).get("out_dim")
+                # arch already present as "architecture"; expose registry arch too
+                m.setdefault("architecture", rec.get("arch"))
+            except Exception as _me:
+                print(f"[Models] Registry enrich failed for {m.get('path')}: {_me}")
+
     result = {"models": models}
     scan_duration = time.time() - scan_start
 

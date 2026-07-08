@@ -111,6 +111,20 @@ class HashCache:
         Returns:
             Hash value (from cache or newly calculated)
         """
+        # Directories (diffusers-format models) cannot be open()'d for a byte hash
+        # (raises [Errno 13] Permission denied on Windows). Delegate to the
+        # component registry's dir-aware content hash, which is a stable identity
+        # computed from model_index/config JSONs + per-file (size, mtime).
+        if os.path.isdir(file_path):
+            try:
+                from core.models.component_registry import get_content_hash
+                dir_hash = get_content_hash(file_path, "diffusers")
+                if dir_hash:
+                    return dir_hash
+            except Exception as e:
+                print(f"[HashCache] Directory hash via registry failed: {e}")
+            return ""
+
         # Try to get from cache first
         cached_hash = self.get_hash(file_path, algorithm)
         if cached_hash:

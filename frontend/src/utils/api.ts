@@ -266,6 +266,27 @@ export interface InpaintParams extends GenerationParams {
   vae_drift_correction?: boolean;
 }
 
+export interface UpscaleParams {
+  upscaler_backend?: string;
+  upscaler_model?: string | null;
+  scale_factor?: number;
+  pil_resample?: string;
+  tile_size?: number;
+  tile_overlap?: number;
+  rtx_vsr_quality?: string;
+  unsharp_enable?: boolean;
+  unsharp_radius?: number;
+  unsharp_percent?: number;
+  unsharp_threshold?: number;
+}
+
+export interface UpscalerModelInfo {
+  name: string;
+  path: string;
+  size_mb: number;
+  source_dir: string;
+}
+
 export interface GeneratedImage {
   id: number;
   filename: string;
@@ -316,6 +337,15 @@ export interface GeneratedImage {
   flatten_in_loop?: string;
   flatten_in_loop_last_steps?: string;
   flatten_in_loop_min_region?: string;
+  // Upscale parameters (generation_type === 'upscale')
+  upscaler_backend?: string;
+  upscaler_model?: string;
+  upscaler_model_hash?: string;
+  scale_factor?: string;
+  pil_resample?: string;
+  tile_size?: string;
+  tile_overlap?: string;
+  rtx_vsr_quality?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +356,7 @@ export interface GenerationDefaultsResponse {
   txt2img: Partial<GenerationParams> & Record<string, unknown>;
   img2img: Partial<GenerationParams> & Record<string, unknown>;
   inpaint:  Partial<GenerationParams> & Record<string, unknown>;
+  upscale: Partial<UpscaleParams> & Record<string, unknown>;
 }
 
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
@@ -784,6 +815,43 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
+  return response.data;
+};
+
+export const generateUpscale = async (params: UpscaleParams, image: File | string) => {
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs
+  if (typeof image === 'string') {
+    const response = await fetch(image);
+    const blob = await response.blob();
+    formData.append("image", blob, "input.png");
+  } else {
+    formData.append("image", image);
+  }
+
+  formData.append("upscaler_backend", params.upscaler_backend || "spandrel");
+  if (params.upscaler_model) {
+    formData.append("upscaler_model", params.upscaler_model);
+  }
+  formData.append("scale_factor", String(params.scale_factor ?? 2.0));
+  formData.append("pil_resample", params.pil_resample || "lanczos");
+  formData.append("tile_size", String(params.tile_size ?? 512));
+  formData.append("tile_overlap", String(params.tile_overlap ?? 32));
+  formData.append("rtx_vsr_quality", params.rtx_vsr_quality || "high");
+  formData.append("unsharp_enable", String(params.unsharp_enable ?? false));
+  formData.append("unsharp_radius", String(params.unsharp_radius ?? 2.0));
+  formData.append("unsharp_percent", String(params.unsharp_percent ?? 100));
+  formData.append("unsharp_threshold", String(params.unsharp_threshold ?? 3));
+
+  const response = await api.post("/generate/upscale", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+export const fetchUpscalerModels = async (): Promise<{ models: UpscalerModelInfo[] }> => {
+  const response = await api.get("/models/upscalers");
   return response.data;
 };
 

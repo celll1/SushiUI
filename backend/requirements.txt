@@ -25,6 +25,7 @@ scipy>=1.11.0  # Required for Lanczos resampling in latent resize mode
 matplotlib>=3.7.0  # Required for controlnet-aux preprocessors
 controlnet-aux>=0.0.7  # ControlNet preprocessors (depth, openpose, etc.)
 onnxruntime-gpu>=1.16.0  # ONNX inference with GPU support (includes CPU fallback)
+spandrel>=0.4.2  # Super-resolution model loader for the Upscale panel
 
 # Database
 sqlalchemy>=2.0.25

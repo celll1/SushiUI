@@ -128,6 +128,24 @@ class GeneratedImage(GalleryBase):
                 if "flatten_in_loop_min_region" in self.parameters:
                     result["flatten_in_loop_min_region"] = str(self.parameters["flatten_in_loop_min_region"])
 
+            # Upscale parameters (generation_type == "upscale")
+            if "upscaler_backend" in self.parameters:
+                result["upscaler_backend"] = self.parameters["upscaler_backend"]
+                if self.parameters.get("upscaler_model"):
+                    result["upscaler_model"] = self.parameters["upscaler_model"]
+                if self.parameters.get("upscaler_model_hash"):
+                    result["upscaler_model_hash"] = self.parameters["upscaler_model_hash"]
+                if "scale_factor" in self.parameters:
+                    result["scale_factor"] = str(self.parameters["scale_factor"])
+                if "pil_resample" in self.parameters:
+                    result["pil_resample"] = self.parameters["pil_resample"]
+                if "tile_size" in self.parameters:
+                    result["tile_size"] = str(self.parameters["tile_size"])
+                if "tile_overlap" in self.parameters:
+                    result["tile_overlap"] = str(self.parameters["tile_overlap"])
+                if "rtx_vsr_quality" in self.parameters:
+                    result["rtx_vsr_quality"] = self.parameters["rtx_vsr_quality"]
+
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:
                 result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]

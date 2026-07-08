@@ -627,6 +627,50 @@ export default function ImageGrid() {
     router.push("/generate?tab=inpaint");
   };
 
+  const sendToUpscale = async (image: GeneratedImage) => {
+    try {
+      // Load image from /outputs/ and save to tempStorage
+      const imageUrl = `/outputs/${image.filename}`;
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const reader = new FileReader();
+
+      await new Promise((resolve, reject) => {
+        reader.onloadend = async () => {
+          try {
+            const base64data = reader.result as string;
+            const tempRef = await saveTempImage(base64data);
+            localStorage.setItem("upscale_input_image", tempRef);
+            window.dispatchEvent(new Event("upscale_input_updated"));
+            resolve(null);
+          } catch (error) {
+            reject(error);
+          }
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    } catch (error) {
+      console.error("[ImageGrid] Failed to send image to upscale:", error);
+    }
+
+    // Restore upscale-relevant parameters if this image was itself an upscale result
+    if (image.generation_type === 'upscale') {
+      const upscaleParams = JSON.parse(localStorage.getItem("upscale_params") || "{}");
+      if (image.upscaler_backend) upscaleParams.upscaler_backend = image.upscaler_backend;
+      if (image.upscaler_model) upscaleParams.upscaler_model = image.upscaler_model;
+      if (image.scale_factor) upscaleParams.scale_factor = parseFloat(image.scale_factor);
+      if (image.pil_resample) upscaleParams.pil_resample = image.pil_resample;
+      if (image.tile_size) upscaleParams.tile_size = parseInt(image.tile_size);
+      if (image.tile_overlap) upscaleParams.tile_overlap = parseInt(image.tile_overlap);
+      if (image.rtx_vsr_quality) upscaleParams.rtx_vsr_quality = image.rtx_vsr_quality;
+      localStorage.setItem("upscale_params", JSON.stringify(upscaleParams));
+      window.dispatchEvent(new Event("upscale_params_updated"));
+    }
+
+    router.push("/generate?tab=upscale");
+  };
+
   // Swipe gesture handlers for gallery pagination
   const minSwipeDistance = 50; // Minimum distance for a swipe
 
@@ -1011,6 +1055,60 @@ export default function ImageGrid() {
                   </div>
                 )}
 
+                {/* Upscale Parameters */}
+                {selectedImage.generation_type === 'upscale' && (
+                  <div className="border-t border-gray-700 pt-3">
+                    <span className="text-gray-400 font-medium">Upscale Parameters:</span>
+                    <div className="mt-2 space-y-2 text-xs">
+                      {selectedImage.upscaler_backend && (
+                        <div>
+                          <span className="text-gray-500">Backend:</span> {selectedImage.upscaler_backend}
+                        </div>
+                      )}
+                      {selectedImage.upscaler_model && (
+                        <div>
+                          <span className="text-gray-500">Model:</span> {selectedImage.upscaler_model}
+                        </div>
+                      )}
+                      {selectedImage.upscaler_model_hash && (
+                        <div>
+                          <span className="text-gray-500">Model Hash:</span> {selectedImage.upscaler_model_hash.substring(0, 12)}...
+                        </div>
+                      )}
+                      {selectedImage.scale_factor && (
+                        <div>
+                          <span className="text-gray-500">Scale Factor:</span> {selectedImage.scale_factor}
+                        </div>
+                      )}
+                      {selectedImage.pil_resample && (
+                        <div>
+                          <span className="text-gray-500">Resample:</span> {selectedImage.pil_resample}
+                        </div>
+                      )}
+                      {selectedImage.tile_size && (
+                        <div>
+                          <span className="text-gray-500">Tile Size:</span> {selectedImage.tile_size}
+                        </div>
+                      )}
+                      {selectedImage.tile_overlap && (
+                        <div>
+                          <span className="text-gray-500">Tile Overlap:</span> {selectedImage.tile_overlap}
+                        </div>
+                      )}
+                      {selectedImage.rtx_vsr_quality && (
+                        <div>
+                          <span className="text-gray-500">RTX VSR Quality:</span> {selectedImage.rtx_vsr_quality}
+                        </div>
+                      )}
+                      {selectedImage.source_image_hash && (
+                        <div>
+                          <span className="text-gray-500">Source Image Hash:</span> {selectedImage.source_image_hash.substring(0, 12)}...
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* img2img/Inpaint Parameters */}
                 {(selectedImage.generation_type === 'img2img' || selectedImage.generation_type === 'inpaint') && (
                   <div className="border-t border-gray-700 pt-3">
@@ -1207,7 +1305,7 @@ export default function ImageGrid() {
                         <Download className="h-4 w-4 mr-2" />
                         Download
                       </Button>
-                      <div className="grid grid-cols-3 gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         <Button
                           onClick={() => sendToTxt2Img(selectedImage)}
                           variant="secondary"
@@ -1232,6 +1330,13 @@ export default function ImageGrid() {
                           disabled={!sendImage && !sendPrompt && !sendParameters}
                         >
                           inpaint
+                        </Button>
+                        <Button
+                          onClick={() => sendToUpscale(selectedImage)}
+                          variant="secondary"
+                          size="sm"
+                        >
+                          Upscale
                         </Button>
                       </div>
                     </div>
@@ -1426,6 +1531,13 @@ export default function ImageGrid() {
                 title="Send to inpaint"
               >
                 inpaint
+              </button>
+              <button
+                onClick={() => sendToUpscale(selectedImage)}
+                className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Send to upscale"
+              >
+                Upscale
               </button>
             </div>
           </div>

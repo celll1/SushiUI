@@ -109,6 +109,38 @@ def save_image_with_metadata(
         if "img2img_fix_steps" in params:
             metadata.add_text("img2img_fix_steps", str(params["img2img_fix_steps"]))
 
+    if generation_type == "upscale":
+        upscaler_backend = params.get("upscaler_backend", "")
+        if upscaler_backend:
+            metadata.add_text("upscaler_backend", upscaler_backend)
+        upscaler_model = params.get("upscaler_model")
+        if upscaler_model:
+            metadata.add_text("upscaler_model", upscaler_model)
+        upscaler_model_hash = params.get("upscaler_model_hash")
+        if upscaler_model_hash:
+            metadata.add_text("upscaler_model_hash", upscaler_model_hash)
+        scale_factor = params.get("scale_factor")
+        if scale_factor is not None:
+            metadata.add_text("scale_factor", str(scale_factor))
+        if upscaler_backend == "pil" and params.get("pil_resample"):
+            metadata.add_text("pil_resample", params["pil_resample"])
+        if upscaler_backend == "spandrel":
+            metadata.add_text("tile_size", str(params.get("tile_size", 0)))
+            metadata.add_text("tile_overlap", str(params.get("tile_overlap", 0)))
+        if upscaler_backend == "rtx_vsr" and params.get("rtx_vsr_quality"):
+            metadata.add_text("rtx_vsr_quality", params["rtx_vsr_quality"])
+        if params.get("unsharp_enable"):
+            metadata.add_text("unsharp_enable", "true")
+            metadata.add_text("unsharp_radius", str(params.get("unsharp_radius", 2.0)))
+            metadata.add_text("unsharp_percent", str(params.get("unsharp_percent", 100)))
+            metadata.add_text("unsharp_threshold", str(params.get("unsharp_threshold", 3)))
+        source_image_hash = params.get("source_image_hash")
+        if source_image_hash:
+            metadata.add_text("source_image_hash", source_image_hash)
+        upscale_time = params.get("upscale_time")
+        if upscale_time is not None:
+            metadata.add_text("upscale_time", str(upscale_time))
+
     if generation_type == "inpaint":
         if "mask_blur" in params:
             metadata.add_text("mask_blur", str(params["mask_blur"]))

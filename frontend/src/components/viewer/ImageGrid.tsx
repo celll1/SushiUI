@@ -35,6 +35,17 @@ export default function ImageGrid() {
   useEffect(() => {
     setPostEdit({ ...NEUTRAL_POST_EDIT });
   }, [selectedImage?.filename]);
+  // Sidebar "Post-edit" section collapse state, persisted across sessions.
+  const [postEditCollapsed, setPostEditCollapsed] = useState(true);
+  useEffect(() => {
+    setPostEditCollapsed(localStorage.getItem("gallery_postedit_collapsed") !== "false");
+  }, []);
+  const togglePostEditCollapsed = () => {
+    setPostEditCollapsed((prev) => {
+      localStorage.setItem("gallery_postedit_collapsed", String(!prev));
+      return !prev;
+    });
+  };
   // Color-flatten preview for the selected image (detail + full-size popup).
   // brightness/saturation remain a CSS filter layered on top (below).
   const selectedImageSrc = selectedImage ? `/outputs/${selectedImage.filename}` : undefined;
@@ -1353,13 +1364,19 @@ export default function ImageGrid() {
 
                     {/* Post-edit section (Download bakes these edits into the file) */}
                     <div className="border-t border-gray-700 pt-3 space-y-3">
-                      <PostEditControls value={postEdit} onChange={setPostEdit} variant="stacked" />
+                      <PostEditControls
+                        value={postEdit}
+                        onChange={setPostEdit}
+                        variant="stacked"
+                        collapsed={postEditCollapsed}
+                        onToggleCollapsed={togglePostEditCollapsed}
+                      />
                       <Button
                         onClick={() => handleDownload(selectedImage)}
                         variant="primary"
                         size="sm"
                         className="w-full flex items-center justify-center"
-                        title="Download the image with the post-edit adjustments above baked in"
+                        title="Download the image with the post-edit adjustments baked in"
                       >
                         <Download className="h-4 w-4 mr-2" />
                         Download

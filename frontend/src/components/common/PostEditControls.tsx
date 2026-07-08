@@ -1,6 +1,6 @@
 "use client";
 
-import { RotateCcw } from "lucide-react";
+import { ChevronDown, ChevronRight, RotateCcw } from "lucide-react";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral } from "@/utils/postEdit";
 import NumberInput from "./NumberInput";
 
@@ -17,6 +17,14 @@ interface PostEditControlsProps {
    *   target. Used in the gallery detail sidebar.
    */
   variant?: "compact" | "stacked";
+  /**
+   * Collapsible header (stacked variant only). When `collapsed` is provided,
+   * the "Post-edit" header becomes a toggle button and the slider rows are
+   * hidden while collapsed. The Reset button stays visible in the header so a
+   * non-neutral edit state remains discoverable when collapsed.
+   */
+  collapsed?: boolean;
+  onToggleCollapsed?: () => void;
 }
 
 // Shared thumb styling for the bare range inputs (kept in sync with Slider.tsx's
@@ -41,7 +49,7 @@ const RANGE_CLASSNAME =
  * (common/NumberInput.tsx), which lets the field be freely cleared/retyped
  * instead of snapping back to a coerced value on every keystroke.
  */
-export default function PostEditControls({ value, onChange, className = "", variant = "compact" }: PostEditControlsProps) {
+export default function PostEditControls({ value, onChange, className = "", variant = "compact", collapsed, onToggleCollapsed }: PostEditControlsProps) {
   const nonNeutral = !isNeutral(value);
 
   if (variant === "stacked") {
@@ -79,13 +87,27 @@ export default function PostEditControls({ value, onChange, className = "", vari
       { id: "post-edit-flatten-range", label: "Color flatten（色ムラ除去）", title: "Color flatten（色ムラ除去）", sliderMax: 100, numberMax: 1000, numberDefault: 0, valueKey: "flatten" },
     ];
 
+    const isCollapsible = collapsed !== undefined;
+
     return (
       <div className={`space-y-3 ${className}`}>
         <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-gray-300">Post-edit</span>
+          {isCollapsible ? (
+            <button
+              type="button"
+              onClick={onToggleCollapsed}
+              className="flex items-center gap-1 text-xs font-medium text-gray-300 hover:text-white"
+              title={collapsed ? "Show post-edit controls" : "Hide post-edit controls"}
+            >
+              {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              Post-edit
+            </button>
+          ) : (
+            <span className="text-xs font-medium text-gray-300">Post-edit</span>
+          )}
           {resetButton}
         </div>
-        {rows.map((row) => (
+        {!(isCollapsible && collapsed) && rows.map((row) => (
           <div key={row.id} className="space-y-1">
             <label htmlFor={row.id} className="block text-xs text-gray-400" title={row.title}>
               {row.label}

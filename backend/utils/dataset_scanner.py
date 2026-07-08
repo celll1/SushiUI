@@ -5,11 +5,205 @@ Pass 2: Associate text/JSON files with image stems via prefix matching.
 """
 
 import os
+import glob
+import json
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
+VIDEO_EXTS = {".webm", ".mp4", ".mkv", ".mov", ".avi"}
+# Both images and videos participate in stem grouping / caption sidecar matching.
+MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
 CAPTION_EXTS = {".txt", ".json"}
+
+# Below this file size a frame-accurate ffprobe frame count (-count_frames,
+# which decodes the whole stream) is permitted as a last resort. Larger files
+# fall back to duration x fps to avoid a full decode during a scan.
+_VIDEO_COUNT_FRAMES_MAX_BYTES = 32 * 1024 * 1024
+
+
+def _find_ffprobe() -> Optional[str]:
+    """Locate the ffprobe executable (PATH first, then common install dirs)."""
+    exe = shutil.which("ffprobe")
+    if exe:
+        return exe
+    patterns = [
+        r"D:\ffmpeg-*\bin\ffprobe.exe",
+        r"C:\ffmpeg-*\bin\ffprobe.exe",
+        "/d/ffmpeg-*/bin/ffprobe",
+        "/c/ffmpeg-*/bin/ffprobe",
+    ]
+    for pat in patterns:
+        hits = glob.glob(pat)
+        if hits:
+            return hits[0]
+    return None
+
+
+def _parse_fraction(value: Optional[str]) -> float:
+    """Parse an ffprobe rational string ('60/1') or plain number into a float."""
+    if not value:
+        return 0.0
+    try:
+        if "/" in value:
+            num, den = value.split("/", 1)
+            den_f = float(den)
+            return float(num) / den_f if den_f else 0.0
+        return float(value)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def _count_frames_ffprobe(ffprobe: str, video_path: str) -> int:
+    """Frame-accurate count via ffprobe -count_frames (decodes the stream).
+
+    Only invoked for small files (see ``_VIDEO_COUNT_FRAMES_MAX_BYTES``).
+    """
+    try:
+        cmd = [
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-count_frames", "-show_entries", "stream=nb_read_frames",
+            "-of", "default=nokey=1:noprint_wrappers=1", video_path,
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        if out.returncode == 0:
+            v = out.stdout.strip()
+            if v.isdigit():
+                return int(v)
+    except Exception as e:  # noqa: BLE001 - probe is best-effort
+        print(f"[VideoProbe] frame count failed for {video_path}: {e}")
+    return 0
+
+
+def probe_video_metadata(video_path: str) -> Optional[Dict[str, Any]]:
+    """Probe a video's metadata via ffprobe without decoding all frames.
+
+    Returns a dict {video_path, fps, num_frames, duration, width, height, codec}
+    or None when the file cannot be probed (caller should skip + log).
+
+    num_frames resolution order:
+      1. stream nb_frames (container-reported, no decode)
+      2. round(fps * duration) (estimate)
+      3. ffprobe -count_frames (full decode) ONLY for files below
+         ``_VIDEO_COUNT_FRAMES_MAX_BYTES`` to avoid decoding large clips.
+    """
+    ffprobe = _find_ffprobe()
+    if not ffprobe:
+        print(f"[VideoProbe] ffprobe not found on PATH or common dirs; cannot probe {video_path}")
+        return None
+    try:
+        cmd = [
+            ffprobe, "-v", "error", "-select_streams", "v:0",
+            "-show_entries",
+            "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,codec_name,duration:format=duration",
+            "-of", "json", video_path,
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            print(f"[VideoProbe] ffprobe failed for {video_path}: {out.stderr.strip()[:200]}")
+            return None
+        data = json.loads(out.stdout)
+        streams = data.get("streams") or []
+        if not streams:
+            print(f"[VideoProbe] no video stream found in {video_path}")
+            return None
+        st = streams[0]
+
+        width = int(st.get("width") or 0)
+        height = int(st.get("height") or 0)
+        if width <= 0 or height <= 0:
+            print(f"[VideoProbe] invalid dimensions ({width}x{height}) for {video_path}")
+            return None
+
+        codec = st.get("codec_name") or None
+
+        fps = _parse_fraction(st.get("r_frame_rate"))
+        if fps <= 0:
+            fps = _parse_fraction(st.get("avg_frame_rate"))
+
+        duration = 0.0
+        for src in (st.get("duration"), (data.get("format") or {}).get("duration")):
+            try:
+                if src is not None and float(src) > 0:
+                    duration = float(src)
+                    break
+            except (ValueError, TypeError):
+                continue
+
+        num_frames = 0
+        nb = st.get("nb_frames")
+        try:
+            if nb is not None and int(nb) > 0:
+                num_frames = int(nb)
+        except (ValueError, TypeError):
+            num_frames = 0
+        if num_frames <= 0 and fps > 0 and duration > 0:
+            num_frames = int(round(fps * duration))
+        if num_frames <= 0:
+            try:
+                if os.path.getsize(video_path) <= _VIDEO_COUNT_FRAMES_MAX_BYTES:
+                    num_frames = _count_frames_ffprobe(ffprobe, video_path)
+            except OSError:
+                pass
+
+        return {
+            "video_path": video_path,
+            "fps": round(fps, 6),
+            "num_frames": int(num_frames),
+            "duration": round(duration, 6),
+            "width": width,
+            "height": height,
+            "codec": codec,
+        }
+    except Exception as e:  # noqa: BLE001 - probe is best-effort, never crash scan
+        print(f"[VideoProbe] probe error for {video_path}: {e}")
+        return None
+
+
+def extract_poster_frame(video_path: str, out_path: str) -> bool:
+    """Write the first frame of a video to out_path (PNG) via cv2.
+
+    Returns True on success. Best-effort: a failure logs a warning and returns
+    False so the scan can proceed without a poster thumbnail.
+    """
+    cap = None
+    try:
+        import cv2
+    except Exception as e:  # noqa: BLE001
+        print(f"[VideoPoster] cv2 unavailable, cannot extract poster: {e}")
+        return False
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            print(f"[VideoPoster] cannot open {video_path}")
+            return False
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            print(f"[VideoPoster] cannot read frame 0 of {video_path}")
+            return False
+        out_dir = os.path.dirname(out_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        # imencode + manual write handles non-ASCII paths that cv2.imwrite mishandles.
+        ext = os.path.splitext(out_path)[1] or ".png"
+        ok2, buf = cv2.imencode(ext, frame)
+        if not ok2:
+            print(f"[VideoPoster] encode failed for {video_path}")
+            return False
+        with open(out_path, "wb") as f:
+            f.write(buf.tobytes())
+        return True
+    except Exception as e:  # noqa: BLE001
+        print(f"[VideoPoster] poster extraction failed for {video_path}: {e}")
+        return False
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def scan_directory_structure(
@@ -42,7 +236,7 @@ def scan_directory_structure(
     image_stems = {}  # stem -> [{"path", "role", "group_name"}]
     for fpath in all_files:
         ext = os.path.splitext(fpath)[1].lower()
-        if ext not in IMAGE_EXTS:
+        if ext not in MEDIA_EXTS:
             continue
 
         stem = _get_stem(fpath)

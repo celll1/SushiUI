@@ -664,6 +664,17 @@ export default function ImageGrid() {
       if (image.tile_size) upscaleParams.tile_size = parseInt(image.tile_size);
       if (image.tile_overlap) upscaleParams.tile_overlap = parseInt(image.tile_overlap);
       if (image.rtx_vsr_quality) upscaleParams.rtx_vsr_quality = image.rtx_vsr_quality;
+      if (image.upscaler_backend === 'diffusion') {
+        if (image.prompt !== undefined) upscaleParams.prompt = image.prompt;
+        if (image.negative_prompt !== undefined) upscaleParams.negative_prompt = image.negative_prompt;
+        if (image.diffusion_denoising_strength) upscaleParams.diffusion_denoising_strength = parseFloat(image.diffusion_denoising_strength);
+        if (image.steps !== undefined) upscaleParams.steps = image.steps;
+        if (image.cfg_scale !== undefined) upscaleParams.cfg_scale = image.cfg_scale;
+        if (image.parameters?.sampler) upscaleParams.sampler = image.parameters.sampler;
+        if (image.parameters?.schedule_type) upscaleParams.schedule_type = image.parameters.schedule_type;
+        if (image.seed !== undefined) upscaleParams.seed = image.seed;
+        if (image.diffusion_pre_upscale_mode) upscaleParams.diffusion_pre_upscale_mode = image.diffusion_pre_upscale_mode;
+      }
       localStorage.setItem("upscale_params", JSON.stringify(upscaleParams));
       window.dispatchEvent(new Event("upscale_params_updated"));
     }
@@ -1098,6 +1109,16 @@ export default function ImageGrid() {
                       {selectedImage.rtx_vsr_quality && (
                         <div>
                           <span className="text-gray-500">RTX VSR Quality:</span> {selectedImage.rtx_vsr_quality}
+                        </div>
+                      )}
+                      {selectedImage.diffusion_denoising_strength && (
+                        <div>
+                          <span className="text-gray-500">Denoising Strength:</span> {selectedImage.diffusion_denoising_strength}
+                        </div>
+                      )}
+                      {selectedImage.diffusion_pre_upscale_mode && (
+                        <div>
+                          <span className="text-gray-500">Pre-upscale Mode:</span> {selectedImage.diffusion_pre_upscale_mode}
                         </div>
                       )}
                       {selectedImage.source_image_hash && (

@@ -5038,15 +5038,15 @@ components:
           description: "Input image to upscale."
         upscaler_backend:
           type: string
-          enum: [pil, spandrel, rtx_vsr]
+          enum: [pil, spandrel, rtx_vsr, diffusion]
           default: spandrel
-          description: "Which upscale backend to run: a PIL resample, a spandrel super-resolution model, or RTX Video Super Resolution (nvvfx)."
+          description: "Which upscale backend to run: a PIL resample, a spandrel super-resolution model, RTX Video Super Resolution (nvvfx), or diffusion tile upscale (img2img per tile with the currently loaded model)."
           example: spandrel
         upscaler_model:
           type: string
           nullable: true
           default: null
-          description: "Filename of the model under models/upscalers/. Required when upscaler_backend=spandrel."
+          description: "Filename of the model under models/upscalers/. Required when upscaler_backend=spandrel, or when upscaler_backend=diffusion and diffusion_pre_upscale_mode=model."
           example: "4x-UltraSharp.pth"
         scale_factor:
           type: number
@@ -5089,6 +5089,53 @@ components:
           type: integer
           default: 3
           description: "Unsharp mask threshold."
+        prompt:
+          type: string
+          default: ""
+          description: "Tile img2img prompt (diffusion backend only)."
+          example: "highly detailed, sharp focus"
+        negative_prompt:
+          type: string
+          default: ""
+          description: "Tile img2img negative prompt (diffusion backend only)."
+        diffusion_denoising_strength:
+          type: number
+          minimum: 0.05
+          maximum: 0.9
+          default: 0.3
+          description: "img2img denoising strength applied to each tile (diffusion backend only)."
+          example: 0.3
+        steps:
+          type: integer
+          default: 20
+          description: "Inference steps for each tile's img2img pass (diffusion backend only)."
+          example: 20
+        cfg_scale:
+          type: number
+          default: 7.0
+          description: "Classifier-free guidance scale for each tile's img2img pass (diffusion backend only)."
+          example: 7.0
+        sampler:
+          type: string
+          default: euler
+          description: "Sampler used for each tile's img2img pass (diffusion backend only)."
+          example: euler
+        schedule_type:
+          type: string
+          default: uniform
+          description: "Noise schedule type used for each tile's img2img pass (diffusion backend only)."
+          example: uniform
+        seed:
+          type: integer
+          default: -1
+          description: "Base seed for diffusion tile upscale; -1 = random. The same base seed is used for all tiles, offset by tile index. The resolved seed is recorded on the returned image (diffusion backend only)."
+          example: -1
+        diffusion_pre_upscale_mode:
+          type: string
+          enum: [pil, model]
+          default: pil
+          description: "How the image is pre-upscaled to the target size before tiling, when upscaler_backend=diffusion: a PIL resample (using pil_resample) or the spandrel model in upscaler_model."
+          example: pil
 
     GenerationResponse:
       type: object

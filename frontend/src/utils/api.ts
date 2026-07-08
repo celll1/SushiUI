@@ -278,6 +278,16 @@ export interface UpscaleParams {
   unsharp_radius?: number;
   unsharp_percent?: number;
   unsharp_threshold?: number;
+  // Diffusion tile upscale (upscaler_backend === "diffusion")
+  prompt?: string;
+  negative_prompt?: string;
+  diffusion_denoising_strength?: number;
+  steps?: number;
+  cfg_scale?: number;
+  sampler?: string;
+  schedule_type?: string;
+  seed?: number;
+  diffusion_pre_upscale_mode?: string;
 }
 
 export interface UpscalerModelInfo {
@@ -346,6 +356,8 @@ export interface GeneratedImage {
   tile_size?: string;
   tile_overlap?: string;
   rtx_vsr_quality?: string;
+  diffusion_denoising_strength?: string;
+  diffusion_pre_upscale_mode?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -843,6 +855,19 @@ export const generateUpscale = async (params: UpscaleParams, image: File | strin
   formData.append("unsharp_radius", String(params.unsharp_radius ?? 2.0));
   formData.append("unsharp_percent", String(params.unsharp_percent ?? 100));
   formData.append("unsharp_threshold", String(params.unsharp_threshold ?? 3));
+
+  // Diffusion tile upscale
+  if (params.upscaler_backend === "diffusion") {
+    formData.append("prompt", params.prompt || "");
+    formData.append("negative_prompt", params.negative_prompt || "");
+    formData.append("diffusion_denoising_strength", String(params.diffusion_denoising_strength ?? 0.3));
+    formData.append("steps", String(params.steps ?? 20));
+    formData.append("cfg_scale", String(params.cfg_scale ?? 7.0));
+    formData.append("sampler", params.sampler || "euler");
+    formData.append("schedule_type", params.schedule_type || "uniform");
+    formData.append("seed", String(params.seed ?? -1));
+    formData.append("diffusion_pre_upscale_mode", params.diffusion_pre_upscale_mode || "pil");
+  }
 
   const response = await api.post("/generate/upscale", formData, {
     headers: { "Content-Type": "multipart/form-data" },

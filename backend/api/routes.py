@@ -1628,11 +1628,21 @@ async def generate_upscale(
     unsharp_radius: float = Form(UPSCALE_DEFAULTS["unsharp_radius"]),
     unsharp_percent: int = Form(UPSCALE_DEFAULTS["unsharp_percent"]),
     unsharp_threshold: int = Form(UPSCALE_DEFAULTS["unsharp_threshold"]),
+    prompt: str = Form(UPSCALE_DEFAULTS["prompt"]),
+    negative_prompt: str = Form(UPSCALE_DEFAULTS["negative_prompt"]),
+    diffusion_denoising_strength: float = Form(UPSCALE_DEFAULTS["diffusion_denoising_strength"]),
+    steps: int = Form(UPSCALE_DEFAULTS["steps"]),
+    cfg_scale: float = Form(UPSCALE_DEFAULTS["cfg_scale"]),
+    sampler: str = Form(UPSCALE_DEFAULTS["sampler"]),
+    schedule_type: str = Form(UPSCALE_DEFAULTS["schedule_type"]),
+    seed: int = Form(UPSCALE_DEFAULTS["seed"]),
+    diffusion_pre_upscale_mode: str = Form(UPSCALE_DEFAULTS["diffusion_pre_upscale_mode"]),
     image: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
-    """Upscale an image via PIL resample, a spandrel super-resolution model, or
-    RTX Video Super Resolution (nvvfx)."""
+    """Upscale an image via PIL resample, a spandrel super-resolution model,
+    RTX Video Super Resolution (nvvfx), or diffusion tile upscale (img2img
+    per tile with the currently loaded model)."""
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from core.upscaler import run_upscale
     start_generation("upscale")
@@ -1655,12 +1665,27 @@ async def generate_upscale(
             "unsharp_percent": unsharp_percent,
             "unsharp_threshold": unsharp_threshold,
         }
+
+        if upscaler_backend == "diffusion":
+            params.update({
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "diffusion_denoising_strength": diffusion_denoising_strength,
+                "steps": steps,
+                "cfg_scale": cfg_scale,
+                "sampler": sampler,
+                "schedule_type": schedule_type,
+                "seed": seed,
+                "diffusion_pre_upscale_mode": diffusion_pre_upscale_mode,
+            })
+
         print(f"upscale generation params: {sanitize_params_for_logging(params)}")
 
-        if upscaler_backend == "spandrel":
+        if upscaler_backend == "spandrel" or (upscaler_backend == "diffusion" and diffusion_pre_upscale_mode == "model"):
             if not upscaler_model:
                 raise CustomValidationError(
-                    "upscaler_model is required when upscaler_backend='spandrel'"
+                    "upscaler_model is required when upscaler_backend='spandrel' "
+                    "(or diffusion_pre_upscale_mode='model')"
                 )
             model_path = _resolve_upscaler_model_path(upscaler_model, db)
             if not model_path:
@@ -1669,6 +1694,12 @@ async def generate_upscale(
                     detail=f"model: {upscaler_model}"
                 )
             params["_upscaler_model_path"] = model_path
+
+        if upscaler_backend == "diffusion" and pipeline_manager.current_model_info is None:
+            raise CustomValidationError(
+                "No diffusion model loaded",
+                detail="Load a model before using upscaler_backend='diffusion'."
+            )
 
         # Progress callback: tiles reported as step/total_steps.
         # send_progress_sync is thread-safe (called from the executor thread).
@@ -1680,17 +1711,28 @@ async def generate_upscale(
 
         from core.gpu_coordinator import gpu_coordinator
         loop = asyncio.get_event_loop()
-        _peak_gb = _estimate_gen_peak_gb(input_image.width, input_image.height, 1, "unknown")
+        if upscaler_backend == "diffusion":
+            target_w = max(1, round(input_image.width * scale_factor))
+            target_h = max(1, round(input_image.height * scale_factor))
+            est_w = tile_size if tile_size > 0 else target_w
+            est_h = tile_size if tile_size > 0 else target_h
+            _peak_gb = _estimate_gen_peak_gb(est_w, est_h, 1, pipeline_manager.current_pipeline_kind)
+        else:
+            _peak_gb = _estimate_gen_peak_gb(input_image.width, input_image.height, 1, "unknown")
         _gen_start = time.perf_counter()
         async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
             result_image, upscale_warnings = await loop.run_in_executor(
                 executor,
-                lambda: run_upscale(params, input_image, progress_callback=progress_callback)
+                lambda: run_upscale(params, input_image, progress_callback=progress_callback, pipeline_manager=pipeline_manager)
             )
         apply_generation_timings(params, time.perf_counter() - _gen_start)
 
         for w in upscale_warnings:
             print(f"[Upscale] Warning: {w}")
+
+        # Record actual output dims so PNG metadata reflects the result, not defaults
+        params["width"] = result_image.width
+        params["height"] = result_image.height
 
         # Calculate metadata first so source_image_hash lands in the PNG text chunk
         metadata = calculate_generation_metadata(
@@ -1702,12 +1744,15 @@ async def generate_upscale(
         )
         params["source_image_hash"] = metadata.get("source_image_hash")
 
+        is_diffusion = upscaler_backend == "diffusion"
+        diffusion_model_info = pipeline_manager.current_model_info if is_diffusion else None
+
         # Save image with metadata
         filename = save_image_with_metadata(
             result_image,
             params,
             "upscale",
-            model_info=None
+            model_info=diffusion_model_info
         )
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
@@ -1718,16 +1763,26 @@ async def generate_upscale(
         if _effective_warnings:
             params_for_db["effective_warnings"] = _effective_warnings
 
+        if is_diffusion:
+            diffusion_model_name, diffusion_model_hash = extract_model_info(pipeline_manager)
+            record_model_name = diffusion_model_name or upscaler_backend
+            record_model_hash = diffusion_model_hash
+            actual_seed = params.get("seed", 0)
+        else:
+            record_model_name = params.get("upscaler_model") or upscaler_backend
+            record_model_hash = params.get("upscaler_model_hash", "")
+            actual_seed = 0
+
         db_image = create_db_image_record(
             GeneratedImage,
             filename=filename,
             params=params_for_db,
-            actual_seed=0,
+            actual_seed=actual_seed,
             generation_type="upscale",
             image_hash=metadata["image_hash"],
             lora_names=None,
-            model_name=params.get("upscaler_model") or upscaler_backend,
-            model_hash=params.get("upscaler_model_hash", ""),
+            model_name=record_model_name,
+            model_hash=record_model_hash,
             result_image=result_image,
             source_image_hash=metadata.get("source_image_hash")
         )
@@ -1735,11 +1790,11 @@ async def generate_upscale(
         db.commit()
         db.refresh(db_image)
 
-        complete_generation({"image_id": db_image.id, "filename": filename, "seed": 0})
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
         return {
             "success": True,
             "image": db_image.to_dict(),
-            "actual_seed": 0,
+            "actual_seed": actual_seed,
             "warnings": get_warnings() + upscale_warnings,
         }
 

@@ -180,6 +180,16 @@ UPSCALE_DEFAULTS: Dict[str, Any] = {
     "unsharp_radius": 2.0,
     "unsharp_percent": 100,
     "unsharp_threshold": 3,
+    # Diffusion tile upscale (upscaler_backend == "diffusion")
+    "prompt": "",
+    "negative_prompt": "",
+    "diffusion_denoising_strength": 0.3,   # 0.05-0.9
+    "steps": GENERATION_DEFAULTS["steps"],
+    "cfg_scale": GENERATION_DEFAULTS["cfg_scale"],
+    "sampler": GENERATION_DEFAULTS["sampler"],
+    "schedule_type": GENERATION_DEFAULTS["schedule_type"],
+    "seed": -1,                            # -1 = random
+    "diffusion_pre_upscale_mode": "pil",   # "pil" | "model"
 }
 
 # ---------------------------------------------------------------------------

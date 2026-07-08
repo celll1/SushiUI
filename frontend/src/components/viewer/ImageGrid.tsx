@@ -714,7 +714,9 @@ export default function ImageGrid() {
     } catch (error) {
       console.error("[ImageGrid] Failed to send image to img2vid:", error);
     }
-    router.push("/generate?tab=img2vid");
+    // img2vid was merged into the img2img panel (dual img->img/vid, driven by the
+    // loaded model). The keyframe still rides img2vid_input_image / img2vid_input_updated.
+    router.push("/generate?tab=img2img");
   };
 
   // Grab the current frame of the selected video via a canvas. Same-origin
@@ -764,7 +766,8 @@ export default function ImageGrid() {
     } catch (error) {
       console.error("[ImageGrid] Failed to send captured frame to img2vid:", error);
     }
-    router.push("/generate?tab=img2vid");
+    // img2vid merged into img2img panel; keyframe rides img2vid_input_image.
+    router.push("/generate?tab=img2img");
   };
 
   // Swipe gesture handlers for gallery pagination

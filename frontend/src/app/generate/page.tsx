@@ -7,8 +7,6 @@ import Txt2ImgPanel from "@/components/generation/Txt2ImgPanel";
 import Img2ImgPanel from "@/components/generation/Img2ImgPanel";
 import InpaintPanel from "@/components/generation/InpaintPanel";
 import UpscalePanel from "@/components/generation/UpscalePanel";
-import Txt2VidPanel from "@/components/generation/Txt2VidPanel";
-import Img2VidPanel from "@/components/generation/Img2VidPanel";
 import FloatingGallery from "@/components/common/FloatingGallery";
 import GenerationQueue from "@/components/common/GenerationQueue";
 import GPUMonitor from "@/components/common/GPUMonitor";
@@ -26,7 +24,7 @@ export default function GeneratePage() {
 function GeneratePageContent() {
   const searchParams = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint" | "upscale" | "txt2vid" | "img2vid">("txt2img");
+  const [activeTab, setActiveTab] = useState<"txt2img" | "img2img" | "inpaint" | "upscale">("txt2img");
   const [galleryImages, setGalleryImages] = useState<Array<{ url: string; timestamp: number }>>([]);
   const [maxGalleryImages, setMaxGalleryImages] = useState(30);
   const { setGenerateForever } = useGenerationQueue();
@@ -38,10 +36,6 @@ function GeneratePageContent() {
       setActiveTab("inpaint");
     } else if (tabParam === "upscale") {
       setActiveTab("upscale");
-    } else if (tabParam === "txt2vid") {
-      setActiveTab("txt2vid");
-    } else if (tabParam === "img2vid") {
-      setActiveTab("img2vid");
     }
   }, [tabParam]);
 
@@ -110,26 +104,6 @@ function GeneratePageContent() {
           >
             Upscale
           </button>
-          <button
-            onClick={() => setActiveTab("txt2vid")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-              activeTab === "txt2vid"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            txt2vid
-          </button>
-          <button
-            onClick={() => setActiveTab("img2vid")}
-            className={`px-3 sm:px-4 py-2 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap ${
-              activeTab === "img2vid"
-                ? "border-b-2 border-blue-500 text-white"
-                : "text-gray-400 hover:text-white"
-            }`}
-          >
-            img2vid
-          </button>
         </div>
 
         {/* Tab Content */}
@@ -137,8 +111,6 @@ function GeneratePageContent() {
         {activeTab === "img2img" && <Img2ImgPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
         {activeTab === "inpaint" && <InpaintPanel onTabChange={setActiveTab} onImageGenerated={handleImageGenerated} />}
         {activeTab === "upscale" && <UpscalePanel onTabChange={setActiveTab} />}
-        {activeTab === "txt2vid" && <Txt2VidPanel onTabChange={setActiveTab} />}
-        {activeTab === "img2vid" && <Img2VidPanel onTabChange={setActiveTab} />}
       </main>
 
       {/* Floating Gallery - shared across all tabs */}

@@ -80,13 +80,13 @@ ANIMA_WIRING = ComponentWiringSpec(
 
 LENS_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
-    latent_channels=16, latent_ndim=4, latent_packing="none",
+    latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
     vae_scale_factor=8, vae_norm="shift_scale",
 )
 
 IDEOGRAM4_WIRING = ComponentWiringSpec(
     te_out_dim=4096, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
-    latent_channels=16, latent_ndim=4, latent_packing="none",
+    latent_channels=32, latent_ndim=4, latent_packing="none",  # AutoencoderKLFlux2 (verified vae/config.json)
     vae_scale_factor=8, vae_norm="shift_scale",
 )
 
@@ -104,7 +104,7 @@ KREA2_WIRING = ComponentWiringSpec(
 
 FLUX2_WIRING = ComponentWiringSpec(
     te_out_dim=None, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
-    latent_channels=16, latent_ndim=4, latent_packing="flux_pack",
+    latent_channels=32, latent_ndim=4, latent_packing="flux_pack",  # AutoencoderKLFlux2 (vae_store flux2=32)
     vae_scale_factor=8, vae_norm="batchnorm",
 )
 

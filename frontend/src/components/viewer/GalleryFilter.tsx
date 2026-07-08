@@ -22,6 +22,10 @@ interface GalleryFilterProps {
   setFilterImg2Img: (value: boolean) => void;
   filterInpaint: boolean;
   setFilterInpaint: (value: boolean) => void;
+  filterTxt2Vid: boolean;
+  setFilterTxt2Vid: (value: boolean) => void;
+  filterImg2Vid: boolean;
+  setFilterImg2Vid: (value: boolean) => void;
   dateFrom: string;
   setDateFrom: (value: string) => void;
   dateTo: string;
@@ -70,6 +74,10 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
   setFilterImg2Img,
   filterInpaint,
   setFilterInpaint,
+  filterTxt2Vid,
+  setFilterTxt2Vid,
+  filterImg2Vid,
+  setFilterImg2Vid,
   dateFrom,
   setDateFrom,
   dateTo,
@@ -140,6 +148,24 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
                   className="rounded"
                 />
                 <span className="text-sm text-gray-300">inpaint</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filterTxt2Vid}
+                  onChange={(e) => setFilterTxt2Vid(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">txt2vid</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filterImg2Vid}
+                  onChange={(e) => setFilterImg2Vid(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">img2vid</span>
               </label>
             </div>
           </div>

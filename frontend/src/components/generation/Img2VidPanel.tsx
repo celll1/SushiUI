@@ -8,6 +8,7 @@ import NumberInput from "../common/NumberInput";
 import Textarea from "../common/Textarea";
 import Input from "../common/Input";
 import GenerationQueue from "../common/GenerationQueue";
+import ModelLoadSection from "../common/ModelLoadSection";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { generateImg2Vid, Img2VidParams } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
@@ -28,6 +29,8 @@ const DEFAULT_PARAMS: Img2VidParams = {
   num_videos_per_prompt: 1,
   max_sequence_length: 1024,
   audio_enable: true,
+  vae_path: null,
+  text_encoder_path: null,
 };
 
 const STORAGE_KEY = "img2vid_params";
@@ -362,6 +365,14 @@ export default function Img2VidPanel({ onTabChange }: Img2VidPanelProps = {}) {
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
       <div className="space-y-4">
+        <ModelLoadSection
+          showVisionEncoder={false}
+          vaePath={params.vae_path ?? null}
+          onVaePathChange={(path) => setParams({ ...params, vae_path: path })}
+          textEncoderPath={params.text_encoder_path ?? null}
+          onTextEncoderChange={(path) => setParams({ ...params, text_encoder_path: path })}
+          storageKeyPrefix="img2vid"
+        />
         <Card title="Keyframe Image">
           <div
             className={`border-2 border-dashed rounded-lg p-4 text-center cursor-pointer transition-colors ${

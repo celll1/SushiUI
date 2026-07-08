@@ -356,6 +356,34 @@ def _save_dataset_cache(cache_path: Path, cache_data: dict):
         print(f"[TrainRunner] Warning: Failed to save dataset cache: {e}")
 
 
+def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str) -> None:
+    """Propagate LTX-2.3 video metadata onto an item dict (in place).
+
+    For item_type=="video" (LTX-2.3 VIDEO datasets), spreads the probed metadata
+    stored in DatasetItem.exif_data ({video_path, fps, num_frames, duration,
+    width, height, codec} per P4a) so the trainer's video-clip encode guards
+    (item_type=="video") and VideoBucketManager see it. Image items get
+    item_type="single" and are otherwise untouched.
+    """
+    if item_type == "video":
+        item_dict["item_type"] = "video"
+        meta = exif_data if isinstance(exif_data, dict) else {}
+        item_dict["video_path"] = meta.get("video_path") or image_path
+        if meta.get("fps") is not None:
+            item_dict["fps"] = meta.get("fps")
+        if meta.get("num_frames") is not None:
+            item_dict["num_frames"] = meta.get("num_frames")
+        if meta.get("duration") is not None:
+            item_dict["duration"] = meta.get("duration")
+        # Prefer probed spatial dims when the DB row lacks them.
+        if not item_dict.get("width") and meta.get("width"):
+            item_dict["width"] = meta.get("width")
+        if not item_dict.get("height") and meta.get("height"):
+            item_dict["height"] = meta.get("height")
+    else:
+        item_dict["item_type"] = item_type or "single"
+
+
 def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None,
                            run_id: int = None) -> list:
     """
@@ -441,6 +469,10 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
             "height": item.height,
             "related_images": item.related_images,
         }
+        # LTX-2.3 video items: carry item_type + probed video metadata so the
+        # trainer's video-clip encode path (item_type=="video") and
+        # VideoBucketManager see it. Image items are unchanged (item_type="single").
+        _apply_video_metadata(item_dict, item.item_type, item.exif_data, item.image_path)
         dataset_items.append(item_dict)
 
     if skipped_missing > 0:
@@ -654,6 +686,16 @@ def _process_cached_items(
             "height": item.get("height"),
         }
 
+        # Carry LTX-2.3 video fields through this re-copy (item is a dict from the
+        # fast/DB load above, so item_type + video metadata already live on it).
+        if item.get("item_type") == "video":
+            processed_item["item_type"] = "video"
+            for _vk in ("video_path", "fps", "num_frames", "duration"):
+                if _vk in item:
+                    processed_item[_vk] = item[_vk]
+        else:
+            processed_item["item_type"] = item.get("item_type", "single")
+
         # Add reference images if available
         if item.get("related_images") and "reference" in item.get("related_images", {}):
             processed_item["reference_images"] = item["related_images"]["reference"]
@@ -837,6 +879,8 @@ def get_dataset_items(db: Session, dataset_id: int, epoch_num: int = 0, run_id: 
             "width": item.width,
             "height": item.height,
         }
+        # LTX-2.3 video items: carry item_type + probed video metadata (see fast path).
+        _apply_video_metadata(item_dict, item.item_type, item.exif_data, item.image_path)
 
         # Add reference images if available
         if item.related_images and "reference" in item.related_images:

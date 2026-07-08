@@ -17,6 +17,7 @@ from .lens_adapter import LensLoRAAdapter, LensFullParameterAdapter
 from .ideogram4_adapter import Ideogram4LoRAAdapter, Ideogram4FullParameterAdapter
 from .minit2i_adapter import MiniT2ILoRAAdapter, MiniT2IFullParameterAdapter
 from .krea2_adapter import Krea2LoRAAdapter, Krea2FullParameterAdapter
+from .ltx2_adapter import Ltx2LoRAAdapter, Ltx2FullParameterAdapter
 from .base_controlnet_adapter import BaseControlNetAdapter
 from .controlnet_sd15_adapter import ControlNetSD15Adapter
 from .controlnet_sdxl_adapter import ControlNetSDXLAdapter
@@ -43,6 +44,8 @@ __all__ = [
     "Ideogram4FullParameterAdapter",
     "Krea2LoRAAdapter",
     "Krea2FullParameterAdapter",
+    "Ltx2LoRAAdapter",
+    "Ltx2FullParameterAdapter",
     "BaseControlNetAdapter",
     "ControlNetSD15Adapter",
     "ControlNetSDXLAdapter",

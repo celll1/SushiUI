@@ -107,3 +107,11 @@ FLUX2_WIRING = ComponentWiringSpec(
     latent_channels=16, latent_ndim=4, latent_packing="flux_pack",
     vae_scale_factor=8, vae_norm="batchnorm",
 )
+
+# LTX-2.3 video: 128ch 5D latents (spatial /32, temporal /8), Gemma3 TE (3840)
+# projected by LTX2TextConnectors to caption_channels=3840, audio VAE present.
+LTX2_WIRING = ComponentWiringSpec(
+    te_out_dim=3840, te_pooled_dim=None, te_seq_packing="llm", added_cond=None,
+    latent_channels=128, latent_ndim=5, latent_packing="none",
+    vae_scale_factor=32, vae_norm="identity",
+)

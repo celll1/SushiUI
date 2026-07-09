@@ -215,6 +215,8 @@ class GenerationParams(BaseModel):
     cpu_text_encoding: bool = GENERATION_DEFAULTS["cpu_text_encoding"]
     # torch.compile optimization
     use_torch_compile: bool = False  # Enable torch.compile for U-Net (1.3-2x speedup)
+    # Keep-models-hot (queue optimization; SD1.5/SDXL only in this phase)
+    keep_models_hot: bool = GENERATION_DEFAULTS["keep_models_hot"]
     vae_tiling: bool = GENERATION_DEFAULTS["vae_tiling"]  # Tiled VAE decode for large images
     vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (sample_size*1.5)
     color_flatten_strength: int = GENERATION_DEFAULTS["color_flatten_strength"]  # 0-100 chroma smoothing; 0=off
@@ -389,6 +391,7 @@ async def generate_txt2img(
     unet_quantization: Optional[str] = Form(None),
     text_encoder_quantization: Optional[str] = Form(None),
     use_torch_compile: bool = Form(False),
+    keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
@@ -569,6 +572,7 @@ async def generate_txt2img(
             "original_size_scale": original_size_scale,
             "text_encoder_quantization": text_encoder_quantization,
             "use_torch_compile": use_torch_compile,
+            "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "color_flatten_strength": color_flatten_strength,
@@ -1269,6 +1273,7 @@ async def generate_img2img(
     text_encoder_quantization: Optional[str] = Form(None),
     cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(False),
+    keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
@@ -1458,6 +1463,7 @@ async def generate_img2img(
             "text_encoder_quantization": text_encoder_quantization,
             "cpu_text_encoding": cpu_text_encoding,
             "use_torch_compile": use_torch_compile,
+            "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "color_flatten_strength": color_flatten_strength,
@@ -2314,6 +2320,7 @@ async def generate_inpaint(
     text_encoder_quantization: Optional[str] = Form(None),
     cpu_text_encoding: bool = Form(GENERATION_DEFAULTS["cpu_text_encoding"]),
     use_torch_compile: bool = Form(False),
+    keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
@@ -2522,6 +2529,7 @@ async def generate_inpaint(
             "text_encoder_quantization": text_encoder_quantization,
             "cpu_text_encoding": cpu_text_encoding,
             "use_torch_compile": use_torch_compile,
+            "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
             "color_flatten_strength": color_flatten_strength,

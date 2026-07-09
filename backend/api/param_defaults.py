@@ -56,6 +56,14 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "text_encoder_quantization": None,
     "cpu_text_encoding": False,
     "use_torch_compile": False,
+    # Keep-models-hot (queue optimization, SD1.5/SDXL only in this phase): when
+    # generating several items back-to-back on the SAME loaded model (same
+    # checkpoint + LoRA set + unet_quantization), skip the CPU offload at the end
+    # of a successful generation (and the matching GPU stage at the start of the
+    # next one) for components it is safe to keep resident, bounded by a VRAM
+    # guard. Off by default (byte-identical staging/offload behavior). See
+    # core/keep_hot.py.
+    "keep_models_hot": False,
     # VAE tiling: decode the latent in overlapping tiles so the VAE decode peak is
     # bounded by the tile size, not the full image. Lets large images decode
     # without OOM. Off by default (not bit-identical to a full decode; small images

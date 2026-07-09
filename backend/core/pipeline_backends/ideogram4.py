@@ -241,11 +241,19 @@ class Ideogram4Mixin:
         return "".join(t for t, _ in parsed)
 
     @torch.no_grad()
-    def _ideogram4_encode(self, prompt, grid_h, grid_w, max_sequence_length, device, dtype):
-        """Stage the text encoder to GPU, encode the prompt, then free it back to CPU."""
+    def _ideogram4_encode(self, prompt, grid_h, grid_w, max_sequence_length, device, dtype,
+                          skip_gpu_stage: bool = False, skip_cpu_offload: bool = False):
+        """Stage the text encoder to GPU, encode the prompt, then free it back to CPU.
+
+        ``skip_gpu_stage``/``skip_cpu_offload`` let a keep-models-hot caller skip the
+        ->GPU stage (already resident from a previous generation) and/or the ->CPU
+        offload (kept hot for the next queued generation) around this single encode
+        call. Both default False, so the default behaviour is byte-identical.
+        """
         from core.models.ideogram4.ideogram4_pipeline_ops import encode_prompt
 
-        self._ideogram4_move("text_encoder", device)
+        if not skip_gpu_stage:
+            self._ideogram4_move("text_encoder", device)
         text_encoder = self.ideogram4_components["text_encoder"]
         tokenizer = self.ideogram4_components["tokenizer"]
         cond = encode_prompt(
@@ -253,7 +261,8 @@ class Ideogram4Mixin:
             grid_h=grid_h, grid_w=grid_w,
             max_sequence_length=max_sequence_length, device=device,
         )
-        self._ideogram4_move("text_encoder", "cpu")
+        if not skip_cpu_offload:
+            self._ideogram4_move("text_encoder", "cpu")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         # Cast conditioning to the transformer compute dtype (halves memory; matches RMSNorm dtype).
@@ -262,7 +271,8 @@ class Ideogram4Mixin:
         return cond
 
     @torch.no_grad()
-    def _ideogram4_encode_nag_negative(self, params, cfg, cond, device, dtype):
+    def _ideogram4_encode_nag_negative(self, params, cfg, cond, device, dtype,
+                                       skip_gpu_stage: bool = False, skip_cpu_offload: bool = False):
         """Encode the NAG-negative prompt into a packed ``nag_llm_features`` tensor and store
         it on ``cond`` — only when NAG is active. Byte-identical (returns early) otherwise.
 
@@ -270,6 +280,9 @@ class Ideogram4Mixin:
         empty prompt like FLUX.2). The negative features share the positive prompt's packed
         layout (same ``encode_prompt`` path), so the conditional transformer can run a
         doubled ``[positive; nag_negative]`` text batch.
+
+        ``skip_gpu_stage``/``skip_cpu_offload``: see ``_ideogram4_encode`` docstring —
+        same keep-models-hot semantics, applied to this (second, optional) text-encoder use.
         """
         from core.models.ideogram4.ideogram4_pipeline_ops import encode_prompt
 
@@ -282,7 +295,8 @@ class Ideogram4Mixin:
         # cleanly; the signed nag_neg weights are carried by NegPip's V scaling instead.
         nag_neg_prompt = self._ideogram4_negpip_clean_prompt(nag_neg_prompt, params)
 
-        self._ideogram4_move("text_encoder", device)
+        if not skip_gpu_stage:
+            self._ideogram4_move("text_encoder", device)
         text_encoder = self.ideogram4_components["text_encoder"]
         tokenizer = self.ideogram4_components["tokenizer"]
         nag_cond = encode_prompt(
@@ -290,7 +304,8 @@ class Ideogram4Mixin:
             grid_h=cfg["grid_h"], grid_w=cfg["grid_w"],
             max_sequence_length=cfg["max_sequence_length"], device=device,
         )
-        self._ideogram4_move("text_encoder", "cpu")
+        if not skip_cpu_offload:
+            self._ideogram4_move("text_encoder", "cpu")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         # Packed features with the nag-negative TEXT region (image region stays zero-padded),
@@ -475,7 +490,23 @@ class Ideogram4Mixin:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-    def _ideogram4_cleanup(self):
+    def _ideogram4_cleanup(self, model_key: Optional[str] = None, gen_succeeded: bool = False,
+                           keep_te: bool = False, keep_transformer: bool = False,
+                           keep_vae: bool = False):
+        """Final cross-generation boundary: strip any leftover block-swap offloaders,
+        then ensure components are back on CPU -- EXCEPT components kept hot on a
+        SUCCESSFUL generation (see core/keep_hot.py). On an exception (``gen_succeeded``
+        False) or when keep-hot bookkeeping was never engaged (``model_key`` None),
+        this forces a full offload of every component, matching the pre-keep-hot
+        behaviour byte-for-byte.
+
+        Ideogram 4 stages BOTH transformers (cond + uncond) as one logical residency
+        unit named ``"transformer"`` (they are always staged/unstaged together by
+        ``_ideogram4_stage_transformers``/``_ideogram4_unstage_transformers``), so
+        ``keep_transformer`` gates offloading BOTH.
+        """
+        from core.keep_hot import mark_resident, discard_resident, clear_resident
+
         # Strip any leftover block-swap offloaders (e.g. if setup raised mid-way).
         for _comp in ("transformer", "unconditional_transformer"):
             t = (self.ideogram4_components or {}).get(_comp)
@@ -485,11 +516,41 @@ class Ideogram4Mixin:
                 except Exception:
                     pass
         self._ideogram4_offloaders = []
-        for _comp in ("text_encoder", "transformer", "unconditional_transformer", "vae"):
-            try:
-                self._ideogram4_move(_comp, "cpu")
-            except Exception:
-                pass
+
+        if not gen_succeeded or model_key is None:
+            clear_resident(self)
+            for _comp in ("text_encoder", "transformer", "unconditional_transformer", "vae"):
+                try:
+                    self._ideogram4_move(_comp, "cpu")
+                except Exception:
+                    pass
+        else:
+            if keep_te:
+                mark_resident(self, "text_encoder", model_key)
+            else:
+                try:
+                    self._ideogram4_move("text_encoder", "cpu")
+                except Exception:
+                    pass
+                discard_resident(self, "text_encoder")
+            if keep_transformer:
+                mark_resident(self, "transformer", model_key)
+            else:
+                try:
+                    self._ideogram4_move("transformer", "cpu")
+                    self._ideogram4_move("unconditional_transformer", "cpu")
+                except Exception:
+                    pass
+                discard_resident(self, "transformer")
+            if keep_vae:
+                mark_resident(self, "vae", model_key)
+            else:
+                try:
+                    self._ideogram4_move("vae", "cpu")
+                except Exception:
+                    pass
+                discard_resident(self, "vae")
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -511,11 +572,50 @@ class Ideogram4Mixin:
         scheduler = self.ideogram4_components["scheduler"]
         advanced_cfg = self._ideogram4_advanced_cfg(params)
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident,
+            should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 20)) > 0
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._ideogram4_move("text_encoder", "cpu"),
+                self._ideogram4_move("transformer", "cpu"),
+                self._ideogram4_move("unconditional_transformer", "cpu"),
+                self._ideogram4_move("vae", "cpu"),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("text_encoder"))
+            if not (_kh_is_block_swapped or _kh_has_loras):
+                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("transformer"))
+                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("unconditional_transformer"))
+            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        # Ideogram 4 has no CPU-text-encoding mode, so TE eligibility is guard-only.
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
             print("[Ideogram4] Stage 1: Text encoding...")
             cond = self._ideogram4_encode(
                 cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
                 cfg["max_sequence_length"], device, dtype,
+                skip_gpu_stage=is_resident(self, "text_encoder", _kh_model_key),
+                skip_cpu_offload=_kh_keep_te,
             )
 
             print("[Ideogram4] Stage 2: Prepare latents...")
@@ -523,10 +623,18 @@ class Ideogram4Mixin:
                 cfg["grid_h"], cfg["grid_w"], dtype=torch.float32, device=device, seed=cfg["seed"],
             )
 
-            nag_cfg = self._ideogram4_encode_nag_negative(params, cfg, cond, device, dtype)
+            nag_cfg = self._ideogram4_encode_nag_negative(
+                params, cfg, cond, device, dtype,
+                skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
+            )
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
-            transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            if is_resident(self, "transformer", _kh_model_key):
+                transformer = self.ideogram4_components["transformer"]
+                uncond_transformer = self.ideogram4_components["unconditional_transformer"]
+                self._ideogram4_offloaders = []
+            else:
+                transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             set_ideogram4_attention_backend(
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
@@ -551,17 +659,30 @@ class Ideogram4Mixin:
                 transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
-                self._ideogram4_unstage_transformers()
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    self._ideogram4_unstage_transformers()
+            # Transformer marked optimistically; _kh_gen_succeeded is set only AFTER
+            # decode below, so a decode failure routes to the finally exception
+            # branch (clear_resident + full offload), undoing this mark.
             del cond
 
             print("[Ideogram4] Stage 4: VAE decode...")
-            self._ideogram4_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._ideogram4_move("vae", device)
             self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
             image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._ideogram4_move("vae", "cpu")
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # All GPU work (incl. decode) succeeded.
+            _kh_gen_succeeded = True
 
             print("[Ideogram4] txt2img completed")
             return image, cfg["seed"], 0
@@ -570,7 +691,10 @@ class Ideogram4Mixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._ideogram4_cleanup()
+            self._ideogram4_cleanup(
+                model_key=_kh_model_key, gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te, keep_transformer=_kh_keep_transformer, keep_vae=_kh_keep_vae,
+            )
 
     def _generate_img2img_ideogram4(self, params: Dict[str, Any], init_image: Image.Image,
                                     progress_callback=None, step_callback=None) -> tuple:
@@ -591,15 +715,55 @@ class Ideogram4Mixin:
         scheduler = self.ideogram4_components["scheduler"]
         advanced_cfg = self._ideogram4_advanced_cfg(params)
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident,
+            should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 20)) > 0
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._ideogram4_move("text_encoder", "cpu"),
+                self._ideogram4_move("transformer", "cpu"),
+                self._ideogram4_move("unconditional_transformer", "cpu"),
+                self._ideogram4_move("vae", "cpu"),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("text_encoder"))
+            if not (_kh_is_block_swapped or _kh_has_loras):
+                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("transformer"))
+                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("unconditional_transformer"))
+            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
             print("[Ideogram4] Stage 1: Text encoding...")
             cond = self._ideogram4_encode(
                 cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
                 cfg["max_sequence_length"], device, dtype,
+                skip_gpu_stage=is_resident(self, "text_encoder", _kh_model_key),
+                skip_cpu_offload=_kh_keep_te,
             )
 
             print("[Ideogram4] Stage 2: Encoding init image...")
-            self._ideogram4_move("vae", device)
+            # First use of the VAE this generation: the cross-generation entry point.
+            if not is_resident(self, "vae", _kh_model_key):
+                self._ideogram4_move("vae", device)
             init_latents = vae_encode(
                 self.ideogram4_components["vae"], init_image, cfg["height"], cfg["width"],
                 device=device, dtype=torch.float32,
@@ -608,10 +772,18 @@ class Ideogram4Mixin:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            nag_cfg = self._ideogram4_encode_nag_negative(params, cfg, cond, device, dtype)
+            nag_cfg = self._ideogram4_encode_nag_negative(
+                params, cfg, cond, device, dtype,
+                skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
+            )
 
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
-            transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            if is_resident(self, "transformer", _kh_model_key):
+                transformer = self.ideogram4_components["transformer"]
+                uncond_transformer = self.ideogram4_components["unconditional_transformer"]
+                self._ideogram4_offloaders = []
+            else:
+                transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             set_ideogram4_attention_backend(
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
@@ -637,17 +809,30 @@ class Ideogram4Mixin:
                 transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
-                self._ideogram4_unstage_transformers()
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    self._ideogram4_unstage_transformers()
+            # Transformer marked optimistically; _kh_gen_succeeded is set only AFTER
+            # decode below, so a decode failure routes to the finally exception
+            # branch (clear_resident + full offload), undoing this mark.
             del cond, init_latents
 
             print("[Ideogram4] Stage 4: VAE decode...")
-            self._ideogram4_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._ideogram4_move("vae", device)
             self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
             image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._ideogram4_move("vae", "cpu")
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # All GPU work (incl. decode) succeeded.
+            _kh_gen_succeeded = True
 
             print("[Ideogram4] img2img completed")
             return image, cfg["seed"], 0
@@ -656,7 +841,10 @@ class Ideogram4Mixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._ideogram4_cleanup()
+            self._ideogram4_cleanup(
+                model_key=_kh_model_key, gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te, keep_transformer=_kh_keep_transformer, keep_vae=_kh_keep_vae,
+            )
 
     def _generate_inpaint_ideogram4(self, params: Dict[str, Any],
                                     init_image: Image.Image, mask_image: Image.Image,
@@ -688,15 +876,55 @@ class Ideogram4Mixin:
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident,
+            should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 20)) > 0
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._ideogram4_move("text_encoder", "cpu"),
+                self._ideogram4_move("transformer", "cpu"),
+                self._ideogram4_move("unconditional_transformer", "cpu"),
+                self._ideogram4_move("vae", "cpu"),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("text_encoder"))
+            if not (_kh_is_block_swapped or _kh_has_loras):
+                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("transformer"))
+                _kh_total_bytes += component_nbytes(self.ideogram4_components.get("unconditional_transformer"))
+            _kh_total_bytes += component_nbytes(self.ideogram4_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
             print("[Ideogram4] Stage 1: Text encoding...")
             cond = self._ideogram4_encode(
                 cfg["prompt"], cfg["grid_h"], cfg["grid_w"],
                 cfg["max_sequence_length"], device, dtype,
+                skip_gpu_stage=is_resident(self, "text_encoder", _kh_model_key),
+                skip_cpu_offload=_kh_keep_te,
             )
 
             print("[Ideogram4] Stage 2: Encoding init image + mask...")
-            self._ideogram4_move("vae", device)
+            # First use of the VAE this generation: the cross-generation entry point.
+            if not is_resident(self, "vae", _kh_model_key):
+                self._ideogram4_move("vae", device)
             init_latents = vae_encode(
                 self.ideogram4_components["vae"], init_image, height, width,
                 device=device, dtype=torch.float32,
@@ -708,10 +936,18 @@ class Ideogram4Mixin:
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32,
             )
 
-            nag_cfg = self._ideogram4_encode_nag_negative(params, cfg, cond, device, dtype)
+            nag_cfg = self._ideogram4_encode_nag_negative(
+                params, cfg, cond, device, dtype,
+                skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
+            )
 
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
-            transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
+            if is_resident(self, "transformer", _kh_model_key):
+                transformer = self.ideogram4_components["transformer"]
+                uncond_transformer = self.ideogram4_components["unconditional_transformer"]
+                self._ideogram4_offloaders = []
+            else:
+                transformer, uncond_transformer = self._ideogram4_stage_transformers(device, params)
             set_ideogram4_attention_backend(
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
@@ -737,17 +973,30 @@ class Ideogram4Mixin:
                 transformer = self._ideogram4_unwrap_nag(transformer)
                 if applied_lora:
                     self._unload_lora_ideogram4()
-                self._ideogram4_unstage_transformers()
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    self._ideogram4_unstage_transformers()
+            # Transformer marked optimistically; _kh_gen_succeeded is set only AFTER
+            # decode below, so a decode failure routes to the finally exception
+            # branch (clear_resident + full offload), undoing this mark.
             del cond, init_latents, mask_latent
 
             print("[Ideogram4] Stage 4: VAE decode...")
-            self._ideogram4_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._ideogram4_move("vae", device)
             self._apply_vae_tiling(self.ideogram4_components["vae"], getattr(self, "_vae_tiling", False))
             image = vae_decode(self.ideogram4_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._ideogram4_move("vae", "cpu")
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._ideogram4_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # All GPU work (incl. decode) succeeded.
+            _kh_gen_succeeded = True
 
             print("[Ideogram4] inpaint completed")
             return image, cfg["seed"], 0
@@ -756,4 +1005,7 @@ class Ideogram4Mixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._ideogram4_cleanup()
+            self._ideogram4_cleanup(
+                model_key=_kh_model_key, gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te, keep_transformer=_kh_keep_transformer, keep_vae=_kh_keep_vae,
+            )

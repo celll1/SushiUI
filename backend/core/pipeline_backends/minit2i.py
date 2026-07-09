@@ -72,28 +72,104 @@ class MiniT2IMixin:
             "latent_w": width // vsf,
         }
 
-    def _minit2i_decode(self, x, cfg):
-        """Pixel: tensor_to_image. Latent: move VAE to GPU, decode, VAE back to CPU."""
+    def _minit2i_kh_setup(self, params: Dict[str, Any]):
+        """Compute keep-models-hot eligibility for this generation (see core/keep_hot.py).
+
+        MiniT2I applies LoRA in place to BOTH the transformer and (when TE-LoRA
+        keys are present) the text encoder -- see _load_lora_minit2i /
+        _unload_lora_minit2i -- so both are gated off whenever any LoRA is
+        requested (the reference's "no LoRA" hazard, extended here to the TE for
+        the same in-place-mutation reason: a resident TE would carry a stale
+        LoRA-wrapped state into the next generation). The transformer is
+        additionally gated off under block-swap streaming. The VAE is absent for
+        pixel-space checkpoints (``vae_type == "none"``) -- component_nbytes(None)
+        is 0 and ``_minit2i_move`` no-ops on a missing component, so it is simply
+        never eligible in that case.
+
+        Returns (model_key, keep_te, keep_transformer, keep_vae, is_block_swapped).
+        """
+        from core.keep_hot import (
+            invalidate_if_model_changed, should_keep_resident, compute_model_key,
+            component_nbytes, keep_hot_requested,
+        )
+        requested = keep_hot_requested(params)
+        model_key = compute_model_key(self, params)
+        has_loras = bool(params.get("loras") or [])
+        has_vae = self.minit2i_components.get("vae") is not None
+
+        enable_block_swap = bool(params.get("enable_block_swap", False))
+        transformer = self.minit2i_components.get("transformer")
+        num_blocks = len(transformer.model.net.double_blocks) if transformer is not None else 0
+        blocks_to_swap = int(params.get("blocks_to_swap", 0))
+        blocks_to_swap = max(0, min(blocks_to_swap, max(num_blocks - 1, 0)))
+        is_block_swapped = enable_block_swap and blocks_to_swap > 0
+
+        # If a resident set exists from a previous generation but is no longer valid
+        # for THIS request's model_key, force a full offload before staging anything.
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._minit2i_move("text_encoder", "cpu"),
+                self._minit2i_move("transformer", "cpu"),
+                self._minit2i_move("vae", "cpu"),
+            ),
+        )
+
+        total_bytes = 0
+        if requested:
+            if not has_loras:
+                total_bytes += component_nbytes(self.minit2i_components.get("text_encoder"))
+                if not is_block_swapped:
+                    total_bytes += component_nbytes(self.minit2i_components.get("transformer"))
+            if has_vae:
+                total_bytes += component_nbytes(self.minit2i_components.get("vae"))
+        guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=total_bytes,
+        ) if requested else False
+
+        keep_te = requested and guard_ok and not has_loras
+        keep_transformer = requested and guard_ok and not is_block_swapped and not has_loras
+        keep_vae = requested and guard_ok and has_vae
+        return model_key, keep_te, keep_transformer, keep_vae, is_block_swapped
+
+    def _minit2i_decode(self, x, cfg, model_key: Optional[str] = None, keep_vae: bool = False):
+        """Pixel: tensor_to_image. Latent: move VAE to GPU (unless already kept
+        resident), decode, then either leave it resident (keep-models-hot) or
+        move it back to CPU (default)."""
         from core.models.minit2i.minit2i_pipeline_ops import tensor_to_image, vae_decode_latent
+        from core.keep_hot import is_resident, mark_resident, discard_resident
         _cf = getattr(self, "_color_flatten_strength", 0)
         if not cfg["is_latent"]:
             return tensor_to_image(x, color_flatten_strength=_cf)
-        vae = self._minit2i_move("vae", self.device)
+        if model_key is None or not is_resident(self, "vae", model_key):
+            vae = self._minit2i_move("vae", self.device)
+        else:
+            vae = self.minit2i_components["vae"]
         try:
             return vae_decode_latent(vae, x, color_flatten_strength=_cf)
         finally:
-            self._minit2i_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if keep_vae and model_key is not None:
+                mark_resident(self, "vae", model_key)
+            else:
+                self._minit2i_move("vae", "cpu")
+                if model_key is not None:
+                    discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
     @torch.no_grad()
     def _minit2i_encode(self, prompt, negative_prompt, prompt_length, device, dtype,
-                        nag_negative_prompt=None):
+                        nag_negative_prompt=None, model_key: Optional[str] = None,
+                        keep_te: bool = False):
         """Encode prompt (+ optional negative, + optional NAG-negative) with FLAN-T5,
-        then free TE to CPU. NAG-negative uses the same encoder path as the negative
-        prompt; returns (nag_text, nag_mask) or (None, None) when not requested."""
+        then free TE to CPU (default) or leave it resident (keep-models-hot).
+        NAG-negative uses the same encoder path as the negative prompt; returns
+        (nag_text, nag_mask) or (None, None) when not requested."""
         from core.models.minit2i.minit2i_pipeline_ops import encode_prompt
         from core.inference.negpip_minit2i import negpip_eligible, clean_prompt
+        from core.keep_hot import is_resident, mark_resident, discard_resident
         # NegPip auto-activation: when a negative emphasis weight is present, strip the
         # emphasis syntax so T5 encodes CLEAN text; the signed weights are carried on the
         # attention value (V) instead. Positive-only prompts are left untouched (the
@@ -104,7 +180,8 @@ class MiniT2IMixin:
             enc_nag = clean_prompt(nag_negative_prompt) if (nag_negative_prompt and str(nag_negative_prompt).strip()) else nag_negative_prompt
         else:
             enc_prompt, enc_negative, enc_nag = prompt, negative_prompt, nag_negative_prompt
-        self._minit2i_move("text_encoder", device)
+        if model_key is None or not is_resident(self, "text_encoder", model_key):
+            self._minit2i_move("text_encoder", device)
         te = self.minit2i_components["text_encoder"]
         tok = self.minit2i_components["tokenizer"]
         text, mask = encode_prompt(te, tok, enc_prompt, prompt_length, device)
@@ -116,9 +193,14 @@ class MiniT2IMixin:
         if enc_nag is not None and str(enc_nag).strip():
             nag_text, nag_mask = encode_prompt(te, tok, enc_nag, prompt_length, device)
             nag_text = nag_text.to(dtype)
-        self._minit2i_move("text_encoder", "cpu")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        if keep_te and model_key is not None:
+            mark_resident(self, "text_encoder", model_key)
+        else:
+            self._minit2i_move("text_encoder", "cpu")
+            if model_key is not None:
+                discard_resident(self, "text_encoder")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
         return text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask
 
     def _minit2i_nag_wrap(self, params, transformer, nag_text, nag_mask):
@@ -251,12 +333,17 @@ class MiniT2IMixin:
         print(f"[MiniT2I] Attention backend: {attn_backend} "
               f"(from attention_type={params.get('attention_type')!r})")
 
-    def _minit2i_stage_transformer(self, device: str, params: Optional[Dict[str, Any]] = None):
+    def _minit2i_stage_transformer(self, device: str, params: Optional[Dict[str, Any]] = None,
+                                   model_key: Optional[str] = None):
         """Place the MiniT2I transformer on GPU for the denoise loop.
 
         With block swap enabled, only the heavy ``double_blocks`` are streamed
         (the rest stays resident); otherwise the whole transformer moves to GPU
-        (default path, unchanged)."""
+        (default path, unchanged) -- unless it is already kept GPU-resident from
+        a previous successful generation (keep-models-hot), in which case the
+        ->GPU move is skipped entirely."""
+        from core.keep_hot import is_resident
+
         params = params or {}
         transformer = self.minit2i_components["transformer"]
         self._minit2i_apply_attention_backend(transformer, params)
@@ -276,11 +363,17 @@ class MiniT2IMixin:
                 transformer, blocks_to_swap, use_pinned_memory, device,
                 h2d_only=h2d_only, ring_size=ring_size)
         else:
-            self._minit2i_move("transformer", device)
+            if model_key is None or not is_resident(self, "transformer", model_key):
+                self._minit2i_move("transformer", device)
         return transformer
 
-    def _minit2i_unstage_transformer(self):
-        """Tear down any block-swap offloader, then return the transformer to CPU."""
+    def _minit2i_unstage_transformer(self, keep_transformer: bool = False,
+                                     model_key: Optional[str] = None):
+        """Tear down any block-swap offloader, then either leave the transformer
+        GPU-resident (keep-models-hot: mark_resident) or return it to CPU
+        (default, or when keep_transformer is False)."""
+        from core.keep_hot import mark_resident, discard_resident
+
         off = getattr(self, "_minit2i_offloader", None)
         transformer = (self.minit2i_components or {}).get("transformer")
         if transformer is not None:
@@ -299,7 +392,12 @@ class MiniT2IMixin:
                 except Exception:
                     pass
         self._minit2i_offloader = None
-        self._minit2i_move("transformer", "cpu")
+        if keep_transformer and model_key is not None:
+            mark_resident(self, "transformer", model_key)
+        else:
+            self._minit2i_move("transformer", "cpu")
+            if model_key is not None:
+                discard_resident(self, "transformer")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -359,7 +457,18 @@ class MiniT2IMixin:
             print(f"[MiniT2I LoRA] Unloaded {restored} LoRA wrappers")
         return restored
 
-    def _minit2i_cleanup(self):
+    def _minit2i_cleanup(self, model_key: Optional[str] = None,
+                        keep_te: bool = False, keep_transformer: bool = False,
+                        keep_vae: bool = False, gen_succeeded: bool = False):
+        """End-of-generation teardown. On failure (or when called with no
+        keep-hot context, e.g. old call sites), force a full offload and clear
+        any tentative residency -- including any transformer/TE mark_resident
+        made optimistically by an inner stage before the failure occurred (see
+        _minit2i_unstage_transformer / _minit2i_encode). On success, components
+        already left resident by their own stage are trusted as-is;
+        discard_resident on the rest just keeps the tracked set in sync
+        (idempotent no-op otherwise)."""
+        from core.keep_hot import clear_resident, discard_resident
         try:
             self._unload_lora_minit2i()
         except Exception:
@@ -375,11 +484,20 @@ class MiniT2IMixin:
                     except Exception:
                         pass
         self._minit2i_offloader = None
-        for _c in ("text_encoder", "transformer", "vae"):
-            try:
-                self._minit2i_move(_c, "cpu")
-            except Exception:
-                pass
+        if not gen_succeeded:
+            clear_resident(self)
+            for _c in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._minit2i_move(_c, "cpu")
+                except Exception:
+                    pass
+        else:
+            if not keep_te:
+                discard_resident(self, "text_encoder")
+            if not keep_transformer:
+                discard_resident(self, "transformer")
+            if not keep_vae:
+                discard_resident(self, "vae")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -391,11 +509,15 @@ class MiniT2IMixin:
         device = self.device
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, 512, 512)
+        _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = \
+            self._minit2i_kh_setup(params)
+        _kh_gen_succeeded = False
         try:
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
-                nag_negative_prompt=params.get("nag_negative_prompt"))
-            transformer = self._minit2i_stage_transformer(device, params)
+                nag_negative_prompt=params.get("nag_negative_prompt"),
+                model_key=_kh_model_key, keep_te=_kh_keep_te)
+            transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             call_target, negpip_wrapper = self._minit2i_negpip_wrap(
@@ -427,8 +549,9 @@ class MiniT2IMixin:
                     nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
-                self._minit2i_unstage_transformer()
-            image = self._minit2i_decode(x, cfg)
+                self._minit2i_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
+            image = self._minit2i_decode(x, cfg, model_key=_kh_model_key, keep_vae=_kh_keep_vae)
+            _kh_gen_succeeded = True
             print("[MiniT2I] txt2img completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -436,7 +559,8 @@ class MiniT2IMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._minit2i_cleanup()
+            self._minit2i_cleanup(_kh_model_key, _kh_keep_te, _kh_keep_transformer,
+                                  _kh_keep_vae, _kh_gen_succeeded)
 
     def _generate_img2img_minit2i(self, params, init_image, progress_callback=None, step_callback=None) -> tuple:
         if not self.minit2i_components:
@@ -449,17 +573,29 @@ class MiniT2IMixin:
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
         denoising_strength = float(params.get("denoising_strength", 0.7))
+        _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = \
+            self._minit2i_kh_setup(params)
+        _kh_gen_succeeded = False
         try:
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
-                nag_negative_prompt=params.get("nag_negative_prompt"))
+                nag_negative_prompt=params.get("nag_negative_prompt"),
+                model_key=_kh_model_key, keep_te=_kh_keep_te)
             if cfg["is_latent"]:
-                vae = self._minit2i_move("vae", device)
+                from core.keep_hot import is_resident, discard_resident
+                # First use of VAE this generation only: honor cross-generation residency
+                # on entry, but always offload after (VAE is reused again at decode, so
+                # this is an intermediate step, not the generation's final exit point).
+                if not is_resident(self, "vae", _kh_model_key):
+                    vae = self._minit2i_move("vae", device)
+                else:
+                    vae = self.minit2i_components["vae"]
                 init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
                 self._minit2i_move("vae", "cpu")
+                discard_resident(self, "vae")
             else:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
-            transformer = self._minit2i_stage_transformer(device, params)
+            transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             call_target, negpip_wrapper = self._minit2i_negpip_wrap(
@@ -481,8 +617,9 @@ class MiniT2IMixin:
                     nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
-                self._minit2i_unstage_transformer()
-            image = self._minit2i_decode(x, cfg)
+                self._minit2i_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
+            image = self._minit2i_decode(x, cfg, model_key=_kh_model_key, keep_vae=_kh_keep_vae)
+            _kh_gen_succeeded = True
             print("[MiniT2I] img2img completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -490,7 +627,8 @@ class MiniT2IMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._minit2i_cleanup()
+            self._minit2i_cleanup(_kh_model_key, _kh_keep_te, _kh_keep_transformer,
+                                  _kh_keep_vae, _kh_gen_succeeded)
 
     def _generate_inpaint_minit2i(self, params, init_image, mask_image, progress_callback=None, step_callback=None) -> tuple:
         if not self.minit2i_components:
@@ -503,20 +641,32 @@ class MiniT2IMixin:
         dtype = torch.bfloat16
         cfg = self._minit2i_common_params(params, init_image.width, init_image.height)
         denoising_strength = float(params.get("denoising_strength", 0.8))
+        _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = \
+            self._minit2i_kh_setup(params)
+        _kh_gen_succeeded = False
         try:
             text, mask, neg_text, neg_mask, nag_text, nag_mask = self._minit2i_encode(
                 cfg["prompt"], cfg["negative_prompt"], cfg["prompt_length"], device, dtype,
-                nag_negative_prompt=params.get("nag_negative_prompt"))
+                nag_negative_prompt=params.get("nag_negative_prompt"),
+                model_key=_kh_model_key, keep_te=_kh_keep_te)
             if cfg["is_latent"]:
-                vae = self._minit2i_move("vae", device)
+                from core.keep_hot import is_resident, discard_resident
+                # First use of VAE this generation only: honor cross-generation residency
+                # on entry, but always offload after (VAE is reused again at decode, so
+                # this is an intermediate step, not the generation's final exit point).
+                if not is_resident(self, "vae", _kh_model_key):
+                    vae = self._minit2i_move("vae", device)
+                else:
+                    vae = self.minit2i_components["vae"]
                 init_t = vae_encode_image(vae, init_image, cfg["height"], cfg["width"], device, dtype)
                 self._minit2i_move("vae", "cpu")
+                discard_resident(self, "vae")
                 # mask at latent resolution (1=regenerate, 0=keep)
                 mask_latent = prepare_mask(mask_image, cfg["latent_h"], cfg["latent_w"], device, dtype)
             else:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
                 mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
-            transformer = self._minit2i_stage_transformer(device, params)
+            transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
             call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
             call_target, negpip_wrapper = self._minit2i_negpip_wrap(
@@ -538,8 +688,9 @@ class MiniT2IMixin:
                     nag_wrapper.restore()
                 if applied_lora:
                     self._unload_lora_minit2i()
-                self._minit2i_unstage_transformer()
-            image = self._minit2i_decode(x, cfg)
+                self._minit2i_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
+            image = self._minit2i_decode(x, cfg, model_key=_kh_model_key, keep_vae=_kh_keep_vae)
+            _kh_gen_succeeded = True
             print("[MiniT2I] inpaint completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -547,4 +698,5 @@ class MiniT2IMixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._minit2i_cleanup()
+            self._minit2i_cleanup(_kh_model_key, _kh_keep_te, _kh_keep_transformer,
+                                  _kh_keep_vae, _kh_gen_succeeded)

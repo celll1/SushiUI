@@ -553,7 +553,7 @@ class Flux2Mixin:
         self._flux2_lora_wrapped_modules.clear()
         print(f"[FLUX.2 LoRA] Unloaded {unloaded_count} LoRA modules")
 
-    def _flux2_cleanup(self):
+    def _flux2_cleanup(self, gen_succeeded=True, keep_te=False, keep_transformer=False, keep_vae=False):
         """Safety-net CPU offload for FLUX.2 components.
 
         On the happy path each generate function already offloads text_encoder,
@@ -566,6 +566,24 @@ class Flux2Mixin:
         (.to("cpu") on an already-CPU module, offloader.cleanup() on an
         already-cleaned-up offloader). Never raises - a failure here must not
         mask the original exception from the caller's try/except.
+
+        Keep-models-hot (see core/keep_hot.py): ``gen_succeeded`` and the
+        ``keep_*`` flags let a successful generation that opted into
+        keep_models_hot skip forcing a component back to CPU here when the
+        caller already decided (and is tracking via keep_hot.mark_resident)
+        that it should stay GPU-resident for the next generation. On any
+        failed generation (``gen_succeeded=False``) the keep flags are
+        ignored entirely and every component is force-offloaded, exactly as
+        before this feature existed -- never trust GPU residency after an
+        exception. Defaults are chosen so a call with no arguments reproduces
+        the pre-keep-hot behavior (force-offload everything).
+
+        The block-swap offloader teardown is NEVER conditioned on the keep
+        flags: ``keep_transformer`` can only be True when block swap was not
+        active for this generation (see the keep-hot eligibility gate in each
+        generate function), so whenever the transformer is kept hot,
+        ``_flux2_active_block_offloader`` is already None here and this
+        teardown is a no-op -- the two states never coexist.
         """
         try:
             offloader = getattr(self, "_flux2_active_block_offloader", None)
@@ -576,8 +594,19 @@ class Flux2Mixin:
                     print(f"[FLUX.2] cleanup: block offloader teardown failed: {e}")
                 self._flux2_active_block_offloader = None
 
+            _kh_skip = set()
+            if gen_succeeded:
+                if keep_te:
+                    _kh_skip.add("text_encoder")
+                if keep_transformer:
+                    _kh_skip.add("transformer")
+                if keep_vae:
+                    _kh_skip.add("vae")
+
             components = getattr(self, "flux2_components", None) or {}
             for key in ("text_encoder", "transformer", "vae"):
+                if key in _kh_skip:
+                    continue
                 comp = components.get(key)
                 if comp is None:
                     continue
@@ -606,6 +635,47 @@ class Flux2Mixin:
             raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
 
         print("[FLUX.2] Starting txt2img generation")
+
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        # FLUX.2 has no cpu_text_encoding option (the text encoder always runs on
+        # GPU), so unlike SD1.5/SDXL there is no is_cpu_inference gate for TE here.
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 0) or 0) > 0
+
+        def _kh_offload_flux2():
+            comps = getattr(self, "flux2_components", None) or {}
+            for _kh_key in ("text_encoder", "transformer", "vae"):
+                _kh_comp = comps.get(_kh_key)
+                if _kh_comp is not None:
+                    try:
+                        _kh_comp.to("cpu")
+                    except Exception:
+                        pass
+
+        invalidate_if_model_changed(self, params, offload_fn=_kh_offload_flux2)
+
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.flux2_components.get("text_encoder"))
+            if not _kh_has_loras and not _kh_is_block_swapped:
+                _kh_total_bytes += component_nbytes(self.flux2_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.flux2_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
 
         try:
             import numpy as np
@@ -695,7 +765,8 @@ class Flux2Mixin:
             # Stage 1: Text Encoding (Qwen3)
             # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
-            text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -739,9 +810,12 @@ class Flux2Mixin:
                 print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
                       f"weights {tuple(negpip_weights.shape)}")
 
-            # Offload text encoder to CPU
-            text_encoder.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload text encoder to CPU (unless kept hot -- TE is not touched
+            # again in this generation, so this is also TE's keep-hot exit point;
+            # see core/keep_hot.py).
+            if not _kh_keep_te:
+                text_encoder.to("cpu")
+                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Encode Reference Images (Image Edit)
@@ -870,7 +944,8 @@ class Flux2Mixin:
                 # No Block Swap - ensure ALL weights are on GPU
                 # This is important when switching from Block Swap ON to OFF
                 from core.memory_management.block_offloading import weighs_to_device
-                transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
+                if not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
                 # Move all block weights to GPU (in case they were on CPU from previous Block Swap)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
@@ -1139,8 +1214,13 @@ class Flux2Mixin:
                 nag_wrapper.restore()  # restore original attention processors
             if negpip_wrapper is not None:
                 negpip_wrapper.restore()  # restore original attention processors
-            transformer.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload transformer to CPU (unless kept hot -- only possible when
+            # block swap was NOT active this generation, see keep-hot setup above;
+            # this is also transformer's keep-hot exit point, it is not touched
+            # again in this generation).
+            if not _kh_keep_transformer:
+                transformer.to("cpu")
+                torch.cuda.empty_cache()
 
             # Clean up reference tokens/IDs (Image Edit)
             if ref_tokens is not None:
@@ -1153,7 +1233,8 @@ class Flux2Mixin:
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 4: VAE decoding...")
             _t_decode = _time.perf_counter()
-            vae = vae.to(self.device)
+            if not is_resident(self, "vae", _kh_model_key):
+                vae = vae.to(self.device)
 
             # Unpack latents with IDs
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
@@ -1184,12 +1265,15 @@ class Flux2Mixin:
             image = (image[0] * 255).astype(np.uint8)
             pil_image = Image.fromarray(image)
 
-            # Offload VAE to CPU
-            vae.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload VAE to CPU (unless kept hot -- this is VAE's keep-hot exit
+            # point for this generation)
+            if not _kh_keep_vae:
+                vae.to("cpu")
+                torch.cuda.empty_cache()
 
             generation_timer.add("vae_decode", _time.perf_counter() - _t_decode)
             print("[FLUX.2] Generation completed")
+            _kh_gen_succeeded = True
             return pil_image, seed, actual_ancestral_seed
 
         except Exception as e:
@@ -1198,7 +1282,27 @@ class Flux2Mixin:
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 generation failed: {str(e)}")
         finally:
-            self._flux2_cleanup()
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    discard_resident(self, "vae")
+            self._flux2_cleanup(
+                gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te,
+                keep_transformer=_kh_keep_transformer,
+                keep_vae=_kh_keep_vae,
+            )
 
     def _flux2_negpip_eligible(self, prompt: str, negative_prompt: str) -> bool:
         """Auto-activate NegPip iff either prompt carries a negative emphasis weight.
@@ -1560,6 +1664,45 @@ class Flux2Mixin:
 
         print("[FLUX.2] Starting img2img generation")
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 0) or 0) > 0
+
+        def _kh_offload_flux2():
+            comps = getattr(self, "flux2_components", None) or {}
+            for _kh_key in ("text_encoder", "transformer", "vae"):
+                _kh_comp = comps.get(_kh_key)
+                if _kh_comp is not None:
+                    try:
+                        _kh_comp.to("cpu")
+                    except Exception:
+                        pass
+
+        invalidate_if_model_changed(self, params, offload_fn=_kh_offload_flux2)
+
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.flux2_components.get("text_encoder"))
+            if not _kh_has_loras and not _kh_is_block_swapped:
+                _kh_total_bytes += component_nbytes(self.flux2_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.flux2_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
             import numpy as np
 
@@ -1653,7 +1796,8 @@ class Flux2Mixin:
             # Stage 1: Text Encoding
             # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
-            text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -1693,8 +1837,12 @@ class Flux2Mixin:
                 print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
                       f"weights {tuple(negpip_weights.shape)}")
 
-            text_encoder.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload text encoder to CPU (unless kept hot -- TE is not touched
+            # again in this generation, so this is also TE's keep-hot exit point;
+            # see core/keep_hot.py).
+            if not _kh_keep_te:
+                text_encoder.to("cpu")
+                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Encode Reference Images (Image Edit)
@@ -1715,7 +1863,8 @@ class Flux2Mixin:
             # Stage 2: Encode input image
             # ============================================================
             print("[FLUX.2] Stage 2: Encoding input image...")
-            vae = vae.to(self.device)
+            if not is_resident(self, "vae", _kh_model_key):
+                vae = vae.to(self.device)
 
             # Preprocess image
             image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
@@ -1736,6 +1885,9 @@ class Flux2Mixin:
             latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
             init_latents = (init_latents - latents_bn_mean) / latents_bn_std
 
+            # NOTE: this offload is a within-generation VRAM-relief step (VAE is
+            # needed again for decode after denoising), not the keep-hot exit
+            # boundary -- intentionally left unconditional; see core/keep_hot.py.
             vae.to("cpu")
             torch.cuda.empty_cache()
 
@@ -1847,7 +1999,8 @@ class Flux2Mixin:
             else:
                 # No Block Swap - ensure ALL weights are on GPU
                 from core.memory_management.block_offloading import weighs_to_device
-                transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
+                if not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:
@@ -2084,8 +2237,12 @@ class Flux2Mixin:
                 nag_wrapper.restore()  # restore original attention processors
             if negpip_wrapper is not None:
                 negpip_wrapper.restore()  # restore original attention processors
-            transformer.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload transformer to CPU (unless kept hot -- only possible when
+            # block swap was NOT active this generation; also transformer's
+            # keep-hot exit point, it is not touched again in this generation).
+            if not _kh_keep_transformer:
+                transformer.to("cpu")
+                torch.cuda.empty_cache()
 
             # Clean up reference tokens/IDs (Image Edit)
             if ref_tokens is not None:
@@ -2098,6 +2255,9 @@ class Flux2Mixin:
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
             _t_decode = _time.perf_counter()
+            # NOTE: VAE was already staged to GPU once for input-image encoding
+            # (Stage 2) and unconditionally offloaded again there -- so this
+            # reload always runs (never resident-skipped); see keep-hot NOTE above.
             vae = vae.to(self.device)
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
@@ -2124,11 +2284,15 @@ class Flux2Mixin:
             image = (image[0] * 255).astype(np.uint8)
             pil_image = Image.fromarray(image)
 
-            vae.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload VAE to CPU (unless kept hot -- this is VAE's keep-hot exit
+            # point for this generation)
+            if not _kh_keep_vae:
+                vae.to("cpu")
+                torch.cuda.empty_cache()
 
             generation_timer.add("vae_decode", _time.perf_counter() - _t_decode)
             print("[FLUX.2] img2img generation completed")
+            _kh_gen_succeeded = True
             return pil_image, seed, actual_ancestral_seed
 
         except Exception as e:
@@ -2137,7 +2301,27 @@ class Flux2Mixin:
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 img2img failed: {str(e)}")
         finally:
-            self._flux2_cleanup()
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    discard_resident(self, "vae")
+            self._flux2_cleanup(
+                gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te,
+                keep_transformer=_kh_keep_transformer,
+                keep_vae=_kh_keep_vae,
+            )
 
     def _generate_inpaint_flux2(
         self,
@@ -2165,6 +2349,45 @@ class Flux2Mixin:
             raise RuntimeError("FLUX.2 components not loaded. Please load a FLUX.2 model first.")
 
         print("[FLUX.2] Starting inpaint generation")
+
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 0) or 0) > 0
+
+        def _kh_offload_flux2():
+            comps = getattr(self, "flux2_components", None) or {}
+            for _kh_key in ("text_encoder", "transformer", "vae"):
+                _kh_comp = comps.get(_kh_key)
+                if _kh_comp is not None:
+                    try:
+                        _kh_comp.to("cpu")
+                    except Exception:
+                        pass
+
+        invalidate_if_model_changed(self, params, offload_fn=_kh_offload_flux2)
+
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.flux2_components.get("text_encoder"))
+            if not _kh_has_loras and not _kh_is_block_swapped:
+                _kh_total_bytes += component_nbytes(self.flux2_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.flux2_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
 
         try:
             import numpy as np
@@ -2265,7 +2488,8 @@ class Flux2Mixin:
             # Stage 1: Text Encoding
             # ============================================================
             print("[FLUX.2] Stage 1: Text encoding...")
-            text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_flux2_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
 
             prompt_embeds, text_ids = self._flux2_encode_prompt(
                 text_encoder, tokenizer, prompt, max_sequence_length
@@ -2305,8 +2529,12 @@ class Flux2Mixin:
                 print(f"[FLUX.2] NegPip auto-activated (negative emphasis weight detected); "
                       f"weights {tuple(negpip_weights.shape)}")
 
-            text_encoder.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload text encoder to CPU (unless kept hot -- TE is not touched
+            # again in this generation, so this is also TE's keep-hot exit point;
+            # see core/keep_hot.py).
+            if not _kh_keep_te:
+                text_encoder.to("cpu")
+                torch.cuda.empty_cache()
 
             # ============================================================
             # Stage 1.5: Encode Reference Images (Image Edit)
@@ -2327,7 +2555,8 @@ class Flux2Mixin:
             # Stage 2: Encode input image and prepare mask
             # ============================================================
             print("[FLUX.2] Stage 2: Encoding input image and mask...")
-            vae = vae.to(self.device)
+            if not is_resident(self, "vae", _kh_model_key):
+                vae = vae.to(self.device)
 
             # Preprocess image
             image_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
@@ -2360,6 +2589,9 @@ class Flux2Mixin:
             latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps)
             init_latents_normalized = (init_latents - latents_bn_mean) / latents_bn_std
 
+            # NOTE: this offload is a within-generation VRAM-relief step (VAE is
+            # needed again for decode after denoising), not the keep-hot exit
+            # boundary -- intentionally left unconditional; see core/keep_hot.py.
             vae.to("cpu")
             torch.cuda.empty_cache()
 
@@ -2480,7 +2712,8 @@ class Flux2Mixin:
             else:
                 # No Block Swap - ensure ALL weights are on GPU
                 from core.memory_management.block_offloading import weighs_to_device
-                transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
+                if not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_flux2_transformer_to_gpu(transformer, transformer_quantization)
                 for block in transformer.transformer_blocks:
                     weighs_to_device(block, torch.device(self.device))
                 for block in transformer.single_transformer_blocks:
@@ -2730,8 +2963,12 @@ class Flux2Mixin:
                 nag_wrapper.restore()  # restore original attention processors
             if negpip_wrapper is not None:
                 negpip_wrapper.restore()  # restore original attention processors
-            transformer.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload transformer to CPU (unless kept hot -- only possible when
+            # block swap was NOT active this generation; also transformer's
+            # keep-hot exit point, it is not touched again in this generation).
+            if not _kh_keep_transformer:
+                transformer.to("cpu")
+                torch.cuda.empty_cache()
 
             # Clean up reference tokens/IDs (Image Edit)
             if ref_tokens is not None:
@@ -2744,6 +2981,9 @@ class Flux2Mixin:
             generation_timer.add("denoise", _time.perf_counter() - _t_denoise)
             print("[FLUX.2] Stage 5: VAE decoding...")
             _t_decode = _time.perf_counter()
+            # NOTE: VAE was already staged to GPU once for input-image/mask
+            # encoding (Stage 2) and unconditionally offloaded again there -- so
+            # this reload always runs (never resident-skipped).
             vae = vae.to(self.device)
 
             latents = self._flux2_unpack_latents_with_ids(latents, latent_ids)
@@ -2770,11 +3010,15 @@ class Flux2Mixin:
             image = (image[0] * 255).astype(np.uint8)
             pil_image = Image.fromarray(image)
 
-            vae.to("cpu")
-            torch.cuda.empty_cache()
+            # Offload VAE to CPU (unless kept hot -- this is VAE's keep-hot exit
+            # point for this generation)
+            if not _kh_keep_vae:
+                vae.to("cpu")
+                torch.cuda.empty_cache()
 
             generation_timer.add("vae_decode", _time.perf_counter() - _t_decode)
             print("[FLUX.2] inpaint generation completed")
+            _kh_gen_succeeded = True
             return pil_image, seed, actual_ancestral_seed
 
         except Exception as e:
@@ -2783,4 +3027,24 @@ class Flux2Mixin:
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 inpaint failed: {str(e)}")
         finally:
-            self._flux2_cleanup()
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    discard_resident(self, "vae")
+            self._flux2_cleanup(
+                gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te,
+                keep_transformer=_kh_keep_transformer,
+                keep_vae=_kh_keep_vae,
+            )

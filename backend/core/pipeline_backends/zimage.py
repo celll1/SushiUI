@@ -283,7 +283,7 @@ class ZImageMixin:
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
         print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
 
-    def _zimage_cleanup(self):
+    def _zimage_cleanup(self, gen_succeeded=True, keep_te=False, keep_transformer=False, keep_vae=False):
         """Safety-net CPU offload for Z-Image components.
 
         On the happy path each generate function already offloads text_encoder,
@@ -302,6 +302,17 @@ class ZImageMixin:
         itself via transformer._block_offloader and don't need explicit teardown
         here), so this safety net does not fight the offloader's block residency
         management - it only ensures the transformer as a whole lands on CPU.
+
+        Keep-models-hot (see core/keep_hot.py): ``gen_succeeded`` and the
+        ``keep_*`` flags let a successful generation that opted into
+        keep_models_hot skip forcing a component back to CPU here when the
+        caller already decided (and is tracking via keep_hot.mark_resident)
+        that it should stay GPU-resident for the next generation. On any
+        failed generation (``gen_succeeded=False``) the keep flags are
+        ignored entirely and every component is force-offloaded, exactly as
+        before this feature existed -- never trust GPU residency after an
+        exception. Defaults are chosen so a call with no arguments reproduces
+        the pre-keep-hot behavior (force-offload everything).
         """
         try:
             from core.vram_optimization import (
@@ -312,22 +323,31 @@ class ZImageMixin:
 
             components = getattr(self, "zimage_components", None) or {}
 
+            _kh_skip = set()
+            if gen_succeeded:
+                if keep_te:
+                    _kh_skip.add("text_encoder")
+                if keep_transformer:
+                    _kh_skip.add("transformer")
+                if keep_vae:
+                    _kh_skip.add("vae")
+
             text_encoder = components.get("text_encoder")
-            if text_encoder is not None:
+            if text_encoder is not None and "text_encoder" not in _kh_skip:
                 try:
                     move_zimage_text_encoder_to_cpu(text_encoder)
                 except Exception as e:
                     print(f"[Z-Image] cleanup: failed to offload text_encoder to CPU: {e}")
 
             transformer = components.get("transformer")
-            if transformer is not None:
+            if transformer is not None and "transformer" not in _kh_skip:
                 try:
                     move_zimage_transformer_to_cpu(transformer)
                 except Exception as e:
                     print(f"[Z-Image] cleanup: failed to offload transformer to CPU: {e}")
 
             vae = components.get("vae")
-            if vae is not None:
+            if vae is not None and "vae" not in _kh_skip:
                 try:
                     move_zimage_vae_to_cpu(vae)
                 except Exception as e:
@@ -395,6 +415,50 @@ class ZImageMixin:
             raise RuntimeError("Z-Image components not loaded. Please load a Z-Image model first.")
 
         print("[Z-Image] Starting txt2img generation")
+
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        # Match the ACTUAL offloader-creation guard: the transformer streaming
+        # offloader is created whenever enable_block_swap is set (the blocks_to_swap
+        # count is clamped, 0 -> a fully-resident no-op offloader), regardless of the
+        # count. Keying transformer-hot eligibility on enable_block_swap alone keeps
+        # the invariant "transformer kept hot => no offloader attached" exact.
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False))
+
+        def _kh_offload_zimage():
+            comps = getattr(self, "zimage_components", None) or {}
+            for _kh_key in ("text_encoder", "transformer", "vae"):
+                _kh_comp = comps.get(_kh_key)
+                if _kh_comp is not None:
+                    try:
+                        _kh_comp.to("cpu")
+                    except Exception:
+                        pass
+
+        invalidate_if_model_changed(self, params, offload_fn=_kh_offload_zimage)
+
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.zimage_components.get("text_encoder"))
+            if not _kh_has_loras and not _kh_is_block_swapped:
+                _kh_total_bytes += component_nbytes(self.zimage_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.zimage_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
 
         try:
 
@@ -496,7 +560,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 1: Text Encoding
             # ============================================================
-            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -516,8 +581,10 @@ class ZImageMixin:
                 text_encoder_quantization
             )
 
-            # Offload Text Encoder to CPU to free VRAM
-            move_zimage_text_encoder_to_cpu(text_encoder)
+            # Offload Text Encoder to CPU to free VRAM (unless kept hot -- see
+            # core/keep_hot.py; the finally block below records the residency).
+            if not _kh_keep_te:
+                move_zimage_text_encoder_to_cpu(text_encoder)
             log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -536,7 +603,8 @@ class ZImageMixin:
 
             if not enable_block_swap:
                 # Normal mode: move entire Transformer to GPU
-                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                if not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
 
                 # DEBUG: Verify LoRA is still applied after GPU move
                 if lora_configs:
@@ -590,8 +658,10 @@ class ZImageMixin:
                 nag_params=params
             )
 
-            # Offload Transformer to CPU to free VRAM for VAE
-            move_zimage_transformer_to_cpu(transformer)
+            # Offload Transformer to CPU to free VRAM for VAE (unless kept hot --
+            # only possible when block swap was NOT active, see setup above).
+            if not _kh_keep_transformer:
+                move_zimage_transformer_to_cpu(transformer)
             log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -601,7 +671,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 3: VAE Decode
             # ============================================================
-            move_zimage_vae_to_gpu(vae)
+            if not is_resident(self, "vae", _kh_model_key):
+                move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -610,8 +681,9 @@ class ZImageMixin:
 
             images = self._zimage_decode_latents(vae, latents)
 
-            # Offload VAE to CPU after decoding
-            move_zimage_vae_to_cpu(vae)
+            # Offload VAE to CPU after decoding (unless kept hot)
+            if not _kh_keep_vae:
+                move_zimage_vae_to_cpu(vae)
 
             # Clear intermediate tensors from GPU memory
             del prompt_embeds_list, negative_prompt_embeds_list, latents
@@ -624,6 +696,7 @@ class ZImageMixin:
             })
 
             print("[Z-Image] Generation completed")
+            _kh_gen_succeeded = True
 
             return images[0], seed, actual_ancestral_seed
 
@@ -633,7 +706,27 @@ class ZImageMixin:
             traceback.print_exc()
             raise RuntimeError(f"Z-Image generation failed: {str(e)}")
         finally:
-            self._zimage_cleanup()
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    discard_resident(self, "vae")
+            self._zimage_cleanup(
+                gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te,
+                keep_transformer=_kh_keep_transformer,
+                keep_vae=_kh_keep_vae,
+            )
 
     def _generate_img2img_zimage(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from image using Z-Image
@@ -651,6 +744,48 @@ class ZImageMixin:
             raise RuntimeError("Z-Image components not loaded. Please load a Z-Image model first.")
 
         print("[Z-Image] Starting img2img generation")
+
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        # Match the ACTUAL offloader-creation guard (created whenever
+        # enable_block_swap is set; blocks_to_swap count is clamped). Keeps the
+        # invariant "transformer kept hot => no offloader attached" exact.
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False))
+
+        def _kh_offload_zimage():
+            comps = getattr(self, "zimage_components", None) or {}
+            for _kh_key in ("text_encoder", "transformer", "vae"):
+                _kh_comp = comps.get(_kh_key)
+                if _kh_comp is not None:
+                    try:
+                        _kh_comp.to("cpu")
+                    except Exception:
+                        pass
+
+        invalidate_if_model_changed(self, params, offload_fn=_kh_offload_zimage)
+
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _kh_total_bytes += component_nbytes(self.zimage_components.get("text_encoder"))
+            if not _kh_has_loras and not _kh_is_block_swapped:
+                _kh_total_bytes += component_nbytes(self.zimage_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.zimage_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
 
         try:
             # Extract components
@@ -741,7 +876,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 1: Text Encoding
             # ============================================================
-            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -761,8 +897,10 @@ class ZImageMixin:
                 text_encoder_quantization
             )
 
-            # Offload Text Encoder to CPU
-            move_zimage_text_encoder_to_cpu(text_encoder)
+            # Offload Text Encoder to CPU (unless kept hot -- TE is not touched
+            # again in this generation, so this is also TE's keep-hot exit point).
+            if not _kh_keep_te:
+                move_zimage_text_encoder_to_cpu(text_encoder)
             log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -772,7 +910,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 2: VAE Encode Input Image
             # ============================================================
-            move_zimage_vae_to_gpu(vae)
+            if not is_resident(self, "vae", _kh_model_key):
+                move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE encode (img2img)", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -885,7 +1024,8 @@ class ZImageMixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
-                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                if not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
                 log_device_status("Ready for Z-Image denoising loop (img2img)", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,
@@ -923,8 +1063,10 @@ class ZImageMixin:
                 nag_params=params
             )
 
-            # Offload Transformer to CPU
-            move_zimage_transformer_to_cpu(transformer)
+            # Offload Transformer to CPU (unless kept hot -- only possible when
+            # block swap was NOT active, see keep-hot setup above)
+            if not _kh_keep_transformer:
+                move_zimage_transformer_to_cpu(transformer)
             log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -934,6 +1076,12 @@ class ZImageMixin:
             # ============================================================
             # Stage 5: VAE Decode
             # ============================================================
+            # NOTE: VAE was already staged to GPU once for input-image encoding
+            # (Stage 2) and offloaded again there unconditionally -- that offload
+            # is a within-generation VRAM-relief step, not the keep-hot exit
+            # boundary, so it is intentionally left untouched by keep-hot. This
+            # reload IS a normal re-stage every time (never resident-skipped)
+            # because the mid-generation offload above always runs.
             move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
                 "text_encoder": text_encoder,
@@ -943,8 +1091,10 @@ class ZImageMixin:
 
             images = self._zimage_decode_latents(vae, latents)
 
-            # Offload VAE to CPU after decoding
-            move_zimage_vae_to_cpu(vae)
+            # Offload VAE to CPU after decoding (unless kept hot -- this is VAE's
+            # true keep-hot exit point for this generation)
+            if not _kh_keep_vae:
+                move_zimage_vae_to_cpu(vae)
 
             # Clear intermediate tensors
             del prompt_embeds_list, negative_prompt_embeds_list, init_latents, noised_latents, latents
@@ -957,6 +1107,7 @@ class ZImageMixin:
             })
 
             print("[Z-Image] img2img generation completed")
+            _kh_gen_succeeded = True
 
             return images[0], seed, actual_ancestral_seed
 
@@ -966,7 +1117,27 @@ class ZImageMixin:
             traceback.print_exc()
             raise RuntimeError(f"Z-Image img2img generation failed: {str(e)}")
         finally:
-            self._zimage_cleanup()
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    discard_resident(self, "vae")
+            self._zimage_cleanup(
+                gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te,
+                keep_transformer=_kh_keep_transformer,
+                keep_vae=_kh_keep_vae,
+            )
 
     def _generate_inpaint_zimage(
         self, params: dict, init_image, mask_image, progress_callback=None, step_callback=None
@@ -990,6 +1161,51 @@ class ZImageMixin:
         Returns:
             (generated_image, seed)
         """
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        # Inpaint does not apply LoRA, but the LoRA hazard gate is kept uniform
+        # across every keep-hot entry point regardless of per-arch LoRA support.
+        _kh_has_loras = bool(params.get("loras") or [])
+        # Match the ACTUAL offloader-creation guard (created whenever
+        # enable_block_swap is set; blocks_to_swap count is clamped). Keeps the
+        # invariant "transformer kept hot => no offloader attached" exact.
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False))
+
+        def _kh_offload_zimage():
+            comps = getattr(self, "zimage_components", None) or {}
+            for _kh_key in ("text_encoder", "transformer", "vae"):
+                _kh_comp = comps.get(_kh_key)
+                if _kh_comp is not None:
+                    try:
+                        _kh_comp.to("cpu")
+                    except Exception:
+                        pass
+
+        invalidate_if_model_changed(self, params, offload_fn=_kh_offload_zimage)
+
+        _kh_total_bytes = 0
+        if _kh_requested:
+            _comps = getattr(self, "zimage_components", None) or {}
+            _kh_total_bytes += component_nbytes(_comps.get("text_encoder"))
+            if not _kh_has_loras and not _kh_is_block_swapped:
+                _kh_total_bytes += component_nbytes(_comps.get("transformer"))
+            _kh_total_bytes += component_nbytes(_comps.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_has_loras and not _kh_is_block_swapped
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
             # Get components
             text_encoder = self.zimage_components["text_encoder"]
@@ -1050,7 +1266,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 1: Text Encoding
             # ============================================================
-            text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
+            if not is_resident(self, "text_encoder", _kh_model_key):
+                text_encoder = move_zimage_text_encoder_to_gpu(text_encoder, text_encoder_quantization)
             log_device_status("Ready for Z-Image text encoding", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1070,8 +1287,10 @@ class ZImageMixin:
                 text_encoder_quantization
             )
 
-            # Offload Text Encoder to CPU
-            move_zimage_text_encoder_to_cpu(text_encoder)
+            # Offload Text Encoder to CPU (unless kept hot -- TE is not touched
+            # again in this generation, so this is also TE's keep-hot exit point).
+            if not _kh_keep_te:
+                move_zimage_text_encoder_to_cpu(text_encoder)
             log_device_status("Text encoding complete, Text Encoder offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1081,7 +1300,8 @@ class ZImageMixin:
             # ============================================================
             # Stage 2: VAE Encode Input Image and Mask
             # ============================================================
-            move_zimage_vae_to_gpu(vae)
+            if not is_resident(self, "vae", _kh_model_key):
+                move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE encode (inpaint)", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1220,7 +1440,8 @@ class ZImageMixin:
             block_swap_ring_size = int(params.get("block_swap_ring_size", 2))
 
             if not enable_block_swap:
-                transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
+                if not is_resident(self, "transformer", _kh_model_key):
+                    transformer = move_zimage_transformer_to_gpu(transformer, transformer_quantization)
                 log_device_status("Ready for Z-Image denoising loop (inpaint)", None, zimage_components={
                     "text_encoder": text_encoder,
                     "transformer": transformer,
@@ -1260,8 +1481,10 @@ class ZImageMixin:
                 nag_params=params
             )
 
-            # Offload Transformer to CPU
-            move_zimage_transformer_to_cpu(transformer)
+            # Offload Transformer to CPU (unless kept hot -- only possible when
+            # block swap was NOT active, see keep-hot setup above)
+            if not _kh_keep_transformer:
+                move_zimage_transformer_to_cpu(transformer)
             log_device_status("Denoising complete, Transformer offloaded to CPU", None, zimage_components={
                 "text_encoder": text_encoder,
                 "transformer": transformer,
@@ -1271,6 +1494,10 @@ class ZImageMixin:
             # ============================================================
             # Stage 5: VAE Decode
             # ============================================================
+            # NOTE: VAE was already staged to GPU once for input-image/mask
+            # encoding (Stage 2) and offloaded again there unconditionally --
+            # that offload is a within-generation VRAM-relief step, not the
+            # keep-hot exit boundary, so it is intentionally left untouched.
             move_zimage_vae_to_gpu(vae)
             log_device_status("Ready for Z-Image VAE decode", None, zimage_components={
                 "text_encoder": text_encoder,
@@ -1280,8 +1507,10 @@ class ZImageMixin:
 
             images = self._zimage_decode_latents(vae, latents)
 
-            # Offload VAE to CPU after decoding
-            move_zimage_vae_to_cpu(vae)
+            # Offload VAE to CPU after decoding (unless kept hot -- this is
+            # VAE's true keep-hot exit point for this generation)
+            if not _kh_keep_vae:
+                move_zimage_vae_to_cpu(vae)
 
             # Clear intermediate tensors
             del prompt_embeds_list, negative_prompt_embeds_list, init_latents, original_latents, noised_latents, mask_latent, latents
@@ -1294,6 +1523,7 @@ class ZImageMixin:
             })
 
             print("[Z-Image] inpaint generation completed")
+            _kh_gen_succeeded = True
 
             return images[0], seed, actual_ancestral_seed
 
@@ -1303,7 +1533,27 @@ class ZImageMixin:
             traceback.print_exc()
             raise RuntimeError(f"Z-Image inpaint generation failed: {str(e)}")
         finally:
-            self._zimage_cleanup()
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    discard_resident(self, "vae")
+            self._zimage_cleanup(
+                gen_succeeded=_kh_gen_succeeded,
+                keep_te=_kh_keep_te,
+                keep_transformer=_kh_keep_transformer,
+                keep_vae=_kh_keep_vae,
+            )
 
     def _zimage_encode_single(self, text_encoder, tokenizer, prompts, max_sequence_length,
                               has_fp8_weights, device):

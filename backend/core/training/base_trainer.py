@@ -7000,6 +7000,11 @@ class BaseTrainer(ABC):
         global_step = 0
         start_epoch = 0
         resume_batch_idx = 0  # Batch index to resume from within epoch
+        # Bind batch_idx up-front so the emergency-save handler (which references
+        # batch_idx) never raises UnboundLocalError when a crash occurs BEFORE the
+        # first batch iteration (dataloader / bucket assembly / model setup), which
+        # would otherwise mask the real error and abort the emergency checkpoint.
+        batch_idx = 0
         resume_training_state = None  # Training state for mid-epoch resume
 
         # Resume from checkpoint if requested

@@ -58,6 +58,17 @@ class LTX2Mixin:
         else:
             print("[LTX-2.3] CUDA unavailable; running pipeline on CPU")
 
+        # VRAM: enable the LTX video VAE's temporal/spatial tiling so decoding the
+        # full [T,H,W] latent does not spike VRAM (the dominant generation peak,
+        # especially for long clips). Idempotent; diffusers picks tile sizes.
+        vae = self.ltx2_components.get("vae")
+        if vae is not None and hasattr(vae, "enable_tiling"):
+            try:
+                vae.enable_tiling()
+                print("[LTX-2.3] video VAE tiling enabled (decode VRAM headroom)")
+            except Exception as e:
+                print(f"[LTX-2.3] VAE tiling enable failed ({e}); continuing")
+
         self._ltx2_offload_enabled = True
         return pipeline
 

@@ -41,7 +41,10 @@ export default function TextEncoderOverrideSelector({
       if (te.out_dim != null) dims.push(`${te.out_dim}d`);
       if (te.te_type) dims.push(te.te_type);
       const suffix = dims.length > 0 ? ` (${dims.join(", ")})` : "";
-      return { value: te.path, label: `${te.name}${suffix}` };
+      const label = te.arch
+        ? `${te.name} — ${te.arch}${suffix}`
+        : `${te.name}${suffix}`;
+      return { value: te.path, label };
     }),
   ];
 

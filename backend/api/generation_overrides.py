@@ -187,6 +187,34 @@ def describe_te(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 # Candidate classification (endpoints)
 # ---------------------------------------------------------------------------
 
+# Generic component-directory basenames that do not identify which model they
+# belong to (typical of diffusers-layout subfolders like ".../krea2/vae").
+_GENERIC_COMPONENT_NAMES = {
+    "vae",
+    "text_encoder",
+    "text_encoder_2",
+    "text_encoder_3",
+    "",
+}
+
+
+def _friendly_component_name(path: str) -> str:
+    """Derive a human-readable candidate name from ``path``.
+
+    If the basename is a real filename (e.g. ``my_custom_vae.safetensors``),
+    it is used as-is. If the basename is a generic diffusers subfolder name
+    (e.g. ``vae``, ``text_encoder``), the parent directory (the model folder)
+    is prepended to disambiguate, e.g. ``.../krea2/vae`` -> ``krea2/vae``.
+    """
+    norm = path.rstrip("/\\")
+    basename = os.path.basename(norm).replace(".safetensors", "")
+    if basename.lower() in _GENERIC_COMPONENT_NAMES:
+        parent = os.path.basename(os.path.dirname(norm))
+        if parent:
+            return f"{parent}/{basename}" if basename else parent
+    return basename
+
+
 def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Return a VAE candidate descriptor, or None when ``path`` is not a
     standalone VAE (a diffusers vae/ dir OR a model whose registry record has a
@@ -195,10 +223,11 @@ def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Opti
     is_standalone = _vae_config_dir(path) is not None
     if not (is_standalone or (d["present"] and not d["has_backbone"])):
         return None
-    name = os.path.basename(path.rstrip("/\\")).replace(".safetensors", "")
+    name = _friendly_component_name(path)
     return {
         "name": name,
         "path": path,
+        "arch": d["arch"],
         "latent_channels": d["latent_channels"],
         "vae_class": d["vae_class"],
         "scale_spatial": d["scale_spatial"],
@@ -213,10 +242,11 @@ def classify_te_candidate(path: str, source_type: Optional[str] = None) -> Optio
     is_standalone = _te_config_dir(path) is not None and _vae_config_dir(path) is None
     if not (is_standalone or (d["present"] and not d["has_backbone"])):
         return None
-    name = os.path.basename(path.rstrip("/\\")).replace(".safetensors", "")
+    name = _friendly_component_name(path)
     return {
         "name": name,
         "path": path,
+        "arch": d["arch"],
         "out_dim": d["out_dim"],
         "te_type": d["te_type"],
     }

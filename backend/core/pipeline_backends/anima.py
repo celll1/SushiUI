@@ -434,9 +434,47 @@ class AnimaMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 20)) > 0
+        # If a resident set exists from a previous generation but is no longer valid
+        # for THIS request's model_key (checkpoint/LoRA/quantization/dtype changed),
+        # force a full offload before staging anything.
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._anima_move("text_encoder", "cpu"),
+                self._anima_move("transformer", "cpu"),
+                self._anima_move("vae", "cpu"),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            if not cpu_text_encoding:
+                _kh_total_bytes += component_nbytes(self.anima_components.get("text_encoder"))
+            if not (_kh_is_block_swapped or _kh_has_loras):
+                _kh_total_bytes += component_nbytes(self.anima_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.anima_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok and not cpu_text_encoding
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
             # Stage 1: text encoding
-            if not cpu_text_encoding:
+            if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             # NegPip auto-activates on any negative emphasis weight. When active
             # we encode CLEAN embeddings (skip_emphasis) so the signed V scaling
@@ -454,7 +492,11 @@ class AnimaMixin:
                 params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
                 enc_device, compute_dtype,
             )
-            if not cpu_text_encoding:
+            # Offload text encoder after encoding (unless kept hot for the next
+            # queued generation on the same model_key).
+            if _kh_keep_te:
+                mark_resident(self, "text_encoder", _kh_model_key)
+            elif not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
                 # Move CPU-encoded embeddings to GPU for denoising
@@ -469,7 +511,11 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Stage 2: denoising
-            transformer = self._anima_stage_transformer(device, transformer_quantization, params)
+            if is_resident(self, "transformer", _kh_model_key):
+                transformer = self.anima_components["transformer"]
+                self._anima_offloader = None
+            else:
+                transformer = self._anima_stage_transformer(device, transformer_quantization, params)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -512,21 +558,37 @@ class AnimaMixin:
                 for w in (negpip_uncond, negpip_cond, nag_wrapper):
                     if w is not None and hasattr(w, "restore"):
                         w.restore()
+            # Optimistically mark/offload the transformer here; the success flag is
+            # NOT set until AFTER the VAE decode below, so a decode failure routes to
+            # the finally's exception branch (clear_resident + full offload), undoing
+            # this mark. (Decode is a separate GPU op here, unlike the SDXL reference
+            # where decode is inside the sampling call.)
             if applied_lora_count:
                 self._unload_lora_anima()
-            self._anima_unstage_transformer()
+            if _kh_keep_transformer:
+                mark_resident(self, "transformer", _kh_model_key)
+            else:
+                self._anima_unstage_transformer()
             del cond, uncond
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Stage 3: VAE decode
-            self._anima_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._anima_move("vae", device)
             self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
             images = vae_decode_latents(vae, latents, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._anima_move("vae", "cpu")
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # All GPU work (incl. decode) succeeded: only now is the generation a
+            # success for keep-hot purposes.
+            _kh_gen_succeeded = True
 
             print("[Anima] txt2img completed")
             return images[0], seed, ancestral_seed
@@ -536,7 +598,10 @@ class AnimaMixin:
             raise
         finally:
             # Strip any leftover block-swap offloader (e.g. if setup raised mid-way),
-            # then ensure all components are back on CPU even if an error occurred.
+            # then ensure all components are back on CPU -- EXCEPT components kept
+            # hot on a SUCCESSFUL generation. On an exception, ALWAYS force a full
+            # offload + clear residency (never trust the pipeline state after an
+            # error going into the next generation).
             _t = (self.anima_components or {}).get("transformer")
             if _t is not None and hasattr(_t, "_block_offloader"):
                 try:
@@ -544,11 +609,38 @@ class AnimaMixin:
                 except Exception:
                     pass
             self._anima_offloader = None
-            for _comp in ("text_encoder", "transformer", "vae"):
-                try:
-                    self._anima_move(_comp, "cpu")
-                except Exception:
-                    pass
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+                for _comp in ("text_encoder", "transformer", "vae"):
+                    try:
+                        self._anima_move(_comp, "cpu")
+                    except Exception:
+                        pass
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("text_encoder", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("transformer", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("vae", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "vae")
 
     def _generate_img2img_anima(self, params: Dict[str, Any], init_image: Image.Image,
                                  progress_callback=None, step_callback=None
@@ -599,16 +691,54 @@ class AnimaMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 20)) > 0
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._anima_move("text_encoder", "cpu"),
+                self._anima_move("transformer", "cpu"),
+                self._anima_move("vae", "cpu"),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            if not cpu_text_encoding:
+                _kh_total_bytes += component_nbytes(self.anima_components.get("text_encoder"))
+            if not (_kh_is_block_swapped or _kh_has_loras):
+                _kh_total_bytes += component_nbytes(self.anima_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.anima_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok and not cpu_text_encoding
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
-            # Encode init image
-            self._anima_move("vae", device)
+            # Encode init image. This is the generation's first use of the VAE, so
+            # this is the cross-generation entry point for it (the later decode-stage
+            # move below is an intra-generation re-stage, unaffected by keep-hot).
+            if not is_resident(self, "vae", _kh_model_key):
+                self._anima_move("vae", device)
             init_latents = vae_encode_image(vae, init_image, device, compute_dtype)
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Text encoding
-            if not cpu_text_encoding:
+            if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             use_negpip = self._anima_negpip_active(params)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
@@ -623,7 +753,9 @@ class AnimaMixin:
                 params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
                 enc_device, compute_dtype,
             )
-            if not cpu_text_encoding:
+            if _kh_keep_te:
+                mark_resident(self, "text_encoder", _kh_model_key)
+            elif not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
                 def _embeds_to_gpu(d):
@@ -637,7 +769,11 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Denoise
-            transformer = self._anima_stage_transformer(device, transformer_quantization, params)
+            if is_resident(self, "transformer", _kh_model_key):
+                transformer = self.anima_components["transformer"]
+                self._anima_offloader = None
+            else:
+                transformer = self._anima_stage_transformer(device, transformer_quantization, params)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -678,21 +814,34 @@ class AnimaMixin:
                 for w in (negpip_uncond, negpip_cond, nag_wrapper):
                     if w is not None and hasattr(w, "restore"):
                         w.restore()
+            # Optimistically mark/offload the transformer; _kh_gen_succeeded is set
+            # only AFTER decode below, so a decode failure routes to the finally
+            # exception branch (clear_resident + full offload), undoing this mark.
             if applied_lora_count:
                 self._unload_lora_anima()
-            self._anima_unstage_transformer()
+            if _kh_keep_transformer:
+                mark_resident(self, "transformer", _kh_model_key)
+            else:
+                self._anima_unstage_transformer()
             del cond, uncond, init_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Decode
-            self._anima_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._anima_move("vae", device)
             self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
             images = vae_decode_latents(vae, latents, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._anima_move("vae", "cpu")
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # All GPU work (incl. decode) succeeded.
+            _kh_gen_succeeded = True
 
             print("[Anima] img2img completed")
             return images[0], seed
@@ -702,7 +851,9 @@ class AnimaMixin:
             raise
         finally:
             # Strip any leftover block-swap offloader (e.g. if setup raised mid-way),
-            # then ensure all components are back on CPU even if an error occurred.
+            # then ensure all components are back on CPU -- EXCEPT components kept
+            # hot on a SUCCESSFUL generation. On an exception, ALWAYS force a full
+            # offload + clear residency.
             _t = (self.anima_components or {}).get("transformer")
             if _t is not None and hasattr(_t, "_block_offloader"):
                 try:
@@ -710,11 +861,38 @@ class AnimaMixin:
                 except Exception:
                     pass
             self._anima_offloader = None
-            for _comp in ("text_encoder", "transformer", "vae"):
-                try:
-                    self._anima_move(_comp, "cpu")
-                except Exception:
-                    pass
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+                for _comp in ("text_encoder", "transformer", "vae"):
+                    try:
+                        self._anima_move(_comp, "cpu")
+                    except Exception:
+                        pass
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("text_encoder", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("transformer", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("vae", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "vae")
 
     def _generate_inpaint_anima(self, params: Dict[str, Any],
                                  init_image: Image.Image, mask_image: Image.Image,
@@ -773,9 +951,47 @@ class AnimaMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_has_loras = bool(params.get("loras") or [])
+        _kh_is_block_swapped = bool(params.get("enable_block_swap", False)) and int(params.get("blocks_to_swap", 20)) > 0
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._anima_move("text_encoder", "cpu"),
+                self._anima_move("transformer", "cpu"),
+                self._anima_move("vae", "cpu"),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            if not cpu_text_encoding:
+                _kh_total_bytes += component_nbytes(self.anima_components.get("text_encoder"))
+            if not (_kh_is_block_swapped or _kh_has_loras):
+                _kh_total_bytes += component_nbytes(self.anima_components.get("transformer"))
+            _kh_total_bytes += component_nbytes(self.anima_components.get("vae"))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok and not cpu_text_encoding
+        _kh_keep_transformer = _kh_requested and _kh_guard_ok and not _kh_is_block_swapped and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         try:
-            # Encode init image
-            self._anima_move("vae", device)
+            # Encode init image. This is the generation's first use of the VAE, so
+            # this is the cross-generation entry point for it (the later decode-stage
+            # move below is an intra-generation re-stage, unaffected by keep-hot).
+            if not is_resident(self, "vae", _kh_model_key):
+                self._anima_move("vae", device)
             init_latents = vae_encode_image(vae, init_image, device, compute_dtype)
             self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
@@ -787,7 +1003,7 @@ class AnimaMixin:
             )
 
             # Text encoding
-            if not cpu_text_encoding:
+            if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
                 text_encoder = self._anima_move("text_encoder", device, text_encoder_quantization)
             use_negpip = self._anima_negpip_active(params)
             cond = encode_prompt(text_encoder, qwen3_tokenizer, t5_tokenizer,
@@ -802,7 +1018,9 @@ class AnimaMixin:
                 params, encode_prompt, text_encoder, qwen3_tokenizer, t5_tokenizer,
                 enc_device, compute_dtype,
             )
-            if not cpu_text_encoding:
+            if _kh_keep_te:
+                mark_resident(self, "text_encoder", _kh_model_key)
+            elif not cpu_text_encoding:
                 self._anima_move("text_encoder", "cpu")
             if cpu_text_encoding:
                 def _embeds_to_gpu(d):
@@ -816,7 +1034,11 @@ class AnimaMixin:
                 torch.cuda.empty_cache()
 
             # Denoise
-            transformer = self._anima_stage_transformer(device, transformer_quantization, params)
+            if is_resident(self, "transformer", _kh_model_key):
+                transformer = self.anima_components["transformer"]
+                self._anima_offloader = None
+            else:
+                transformer = self._anima_stage_transformer(device, transformer_quantization, params)
 
             # Apply user-supplied LoRAs after the transformer is on GPU (and
             # after any optional quantization). LoRA wrappers point at the
@@ -857,21 +1079,34 @@ class AnimaMixin:
                 for w in (negpip_uncond, negpip_cond, nag_wrapper):
                     if w is not None and hasattr(w, "restore"):
                         w.restore()
+            # Optimistically mark/offload the transformer; _kh_gen_succeeded is set
+            # only AFTER decode below, so a decode failure routes to the finally
+            # exception branch (clear_resident + full offload), undoing this mark.
             if applied_lora_count:
                 self._unload_lora_anima()
-            self._anima_unstage_transformer()
+            if _kh_keep_transformer:
+                mark_resident(self, "transformer", _kh_model_key)
+            else:
+                self._anima_unstage_transformer()
             del cond, uncond, init_latents, mask_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Decode
-            self._anima_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._anima_move("vae", device)
             self._apply_vae_tiling(vae, getattr(self, "_vae_tiling", False))
             images = vae_decode_latents(vae, latents, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._anima_move("vae", "cpu")
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._anima_move("vae", "cpu")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+
+            # All GPU work (incl. decode) succeeded.
+            _kh_gen_succeeded = True
 
             print("[Anima] inpaint completed")
             return images[0], seed
@@ -881,7 +1116,9 @@ class AnimaMixin:
             raise
         finally:
             # Strip any leftover block-swap offloader (e.g. if setup raised mid-way),
-            # then ensure all components are back on CPU even if an error occurred.
+            # then ensure all components are back on CPU -- EXCEPT components kept
+            # hot on a SUCCESSFUL generation. On an exception, ALWAYS force a full
+            # offload + clear residency.
             _t = (self.anima_components or {}).get("transformer")
             if _t is not None and hasattr(_t, "_block_offloader"):
                 try:
@@ -889,8 +1126,35 @@ class AnimaMixin:
                 except Exception:
                     pass
             self._anima_offloader = None
-            for _comp in ("text_encoder", "transformer", "vae"):
-                try:
-                    self._anima_move(_comp, "cpu")
-                except Exception:
-                    pass
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+                for _comp in ("text_encoder", "transformer", "vae"):
+                    try:
+                        self._anima_move(_comp, "cpu")
+                    except Exception:
+                        pass
+            else:
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("text_encoder", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("transformer", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "transformer")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    try:
+                        self._anima_move("vae", "cpu")
+                    except Exception:
+                        pass
+                    discard_resident(self, "vae")

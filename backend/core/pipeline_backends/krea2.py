@@ -40,6 +40,50 @@ class Krea2Mixin:
             print(f"[Krea2] Warning: could not move {component_name} to {target_device}: {e}")
         return comp
 
+    def _krea2_kh_setup(self, params: Dict[str, Any]):
+        """Compute keep-models-hot eligibility for this generation (see core/keep_hot.py).
+
+        Krea 2 has no block-swap streaming and no inference-time LoRA application
+        today (grep-verified), so the only hazard gate that currently applies is
+        the LoRA one — kept for forward-compat if LoRA inference is added later.
+        Returns (model_key, keep_te, keep_transformer, keep_vae).
+        """
+        from core.keep_hot import (
+            invalidate_if_model_changed, should_keep_resident, compute_model_key,
+            component_nbytes, keep_hot_requested,
+        )
+        requested = keep_hot_requested(params)
+        model_key = compute_model_key(self, params)
+        has_loras = bool(params.get("loras") or [])
+
+        # If a resident set exists from a previous generation but is no longer valid
+        # for THIS request's model_key, force a full offload before staging anything.
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._krea2_move("text_encoder", "cpu"),
+                self._krea2_move("transformer", "cpu"),
+                self._krea2_move("vae", "cpu"),
+            ),
+        )
+
+        total_bytes = 0
+        if requested:
+            total_bytes += component_nbytes(self.krea2_components.get("text_encoder"))
+            if not has_loras:
+                total_bytes += component_nbytes(self.krea2_components.get("transformer"))
+            total_bytes += component_nbytes(self.krea2_components.get("vae"))
+        guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=total_bytes,
+        ) if requested else False
+
+        keep_te = requested and guard_ok
+        keep_transformer = requested and guard_ok and not has_loras
+        keep_vae = requested and guard_ok
+        return model_key, keep_te, keep_transformer, keep_vae
+
     def _krea2_apply_attention_backend(self, transformer, params: Dict[str, Any]):
         """Stamp the inference attention backend (native/flash/sage) on the transformer.
 
@@ -104,14 +148,20 @@ class Krea2Mixin:
         }
 
     @torch.no_grad()
-    def _krea2_encode(self, prompt, negative_prompt, cfg, device, dtype):
-        """Stage the TE to GPU, encode positive (+ negative when CFG on), free TE to CPU."""
+    def _krea2_encode(self, prompt, negative_prompt, cfg, device, dtype,
+                       model_key: Optional[str] = None, keep_te: bool = False):
+        """Stage the TE to GPU (unless already kept resident), encode positive
+        (+ negative when CFG on), then either free TE to CPU (default) or leave
+        it resident (keep-models-hot: mark_resident, deferred final decision is
+        still corrected by the caller's outer cleanup on exception)."""
         from core.models.krea2.krea2_pipeline_ops import encode_prompt
+        from core.keep_hot import is_resident, mark_resident, discard_resident
 
         select_layers = self.krea2_components["text_encoder_select_layers"]
         max_len = cfg["max_sequence_length"]
 
-        self._krea2_move("text_encoder", device)
+        if model_key is None or not is_resident(self, "text_encoder", model_key):
+            self._krea2_move("text_encoder", device)
         te = self.krea2_components["text_encoder"]
         tok = self.krea2_components["tokenizer"]
 
@@ -121,18 +171,42 @@ class Krea2Mixin:
             neg_prompt = negative_prompt if (negative_prompt and negative_prompt.strip()) else ""
             neg_embeds, neg_mask = encode_prompt(te, tok, neg_prompt, select_layers, max_len, device)
             neg_embeds = neg_embeds.to(dtype)
-        self._krea2_move("text_encoder", "cpu")
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+
+        if keep_te and model_key is not None:
+            mark_resident(self, "text_encoder", model_key)
+        else:
+            self._krea2_move("text_encoder", "cpu")
+            if model_key is not None:
+                discard_resident(self, "text_encoder")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return prompt_embeds.to(dtype), prompt_mask, neg_embeds, neg_mask
 
-    def _krea2_cleanup(self):
-        for _c in ("text_encoder", "transformer", "vae"):
-            try:
-                self._krea2_move(_c, "cpu")
-            except Exception:
-                pass
+    def _krea2_cleanup(self, model_key: Optional[str] = None,
+                       keep_te: bool = False, keep_transformer: bool = False,
+                       keep_vae: bool = False, gen_succeeded: bool = False):
+        """End-of-generation teardown. On failure (or when called with no
+        keep-hot context, e.g. old call sites), force a full offload and clear
+        any tentative residency. On success, components already left resident
+        by their own stage (keep_X=True) are trusted as-is; the rest were
+        already offloaded at their own stage -- discard_resident just keeps
+        the tracked set in sync (idempotent no-op otherwise)."""
+        from core.keep_hot import clear_resident, discard_resident
+        if not gen_succeeded:
+            clear_resident(self)
+            for _c in ("text_encoder", "transformer", "vae"):
+                try:
+                    self._krea2_move(_c, "cpu")
+                except Exception:
+                    pass
+        else:
+            if not keep_te:
+                discard_resident(self, "text_encoder")
+            if not keep_transformer:
+                discard_resident(self, "transformer")
+            if not keep_vae:
+                discard_resident(self, "vae")
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -151,10 +225,15 @@ class Krea2Mixin:
         scheduler = self.krea2_components["scheduler"]
         advanced_cfg = self._krea2_advanced_cfg(params)
 
+        from core.keep_hot import is_resident, mark_resident, discard_resident
+        _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae = self._krea2_kh_setup(params)
+        _kh_gen_succeeded = False
+
         try:
             print("[Krea2] Stage 1: Text encoding...")
             prompt_embeds, prompt_mask, neg_embeds, neg_mask = self._krea2_encode(
-                cfg["prompt"], cfg["negative_prompt"], cfg, device, dtype)
+                cfg["prompt"], cfg["negative_prompt"], cfg, device, dtype,
+                model_key=_kh_model_key, keep_te=_kh_keep_te)
 
             print("[Krea2] Stage 2: Prepare latents...")
             latents = prepare_latents_txt2img(
@@ -162,7 +241,10 @@ class Krea2Mixin:
                 dtype=torch.float32, device=device, seed=cfg["seed"])
 
             print("[Krea2] Stage 3: Denoising...")
-            transformer = self._krea2_move("transformer", device)
+            if not is_resident(self, "transformer", _kh_model_key):
+                transformer = self._krea2_move("transformer", device)
+            else:
+                transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
             try:
                 latents = denoise_loop(
@@ -172,18 +254,28 @@ class Krea2Mixin:
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                 )
             finally:
-                self._krea2_move("transformer", "cpu")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    self._krea2_move("transformer", "cpu")
+                    discard_resident(self, "transformer")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+            print("[Krea2] Stage 4: VAE decode...")
+            if not is_resident(self, "vae", _kh_model_key):
+                self._krea2_move("vae", device)
+            self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
+            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-            print("[Krea2] Stage 4: VAE decode...")
-            self._krea2_move("vae", device)
-            self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
-            self._krea2_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            _kh_gen_succeeded = True
             print("[Krea2] txt2img completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -191,7 +283,8 @@ class Krea2Mixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._krea2_cleanup()
+            self._krea2_cleanup(_kh_model_key, _kh_keep_te, _kh_keep_transformer,
+                                 _kh_keep_vae, _kh_gen_succeeded)
 
     def _generate_img2img_krea2(self, params: Dict[str, Any], init_image: Image.Image,
                                 progress_callback=None, step_callback=None) -> tuple:
@@ -209,22 +302,35 @@ class Krea2Mixin:
         scheduler = self.krea2_components["scheduler"]
         advanced_cfg = self._krea2_advanced_cfg(params)
 
+        from core.keep_hot import is_resident, mark_resident, discard_resident
+        _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae = self._krea2_kh_setup(params)
+        _kh_gen_succeeded = False
+
         try:
             print("[Krea2] Stage 1: Text encoding...")
             prompt_embeds, prompt_mask, neg_embeds, neg_mask = self._krea2_encode(
-                cfg["prompt"], cfg["negative_prompt"], cfg, device, dtype)
+                cfg["prompt"], cfg["negative_prompt"], cfg, device, dtype,
+                model_key=_kh_model_key, keep_te=_kh_keep_te)
 
             print("[Krea2] Stage 2: Encoding init image...")
-            self._krea2_move("vae", device)
+            # First use of VAE this generation only: honor cross-generation residency
+            # on entry, but always offload after (VAE is reused again at Stage 4, so
+            # this is an intermediate step, not the generation's final exit point).
+            if not is_resident(self, "vae", _kh_model_key):
+                self._krea2_move("vae", device)
             init_latents = vae_encode(
                 self.krea2_components["vae"], init_image, cfg["height"], cfg["width"],
                 cfg["patch_size"], device=device, dtype=torch.float32)
             self._krea2_move("vae", "cpu")
+            discard_resident(self, "vae")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             print("[Krea2] Stage 3: Denoising (SDEdit)...")
-            transformer = self._krea2_move("transformer", device)
+            if not is_resident(self, "transformer", _kh_model_key):
+                transformer = self._krea2_move("transformer", device)
+            else:
+                transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
             try:
                 latents = denoise_loop_img2img(
@@ -235,18 +341,28 @@ class Krea2Mixin:
                     seed=cfg["seed"], progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                 )
             finally:
-                self._krea2_move("transformer", "cpu")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    self._krea2_move("transformer", "cpu")
+                    discard_resident(self, "transformer")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+            print("[Krea2] Stage 4: VAE decode...")
+            if not is_resident(self, "vae", _kh_model_key):
+                self._krea2_move("vae", device)
+            self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
+            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-            print("[Krea2] Stage 4: VAE decode...")
-            self._krea2_move("vae", device)
-            self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
-            self._krea2_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            _kh_gen_succeeded = True
             print("[Krea2] img2img completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -254,7 +370,8 @@ class Krea2Mixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._krea2_cleanup()
+            self._krea2_cleanup(_kh_model_key, _kh_keep_te, _kh_keep_transformer,
+                                 _kh_keep_vae, _kh_gen_succeeded)
 
     def _generate_inpaint_krea2(self, params: Dict[str, Any],
                                 init_image: Image.Image, mask_image: Image.Image,
@@ -283,24 +400,37 @@ class Krea2Mixin:
             from PIL import ImageFilter
             mask_image = mask_image.filter(ImageFilter.GaussianBlur(mask_blur))
 
+        from core.keep_hot import is_resident, mark_resident, discard_resident
+        _kh_model_key, _kh_keep_te, _kh_keep_transformer, _kh_keep_vae = self._krea2_kh_setup(params)
+        _kh_gen_succeeded = False
+
         try:
             print("[Krea2] Stage 1: Text encoding...")
             prompt_embeds, prompt_mask, neg_embeds, neg_mask = self._krea2_encode(
-                cfg["prompt"], cfg["negative_prompt"], cfg, device, dtype)
+                cfg["prompt"], cfg["negative_prompt"], cfg, device, dtype,
+                model_key=_kh_model_key, keep_te=_kh_keep_te)
 
             print("[Krea2] Stage 2: Encoding init image + mask...")
-            self._krea2_move("vae", device)
+            # First use of VAE this generation only: honor cross-generation residency
+            # on entry, but always offload after (VAE is reused again at Stage 4, so
+            # this is an intermediate step, not the generation's final exit point).
+            if not is_resident(self, "vae", _kh_model_key):
+                self._krea2_move("vae", device)
             init_latents = vae_encode(
                 self.krea2_components["vae"], init_image, height, width,
                 cfg["patch_size"], device=device, dtype=torch.float32)
             self._krea2_move("vae", "cpu")
+            discard_resident(self, "vae")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             mask_latent = prepare_mask_latent(
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32)
 
             print("[Krea2] Stage 3: Denoising (repaint)...")
-            transformer = self._krea2_move("transformer", device)
+            if not is_resident(self, "transformer", _kh_model_key):
+                transformer = self._krea2_move("transformer", device)
+            else:
+                transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
             try:
                 latents = denoise_loop_inpaint(
@@ -311,18 +441,28 @@ class Krea2Mixin:
                     seed=cfg["seed"], progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                 )
             finally:
-                self._krea2_move("transformer", "cpu")
+                if _kh_keep_transformer:
+                    mark_resident(self, "transformer", _kh_model_key)
+                else:
+                    self._krea2_move("transformer", "cpu")
+                    discard_resident(self, "transformer")
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+            print("[Krea2] Stage 4: VAE decode...")
+            if not is_resident(self, "vae", _kh_model_key):
+                self._krea2_move("vae", device)
+            self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
+            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
 
-            print("[Krea2] Stage 4: VAE decode...")
-            self._krea2_move("vae", device)
-            self._apply_vae_tiling(self.krea2_components["vae"], getattr(self, "_vae_tiling", False))
-            image = vae_decode(self.krea2_components["vae"], latents, cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
-            self._krea2_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            _kh_gen_succeeded = True
             print("[Krea2] inpaint completed")
             return image, cfg["seed"], 0
         except Exception as e:
@@ -330,4 +470,5 @@ class Krea2Mixin:
             import traceback; traceback.print_exc()
             raise
         finally:
-            self._krea2_cleanup()
+            self._krea2_cleanup(_kh_model_key, _kh_keep_te, _kh_keep_transformer,
+                                 _kh_keep_vae, _kh_gen_succeeded)

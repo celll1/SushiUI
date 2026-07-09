@@ -221,6 +221,59 @@ class LensMixin:
             print(f"[Lens] Warning: could not move {component_name} to {target_device}: {e}")
         return comp
 
+    def _lens_kh_setup(self, params: Dict[str, Any]):
+        """Compute keep-models-hot eligibility for this generation (see core/keep_hot.py).
+
+        Lens's text encoder is unconditionally freed to ``None`` every generation
+        (see ``_reload_lens_text_encoder``) to reclaim ~9.7 GB of mxfp4 CUDA
+        buffers -- that existing arch-specific optimization is left untouched, so
+        the text encoder is never a keep-hot candidate here. Only the transformer
+        (gated off under block-swap streaming or when LoRA is applied -- LoRA
+        mutates the transformer's modules in place per generation) and the VAE
+        (static) are keep-hot eligible.
+
+        Returns (model_key, keep_transformer, keep_vae, is_block_swapped).
+        """
+        from core.keep_hot import (
+            invalidate_if_model_changed, should_keep_resident, compute_model_key,
+            component_nbytes, keep_hot_requested,
+        )
+        requested = keep_hot_requested(params)
+        model_key = compute_model_key(self, params)
+        has_loras = bool(params.get("loras") or [])
+
+        enable_block_swap = bool(params.get("enable_block_swap", False))
+        transformer = self.lens_components.get("transformer")
+        num_layers = len(transformer.transformer_blocks) if transformer is not None else 0
+        blocks_to_swap = int(params.get("blocks_to_swap", 20))
+        blocks_to_swap = max(0, min(blocks_to_swap, max(num_layers - 1, 0)))
+        is_block_swapped = enable_block_swap and blocks_to_swap > 0
+
+        # If a resident set exists from a previous generation but is no longer valid
+        # for THIS request's model_key, force a full offload before staging anything.
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                self._lens_move("transformer", "cpu"),
+                self._lens_move("vae", "cpu"),
+            ),
+        )
+
+        total_bytes = 0
+        if requested:
+            if not is_block_swapped and not has_loras:
+                total_bytes += component_nbytes(self.lens_components.get("transformer"))
+            total_bytes += component_nbytes(self.lens_components.get("vae"))
+        guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=total_bytes,
+        ) if requested else False
+
+        keep_transformer = requested and guard_ok and not is_block_swapped and not has_loras
+        keep_vae = requested and guard_ok
+        return model_key, keep_transformer, keep_vae, is_block_swapped
+
     def _lens_setup_block_swap(self, transformer, blocks_to_swap: int,
                                use_pinned_memory: bool, device: str,
                                h2d_only: bool = False, ring_size: int = 2):
@@ -283,14 +336,19 @@ class LensMixin:
         return backend
 
     def _lens_stage_transformer(self, params: Dict[str, Any], device: str,
-                                transformer_quantization: Optional[str]):
+                                transformer_quantization: Optional[str],
+                                model_key: Optional[str] = None):
         """Place the Lens transformer on GPU for denoising.
 
         When block swap is enabled, the transformer streams its blocks (per-model
         offloader) instead of being fully resident. Otherwise the whole
-        transformer is moved to GPU (default path, unchanged).
+        transformer is moved to GPU (default path, unchanged) -- unless it is
+        already kept GPU-resident from a previous successful generation
+        (keep-models-hot), in which case the ->GPU move is skipped entirely.
         Returns the (possibly quantized) transformer from self.lens_components.
         """
+        from core.keep_hot import is_resident
+
         enable_block_swap = bool(params.get("enable_block_swap", False))
         transformer = self.lens_components["transformer"]
         num_layers = len(transformer.transformer_blocks)
@@ -313,12 +371,18 @@ class LensMixin:
                 h2d_only=h2d_only, ring_size=ring_size,
             )
         else:
-            transformer = self._lens_move("transformer", device, transformer_quantization)
-            transformer = self.lens_components["transformer"]
+            if model_key is None or not is_resident(self, "transformer", model_key):
+                transformer = self._lens_move("transformer", device, transformer_quantization)
+                transformer = self.lens_components["transformer"]
         return transformer
 
-    def _lens_unstage_transformer(self):
-        """Tear down any block-swap offloader, then return the transformer to CPU."""
+    def _lens_unstage_transformer(self, keep_transformer: bool = False,
+                                  model_key: Optional[str] = None):
+        """Tear down any block-swap offloader, then either leave the transformer
+        GPU-resident (keep-models-hot: mark_resident) or return it to CPU
+        (default, or when keep_transformer is False)."""
+        from core.keep_hot import mark_resident, discard_resident
+
         transformer = (self.lens_components or {}).get("transformer")
         offloader = getattr(self, "_lens_offloader", None)
         if transformer is not None and hasattr(transformer, "_block_offloader"):
@@ -334,7 +398,35 @@ class LensMixin:
                 except Exception:
                     pass
         self._lens_offloader = None
-        self._lens_move("transformer", "cpu")
+        if keep_transformer and model_key is not None:
+            mark_resident(self, "transformer", model_key)
+        else:
+            self._lens_move("transformer", "cpu")
+            if model_key is not None:
+                discard_resident(self, "transformer")
+
+    def _lens_kh_teardown(self, model_key: Optional[str], keep_transformer: bool,
+                          keep_vae: bool, gen_succeeded: bool):
+        """Final cross-generation residency decision for transformer + VAE (see
+        core/keep_hot.py). On failure, force a full offload and clear any
+        tentative residency (never trust the pipeline state after an error
+        going into the next generation). On success, components already left
+        resident by their own stage (keep_X=True) are trusted as-is; the rest
+        were already offloaded at their own stage -- discard_resident just
+        keeps the tracked set in sync (idempotent no-op otherwise)."""
+        from core.keep_hot import clear_resident, discard_resident
+        if not gen_succeeded:
+            clear_resident(self)
+            for _comp in ("transformer", "vae"):
+                try:
+                    self._lens_move(_comp, "cpu")
+                except Exception:
+                    pass
+        else:
+            if not keep_transformer:
+                discard_resident(self, "transformer")
+            if not keep_vae:
+                discard_resident(self, "vae")
 
     def _generate_txt2img_lens(self, params: Dict[str, Any],
                                 progress_callback=None, step_callback=None,
@@ -387,6 +479,10 @@ class LensMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
+        from core.keep_hot import is_resident, mark_resident
+        _kh_model_key, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = self._lens_kh_setup(params)
+        _kh_gen_succeeded = False
+
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
@@ -428,7 +524,8 @@ class LensMixin:
 
             # Stage 3: Denoising
             print("[Lens] Stage 3: Denoising...")
-            transformer = self._lens_stage_transformer(params, device, transformer_quantization)
+            transformer = self._lens_stage_transformer(params, device, transformer_quantization,
+                                                       model_key=_kh_model_key)
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -449,22 +546,27 @@ class LensMixin:
             finally:
                 if applied_lora_count:
                     self._unload_lora_lens()
-            self._lens_unstage_transformer()
+            self._lens_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
             del encoder_features, encoder_mask
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Stage 4: VAE decode
             print("[Lens] Stage 4: VAE decode...")
-            self._lens_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
             image = vae_decode(vae_gpu, latents, latent_h, latent_w, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._lens_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._lens_move("vae", "cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
+            _kh_gen_succeeded = True
             print("[Lens] txt2img completed")
             return image, seed, 0
 
@@ -487,11 +589,7 @@ class LensMixin:
                 except Exception:
                     pass
             self._lens_offloader = None
-            for _comp in ("transformer", "vae"):
-                try:
-                    self._lens_move(_comp, "cpu")
-                except Exception:
-                    pass
+            self._lens_kh_teardown(_kh_model_key, _kh_keep_transformer, _kh_keep_vae, _kh_gen_succeeded)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -544,6 +642,10 @@ class LensMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
+        from core.keep_hot import is_resident, mark_resident, discard_resident
+        _kh_model_key, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = self._lens_kh_setup(params)
+        _kh_gen_succeeded = False
+
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
@@ -581,16 +683,22 @@ class LensMixin:
 
             # Stage 2: Encode init image
             print("[Lens] Stage 2: Encoding init image...")
-            self._lens_move("vae", device)
+            # First use of VAE this generation only: honor cross-generation residency
+            # on entry, but always offload after (VAE is reused again at Stage 4, so
+            # this is an intermediate step, not the generation's final exit point).
+            if not is_resident(self, "vae", _kh_model_key):
+                self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             init_latents = vae_encode(vae_gpu, init_image, height, width, device=device, dtype=dtype)
             self._lens_move("vae", "cpu")
+            discard_resident(self, "vae")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Stage 3: Denoising (SDEdit)
             print("[Lens] Stage 3: Denoising...")
-            transformer = self._lens_stage_transformer(params, device, transformer_quantization)
+            transformer = self._lens_stage_transformer(params, device, transformer_quantization,
+                                                       model_key=_kh_model_key)
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -612,22 +720,27 @@ class LensMixin:
             finally:
                 if applied_lora_count:
                     self._unload_lora_lens()
-            self._lens_unstage_transformer()
+            self._lens_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
             del encoder_features, encoder_mask, init_latents
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Stage 4: VAE decode
             print("[Lens] Stage 4: VAE decode...")
-            self._lens_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
             image = vae_decode(vae_gpu, latents, latent_h, latent_w, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._lens_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._lens_move("vae", "cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
+            _kh_gen_succeeded = True
             print("[Lens] img2img completed")
             return image, seed, 0
 
@@ -648,11 +761,7 @@ class LensMixin:
                 except Exception:
                     pass
             self._lens_offloader = None
-            for _comp in ("transformer", "vae"):
-                try:
-                    self._lens_move(_comp, "cpu")
-                except Exception:
-                    pass
+            self._lens_kh_teardown(_kh_model_key, _kh_keep_transformer, _kh_keep_vae, _kh_gen_succeeded)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -716,6 +825,10 @@ class LensMixin:
         cpu_text_encoding = params.get("cpu_text_encoding", False)
         enc_device = "cpu" if cpu_text_encoding else device
 
+        from core.keep_hot import is_resident, mark_resident, discard_resident
+        _kh_model_key, _kh_keep_transformer, _kh_keep_vae, _kh_is_block_swapped = self._lens_kh_setup(params)
+        _kh_gen_succeeded = False
+
         try:
             # Stage 1: Text encoding
             print("[Lens] Stage 1: Text encoding...")
@@ -753,10 +866,15 @@ class LensMixin:
 
             # Stage 2: Encode init image + prepare mask
             print("[Lens] Stage 2: Encoding init image...")
-            self._lens_move("vae", device)
+            # First use of VAE this generation only: honor cross-generation residency
+            # on entry, but always offload after (VAE is reused again at Stage 4, so
+            # this is an intermediate step, not the generation's final exit point).
+            if not is_resident(self, "vae", _kh_model_key):
+                self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             init_latents = vae_encode(vae_gpu, init_image, height, width, device=device, dtype=dtype)
             self._lens_move("vae", "cpu")
+            discard_resident(self, "vae")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -764,7 +882,8 @@ class LensMixin:
 
             # Stage 3: Denoising with repaint
             print("[Lens] Stage 3: Denoising (repaint)...")
-            transformer = self._lens_stage_transformer(params, device, transformer_quantization)
+            transformer = self._lens_stage_transformer(params, device, transformer_quantization,
+                                                       model_key=_kh_model_key)
             lora_configs = params.get("loras") or []
             applied_lora_count = self._load_lora_lens(lora_configs) if lora_configs else 0
             transformer = self.lens_components["transformer"]
@@ -787,22 +906,27 @@ class LensMixin:
             finally:
                 if applied_lora_count:
                     self._unload_lora_lens()
-            self._lens_unstage_transformer()
+            self._lens_unstage_transformer(keep_transformer=_kh_keep_transformer, model_key=_kh_model_key)
             del encoder_features, encoder_mask, init_latents, mask_latent
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
             # Stage 4: VAE decode
             print("[Lens] Stage 4: VAE decode...")
-            self._lens_move("vae", device)
+            if not is_resident(self, "vae", _kh_model_key):
+                self._lens_move("vae", device)
             vae_gpu = self.lens_components["vae"]
             self._apply_vae_tiling(vae_gpu, getattr(self, "_vae_tiling", False))
             image = vae_decode(vae_gpu, latents, latent_h, latent_w, color_flatten_strength=getattr(self, "_color_flatten_strength", 0))
             del latents
-            self._lens_move("vae", "cpu")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            if _kh_keep_vae:
+                mark_resident(self, "vae", _kh_model_key)
+            else:
+                self._lens_move("vae", "cpu")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
+            _kh_gen_succeeded = True
             print("[Lens] inpaint completed")
             return image, seed, 0
 
@@ -823,10 +947,6 @@ class LensMixin:
                 except Exception:
                     pass
             self._lens_offloader = None
-            for _comp in ("transformer", "vae"):
-                try:
-                    self._lens_move(_comp, "cpu")
-                except Exception:
-                    pass
+            self._lens_kh_teardown(_kh_model_key, _kh_keep_transformer, _kh_keep_vae, _kh_gen_succeeded)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()

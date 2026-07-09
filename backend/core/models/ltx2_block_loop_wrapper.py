@@ -144,6 +144,11 @@ class Ltx2BlockLoopWrapper(nn.Module):
         # Not implemented; declared so train_step can attach/clear them.
         self._tread_router = None
         self._block_dropout = None
+        # AP3 — DiT-BlockSkip (arXiv 2603.20755) folded-precompute LoRA memory
+        # reduction (training-only). Mutually exclusive with TREAD (both
+        # restructure the block loop) and with Block Swap (folding requires all
+        # blocks resident); enforced in ``attach_blockskip`` and ``base_trainer``.
+        self._blockskip_config = None
 
         # Compatibility attributes (diffusers pipeline + LoRA introspection).
         self.config = transformer.config
@@ -212,7 +217,36 @@ class Ltx2BlockLoopWrapper(nn.Module):
         calls through this wrapper -- but the clear is kept as defense in depth)
         always run the full network on all tokens.
         """
+        assert config is None or self._blockskip_config is None, (
+            "Ltx2BlockLoopWrapper: TREAD (_tread_router) and BlockSkip "
+            "(_blockskip_config) must never be attached simultaneously (both "
+            "restructure the block loop; guarded in base_trainer / ltx2_ops)."
+        )
         self._tread_router = config
+
+    def attach_blockskip(self, config: Optional[dict]) -> None:
+        """Attach (or clear with None) the AP3 DiT-BlockSkip config.
+
+        DiT-BlockSkip (arXiv 2603.20755) is a TRAINING-ONLY, LoRA-only memory
+        reduction: a no_grad full pass captures the residual DELTA over the
+        skipped front/back block spans (both the video and audio streams), and
+        the gradient pass runs ONLY the middle blocks, re-adding the deltas at
+        the span boundaries. Backprop is confined to the middle blocks, so the
+        skipped blocks retain no backward activations.
+
+        ``config`` keys: ``front`` (int, blocks skipped at the start) and
+        ``back`` (int, blocks skipped at the end). Gated in ``_custom_forward``
+        on ``self.training AND torch.is_grad_enabled()`` (never fires during
+        sampling/validation). Mutually exclusive with TREAD (``_tread_router``)
+        and requires Block Swap to be off (``base_trainer`` enforces
+        ``blocks_to_swap == 0`` when ``blockskip_enable`` is set).
+        """
+        assert config is None or self._tread_router is None, (
+            "Ltx2BlockLoopWrapper: BlockSkip (_blockskip_config) and TREAD "
+            "(_tread_router) must never be attached simultaneously (both "
+            "restructure the block loop; guarded in base_trainer / ltx2_ops)."
+        )
+        self._blockskip_config = config
 
     def attach_spectrum(self, video_forecaster: Optional[Any], audio_forecaster: Optional[Any]) -> None:
         """Attach (or clear with ``(None, None)``) the Spectrum output forecasters.
@@ -241,7 +275,8 @@ class Ltx2BlockLoopWrapper(nn.Module):
             and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
         )
         return bool(swap_on or self._fbcache is not None or self._spectrum_video is not None
-                    or self._tread_router is not None or self._block_dropout is not None)
+                    or self._tread_router is not None or self._block_dropout is not None
+                    or self._blockskip_config is not None)
 
     # ------------------------------------------------------------------
     # Forward
@@ -547,6 +582,51 @@ class Ltx2BlockLoopWrapper(nn.Module):
 
         grad_ckpt = torch.is_grad_enabled() and t.gradient_checkpointing
 
+        # AP3 DiT-BlockSkip (arXiv 2603.20755): OFF by default (_blockskip_config
+        # is None). Training-only -- gated on self.training AND autograd being
+        # enabled (sampling/validation never attach a config, and the pipeline
+        # sampling path calls the INNER transformer directly, never this
+        # wrapper). Mutually exclusive with TREAD (_tread_router, asserted in
+        # attach_blockskip/attach_tread) and with Block Swap (base_trainer
+        # enforces blocks_to_swap == 0 when blockskip_enable is set). Folds the
+        # skipped front/back block spans (BOTH the video and audio streams) via
+        # a no_grad delta capture + a gradient pass over only the middle blocks;
+        # see ``_blockskip_forward`` for the two-pass fold. Short-circuits the
+        # entire stage-5 loop below (TREAD routing, FBCache and Block Swap are
+        # therefore never reached on this path).
+        blockskip = self._blockskip_config if (self.training and torch.is_grad_enabled()) else None
+        if blockskip is not None:
+            assert self._tread_router is None, (
+                "Ltx2BlockLoopWrapper: BlockSkip (_blockskip_config) and TREAD "
+                "(_tread_router) must never be attached simultaneously (both "
+                "restructure the block loop; guarded in attach_blockskip/attach_tread)."
+            )
+            assert fbcache is None, (
+                "Ltx2BlockLoopWrapper: BlockSkip is training-only and FBCache is "
+                "inference-only; they must never be attached at the same time."
+            )
+            assert not swap_on, (
+                "Ltx2BlockLoopWrapper: BlockSkip requires blocks_to_swap=0 "
+                "(enforced in base_trainer); the block-swap conductor cannot be "
+                "attached alongside BlockSkip's folded precompute."
+            )
+            hidden_states, audio_hidden_states = self._blockskip_forward(
+                blockskip, t, hidden_states, audio_hidden_states,
+                encoder_hidden_states, audio_encoder_hidden_states,
+                temb, temb_audio,
+                video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+                video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+                temb_prompt, temb_prompt_audio,
+                video_rotary_emb, audio_rotary_emb,
+                video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+                encoder_attention_mask, audio_encoder_attention_mask,
+                isolate_modalities, grad_ckpt,
+            )
+            return self._finish_stage6(
+                t, hidden_states, audio_hidden_states,
+                embedded_timestep, audio_embedded_timestep, return_dict,
+            )
+
         # AP3 TREAD token routing (arXiv 2501.04765): OFF by default (_tread_router
         # is None). Training-only -- gated on self.training AND autograd being
         # enabled; sampling/validation never attach a route config (cleared by
@@ -740,6 +820,17 @@ class Ltx2BlockLoopWrapper(nn.Module):
             fbcache.store((hidden_states - original_video, audio_hidden_states - original_audio))
 
         # === 6. Output layers (including unpatchification) ===
+        return self._finish_stage6(
+            t, hidden_states, audio_hidden_states,
+            embedded_timestep, audio_embedded_timestep, return_dict,
+        )
+
+    @staticmethod
+    def _finish_stage6(t, hidden_states, audio_hidden_states,
+                        embedded_timestep, audio_embedded_timestep, return_dict):
+        """Stage 6 (output layers, incl. unpatchification) -- shared tail for the
+        normal block loop AND the BlockSkip fold (``_blockskip_forward``), so
+        both paths funnel through the IDENTICAL final projection code."""
         scale_shift_values = t.scale_shift_table[None, None] + embedded_timestep[:, :, None]
         shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]
 
@@ -757,6 +848,164 @@ class Ltx2BlockLoopWrapper(nn.Module):
         if not return_dict:
             return (output, audio_output)
         return AudioVisualModelOutput(sample=output, audio_sample=audio_output)
+
+    def _blockskip_forward(
+        self, cfg, t, hidden_states, audio_hidden_states,
+        encoder_hidden_states, audio_encoder_hidden_states,
+        temb, temb_audio,
+        video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+        video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+        temb_prompt, temb_prompt_audio,
+        video_rotary_emb, audio_rotary_emb,
+        video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+        encoder_attention_mask, audio_encoder_attention_mask,
+        isolate_modalities, grad_ckpt,
+    ):
+        """DiT-BlockSkip two-pass fold over the DUAL (video, audio) stream
+        (arXiv 2603.20755), ported from the Anima image-DiT implementation
+        (``anima_models.py: _blockskip_forward``).
+
+        Pass 1 (no_grad, full network, SAME module state -- LoRA active -- as
+        pass 2): capture the residual feature DELTA for BOTH streams over each
+        skipped span:
+          video_delta_front = v_n - v_0        (front span [0, n))
+          video_delta_back  = v_L - v_{L-m}    (back span  [L-m, L))
+        and identically for the audio stream, where v_i / a_i are the
+        video/audio stream values fed INTO block i (v_L/a_L are the values fed
+        to stage 6).
+
+        Pass 2 (gradient, middle blocks [n, L-m) only):
+          hs  = hidden_states       + video_delta_front   (== v_n, exact)
+          ahs = audio_hidden_states + audio_delta_front   (== a_n, exact)
+          hs, ahs = middle_blocks(hs, ahs)                (LoRA-trained, grad flows here)
+          hs  = hs  + video_delta_back                    (== v_L when middle is unchanged)
+          ahs = ahs + audio_delta_back
+
+        Because pass 1 runs with the SAME (LoRA-active) weights as pass 2, the
+        reconstruction is EXACT for any front/back span -- not merely exact
+        under the paper's frozen-base assumption (audited finding from the
+        Anima port).
+
+        Every block still receives the FULL token stream (BlockSkip does not
+        gather tokens, unlike TREAD) -- video_rotary_emb / all temb* /
+        encoder tensors are passed UNCHANGED to every block, front through
+        back. The audio stream is folded symmetrically with the video stream
+        (captured + re-added at the same span boundaries) even though
+        ``isolate_modalities=True`` makes the two streams independent within a
+        block during training -- this keeps the block call signature
+        satisfied and the (unused) audio prediction well-formed; it is never
+        special-cased away.
+
+        The no_grad pass never checkpoints (there is no backward through it);
+        the gradient pass reuses the wrapper's usual per-block
+        ``t._gradient_checkpointing_func`` path when ``grad_ckpt`` is set,
+        exactly as the normal block loop does.
+        """
+        blocks = t.transformer_blocks
+        num_blocks = len(blocks)
+        front = int(cfg["front"])
+        back = int(cfg["back"])
+        lo = front
+        hi = num_blocks - back
+        if not (0 <= lo <= hi <= num_blocks):
+            raise ValueError(
+                f"Ltx2BlockLoopWrapper BlockSkip: invalid span front={front} "
+                f"back={back} for {num_blocks} blocks (resolved lo={lo}, hi={hi})"
+            )
+
+        def _run_block(block_idx, block, hs, ahs, use_ckpt):
+            if use_ckpt:
+                return t._gradient_checkpointing_func(
+                    block,
+                    hs,
+                    ahs,
+                    encoder_hidden_states,
+                    audio_encoder_hidden_states,
+                    temb,
+                    temb_audio,
+                    video_cross_attn_scale_shift,
+                    audio_cross_attn_scale_shift,
+                    video_cross_attn_a2v_gate,
+                    audio_cross_attn_v2a_gate,
+                    temb_prompt,
+                    temb_prompt_audio,
+                    video_rotary_emb,
+                    audio_rotary_emb,
+                    video_cross_attn_rotary_emb,
+                    audio_cross_attn_rotary_emb,
+                    encoder_attention_mask,
+                    audio_encoder_attention_mask,
+                    None,  # self_attention_mask
+                    None,  # audio_self_attention_mask
+                    None,  # a2v_cross_attention_mask
+                    None,  # v2a_cross_attention_mask
+                    not isolate_modalities,  # use_a2v_cross_attention
+                    not isolate_modalities,  # use_v2a_cross_attention
+                    None,  # perturbation_mask (STG is an inference-only feature)
+                    False,  # all_perturbed
+                )
+            return block(
+                hidden_states=hs,
+                audio_hidden_states=ahs,
+                encoder_hidden_states=encoder_hidden_states,
+                audio_encoder_hidden_states=audio_encoder_hidden_states,
+                temb=temb,
+                temb_audio=temb_audio,
+                temb_ca_scale_shift=video_cross_attn_scale_shift,
+                temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
+                temb_ca_gate=video_cross_attn_a2v_gate,
+                temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+                temb_prompt=temb_prompt,
+                temb_prompt_audio=temb_prompt_audio,
+                video_rotary_emb=video_rotary_emb,
+                audio_rotary_emb=audio_rotary_emb,
+                ca_video_rotary_emb=video_cross_attn_rotary_emb,
+                ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
+                encoder_attention_mask=encoder_attention_mask,
+                audio_encoder_attention_mask=audio_encoder_attention_mask,
+                self_attention_mask=None,
+                audio_self_attention_mask=None,
+                a2v_cross_attention_mask=None,
+                v2a_cross_attention_mask=None,
+                use_a2v_cross_attention=not isolate_modalities,
+                use_v2a_cross_attention=not isolate_modalities,
+                perturbation_mask=None,
+                all_perturbed=False,
+            )
+
+        # Pass 1: frozen (LoRA-active) full forward under no_grad, capturing
+        # the span-boundary features for BOTH streams.
+        with torch.no_grad():
+            v0, a0 = hidden_states, audio_hidden_states
+            vt, at = v0, a0
+            v_lo = a_lo = None
+            v_hi = a_hi = None
+            for i, block in enumerate(blocks):
+                if i == lo:
+                    v_lo, a_lo = vt, at
+                if i == hi:
+                    v_hi, a_hi = vt, at
+                vt, at = _run_block(i, block, vt, at, use_ckpt=False)
+            v_L, a_L = vt, at
+            if v_lo is None:       # front == 0 (no front skip)
+                v_lo, a_lo = v0, a0
+            if v_hi is None:       # back == 0 (no back skip): hi == num_blocks
+                v_hi, a_hi = v_L, a_L
+            video_delta_front = (v_lo - v0).detach()
+            audio_delta_front = (a_lo - a0).detach()
+            video_delta_back = (v_L - v_hi).detach()
+            audio_delta_back = (a_L - a_hi).detach()
+
+        # Pass 2: gradient forward over ONLY the middle blocks [lo, hi). LoRA
+        # is trained exclusively on these blocks; the skipped spans retain no
+        # backward activations.
+        hs = hidden_states + video_delta_front
+        ahs = audio_hidden_states + audio_delta_front
+        for i in range(lo, hi):
+            hs, ahs = _run_block(i, blocks[i], hs, ahs, use_ckpt=grad_ckpt)
+        hs = hs + video_delta_back
+        ahs = ahs + audio_delta_back
+        return hs, ahs
 
     # ------------------------------------------------------------------
     # Passthroughs (LoRA save/load + block-swap conductor + diffusers pipeline)

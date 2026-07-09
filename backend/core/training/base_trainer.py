@@ -770,17 +770,23 @@ class BaseTrainer(ABC):
         # features Delta and (b) runs a gradient pass over ONLY the middle blocks,
         # re-adding Delta at the span boundaries. Backprop flows only through the
         # middle blocks, so the skipped blocks retain NO backward activations and
-        # hold NO optimizer state (frozen, no LoRA). Currently wired for the Anima
-        # DiT (other archs ignore self.blockskip_config). Default OFF.
+        # hold NO optimizer state (frozen, no LoRA). Wired for the Anima DiT
+        # (anima_ops.py) and for LTX-2.3 video (ltx2_ops.py + the DUAL-stream
+        # fold in Ltx2BlockLoopWrapper._blockskip_forward, which folds BOTH the
+        # video and audio streams); other archs ignore self.blockskip_config.
+        # Default OFF.
         self.blockskip_config = None
         if bool(_tc.get("blockskip_enable", False)):
             trainer_cls = type(self).__name__
-            # LoRA variant: LoRA only in the middle blocks (skipped front/back
-            # frozen, no adapter). Partial-FT variant: full parameters on the
-            # middle blocks + all non-block components; skipped front/back blocks
-            # are frozen (requires_grad_(False)) and excluded from the optimizer,
-            # supplied by the precomputed residual features. Both are exact
-            # (the frozen skipped spans make the folded per-step residuals valid).
+            # The skipped front/back blocks run ONLY inside the per-step no_grad
+            # precompute pass, so they retain NO backward activations (the memory
+            # saving) and receive NO gradient; the middle blocks run under grad and
+            # carry the training signal (LoRA adapters or full parameters). NOTE:
+            # the skipped blocks are NOT requires_grad_(False) / optimizer-excluded
+            # here — any adapter/params they own simply stay gradient-starved (they
+            # keep optimizer slots but never update). The fold is exact because both
+            # passes use identical (LoRA-active) weights, so the precomputed span
+            # residual equals what the full network would produce.
             # ReLoRATrainer (subclass of LoRATrainer, exact name "ReLoRATrainer")
             # and ControlNet are NOT supported.
             if trainer_cls not in ("LoRATrainer", "FullParameterTrainer"):
@@ -821,12 +827,13 @@ class BaseTrainer(ABC):
                 "front": _bs_front,
                 "back": _bs_back,
             }
-            print(f"[BlockSkip] DiT-BlockSkip ENABLED (memory reduction, "
+            print(f"[BlockSkip] DiT-BlockSkip ENABLED (activation-memory reduction, "
                   f"trainer={trainer_cls}): skip first {_bs_front} + last {_bs_back} "
-                  f"blocks; only the middle blocks train (LoRA or full parameters); "
-                  f"skipped blocks frozen + excluded from the optimizer; residuals "
-                  f"kept in memory per step (training-only; sampling runs the full "
-                  f"network).")
+                  f"blocks; only the middle blocks train under grad (LoRA or full "
+                  f"parameters); skipped blocks run no_grad only (no backward "
+                  f"activations, gradient-starved — not optimizer-excluded); span "
+                  f"residuals kept in memory per step (training-only; sampling runs "
+                  f"the full network).")
             if str(_tc.get("torch_compile", "off")).lower() not in ("off", "", "none"):
                 print("[BlockSkip] WARNING: torch_compile is on — BlockSkip runs a "
                       "two-pass (no_grad full + grad middle) forward with dynamic "

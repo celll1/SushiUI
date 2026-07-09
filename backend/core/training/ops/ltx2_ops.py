@@ -241,7 +241,9 @@ def setup_block_swap(trainer) -> None:
 def setup_wrapper(trainer) -> None:
     """Install ``Ltx2BlockLoopWrapper`` as ``trainer.transformer`` WHEN an AP3
     training feature is enabled (currently: TREAD token routing, gated on
-    ``trainer.tread_config``).
+    ``trainer.tread_config``; and DiT-BlockSkip, gated on
+    ``trainer.blockskip_config``). The two are mutually exclusive (enforced in
+    ``base_trainer``), so at most one is set for a given run.
 
     Call order (mode subclasses -- lora_trainer.py / full_parameter_trainer.py):
       1. Adapter LoRA-injects / freezes-and-unfreezes the INNER transformer
@@ -273,8 +275,9 @@ def setup_wrapper(trainer) -> None:
     if getattr(trainer, "ltx2_block_loop_wrapper", None) is not None:
         return  # idempotent guard (defensive; no known multi-call site today)
 
-    tread_enabled = getattr(trainer, "tread_config", None) is not None
-    if not tread_enabled:
+    tread_cfg = getattr(trainer, "tread_config", None)
+    blockskip_cfg = getattr(trainer, "blockskip_config", None)
+    if tread_cfg is None and blockskip_cfg is None:
         trainer.ltx2_block_loop_wrapper = None
         return
 
@@ -284,7 +287,8 @@ def setup_wrapper(trainer) -> None:
     trainer.transformer = wrapper
     trainer.ltx2_block_loop_wrapper = wrapper
     print(f"{trainer.log_prefix} [AP3] Ltx2BlockLoopWrapper installed for LTX-2.3 "
-          f"training (TREAD token routing enabled: {trainer.tread_config}); "
+          f"training (TREAD token routing enabled: {tread_cfg}; "
+          f"DiT-BlockSkip enabled: {blockskip_cfg}); "
           f"trainer.transformer_original remains the inner (unwrapped) model")
 
 
@@ -635,6 +639,7 @@ def train_step(
     # safe. `wrapper` is None when TREAD was not enabled at setup time (see
     # ltx2_ops.setup_wrapper) -- byte-identical unwrapped path, nothing to attach.
     tread_cfg = getattr(trainer, "tread_config", None)
+    blockskip_cfg = getattr(trainer, "blockskip_config", None)
     wrapper = getattr(trainer, "ltx2_block_loop_wrapper", None)
     if tread_cfg is not None and wrapper is not None:
         wrapper.attach_tread(tread_cfg)
@@ -646,6 +651,21 @@ def train_step(
                   f"will NOT be applied this run")
             trainer._warned_ltx2_tread_no_wrapper = True
 
+    # AP3 DiT-BlockSkip: attach the folded-precompute config to the wrapper for
+    # THIS training forward only, then clear it in `finally` (mirrors TREAD
+    # above). Mutually exclusive with TREAD (enforced in base_trainer and
+    # asserted again in the wrapper's attach_* methods), so only one of
+    # tread_cfg / blockskip_cfg is ever non-None for a given run.
+    if blockskip_cfg is not None and wrapper is not None:
+        wrapper.attach_blockskip(blockskip_cfg)
+    elif blockskip_cfg is not None and wrapper is None:
+        if not getattr(trainer, "_warned_ltx2_blockskip_no_wrapper", False):
+            print(f"{trainer.log_prefix} WARNING: blockskip_config is set but no "
+                  f"Ltx2BlockLoopWrapper is installed (setup_wrapper did not run "
+                  f"or found blockskip_config unset at setup time) -- BlockSkip "
+                  f"folding will NOT be applied this run")
+            trainer._warned_ltx2_blockskip_no_wrapper = True
+
     try:
         if trainer.mixed_precision:
             with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
@@ -655,6 +675,8 @@ def train_step(
     finally:
         if tread_cfg is not None and wrapper is not None:
             wrapper.attach_tread(None)
+        if blockskip_cfg is not None and wrapper is not None:
+            wrapper.attach_blockskip(None)
 
     if profile_vram:
         print_vram_usage("[train_step_ltx2] After DiT forward")

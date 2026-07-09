@@ -16,10 +16,11 @@ the default LTX-2.3 path is byte-identical to the unwrapped model.
 
 Extension points (populated by later phases, all None by default -> fast path):
   * ``_block_offloader``  — AP1 block-swap GENERATION (this file).
-  * ``_fbcache`` / ``_fbcache_step`` — AP2 First-Block-Cache (joint audio+video).
+  * ``_fbcache`` / ``_fbcache_step`` — AP2 First-Block-Cache (joint audio+video;
+    implemented -- see ``_custom_forward``'s block loop; inference-only).
   * ``_tread_router`` / ``_block_dropout`` — AP3 TREAD + stochastic-depth TRAINING.
 
-The AP2/AP3 slots are declared here but NOT implemented; the custom block loop
+The AP3 slots are declared here but NOT implemented; the custom block loop
 leaves clean per-block hook sites for them (see the comments in ``forward``).
 
 Diffusers pin: the wrapper depends on the inner model exposing a fixed set of
@@ -142,6 +143,18 @@ class Ltx2BlockLoopWrapper(nn.Module):
     def attach_block_offloader(self, block_offloader: Optional[Any]) -> None:
         """Attach (or clear with None) the generation block offloader."""
         self._block_offloader = block_offloader
+
+    def attach_fbcache(self, fbcache: Optional[Any]) -> None:
+        """Attach (or clear with None) the AP2 First-Block-Cache.
+
+        FBCache is INFERENCE-ONLY (asserted in ``_custom_forward``); the caller
+        (``ltx2.py``) is responsible for building it via
+        ``core.inference.fbcache.build_fbcache`` and for guarding mutual
+        exclusivity with Block Swap / Spectrum before attaching. ``_fbcache_step``
+        is a plain settable attribute the pipeline callback advances once per
+        denoise step (see ``ltx2.py``'s ``callback_on_step_end``)."""
+        self._fbcache = fbcache
+        self._fbcache_step = 0
 
     def _any_feature_active(self) -> bool:
         swap_on = (
@@ -274,6 +287,14 @@ class Ltx2BlockLoopWrapper(nn.Module):
         t = self.transformer
         offloader = self._block_offloader
         swap_on = offloader is not None and getattr(offloader, "blocks_to_swap", 0) > 0
+        fbcache = self._fbcache
+        if fbcache is not None:
+            # FBCache is INFERENCE-ONLY: a cache hit skips real block computation
+            # (and its gradients), so it must never be attached during training.
+            assert not torch.is_grad_enabled(), (
+                "Ltx2BlockLoopWrapper: FBCache (_fbcache) must not be attached "
+                "while autograd is enabled (inference-only feature)."
+            )
 
         # === Replicated stock stages (transformer_ltx2.forward 1420-1535) ===
         # Determine timestep for audio.
@@ -406,6 +427,15 @@ class Ltx2BlockLoopWrapper(nn.Module):
 
         grad_ckpt = torch.is_grad_enabled() and t.gradient_checkpointing
 
+        # AP2 First-Block-Cache: joint (video, audio) residual. Both streams
+        # survive to the output (unlike a dual-stream image arch that strips
+        # text), so the cached object is a TUPLE (video_residual, audio_residual)
+        # and the reconstruction on a hit restores BOTH streams. Capture the
+        # pre-block-loop hidden states (right after proj_in) as the residual base.
+        fb_hit = False
+        original_video = hidden_states
+        original_audio = audio_hidden_states
+
         for block_idx, block in enumerate(t.transformer_blocks):
             # AP1 block-swap: ensure this block's weights are resident before use.
             if swap_on:
@@ -484,9 +514,28 @@ class Ltx2BlockLoopWrapper(nn.Module):
             if swap_on:
                 offloader.submit_move_blocks_forward(block_idx)
 
-            # AP2 extension site (NOT implemented in AP1): after block 0, compute
-            # the joint (video, audio) residual indicator and, on a cache hit,
-            # reconstruct both streams from the cached residual and break.
+            # AP2 FBCache decision after the FIRST block: indicator = the VIDEO
+            # stream's residual so far. On a hit, reuse the cached (video, audio)
+            # residual pair and skip everything remaining (both the rest of the
+            # block loop and its block-swap wait/submit calls -- the offloader's
+            # prefetch is forward-only and per-generation, so an early break here
+            # simply leaves later blocks' prefetch un-submitted this call, mirroring
+            # the FLUX.2 wrapper's FBCache break; the pipeline guards this mode
+            # combination as mutually exclusive with Block Swap regardless).
+            if fbcache is not None and block_idx == 0:
+                indicator = hidden_states - original_video
+                if fbcache.use_cache(indicator, int(self._fbcache_step)):
+                    cached_video_residual, cached_audio_residual = fbcache.get()
+                    hidden_states = original_video + cached_video_residual
+                    audio_hidden_states = original_audio + cached_audio_residual
+                    fb_hit = True
+                    break
+
+        # AP2 FBCache miss: store the full (video, audio) residual pair -- the
+        # exact tensors fed to the stage-6 norm_out/proj_out calls on a miss, so a
+        # future hit reproduces them exactly.
+        if fbcache is not None and not fb_hit:
+            fbcache.store((hidden_states - original_video, audio_hidden_states - original_audio))
 
         # === 6. Output layers (including unpatchification) ===
         scale_shift_values = t.scale_shift_table[None, None] + embedded_timestep[:, :, None]

@@ -222,6 +222,15 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     # (weights streamed to GPU during the denoise loop). 0 = disabled (stock
     # enable_model_cpu_offload path, transformer fully GPU-resident).
     "blocks_to_swap": 0,
+    # AP2: First-Block-Cache (dynamic per-step trajectory-redundancy skip). Only
+    # available when the transformer runs through Ltx2BlockLoopWrapper (either
+    # because blocks_to_swap > 0, or the wrapper is force-attached for FBCache
+    # alone). Mutually exclusive with Block Swap (a cache hit skips the block
+    # loop, desyncing the per-block swap prefetch rotation) — disabled with a
+    # warning if blocks_to_swap > 0.
+    "fbcache_enable": False,
+    "fbcache_threshold": 0.12,       # relative-L1 first-block-residual threshold
+    "fbcache_warmup_steps": 1,       # always-compute the first N steps
     # Per-generation component overrides (RP2b). Both unsupported on the LTX-2.3
     # video arch (accepted-but-ignored with a warning); kept here so the video
     # request schema carries the same keys as the image routes.

@@ -29,7 +29,24 @@ from PIL import Image
 class LTX2Mixin:
     """LTX2Mixin: LTX-2.3 text-to-video generation backend."""
 
-    def _ensure_ltx2_offload(self, blocks_to_swap: int = 0):
+    def _ltx2_build_fbcache(self, params: Dict[str, Any], block_swap_on: bool):
+        """Build a FirstBlockCache for LTX-2.3, or None when inactive/guarded.
+
+        FBCache is mutually exclusive with Block Swap (a cache hit skips the
+        block loop -- including its wait_for_block/submit_move_blocks_forward
+        calls -- which would desync the per-block swap prefetch rotation), so it
+        is force-disabled (with a logged reason) whenever ``blocks_to_swap > 0``.
+        There is currently no Spectrum-equivalent output-forecaster wired for
+        LTX-2.3, so only the Block Swap guard applies today."""
+        from core.inference.fbcache import build_fbcache, fbcache_active
+        if not fbcache_active(params):
+            return None
+        if block_swap_on:
+            print("[FBCache] LTX-2.3 disabled: Block Swap is enabled (layer skip desyncs rotation)")
+            return None
+        return build_fbcache(params, label="LTX-2.3")
+
+    def _ensure_ltx2_offload(self, blocks_to_swap: int = 0, force_block_swap_mode: bool = False):
         """Attach model_cpu_offload hooks, in either the stock ("normal") mode or
         the block-swap-compatible ("block_swap") mode, re-attaching whenever the
         requested mode differs from what is currently attached.
@@ -63,7 +80,7 @@ class LTX2Mixin:
         if pipeline is None:
             raise RuntimeError("LTX-2.3 pipeline reference missing from components")
 
-        desired_mode = "block_swap" if blocks_to_swap > 0 else "normal"
+        desired_mode = "block_swap" if (blocks_to_swap > 0 or force_block_swap_mode) else "normal"
         current_mode = getattr(self, "_ltx2_offload_mode", None)
         if getattr(self, "_ltx2_offload_enabled", False) and current_mode == desired_mode:
             return pipeline
@@ -112,12 +129,21 @@ class LTX2Mixin:
         self._ltx2_offload_mode = desired_mode
         return pipeline
 
-    def _ensure_ltx2_block_swap_wrapper(self, blocks_to_swap: int):
+    def _ensure_ltx2_block_swap_wrapper(self, blocks_to_swap: int, force_wrap: bool = False):
         """Wrap (or unwrap) the LTX-2.3 transformer for AP1 block-swap GENERATION.
 
-        ``blocks_to_swap <= 0``: unwraps back to the stock
-        ``LTX2VideoTransformer3DModel`` (byte-identical current behavior — the
-        wrapper is NOT applied in this case).
+        ``blocks_to_swap <= 0`` and ``force_wrap=False``: unwraps back to the
+        stock ``LTX2VideoTransformer3DModel`` (byte-identical current behavior —
+        the wrapper is NOT applied in this case).
+
+        ``blocks_to_swap <= 0`` and ``force_wrap=True``: FBCache (AP2) needs the
+        wrapper's custom block loop even with no real block-swap; wraps with a
+        NULL block offloader (``block_offloader=None``, mirroring
+        ``Flux2BlockSwapWrapper``'s FBCache-only path) so ``_any_feature_active()``
+        is decided solely by ``_fbcache``. The caller must still route
+        ``_ensure_ltx2_offload`` through ``force_block_swap_mode=True`` in this
+        case, since the custom forward bypasses the whole-transformer accelerate
+        offload hook (it calls submodules directly, never ``inner.forward()``).
 
         ``blocks_to_swap > 0``: builds a ``TransformerBlockOffloader`` over
         ``transformer.transformer_blocks`` (generic block_offloading.py,
@@ -143,6 +169,28 @@ class LTX2Mixin:
         inner = current.transformer if isinstance(current, Ltx2BlockLoopWrapper) else current
 
         if blocks_to_swap <= 0:
+            if force_wrap:
+                # FBCache-only wrap: no real block offloader. Idempotent no-op if
+                # already wrapped this way (no swap count, wrapper present).
+                already = (
+                    isinstance(current, Ltx2BlockLoopWrapper)
+                    and current._block_offloader is None
+                    and getattr(self, "_ltx2_block_swap_count", 0) == 0
+                )
+                if already:
+                    return
+                if isinstance(current, Ltx2BlockLoopWrapper) and current._block_offloader is not None:
+                    current._block_offloader.cleanup()
+                wrapper = current if isinstance(current, Ltx2BlockLoopWrapper) else Ltx2BlockLoopWrapper(inner, block_offloader=None)
+                wrapper._block_offloader = None
+                pipeline.transformer = wrapper
+                self.ltx2_components["transformer"] = wrapper
+                i2v = self.ltx2_components.get("i2v_pipeline")
+                if i2v is not None:
+                    i2v.transformer = wrapper
+                self._ltx2_block_swap_count = 0
+                print("[LTX-2.3] FBCache-only wrap active (Ltx2BlockLoopWrapper, no block offloader)")
+                return
             if isinstance(current, Ltx2BlockLoopWrapper):
                 offloader = current._block_offloader
                 if offloader is not None:
@@ -191,7 +239,7 @@ class LTX2Mixin:
         print(f"[LTX-2.3] Block Swap enabled: {blocks_to_swap} blocks to swap "
               f"(Ltx2BlockLoopWrapper active)")
 
-    def _ensure_ltx2_swap_and_offload(self, blocks_to_swap: int):
+    def _ensure_ltx2_swap_and_offload(self, blocks_to_swap: int, force_wrap: bool = False):
         """Bring the shared transformer to the requested block-swap state with the
         CORRECT ordering relative to the model-offload hook attach, and return the
         base pipeline.
@@ -201,17 +249,28 @@ class LTX2Mixin:
         `.to(device)`), THEN wrap + build the block offloader that repositions the
         swappable blocks to CPU.
 
-        Disabling (``blocks_to_swap <= 0``): UNWRAP FIRST, then re-attach offload.
-        `enable_model_cpu_offload` moves the whole pipeline to CPU and binds a
-        streaming forward-hook to ``pipeline.transformer``; if we re-offloaded while
-        the wrapper were still installed, the hook would bind to the wrapper object
-        that the subsequent unwrap discards, leaving the inner transformer stranded
-        on CPU with no hook (device-mismatch on the next call). Unwrapping first
-        makes the hook bind to the restored inner transformer.
+        ``force_wrap`` (FBCache-only, ``blocks_to_swap == 0``): same ordering as
+        the enabling path (offload first, in ``force_block_swap_mode`` so the
+        transformer is offload-excluded even though no real block-swap is
+        requested), then wrap with a null block offloader. Needed because the
+        wrapper's custom forward bypasses the whole-transformer accelerate hook
+        (see ``_ensure_ltx2_block_swap_wrapper``).
+
+        Disabling (``blocks_to_swap <= 0`` and ``force_wrap=False``): UNWRAP
+        FIRST, then re-attach offload. `enable_model_cpu_offload` moves the whole
+        pipeline to CPU and binds a streaming forward-hook to
+        ``pipeline.transformer``; if we re-offloaded while the wrapper were still
+        installed, the hook would bind to the wrapper object that the subsequent
+        unwrap discards, leaving the inner transformer stranded on CPU with no
+        hook (device-mismatch on the next call). Unwrapping first makes the hook
+        bind to the restored inner transformer.
         """
         if blocks_to_swap > 0:
             pipeline = self._ensure_ltx2_offload(blocks_to_swap=blocks_to_swap)
             self._ensure_ltx2_block_swap_wrapper(blocks_to_swap)
+        elif force_wrap:
+            pipeline = self._ensure_ltx2_offload(blocks_to_swap=0, force_block_swap_mode=True)
+            self._ensure_ltx2_block_swap_wrapper(0, force_wrap=True)
         else:
             self._ensure_ltx2_block_swap_wrapper(0)
             pipeline = self._ensure_ltx2_offload(blocks_to_swap=0)
@@ -286,12 +345,26 @@ class LTX2Mixin:
 
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
 
+        # AP2 First-Block-Cache: build before the offload/wrap step so the wrap
+        # decision (force the wrapper on for FBCache-only) is known up front.
+        # Mutually exclusive with Block Swap (see _ltx2_build_fbcache).
+        fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
+        force_wrap = fbcache is not None and blocks_to_swap <= 0
+
         # Base pipeline owns the offload hooks on the shared modules. This brings
         # the shared transformer to the requested block-swap state (wrap/unwrap +
         # offload) in the correct order, BEFORE the i2v pipeline is built (or
         # re-cached) so it always references the correct (wrapped or stock) object.
-        self._ensure_ltx2_swap_and_offload(blocks_to_swap)
+        self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
         pipeline = self._ensure_ltx2_i2v_pipeline()
+
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        fbcache_target = pipeline.transformer if isinstance(pipeline.transformer, Ltx2BlockLoopWrapper) else None
+        if fbcache is not None and fbcache_target is not None:
+            fbcache_target.attach_fbcache(fbcache)
+        elif fbcache is not None:
+            print("[FBCache] LTX-2.3: could not attach (transformer not wrapped)")
+            fbcache = None
 
         # Normalize the keyframe to RGB PIL; the pipeline's video_processor
         # handles the resize/fit to (width, height).
@@ -325,37 +398,50 @@ class LTX2Mixin:
         gen_device = "cuda" if torch.cuda.is_available() else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        callback = None
-        if progress_callback is not None:
+        # Progress + FBCache step advance: LTX2Pipeline invokes
+        # callback_on_step_end(pipe, i, t, kwargs) AFTER every denoise step. We
+        # advance _fbcache_step to i+1 there (primed for the NEXT step's forward
+        # call); step 0 uses the wrapper's default (0) from attach_fbcache().
+        if progress_callback is not None or fbcache_target is not None:
             def _cb(pipe, step_index, timestep, callback_kwargs):
-                try:
-                    progress_callback(step_index + 1, num_inference_steps)
-                except Exception:
-                    pass
+                if progress_callback is not None:
+                    try:
+                        progress_callback(step_index + 1, num_inference_steps)
+                    except Exception:
+                        pass
+                if fbcache_target is not None:
+                    fbcache_target._fbcache_step = step_index + 1
                 return callback_kwargs
             callback = _cb
+        else:
+            callback = None
 
         print(f"[LTX-2.3] img2vid: {width}x{height} num_frames={num_frames} "
               f"fps={frame_rate} steps={num_inference_steps} cfg={guidance_scale} "
               f"seed={seed} audio={audio_enable}")
 
-        video, audio = pipeline(
-            image=input_image,
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            frame_rate=frame_rate,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            num_videos_per_prompt=num_videos_per_prompt,
-            generator=generator,
-            output_type="np",
-            return_dict=False,
-            max_sequence_length=max_sequence_length,
-            callback_on_step_end=callback,
-        )
+        try:
+            video, audio = pipeline(
+                image=input_image,
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                frame_rate=frame_rate,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                num_videos_per_prompt=num_videos_per_prompt,
+                generator=generator,
+                output_type="np",
+                return_dict=False,
+                max_sequence_length=max_sequence_length,
+                callback_on_step_end=callback,
+            )
+        finally:
+            if fbcache_target is not None:
+                print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+                fbcache_target.attach_fbcache(None)
 
         frames_np = video[0]  # [T, H, W, C]
         frames = (np.clip(frames_np, 0.0, 1.0) * 255.0).round().astype(np.uint8)
@@ -393,7 +479,22 @@ class LTX2Mixin:
             raise RuntimeError("LTX-2.3 components not loaded. Please load an LTX-2.3 model first.")
 
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
-        pipeline = self._ensure_ltx2_swap_and_offload(blocks_to_swap)
+
+        # AP2 First-Block-Cache: build before the offload/wrap step so the wrap
+        # decision (force the wrapper on for FBCache-only) is known up front.
+        # Mutually exclusive with Block Swap (see _ltx2_build_fbcache).
+        fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
+        force_wrap = fbcache is not None and blocks_to_swap <= 0
+
+        pipeline = self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
+
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        fbcache_target = pipeline.transformer if isinstance(pipeline.transformer, Ltx2BlockLoopWrapper) else None
+        if fbcache is not None and fbcache_target is not None:
+            fbcache_target.attach_fbcache(fbcache)
+        elif fbcache is not None:
+            print("[FBCache] LTX-2.3: could not attach (transformer not wrapped)")
+            fbcache = None
 
         # Resolve parameters
         prompt = params.get("prompt", "") or ""
@@ -420,38 +521,49 @@ class LTX2Mixin:
         gen_device = "cuda" if torch.cuda.is_available() else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        # Progress: LTX2Pipeline invokes callback_on_step_end(pipe, i, t, kwargs)
-        # at the end of every denoise step and expects a dict back.
-        callback = None
-        if progress_callback is not None:
+        # Progress + FBCache step advance: LTX2Pipeline invokes
+        # callback_on_step_end(pipe, i, t, kwargs) AFTER every denoise step. We
+        # advance _fbcache_step to i+1 there (primed for the NEXT step's forward
+        # call); step 0 uses the wrapper's default (0) from attach_fbcache().
+        if progress_callback is not None or fbcache_target is not None:
             def _cb(pipe, step_index, timestep, callback_kwargs):
-                try:
-                    progress_callback(step_index + 1, num_inference_steps)
-                except Exception:
-                    pass
+                if progress_callback is not None:
+                    try:
+                        progress_callback(step_index + 1, num_inference_steps)
+                    except Exception:
+                        pass
+                if fbcache_target is not None:
+                    fbcache_target._fbcache_step = step_index + 1
                 return callback_kwargs
             callback = _cb
+        else:
+            callback = None
 
         print(f"[LTX-2.3] txt2vid: {width}x{height} num_frames={num_frames} "
               f"fps={frame_rate} steps={num_inference_steps} cfg={guidance_scale} "
               f"seed={seed} audio={audio_enable}")
 
-        video, audio = pipeline(
-            prompt=prompt,
-            negative_prompt=negative_prompt,
-            height=height,
-            width=width,
-            num_frames=num_frames,
-            frame_rate=frame_rate,
-            num_inference_steps=num_inference_steps,
-            guidance_scale=guidance_scale,
-            num_videos_per_prompt=num_videos_per_prompt,
-            generator=generator,
-            output_type="np",
-            return_dict=False,
-            max_sequence_length=max_sequence_length,
-            callback_on_step_end=callback,
-        )
+        try:
+            video, audio = pipeline(
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_frames=num_frames,
+                frame_rate=frame_rate,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                num_videos_per_prompt=num_videos_per_prompt,
+                generator=generator,
+                output_type="np",
+                return_dict=False,
+                max_sequence_length=max_sequence_length,
+                callback_on_step_end=callback,
+            )
+        finally:
+            if fbcache_target is not None:
+                print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+                fbcache_target.attach_fbcache(None)
 
         # video: np.ndarray [B, T, H, W, C] float in [0, 1] (output_type="np").
         frames_np = video[0]  # [T, H, W, C]

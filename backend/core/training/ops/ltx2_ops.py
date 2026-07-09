@@ -655,7 +655,12 @@ def generate_sample(
     try:
         pipeline = trainer.ltx2_pipeline
         device = trainer.device
-        gen = torch.Generator(device=device)
+        # CPU generator: during training the LTX components are offload/block-swap
+        # staged, so diffusers allocates the noise latent on CPU — a CUDA generator
+        # cannot seed a CPU tensor ("Cannot generate a cpu tensor from a generator
+        # of type cuda"). A CPU generator is universally compatible (randn_tensor
+        # generates on CPU then moves) and reproducible across offload layouts.
+        gen = torch.Generator(device="cpu")
         gen.manual_seed(seed if (seed is not None and seed >= 0) else _random.randint(0, 2**32 - 1))
 
         # Keep the clip tiny for a validation sample (9 frames = 1 latent block).

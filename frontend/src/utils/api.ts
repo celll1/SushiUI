@@ -951,6 +951,7 @@ export const fetchUpscalerModels = async (): Promise<{ models: UpscalerModelInfo
 export interface VaeEntry {
   name: string;
   path: string;
+  arch?: string | null;
   latent_channels?: number | null;
   vae_class?: string | null;
   scale_spatial?: number | null;
@@ -960,6 +961,7 @@ export interface VaeEntry {
 export interface TextEncoderEntry {
   name: string;
   path: string;
+  arch?: string | null;
   out_dim?: number | null;
   te_type?: string | null;
 }
@@ -2283,6 +2285,9 @@ export interface DatasetItem {
   image_hash: string;
   created_at: string;
   updated_at: string;
+  // For item_type="video": public URL of the first-frame poster thumbnail
+  // generated at scan time (served via the /thumbnails static mount).
+  thumbnail_url?: string | null;
   captions?: DatasetCaptionData[];
   related_images?: {
     reference?: string[];  // Reference image paths for training

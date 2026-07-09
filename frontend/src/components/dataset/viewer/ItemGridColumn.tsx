@@ -351,14 +351,40 @@ export default function ItemGridColumn({
                   />
                 </div>
 
-                {/* Image */}
-                <div className="aspect-square bg-gray-900">
-                  <img
-                    src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
-                    alt={item.base_name}
-                    className="w-full h-full object-cover rounded-t"
-                    loading="lazy"
-                  />
+                {/* Image / video poster */}
+                <div className="aspect-square bg-gray-900 relative">
+                  {item.item_type === "video" ? (
+                    item.thumbnail_url ? (
+                      <img
+                        src={item.thumbnail_url}
+                        alt={item.base_name}
+                        className="w-full h-full object-cover rounded-t"
+                        loading="lazy"
+                      />
+                    ) : (
+                      // No poster thumbnail generated yet (e.g. older scan) —
+                      // avoid a broken <img> for the raw mp4 by using a
+                      // muted, non-controlled <video> to show its first frame.
+                      <video
+                        src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                        className="w-full h-full object-cover rounded-t"
+                        muted
+                        preload="metadata"
+                      />
+                    )
+                  ) : (
+                    <img
+                      src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                      alt={item.base_name}
+                      className="w-full h-full object-cover rounded-t"
+                      loading="lazy"
+                    />
+                  )}
+                  {item.item_type === "video" && (
+                    <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1 rounded">
+                      ▶
+                    </span>
+                  )}
                 </div>
 
                 {/* Info */}

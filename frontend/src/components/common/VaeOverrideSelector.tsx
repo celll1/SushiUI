@@ -39,7 +39,10 @@ export default function VaeOverrideSelector({
       if (v.latent_channels != null) dims.push(`${v.latent_channels}ch`);
       if (v.vae_class) dims.push(v.vae_class);
       const suffix = dims.length > 0 ? ` (${dims.join(", ")})` : "";
-      return { value: v.path, label: `${v.name}${suffix}` };
+      const label = v.arch
+        ? `${v.name} — ${v.arch}${suffix}`
+        : `${v.name}${suffix}`;
+      return { value: v.path, label };
     }),
   ];
 

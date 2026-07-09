@@ -542,13 +542,25 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         <div className="flex-shrink-0 flex gap-2">
           {/* Image Preview - Small Thumbnail */}
           <div className="w-24 h-24 sm:w-32 sm:h-32 bg-gray-800 rounded overflow-hidden flex-shrink-0">
-            <img
-              src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
-              alt={item.base_name}
-              className="w-full h-full object-contain bg-gray-900 cursor-pointer hover:opacity-80 transition-opacity"
-              onDoubleClick={() => setIsImageExpanded(true)}
-              title="Double-click to expand"
-            />
+            {item.item_type === "video" ? (
+              <video
+                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                poster={item.thumbnail_url || undefined}
+                className="w-full h-full object-contain bg-gray-900 cursor-pointer hover:opacity-80 transition-opacity"
+                controls
+                preload="metadata"
+                onDoubleClick={() => setIsImageExpanded(true)}
+                title="Double-click to expand"
+              />
+            ) : (
+              <img
+                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                alt={item.base_name}
+                className="w-full h-full object-contain bg-gray-900 cursor-pointer hover:opacity-80 transition-opacity"
+                onDoubleClick={() => setIsImageExpanded(true)}
+                title="Double-click to expand"
+              />
+            )}
           </div>
 
           {/* File Info */}
@@ -834,11 +846,21 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         >
           {/* Image Container */}
           <div className="flex-1 flex items-center justify-center p-4">
-            <img
-              src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
-              alt={item.base_name}
-              className="max-w-full max-h-full object-contain"
-            />
+            {item.item_type === "video" ? (
+              <video
+                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                poster={item.thumbnail_url || undefined}
+                className="max-w-full max-h-full object-contain"
+                controls
+                preload="metadata"
+              />
+            ) : (
+              <img
+                src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                alt={item.base_name}
+                className="max-w-full max-h-full object-contain"
+              />
+            )}
           </div>
 
           {/* Resize Handle */}

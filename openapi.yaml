@@ -5190,6 +5190,11 @@ components:
           default: true
           description: "When true, mux the generated audio track into the mp4."
           example: true
+        blocks_to_swap:
+          type: integer
+          default: 0
+          description: "Number of LTX-2.3 transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap (transformer stays fully GPU-resident via the stock model-offload path)."
+          example: 0
         vae_path:
           type: string
           nullable: true

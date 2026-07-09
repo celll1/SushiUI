@@ -29,28 +29,67 @@ from PIL import Image
 class LTX2Mixin:
     """LTX2Mixin: LTX-2.3 text-to-video generation backend."""
 
-    def _ensure_ltx2_offload(self):
-        """Attach model_cpu_offload hooks once.
+    def _ensure_ltx2_offload(self, blocks_to_swap: int = 0):
+        """Attach model_cpu_offload hooks, in either the stock ("normal") mode or
+        the block-swap-compatible ("block_swap") mode, re-attaching whenever the
+        requested mode differs from what is currently attached.
 
-        `enable_model_cpu_offload` stages the offload sequence
-        (text_encoder -> connectors -> transformer -> vae -> audio_vae ->
-        vocoder) so the 19B transformer + Gemma-3 text encoder move through the
-        GPU one component at a time. Re-calling it would re-attach hooks, so this
-        is guarded by a flag.
+        Stock mode (``blocks_to_swap == 0``, UNCHANGED): `enable_model_cpu_offload`
+        stages the offload sequence (text_encoder -> connectors -> transformer ->
+        vae -> audio_vae -> vocoder) so the 19B transformer + Gemma-3 text encoder
+        move through the GPU one component at a time.
+
+        Block-swap mode (``blocks_to_swap > 0``): `enable_model_cpu_offload`
+        normally moves each staged component to GPU via an accelerate forward
+        hook that owns the WHOLE module (`cpu_offload_with_hook`), which
+        conflicts with block-swap (some transformer blocks must stay resident on
+        CPU while the rest stream through GPU). diffusers 0.38.0's
+        `enable_model_cpu_offload` (`pipeline_utils.py` ~1189-1282) builds its
+        per-model hook chain by walking ``model_cpu_offload_seq.split("->")``;
+        remaining `self.components` entries are either given a plain
+        `.to(device)` (if listed in `self._exclude_from_cpu_offload`) or another
+        accelerate hook. Both are plain-Python attributes read off the pipeline
+        INSTANCE (falling back to the class default), so reassigning them on the
+        instance does not mutate the class or other pipeline instances. We drop
+        the ``"transformer"`` token from the instance's ``model_cpu_offload_seq``
+        AND add ``"transformer"`` to ``self._exclude_from_cpu_offload`` so it
+        takes the plain-`.to(device)` branch (one unconditional move, not an
+        accelerate hook) instead of being hook-managed. The block offloader
+        (built afterward in `_ensure_ltx2_block_swap_wrapper`) then repositions
+        the swappable blocks' weights back to CPU. Every other component keeps
+        its stock accelerate-hook behavior in both modes.
         """
         pipeline = self.ltx2_components.get("pipeline")
         if pipeline is None:
             raise RuntimeError("LTX-2.3 pipeline reference missing from components")
 
-        if getattr(self, "_ltx2_offload_enabled", False):
+        desired_mode = "block_swap" if blocks_to_swap > 0 else "normal"
+        current_mode = getattr(self, "_ltx2_offload_mode", None)
+        if getattr(self, "_ltx2_offload_enabled", False) and current_mode == desired_mode:
             return pipeline
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if device == "cuda":
             try:
+                # model_cpu_offload_seq is a CLASS attribute; reading it via
+                # type(pipeline) always yields the stock diffusers-defined
+                # string, independent of any previous instance-level override.
+                stock_seq = type(pipeline).model_cpu_offload_seq
+                exclude = list(getattr(pipeline, "_exclude_from_cpu_offload", []) or [])
+                if desired_mode == "block_swap":
+                    pipeline.model_cpu_offload_seq = "->".join(
+                        tok for tok in stock_seq.split("->") if tok != "transformer"
+                    )
+                    if "transformer" not in exclude:
+                        exclude.append("transformer")
+                else:
+                    pipeline.model_cpu_offload_seq = stock_seq
+                    exclude = [tok for tok in exclude if tok != "transformer"]
+                pipeline._exclude_from_cpu_offload = exclude
+
                 pipeline.enable_model_cpu_offload(device=device)
-                print("[LTX-2.3] enable_model_cpu_offload attached "
-                      "(text_encoder->connectors->transformer->vae->audio_vae->vocoder)")
+                print(f"[LTX-2.3] enable_model_cpu_offload attached (mode={desired_mode}, "
+                      f"seq={pipeline.model_cpu_offload_seq})")
             except Exception as e:
                 print(f"[LTX-2.3] enable_model_cpu_offload failed ({e}); "
                       f"falling back to whole-pipeline .to(cuda)")
@@ -70,6 +109,112 @@ class LTX2Mixin:
                 print(f"[LTX-2.3] VAE tiling enable failed ({e}); continuing")
 
         self._ltx2_offload_enabled = True
+        self._ltx2_offload_mode = desired_mode
+        return pipeline
+
+    def _ensure_ltx2_block_swap_wrapper(self, blocks_to_swap: int):
+        """Wrap (or unwrap) the LTX-2.3 transformer for AP1 block-swap GENERATION.
+
+        ``blocks_to_swap <= 0``: unwraps back to the stock
+        ``LTX2VideoTransformer3DModel`` (byte-identical current behavior — the
+        wrapper is NOT applied in this case).
+
+        ``blocks_to_swap > 0``: builds a ``TransformerBlockOffloader`` over
+        ``transformer.transformer_blocks`` (generic block_offloading.py,
+        ``supports_backward=False`` — inference only) and wraps the transformer
+        with ``Ltx2BlockLoopWrapper``. Both ``pipeline.transformer`` and
+        ``self.ltx2_components["transformer"]`` are updated to the wrapper so
+        every consumer (base pipeline and a later-built i2v pipeline) sees the
+        same object. An already-cached i2v pipeline (if any) has its
+        ``transformer`` ref updated too, since it shares every module with the
+        base pipeline rather than owning its own weights.
+
+        Must be called AFTER `_ensure_ltx2_offload(blocks_to_swap)` so the
+        transformer's device placement (whole-GPU via the offload-exclusion
+        above) is settled before the offloader repositions swappable blocks.
+        """
+        pipeline = self.ltx2_components.get("pipeline")
+        if pipeline is None:
+            raise RuntimeError("LTX-2.3 pipeline reference missing from components")
+
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+
+        current = pipeline.transformer
+        inner = current.transformer if isinstance(current, Ltx2BlockLoopWrapper) else current
+
+        if blocks_to_swap <= 0:
+            if isinstance(current, Ltx2BlockLoopWrapper):
+                offloader = current._block_offloader
+                if offloader is not None:
+                    offloader.cleanup()
+                pipeline.transformer = inner
+                self.ltx2_components["transformer"] = inner
+                i2v = self.ltx2_components.get("i2v_pipeline")
+                if i2v is not None:
+                    i2v.transformer = inner
+                print("[LTX-2.3] Block Swap disabled; transformer unwrapped (stock forward)")
+            self._ltx2_block_swap_count = 0
+            return
+
+        prev_count = getattr(self, "_ltx2_block_swap_count", 0)
+        if isinstance(current, Ltx2BlockLoopWrapper) and prev_count == blocks_to_swap:
+            return  # already wired for this exact swap count
+
+        if isinstance(current, Ltx2BlockLoopWrapper) and current._block_offloader is not None:
+            current._block_offloader.cleanup()
+
+        from core.memory_management import TransformerBlockOffloader
+        device = next(inner.parameters()).device
+        offloader = TransformerBlockOffloader(
+            blocks=inner.transformer_blocks,
+            blocks_to_swap=blocks_to_swap,
+            device=device,
+            target_dtype=inner.dtype,
+            use_pinned_memory=False,
+            transformer=inner,
+            supports_backward=False,
+            # Generation weights are frozen: use the H2D-only fast path (permanent
+            # pinned CPU masters + coalesced single copy per block) so we skip the
+            # pointless device->host eviction of read-only weights (halves PCIe
+            # traffic vs the standard swap). Auto-disables if backward is ever on.
+            h2d_only=True,
+        )
+        offloader.prepare_block_devices_before_forward()
+
+        wrapper = Ltx2BlockLoopWrapper(inner, block_offloader=offloader)
+        pipeline.transformer = wrapper
+        self.ltx2_components["transformer"] = wrapper
+        i2v = self.ltx2_components.get("i2v_pipeline")
+        if i2v is not None:
+            i2v.transformer = wrapper
+        self._ltx2_block_swap_count = blocks_to_swap
+        print(f"[LTX-2.3] Block Swap enabled: {blocks_to_swap} blocks to swap "
+              f"(Ltx2BlockLoopWrapper active)")
+
+    def _ensure_ltx2_swap_and_offload(self, blocks_to_swap: int):
+        """Bring the shared transformer to the requested block-swap state with the
+        CORRECT ordering relative to the model-offload hook attach, and return the
+        base pipeline.
+
+        Enabling (``blocks_to_swap > 0``): offload FIRST (which excludes the
+        transformer from the accelerate hook chain and gives it a plain
+        `.to(device)`), THEN wrap + build the block offloader that repositions the
+        swappable blocks to CPU.
+
+        Disabling (``blocks_to_swap <= 0``): UNWRAP FIRST, then re-attach offload.
+        `enable_model_cpu_offload` moves the whole pipeline to CPU and binds a
+        streaming forward-hook to ``pipeline.transformer``; if we re-offloaded while
+        the wrapper were still installed, the hook would bind to the wrapper object
+        that the subsequent unwrap discards, leaving the inner transformer stranded
+        on CPU with no hook (device-mismatch on the next call). Unwrapping first
+        makes the hook bind to the restored inner transformer.
+        """
+        if blocks_to_swap > 0:
+            pipeline = self._ensure_ltx2_offload(blocks_to_swap=blocks_to_swap)
+            self._ensure_ltx2_block_swap_wrapper(blocks_to_swap)
+        else:
+            self._ensure_ltx2_block_swap_wrapper(0)
+            pipeline = self._ensure_ltx2_offload(blocks_to_swap=0)
         return pipeline
 
     def _ensure_ltx2_i2v_pipeline(self):
@@ -139,8 +284,13 @@ class LTX2Mixin:
         if input_image is None:
             raise RuntimeError("img2vid requires an input image for the first-frame keyframe")
 
-        # Base pipeline owns the offload hooks on the shared modules.
-        self._ensure_ltx2_offload()
+        blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
+
+        # Base pipeline owns the offload hooks on the shared modules. This brings
+        # the shared transformer to the requested block-swap state (wrap/unwrap +
+        # offload) in the correct order, BEFORE the i2v pipeline is built (or
+        # re-cached) so it always references the correct (wrapped or stock) object.
+        self._ensure_ltx2_swap_and_offload(blocks_to_swap)
         pipeline = self._ensure_ltx2_i2v_pipeline()
 
         # Normalize the keyframe to RGB PIL; the pipeline's video_processor
@@ -242,7 +392,8 @@ class LTX2Mixin:
         if not self.ltx2_components:
             raise RuntimeError("LTX-2.3 components not loaded. Please load an LTX-2.3 model first.")
 
-        pipeline = self._ensure_ltx2_offload()
+        blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
+        pipeline = self._ensure_ltx2_swap_and_offload(blocks_to_swap)
 
         # Resolve parameters
         prompt = params.get("prompt", "") or ""

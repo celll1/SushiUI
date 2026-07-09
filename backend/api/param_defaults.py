@@ -218,6 +218,10 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     "num_videos_per_prompt": 1,
     "max_sequence_length": 1024,     # Gemma-3 prompt token budget
     "audio_enable": True,            # mux the generated audio track into the mp4
+    # AP1: block-swap generation. Number of transformer_blocks kept CPU-resident
+    # (weights streamed to GPU during the denoise loop). 0 = disabled (stock
+    # enable_model_cpu_offload path, transformer fully GPU-resident).
+    "blocks_to_swap": 0,
     # Per-generation component overrides (RP2b). Both unsupported on the LTX-2.3
     # video arch (accepted-but-ignored with a warning); kept here so the video
     # request schema carries the same keys as the image routes.

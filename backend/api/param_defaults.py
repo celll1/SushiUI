@@ -231,6 +231,23 @@ VIDEO_GEN_DEFAULTS: Dict[str, Any] = {
     "fbcache_enable": False,
     "fbcache_threshold": 0.12,       # relative-L1 first-block-residual threshold
     "fbcache_warmup_steps": 1,       # always-compute the first N steps
+    # Spectrum: Adaptive Spectral Feature Forecasting (training-free acceleration),
+    # wrapper-hosted (Ltx2BlockLoopWrapper). Forecasts the PRE-CFG per-branch joint
+    # (video, audio) transformer output from a Chebyshev fit over actual passes,
+    # skipping the whole forward on forecast steps. Mutually exclusive with FBCache
+    # (Spectrum takes precedence) and with Block Swap (disabled with a warning if
+    # blocks_to_swap > 0). Same knobs as the image GenerationParams schema.
+    "spectrum_enable": False,
+    "spectrum_w": 0.5,
+    "spectrum_w_decay": 0.0,
+    "spectrum_delta_cap": 0.0,
+    "spectrum_m": 4,
+    "spectrum_lam": 0.1,
+    "spectrum_warmup_steps": 3,
+    "spectrum_window_size": 4,
+    "spectrum_flex_window": 0.75,
+    "spectrum_tail": 0.12,
+    "spectrum_max_cache": 0,
     # Per-generation component overrides (RP2b). Both unsupported on the LTX-2.3
     # video arch (accepted-but-ignored with a warning); kept here so the video
     # request schema carries the same keys as the image routes.

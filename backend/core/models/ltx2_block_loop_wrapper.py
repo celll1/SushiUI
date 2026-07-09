@@ -18,6 +18,9 @@ Extension points (populated by later phases, all None by default -> fast path):
   * ``_block_offloader``  — AP1 block-swap GENERATION (this file).
   * ``_fbcache`` / ``_fbcache_step`` — AP2 First-Block-Cache (joint audio+video;
     implemented -- see ``_custom_forward``'s block loop; inference-only).
+  * ``_spectrum_video`` / ``_spectrum_audio`` / ``_spectrum_step`` — Spectrum
+    (Adaptive Spectral Feature Forecasting; implemented -- see ``forward``'s
+    pre-CFG output-mode skip; inference-only; mutually exclusive with FBCache).
   * ``_tread_router`` / ``_block_dropout`` — AP3 TREAD + stochastic-depth TRAINING.
 
 The AP3 slots are declared here but NOT implemented; the custom block loop
@@ -100,9 +103,21 @@ class Ltx2BlockLoopWrapper(nn.Module):
         # AP1 — block-swap generation (generic TransformerBlockOffloader over
         # transformer_blocks; explicit wait/submit in the loop, forward-only).
         self._block_offloader = block_offloader
-        # AP2 — First-Block-Cache (joint (video, audio) residual). Not implemented.
+        # AP2 — First-Block-Cache (joint (video, audio) residual).
         self._fbcache = None
         self._fbcache_step = 0
+        # Spectrum — Adaptive Spectral Feature Forecasting (output mode, joint
+        # video+audio, forecast PRE-CFG so the elementwise-linear Chebyshev fit
+        # commutes with the CFG combine done downstream by the diffusers pipeline
+        # loop). Two forecasters built with IDENTICAL config so is_anchor(step)
+        # agrees for both (the anchor schedule depends only on step index +
+        # config, not on the tensor data). Mutually exclusive with FBCache (same
+        # trajectory-redundancy target) and with real Block Swap (a forecast skip
+        # step returns without running the block loop, desyncing the swap
+        # prefetch rotation) -- both guarded in ltx2.py.
+        self._spectrum_video = None
+        self._spectrum_audio = None
+        self._spectrum_step = 0
         # AP3 — TREAD token routing + stochastic-depth block dropout (training).
         # Not implemented; declared so train_step can attach/clear them.
         self._tread_router = None
@@ -153,15 +168,41 @@ class Ltx2BlockLoopWrapper(nn.Module):
         exclusivity with Block Swap / Spectrum before attaching. ``_fbcache_step``
         is a plain settable attribute the pipeline callback advances once per
         denoise step (see ``ltx2.py``'s ``callback_on_step_end``)."""
+        assert fbcache is None or self._spectrum_video is None, (
+            "Ltx2BlockLoopWrapper: FBCache and Spectrum must never be attached "
+            "simultaneously (mutually exclusive trajectory-redundancy features; "
+            "guarded in ltx2.py)."
+        )
         self._fbcache = fbcache
         self._fbcache_step = 0
+
+    def attach_spectrum(self, video_forecaster: Optional[Any], audio_forecaster: Optional[Any]) -> None:
+        """Attach (or clear with ``(None, None)``) the Spectrum output forecasters.
+
+        Spectrum is INFERENCE-ONLY (asserted in ``forward``) and mutually
+        exclusive with FBCache (asserted here and in ``forward``); the caller
+        (``ltx2.py``) is responsible for building both forecasters via
+        ``core.inference.spectrum_forecaster.build_output_forecaster`` with
+        IDENTICAL config (so ``is_anchor(step)`` agrees for video and audio) and
+        for guarding mutual exclusivity with FBCache / Block Swap before
+        attaching. ``_spectrum_step`` is a plain settable attribute the pipeline
+        callback advances once per denoise step (mirrors ``_fbcache_step``; see
+        ``ltx2.py``'s ``callback_on_step_end``)."""
+        assert video_forecaster is None or self._fbcache is None, (
+            "Ltx2BlockLoopWrapper: Spectrum and FBCache must never be attached "
+            "simultaneously (mutually exclusive trajectory-redundancy features; "
+            "guarded in ltx2.py)."
+        )
+        self._spectrum_video = video_forecaster
+        self._spectrum_audio = audio_forecaster
+        self._spectrum_step = 0
 
     def _any_feature_active(self) -> bool:
         swap_on = (
             self._block_offloader is not None
             and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
         )
-        return bool(swap_on or self._fbcache is not None
+        return bool(swap_on or self._fbcache is not None or self._spectrum_video is not None
                     or self._tread_router is not None or self._block_dropout is not None)
 
     # ------------------------------------------------------------------
@@ -197,6 +238,32 @@ class Ltx2BlockLoopWrapper(nn.Module):
 
         Fast path (no feature attached) delegates verbatim to the inner model.
         """
+        # Spectrum: on a forecast (non-anchor) step, skip the ENTIRE forward
+        # (RoPE / projections / block loop / output layers) and return the
+        # forecasted (video, audio) output directly. The wrapper receives the
+        # PRE-CFG batch (diffusers concatenates [uncond, cond] before calling
+        # the transformer once per step), so this forecasts the whole 2B-batch
+        # tensor; the Chebyshev ridge fit + w-mix are elementwise-linear, so
+        # forecasting pre-CFG is equivalent to forecasting the post-CFG
+        # combination (same reasoning as the SD/SDXL/FLUX.2 Spectrum paths).
+        if self._spectrum_video is not None:
+            assert not torch.is_grad_enabled(), (
+                "Ltx2BlockLoopWrapper: Spectrum (_spectrum_video/_spectrum_audio) must "
+                "not be attached while autograd is enabled (inference-only feature)."
+            )
+            assert self._fbcache is None, (
+                "Ltx2BlockLoopWrapper: Spectrum and FBCache must never be attached "
+                "simultaneously (mutually exclusive trajectory-redundancy features; "
+                "guarded in ltx2.py)."
+            )
+            step = int(self._spectrum_step)
+            if not self._spectrum_video.is_anchor(step):
+                forecast_video = self._spectrum_video.forecast(step)
+                forecast_audio = self._spectrum_audio.forecast(step)
+                if not return_dict:
+                    return (forecast_video, forecast_audio)
+                return AudioVisualModelOutput(sample=forecast_video, audio_sample=forecast_audio)
+
         if not self._any_feature_active():
             # Byte-identical default: the inner model's own forward (protects the
             # verified LTX-2.3 generation + training paths). The @apply_lora_scale
@@ -227,7 +294,7 @@ class Ltx2BlockLoopWrapper(nn.Module):
                 return_dict=return_dict,
             )
 
-        return self._custom_forward(
+        result = self._custom_forward(
             hidden_states=hidden_states,
             audio_hidden_states=audio_hidden_states,
             encoder_hidden_states=encoder_hidden_states,
@@ -252,6 +319,21 @@ class Ltx2BlockLoopWrapper(nn.Module):
             attention_kwargs=attention_kwargs,
             return_dict=return_dict,
         )
+
+        # Spectrum: this was an ANCHOR step (the forecast branch above returned
+        # early on a skip step) -- record the wrapper's final returned tensors
+        # (post proj_out / audio_proj_out, the same tensors the pipeline
+        # receives) so future forecast steps extrapolate from them.
+        if self._spectrum_video is not None:
+            step = int(self._spectrum_step)
+            if isinstance(result, tuple):
+                video_out, audio_out = result[0], result[1]
+            else:
+                video_out, audio_out = result.sample, result.audio_sample
+            self._spectrum_video.record(step, video_out)
+            self._spectrum_audio.record(step, audio_out)
+
+        return result
 
     # NOTE: the @apply_lora_scale decorator on the stock forward pops the LoRA
     # scale out of attention_kwargs before the blocks run. In the custom path we

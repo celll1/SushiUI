@@ -79,6 +79,28 @@ _REQUIRED_PARAMS = (
 )
 
 
+def _gather_video_rope(rope_tuple, idx: torch.Tensor):
+    """Gather the kept-token rows out of a ``(cos, sin)`` RoPE pair.
+
+    LTX-2.3's ``LTX2AudioVideoRotaryPosEmbed`` produces either shape depending on
+    ``rope_type`` (diffusers default: ``"interleaved"``):
+      * interleaved: ``[B, N, D]``       (token axis = dim 1, D = full proj dim)
+      * split:       ``[B, H, N, D//2]`` (token axis = dim 2, per-head)
+    Handles BOTH so a future/alternate ``rope_type`` config does not silently
+    mis-gather.
+    """
+    cos, sin = rope_tuple
+    if cos.dim() == 3:
+        return cos.index_select(1, idx), sin.index_select(1, idx)
+    if cos.dim() == 4:
+        return cos.index_select(2, idx), sin.index_select(2, idx)
+    raise ValueError(
+        f"Ltx2BlockLoopWrapper: unexpected LTX-2.3 video RoPE ndim={cos.dim()} "
+        "(expected 3 [interleaved] or 4 [split]); TREAD gather not implemented "
+        "for this shape."
+    )
+
+
 class Ltx2BlockLoopWrapper(nn.Module):
     """Wrap ``LTX2VideoTransformer3DModel`` and re-own only the block loop.
 
@@ -175,6 +197,22 @@ class Ltx2BlockLoopWrapper(nn.Module):
         )
         self._fbcache = fbcache
         self._fbcache_step = 0
+
+    def attach_tread(self, config: Optional[dict]) -> None:
+        """Attach (or clear with None) the AP3 TREAD token-routing config.
+
+        TREAD (arXiv 2501.04765) is TRAINING-ONLY (``_custom_forward`` additionally
+        gates on ``self.training`` and ``torch.is_grad_enabled()``, so this is
+        doubly safe). The caller (``ltx2_ops.train_step``) is responsible for
+        attaching a dict with keys ``drop_ratio`` / ``start_block`` / ``end_block``
+        before the training forward and clearing it (``attach_tread(None)``) in a
+        ``finally`` so sampling/validation (which reuse the same transformer via
+        ``trainer.ltx2_pipeline`` -- note: the pipeline actually holds its own
+        direct reference to the INNER unwrapped transformer, so it never even
+        calls through this wrapper -- but the clear is kept as defense in depth)
+        always run the full network on all tokens.
+        """
+        self._tread_router = config
 
     def attach_spectrum(self, video_forecaster: Optional[Any], audio_forecaster: Optional[Any]) -> None:
         """Attach (or clear with ``(None, None)``) the Spectrum output forecasters.
@@ -509,6 +547,67 @@ class Ltx2BlockLoopWrapper(nn.Module):
 
         grad_ckpt = torch.is_grad_enabled() and t.gradient_checkpointing
 
+        # AP3 TREAD token routing (arXiv 2501.04765): OFF by default (_tread_router
+        # is None). Training-only -- gated on self.training AND autograd being
+        # enabled; sampling/validation never attach a route config (cleared by
+        # ltx2_ops.train_step's `finally`, and the pipeline sampling path calls the
+        # INNER transformer directly, never this wrapper), so routing structurally
+        # cannot fire outside a training forward.
+        #
+        # Exactness for LTX-2.3 video (proven in the AP3 feasibility study): the
+        # training timestep is a per-SAMPLE scalar, so temb / temb_audio /
+        # temb_prompt / temb_ca_* are all [B, 1, D] and BROADCAST over every video
+        # token identically -- none of them are per-token. Gathering a token
+        # subset for blocks [start_block, end_block) is therefore EXACT without
+        # gathering any modulation tensor.
+        #
+        # Only the VIDEO stream is routed. Audio flows through every block
+        # unchanged (a separate token axis; not gathered). The wrapper's training
+        # call always sets isolate_modalities=True (see ltx2_ops.train_step),
+        # which disables use_a2v_cross_attention / use_v2a_cross_attention -- the
+        # ONLY consumers of `ca_video_rotary_emb` / `ca_audio_rotary_emb` -- so
+        # those two RoPE tuples are dead code during training and are passed
+        # through UNCHANGED (never gathered). attn2 (video-text cross-attention)
+        # is called with query_rotary_emb=None (no RoPE at all), so the gathered
+        # video subset needs no cross-attention RoPE either. The ONLY RoPE tensor
+        # that must be gathered is `video_rotary_emb` (attn1 video self-attention).
+        tread = self._tread_router if (self.training and torch.is_grad_enabled()) else None
+        num_video_tokens = hidden_states.shape[1]
+        route_active = False
+        kept_idx = None
+        start_b = end_b = 0
+        if tread is not None:
+            start_b = int(tread.get("start_block", 0))
+            end_b = int(tread.get("end_block", 0))
+            drop_ratio = float(tread.get("drop_ratio", 0.0))
+            num_blocks = len(t.transformer_blocks)
+            if not (0 <= start_b < end_b <= num_blocks and 0.0 < drop_ratio < 1.0):
+                if not getattr(self, "_warned_tread_span", False):
+                    print(f"[LTX2 TREAD] WARNING: invalid route "
+                          f"(start={start_b}, end={end_b}, drop={drop_ratio}, "
+                          f"blocks={num_blocks}); routing disabled")
+                    self._warned_tread_span = True
+            elif num_video_tokens <= 1:
+                if not getattr(self, "_warned_tread_tokens", False):
+                    print(f"[LTX2 TREAD] WARNING: video token count "
+                          f"{num_video_tokens} <= 1; routing disabled")
+                    self._warned_tread_tokens = True
+            else:
+                route_active = True
+
+        if route_active:
+            # Randomness sampled ONCE per step, OUTSIDE any checkpointed callable
+            # (the per-block gradient-checkpointing recompute below only re-runs
+            # the single block's forward given tensors fixed at this point in the
+            # enclosing loop -- it never re-executes this selection). This is the
+            # correctness pin: sampling kept_idx inside block.forward or inside
+            # the checkpointed callable would let recompute pick a different token
+            # subset and silently corrupt gradients.
+            from core.training.token_routing import select_kept_indices
+            kept_idx = select_kept_indices(num_video_tokens, drop_ratio, hidden_states.device)
+
+        video_rotary_emb_full = video_rotary_emb  # restored for out-of-span blocks
+
         # AP2 First-Block-Cache: joint (video, audio) residual. Both streams
         # survive to the output (unlike a dual-stream image arch that strips
         # text), so the cached object is a TUPLE (video_residual, audio_residual)
@@ -526,11 +625,19 @@ class Ltx2BlockLoopWrapper(nn.Module):
             block_perturbation_mask = perturbation_mask if block_idx in stg_blocks else None
             block_all_perturbed = all_perturbed if block_idx in stg_blocks else False
 
-            # AP3 extension sites (NOT implemented in AP1):
-            #   * TREAD: enter/exit a token-routing span here (video tokens only).
-            #   * block-dropout: skip the block (both streams identity) with
-            #     residual rescale. Both would branch around the block(...) call
-            #     below. Left clean intentionally.
+            # AP3 TREAD: enter the routed span. Snapshot the full video stream
+            # (identity/residual transport for bypassed tokens) and gather the
+            # kept subset + its video RoPE rows. Audio / text streams and all
+            # modulation tensors are untouched (see the exactness note above).
+            if route_active and block_idx == start_b:
+                from core.training.token_routing import gather_tokens
+                x_full = hidden_states
+                hidden_states = gather_tokens(hidden_states, kept_idx)
+                video_rotary_emb = _gather_video_rope(video_rotary_emb_full, kept_idx)
+
+            # block-dropout (NOT implemented in this phase): would skip the block
+            # (both streams identity) with residual rescale, branching around the
+            # block(...) call below. Left clean intentionally.
 
             if grad_ckpt:
                 hidden_states, audio_hidden_states = t._gradient_checkpointing_func(
@@ -596,6 +703,15 @@ class Ltx2BlockLoopWrapper(nn.Module):
             if swap_on:
                 offloader.submit_move_blocks_forward(block_idx)
 
+            # AP3 TREAD: exit the routed span. Scatter the processed kept tokens
+            # back into the full stream (bypassed tokens keep the pre-span values
+            # captured in x_full -- the paper's identity/residual transport) and
+            # restore the full video RoPE for any remaining post-span blocks.
+            if route_active and block_idx == end_b - 1:
+                from core.training.token_routing import scatter_tokens
+                hidden_states = scatter_tokens(x_full, hidden_states, kept_idx)
+                video_rotary_emb = video_rotary_emb_full
+
             # AP2 FBCache decision after the FIRST block: indicator = the VIDEO
             # stream's residual so far. On a hit, reuse the cached (video, audio)
             # residual pair and skip everything remaining (both the rest of the
@@ -603,7 +719,11 @@ class Ltx2BlockLoopWrapper(nn.Module):
             # prefetch is forward-only and per-generation, so an early break here
             # simply leaves later blocks' prefetch un-submitted this call, mirroring
             # the FLUX.2 wrapper's FBCache break; the pipeline guards this mode
-            # combination as mutually exclusive with Block Swap regardless).
+            # combination as mutually exclusive with Block Swap regardless). FBCache
+            # is inference-only and TREAD is training-only (structurally mutually
+            # exclusive via the grad-enabled gates above), so `original_video`
+            # (captured pre-loop, full token count) never mismatches a
+            # TREAD-reduced `hidden_states` here.
             if fbcache is not None and block_idx == 0:
                 indicator = hidden_states - original_video
                 if fbcache.use_cache(indicator, int(self._fbcache_step)):

@@ -95,6 +95,8 @@ class FullParameterTrainer(BaseTrainer):
             self.setup_minit2i_block_swap()
         if hasattr(self, "setup_krea2_block_swap"):
             self.setup_krea2_block_swap()
+        if hasattr(self, "setup_ltx2_wrapper"):
+            self.setup_ltx2_wrapper()
         if hasattr(self, "setup_ltx2_block_swap"):
             self.setup_ltx2_block_swap()
 

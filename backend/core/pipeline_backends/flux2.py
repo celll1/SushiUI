@@ -553,6 +553,44 @@ class Flux2Mixin:
         self._flux2_lora_wrapped_modules.clear()
         print(f"[FLUX.2 LoRA] Unloaded {unloaded_count} LoRA modules")
 
+    def _flux2_cleanup(self):
+        """Safety-net CPU offload for FLUX.2 components.
+
+        On the happy path each generate function already offloads text_encoder,
+        transformer and vae to CPU inline, and tears down its block-swap offloader.
+        This helper is called from a `finally` block in every generate entry point
+        so that an exception raised mid-generation (denoise loop, VAE decode, etc.)
+        cannot leave the transformer (largest component) or TE resident on GPU.
+
+        Idempotent: re-running after the happy-path cleanup is a cheap no-op
+        (.to("cpu") on an already-CPU module, offloader.cleanup() on an
+        already-cleaned-up offloader). Never raises - a failure here must not
+        mask the original exception from the caller's try/except.
+        """
+        try:
+            offloader = getattr(self, "_flux2_active_block_offloader", None)
+            if offloader is not None:
+                try:
+                    offloader.cleanup()
+                except Exception as e:
+                    print(f"[FLUX.2] cleanup: block offloader teardown failed: {e}")
+                self._flux2_active_block_offloader = None
+
+            components = getattr(self, "flux2_components", None) or {}
+            for key in ("text_encoder", "transformer", "vae"):
+                comp = components.get(key)
+                if comp is None:
+                    continue
+                try:
+                    comp.to("cpu")
+                except Exception as e:
+                    print(f"[FLUX.2] cleanup: failed to offload {key} to CPU: {e}")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"[FLUX.2] cleanup: unexpected error during safety-net cleanup: {e}")
+
     def _generate_txt2img_flux2(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text using FLUX.2 Klein
 
@@ -781,6 +819,10 @@ class Flux2Mixin:
 
                 # Prepare block devices
                 block_offloader.prepare_block_devices_before_forward()
+                # Track the active offloader on self so the finally-block safety net
+                # (_flux2_cleanup) can tear it down even if an exception is raised
+                # before the normal-path cleanup below runs.
+                self._flux2_active_block_offloader = block_offloader
 
                 # NAG / NegPip now compose with Block Swap: install the matching attention
                 # processors and build ONE unified wrapper holding both the offloader and
@@ -1092,6 +1134,7 @@ class Flux2Mixin:
             # Cleanup block offloader and offload transformer to CPU
             if block_offloader is not None:
                 block_offloader.cleanup()
+                self._flux2_active_block_offloader = None
             if nag_wrapper is not None:
                 nag_wrapper.restore()  # restore original attention processors
             if negpip_wrapper is not None:
@@ -1154,6 +1197,8 @@ class Flux2Mixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 generation failed: {str(e)}")
+        finally:
+            self._flux2_cleanup()
 
     def _flux2_negpip_eligible(self, prompt: str, negative_prompt: str) -> bool:
         """Auto-activate NegPip iff either prompt carries a negative emphasis weight.
@@ -1754,6 +1799,10 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
+                # Track the active offloader on self so the finally-block safety net
+                # (_flux2_cleanup) can tear it down even if an exception is raised
+                # before the normal-path cleanup below runs.
+                self._flux2_active_block_offloader = block_offloader
                 # NAG / NegPip now compose with Block Swap: install the matching attention
                 # processors and build ONE unified wrapper holding both the offloader and
                 # the single-stream processors.
@@ -2030,6 +2079,7 @@ class Flux2Mixin:
             # Cleanup block offloader and offload transformer to CPU (img2img)
             if block_offloader is not None:
                 block_offloader.cleanup()
+                self._flux2_active_block_offloader = None
             if nag_wrapper is not None:
                 nag_wrapper.restore()  # restore original attention processors
             if negpip_wrapper is not None:
@@ -2086,6 +2136,8 @@ class Flux2Mixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 img2img failed: {str(e)}")
+        finally:
+            self._flux2_cleanup()
 
     def _generate_inpaint_flux2(
         self,
@@ -2380,6 +2432,10 @@ class Flux2Mixin:
                     ring_size=block_swap_ring_size,
                 )
                 block_offloader.prepare_block_devices_before_forward()
+                # Track the active offloader on self so the finally-block safety net
+                # (_flux2_cleanup) can tear it down even if an exception is raised
+                # before the normal-path cleanup below runs.
+                self._flux2_active_block_offloader = block_offloader
                 # NAG / NegPip now compose with Block Swap: install the matching attention
                 # processors and build ONE unified wrapper holding both the offloader and
                 # the single-stream processors.
@@ -2669,6 +2725,7 @@ class Flux2Mixin:
             # Cleanup block offloader and offload transformer to CPU (inpaint)
             if block_offloader is not None:
                 block_offloader.cleanup()
+                self._flux2_active_block_offloader = None
             if nag_wrapper is not None:
                 nag_wrapper.restore()  # restore original attention processors
             if negpip_wrapper is not None:
@@ -2725,3 +2782,5 @@ class Flux2Mixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"FLUX.2 inpaint failed: {str(e)}")
+        finally:
+            self._flux2_cleanup()

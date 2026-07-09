@@ -283,6 +283,61 @@ class ZImageMixin:
         print(f"[Z-Image LoRA] Unloaded {unloaded_count} LoRA modules")
         print(f"[Z-Image LoRA] Original modules preserved for future LoRA loads")
 
+    def _zimage_cleanup(self):
+        """Safety-net CPU offload for Z-Image components.
+
+        On the happy path each generate function already offloads text_encoder,
+        transformer and vae to CPU inline via move_zimage_*_to_cpu(). This helper
+        is called from a `finally` block in every generate entry point so that an
+        exception raised mid-generation (denoise loop, VAE decode, etc.) cannot
+        leave the transformer (largest component) or TE resident on GPU.
+
+        Idempotent: re-running after the happy-path cleanup is a cheap no-op
+        (.to("cpu") on an already-CPU module). Never raises - a failure here
+        must not mask the original exception from the caller's try/except.
+
+        Block Swap: mirrors the existing happy-path behavior, which offloads the
+        transformer via move_zimage_transformer_to_cpu() without a separate
+        offloader.cleanup() step (the offloader's hooks live on the transformer
+        itself via transformer._block_offloader and don't need explicit teardown
+        here), so this safety net does not fight the offloader's block residency
+        management - it only ensures the transformer as a whole lands on CPU.
+        """
+        try:
+            from core.vram_optimization import (
+                move_zimage_text_encoder_to_cpu,
+                move_zimage_transformer_to_cpu,
+                move_zimage_vae_to_cpu,
+            )
+
+            components = getattr(self, "zimage_components", None) or {}
+
+            text_encoder = components.get("text_encoder")
+            if text_encoder is not None:
+                try:
+                    move_zimage_text_encoder_to_cpu(text_encoder)
+                except Exception as e:
+                    print(f"[Z-Image] cleanup: failed to offload text_encoder to CPU: {e}")
+
+            transformer = components.get("transformer")
+            if transformer is not None:
+                try:
+                    move_zimage_transformer_to_cpu(transformer)
+                except Exception as e:
+                    print(f"[Z-Image] cleanup: failed to offload transformer to CPU: {e}")
+
+            vae = components.get("vae")
+            if vae is not None:
+                try:
+                    move_zimage_vae_to_cpu(vae)
+                except Exception as e:
+                    print(f"[Z-Image] cleanup: failed to offload vae to CPU: {e}")
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as e:
+            print(f"[Z-Image] cleanup: unexpected error during safety-net cleanup: {e}")
+
     def _get_zimage_scheduler(self, sampler: str):
         """
         Get appropriate Flow Match scheduler for Z-Image based on sampler selection
@@ -577,6 +632,8 @@ class ZImageMixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Z-Image generation failed: {str(e)}")
+        finally:
+            self._zimage_cleanup()
 
     def _generate_img2img_zimage(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
         """Generate image from image using Z-Image
@@ -908,6 +965,8 @@ class ZImageMixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Z-Image img2img generation failed: {str(e)}")
+        finally:
+            self._zimage_cleanup()
 
     def _generate_inpaint_zimage(
         self, params: dict, init_image, mask_image, progress_callback=None, step_callback=None
@@ -1243,6 +1302,8 @@ class ZImageMixin:
             import traceback
             traceback.print_exc()
             raise RuntimeError(f"Z-Image inpaint generation failed: {str(e)}")
+        finally:
+            self._zimage_cleanup()
 
     def _zimage_encode_single(self, text_encoder, tokenizer, prompts, max_sequence_length,
                               has_fp8_weights, device):

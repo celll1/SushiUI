@@ -14,6 +14,7 @@ webui_cl/
 │   │   ├── training/        # trainers, adapters, optimizers, losses
 │   │   ├── model_loader.py
 │   │   ├── pipeline.py
+│   │   ├── keep_hot.py       # opt-in cross-generation GPU-resident component tracking
 │   │   └── vram_optimization.py
 │   ├── database/        # SQLAlchemy models
 │   └── utils/            # image_utils.py (metadata), misc helpers
@@ -38,6 +39,7 @@ webui_cl/
 | `backend/core/model_loader.py` | Detects model type/architecture from a checkpoint (single-file signature heuristics, e.g. `_keys_look_krea2`), builds and returns the loaded pipeline. |
 | `backend/core/attention/` | The attention conduit: `registry.py` (per-backend capability descriptors: native/flash/sage/tq), `dispatch.py` (routes a call to the resolved backend), `config.py` (capability-based downgrade rules), `backends.py` (kernel callables). Adding a backend is a one-entry change here — see `docs/guides/ADD_A_MODEL_ARCHITECTURE.md`. |
 | `backend/core/pipeline_backends/` | One file per architecture (`zimage.py`, `flux2.py`, `anima.py`, `lens.py`, `krea2.py`, `ideogram4.py`, `minit2i.py`; SD1.5/SDXL are handled by the base `pipeline.py` path) — architecture-specific generation logic as mixins. |
+| `backend/core/keep_hot.py` | Arch-agnostic `keep_models_hot` state (model_key computation, VRAM guard, resident-set tracking); wired into `pipeline.py` (SD1.5/SDXL) and all 7 DiT `pipeline_backends/*.py` files. Not wired into `ltx2.py`. |
 | `backend/core/training/` | `base_trainer.py` (shared loop, block-swap, optimizer wiring), `lora_trainer.py` / `full_parameter_trainer.py`, `adapters/` (per-architecture training adapters — text encoding, conditioning, time-ids), `optimizers/`, `losses/`, `bucketing.py`, `latent_cache.py`. |
 | `backend/api/routes.py` | All FastAPI endpoints; generation endpoints (`/generate/txt2img|img2img|inpaint`) are `multipart/form-data` (`Form(...)` params), not JSON. |
 | `backend/api/param_defaults.py` | Single source of truth for every default value (`GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, `TAGGER_TRAINING_DEFAULTS`), exposed via `/schema/*`. |

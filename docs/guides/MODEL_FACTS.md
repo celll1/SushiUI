@@ -18,6 +18,7 @@ them. No subjective performance claims.
 | minit2i (b16/l16) | MM-DiT (MM-JiT) | FLAN-T5-Large (`T5`, frozen) | sample (x0) / flow (`MiniT2IFlowMatchScheduler`) | pixel-space (no VAE) by default; optional latent VAE variant (`is_latent` when vae_type != none) | plain CFG with `cfg_interval`; `cfg_scale` default 6.0 | conduit; b16 tq (head_dim 64) / l16 native (head_dim 52→56 padded) — same infer/train | diffusers variant dir (`transformer/` + `scheduler/`), single-file (variant auto-detected), `scratch:minit2i:` sentinel; FLAN-T5 from explicit path / sibling `flan-t5-large` dir / hub `google/flan-t5-large` | `minit2i_adapter.py`; TE frozen; pixel variant skips VAE decode |
 | anima | DiT (Cosmos-Predict2 style) | Qwen3-0.6B (`Qwen3Model`) + 6-layer LLM Adapter; T5 tokenizer feeds adapter target ids | velocity / flow (rectified flow) | latent, Qwen-Image VAE (`AutoencoderKLQwenImage`-style, 16ch) | (verify) standard CFG via `_anima_encode_nag_neg` | conduit tq infer / native train (`attn_mode` torch/flash blocks tq) | split-files layout (`split_files/diffusion_models|text_encoders|vae`) or single DiT `.safetensors`; Qwen3 + Qwen-Image VAE auto-discovered by filename patterns | `anima_adapter.py`; DiT + optional LLM-Adapter-only training; Qwen3 TE + VAE frozen |
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
+| ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
 
 ## Row-level notes
 
@@ -56,6 +57,47 @@ them. No subjective performance claims.
   `guidance = cfg_scale - 1`; the distilled/turbo checkpoint sets guidance 0 (no
   CFG). Qwen3-VL-4B TE is always frozen and TE training is explicitly rejected;
   train_runner forces bf16.
+- **ltx2** — Video (+ optional audio) generation, not part of the 9-architecture
+  image roster; loaded/routed separately from `model_loader.py`'s image-model
+  detection. All speed/lightweight features below are opt-in (default OFF) and
+  apply to both txt2vid and img2vid.
+  - **Generation, block swap** (`blocks_to_swap`, `backend/core/pipeline_backends/ltx2.py`,
+    `backend/core/models/ltx2_block_loop_wrapper.py`): streams `transformer_blocks`
+    CPU↔GPU during the denoise loop via `Ltx2BlockLoopWrapper` + `TransformerBlockOffloader`
+    (`h2d_only=True`, inference-only, `supports_backward=False`). Mutually exclusive
+    with FBCache and Spectrum (a block-swap-active transformer cannot take a
+    cache-hit/forecast-skip early return without desyncing the swap prefetch
+    rotation).
+  - **Generation, FBCache** (`fbcache_enable`/`fbcache_threshold`/`fbcache_warmup_steps`,
+    `_ltx2_build_fbcache`): first-block-cache over the joint (video, audio)
+    residual. Disabled whenever `blocks_to_swap > 0` or `spectrum_enable` is set
+    (Spectrum takes precedence, same redundancy target).
+  - **Generation, Spectrum/SFF** (`spectrum_enable` + `spectrum_m/lam/w/w_decay/
+    delta_cap/warmup_steps/window_size/flex_window/tail/max_cache`,
+    `_ltx2_build_spectrum`): Chebyshev output forecasting for both the video and
+    audio streams, hosted in `Ltx2BlockLoopWrapper`; takes precedence over FBCache.
+    Mutually exclusive with block swap; also disabled if Spatio-Temporal Guidance
+    (`stg_scale`/`audio_stg_scale`) is set, since forecasting assumes exactly one
+    transformer call per step. `w_decay`/`delta_cap` are separately opt-in (0.0 = off).
+  - **Training, block swap + ring-buffer 8-bit optimizers**
+    (`backend/core/training/base_trainer.py::_fused_backward_target_module`):
+    block swap and `adamw8bit_ringbuffer`/`lion8bit_ringbuffer` now compose for
+    LTX-2.3 (and other DiT archs without a `self.unet`); previously the fused
+    backward path crashed on `self.unet is None`.
+  - **Training, TREAD token routing** (`tread_enable`/`tread_drop_ratio`/
+    `tread_start_block`/`tread_end_block`, `backend/core/training/ops/ltx2_ops.py`):
+    drops/routes tokens through a reduced-token span (arXiv 2501.04765); the
+    LTX-2.3 implementation is exact for its per-sample-scalar timestep (broadcast
+    modulation) and gathers only `video_rotary_emb`. Only installs
+    `Ltx2BlockLoopWrapper` for training when an AP3 feature (TREAD or BlockSkip)
+    is enabled. Composes with block swap; mutually exclusive with BlockSkip.
+  - **Training, DiT-BlockSkip** (`blockskip_enable`/`blockskip_front`/`blockskip_back`,
+    LoRA and full-parameter trainers only, arXiv 2603.20755): dual-stream
+    (video + audio) folded-precompute — a no-grad full pass captures the
+    skipped front/back blocks' residual, a grad pass runs only the middle
+    blocks. Skipped blocks are gradient-starved (no retained backward
+    activations), not optimizer-excluded. Requires `blocks_to_swap == 0`;
+    mutually exclusive with TREAD and with stochastic-depth (`block_skip_rate`).
 
 ## Anchors used
 
@@ -63,8 +105,13 @@ them. No subjective performance claims.
   single-file loaders, comfy→official conversion.
 - `backend/core/attention/registry.py` — per-arch attention backend routing
   (conduit vs diffusers dispatch, head_dim constraints, tq/flash/sage/native).
-- `backend/core/pipeline_backends/{flux2,ideogram4,lens,minit2i,krea2,zimage,anima}.py`
+- `backend/core/pipeline_backends/{flux2,ideogram4,lens,minit2i,krea2,zimage,anima,ltx2}.py`
   — CFG conventions, text encoding, VAE staging.
+- `backend/core/models/ltx2_block_loop_wrapper.py` — `Ltx2BlockLoopWrapper`
+  (block swap, FBCache, Spectrum for generation; TREAD/BlockSkip attach points
+  for training).
+- `backend/core/training/ops/ltx2_ops.py` — LTX-2.3 training forward, TREAD/
+  BlockSkip config attach/detach per step.
 - `backend/core/inference/custom_sampling.py` — SD/SDXL CFG short-circuit at cfg==1.0.
 - `backend/core/models/{lens,ideogram4,minit2i,krea2,anima}/*_loader.py` — component
   classes, completion sources (sibling dirs / hub fallbacks / env overrides).

@@ -377,6 +377,9 @@ optimizer = AdamW8bit_RingBuffer(
 - CUDA Toolkit (nvcc必須、JIT compile用)
 - Ninja (高速ビルド用)
 - Z-Image, SDXL, SD1.5 (Full Parameter, LoRA両方)
+- Block Swapとの併用: DiT系アーキテクチャ（LTX-2.3含む、`self.unet`を持たない
+  アーキテクチャ全般）でも動作（`base_trainer.py::_fused_backward_target_module`
+  が`self.unet is None`前提のクラッシュを修正済み）
 
 ⚠️ **非対応**:
 - PyTorch < 2.1 (CUDA kernel API互換性)

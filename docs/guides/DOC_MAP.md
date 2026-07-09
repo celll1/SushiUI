@@ -21,7 +21,7 @@ Local-only files that may be absent in a fresh clone are listed separately.
 | `docs/guides/ADD_A_PARAMETER.md` | Ordered checklist for threading a new API parameter through the stack. |
 | `docs/guides/ADD_A_MODEL_ARCHITECTURE.md` | Procedure for adding a 10th diffusion architecture. |
 | `docs/guides/API_TESTING.md` | Safe vs. owner-sanctioned endpoints, dry-run convention, restart polling. |
-| `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference (written separately; may not exist yet). |
+| `docs/guides/MODEL_FACTS.md` | Per-architecture facts reference, including LTX-2.3 video-model speed/lightweight features. |
 
 ## `docs/` (design docs / reports / plans)
 

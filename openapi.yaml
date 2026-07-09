@@ -5195,6 +5195,21 @@ components:
           default: 0
           description: "Number of LTX-2.3 transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap (transformer stays fully GPU-resident via the stock model-offload path)."
           example: 0
+        fbcache_enable:
+          type: boolean
+          default: false
+          description: "First-Block-Cache: per-step reuse of the previous transformer output when the first-block residual changes little between steps. Mutually exclusive with Block Swap (blocks_to_swap > 0 disables it, with a logged reason)."
+          example: false
+        fbcache_threshold:
+          type: number
+          default: 0.12
+          description: "Relative-L1 change threshold on the first-block residual used to decide cache reuse. Higher values reuse more often; lower values reuse less often."
+          example: 0.12
+        fbcache_warmup_steps:
+          type: integer
+          default: 1
+          description: "Number of initial denoising steps that always run the full transformer (no cache reuse), before fbcache_enable takes effect."
+          example: 1
         vae_path:
           type: string
           nullable: true

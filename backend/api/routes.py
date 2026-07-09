@@ -143,6 +143,11 @@ class Txt2VidRequest(BaseModel):
     audio_enable: bool = TXT2VID_DEFAULTS["audio_enable"]
     # AP1: block-swap generation (number of transformer_blocks kept CPU-resident).
     blocks_to_swap: int = TXT2VID_DEFAULTS["blocks_to_swap"]
+    # AP2: First-Block-Cache (dynamic per-step trajectory-redundancy skip).
+    # Mutually exclusive with Block Swap (see fbcache.py / ltx2.py).
+    fbcache_enable: bool = TXT2VID_DEFAULTS["fbcache_enable"]
+    fbcache_threshold: float = TXT2VID_DEFAULTS["fbcache_threshold"]
+    fbcache_warmup_steps: int = TXT2VID_DEFAULTS["fbcache_warmup_steps"]
     # Per-generation component overrides (RP2b). Unsupported on the LTX-2.3 video
     # arch: accepted-but-ignored with a warning (see check_arch_capabilities).
     vae_path: Optional[str] = TXT2VID_DEFAULTS["vae_path"]
@@ -2025,6 +2030,9 @@ async def generate_img2vid(
     max_sequence_length: int = Form(TXT2VID_DEFAULTS["max_sequence_length"]),
     audio_enable: bool = Form(TXT2VID_DEFAULTS["audio_enable"]),
     blocks_to_swap: int = Form(TXT2VID_DEFAULTS["blocks_to_swap"]),
+    fbcache_enable: bool = Form(TXT2VID_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(TXT2VID_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(TXT2VID_DEFAULTS["fbcache_warmup_steps"]),
     vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
     text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
     image: UploadFile = File(...),
@@ -2054,6 +2062,9 @@ async def generate_img2vid(
         "max_sequence_length": max_sequence_length,
         "audio_enable": audio_enable,
         "blocks_to_swap": blocks_to_swap,
+        "fbcache_enable": fbcache_enable,
+        "fbcache_threshold": fbcache_threshold,
+        "fbcache_warmup_steps": fbcache_warmup_steps,
         "vae_path": vae_path,
         "text_encoder_path": text_encoder_path,
     }

@@ -141,6 +141,8 @@ class Txt2VidRequest(BaseModel):
     num_videos_per_prompt: int = TXT2VID_DEFAULTS["num_videos_per_prompt"]
     max_sequence_length: int = TXT2VID_DEFAULTS["max_sequence_length"]
     audio_enable: bool = TXT2VID_DEFAULTS["audio_enable"]
+    # AP1: block-swap generation (number of transformer_blocks kept CPU-resident).
+    blocks_to_swap: int = TXT2VID_DEFAULTS["blocks_to_swap"]
     # Per-generation component overrides (RP2b). Unsupported on the LTX-2.3 video
     # arch: accepted-but-ignored with a warning (see check_arch_capabilities).
     vae_path: Optional[str] = TXT2VID_DEFAULTS["vae_path"]
@@ -2022,6 +2024,7 @@ async def generate_img2vid(
     num_videos_per_prompt: int = Form(TXT2VID_DEFAULTS["num_videos_per_prompt"]),
     max_sequence_length: int = Form(TXT2VID_DEFAULTS["max_sequence_length"]),
     audio_enable: bool = Form(TXT2VID_DEFAULTS["audio_enable"]),
+    blocks_to_swap: int = Form(TXT2VID_DEFAULTS["blocks_to_swap"]),
     vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
     text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
     image: UploadFile = File(...),
@@ -2050,6 +2053,7 @@ async def generate_img2vid(
         "num_videos_per_prompt": num_videos_per_prompt,
         "max_sequence_length": max_sequence_length,
         "audio_enable": audio_enable,
+        "blocks_to_swap": blocks_to_swap,
         "vae_path": vae_path,
         "text_encoder_path": text_encoder_path,
     }

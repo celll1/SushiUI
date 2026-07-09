@@ -68,6 +68,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   text_encoder_quantization: null,
   cpu_text_encoding: false,
   use_torch_compile: false,
+  keep_models_hot: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
   color_flatten_strength: 0,
@@ -1235,6 +1236,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         original_size_scale: mainParams.original_size_scale,
         cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
+        keep_models_hot: mainParams.keep_models_hot, // Inherited default; queue dispatch overrides based on hasNext
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
         color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting

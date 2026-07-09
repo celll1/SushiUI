@@ -143,6 +143,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   text_encoder_quantization: null,
   cpu_text_encoding: false,
   use_torch_compile: false,
+  keep_models_hot: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
   color_flatten_strength: 0,
@@ -1573,6 +1574,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         original_size_scale: mainParams.original_size_scale,
         cpu_text_encoding: mainParams.cpu_text_encoding, // Inherit CPU text encoding setting
         use_torch_compile: mainParams.use_torch_compile, // Inherit torch.compile setting
+        keep_models_hot: mainParams.keep_models_hot, // Inherited default; queue dispatch overrides based on hasNext
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
         color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
@@ -1828,6 +1830,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         use_pinned_memory: nextItem.params.use_pinned_memory,
         block_swap_h2d_only: nextItem.params.block_swap_h2d_only,
         block_swap_ring_size: nextItem.params.block_swap_ring_size,
+        // Keep model components GPU-resident for the next queued generation
+        // (value is set by the queue dispatcher's hasNext check)
+        keep_models_hot: nextItem.params.keep_models_hot,
       };
 
       // Add FLUX.2 Image Edit / Vision Encoder reference images

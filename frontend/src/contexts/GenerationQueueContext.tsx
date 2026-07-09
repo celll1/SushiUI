@@ -216,7 +216,27 @@ export function GenerationQueueProvider({ children }: { children: ReactNode }) {
     }
 
     if (nextItem) {
-      const updatedItem = { ...nextItem, status: "generating" as const, startTime: Date.now() };
+      // Auto-enable keep_models_hot whenever another pending item remains in the
+      // queue after this one. The backend safely invalidates/offloads GPU-resident
+      // components if the next dispatched item turns out to use a different model,
+      // so "is there a next queued item at all" is a sufficient signal here -- the
+      // frontend does not need to compare models itself. Only the last item of a
+      // back-to-back run is dispatched with keep_models_hot=false, which tells the
+      // backend to release VRAM once that generation completes.
+      const hasNext = currentQueue.some(
+        (item) => item.id !== nextItem!.id && item.status === "pending"
+      );
+      const supportsKeepModelsHot =
+        nextItem.type === "txt2img" || nextItem.type === "img2img" || nextItem.type === "inpaint";
+
+      const updatedItem = {
+        ...nextItem,
+        status: "generating" as const,
+        startTime: Date.now(),
+        params: supportsKeepModelsHot
+          ? { ...nextItem.params, keep_models_hot: hasNext }
+          : nextItem.params,
+      };
       setCurrentItem(updatedItem);
 
       // Update the item in queue to generating status

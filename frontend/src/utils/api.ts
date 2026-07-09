@@ -255,6 +255,9 @@ export interface GenerationParams {
   guidance_scale?: number;          // video guidance (default 1.0)
   num_videos_per_prompt?: number;   // default 1
   audio_enable?: boolean;           // default true
+  // Keep model components GPU-resident between back-to-back generations
+  // (queue sets this automatically based on whether a next item is queued)
+  keep_models_hot?: boolean;
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -508,6 +511,8 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
+  formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   // In-loop background hard-flatten (final-step flat-region solid-color replacement)
@@ -835,6 +840,8 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
+  formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   // In-loop background hard-flatten (final-step flat-region solid-color replacement)
@@ -1146,6 +1153,8 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
+  formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   // In-loop background hard-flatten (final-step flat-region solid-color replacement)

@@ -3170,6 +3170,28 @@ class BaseTrainer(ABC):
                 # moves each block to CPU (otherwise CPU-resident params are silently skipped).
                 self._setup_fused_backward_pass(optimizer_type)
 
+    def _fused_backward_target_module(self):
+        """Return the main trainable module the ring-buffer optimizers register their
+        post-accumulate-grad hooks on.
+
+        Arch-dependent: U-Net archs (SD/SDXL) keep the trainable model on
+        ``self.unet`` and set ``self.transformer = None``; transformer/DiT archs
+        (LTX-2.3, Anima, FLUX.2, Z-Image, ...) set ``self.unet = None`` and keep the
+        DiT on ``self.transformer``. The hook registration filters to requires_grad
+        params, so for LoRA runs only the adapter params get hooks regardless of
+        which module is passed. (Previously hardcoded ``self.unet``, which is None
+        for DiT archs -> AttributeError under block-swap + ring-buffer.)
+        """
+        module = getattr(self, "transformer", None)
+        if module is None:
+            module = getattr(self, "unet", None)
+        if module is None:
+            raise RuntimeError(
+                "Fused-backward ring-buffer setup found neither self.transformer nor "
+                "self.unet; the trainable model must be loaded before optimizer setup."
+            )
+        return module
+
     def _setup_fused_backward_pass(self, optimizer_type: str):
         """
         Setup fused backward pass for Block Swap compatibility.
@@ -3202,16 +3224,23 @@ class BaseTrainer(ABC):
         elif optimizer_type.lower() == "adamw8bit_ringbuffer":
             # AdamW8bit_RingBuffer has built-in hook support via patch_adamw8bit_ringbuffer
             from .optimizers.adamw8bit_ringbuffer import patch_adamw8bit_ringbuffer
-            # Note: patch_adamw8bit_ringbuffer registers hooks itself, so we don't need the loop below
-            patch_adamw8bit_ringbuffer(self.unet, self.optimizer)
+            # Note: patch_adamw8bit_ringbuffer registers hooks itself, so we don't need the loop below.
+            # The main trainable module is arch-dependent: U-Net archs (SD/SDXL) use
+            # self.unet; transformer archs (LTX-2.3, Anima, FLUX.2, Z-Image, ...) set
+            # self.unet=None and keep the DiT on self.transformer. Register the hooks
+            # on whichever exists — the patch filters to requires_grad params, so LoRA
+            # runs only hook the adapter params regardless of which module is passed.
+            patch_adamw8bit_ringbuffer(self._fused_backward_target_module(), self.optimizer)
             self.use_fused_backward = True
             print(f"{self.log_prefix} AdamW8bit_RingBuffer hooks registered via patch_adamw8bit_ringbuffer")
             return  # Skip the hook registration loop below
         elif optimizer_type.lower() == "lion8bit_ringbuffer":
             # Lion8bit_RingBuffer has built-in hook support via register_lion8bit_fused_backward
             from .optimizers.lion8bit_ringbuffer import register_lion8bit_fused_backward
-            # Note: register_lion8bit_fused_backward registers hooks itself, so we don't need the loop below
-            register_lion8bit_fused_backward(self.optimizer, self.unet)
+            # Note: register_lion8bit_fused_backward registers hooks itself, so we don't need the loop below.
+            # See the adamw8bit_ringbuffer branch: target module is arch-dependent
+            # (self.unet for U-Net archs, self.transformer for DiT archs).
+            register_lion8bit_fused_backward(self.optimizer, self._fused_backward_target_module())
             self.use_fused_backward = True
             print(f"{self.log_prefix} Lion8bit_RingBuffer hooks registered via register_lion8bit_fused_backward")
             return  # Skip the hook registration loop below

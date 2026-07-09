@@ -157,6 +157,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if self.current_model == model_id:
             return
 
+        # A model (re)load invalidates any keep-models-hot resident set from the
+        # previous model — the components about to be freed/replaced are exactly
+        # what the resident set refers to.
+        from core.keep_hot import clear_resident
+        clear_resident(self)
+
         # Clear any TE/VAE override state: the new model replaces the components
         # the override swapped, so the previous override refs are now stale.
         self._override_vae_path = None
@@ -2167,6 +2173,54 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if not self.txt2img_pipeline:
             raise RuntimeError("txt2img pipeline not loaded. Please load a model first.")
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        from core.vram_optimization import move_text_encoders_to_cpu as _kh_te_to_cpu, \
+            move_unet_to_cpu as _kh_unet_to_cpu, move_vae_to_cpu as _kh_vae_to_cpu
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_cpu_text_encoding = bool(params.get("cpu_text_encoding", False))
+        _kh_has_loras = bool(params.get("loras") or [])
+        # If a resident set exists from a previous generation but is no longer valid
+        # for THIS request's model_key (checkpoint/LoRA/quantization/dtype changed),
+        # force a full offload before staging anything.
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                _kh_te_to_cpu(self.txt2img_pipeline),
+                _kh_unet_to_cpu(self.txt2img_pipeline),
+                _kh_vae_to_cpu(self.txt2img_pipeline),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            if not _kh_cpu_text_encoding:
+                _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "text_encoder", None))
+                _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "text_encoder_2", None))
+            # LoRA hazard gate (Phase A): LoRA mutates the U-Net per generation, so
+            # keeping it resident is only safe when the next gen's LoRA set is
+            # guaranteed identical. Routes.py currently reloads/unloads LoRA around
+            # every generation regardless of keep-hot, so provably-safe skip-reload
+            # coordination is NOT wired yet in this phase -- gate U-Net-hot to the
+            # no-LoRA case only. TODO(Phase A follow-up / Phase B): once routes.py
+            # skips the LoRA unload/reload for an unchanged model_key, drop this gate.
+            if not _kh_has_loras:
+                _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "unet", None))
+            _kh_total_bytes += component_nbytes(getattr(self.txt2img_pipeline, "vae", None))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
+        _kh_keep_unet = _kh_requested and _kh_guard_ok and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         # VAE tiling option: decode bounded by tile size (large-image OOM relief).
         self._apply_vae_tiling(getattr(self.txt2img_pipeline, "vae", None),
                                bool(params.get("vae_tiling", False)))
@@ -2216,7 +2270,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
-        if not cpu_text_encoding:
+        if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
             move_text_encoders_to_gpu(self.txt2img_pipeline)
         log_device_status("Ready for text encoding", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -2315,8 +2369,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
 
-        # Offload text encoders to CPU after all encoding is complete
-        move_text_encoders_to_cpu(self.txt2img_pipeline)
+        # Offload text encoders to CPU after all encoding is complete (unless kept hot)
+        if _kh_keep_te:
+            mark_resident(self, "text_encoder", _kh_model_key)
+        else:
+            move_text_encoders_to_cpu(self.txt2img_pipeline)
 
         # ===== STAGE 1.5: VISION ENCODER (optional) =====
         # Apply vision encoder if loaded and reference images are provided.
@@ -2348,7 +2405,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         print(f"[Pipeline] torch.compile parameter: {use_torch_compile}")
         if unet_quantization and unet_quantization != "none":
             print(f"[Pipeline] Applying U-Net quantization: {unet_quantization}")
-        move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization, use_torch_compile=use_torch_compile)
+        if not is_resident(self, "unet", _kh_model_key):
+            move_unet_to_gpu(self.txt2img_pipeline, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
         log_device_status("Ready for U-Net inference", self.txt2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -2635,6 +2693,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
+            _kh_gen_succeeded = True
 
         except Exception as e:
             print(f"Generation error: {e}")
@@ -2656,11 +2715,37 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             nag_negative_prompt_embeds = None
             nag_negative_pooled_prompt_embeds = None
 
-            # Offload all components to CPU to free VRAM
+            # Offload all components to CPU to free VRAM -- EXCEPT components kept
+            # hot on a SUCCESSFUL generation. On an exception, ALWAYS force a full
+            # offload + clear residency (never trust the pipeline state after an
+            # error going into the next generation).
             from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
-            move_text_encoders_to_cpu(pipeline_to_use)
-            move_unet_to_cpu(pipeline_to_use)
-            move_vae_to_cpu(pipeline_to_use)
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+                move_text_encoders_to_cpu(pipeline_to_use)
+                move_unet_to_cpu(pipeline_to_use)
+                move_vae_to_cpu(pipeline_to_use)
+            else:
+                # A component that is NOT kept hot must be dropped from the
+                # resident set (discard_resident) in addition to being offloaded,
+                # so state never claims a component is GPU-resident after it was
+                # moved to CPU (that would make the next same-model generation
+                # skip its ->GPU stage -> device mismatch).
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    move_text_encoders_to_cpu(pipeline_to_use)
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_unet:
+                    mark_resident(self, "unet", _kh_model_key)
+                else:
+                    move_unet_to_cpu(pipeline_to_use)
+                    discard_resident(self, "unet")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    move_vae_to_cpu(pipeline_to_use)
+                    discard_resident(self, "vae")
 
             # Move TAESD preview decoder to CPU
             from core.utils.taesd import taesd_manager
@@ -2758,6 +2843,45 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self.img2img_pipeline = self.img2img_pipeline.to(self.device)
             print("img2img pipeline created successfully")
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        from core.vram_optimization import move_text_encoders_to_cpu as _kh_te_to_cpu, \
+            move_unet_to_cpu as _kh_unet_to_cpu, move_vae_to_cpu as _kh_vae_to_cpu
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_cpu_text_encoding = bool(params.get("cpu_text_encoding", False))
+        _kh_has_loras = bool(params.get("loras") or [])
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                _kh_te_to_cpu(self.img2img_pipeline),
+                _kh_unet_to_cpu(self.img2img_pipeline),
+                _kh_vae_to_cpu(self.img2img_pipeline),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            if not _kh_cpu_text_encoding:
+                _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "text_encoder", None))
+                _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "text_encoder_2", None))
+            # LoRA hazard gate (Phase A) -- see generate_txt2img for rationale.
+            if not _kh_has_loras:
+                _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "unet", None))
+            _kh_total_bytes += component_nbytes(getattr(self.img2img_pipeline, "vae", None))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
+        _kh_keep_unet = _kh_requested and _kh_guard_ok and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         # VAE tiling option: decode bounded by tile size (large-image OOM relief).
         self._apply_vae_tiling(getattr(self.img2img_pipeline, "vae", None),
                                bool(params.get("vae_tiling", False)))
@@ -2834,7 +2958,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
-        if not cpu_text_encoding:
+        if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
             move_text_encoders_to_gpu(self.img2img_pipeline)
         log_device_status("Ready for text encoding (img2img)", self.img2img_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -2949,8 +3073,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
 
-        # Offload text encoders to CPU after all encoding is complete
-        move_text_encoders_to_cpu(pipeline_to_use)
+        # Offload text encoders to CPU after all encoding is complete (unless kept hot)
+        if _kh_keep_te:
+            mark_resident(self, "text_encoder", _kh_model_key)
+        else:
+            move_text_encoders_to_cpu(pipeline_to_use)
 
         # ===== STAGE 1.5: VISION ENCODER (optional) =====
         _ve_ref_images = params.get("ref_images", [])
@@ -3187,7 +3314,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # Get quantization option from params
             unet_quantization = params.get("unet_quantization", None)
             use_torch_compile = params.get("use_torch_compile", False)
-            move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
+            if not is_resident(self, "unet", _kh_model_key):
+                move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
             log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -3258,6 +3386,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
+            _kh_gen_succeeded = True
 
         except Exception as e:
             print(f"Generation error: {e}")
@@ -3279,11 +3408,32 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             nag_negative_prompt_embeds = None
             nag_negative_pooled_prompt_embeds = None
 
-            # Offload all components to CPU to free VRAM
+            # Offload all components to CPU to free VRAM -- EXCEPT components kept
+            # hot on a SUCCESSFUL generation (see generate_txt2img for the contract).
             from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
-            move_text_encoders_to_cpu(pipeline_to_use)
-            move_unet_to_cpu(pipeline_to_use)
-            move_vae_to_cpu(pipeline_to_use)
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+                move_text_encoders_to_cpu(pipeline_to_use)
+                move_unet_to_cpu(pipeline_to_use)
+                move_vae_to_cpu(pipeline_to_use)
+            else:
+                # Non-kept components are dropped from the resident set (see the
+                # txt2img finally for why) as well as offloaded.
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    move_text_encoders_to_cpu(pipeline_to_use)
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_unet:
+                    mark_resident(self, "unet", _kh_model_key)
+                else:
+                    move_unet_to_cpu(pipeline_to_use)
+                    discard_resident(self, "unet")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    move_vae_to_cpu(pipeline_to_use)
+                    discard_resident(self, "vae")
 
             # Move TAESD preview decoder to CPU
             from core.utils.taesd import taesd_manager
@@ -3387,6 +3537,45 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
             self.inpaint_pipeline = self.inpaint_pipeline.to(self.device)
 
+        # ===== Keep-models-hot (opt-in queue optimization; see core/keep_hot.py) =====
+        from core.keep_hot import (
+            invalidate_if_model_changed, is_resident, mark_resident, clear_resident,
+            discard_resident, should_keep_resident, compute_model_key, component_nbytes,
+            keep_hot_requested,
+        )
+        from core.vram_optimization import move_text_encoders_to_cpu as _kh_te_to_cpu, \
+            move_unet_to_cpu as _kh_unet_to_cpu, move_vae_to_cpu as _kh_vae_to_cpu
+        _kh_requested = keep_hot_requested(params)
+        _kh_model_key = compute_model_key(self, params)
+        _kh_cpu_text_encoding = bool(params.get("cpu_text_encoding", False))
+        _kh_has_loras = bool(params.get("loras") or [])
+        invalidate_if_model_changed(
+            self, params,
+            offload_fn=lambda: (
+                _kh_te_to_cpu(self.inpaint_pipeline),
+                _kh_unet_to_cpu(self.inpaint_pipeline),
+                _kh_vae_to_cpu(self.inpaint_pipeline),
+            ),
+        )
+        _kh_total_bytes = 0
+        if _kh_requested:
+            if not _kh_cpu_text_encoding:
+                _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "text_encoder", None))
+                _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "text_encoder_2", None))
+            # LoRA hazard gate (Phase A) -- see generate_txt2img for rationale.
+            if not _kh_has_loras:
+                _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "unet", None))
+            _kh_total_bytes += component_nbytes(getattr(self.inpaint_pipeline, "vae", None))
+        _kh_guard_ok = should_keep_resident(
+            self, "combined", params,
+            is_block_swapped=False, is_cpu_inference=False,
+            component_bytes=_kh_total_bytes,
+        ) if _kh_requested else False
+        _kh_keep_te = _kh_requested and _kh_guard_ok and not _kh_cpu_text_encoding
+        _kh_keep_unet = _kh_requested and _kh_guard_ok and not _kh_has_loras
+        _kh_keep_vae = _kh_requested and _kh_guard_ok
+        _kh_gen_succeeded = False
+
         # VAE tiling option: decode bounded by tile size (large-image OOM relief).
         self._apply_vae_tiling(getattr(self.inpaint_pipeline, "vae", None),
                                bool(params.get("vae_tiling", False)))
@@ -3460,7 +3649,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         from core.vram_optimization import log_device_status, move_text_encoders_to_gpu, move_text_encoders_to_cpu, move_vae_to_gpu, move_vae_to_cpu
 
         cpu_text_encoding = params.get("cpu_text_encoding", False)
-        if not cpu_text_encoding:
+        if not cpu_text_encoding and not is_resident(self, "text_encoder", _kh_model_key):
             move_text_encoders_to_gpu(self.inpaint_pipeline)
         log_device_status("Ready for text encoding (inpaint)", self.inpaint_pipeline, vision_encoder=getattr(self, 'vision_encoder', None))
 
@@ -3574,8 +3763,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
 
-        # Offload text encoders to CPU after all encoding is complete
-        move_text_encoders_to_cpu(pipeline_to_use)
+        # Offload text encoders to CPU after all encoding is complete (unless kept hot)
+        if _kh_keep_te:
+            mark_resident(self, "text_encoder", _kh_model_key)
+        else:
+            move_text_encoders_to_cpu(pipeline_to_use)
 
         # ===== STAGE 1.5: VISION ENCODER (optional) =====
         _ve_ref_images = params.get("ref_images", [])
@@ -3670,14 +3862,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Get quantization option from params
         unet_quantization = params.get("unet_quantization", None)
         use_torch_compile = params.get("use_torch_compile", False)
-        move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
+        if not is_resident(self, "unet", _kh_model_key):
+            move_unet_to_gpu(pipeline_to_use, quantization=unet_quantization, use_torch_compile=use_torch_compile)
 
         log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
         # Use custom inpaint sampling loop. VAE decode is folded into the loop on
         # this legacy path, so the combined span is recorded as "denoise".
-        _t_denoise = time.perf_counter()
-        image = custom_inpaint_sampling_loop(
+        try:
+            _t_denoise = time.perf_counter()
+            image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
             color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
             vae_drift_correction=getattr(self, "_vae_drift_correction", False),
@@ -3743,34 +3937,62 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
             fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
             **controlnet_kwargs,
-        )
-        generation_timer.add("denoise", time.perf_counter() - _t_denoise)
+            )
+            generation_timer.add("denoise", time.perf_counter() - _t_denoise)
+            _kh_gen_succeeded = True
 
-        # Restore original attention processors if they were changed
-        if self.original_processors is not None:
-            from core.inference.attention_processors import restore_processors
-            restore_processors(pipeline_to_use.unet, self.original_processors)
-            self.original_processors = None
+        except Exception as e:
+            print(f"Generation error: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        finally:
+            # Restore original attention processors if they were changed
+            if self.original_processors is not None:
+                from core.inference.attention_processors import restore_processors
+                restore_processors(pipeline_to_use.unet, self.original_processors)
+                self.original_processors = None
 
-        # Delete GPU embed tensors
-        prompt_embeds = None
-        negative_prompt_embeds = None
-        pooled_prompt_embeds = None
-        negative_pooled_prompt_embeds = None
-        nag_negative_prompt_embeds = None
-        nag_negative_pooled_prompt_embeds = None
+            # Delete GPU embed tensors
+            prompt_embeds = None
+            negative_prompt_embeds = None
+            pooled_prompt_embeds = None
+            negative_pooled_prompt_embeds = None
+            nag_negative_prompt_embeds = None
+            nag_negative_pooled_prompt_embeds = None
 
-        # Offload all components to CPU to free VRAM
-        from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
-        move_text_encoders_to_cpu(pipeline_to_use)
-        move_unet_to_cpu(pipeline_to_use)
-        move_vae_to_cpu(pipeline_to_use)
+            # Offload all components to CPU to free VRAM -- EXCEPT components kept
+            # hot on a SUCCESSFUL generation (see generate_txt2img for the contract).
+            from core.vram_optimization import move_text_encoders_to_cpu, move_unet_to_cpu, move_vae_to_cpu
+            if not _kh_gen_succeeded:
+                clear_resident(self)
+                move_text_encoders_to_cpu(pipeline_to_use)
+                move_unet_to_cpu(pipeline_to_use)
+                move_vae_to_cpu(pipeline_to_use)
+            else:
+                # Non-kept components are dropped from the resident set (see the
+                # txt2img finally for why) as well as offloaded.
+                if _kh_keep_te:
+                    mark_resident(self, "text_encoder", _kh_model_key)
+                else:
+                    move_text_encoders_to_cpu(pipeline_to_use)
+                    discard_resident(self, "text_encoder")
+                if _kh_keep_unet:
+                    mark_resident(self, "unet", _kh_model_key)
+                else:
+                    move_unet_to_cpu(pipeline_to_use)
+                    discard_resident(self, "unet")
+                if _kh_keep_vae:
+                    mark_resident(self, "vae", _kh_model_key)
+                else:
+                    move_vae_to_cpu(pipeline_to_use)
+                    discard_resident(self, "vae")
 
-        # Move TAESD preview decoder to CPU
-        from core.utils.taesd import taesd_manager
-        taesd_manager.offload_to_cpu()
+            # Move TAESD preview decoder to CPU
+            from core.utils.taesd import taesd_manager
+            taesd_manager.offload_to_cpu()
 
-        print("[VRAM] All components offloaded to CPU after inpaint generation")
+            print("[VRAM] All components offloaded to CPU after inpaint generation")
 
         # Clear embeds_cache to prevent VRAM leak from prompt editing closures
         if 'embeds_cache' in dir() and embeds_cache:

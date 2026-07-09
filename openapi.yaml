@@ -4861,6 +4861,20 @@ components:
         use_torch_compile:
           type: boolean
           default: false
+        keep_models_hot:
+          type: boolean
+          default: false
+          description: |
+            Opt-in queue optimization (SD1.5/SDXL only in this phase). When generating
+            several items back-to-back on the SAME loaded model (same checkpoint, LoRA
+            set, and unet_quantization), keeps eligible components (text encoder, U-Net,
+            VAE) resident on the GPU between consecutive generations instead of staging
+            them to CPU and back. Bounded by a VRAM guard: falls back to normal
+            staging/offload (with a warnings[] entry) when free VRAM is insufficient.
+            Never keeps a component resident under block-swap streaming or CPU text
+            encoding. Off by default (identical staging/offload behavior to previous
+            releases).
+          example: false
         vae_tiling:
           type: boolean
           default: false

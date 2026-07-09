@@ -36,15 +36,68 @@ class LTX2Mixin:
         block loop -- including its wait_for_block/submit_move_blocks_forward
         calls -- which would desync the per-block swap prefetch rotation), so it
         is force-disabled (with a logged reason) whenever ``blocks_to_swap > 0``.
-        There is currently no Spectrum-equivalent output-forecaster wired for
-        LTX-2.3, so only the Block Swap guard applies today."""
+        FBCache is also mutually exclusive with Spectrum (same
+        trajectory-redundancy target as FBCache -- both skip a full forward on
+        selected steps); Spectrum takes precedence, mirroring the FLUX.2 policy
+        (``_flux2_build_fbcache``), so FBCache is disabled whenever
+        ``spectrum_enable`` is set."""
         from core.inference.fbcache import build_fbcache, fbcache_active
         if not fbcache_active(params):
             return None
         if block_swap_on:
             print("[FBCache] LTX-2.3 disabled: Block Swap is enabled (layer skip desyncs rotation)")
             return None
+        if params.get("spectrum_enable", False):
+            print("[FBCache] LTX-2.3 disabled: Spectrum is enabled (same redundancy target)")
+            return None
         return build_fbcache(params, label="LTX-2.3")
+
+    def _ltx2_build_spectrum(self, params: Dict[str, Any], num_inference_steps: int, block_swap_on: bool):
+        """Build the (video, audio) Spectrum output-forecaster pair for LTX-2.3, or (None, None).
+
+        Two forecasters, built from IDENTICAL config, so ``is_anchor(step)``
+        agrees for both streams (the anchor schedule is a pure function of the
+        step index + config, not of the tensor data) -- this is required for the
+        wrapper's single skip/anchor branch to cover both streams consistently.
+
+        Mutually exclusive with Block Swap (a forecast-skip step returns from
+        the wrapper's ``forward`` without running the block loop, so the
+        offloader's per-block wait/submit calls never fire, desyncing the swap
+        prefetch rotation) -- disabled whenever ``blocks_to_swap > 0``.
+
+        Forecasting requires exactly ONE transformer call per denoise step (the
+        forecast is fit against, and skips, that single call). LTX-2.3
+        generation today issues exactly one call per step (CFG is a single
+        batched 2B-batch call, not two separate calls) and never sets
+        Spatio-Temporal Guidance (``spatio_temporal_guidance_blocks`` /
+        ``perturbation_mask`` are not wired into ``params`` anywhere in this
+        module). Defensively check for that STG param anyway: if a future
+        change threads it through, disable Spectrum rather than silently
+        forecasting an inconsistent multi-call step."""
+        if not params.get("spectrum_enable", False):
+            return None, None
+        if block_swap_on:
+            print("[Spectrum] LTX-2.3 disabled: Block Swap is enabled (forecast skip desyncs swap rotation)")
+            return None, None
+        if params.get("stg_scale") or params.get("audio_stg_scale"):
+            print("[Spectrum] LTX-2.3 disabled: Spatio-Temporal Guidance would require more "
+                  "than one transformer call per step (not currently supported alongside Spectrum)")
+            return None, None
+        from core.inference.spectrum_forecaster import build_output_forecaster
+        video_fc = build_output_forecaster(params, num_inference_steps, label="LTX-2.3 video")
+        if video_fc is None:
+            return None, None
+        audio_fc = build_output_forecaster(params, num_inference_steps, label="LTX-2.3 audio")
+        # Same config -> build_output_forecaster's warmup-length gate is
+        # deterministic, so audio_fc is None iff video_fc is None; this is just
+        # a defensive symmetry check, not expected to fire in practice.
+        if audio_fc is None:
+            print("[Spectrum] LTX-2.3: audio forecaster failed to build; disabling Spectrum entirely")
+            return None, None
+        max_cache = video_fc.max_cache
+        print(f"[Spectrum] LTX-2.3: {len(video_fc.anchors)}/{num_inference_steps} actual passes "
+              f"(video + audio forecasters, each caching up to {max_cache} anchor tensor(s))")
+        return video_fc, audio_fc
 
     def _ensure_ltx2_offload(self, blocks_to_swap: int = 0, force_block_swap_mode: bool = False):
         """Attach model_cpu_offload hooks, in either the stock ("normal") mode or
@@ -346,10 +399,15 @@ class LTX2Mixin:
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
 
         # AP2 First-Block-Cache: build before the offload/wrap step so the wrap
-        # decision (force the wrapper on for FBCache-only) is known up front.
-        # Mutually exclusive with Block Swap (see _ltx2_build_fbcache).
+        # decision (force the wrapper on for FBCache-only / Spectrum-only) is
+        # known up front. Mutually exclusive with Block Swap and Spectrum (see
+        # _ltx2_build_fbcache; Spectrum takes precedence over FBCache).
         fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
-        force_wrap = fbcache is not None and blocks_to_swap <= 0
+        num_inference_steps_probe = int(params.get("num_inference_steps", 8))
+        spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
+            params, num_inference_steps_probe, blocks_to_swap > 0
+        )
+        force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
 
         # Base pipeline owns the offload hooks on the shared modules. This brings
         # the shared transformer to the requested block-swap state (wrap/unwrap +
@@ -365,6 +423,13 @@ class LTX2Mixin:
         elif fbcache is not None:
             print("[FBCache] LTX-2.3: could not attach (transformer not wrapped)")
             fbcache = None
+        spectrum_target = None
+        if spectrum_video is not None and fbcache_target is not None:
+            spectrum_target = fbcache_target
+            spectrum_target.attach_spectrum(spectrum_video, spectrum_audio)
+        elif spectrum_video is not None:
+            print("[Spectrum] LTX-2.3: could not attach (transformer not wrapped)")
+            spectrum_video = spectrum_audio = None
 
         # Normalize the keyframe to RGB PIL; the pipeline's video_processor
         # handles the resize/fit to (width, height).
@@ -398,11 +463,12 @@ class LTX2Mixin:
         gen_device = "cuda" if torch.cuda.is_available() else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        # Progress + FBCache step advance: LTX2Pipeline invokes
+        # Progress + FBCache/Spectrum step advance: LTX2Pipeline invokes
         # callback_on_step_end(pipe, i, t, kwargs) AFTER every denoise step. We
-        # advance _fbcache_step to i+1 there (primed for the NEXT step's forward
-        # call); step 0 uses the wrapper's default (0) from attach_fbcache().
-        if progress_callback is not None or fbcache_target is not None:
+        # advance _fbcache_step / _spectrum_step to i+1 there (primed for the
+        # NEXT step's forward call); step 0 uses the wrapper's default (0) from
+        # attach_fbcache() / attach_spectrum().
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None:
             def _cb(pipe, step_index, timestep, callback_kwargs):
                 if progress_callback is not None:
                     try:
@@ -411,6 +477,8 @@ class LTX2Mixin:
                         pass
                 if fbcache_target is not None:
                     fbcache_target._fbcache_step = step_index + 1
+                if spectrum_target is not None:
+                    spectrum_target._spectrum_step = step_index + 1
                 return callback_kwargs
             callback = _cb
         else:
@@ -442,6 +510,11 @@ class LTX2Mixin:
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
+            if spectrum_target is not None:
+                v_stats = spectrum_video.stats()
+                print(f"[Spectrum] LTX-2.3 summary: {v_stats['anchors']} anchor(s), "
+                      f"{v_stats['forecasts']} forecast(s) of {v_stats['total']} step(s)")
+                spectrum_target.attach_spectrum(None, None)
 
         frames_np = video[0]  # [T, H, W, C]
         frames = (np.clip(frames_np, 0.0, 1.0) * 255.0).round().astype(np.uint8)
@@ -481,10 +554,15 @@ class LTX2Mixin:
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
 
         # AP2 First-Block-Cache: build before the offload/wrap step so the wrap
-        # decision (force the wrapper on for FBCache-only) is known up front.
-        # Mutually exclusive with Block Swap (see _ltx2_build_fbcache).
+        # decision (force the wrapper on for FBCache-only / Spectrum-only) is
+        # known up front. Mutually exclusive with Block Swap and Spectrum (see
+        # _ltx2_build_fbcache; Spectrum takes precedence over FBCache).
         fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
-        force_wrap = fbcache is not None and blocks_to_swap <= 0
+        num_inference_steps_probe = int(params.get("num_inference_steps", 8))
+        spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
+            params, num_inference_steps_probe, blocks_to_swap > 0
+        )
+        force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
 
         pipeline = self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
 
@@ -495,6 +573,13 @@ class LTX2Mixin:
         elif fbcache is not None:
             print("[FBCache] LTX-2.3: could not attach (transformer not wrapped)")
             fbcache = None
+        spectrum_target = None
+        if spectrum_video is not None and fbcache_target is not None:
+            spectrum_target = fbcache_target
+            spectrum_target.attach_spectrum(spectrum_video, spectrum_audio)
+        elif spectrum_video is not None:
+            print("[Spectrum] LTX-2.3: could not attach (transformer not wrapped)")
+            spectrum_video = spectrum_audio = None
 
         # Resolve parameters
         prompt = params.get("prompt", "") or ""
@@ -521,11 +606,12 @@ class LTX2Mixin:
         gen_device = "cuda" if torch.cuda.is_available() else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        # Progress + FBCache step advance: LTX2Pipeline invokes
+        # Progress + FBCache/Spectrum step advance: LTX2Pipeline invokes
         # callback_on_step_end(pipe, i, t, kwargs) AFTER every denoise step. We
-        # advance _fbcache_step to i+1 there (primed for the NEXT step's forward
-        # call); step 0 uses the wrapper's default (0) from attach_fbcache().
-        if progress_callback is not None or fbcache_target is not None:
+        # advance _fbcache_step / _spectrum_step to i+1 there (primed for the
+        # NEXT step's forward call); step 0 uses the wrapper's default (0) from
+        # attach_fbcache() / attach_spectrum().
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None:
             def _cb(pipe, step_index, timestep, callback_kwargs):
                 if progress_callback is not None:
                     try:
@@ -534,6 +620,8 @@ class LTX2Mixin:
                         pass
                 if fbcache_target is not None:
                     fbcache_target._fbcache_step = step_index + 1
+                if spectrum_target is not None:
+                    spectrum_target._spectrum_step = step_index + 1
                 return callback_kwargs
             callback = _cb
         else:
@@ -564,6 +652,11 @@ class LTX2Mixin:
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
+            if spectrum_target is not None:
+                v_stats = spectrum_video.stats()
+                print(f"[Spectrum] LTX-2.3 summary: {v_stats['anchors']} anchor(s), "
+                      f"{v_stats['forecasts']} forecast(s) of {v_stats['total']} step(s)")
+                spectrum_target.attach_spectrum(None, None)
 
         # video: np.ndarray [B, T, H, W, C] float in [0, 1] (output_type="np").
         frames_np = video[0]  # [T, H, W, C]

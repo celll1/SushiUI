@@ -148,6 +148,19 @@ class Txt2VidRequest(BaseModel):
     fbcache_enable: bool = TXT2VID_DEFAULTS["fbcache_enable"]
     fbcache_threshold: float = TXT2VID_DEFAULTS["fbcache_threshold"]
     fbcache_warmup_steps: int = TXT2VID_DEFAULTS["fbcache_warmup_steps"]
+    # Spectrum (Adaptive Spectral Feature Forecasting). Mutually exclusive with
+    # FBCache (Spectrum takes precedence) and with Block Swap (see ltx2.py).
+    spectrum_enable: bool = TXT2VID_DEFAULTS["spectrum_enable"]
+    spectrum_w: float = TXT2VID_DEFAULTS["spectrum_w"]
+    spectrum_w_decay: float = TXT2VID_DEFAULTS["spectrum_w_decay"]
+    spectrum_delta_cap: float = TXT2VID_DEFAULTS["spectrum_delta_cap"]
+    spectrum_m: int = TXT2VID_DEFAULTS["spectrum_m"]
+    spectrum_lam: float = TXT2VID_DEFAULTS["spectrum_lam"]
+    spectrum_warmup_steps: int = TXT2VID_DEFAULTS["spectrum_warmup_steps"]
+    spectrum_window_size: int = TXT2VID_DEFAULTS["spectrum_window_size"]
+    spectrum_flex_window: float = TXT2VID_DEFAULTS["spectrum_flex_window"]
+    spectrum_tail: float = TXT2VID_DEFAULTS["spectrum_tail"]
+    spectrum_max_cache: int = TXT2VID_DEFAULTS["spectrum_max_cache"]
     # Per-generation component overrides (RP2b). Unsupported on the LTX-2.3 video
     # arch: accepted-but-ignored with a warning (see check_arch_capabilities).
     vae_path: Optional[str] = TXT2VID_DEFAULTS["vae_path"]
@@ -2033,6 +2046,17 @@ async def generate_img2vid(
     fbcache_enable: bool = Form(TXT2VID_DEFAULTS["fbcache_enable"]),
     fbcache_threshold: float = Form(TXT2VID_DEFAULTS["fbcache_threshold"]),
     fbcache_warmup_steps: int = Form(TXT2VID_DEFAULTS["fbcache_warmup_steps"]),
+    spectrum_enable: bool = Form(TXT2VID_DEFAULTS["spectrum_enable"]),
+    spectrum_w: float = Form(TXT2VID_DEFAULTS["spectrum_w"]),
+    spectrum_w_decay: float = Form(TXT2VID_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(TXT2VID_DEFAULTS["spectrum_delta_cap"]),
+    spectrum_m: int = Form(TXT2VID_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(TXT2VID_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(TXT2VID_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(TXT2VID_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(TXT2VID_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(TXT2VID_DEFAULTS["spectrum_tail"]),
+    spectrum_max_cache: int = Form(TXT2VID_DEFAULTS["spectrum_max_cache"]),
     vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
     text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
     image: UploadFile = File(...),
@@ -2065,6 +2089,17 @@ async def generate_img2vid(
         "fbcache_enable": fbcache_enable,
         "fbcache_threshold": fbcache_threshold,
         "fbcache_warmup_steps": fbcache_warmup_steps,
+        "spectrum_enable": spectrum_enable,
+        "spectrum_w": spectrum_w,
+        "spectrum_w_decay": spectrum_w_decay,
+        "spectrum_delta_cap": spectrum_delta_cap,
+        "spectrum_m": spectrum_m,
+        "spectrum_lam": spectrum_lam,
+        "spectrum_warmup_steps": spectrum_warmup_steps,
+        "spectrum_window_size": spectrum_window_size,
+        "spectrum_flex_window": spectrum_flex_window,
+        "spectrum_tail": spectrum_tail,
+        "spectrum_max_cache": spectrum_max_cache,
         "vae_path": vae_path,
         "text_encoder_path": text_encoder_path,
     }

@@ -1254,12 +1254,26 @@ class BaseTrainer(ABC):
         from core.training.ops import krea2_ops
         return krea2_ops.setup_block_swap(self)
 
+    def setup_ltx2_wrapper(self):
+        """Delegator (plan AP3): body lives in ``ops/ltx2_ops.setup_wrapper``.
+        Kept on the trainer because mode subclasses (full_parameter_trainer /
+        lora_trainer) call it LATE via ``hasattr(self, "setup_ltx2_wrapper")``
+        after adapter setup and BEFORE ``setup_ltx2_block_swap`` -- installs
+        ``Ltx2BlockLoopWrapper`` (re-owned block loop) ONLY when an AP3 training
+        feature (currently: TREAD) is enabled; a no-op otherwise (byte-identical
+        default training path).
+        """
+        from core.training.ops import ltx2_ops
+        return ltx2_ops.setup_wrapper(self)
+
     def setup_ltx2_block_swap(self):
         """Delegator (plan P5): body lives in ``ops/ltx2_ops.setup_block_swap``.
         Kept on the trainer because mode subclasses (full_parameter_trainer /
         lora_trainer) call it LATE via ``hasattr(self, "setup_ltx2_block_swap")``
-        after adapter setup; ``arch/ltx2.py`` calls the same ops function so the
-        body is defined exactly once.
+        after adapter setup (and after ``setup_ltx2_wrapper``, so the conductor
+        registers on the same ``transformer_blocks`` the wrapper's loop uses);
+        ``arch/ltx2.py`` calls the same ops function so the body is defined
+        exactly once.
         """
         from core.training.ops import ltx2_ops
         return ltx2_ops.setup_block_swap(self)

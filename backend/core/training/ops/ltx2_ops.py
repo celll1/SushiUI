@@ -238,6 +238,56 @@ def setup_block_swap(trainer) -> None:
     print(f"{trainer.log_prefix} [block-swap] LayerOffloadConductor hooks registered for LTX-2.3")
 
 
+def setup_wrapper(trainer) -> None:
+    """Install ``Ltx2BlockLoopWrapper`` as ``trainer.transformer`` WHEN an AP3
+    training feature is enabled (currently: TREAD token routing, gated on
+    ``trainer.tread_config``).
+
+    Call order (mode subclasses -- lora_trainer.py / full_parameter_trainer.py):
+      1. Adapter LoRA-injects / freezes-and-unfreezes the INNER transformer
+         in-place (``trainer.transformer`` still refers to the same object as
+         ``trainer.transformer_original``, set at ``load_components`` time).
+      2. THIS function wraps that (already-adapted) inner transformer.
+      3. ``setup_block_swap`` (called immediately after, by the same mode
+         subclass) initialises the ``LayerOffloadConductor`` over
+         ``trainer.transformer.transformer_blocks`` -- resolved through the
+         wrapper's ``__getattr__`` passthrough to the SAME ``nn.ModuleList``
+         object the wrapper's block loop iterates, so the conductor's
+         forward-pre/full-backward hooks fire correctly whether the wrapper or
+         the raw model owns the loop (they hook the block modules directly, not
+         the loop).
+
+    When no AP3 feature is enabled, this is a no-op: ``trainer.transformer``
+    stays the stock ``LTX2VideoTransformer3DModel`` and LTX-2.3 training is
+    byte-identical to the pre-AP3 path (the wrapper's own fast path would also
+    be byte-identical, but skipping the wrap entirely avoids even the
+    passthrough overhead / diffusers-pin assertion when TREAD is off).
+
+    ``trainer.transformer_original`` is NOT reassigned here -- it keeps pointing
+    at the inner (unwrapped, but LoRA-adapted) model for any code path that
+    intentionally wants the raw transformer (e.g. LoRA state_dict introspection
+    that predates the wrapper).
+    """
+    if not getattr(trainer, "is_ltx2", False):
+        return
+    if getattr(trainer, "ltx2_block_loop_wrapper", None) is not None:
+        return  # idempotent guard (defensive; no known multi-call site today)
+
+    tread_enabled = getattr(trainer, "tread_config", None) is not None
+    if not tread_enabled:
+        trainer.ltx2_block_loop_wrapper = None
+        return
+
+    from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+    inner = trainer.transformer
+    wrapper = Ltx2BlockLoopWrapper(inner)
+    trainer.transformer = wrapper
+    trainer.ltx2_block_loop_wrapper = wrapper
+    print(f"{trainer.log_prefix} [AP3] Ltx2BlockLoopWrapper installed for LTX-2.3 "
+          f"training (TREAD token routing enabled: {trainer.tread_config}); "
+          f"trainer.transformer_original remains the inner (unwrapped) model")
+
+
 def setup_attention_backend(trainer, backend: str):
     """LTX-2.3 uses the diffusers attention dispatcher (SDPA by default). No
     per-block attn-mode vocabulary to set (unlike Anima's vendored kernel), so
@@ -578,11 +628,33 @@ def train_step(
         )
         return out
 
-    if trainer.mixed_precision:
-        with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+    # AP3 TREAD token routing: attach the route config to the Ltx2BlockLoopWrapper
+    # for THIS training forward only, then clear it in `finally` so any other use
+    # of the same wrapper instance never sees a stale config. The wrapper's own
+    # forward additionally gates on self.training/grad-enabled, so this is doubly
+    # safe. `wrapper` is None when TREAD was not enabled at setup time (see
+    # ltx2_ops.setup_wrapper) -- byte-identical unwrapped path, nothing to attach.
+    tread_cfg = getattr(trainer, "tread_config", None)
+    wrapper = getattr(trainer, "ltx2_block_loop_wrapper", None)
+    if tread_cfg is not None and wrapper is not None:
+        wrapper.attach_tread(tread_cfg)
+    elif tread_cfg is not None and wrapper is None:
+        if not getattr(trainer, "_warned_ltx2_tread_no_wrapper", False):
+            print(f"{trainer.log_prefix} WARNING: tread_config is set but no "
+                  f"Ltx2BlockLoopWrapper is installed (setup_wrapper did not run "
+                  f"or found tread_config unset at setup time) -- TREAD routing "
+                  f"will NOT be applied this run")
+            trainer._warned_ltx2_tread_no_wrapper = True
+
+    try:
+        if trainer.mixed_precision:
+            with torch.autocast(device_type=trainer.device.type, dtype=trainer.training_dtype):
+                v_pred_video, _v_pred_audio = _forward()
+        else:
             v_pred_video, _v_pred_audio = _forward()
-    else:
-        v_pred_video, _v_pred_audio = _forward()
+    finally:
+        if tread_cfg is not None and wrapper is not None:
+            wrapper.attach_tread(None)
 
     if profile_vram:
         print_vram_usage("[train_step_ltx2] After DiT forward")

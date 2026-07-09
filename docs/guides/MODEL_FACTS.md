@@ -20,6 +20,62 @@ them. No subjective performance claims.
 | krea2 | MM-DiT (single-stream) | Qwen3-VL-4B-Instruct (frozen) | velocity / flow (rectified flow) | latent, `AutoencoderKLQwenImage` 16ch (latents_mean/std) | `guidance = cfg_scale - 1` (default cfg 4.5); distilled/turbo disables CFG (guidance 0) | conduit (tq usable, GQA) (verify infer/train head_dim) | diffusers dir (`Krea2Pipeline`), transformer-only dir (auto-complement), single-file (diffusers/raw/comfy/sushiUI TE+DiT combined); TE `Qwen/Qwen3-VL-4B-Instruct`, VAE `Qwen/Qwen-Image` `vae` (env `KREA2_TE_DIR`/`KREA2_VAE_DIR` overrides) | `krea2_adapter.py`; transformer only, Qwen3-VL TE ALWAYS frozen (`train_text_encoder` rejected), VAE frozen; train_runner forces bf16 |
 | ltx2 | joint video+audio DiT (`LTX2VideoTransformer3DModel`) | Gemma-3 text encoder (frozen) | velocity / flow (`LTX2Pipeline`/`LTX2ImageToVideoPipeline`, txt2vid + img2vid) | 5D video latent (`[T,H,W]`) via LTX video VAE (tiling enabled) + separate audio VAE/vocoder | plain CFG (`guidance_scale`); img2vid pins frame 0 via `conditioning_mask` | n/a (own pipeline backend, not conduit-routed) | not in the single-file completion matrix above (own loader) | own trainer ops (`ltx2_ops.py`); see row-level notes for AP1-3 speed/lightweight features |
 
+## VRAM management: keep_models_hot (opt-in, all image archs except ltx2)
+
+Post-load CPU offload and generation-time sequential component staging (text
+encoder(s) -> GPU -> encode -> CPU, denoiser -> GPU -> denoise -> CPU, VAE ->
+GPU -> decode -> CPU, one component on GPU at a time to bound peak VRAM) is
+already implemented for every architecture: the SDXL reference path in
+`backend/core/vram_optimization.py`, the 7 DiT archs via per-arch `_move`
+helpers in `pipeline_backends/*.py`, and LTX-2.3 via diffusers accelerate's
+`model_cpu_offload_seq` hooks.
+
+`keep_models_hot` (`GenerationParams`, default `false`) is an additional,
+opt-in layer on top of that staging: when a queue runs consecutive
+generations on the same model, it skips the ->CPU offload at the end of a
+generation and the ->GPU stage at the start of the next one for components
+it is safe to leave GPU-resident, cutting re-staging calls between queued
+generations. Shared state/logic lives in `backend/core/keep_hot.py` and is
+reused verbatim by SD1.5/SDXL (`pipeline.py`) and all 7 DiT image archs
+(`pipeline_backends/{flux2,zimage,anima,lens,krea2,ideogram4,minit2i}.py`).
+
+- **Eligibility per component**: text encoder(s) and VAE are eligible
+  whenever they are not doing CPU inference; the denoiser (U-Net/transformer)
+  is only eligible when there is NO LoRA applied and the arch is NOT
+  block-swapped for this generation.
+- **model_key** = `(checkpoint, sorted LoRA path+weight set,
+  unet_quantization, text_encoder_quantization, cpu_text_encoding,
+  weight_dtype)`. Any change invalidates the resident set and forces a full
+  offload before staging the new request.
+- **VRAM guard**: a component is kept resident only if `free_vram -
+  1.5GB headroom >= component_bytes`; otherwise it falls back to a normal
+  offload for that component and appends a `warnings[]` entry
+  (`keep_hot_vram_guard` / `keep_hot_no_cuda`).
+- **Exception path**: any exception during generation always forces a full
+  offload and clears residency for every component, regardless of what was
+  requested.
+- **Per-arch exceptions**: `lens` never keeps its text encoder hot (it frees
+  the TE to `None` every generation to reclaim ~9.7GB of untracked mxfp4
+  buffers). `minit2i` gates both TE and transformer on no-LoRA (its LoRA
+  wraps both) and has no VAE component (pixel-space). `ideogram4` keeps its
+  conditional + unconditional transformer pair together as one residency
+  unit.
+- **ltx2 is excluded**: `keep_models_hot` is not plumbed to the video
+  generation request path; LTX-2.3 uses diffusers accelerate's
+  `enable_model_cpu_offload` hooks, and its longer denoise loop makes
+  per-generation re-staging overhead comparatively small.
+- **Frontend**: the generation queue (`GenerationQueueContext`) sets
+  `keep_models_hot = true` on every queued item except the last one in a
+  back-to-back run on txt2img/img2img/inpaint; the last item sends `false`
+  so VRAM is released at queue end. The frontend does not compare models
+  itself — the backend's `model_key` invalidation handles a mid-queue model
+  change safely.
+- **Robustness**: FLUX.2 and Z-Image's post-generation component offload
+  (text_encoder/transformer/VAE -> CPU) is now wrapped in a `finally` block
+  (previously happy-path only, so an exception during denoise/decode could
+  strand the transformer on GPU); this brings them in line with the other
+  archs, which already offloaded in a `finally`-guarded cleanup.
+
 ## Row-level notes
 
 - **sd15** — Simplest U-Net path. Detection falls through to sd15 when nothing else
@@ -119,3 +175,6 @@ them. No subjective performance claims.
   — TE-frozen policies, dual-transformer training, LLM-Adapter-only mode.
 - `backend/core/training/MODEL_ARCHITECTURES.md` — SD1.5/SDXL/Z-Image component
   specs, forward-pass signatures, schedulers.
+- `backend/core/keep_hot.py` — `keep_models_hot` model_key computation, VRAM
+  guard, resident-set tracking, shared by `pipeline.py` and the 7 DiT
+  `pipeline_backends/*.py` files (not `ltx2.py`).

@@ -950,10 +950,30 @@ def custom_sampling_loop(
                       f"warmup={spectrum_warmup_steps}, window={spectrum_window_size}, "
                       f"flex={spectrum_flex_window}, tail={spectrum_tail})")
 
+    # Style transfer runs its own separate capture/cond/uncond forwards, which are
+    # incompatible with NAG's batch-3 layout, ControlNet's batch-2 residuals, and
+    # Spectrum's per-step record/forecast (style never calls spectrum.record()).
+    # Yield to the established feature (disable style) with a warning rather than
+    # crash / silently misbehave.
+    # TODO: ControlNet(structure)+style(appearance) is a desirable combo; supporting
+    # it needs per-pass batch-1 residual recompute -- future enhancement.
+    if style_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] Style transfer disabled: not compatible with NAG / "
+              "ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
+            code="style_incompatible",
+        )
+        style_active = False
+
     # FBCache (First Block Cache): dynamic per-step deep-block caching via the same
     # per-block interception as Spectrum block mode. Mutually exclusive with Spectrum
     # (same monkey-patch), and auto-disabled for the same unstable-conditioning cases
     # (prompt editing / ControlNet / DEUS) that make per-step block outputs non-reusable.
+    # Also disabled when style transfer is active: the style branch's per-step capture
+    # forward (on the style ref latent) would run through the FBCache block wrappers
+    # and pollute the cache with the style ref's residuals (begin_step/end_step reset
+    # is only invoked on the standard path, never in the style branch).
     fbcache_ctrl = None
     if fbcache_enable:
         if spectrum_block_ctrl is not None or spectrum is not None:
@@ -964,12 +984,12 @@ def custom_sampling_loop(
                 "same block interception (mutually exclusive)",
                 code="feature_auto_disabled",
             )
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
-            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS "
-                  "change the block outputs per step; needs stable conditioning)")
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active:
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
+                  "style transfer change the block outputs per step; needs stable conditioning)")
             _add_generation_warning(
-                "FBCache was requested but disabled: prompt-editing / ControlNet / DEUS "
-                "change the block outputs per step and need stable conditioning",
+                "FBCache was requested but disabled: prompt-editing / ControlNet / DEUS / "
+                "style transfer change the block outputs per step and need stable conditioning",
                 code="feature_auto_disabled",
             )
         else:
@@ -1965,15 +1985,30 @@ def custom_img2img_sampling_loop(
             else:
                 print(f"[Spectrum] enabled (img2img, output mode): {len(spectrum.anchors)}/{_n_steps} actual passes")
 
+    # Style transfer yields to NAG / ControlNet / Spectrum -- see the txt2img loop for
+    # the full rationale (incompatible batch layouts / stale spectrum state).
+    # TODO: ControlNet(structure)+style(appearance) is a desirable combo; supporting
+    # it needs per-pass batch-1 residual recompute -- future enhancement.
+    if style_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] Style transfer disabled: not compatible with NAG / "
+              "ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
+            code="style_incompatible",
+        )
+        style_active = False
+
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
-    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS).
+    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
+    # and also for style transfer (its capture forward would pollute the cache; see
+    # the txt2img loop for details).
     fbcache_ctrl = None
     if fbcache_enable:
         if spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
-            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS; "
-                  "needs stable conditioning)")
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active:
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
+                  "style transfer; needs stable conditioning)")
         else:
             from core.inference.fbcache_unet import build_unet_fbcache_controller
             fbcache_ctrl = build_unet_fbcache_controller(
@@ -2961,15 +2996,30 @@ def custom_inpaint_sampling_loop(
             else:
                 print(f"[Spectrum] enabled (inpaint, output mode): {len(spectrum.anchors)}/{_n_steps} actual passes")
 
+    # Style transfer yields to NAG / ControlNet / Spectrum -- see the txt2img loop for
+    # the full rationale (incompatible batch layouts / stale spectrum state).
+    # TODO: ControlNet(structure)+style(appearance) is a desirable combo; supporting
+    # it needs per-pass batch-1 residual recompute -- future enhancement.
+    if style_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] Style transfer disabled: not compatible with NAG / "
+              "ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
+            code="style_incompatible",
+        )
+        style_active = False
+
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
-    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS).
+    # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
+    # and also for style transfer (its capture forward would pollute the cache; see
+    # the txt2img loop for details).
     fbcache_ctrl = None
     if fbcache_enable:
         if spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
-            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS; "
-                  "needs stable conditioning)")
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active:
+            print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
+                  "style transfer; needs stable conditioning)")
         else:
             from core.inference.fbcache_unet import build_unet_fbcache_controller
             fbcache_ctrl = build_unet_fbcache_controller(

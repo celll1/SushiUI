@@ -181,6 +181,13 @@ class Txt2VidRequest(BaseModel):
     # arch: accepted-but-ignored with a warning (see check_arch_capabilities).
     vae_path: Optional[str] = TXT2VID_DEFAULTS["vae_path"]
     text_encoder_path: Optional[str] = TXT2VID_DEFAULTS["text_encoder_path"]
+    # Training-free reference-style transfer (video self-attention KV
+    # injection; see core.inference.style_ltx2). An entry with
+    # is_style_transfer=true carries the style reference; extracted by
+    # process_controlnet_configs() into params["style_transfer"] (not a
+    # ControlNet). No image-conditioning ControlNets exist for LTX-2.3 today --
+    # this field exists ONLY to carry the style-transfer entry.
+    controlnets: Optional[List[ControlNetConfig]] = []
 
 
 class GenerationParams(BaseModel):
@@ -1956,6 +1963,16 @@ async def generate_txt2vid(
             detail="Load an LTX-2.3 video model before calling /generate/txt2vid.",
         )
 
+    # Training-free reference-style transfer (video). No image-conditioning
+    # ControlNets are supported for LTX-2.3 -- `controlnets` exists only to
+    # carry an `is_style_transfer` entry (see core.inference.style_ltx2).
+    _, style_transfer = process_controlnet_configs(
+        params.get("controlnets") or [],
+        generation_type="txt2vid",
+    )
+    params["style_transfer"] = style_transfer
+    params.pop("controlnets", None)
+
     start_generation("txt2vid")
     try:
         pipeline_manager.reset_cancel_flag()
@@ -2084,6 +2101,7 @@ async def generate_img2vid(
     spectrum_max_cache: int = Form(TXT2VID_DEFAULTS["spectrum_max_cache"]),
     vae_path: Optional[str] = Form(TXT2VID_DEFAULTS["vae_path"]),
     text_encoder_path: Optional[str] = Form(TXT2VID_DEFAULTS["text_encoder_path"]),
+    controlnets: str = Form("[]"),  # JSON string; only is_style_transfer entries are meaningful for LTX-2.3
     image: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
@@ -2128,6 +2146,13 @@ async def generate_img2vid(
         "vae_path": vae_path,
         "text_encoder_path": text_encoder_path,
     }
+
+    # Training-free reference-style transfer (video). See generate_txt2vid's
+    # identical wiring / core.inference.style_ltx2 for the mechanism.
+    import json
+    _controlnet_configs = json.loads(controlnets) if controlnets else []
+    _, style_transfer = process_controlnet_configs(_controlnet_configs, generation_type="img2vid")
+    params["style_transfer"] = style_transfer
 
     # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
     if width % 32 != 0 or height % 32 != 0:

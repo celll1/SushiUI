@@ -5204,6 +5204,22 @@ components:
           default: true
           description: "When true, mux the generated audio track into the mp4."
           example: true
+        controlnets:
+          type: array
+          nullable: true
+          description: |
+            Optional array of ControlNet / reference-guide / style-transfer config
+            objects (same shape as the image endpoints' controlnets). Training-free
+            STYLE TRANSFER rides here as an entry with is_style_transfer: true carrying
+            the style reference image (image_base64) plus Style Strength (strength),
+            style_adain_strength and style_blocks; LTX-2.3 extracts it and injects the
+            reference's video-token self-attention K/V so every frame attends the same
+            still reference (temporally consistent). Mutually exclusive with FBCache /
+            Spectrum / Block Swap (style takes precedence, those are disabled with a
+            logged reason). Other entry types are accepted for shape parity.
+          items:
+            type: object
+          example: []
         blocks_to_swap:
           type: integer
           default: 0

@@ -18,7 +18,7 @@ where:
     actual_seed = the concrete seed used (random draw resolved when seed < 0).
 """
 
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, Optional, Callable, List
 import random
 
 import numpy as np
@@ -98,6 +98,105 @@ class LTX2Mixin:
         print(f"[Spectrum] LTX-2.3: {len(video_fc.anchors)}/{num_inference_steps} actual passes "
               f"(video + audio forecasters, each caching up to {max_cache} anchor tensor(s))")
         return video_fc, audio_fc
+
+    def _ltx2_prepare_style_reference(self, style_image, width: int, height: int, device) -> "torch.Tensor":
+        """VAE-encode a still-image style reference as a ONE-FRAME LTX-2.3 video
+        latent, packed into the SAME token layout attn1 sees for the target's
+        own frame-0 spatial tokens (see ``core.inference.style_ltx2`` module
+        docstring: "Still -> single-frame video-latent reference"). Returns a
+        ``[1, H*W, C]`` float32 tensor (pre ``proj_in``, pre re-noising) --
+        analogous to FLUX.2's ``_flux2_prepare_style_reference`` but through the
+        LTX-2.3 VIDEO VAE with ``num_frames=1`` instead of an image VAE.
+        """
+        from diffusers.pipelines.ltx2.pipeline_ltx2 import LTX2Pipeline
+
+        vae = self.ltx2_components["vae"]
+        vae_device = next(vae.parameters()).device
+        vae_dtype = next(vae.parameters()).dtype
+
+        img = style_image.convert("RGB").resize((int(width), int(height)), Image.LANCZOS)
+        img_array = np.array(img).astype(np.float32) / 255.0
+        img_array = (img_array - 0.5) * 2.0
+        # [1, C, F=1, H, W]
+        img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0).unsqueeze(2)
+        img_tensor = img_tensor.to(device=vae_device, dtype=vae_dtype)
+
+        with torch.no_grad():
+            latent_dist = vae.encode(img_tensor).latent_dist
+            latent = latent_dist.mode() if hasattr(latent_dist, "mode") else latent_dist.sample()
+            latent = LTX2Pipeline._normalize_latents(
+                latent, vae.latents_mean, vae.latents_std, vae.config.scaling_factor
+            )
+            packed = LTX2Pipeline._pack_latents(latent, patch_size=1, patch_size_t=1)
+
+        return packed.to(device=device, dtype=torch.float32)
+
+    def _ltx2_style_config(self, params: Dict[str, Any], width: int, height: int, device):
+        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None,
+        None)`` when no style reference is attached. ``axes_dims`` is
+        intentionally left unset (LTX-2.3's interleaved RoPE does not match
+        ``frequency_scale_vector``'s layout -- see
+        ``core.inference.style_ltx2`` module docstring; the attn1 hook always
+        passes an all-ones frequency vector regardless).
+        """
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from diffusers.utils.torch_utils import randn_tensor
+        from core.inference.reference_style import style_config_from_dict
+
+        cfg = style_config_from_dict(style_dict)
+
+        ref_x0 = self._ltx2_prepare_style_reference(style_dict["image"], width, height, device)
+
+        seed = params.get("seed", -1)
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError):
+            seed = -1
+        ref_seed = None if seed < 0 else (seed + 991) % (2 ** 32)
+        generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+        eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
+        return cfg, ref_x0, eps_ref
+
+    def _ltx2_resolve_style(self, params: Dict[str, Any]) -> bool:
+        """Returns whether style transfer is requested for this generation and,
+        if so, force-disables the features that are mutually exclusive with it
+        DIRECTLY ON ``params`` (mirrors every other arch's precedence policy --
+        see ``core.inference.style_ltx2`` module docstring's interop section):
+        FBCache and Spectrum are disabled (a cache hit / forecast skip would
+        desync the per-block style capture/inject store), and Block Swap is
+        forced off (``blocks_to_swap = 0``; the ref-capture sub-pass does not
+        thread the block-offloader's wait/submit calls).
+        """
+        style_active = bool((params.get("style_transfer") or {}).get("image"))
+        if not style_active:
+            return False
+        if params.get("stg_scale") or params.get("audio_stg_scale"):
+            # Mirrors _ltx2_build_spectrum's identical guard: Spatio-Temporal
+            # Guidance issues EXTRA (non-doubled) transformer calls per step
+            # that core.inference.style_ltx2's CFG row-split heuristic does not
+            # model correctly (see that module's docstring). Not reachable
+            # today (no caller wires stg_scale/audio_stg_scale for LTX-2.3),
+            # kept as a defensive guard against a future STG wiring.
+            print("[StyleLTX2] Style transfer disabled: Spatio-Temporal Guidance is active "
+                  "(extra per-step transformer calls are not modeled by the CFG row-split logic)")
+            params["style_transfer"] = None
+            return False
+        if params.get("fbcache_enable"):
+            print("[StyleLTX2] FBCache disabled: style transfer is active (capture-forward cache pollution)")
+            params["fbcache_enable"] = False
+        if params.get("spectrum_enable"):
+            print("[StyleLTX2] Spectrum disabled: style transfer is active (capture-forward cache pollution)")
+            params["spectrum_enable"] = False
+        if int(params.get("blocks_to_swap", 0) or 0) > 0:
+            print("[StyleLTX2] Block Swap disabled: style transfer is active "
+                  "(ref-capture sub-pass does not thread the block-offloader rotation)")
+            params["blocks_to_swap"] = 0
+        return True
 
     def _ensure_ltx2_offload(self, blocks_to_swap: int = 0, force_block_swap_mode: bool = False):
         """Attach model_cpu_offload hooks, in either the stock ("normal") mode or
@@ -396,18 +495,37 @@ class LTX2Mixin:
         if input_image is None:
             raise RuntimeError("img2vid requires an input image for the first-frame keyframe")
 
+        # Resolve parameters (mirrors _generate_txt2vid_ltx2; moved up: style
+        # transfer needs width/height before the offload/wrap decision below).
+        prompt = params.get("prompt", "") or ""
+        negative_prompt = params.get("negative_prompt", "") or ""
+        width = int(params.get("width", 768))
+        height = int(params.get("height", 512))
+        num_frames = int(params.get("num_frames", 121))
+        frame_rate = float(params.get("frame_rate", 24.0))
+        num_inference_steps = int(params.get("num_inference_steps", 8))
+        guidance_scale = float(params.get("guidance_scale", 1.0))
+        num_videos_per_prompt = int(params.get("num_videos_per_prompt", 1))
+        max_sequence_length = int(params.get("max_sequence_length", 1024))
+        audio_enable = bool(params.get("audio_enable", True))
+
+        # Training-free reference-style transfer: resolve BEFORE FBCache/
+        # Spectrum/Block-Swap (see _generate_txt2vid_ltx2 / _ltx2_resolve_style).
+        style_active = self._ltx2_resolve_style(params)
+
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
 
         # AP2 First-Block-Cache: build before the offload/wrap step so the wrap
-        # decision (force the wrapper on for FBCache-only / Spectrum-only) is
-        # known up front. Mutually exclusive with Block Swap and Spectrum (see
-        # _ltx2_build_fbcache; Spectrum takes precedence over FBCache).
+        # decision (force the wrapper on for FBCache-only / Spectrum-only /
+        # style-only) is known up front. Mutually exclusive with Block Swap and
+        # Spectrum (see _ltx2_build_fbcache; Spectrum takes precedence over
+        # FBCache) and with style transfer (force-disabled above).
         fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
-        num_inference_steps_probe = int(params.get("num_inference_steps", 8))
+        num_inference_steps_probe = num_inference_steps
         spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
             params, num_inference_steps_probe, blocks_to_swap > 0
         )
-        force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
+        force_wrap = (fbcache is not None or spectrum_video is not None or style_active) and blocks_to_swap <= 0
 
         # Base pipeline owns the offload hooks on the shared modules. This brings
         # the shared transformer to the requested block-swap state (wrap/unwrap +
@@ -417,6 +535,7 @@ class LTX2Mixin:
         pipeline = self._ensure_ltx2_i2v_pipeline()
 
         from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        style_target = pipeline.transformer if isinstance(pipeline.transformer, Ltx2BlockLoopWrapper) else None
         fbcache_target = pipeline.transformer if isinstance(pipeline.transformer, Ltx2BlockLoopWrapper) else None
         if fbcache is not None and fbcache_target is not None:
             fbcache_target.attach_fbcache(fbcache)
@@ -431,25 +550,28 @@ class LTX2Mixin:
             print("[Spectrum] LTX-2.3: could not attach (transformer not wrapped)")
             spectrum_video = spectrum_audio = None
 
+        style_processors: List[Any] = []
+        style_saved_processors: List[Any] = []
+        style_cfg = None
+        if style_active and style_target is not None:
+            device = next(style_target.transformer.parameters()).device
+            style_cfg, style_ref_x0, style_eps_ref = self._ltx2_style_config(params, width, height, device)
+            if style_cfg is not None:
+                from core.inference.style_ltx2 import install_ltx2_style_processors
+                style_processors, style_saved_processors = install_ltx2_style_processors(style_target.transformer)
+                style_target.attach_style(style_processors, style_cfg, style_ref_x0, style_eps_ref)
+                style_target._style_total_steps = num_inference_steps
+                print(f"[StyleLTX2] Style transfer active: {len(style_processors)} attn1 processors stamped")
+        elif style_active:
+            print("[StyleLTX2]: could not attach (transformer not wrapped)")
+            style_cfg = None
+
         # Normalize the keyframe to RGB PIL; the pipeline's video_processor
         # handles the resize/fit to (width, height).
         if not isinstance(input_image, Image.Image):
             raise RuntimeError("img2vid input_image must be a PIL.Image")
         if input_image.mode != "RGB":
             input_image = input_image.convert("RGB")
-
-        # Resolve parameters (mirrors _generate_txt2vid_ltx2).
-        prompt = params.get("prompt", "") or ""
-        negative_prompt = params.get("negative_prompt", "") or ""
-        width = int(params.get("width", 768))
-        height = int(params.get("height", 512))
-        num_frames = int(params.get("num_frames", 121))
-        frame_rate = float(params.get("frame_rate", 24.0))
-        num_inference_steps = int(params.get("num_inference_steps", 8))
-        guidance_scale = float(params.get("guidance_scale", 1.0))
-        num_videos_per_prompt = int(params.get("num_videos_per_prompt", 1))
-        max_sequence_length = int(params.get("max_sequence_length", 1024))
-        audio_enable = bool(params.get("audio_enable", True))
 
         # Seed: -1 (or negative/None) -> random draw, recorded back for the caller.
         seed = params.get("seed", -1)
@@ -463,12 +585,12 @@ class LTX2Mixin:
         gen_device = "cuda" if torch.cuda.is_available() else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        # Progress + FBCache/Spectrum step advance: LTX2Pipeline invokes
+        # Progress + FBCache/Spectrum/style step advance: LTX2Pipeline invokes
         # callback_on_step_end(pipe, i, t, kwargs) AFTER every denoise step. We
-        # advance _fbcache_step / _spectrum_step to i+1 there (primed for the
-        # NEXT step's forward call); step 0 uses the wrapper's default (0) from
-        # attach_fbcache() / attach_spectrum().
-        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None:
+        # advance _fbcache_step / _spectrum_step / _style_step_idx to i+1 there
+        # (primed for the NEXT step's forward call); step 0 uses the wrapper's
+        # default (0) from attach_fbcache() / attach_spectrum() / attach_style().
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None or style_cfg is not None:
             def _cb(pipe, step_index, timestep, callback_kwargs):
                 if progress_callback is not None:
                     try:
@@ -479,6 +601,8 @@ class LTX2Mixin:
                     fbcache_target._fbcache_step = step_index + 1
                 if spectrum_target is not None:
                     spectrum_target._spectrum_step = step_index + 1
+                if style_cfg is not None and style_target is not None:
+                    style_target._style_step_idx = step_index + 1
                 return callback_kwargs
             callback = _cb
         else:
@@ -510,6 +634,12 @@ class LTX2Mixin:
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
+            if style_saved_processors:
+                from core.inference.style_ltx2 import restore_ltx2_style_processors
+                if style_target is not None:
+                    style_target.attach_style(None, None, None, None)
+                restore_ltx2_style_processors(style_saved_processors)
+                print("[StyleLTX2] processors restored (generation complete)")
             if spectrum_target is not None:
                 v_stats = spectrum_video.stats()
                 print(f"[Spectrum] LTX-2.3 summary: {v_stats['anchors']} anchor(s), "
@@ -551,22 +681,47 @@ class LTX2Mixin:
         if not self.ltx2_components:
             raise RuntimeError("LTX-2.3 components not loaded. Please load an LTX-2.3 model first.")
 
+        # Resolve parameters (moved up: style transfer needs width/height to
+        # VAE-encode the reference at the target resolution before the
+        # offload/wrap decision below).
+        prompt = params.get("prompt", "") or ""
+        negative_prompt = params.get("negative_prompt", "") or ""
+        width = int(params.get("width", 768))
+        height = int(params.get("height", 512))
+        num_frames = int(params.get("num_frames", 121))
+        frame_rate = float(params.get("frame_rate", 24.0))
+        num_inference_steps = int(params.get("num_inference_steps", 8))
+        guidance_scale = float(params.get("guidance_scale", 1.0))
+        num_videos_per_prompt = int(params.get("num_videos_per_prompt", 1))
+        max_sequence_length = int(params.get("max_sequence_length", 1024))
+        audio_enable = bool(params.get("audio_enable", True))
+
+        # Training-free reference-style transfer: resolve BEFORE FBCache/
+        # Spectrum/Block-Swap so their build calls see the (possibly
+        # force-disabled) params (see core.inference.style_ltx2 module
+        # docstring's interop section / _ltx2_resolve_style).
+        style_active = self._ltx2_resolve_style(params)
+
         blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
 
         # AP2 First-Block-Cache: build before the offload/wrap step so the wrap
-        # decision (force the wrapper on for FBCache-only / Spectrum-only) is
-        # known up front. Mutually exclusive with Block Swap and Spectrum (see
-        # _ltx2_build_fbcache; Spectrum takes precedence over FBCache).
+        # decision (force the wrapper on for FBCache-only / Spectrum-only /
+        # style-only) is known up front. Mutually exclusive with Block Swap and
+        # Spectrum (see _ltx2_build_fbcache; Spectrum takes precedence over
+        # FBCache) and with style transfer (force-disabled by
+        # _ltx2_resolve_style above, so fbcache_active(params) is already False
+        # here whenever style_active).
         fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
-        num_inference_steps_probe = int(params.get("num_inference_steps", 8))
+        num_inference_steps_probe = num_inference_steps
         spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
             params, num_inference_steps_probe, blocks_to_swap > 0
         )
-        force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
+        force_wrap = (fbcache is not None or spectrum_video is not None or style_active) and blocks_to_swap <= 0
 
         pipeline = self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
 
         from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        style_target = pipeline.transformer if isinstance(pipeline.transformer, Ltx2BlockLoopWrapper) else None
         fbcache_target = pipeline.transformer if isinstance(pipeline.transformer, Ltx2BlockLoopWrapper) else None
         if fbcache is not None and fbcache_target is not None:
             fbcache_target.attach_fbcache(fbcache)
@@ -581,18 +736,25 @@ class LTX2Mixin:
             print("[Spectrum] LTX-2.3: could not attach (transformer not wrapped)")
             spectrum_video = spectrum_audio = None
 
-        # Resolve parameters
-        prompt = params.get("prompt", "") or ""
-        negative_prompt = params.get("negative_prompt", "") or ""
-        width = int(params.get("width", 768))
-        height = int(params.get("height", 512))
-        num_frames = int(params.get("num_frames", 121))
-        frame_rate = float(params.get("frame_rate", 24.0))
-        num_inference_steps = int(params.get("num_inference_steps", 8))
-        guidance_scale = float(params.get("guidance_scale", 1.0))
-        num_videos_per_prompt = int(params.get("num_videos_per_prompt", 1))
-        max_sequence_length = int(params.get("max_sequence_length", 1024))
-        audio_enable = bool(params.get("audio_enable", True))
+        # Training-free reference-style transfer: install patched attn1
+        # processors on the INNER (unwrapped) transformer and attach the
+        # (cfg, ref_x0, eps_ref) triple to the wrapper. See
+        # core.inference.style_ltx2 module docstring for the full design.
+        style_processors: List[Any] = []
+        style_saved_processors: List[Any] = []
+        style_cfg = None
+        if style_active and style_target is not None:
+            device = next(style_target.transformer.parameters()).device
+            style_cfg, style_ref_x0, style_eps_ref = self._ltx2_style_config(params, width, height, device)
+            if style_cfg is not None:
+                from core.inference.style_ltx2 import install_ltx2_style_processors
+                style_processors, style_saved_processors = install_ltx2_style_processors(style_target.transformer)
+                style_target.attach_style(style_processors, style_cfg, style_ref_x0, style_eps_ref)
+                style_target._style_total_steps = num_inference_steps
+                print(f"[StyleLTX2] Style transfer active: {len(style_processors)} attn1 processors stamped")
+        elif style_active:
+            print("[StyleLTX2]: could not attach (transformer not wrapped)")
+            style_cfg = None
 
         # Seed: -1 (or negative/None) -> random draw, recorded back for the caller.
         seed = params.get("seed", -1)
@@ -606,12 +768,12 @@ class LTX2Mixin:
         gen_device = "cuda" if torch.cuda.is_available() else "cpu"
         generator = torch.Generator(device=gen_device).manual_seed(seed)
 
-        # Progress + FBCache/Spectrum step advance: LTX2Pipeline invokes
+        # Progress + FBCache/Spectrum/style step advance: LTX2Pipeline invokes
         # callback_on_step_end(pipe, i, t, kwargs) AFTER every denoise step. We
-        # advance _fbcache_step / _spectrum_step to i+1 there (primed for the
-        # NEXT step's forward call); step 0 uses the wrapper's default (0) from
-        # attach_fbcache() / attach_spectrum().
-        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None:
+        # advance _fbcache_step / _spectrum_step / _style_step_idx to i+1 there
+        # (primed for the NEXT step's forward call); step 0 uses the wrapper's
+        # default (0) from attach_fbcache() / attach_spectrum() / attach_style().
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None or style_cfg is not None:
             def _cb(pipe, step_index, timestep, callback_kwargs):
                 if progress_callback is not None:
                     try:
@@ -622,6 +784,8 @@ class LTX2Mixin:
                     fbcache_target._fbcache_step = step_index + 1
                 if spectrum_target is not None:
                     spectrum_target._spectrum_step = step_index + 1
+                if style_cfg is not None and style_target is not None:
+                    style_target._style_step_idx = step_index + 1
                 return callback_kwargs
             callback = _cb
         else:
@@ -652,6 +816,15 @@ class LTX2Mixin:
             if fbcache_target is not None:
                 print(f"[FBCache] LTX-2.3 summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
                 fbcache_target.attach_fbcache(None)
+            if style_saved_processors:
+                # Restore/patch-removal + context clear MUST run on exception too
+                # (finally), else style state leaks into the next generation --
+                # mirrors the FLUX.2 audit finding.
+                from core.inference.style_ltx2 import restore_ltx2_style_processors
+                if style_target is not None:
+                    style_target.attach_style(None, None, None, None)
+                restore_ltx2_style_processors(style_saved_processors)
+                print("[StyleLTX2] processors restored (generation complete)")
             if spectrum_target is not None:
                 v_stats = spectrum_video.stats()
                 print(f"[Spectrum] LTX-2.3 summary: {v_stats['anchors']} anchor(s), "

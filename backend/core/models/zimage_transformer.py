@@ -93,6 +93,14 @@ class ZImageAttention(nn.Module):
     # byte-identical. Set to a NegPipContext by the Z-Image denoising loop only while a prompt
     # with a negative emphasis weight is active. See core/inference/negpip_zimage.py.
     _negpip_ctx = None
+    # Training-free reference-style transfer (StyleAligned/VSP-style KV injection) context.
+    # None => style transfer off (default), forward is byte-identical. Set (per-instance, NOT
+    # class-level like NAG/NegPip above, because it needs a per-block store keyed by
+    # ``block_idx``) by ``ZImageTransformer2DModel._stamp_style_context`` only while a style
+    # reference is attached. See core/inference/reference_style.py and pipeline_backends/zimage.py
+    # (``ZImageMixin._zimage_style_step``).
+    _style_ctx = None
+    block_idx: Optional[int] = None
 
     def __init__(self, dim: int, n_heads: int, n_kv_heads: int, qk_norm: bool = True, eps: float = 1e-5):
         super().__init__()
@@ -140,6 +148,55 @@ class ZImageAttention(nn.Module):
         if freqs_cis is not None:
             query = apply_rotary_emb(query, freqs_cis)
             key = apply_rotary_emb(key, freqs_cis)
+
+        # --- Reference-style KV injection (training-free) ---
+        # OFF by default (_style_ctx is None) -- byte-identical forward. Must run strictly
+        # AFTER qk-RMSNorm and AFTER RoPE (mirrors Krea2Attention / FLUX.2's
+        # StyleConduitFlux2AttnProcessor): RMSNorm would erase pre-norm scaling, and RoPE must
+        # already be baked into K before it is stashed/injected (the rotary phase carries the
+        # token position; injecting pre-RoPE K would desync the reference's positions from the
+        # target's). Image tokens are the PREFIX of the unified [image; caption] sequence in
+        # Z-Image (img_start=0), unlike Krea2/FLUX.2 where they are the suffix after text --
+        # img_start/img_end are stamped once per forward by
+        # ZImageTransformer2DModel._stamp_style_context using x_item_seqlens[0] (same value the
+        # NAG/NegPip contexts use for "image_len").
+        style_ctx = self._style_ctx
+        if style_ctx is not None and self.block_idx is not None and style_ctx.active_for_block(self.block_idx):
+            img_start, img_end = style_ctx.img_start, style_ctx.img_end
+            if style_ctx.mode == "capture":
+                # Stash post-norm/post-RoPE image-token Q/K/V (Query captured too: target-Q's
+                # AdaIN alignment is stylized by the REFERENCE Query, not the reference Key).
+                style_ctx.store[self.block_idx] = (
+                    query[:, img_start:img_end].detach().clone(),
+                    key[:, img_start:img_end].detach().clone(),
+                    value[:, img_start:img_end].detach().clone(),
+                )
+            elif style_ctx.mode == "inject":
+                ref_qkv = style_ctx.store.get(self.block_idx)
+                if ref_qkv is not None:
+                    from core.inference.reference_style import inject_kv, make_ref_value
+
+                    ref_q, ref_k, ref_v = ref_qkv
+                    cfg = style_ctx.config
+                    if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
+                        freq_vec = cfg.get_freq_scale_vector(self.head_dim, style_ctx.progress, key.device, key.dtype)
+                        target_v_img = value[:, img_start:img_end]
+                        ref_v_final = make_ref_value(
+                            target_v_img, ref_v, cfg.value_mode, cfg.value_adain_strength, cfg.ref_value_mix
+                        )
+                        ref_len_before = key.shape[1]
+                        key, value, query = inject_kv(
+                            key, value, ref_k, ref_v_final, img_start, img_end,
+                            cfg.ref_k_strength, freq_vec, cfg.adain_strength, q=query, ref_q=ref_q,
+                        )
+                        # attention_mask arrives here as a 2D [B, S_k] bool mask (see
+                        # ``core.attention.backends._process_mask``, which reshapes it to
+                        # [B,1,1,S_k] internally) -- pad the trailing (key) axis to match the
+                        # newly-appended reference columns, mirroring Krea2Attention's 4D-mask pad.
+                        if attention_mask is not None and key.shape[1] != ref_len_before:
+                            ref_len = ref_k.shape[1]
+                            pad = attention_mask.new_ones(attention_mask.shape[0], ref_len)
+                            attention_mask = torch.cat([attention_mask, pad], dim=-1)
 
         dtype = query.dtype
         query, key = query.to(dtype), key.to(dtype)
@@ -692,6 +749,26 @@ class ZImageTransformer2DModel(nn.Module):
                 print(f"[Z-Image NegPip] Failed to install NegPip context: {_np_e}")
                 ZImageAttention._negpip_ctx = None
 
+        # Reference-style KV injection (training-free): install the per-forward
+        # StyleContext (set externally by the Z-Image denoising loop's ``_zimage_style_step``,
+        # ``None`` by default -> byte-identical) onto every main joint-layer attention module and
+        # its static ``block_idx``, and record this forward's image-token range. Image tokens are
+        # the PREFIX of the unified [image; caption] row (x_item_seqlens[0] long, identical across
+        # all groups since they all share the same image size), same as NAG/NegPip's "image_len"
+        # above. Only ``self.layers`` (joint image+caption attention) are touched -- the
+        # noise_refiner/context_refiner run BEFORE the unified sequence exists and are pure-image /
+        # pure-caption respectively, so a joint self-attention KV swap does not apply to them (same
+        # exclusion Krea2Attention applies to its text-fusion blocks). Mutually exclusive with
+        # FBCache at the generation level (enforced by the pipeline, not here) since a cache hit
+        # would skip layers[1:] and desync the per-block style store.
+        style_ctx = getattr(self, "_style_ctx", None)
+        if style_ctx is not None:
+            style_ctx.img_start = 0
+            style_ctx.img_end = x_item_seqlens[0]
+            for idx, layer in enumerate(self.layers):
+                layer.attention.block_idx = idx
+                layer.attention._style_ctx = style_ctx
+
         # First Block Cache (FBCache): OFF by default (_fbcache is None -> byte-identical).
         # When a FirstBlockCache is attached by the Z-Image denoising loop, run only the first
         # joint layer, take its residual as the indicator, and either reuse the cached full
@@ -744,6 +821,13 @@ class ZImageTransformer2DModel(nn.Module):
         # Clear the NegPip context so it never leaks into a subsequent non-NegPip forward.
         if negpip_installed:
             ZImageAttention._negpip_ctx = None
+        # Clear the style context (and its per-block stamping) so it never leaks into a
+        # subsequent non-style forward -- mirrors ``Krea2Transformer2DModel._stamp_style_context``
+        # being re-called with ``ctx=None`` for a disarmed generation.
+        if style_ctx is not None:
+            for layer in self.layers:
+                layer.attention._style_ctx = None
+                layer.attention.block_idx = None
 
         unified = self.all_final_layer[f"{patch_size}-{f_patch_size}"](unified, adaln_input)
         unified = list(unified.unbind(dim=0))

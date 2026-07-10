@@ -649,13 +649,29 @@ class ZImageMixin:
                     "vae": vae
                 })
 
+            # Training-free reference-style transfer setup (no-op / None when no style
+            # reference is attached -- byte-identical default path below). txt2img has no
+            # other VAE-encode stage (unlike img2img/inpaint), so the VAE is briefly staged
+            # to GPU here just to encode the reference, then offloaded again.
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                if not is_resident(self, "vae", _kh_model_key):
+                    move_zimage_vae_to_gpu(vae)
+                style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
+                    params, vae, height, width, torch.device(self.device), generator=generator
+                )
+                move_zimage_vae_to_cpu(vae)
+                print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
+                      f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
+
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
                 height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
                 generator, progress_callback, step_callback,
                 spectrum_params=params,
                 nag_negative_embeds_list=nag_negative_embeds_list,
-                nag_params=params
+                nag_params=params,
+                style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
             )
 
             # Offload Transformer to CPU to free VRAM for VAE (unless kept hot --
@@ -955,6 +971,18 @@ class ZImageMixin:
 
             print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
 
+            # Training-free reference-style transfer setup (no-op / None when no style
+            # reference is attached -- byte-identical default path below). VAE is already
+            # resident on GPU from the init-image encode above, so the reference encode
+            # piggybacks on it before the offload below.
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
+                    params, vae, height, width, torch.device(self.device), generator=generator
+                )
+                print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
+                      f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
+
             # Offload VAE to CPU after encoding
             move_zimage_vae_to_cpu(vae)
 
@@ -1060,7 +1088,8 @@ class ZImageMixin:
                 timesteps_override=timesteps_img2img,
                 spectrum_params=params,
                 nag_negative_embeds_list=nag_negative_embeds_list,
-                nag_params=params
+                nag_params=params,
+                style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
             )
 
             # Offload Transformer to CPU (unless kept hot -- only possible when
@@ -1370,6 +1399,18 @@ class ZImageMixin:
             print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
             print(f"[Z-Image] Mask latent shape: {mask_latent.shape}")
 
+            # Training-free reference-style transfer setup (no-op / None when no style
+            # reference is attached -- byte-identical default path below). VAE is already
+            # resident on GPU from the init-image encode above, so the reference encode
+            # piggybacks on it before the offload below.
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
+                    params, vae, height, width, torch.device(self.device), generator=generator
+                )
+                print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
+                      f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
+
             # Offload VAE to CPU after encoding
             move_zimage_vae_to_cpu(vae)
 
@@ -1478,7 +1519,8 @@ class ZImageMixin:
                 original_latents=original_latents,
                 spectrum_params=params,
                 nag_negative_embeds_list=nag_negative_embeds_list,
-                nag_params=params
+                nag_params=params,
+                style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
             )
 
             # Offload Transformer to CPU (unless kept hot -- only possible when
@@ -1751,6 +1793,168 @@ class ZImageMixin:
         generation_timer.add("text_encode", _time.perf_counter() - _t_phase)
         return prompt_embeds_list, negative_prompt_embeds_list, do_classifier_free_guidance
 
+    def _zimage_prepare_style_reference(self, vae, style_image, height: int, width: int,
+                                        device, generator=None):
+        """VAE-encode a style reference image to the SAME (non-packed) latent shape used by
+        the Z-Image denoising loop's own ``latents`` tensor -- ``(1, C, H_lat, W_lat)`` -- using
+        the identical encode path as img2img/inpaint's own init-image encoding (encoder ->
+        quant_conv -> mean/logvar reparameterize -> scaling_factor). Returns a float32 tensor
+        (the "clean" x0 reference latent, re-noised per-step by ``_zimage_style_step``)."""
+        import numpy as np
+        from PIL import Image as PILImage
+
+        if style_image.mode != "RGB":
+            style_image = style_image.convert("RGB")
+        if style_image.size != (width, height):
+            style_image = style_image.resize((width, height), PILImage.Resampling.LANCZOS)
+        image_array = np.array(style_image).astype(np.float32) / 255.0
+        image_tensor = torch.from_numpy(image_array).permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+        image_tensor = image_tensor * 2.0 - 1.0
+        image_tensor = image_tensor.to(device=device, dtype=vae.dtype)
+
+        with torch.no_grad():
+            h = vae.encoder(image_tensor)
+            if vae.quant_conv is not None:
+                h = vae.quant_conv(h)
+            mean, logvar = torch.chunk(h, 2, dim=1)
+            std = torch.exp(0.5 * logvar)
+            noise = torch.randn(mean.shape, dtype=mean.dtype, device=mean.device, generator=generator)
+            ref_x0 = mean + std * noise
+            if hasattr(vae, 'config') and hasattr(vae.config, 'scaling_factor'):
+                ref_x0 = ref_x0 * vae.config.scaling_factor
+            else:
+                ref_x0 = ref_x0 * 0.13025
+            del h, mean, logvar, std
+        return ref_x0.float()
+
+    def _zimage_style_config(self, params: Dict[str, Any], vae, height: int, width: int,
+                              device, generator=None):
+        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)`` when no
+        style reference is attached (byte-identical default path -- the caller never installs
+        ``transformer._style_ctx`` in that case).
+
+        ``axes_dims`` is filled in from ``core.models.zimage_transformer.ROPE_AXES_DIMS``,
+        Z-Image's RoPE axis split (t, h, w) = (32, 48, 48) -- the SAME axis layout Krea2 uses, so
+        the shared ``frequency_scale_vector`` real-valued per-head-dim scale curve applies
+        UNCHANGED even though Z-Image's RoPE is implemented via complex ``view_as_complex``
+        multiplication rather than Krea2's real cos/sin pairs: ``apply_rotary_emb`` here rotates
+        each adjacent-slot ``(2i, 2i+1)`` real pair by one complex frequency, and a uniform real
+        scale applied to a real-valued tensor AFTER that rotation is just a per-channel magnitude
+        scale -- it doesn't care whether the rotation was expressed as a 2x2 real matrix or a
+        complex multiply, only that both slots of a rotary pair get the SAME scale. The
+        ``repeat_interleave(2)`` pairing in ``frequency_scale_vector`` exactly matches Z-Image's
+        own ``view_as_complex(x.reshape(..., -1, 2))`` pairing (adjacent real slots), so no
+        ones-vector fallback is needed here (unlike architectures whose RoPE axis order can't be
+        cleanly recovered)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from diffusers.utils.torch_utils import randn_tensor
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.zimage_transformer import ROPE_AXES_DIMS
+
+        cfg = style_config_from_dict(style_dict)
+        cfg.axes_dims = tuple(ROPE_AXES_DIMS)
+
+        ref_x0 = self._zimage_prepare_style_reference(
+            vae, style_dict["image"], height, width, device, generator=generator
+        )
+
+        seed = params.get("seed", -1)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2 ** 32)
+        ref_generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+        eps_ref = randn_tensor(ref_x0.shape, generator=ref_generator, device=device, dtype=ref_x0.dtype)
+        return cfg, ref_x0, eps_ref
+
+    def _zimage_style_step(
+        self, transformer, style_cfg, style_ref_x0, style_eps_ref,
+        t, latents, prompt_embeds_list, negative_prompt_embeds_list,
+        apply_cfg: bool, guidance_scale: float, has_fp8_weights: bool,
+        step_idx: int, num_inference_steps: int,
+    ):
+        """One style-active denoise step for Z-Image: bypasses the batched
+        ``[negative; positive(; nag_negative)]`` CFG fast path entirely for this step (mirrors
+        FLUX.2's ``_flux2_style_step``, the closest architectural precedent for a training-free
+        style-transfer two-pass loop). A REF capture forward (the style reference re-noised to
+        the CURRENT sigma, using the SAME ``x_t = (1-sigma)*x0 + sigma*eps`` convention this
+        loop's own img2img/inpaint noising uses, ``sigma = t/1000``) stashes post-RoPE
+        image-token (PREFIX) Q/K/V per joint block; the COND forward then reads/injects them.
+        The UNCOND forward (when CFG is active) is ALWAYS run with the style context disarmed
+        (untouched), matching the Krea2/FLUX.2 wiring. NAG, NegPip and FBCache are bypassed for
+        this step -- mutually exclusive with style transfer (same reasoning as FLUX.2: FBCache
+        additionally needs full-generation-level exclusion since a cache hit skips layers[1:]
+        and would desync the per-block style store across steps -- enforced by the caller,
+        ``_zimage_denoising_loop``, disabling FBCache for the whole generation whenever style
+        transfer is requested). Block Swap still applies unchanged since the transformer's own
+        ``forward()`` layer loop (and its ``_block_offloader`` calls) runs exactly the same way
+        for these calls as for the normal batched path.
+
+        Returns the final signed noise_pred (``-model_output.squeeze(2)``, same convention the
+        non-style branch produces) ready for ``scheduler.step``.
+        """
+        from core.inference.reference_style import StyleContext
+
+        batch_size = len(prompt_embeds_list)
+        sigma_now = float(t.item()) / 1000.0
+        ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
+        progress = style_cfg.step_progress(step_idx, num_inference_steps)
+
+        input_dtype = torch.bfloat16 if has_fp8_weights else next(transformer.parameters()).dtype
+        timestep = t.expand(latents.shape[0]).to(input_dtype)
+        timestep = (1000 - timestep) / 1000
+
+        # Per-item lists: the reference image is IDENTICAL (same style ref) for every batch item,
+        # only the caption differs -- exactly how the target's own ``latents`` are shared across
+        # the pos/neg/nag groups in the normal batched path (repeat, not distinct content).
+        ref_item = ref_t[0].to(input_dtype).unsqueeze(1)  # (C, 1, H, W)
+        ref_list = [ref_item for _ in range(batch_size)]
+        latents_list = list(latents.to(input_dtype).unsqueeze(2).unbind(dim=0))
+
+        def _forward(x_list, cap_list):
+            with torch.no_grad():
+                if has_fp8_weights:
+                    with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                        return transformer(x_list, timestep, cap_list)[0]
+                return transformer(x_list, timestep, cap_list)[0]
+
+        try:
+            capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+            transformer._style_ctx = capture_ctx
+            _forward(ref_list, prompt_embeds_list)
+
+            inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+            transformer._style_ctx = inject_ctx
+            cond_out = _forward(latents_list, prompt_embeds_list)
+        finally:
+            transformer._style_ctx = None
+            # Defense-in-depth: if a style forward raised after stamping but before
+            # the transformer's own end-of-forward clear, the per-layer attention
+            # _style_ctx/block_idx would be left stale. With transformer._style_ctx
+            # now None a subsequent forward skips both stamping AND clearing, so a
+            # stale per-layer ctx could otherwise fire on a later (even style-off)
+            # generation. Clear the per-layer attention ctx here too.
+            for _layer in getattr(transformer, "layers", []):
+                _attn = getattr(_layer, "attention", None)
+                if _attn is not None:
+                    _attn._style_ctx = None
+                    _attn.block_idx = None
+
+        if apply_cfg:
+            uncond_out = _forward(latents_list, negative_prompt_embeds_list)
+            combined = []
+            for j in range(batch_size):
+                neg = uncond_out[j].float()
+                pos = cond_out[j].float()
+                combined.append(neg + guidance_scale * (pos - neg))
+            noise_pred = torch.stack(combined, dim=0)
+        else:
+            noise_pred = torch.stack([o.float() for o in cond_out], dim=0)
+
+        return -noise_pred.squeeze(2)
+
     def _zimage_denoising_loop(
         self, transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
         height, width, num_inference_steps, guidance_scale, do_classifier_free_guidance,
@@ -1761,7 +1965,10 @@ class ZImageMixin:
         original_latents: Optional[torch.Tensor] = None,
         spectrum_params: Optional[Dict[str, Any]] = None,
         nag_negative_embeds_list: Optional[List[torch.Tensor]] = None,
-        nag_params: Optional[Dict[str, Any]] = None
+        nag_params: Optional[Dict[str, Any]] = None,
+        style_cfg=None,
+        style_ref_x0: Optional[torch.Tensor] = None,
+        style_eps_ref: Optional[torch.Tensor] = None,
     ):
         """
         Stage 2: Denoising Loop for Z-Image
@@ -1868,11 +2075,19 @@ class ZImageMixin:
             from core.inference.spectrum_forecaster import build_output_forecaster
             spectrum = build_output_forecaster(spectrum_params, len(timesteps), label="Z-Image")
 
+        # Training-free reference-style transfer: active only when a style reference was
+        # attached (style_cfg is not None -- built by ``_zimage_style_config``, byte-identical
+        # no-op otherwise).
+        style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+
         # First Block Cache (FBCache): dynamic per-step residual reuse. Mutually exclusive with:
         #   (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
         #   (b) Block Swap -- a cache hit skips layers[1:], which would desync the block-swap
         #       rotation (the offloader expects every layer to run each step).
-        # FBCache runs only when BOTH are off. CFG is BATCHED here (one transformer forward per
+        #   (c) Style transfer -- a cache hit skips layers[1:], which would desync the per-block
+        #       style store (the style hook needs EVERY joint layer to run its capture+inject pair
+        #       every active step, and a cache hit would silently reuse a stale non-style residual).
+        # FBCache runs only when ALL THREE are off. CFG is BATCHED here (one transformer forward per
         # step over the whole [neg; pos(; nag)] batch), so a SINGLE FirstBlockCache instance is
         # correct: the first-block residual and cached full residual span the entire batch and the
         # same batch layout recurs every step.
@@ -1885,6 +2100,8 @@ class ZImageMixin:
                 print("[FBCache] Z-Image disabled: Spectrum is enabled (same redundancy target)")
             elif _fb_bs:
                 print("[FBCache] Z-Image disabled: Block Swap is enabled (layer skip desyncs rotation)")
+            elif style_active:
+                print("[FBCache] Z-Image disabled: Style transfer is enabled (layer skip desyncs the per-block style store)")
             else:
                 fbcache = build_fbcache(spectrum_params, label="Z-Image")
         # Ensure no stale cache leaks into this forward stream.
@@ -2005,9 +2222,24 @@ class ZImageMixin:
             # Apply CFG when guidance_scale is not 1.0 (consistent with SD/SDXL)
             apply_cfg = do_classifier_free_guidance and abs(current_guidance_scale - 1.0) > 1e-5
 
+            # Training-free reference-style transfer: bypasses the batched
+            # [negative;positive(;nag_negative)] CFG fast path (and Spectrum/NAG/NegPip/FBCache)
+            # entirely for this step -- see ``_zimage_style_step``'s docstring. Takes priority over
+            # Spectrum's skip-step forecast since a forecast has no attention to inject style into.
+            style_active_step = style_active and style_cfg.is_step_active(normalized_step, num_inference_steps)
+
             # Spectrum: forecast the post-CFG velocity on skip steps (skip transformer + CFG)
-            spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
-            if spectrum_skip:
+            spectrum_skip = not style_active_step and spectrum is not None and not spectrum.is_anchor(i)
+            if style_active_step:
+                noise_pred = self._zimage_style_step(
+                    transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    t, latents, prompt_embeds_list, negative_prompt_embeds_list,
+                    apply_cfg, current_guidance_scale, has_fp8_weights,
+                    normalized_step, num_inference_steps,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            elif spectrum_skip:
                 noise_pred = spectrum.forecast(i)
             else:
                 # Prepare model input (concat positive + negative if CFG)

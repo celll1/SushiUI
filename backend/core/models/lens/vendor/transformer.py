@@ -125,6 +125,14 @@ class LensEmbedRope(nn.Module):
         return freqs.clone().contiguous()
 
 class LensJointAttention(nn.Module):
+    # Training-free reference-style KV injection (see core.inference.reference_style).
+    # Both default to None at the class level: attention modules that are never
+    # stamped (i.e. every module, unless a style-active generation is running)
+    # take the byte-identical original code path -- mirrors Krea2Attention's
+    # ``_style_ctx``/``block_idx`` class-attr pattern.
+    _style_ctx = None
+    block_idx = None
+
     def __init__(self, query_dim, added_kv_proj_dim, dim_head=64, heads=8, out_dim=None, eps=1e-5):
         super().__init__()
         self.inner_dim = out_dim if out_dim is not None else dim_head * heads
@@ -172,11 +180,68 @@ class LensJointAttention(nn.Module):
             txt_freqs = txt_freqs[:seq_txt]
             txt_q = apply_rotary_emb_lens(txt_q, txt_freqs)
             txt_k = apply_rotary_emb_lens(txt_k, txt_freqs)
+
+        # Training-free reference-style KV injection (StyleAligned/VSP-style) --
+        # OFF by default (_style_ctx is None -> byte-identical, including the
+        # attention_mask path below since img_k/img_v/img_q are unchanged and no
+        # padding is ever appended). Must run strictly AFTER qk-RMSNorm and AFTER
+        # RoPE (same reasoning as Krea2Attention: RMSNorm would erase pre-norm
+        # scaling, and RoPE must already carry the token position before K is
+        # stashed/injected) and strictly BEFORE the img/txt concat below, since
+        # Lens's dual-stream projections keep the image tokens as their own BSHD
+        # tensor (img_q/img_k/img_v, [bsz, seq_img, heads, dim_head]) until this
+        # point -- there is no need to slice a combined stream by img_start/
+        # img_end the way Krea2/FLUX.2 do; the whole tensor IS the image region.
+        ctx = self._style_ctx
+        if ctx is not None and self.block_idx is not None and ctx.active_for_block(self.block_idx):
+            if ctx.mode == "capture":
+                ctx.store[self.block_idx] = (
+                    img_q.detach().clone(),
+                    img_k.detach().clone(),
+                    img_v.detach().clone(),
+                )
+            elif ctx.mode == "inject":
+                ref_qkv = ctx.store.get(self.block_idx)
+                if ref_qkv is not None:
+                    from core.inference.reference_style import inject_kv, make_ref_value
+
+                    ref_q, ref_k, ref_v = ref_qkv
+                    cfg = ctx.config
+                    if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
+                        freq_vec = cfg.get_freq_scale_vector(self.dim_head, ctx.progress, img_k.device, img_k.dtype)
+                        ref_v_final = make_ref_value(
+                            img_v, ref_v, cfg.value_mode, cfg.value_adain_strength, cfg.ref_value_mix
+                        )
+                        ref_len_before = img_k.shape[1]
+                        img_k, img_v, img_q = inject_kv(
+                            img_k, img_v, ref_k, ref_v_final, 0, ref_len_before,
+                            cfg.ref_k_strength, freq_vec, cfg.adain_strength, q=img_q, ref_q=ref_q,
+                        )
+                        if attention_mask is not None and img_k.shape[1] != ref_len_before:
+                            # Extra ref-K/V columns were appended to the IMAGE region --
+                            # pad the joint additive mask with unmasked (0.0) entries for
+                            # them, inserted at the same offset (right after the image
+                            # region, before text) so the later shape check (which now
+                            # compares against the ACTUAL post-cat key length, not the
+                            # pre-injection seq_img + seq_txt) lines up.
+                            extra = img_k.shape[1] - ref_len_before
+                            pad = attention_mask.new_zeros((attention_mask.shape[0], 1, 1, extra))
+                            attention_mask = torch.cat(
+                                [attention_mask[..., :seq_img], pad, attention_mask[..., seq_img:]], dim=-1
+                            )
+
         q = torch.cat([img_q, txt_q], dim=1).transpose(1, 2)
         k = torch.cat([img_k, txt_k], dim=1).transpose(1, 2)
         v = torch.cat([img_v, txt_v], dim=1).transpose(1, 2)
         if attention_mask is not None:
-            expected_mask_shape = (bsz, 1, 1, seq_img + seq_txt)
+            # Compares against the ACTUAL key sequence length (k.shape[2] -- k is
+            # already transposed to BHSD [bsz, heads, seq, dim_head] above, so the
+            # sequence axis is index 2, not 1) rather than the pre-injection
+            # seq_img + seq_txt, so that style-transfer's extra ref-K/V columns
+            # (appended to the image region above) don't trip this check --
+            # byte-identical to the original seq_img + seq_txt check whenever no
+            # style injection happened this block (the two are equal in that case).
+            expected_mask_shape = (bsz, 1, 1, k.shape[2])
             if attention_mask.shape != expected_mask_shape:
                 raise ValueError(f"attention_mask must have shape {expected_mask_shape}, got {tuple(attention_mask.shape)}.")
             attention_mask = attention_mask.to(q.dtype)
@@ -307,6 +372,28 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
     _skip_layerwise_casting_patterns = ["pos_embed", "norm"]
     _repeated_blocks = ["LensTransformerBlock"]
 
+    # Training-free reference-style transfer: set externally by the Lens denoise
+    # loop (core.models.lens.lens_pipeline_ops) to a core.inference.reference_style
+    # StyleContext ("capture" or "inject") for a style-active step, or left None
+    # (the class default) the rest of the time -- None means every attention
+    # module's ``_style_ctx`` stays None too (see ``_stamp_style_context``), so a
+    # generation without a style reference never touches this mechanism at all.
+    _style_ctx = None
+
+    def _stamp_style_context(self) -> None:
+        """Propagate ``self._style_ctx`` (and each block's static index) onto every
+        ``transformer_blocks[i].attn`` module. Cheap no-op assignment loop when
+        ``_style_ctx`` is None (the default), keeping the attention forward path
+        byte-identical. Unlike Krea2 (whose single main-block stack needs an
+        img_start/img_end range recorded on the context), Lens's dual-stream
+        attention already receives the image tokens as their own tensor -- the
+        image-token range is implicitly ``[0, seq_img)`` of THAT tensor, so
+        nothing needs to be recorded here beyond the context object and block_idx."""
+        ctx = self._style_ctx
+        for idx, block in enumerate(self.transformer_blocks):
+            block.attn.block_idx = idx
+            block.attn._style_ctx = ctx
+
     @register_to_config
     def __init__(self, patch_size=2, in_channels=128, out_channels=32, num_layers=48,
                  attention_head_dim=64, num_attention_heads=24, inner_dim=1536, enc_hidden_dim=2880,
@@ -360,6 +447,7 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         attention_mask = self._build_joint_attention_mask(encoder_hidden_states_mask, img_len)
         hidden_states = self.img_in(hidden_states)
         timestep = timestep.to(hidden_states.dtype)
+        self._stamp_style_context()
         if self.multi_layer_encoder_feature:
             normed = [self.txt_norm[i](encoder_hidden_states[i]) for i in range(len(self.selected_layer_index))]
             encoder_hidden_states = torch.cat(normed, dim=-1)

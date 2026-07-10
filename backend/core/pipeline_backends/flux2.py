@@ -594,6 +594,21 @@ class Flux2Mixin:
                     print(f"[FLUX.2] cleanup: block offloader teardown failed: {e}")
                 self._flux2_active_block_offloader = None
 
+            # Style-transfer attention processors: on the happy path these are already
+            # restored in the generate function's try body (which also clears this attr
+            # to None). If an exception fired mid-denoise, restore is skipped there, so
+            # this safety net catches it here -- otherwise the style-stamped processors
+            # would leak onto the persistent transformer and silently affect the NEXT
+            # generation (see style_flux2 module docstring).
+            style_saved = getattr(self, "_flux2_active_style_saved", None)
+            if style_saved:
+                try:
+                    from core.inference.style_flux2 import restore_flux2_style_processors
+                    restore_flux2_style_processors(style_saved)
+                except Exception as e:
+                    print(f"[FLUX.2] cleanup: style processor restore failed: {e}")
+                self._flux2_active_style_saved = None
+
             _kh_skip = set()
             if gen_succeeded:
                 if keep_te:
@@ -825,6 +840,23 @@ class Flux2Mixin:
             # precedence and ref_images is dropped for this generation when both
             # are requested.
             style_requested = bool((params.get("style_transfer") or {}).get("image"))
+            # Style transfer's attention hook only replaces Flux2AttnProcessor /
+            # ConduitFlux2AttnProcessor instances (see style_flux2 module docstring). If
+            # NAG or NegPip already swapped in their own processor/wrapper, style would
+            # silently no-op (its hook never sees the batch) while the NAG/NegPip machinery
+            # still ran -- so NAG/NegPip takes precedence and style is dropped explicitly.
+            if style_requested and (nag_active or negpip_active):
+                print("[FLUX.2] Style transfer requested: disabling (NAG/NegPip is active and "
+                      "takes precedence) for this generation -- the two features are mutually exclusive.")
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "FLUX.2 style transfer disabled: NAG/NegPip is active",
+                        code="style_disabled_by_nag_negpip",
+                    )
+                except Exception:
+                    pass
+                style_requested = False
             ref_images = params.get("ref_images", []) if not style_requested else []
             if style_requested and params.get("ref_images"):
                 print("[FLUX.2] Style transfer requested: ignoring ref_images (Image-Edit) "
@@ -997,14 +1029,30 @@ class Flux2Mixin:
 
             # First Block Cache (FBCache): dynamic per-step image-residual reuse. Mutually
             # exclusive with (a) Spectrum (same trajectory redundancy; combining compounds
-            # error) and (b) Block Swap (a cache hit skips the block loops -> desyncs the
-            # per-block swap rotation). Active only when BOTH are off. When active, we must
-            # route through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
-            # forward intercepts the dual+single block loops; the raw diffusers forward
-            # (fast path) does not. If NAG/NegPip already installed a wrapper above, reuse it.
-            fbcache = self._flux2_build_fbcache(
-                params, enable_block_swap and blocks_to_swap > 0
-            )
+            # error), (b) Block Swap (a cache hit skips the block loops -> desyncs the
+            # per-block swap rotation), and (c) style transfer (its capture-forward +
+            # inject_kv steps would run through the FBCache wrappers at the same step_idx,
+            # storing the REF pass's residual and corrupting the COND pass -- see
+            # core.inference.style_flux2). Active only when ALL of these are off. When
+            # active, we must route through the unified Flux2BlockSwapWrapper
+            # (offloader=None) so its custom forward intercepts the dual+single block
+            # loops; the raw diffusers forward (fast path) does not. If NAG/NegPip already
+            # installed a wrapper above, reuse it.
+            if style_requested:
+                print("[FLUX.2] FBCache disabled: style transfer is active (capture-forward cache pollution)")
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "FLUX.2 FBCache disabled: style transfer is active",
+                        code="style_disables_fbcache",
+                    )
+                except Exception:
+                    pass
+                fbcache = None
+            else:
+                fbcache = self._flux2_build_fbcache(
+                    params, enable_block_swap and blocks_to_swap > 0
+                )
             if fbcache is not None:
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
                 _unified = getattr(transformer_wrapper, "_unified", None)
@@ -1048,10 +1096,15 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Training-free reference-style transfer setup (no-op / None when no
-            # style reference is attached -- byte-identical default path below).
-            style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
-                params, transformer, height, width, self.device
-            )
+            # style reference is attached -- byte-identical default path below). Gated on
+            # style_requested, which the NAG/NegPip precedence check above may already have
+            # forced to False (see Stage 1.5).
+            if style_requested:
+                style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
+                    params, transformer, height, width, self.device
+                )
+            else:
+                style_cfg, style_ref_x0, style_eps_ref = None, None, None
             style_processors: List[Any] = []
             style_saved_processors: List[Any] = []
             if style_cfg is not None:
@@ -1062,13 +1115,32 @@ class Flux2Mixin:
                     transformer, style_canonical_backend, AttentionMode.INFERENCE
                 )
                 print(f"[FLUX.2] Style transfer active: {len(style_processors)} attention modules stamped")
+                # Stash for _flux2_cleanup's exception safety net (see Bug 1): if an
+                # exception fires mid-denoise, the happy-path restore below (in the try
+                # body) is skipped, and this attr tells cleanup to restore instead. On the
+                # happy path this is cleared back to None right after the in-try restore.
+                self._flux2_active_style_saved = style_saved_processors
 
             # Denoising loop
-            # Spectrum output-mode acceleration (forecast per-step model output)
+            # Spectrum output-mode acceleration (forecast per-step model output). Also
+            # yields to style transfer: Spectrum records the final noise_pred and skips
+            # transformer+CFG on forecast steps, which would starve the style-active steps
+            # of the REF/COND/UNCOND forwards _flux2_style_step depends on.
             spectrum = None
             if params.get("spectrum_enable", False):
-                from core.inference.spectrum_forecaster import build_output_forecaster
-                spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
+                if style_requested:
+                    print("[FLUX.2] Spectrum disabled: style transfer is active")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "FLUX.2 Spectrum disabled: style transfer is active",
+                            code="style_disables_spectrum",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    from core.inference.spectrum_forecaster import build_output_forecaster
+                    spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             total_steps = len(timesteps)
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
@@ -1261,6 +1333,10 @@ class Flux2Mixin:
             if style_saved_processors:
                 from core.inference.style_flux2 import restore_flux2_style_processors
                 restore_flux2_style_processors(style_saved_processors)
+                # Happy path: already restored above, so clear the exception-safety-net
+                # attr (set at install time) to make _flux2_cleanup's finally-block
+                # restore a no-op (see Bug 1 fix in _flux2_cleanup).
+                self._flux2_active_style_saved = None
             # Offload transformer to CPU (unless kept hot -- only possible when
             # block swap was NOT active this generation, see keep-hot setup above;
             # this is also transformer's keep-hot exit point, it is not touched
@@ -2056,6 +2132,23 @@ class Flux2Mixin:
             # precedence and ref_images is dropped for this generation when both
             # are requested.
             style_requested = bool((params.get("style_transfer") or {}).get("image"))
+            # Style transfer's attention hook only replaces Flux2AttnProcessor /
+            # ConduitFlux2AttnProcessor instances (see style_flux2 module docstring). If
+            # NAG or NegPip already swapped in their own processor/wrapper, style would
+            # silently no-op (its hook never sees the batch) while the NAG/NegPip machinery
+            # still ran -- so NAG/NegPip takes precedence and style is dropped explicitly.
+            if style_requested and (nag_active or negpip_active):
+                print("[FLUX.2] Style transfer requested: disabling (NAG/NegPip is active and "
+                      "takes precedence) for this generation -- the two features are mutually exclusive.")
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "FLUX.2 style transfer disabled: NAG/NegPip is active",
+                        code="style_disabled_by_nag_negpip",
+                    )
+                except Exception:
+                    pass
+                style_requested = False
             ref_images = params.get("ref_images", []) if not style_requested else []
             if style_requested and params.get("ref_images"):
                 print("[FLUX.2] Style transfer requested: ignoring ref_images (Image-Edit) "
@@ -2254,13 +2347,28 @@ class Flux2Mixin:
                     transformer_wrapper = negpip_wrapper
 
             # First Block Cache (FBCache): dynamic per-step image-residual reuse. Mutually
-            # exclusive with Spectrum and Block Swap (see _flux2_build_fbcache). When active,
-            # route through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
+            # exclusive with Spectrum and Block Swap (see _flux2_build_fbcache), and also with
+            # style transfer (its capture-forward + inject_kv steps would run through the
+            # FBCache wrappers at the same step_idx, storing the REF pass's residual and
+            # corrupting the COND pass -- see core.inference.style_flux2). When active, route
+            # through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
             # forward intercepts the dual+single block loops (the raw diffusers forward /
             # fast path does not). Reuse the NAG/NegPip wrapper if one was installed above.
-            fbcache = self._flux2_build_fbcache(
-                params, enable_block_swap and blocks_to_swap > 0
-            )
+            if style_requested:
+                print("[FLUX.2] FBCache disabled: style transfer is active (capture-forward cache pollution)")
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "FLUX.2 FBCache disabled: style transfer is active",
+                        code="style_disables_fbcache",
+                    )
+                except Exception:
+                    pass
+                fbcache = None
+            else:
+                fbcache = self._flux2_build_fbcache(
+                    params, enable_block_swap and blocks_to_swap > 0
+                )
             if fbcache is not None:
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
                 _unified = getattr(transformer_wrapper, "_unified", None)
@@ -2296,10 +2404,15 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Training-free reference-style transfer setup (no-op / None when no
-            # style reference is attached -- byte-identical default path below).
-            style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
-                params, transformer, height, width, self.device
-            )
+            # style reference is attached -- byte-identical default path below). Gated on
+            # style_requested, which the NAG/NegPip precedence check above may already have
+            # forced to False (see Stage 1.5).
+            if style_requested:
+                style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
+                    params, transformer, height, width, self.device
+                )
+            else:
+                style_cfg, style_ref_x0, style_eps_ref = None, None, None
             style_processors: List[Any] = []
             style_saved_processors: List[Any] = []
             if style_cfg is not None:
@@ -2310,12 +2423,31 @@ class Flux2Mixin:
                     transformer, style_canonical_backend, AttentionMode.INFERENCE
                 )
                 print(f"[FLUX.2] Style transfer active: {len(style_processors)} attention modules stamped")
+                # Stash for _flux2_cleanup's exception safety net (see Bug 1): if an
+                # exception fires mid-denoise, the happy-path restore below (in the try
+                # body) is skipped, and this attr tells cleanup to restore instead. On the
+                # happy path this is cleared back to None right after the in-try restore.
+                self._flux2_active_style_saved = style_saved_processors
 
-            # Spectrum output-mode acceleration (forecast per-step model output)
+            # Spectrum output-mode acceleration (forecast per-step model output). Also
+            # yields to style transfer: Spectrum records the final noise_pred and skips
+            # transformer+CFG on forecast steps, which would starve the style-active steps
+            # of the REF/COND/UNCOND forwards _flux2_style_step depends on.
             spectrum = None
             if params.get("spectrum_enable", False):
-                from core.inference.spectrum_forecaster import build_output_forecaster
-                spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
+                if style_requested:
+                    print("[FLUX.2] Spectrum disabled: style transfer is active")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "FLUX.2 Spectrum disabled: style transfer is active",
+                            code="style_disables_spectrum",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    from core.inference.spectrum_forecaster import build_output_forecaster
+                    spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             total_steps = len(timesteps)
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
@@ -2488,6 +2620,10 @@ class Flux2Mixin:
             if style_saved_processors:
                 from core.inference.style_flux2 import restore_flux2_style_processors
                 restore_flux2_style_processors(style_saved_processors)
+                # Happy path: already restored above, so clear the exception-safety-net
+                # attr (set at install time) to make _flux2_cleanup's finally-block
+                # restore a no-op (see Bug 1 fix in _flux2_cleanup).
+                self._flux2_active_style_saved = None
             # Offload transformer to CPU (unless kept hot -- only possible when
             # block swap was NOT active this generation; also transformer's
             # keep-hot exit point, it is not touched again in this generation).
@@ -2795,6 +2931,23 @@ class Flux2Mixin:
             # precedence and ref_images is dropped for this generation when both
             # are requested.
             style_requested = bool((params.get("style_transfer") or {}).get("image"))
+            # Style transfer's attention hook only replaces Flux2AttnProcessor /
+            # ConduitFlux2AttnProcessor instances (see style_flux2 module docstring). If
+            # NAG or NegPip already swapped in their own processor/wrapper, style would
+            # silently no-op (its hook never sees the batch) while the NAG/NegPip machinery
+            # still ran -- so NAG/NegPip takes precedence and style is dropped explicitly.
+            if style_requested and (nag_active or negpip_active):
+                print("[FLUX.2] Style transfer requested: disabling (NAG/NegPip is active and "
+                      "takes precedence) for this generation -- the two features are mutually exclusive.")
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "FLUX.2 style transfer disabled: NAG/NegPip is active",
+                        code="style_disabled_by_nag_negpip",
+                    )
+                except Exception:
+                    pass
+                style_requested = False
             ref_images = params.get("ref_images", []) if not style_requested else []
             if style_requested and params.get("ref_images"):
                 print("[FLUX.2] Style transfer requested: ignoring ref_images (Image-Edit) "
@@ -3014,13 +3167,28 @@ class Flux2Mixin:
                     transformer_wrapper = negpip_wrapper
 
             # First Block Cache (FBCache): dynamic per-step image-residual reuse. Mutually
-            # exclusive with Spectrum and Block Swap (see _flux2_build_fbcache). When active,
-            # route through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
+            # exclusive with Spectrum and Block Swap (see _flux2_build_fbcache), and also with
+            # style transfer (its capture-forward + inject_kv steps would run through the
+            # FBCache wrappers at the same step_idx, storing the REF pass's residual and
+            # corrupting the COND pass -- see core.inference.style_flux2). When active, route
+            # through the unified Flux2BlockSwapWrapper (offloader=None) so its custom
             # forward intercepts the dual+single block loops (the raw diffusers forward /
             # fast path does not). Reuse the NAG/NegPip wrapper if one was installed above.
-            fbcache = self._flux2_build_fbcache(
-                params, enable_block_swap and blocks_to_swap > 0
-            )
+            if style_requested:
+                print("[FLUX.2] FBCache disabled: style transfer is active (capture-forward cache pollution)")
+                try:
+                    from api.generation_status import add_warning
+                    add_warning(
+                        "FLUX.2 FBCache disabled: style transfer is active",
+                        code="style_disables_fbcache",
+                    )
+                except Exception:
+                    pass
+                fbcache = None
+            else:
+                fbcache = self._flux2_build_fbcache(
+                    params, enable_block_swap and blocks_to_swap > 0
+                )
             if fbcache is not None:
                 from core.models.flux2_block_swap_wrapper import Flux2BlockSwapWrapper
                 _unified = getattr(transformer_wrapper, "_unified", None)
@@ -3056,10 +3224,15 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Training-free reference-style transfer setup (no-op / None when no
-            # style reference is attached -- byte-identical default path below).
-            style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
-                params, transformer, height, width, self.device
-            )
+            # style reference is attached -- byte-identical default path below). Gated on
+            # style_requested, which the NAG/NegPip precedence check above may already have
+            # forced to False (see Stage 1.5).
+            if style_requested:
+                style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
+                    params, transformer, height, width, self.device
+                )
+            else:
+                style_cfg, style_ref_x0, style_eps_ref = None, None, None
             style_processors: List[Any] = []
             style_saved_processors: List[Any] = []
             if style_cfg is not None:
@@ -3070,12 +3243,31 @@ class Flux2Mixin:
                     transformer, style_canonical_backend, AttentionMode.INFERENCE
                 )
                 print(f"[FLUX.2] Style transfer active: {len(style_processors)} attention modules stamped")
+                # Stash for _flux2_cleanup's exception safety net (see Bug 1): if an
+                # exception fires mid-denoise, the happy-path restore below (in the try
+                # body) is skipped, and this attr tells cleanup to restore instead. On the
+                # happy path this is cleared back to None right after the in-try restore.
+                self._flux2_active_style_saved = style_saved_processors
 
-            # Spectrum output-mode acceleration (forecast per-step model output)
+            # Spectrum output-mode acceleration (forecast per-step model output). Also
+            # yields to style transfer: Spectrum records the final noise_pred and skips
+            # transformer+CFG on forecast steps, which would starve the style-active steps
+            # of the REF/COND/UNCOND forwards _flux2_style_step depends on.
             spectrum = None
             if params.get("spectrum_enable", False):
-                from core.inference.spectrum_forecaster import build_output_forecaster
-                spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
+                if style_requested:
+                    print("[FLUX.2] Spectrum disabled: style transfer is active")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "FLUX.2 Spectrum disabled: style transfer is active",
+                            code="style_disables_spectrum",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    from core.inference.spectrum_forecaster import build_output_forecaster
+                    spectrum = build_output_forecaster(params, len(timesteps), label="FLUX.2")
             total_steps = len(timesteps)
             for i, t in enumerate(timesteps):
                 if self.cancel_requested:
@@ -3261,6 +3453,10 @@ class Flux2Mixin:
             if style_saved_processors:
                 from core.inference.style_flux2 import restore_flux2_style_processors
                 restore_flux2_style_processors(style_saved_processors)
+                # Happy path: already restored above, so clear the exception-safety-net
+                # attr (set at install time) to make _flux2_cleanup's finally-block
+                # restore a no-op (see Bug 1 fix in _flux2_cleanup).
+                self._flux2_active_style_saved = None
             # Offload transformer to CPU (unless kept hot -- only possible when
             # block swap was NOT active this generation; also transformer's
             # keep-hot exit point, it is not touched again in this generation).

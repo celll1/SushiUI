@@ -150,6 +150,16 @@ export interface ControlNetConfig {
   is_reference_guide?: boolean;
   preprocessor?: string;
   enable_preprocessor: boolean;
+  is_style_transfer?: boolean;
+  style_adain_strength?: number;
+  style_blocks?: string;
+  style_low_scale_end?: number;
+  style_high_scale?: number;
+  style_beta?: number;
+  style_value_mode?: string;
+  style_ref_value_mix?: number;
+  style_late_release?: number;
+  style_rope_offset?: boolean;
 }
 
 export interface GenerationParams {

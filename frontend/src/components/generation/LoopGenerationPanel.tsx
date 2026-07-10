@@ -70,6 +70,16 @@ export interface LoopGenerationStep {
     is_reference_guide?: boolean;
     preprocessor?: string;
     enable_preprocessor: boolean;
+    is_style_transfer?: boolean;
+    style_adain_strength?: number;
+    style_blocks?: string;
+    style_low_scale_end?: number;
+    style_high_scale?: number;
+    style_beta?: number;
+    style_value_mode?: string;
+    style_ref_value_mix?: number;
+    style_late_release?: number;
+    style_rope_offset?: boolean;
   }>;
 
   // Inpaint specific
@@ -845,6 +855,16 @@ export default function LoopGenerationPanel({
                         is_reference_guide: cn.is_reference_guide,
                         preprocessor: cn.preprocessor,
                         enable_preprocessor: cn.enable_preprocessor,
+                        is_style_transfer: cn.is_style_transfer,
+                        style_adain_strength: cn.style_adain_strength,
+                        style_blocks: cn.style_blocks,
+                        style_low_scale_end: cn.style_low_scale_end,
+                        style_high_scale: cn.style_high_scale,
+                        style_beta: cn.style_beta,
+                        style_value_mode: cn.style_value_mode,
+                        style_ref_value_mix: cn.style_ref_value_mix,
+                        style_late_release: cn.style_late_release,
+                        style_rope_offset: cn.style_rope_offset,
                       }))}
                       onChange={(controlnets) => {
                         // Map ControlNets from selector and preserve useLoopImage flag by model_path

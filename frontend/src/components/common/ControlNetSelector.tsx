@@ -33,6 +33,16 @@ export interface ControlNetConfig {
   is_reference_guide?: boolean;
   preprocessor?: string;
   enable_preprocessor: boolean;
+  is_style_transfer?: boolean;
+  style_adain_strength?: number;
+  style_blocks?: string;
+  style_low_scale_end?: number;
+  style_high_scale?: number;
+  style_beta?: number;
+  style_value_mode?: string;
+  style_ref_value_mix?: number;
+  style_late_release?: number;
+  style_rope_offset?: boolean;
 }
 
 interface ControlNetSelectorProps {
@@ -372,6 +382,21 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
     notifyChange([...value, newRefGuide]);
   };
 
+  const addStyleTransfer = () => {
+    const newStyleTransfer: ControlNetConfig = {
+      model_path: "__style_transfer__",
+      strength: 1.06,
+      start_step: 0,
+      end_step: 1000,
+      is_lllite: false,
+      is_style_transfer: true,
+      enable_preprocessor: false,
+      style_adain_strength: 0.85,
+      style_blocks: "7-27",
+    };
+    notifyChange([...value, newStyleTransfer]);
+  };
+
   const removeControlNet = async (index: number) => {
     // Delete the image reference before removing the ControlNet
     await deleteImageReference(index);
@@ -601,6 +626,12 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                       Reference Guide
                     </span>
                   </div>
+                ) : cn.is_style_transfer ? (
+                  <div className="mt-1">
+                    <span className="inline-block text-xs px-2 py-0.5 rounded bg-purple-700 text-purple-100">
+                      Style Transfer
+                    </span>
+                  </div>
                 ) : (
                 <>
                 <select
@@ -815,7 +846,7 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
               <div className="space-y-3">
 
                 <Slider
-                  label="Strength"
+                  label={cn.is_style_transfer ? "Style Strength" : "Strength"}
                   min={cn.is_reference_guide ? -2 : 0}
                   max={2}
                   step={0.05}
@@ -837,8 +868,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                   disabled={disabled}
                 />
 
-                {/* U-Net Block Weights - hidden for Reference Guide */}
-                {!cn.is_reference_guide && (
+                {/* U-Net Block Weights - hidden for Reference Guide / Style Transfer */}
+                {!cn.is_reference_guide && !cn.is_style_transfer && (
                 <div>
                   <label className="block text-sm font-medium text-gray-300 mb-2">
                     U-Net Block Weights
@@ -853,11 +884,39 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                   />
                 </div>
                 )}
+
+                {/* Style Transfer specific controls */}
+                {cn.is_style_transfer && (
+                  <>
+                    <Slider
+                      label="AdaIN Strength"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={cn.style_adain_strength ?? 0.85}
+                      onChange={(e) => updateControlNet(index, { style_adain_strength: parseFloat(e.target.value) })}
+                      disabled={disabled}
+                    />
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300 mb-1">
+                        Style Blocks
+                      </label>
+                      <input
+                        type="text"
+                        value={cn.style_blocks ?? "7-27"}
+                        onChange={(e) => updateControlNet(index, { style_blocks: e.target.value })}
+                        disabled={disabled}
+                        placeholder="e.g. 7-27"
+                        className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
-            {/* Preprocessor Settings - hidden for Reference Guide */}
-            {cn.is_reference_guide ? null :
+            {/* Preprocessor Settings - hidden for Reference Guide / Style Transfer */}
+            {(cn.is_reference_guide || cn.is_style_transfer) ? null :
             <div className="mt-3 p-3 bg-gray-700 rounded-lg">
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 Preprocessor
@@ -1008,8 +1067,8 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
             </div>
             }
 
-            {/* Optional Prompt for this ControlNet - hidden for Reference Guide */}
-            {!cn.is_reference_guide &&
+            {/* Optional Prompt for this ControlNet - hidden for Reference Guide / Style Transfer */}
+            {!cn.is_reference_guide && !cn.is_style_transfer &&
             <div className="mt-3">
               <label className="block text-sm font-medium text-gray-300 mb-1">
                 Optional Prompt (for this ControlNet only)
@@ -1044,6 +1103,14 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
             className="flex-1"
           >
             + Reference Guide
+          </Button>
+          <Button
+            onClick={addStyleTransfer}
+            disabled={disabled}
+            variant="secondary"
+            className="flex-1"
+          >
+            + Style Transfer
           </Button>
         </div>
       </div>

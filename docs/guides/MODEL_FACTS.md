@@ -76,6 +76,53 @@ reused verbatim by SD1.5/SDXL (`pipeline.py`) and all 7 DiT image archs
   strand the transformer on GPU); this brings them in line with the other
   archs, which already offloaded in a `finally`-guarded cleanup.
 
+## Style transfer: training-free reference-image KV-injection (opt-in, off by default)
+
+Reference-image style transfer (StyleAligned / Visual-Style-Prompting family):
+a style reference image is VAE-encoded and forward-noised to each active
+denoise step's sigma, run through the transformer once to CAPTURE the
+post-norm/post-RoPE image-token Key/Value (and Query, where wired) per
+attention block, then the target's conditional forward INJECTS the
+(frequency-scaled + AdaIN-aligned) reference K/V onto its own image-token K/V
+before attention. No weights change, no LoRA, no training; the UNCOND branch
+is untouched. Default OFF (no reference image selected) is byte-identical to
+a generation without style transfer.
+
+- **Arch-agnostic core**: `backend/core/inference/reference_style.py` —
+  `StyleTransferConfig`, `inject_kv`, `cross_batch_adain_qk`, `make_ref_value`,
+  `frequency_scale_vector`, `StyleContext`. Ports the community
+  `ComfyUI-Krea2-StyleTransfer` reference node's math verbatim; per-arch
+  wiring lives outside this module (where to hook, how to slice the
+  image-token region, how to build the reference forward's position ids).
+- **Krea2**: `backend/core/models/krea2/vendor/transformer.py` (attention
+  hook) + `backend/core/pipeline_backends/krea2.py` (`krea2_pipeline_ops.py`
+  capture/inject orchestration). RoPE present (`axes_dims_rope`), so
+  `frequency_scale_vector`'s frequency-content suppression applies.
+- **SD1.5 / SDXL**: `backend/core/inference/attention_processors.py`
+  (`UnifiedAttnProcessor`, both backends' attention layers) +
+  `backend/core/inference/custom_sampling.py` +  `backend/core/pipeline.py`.
+  The U-Net has no RoPE, so the frequency-scale vector degenerates to a
+  ones-vector and StyleAligned's original self-attention-layer selection is
+  used instead of a RoPE axis split.
+- **FLUX.2**: `backend/core/inference/style_flux2.py` +
+  `backend/core/pipeline_backends/flux2.py`. Injects in both the dual-stream
+  blocks (`transformer.transformer_blocks`) and the single-stream blocks
+  (`transformer.single_transformer_blocks`). Style transfer is mutually
+  exclusive with FLUX.2 Image-Edit `ref_images` conditioning and with
+  NAG/NegPip (style wins when both are requested).
+- **All 3 generation modes** (txt2img/img2img/inpaint) are wired for every
+  arch above.
+- **Frontend**: a "+ Style Transfer" sub-mode of the shared
+  `ControlNetSelector` component (`frontend/src/components/common/ControlNetSelector.tsx`),
+  sibling to the existing "+ Reference Guide" sub-mode; entries carry
+  `is_style_transfer: true` inside the same `controlnets[]` array (keeps the
+  reference-image upload path) and expose Style Strength (`ref_k_strength`),
+  AdaIN strength (`style_adain_strength`/`adain_strength`), block range, and
+  a 0-1000 step range (same convention as LoRA step gating).
+- **Knobs not yet exposed in the UI** (carried at their reference-node
+  defaults in `StyleTransferConfig`): `value_mode`, `ref_value_mix`,
+  multi-reference support, `late_release`, `rope_offset`.
+
 ## Row-level notes
 
 - **sd15** — Simplest U-Net path. Detection falls through to sd15 when nothing else

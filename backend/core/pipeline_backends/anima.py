@@ -382,6 +382,44 @@ class AnimaMixin:
             self.current_attention_type = backend
         anima_attention.set_attention_backend(backend)
 
+    def _anima_style_config(self, params: Dict[str, Any], width: int, height: int, device):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None,
+        None)`` when no style reference is attached.
+
+        ``axes_dims`` is intentionally left UNSET (``None``): Anima's 3D video
+        RoPE (``apply_rotary_pos_emb(..., interleaved=False)``) uses the
+        "rotate-half" convention, not the per-axis interleave-real layout that
+        ``reference_style.frequency_scale_vector`` assumes (Krea2/FLUX-style).
+        Deriving a correct per-axis frequency-suppression curve for Anima's
+        RoPE layout is a separate adaptation; until then the attention hook
+        (``anima_models.Attention.forward``) uses an all-ones frequency vector
+        instead of calling ``cfg.get_freq_scale_vector`` -- this only disables
+        the RoPE-frequency-content suppression (a quality knob), NOT the
+        ``ref_k_strength`` scale or AdaIN alignment, which still apply in full.
+
+        ``width``/``height`` must be the TARGET generation's already-snapped
+        resolution (not the style image's own size) so the encoded reference
+        latent aligns token-for-token with the target latent grid at every
+        denoise step.
+        """
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.anima.anima_pipeline_ops import prepare_style_reference
+
+        cfg = style_config_from_dict(style_dict)
+
+        seed = params.get("seed", -1)
+        ref_x0, eps_ref = prepare_style_reference(
+            self.anima_components["vae"], style_dict["image"], height, width,
+            device=device, dtype=torch.bfloat16, seed=seed,
+        )
+        return cfg, ref_x0, eps_ref
+
     def _generate_txt2img_anima(self, params: Dict[str, Any],
                                  progress_callback=None, step_callback=None
                                  ) -> tuple[Image.Image, int, int]:
@@ -540,6 +578,19 @@ class AnimaMixin:
             # Restore only the NegPip wrappers we actually created (cond_driver
             # differs from base_cond only when a NegPip cond wrapper was built).
             negpip_cond = cond_driver if cond_driver is not base_cond else None
+
+            # Training-free reference-style transfer. OFF by default
+            # (style_transfer absent -> (None, None, None), no-op below).
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                if not is_resident(self, "vae", _kh_model_key):
+                    self._anima_move("vae", device)
+                style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+                self._anima_move("vae", "cpu")
+                discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             try:
                 latents = sample_txt2img(
                     transformer=transformer, scheduler=scheduler,
@@ -549,6 +600,7 @@ class AnimaMixin:
                     guidance_scale=guidance_scale,
                     generator=generator, device=device, dtype=compute_dtype,
                     step_callback=(progress_callback or step_callback),
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
                     nag_transformer=cond_driver if cond_driver is not transformer else None,
@@ -795,6 +847,19 @@ class AnimaMixin:
                     t5_tokenizer, device, compute_dtype,
                 )
             negpip_cond = cond_driver if cond_driver is not base_cond else None
+
+            # Training-free reference-style transfer. OFF by default
+            # (style_transfer absent -> (None, None, None), no-op below).
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                if not is_resident(self, "vae", _kh_model_key):
+                    self._anima_move("vae", device)
+                style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+                self._anima_move("vae", "cpu")
+                discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             try:
                 latents = sample_img2img(
                     transformer=transformer, scheduler=scheduler,
@@ -805,6 +870,7 @@ class AnimaMixin:
                     guidance_scale=guidance_scale,
                     generator=generator, device=device, dtype=compute_dtype,
                     step_callback=(progress_callback or step_callback),
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
                     nag_transformer=cond_driver if cond_driver is not transformer else None,
@@ -1060,6 +1126,19 @@ class AnimaMixin:
                     t5_tokenizer, device, compute_dtype,
                 )
             negpip_cond = cond_driver if cond_driver is not base_cond else None
+
+            # Training-free reference-style transfer. OFF by default
+            # (style_transfer absent -> (None, None, None), no-op below).
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                if not is_resident(self, "vae", _kh_model_key):
+                    self._anima_move("vae", device)
+                style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+                self._anima_move("vae", "cpu")
+                discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             try:
                 latents = sample_inpaint(
                     transformer=transformer, scheduler=scheduler,
@@ -1070,6 +1149,7 @@ class AnimaMixin:
                     guidance_scale=guidance_scale,
                     generator=generator, device=device, dtype=compute_dtype,
                     step_callback=(progress_callback or step_callback),
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
                     nag_transformer=cond_driver if cond_driver is not transformer else None,

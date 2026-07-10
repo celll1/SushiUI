@@ -349,6 +349,27 @@ def vae_encode_image(vae, image: Image.Image, device: str, dtype: torch.dtype) -
 
 
 @torch.no_grad()
+def prepare_style_reference(
+    vae, style_image: Image.Image, height: int, width: int, device: str,
+    dtype: torch.dtype, seed: Optional[int] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """VAE-encode the style reference image to the SAME normalized-latent shape
+    as the target generation (B=1, C=16, T=1, H/8, W/8), and draw the ONE fixed
+    reference noise tensor used for every step's re-noising (drawing fresh
+    noise per step would make the reference K/V flicker step to step). Uses a
+    seed offset from the main generation seed so the reference noise is
+    decorrelated from the target's own init noise but still reproducible
+    (mirrors Krea2's ``prepare_style_reference``)."""
+    if style_image.size != (width, height):
+        style_image = style_image.resize((width, height), Image.LANCZOS)
+    ref_x0 = vae_encode_image(vae, style_image, device, dtype)
+    ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+    generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+    eps_ref = torch.randn(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
+    return ref_x0, eps_ref
+
+
+@torch.no_grad()
 @time_phase("vae_decode")
 def vae_decode_latents(vae, latents: torch.Tensor, color_flatten_strength: int = 0) -> List[Image.Image]:
     """Decode normalized (B, 16, 1, H/8, W/8) latents to PIL images.
@@ -454,6 +475,47 @@ def _apply_advanced_cfg(
     return v, cfg_now, cfg_metrics
 
 
+def _anima_style_capture(
+    real_transformer, style_cfg, style_ref_x0: torch.Tensor, style_eps_ref: torch.Tensor,
+    sigma_now_f: float, progress: float, cond_embeds: Dict[str, torch.Tensor],
+    padding_mask: torch.Tensor, timestep_batch: torch.Tensor, dtype: torch.dtype,
+):
+    """Re-noise the (fixed) style reference latent to the CURRENT sigma using
+    Anima's own noising convention (``x_t = (1-sigma)*x0 + sigma*eps``,
+    identical to ``AnimaFlowMatchScheduler.scale_noise``), run a capture
+    forward on the RAW transformer (bypassing any NAG/NegPip wrapper --
+    self-attention runs before cross-attention within each block, so a
+    wrapper's cross-attention changes cannot affect the captured
+    self-attention Q/K/V) using the TARGET's own positive prompt embeds, and
+    return the populated capture ``StyleContext``."""
+    from core.inference.reference_style import StyleContext
+
+    ref_t = (1.0 - sigma_now_f) * style_ref_x0 + sigma_now_f * style_eps_ref
+    capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+    # Disarm FBCache for the capture forward: the cond FBCache (_fbcache /
+    # _fbcache_step) is still set from the enclosing step, and a capture forward
+    # would otherwise store the STYLE reference's first-block residual into it,
+    # causing the subsequent real cond pass to compare against (or reuse) the
+    # style ref's residual -> silent output corruption when FBCache/TeaCache and
+    # style transfer are both enabled. Save/clear/restore around the extra forward.
+    saved_fbcache = getattr(real_transformer, "_fbcache", None)
+    real_transformer._fbcache = None
+    real_transformer._style_ctx = capture_ctx
+    try:
+        real_transformer(
+            x=ref_t.to(dtype),
+            timesteps=timestep_batch,
+            context=cond_embeds["prompt_embeds"],
+            padding_mask=padding_mask,
+            target_input_ids=cond_embeds["t5_input_ids"],
+            target_attention_mask=cond_embeds["t5_attn_mask"],
+            source_attention_mask=cond_embeds["source_mask"],
+        )
+    finally:
+        real_transformer._fbcache = saved_fbcache
+    return capture_ctx
+
+
 @torch.no_grad()
 @time_phase("denoise")
 def sample_txt2img(
@@ -473,9 +535,23 @@ def sample_txt2img(
     spectrum_params=None,
     nag_transformer=None,
     negpip_uncond_transformer=None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Run the Rectified-Flow Euler denoising loop and return latents
     of shape [1, 16, 1, H/8, W/8].
+
+    Training-free reference-style transfer (``style_cfg`` is a
+    ``core.inference.reference_style.StyleTransferConfig``, non-None only when
+    a style reference is attached): per active step, does a REF capture
+    forward (the RAW transformer run on the style reference re-noised to this
+    step's sigma, using the TARGET's own positive prompt embeds) to stash
+    post-RoPE image-token Q/K/V per block, then the conditional forward reads/
+    injects them. The unconditional forward is always run with no style
+    context (untouched). ``style_eps_ref`` is drawn ONCE per generation by the
+    caller (not per step) -- re-noising with fresh noise each step would make
+    the reference K/V flicker step to step.
 
     ``nag_transformer`` (optional): when supplied, the CONDITIONAL forward pass
     is routed through it (an ``AnimaNAGWrapper`` and/or ``AnimaNegPipWrapper``)
@@ -513,6 +589,7 @@ def sample_txt2img(
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
     sp_i = -1
     for i in range(num_inference_steps):
         sp_i += 1
@@ -527,11 +604,30 @@ def sample_txt2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
+            sigma_now_f = float(scheduler.sigmas[i].item())
+
             # FBCache: select the cond instance + current step for the conditional pass
             # (mirrors how _block_offloader is attached; None -> forward unchanged).
             if fbcache_cond is not None:
                 real_transformer._fbcache = fbcache_cond
                 real_transformer._fbcache_step = i
+
+            # Training-free reference-style transfer: capture the style
+            # reference's self-attention K/V at this step's sigma, then let
+            # the conditional pass read/inject them.
+            if style_active and style_cfg.is_step_active(sp_i, num_inference_steps):
+                progress = style_cfg.step_progress(sp_i, num_inference_steps)
+                capture_ctx = _anima_style_capture(
+                    real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    sigma_now_f, progress, cond_embeds, padding_mask, timestep_batch, dtype,
+                )
+                from core.inference.reference_style import StyleContext
+                real_transformer._style_ctx = StyleContext(
+                    mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress,
+                )
+            elif style_active:
+                real_transformer._style_ctx = None
+
             v_cond = cond_transformer(
                 x=latents,
                 timesteps=timestep_batch,
@@ -541,6 +637,10 @@ def sample_txt2img(
                 target_attention_mask=cond_embeds["t5_attn_mask"],
                 source_attention_mask=cond_embeds["source_mask"],
             )
+
+            if style_active:
+                # Unconditional pass is always run with no style context.
+                real_transformer._style_ctx = None
 
             if do_cfg:
                 # FBCache: switch to the uncond instance for the unconditional pass.
@@ -559,7 +659,6 @@ def sample_txt2img(
             else:
                 v_uncond = None
 
-            sigma_now_f = float(scheduler.sigmas[i].item())
             sigma_max_f = float(scheduler.sigmas[0].item())
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
@@ -581,6 +680,8 @@ def sample_txt2img(
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
+    if hasattr(real_transformer, "_style_ctx"):
+        real_transformer._style_ctx = None
     _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond)
     return latents
 
@@ -604,6 +705,9 @@ def sample_img2img(
     spectrum_params=None,
     nag_transformer=None,
     negpip_uncond_transformer=None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """img2img: start from `init_latents` partially noised. Returns final latents.
 
@@ -612,6 +716,11 @@ def sample_img2img(
     tokens). None => unchanged path.
     ``negpip_uncond_transformer`` (optional): routes the UNCONDITIONAL pass
     through an ``AnimaNegPipWrapper`` (negative prompt's signed V weights).
+
+    ``style_cfg``/``style_ref_x0``/``style_eps_ref`` (optional): training-free
+    reference-style transfer -- see ``sample_txt2img``'s docstring. Step
+    indexing uses the RELATIVE index within this (possibly trimmed by
+    ``denoising_strength``) trajectory, matching ``spectrum``'s ``sp_i``.
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
@@ -640,6 +749,8 @@ def sample_img2img(
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    total_style_steps = num_inference_steps - start_step
     sp_i = -1
     for i in range(start_step, num_inference_steps):
         sp_i += 1
@@ -653,9 +764,26 @@ def sample_img2img(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
+            sigma_now_f = float(scheduler.sigmas[i].item())
+
             if fbcache_cond is not None:
                 real_transformer._fbcache = fbcache_cond
                 real_transformer._fbcache_step = i
+
+            # Training-free reference-style transfer (see sample_txt2img).
+            if style_active and style_cfg.is_step_active(sp_i, total_style_steps):
+                progress = style_cfg.step_progress(sp_i, total_style_steps)
+                capture_ctx = _anima_style_capture(
+                    real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    sigma_now_f, progress, cond_embeds, padding_mask, timestep_batch, dtype,
+                )
+                from core.inference.reference_style import StyleContext
+                real_transformer._style_ctx = StyleContext(
+                    mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress,
+                )
+            elif style_active:
+                real_transformer._style_ctx = None
+
             v_cond = cond_transformer(
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
@@ -663,6 +791,10 @@ def sample_img2img(
                 target_attention_mask=cond_embeds["t5_attn_mask"],
                 source_attention_mask=cond_embeds["source_mask"],
             )
+
+            if style_active:
+                real_transformer._style_ctx = None
+
             if do_cfg:
                 if fbcache_uncond is not None:
                     real_transformer._fbcache = fbcache_uncond
@@ -677,7 +809,6 @@ def sample_img2img(
             else:
                 v_uncond = None
 
-            sigma_now_f = float(scheduler.sigmas[i].item())
             sigma_max_f = float(scheduler.sigmas[0].item())
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
@@ -697,6 +828,8 @@ def sample_img2img(
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
+    if hasattr(real_transformer, "_style_ctx"):
+        real_transformer._style_ctx = None
     _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond)
 
     return latents
@@ -722,6 +855,9 @@ def sample_inpaint(
     spectrum_params=None,
     nag_transformer=None,
     negpip_uncond_transformer=None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Latent-space inpainting via per-step blending.
 
@@ -733,6 +869,9 @@ def sample_inpaint(
     tokens). None => unchanged path.
     ``negpip_uncond_transformer`` (optional): routes the UNCONDITIONAL pass
     through an ``AnimaNegPipWrapper`` (negative prompt's signed V weights).
+
+    ``style_cfg``/``style_ref_x0``/``style_eps_ref`` (optional): training-free
+    reference-style transfer -- see ``sample_txt2img``'s docstring.
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
@@ -767,6 +906,8 @@ def sample_inpaint(
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    total_style_steps = num_inference_steps - start_step
     sp_i = -1
     for i in range(start_step, num_inference_steps):
         sp_i += 1
@@ -780,9 +921,26 @@ def sample_inpaint(
             v = spectrum.forecast(sp_i)
             cfg_metrics = None
         else:
+            sigma_now_f = float(scheduler.sigmas[i].item())
+
             if fbcache_cond is not None:
                 real_transformer._fbcache = fbcache_cond
                 real_transformer._fbcache_step = i
+
+            # Training-free reference-style transfer (see sample_txt2img).
+            if style_active and style_cfg.is_step_active(sp_i, total_style_steps):
+                progress = style_cfg.step_progress(sp_i, total_style_steps)
+                capture_ctx = _anima_style_capture(
+                    real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    sigma_now_f, progress, cond_embeds, padding_mask, timestep_batch, dtype,
+                )
+                from core.inference.reference_style import StyleContext
+                real_transformer._style_ctx = StyleContext(
+                    mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress,
+                )
+            elif style_active:
+                real_transformer._style_ctx = None
+
             v_cond = cond_transformer(
                 x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
                 padding_mask=padding_mask,
@@ -790,6 +948,10 @@ def sample_inpaint(
                 target_attention_mask=cond_embeds["t5_attn_mask"],
                 source_attention_mask=cond_embeds["source_mask"],
             )
+
+            if style_active:
+                real_transformer._style_ctx = None
+
             if do_cfg:
                 if fbcache_uncond is not None:
                     real_transformer._fbcache = fbcache_uncond
@@ -804,7 +966,6 @@ def sample_inpaint(
             else:
                 v_uncond = None
 
-            sigma_now_f = float(scheduler.sigmas[i].item())
             sigma_max_f = float(scheduler.sigmas[0].item())
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
@@ -836,6 +997,8 @@ def sample_inpaint(
             except Exception as e:
                 print(f"[Anima] step_callback raised: {e}")
 
+    if hasattr(real_transformer, "_style_ctx"):
+        real_transformer._style_ctx = None
     _cleanup_anima_fbcache(real_transformer, fbcache_cond, fbcache_uncond)
     return latents
 

@@ -600,6 +600,92 @@ def _dual_branch_velocity(
 
 
 # ---------------------------------------------------------------------------
+# Training-free reference-style transfer (StyleAligned/VSP-style KV injection)
+# ---------------------------------------------------------------------------
+
+def _ideogram4_style_step(
+    transformer,
+    unconditional_transformer,
+    style_cfg,
+    style_ref_x0: torch.Tensor,
+    style_eps_ref: torch.Tensor,
+    style_processors: List[Any],
+    step_idx: int,
+    total_steps: int,
+    t,
+    latents: torch.Tensor,
+    cond: Dict[str, Any],
+    gw_i: float,
+    sigma_t: float,
+    num_train_timesteps: int,
+    advanced_cfg: Optional[Dict[str, Any]],
+) -> Tuple[torch.Tensor, Any]:
+    """One style-active denoise step for Ideogram 4: a REF capture forward (the style
+    reference re-noised to this step's CURRENT sigma, packed into the SAME
+    ``[left-pad][text][image]`` layout as the target's own conditional forward, using the
+    target's own positive-prompt conditioning so the image-token span lines up exactly)
+    stashes post-MRoPE image-token Q/K/V per block on the CONDITIONAL transformer; the
+    normal ``_dual_branch_velocity`` call then runs with the style context armed for
+    "inject" on the SAME conditional transformer object (its ``layers[i].attention``
+    processors were swapped for ``StyleIdeogram4AttnProcessor`` by
+    ``install_ideogram4_style_processors`` before the loop started) -- the unconditional
+    transformer has no style processors installed at all, so its branch is completely
+    unaffected (matches the Lens/Krea2/FLUX.2 "uncond stays disarmed" wiring).
+
+    Noising convention (matches this loop's own scheduler stepping / img2img/inpaint
+    re-noising): flow-matching ``x_t = (1 - sigma) * x0 + sigma * eps``,
+    ``sigma = t / num_train_timesteps``.
+    """
+    from core.inference.reference_style import StyleContext
+    from core.models.ideogram4.style_ideogram4 import set_ideogram4_style_context
+
+    sigma_now = float(t.item()) / num_train_timesteps
+    ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
+    progress = style_cfg.step_progress(step_idx, total_steps)
+
+    max_text = cond["max_text_tokens"]
+    t_dtype = transformer.dtype
+    batch = latents.shape[0]
+    t_model = (1.0 - (t.float() / num_train_timesteps)).expand(batch).to(t_dtype)
+
+    img_start = max_text
+    img_end = max_text + latents.shape[1]
+
+    try:
+        capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+        capture_ctx.img_start = img_start
+        capture_ctx.img_end = img_end
+        set_ideogram4_style_context(style_processors, capture_ctx)
+
+        ref_text_padding = torch.zeros(
+            batch, max_text, ref_t.shape[-1], dtype=ref_t.dtype, device=ref_t.device
+        )
+        ref_pos_z = torch.cat([ref_text_padding, ref_t], dim=1).to(t_dtype)
+        transformer(
+            hidden_states=ref_pos_z,
+            timestep=t_model,
+            encoder_hidden_states=cond["llm_features"],
+            position_ids=cond["position_ids"],
+            segment_ids=cond["segment_ids"],
+            indicator=cond["indicator"],
+            return_dict=False,
+        )
+
+        inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+        inject_ctx.img_start = img_start
+        inject_ctx.img_end = img_end
+        set_ideogram4_style_context(style_processors, inject_ctx)
+
+        v, cfg_metrics = _dual_branch_velocity(
+            transformer, unconditional_transformer, latents, cond, t_model, gw_i, sigma_t, advanced_cfg,
+        )
+    finally:
+        set_ideogram4_style_context(style_processors, None)
+
+    return v, cfg_metrics
+
+
+# ---------------------------------------------------------------------------
 # First Block Cache (FBCache) helpers
 # ---------------------------------------------------------------------------
 
@@ -618,7 +704,7 @@ def _unwrap_ideogram4_transformer(driver):
     return real
 
 
-def _build_ideogram4_fbcache(spectrum_params, spectrum, do_cfg):
+def _build_ideogram4_fbcache(spectrum_params, spectrum, do_cfg, style_active: bool = False):
     """Build FBCache instance(s) for the Ideogram4 denoise loop, or (None, None).
 
     Ideogram4 runs CFG as TWO SEPARATE transformer objects per step -- the conditional
@@ -630,7 +716,9 @@ def _build_ideogram4_fbcache(spectrum_params, spectrum, do_cfg):
       (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
       (b) Block Swap -- a cache hit skips layers[1:], desyncing the block-swap rotation
           (the offloader expects every block to run each step).
-    It runs only when BOTH are off. Returns (fbcache_cond, fbcache_uncond)."""
+      (c) Reference-style transfer -- a cache hit skips layers[1:] on the CONDITIONAL
+          transformer, desyncing the per-block style capture/inject store across steps.
+    It runs only when ALL are off. Returns (fbcache_cond, fbcache_uncond)."""
     from core.inference.fbcache import build_fbcache, fbcache_active
     if spectrum_params is None or not fbcache_active(spectrum_params):
         return None, None
@@ -641,6 +729,9 @@ def _build_ideogram4_fbcache(spectrum_params, spectrum, do_cfg):
         return None, None
     if block_swap_on:
         print("[FBCache] Ideogram4 disabled: Block Swap is enabled (block skip desyncs rotation)")
+        return None, None
+    if style_active:
+        print("[FBCache] Ideogram4 disabled: Style transfer is active (block skip desyncs the per-block K/V store)")
         return None, None
     fbcache_cond = build_fbcache(spectrum_params, label="Ideogram4 (cond)")
     fbcache_uncond = build_fbcache(spectrum_params, label="Ideogram4 (uncond)") if do_cfg else None
@@ -683,6 +774,10 @@ def _run_loop(
     init_noise: Optional[torch.Tensor] = None,
     mask_latent: Optional[torch.Tensor] = None,
     spectrum_params=None,
+    style_processors: Optional[List[Any]] = None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Shared dual-branch flow-matching loop (txt2img / img2img / inpaint)."""
     from core.inference.cancellation import raise_if_cancelled
@@ -690,11 +785,24 @@ def _run_loop(
     spectrum = build_output_forecaster(spectrum_params, total_steps, "Ideogram4")
     batch = latents.shape[0]
 
+    # Training-free reference-style transfer (see core.inference.reference_style):
+    # active only when a style reference image is attached AND the conditional
+    # transformer's attention modules were swapped for StyleIdeogram4AttnProcessor
+    # (pipeline_backends/ideogram4.py already disabled NAG/NegPip/forced native
+    # attention for the whole generation whenever this is true).
+    style_active = (
+        style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+        and style_processors
+    )
+
     # FBCache: two instances (cond/uncond) for the two-transformer-object CFG. None when
-    # inactive/guarded (Spectrum or block swap). Attached to the REAL transformers (past any
-    # NAG wrapper) so the vendored forward's block loop reads _fbcache; the step index is
-    # refreshed each step (mirrors how _block_offloader is attached to both transformers).
-    fbcache_cond, fbcache_uncond = _build_ideogram4_fbcache(spectrum_params, spectrum, True)
+    # inactive/guarded (Spectrum, block swap, or style transfer). Attached to the REAL
+    # transformers (past any NAG wrapper) so the vendored forward's block loop reads
+    # _fbcache; the step index is refreshed each step (mirrors how _block_offloader is
+    # attached to both transformers).
+    fbcache_cond, fbcache_uncond = _build_ideogram4_fbcache(
+        spectrum_params, spectrum, True, style_active=style_active,
+    )
     real_cond = _unwrap_ideogram4_transformer(transformer)
     real_uncond = _unwrap_ideogram4_transformer(unconditional_transformer)
     if fbcache_cond is not None:
@@ -709,9 +817,18 @@ def _run_loop(
 
         # Spectrum: forecast the dual-branch velocity on skip steps
         spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+        style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
         if spectrum_skip:
             v = spectrum.forecast(i)
             cfg_metrics = None
+        elif style_active_step:
+            v, cfg_metrics = _ideogram4_style_step(
+                transformer, unconditional_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                style_processors, i, total_steps, t, latents, cond, guidance[i], sigma_t,
+                num_train_timesteps, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(i, v)
         else:
             # FBCache: set the current step index on each transformer's cache (no-op when
             # the cache is None -> the vendored forward keeps its default block loop).
@@ -766,6 +883,10 @@ def denoise_loop(
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    style_processors: Optional[List[Any]] = None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img (dual-branch asymmetric CFG)."""
     device = latents.device
@@ -777,6 +898,8 @@ def denoise_loop(
         timesteps, guidance, num_train_timesteps,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         spectrum_params=spectrum_params,
+        style_processors=style_processors, style_cfg=style_cfg,
+        style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
     )
 
 
@@ -802,6 +925,10 @@ def denoise_loop_img2img(
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    style_processors: Optional[List[Any]] = None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on the flow-matching schedule."""
     device = init_latents.device
@@ -826,6 +953,8 @@ def denoise_loop_img2img(
         timesteps, guidance, num_train_timesteps,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         spectrum_params=spectrum_params,
+        style_processors=style_processors, style_cfg=style_cfg,
+        style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
     )
 
 
@@ -852,6 +981,10 @@ def denoise_loop_inpaint(
     progress_callback=None,
     advanced_cfg: Optional[Dict[str, Any]] = None,
     spectrum_params=None,
+    style_processors: Optional[List[Any]] = None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on the flow-matching schedule.
 
@@ -881,4 +1014,6 @@ def denoise_loop_inpaint(
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         spectrum_params=spectrum_params,
         init_latents=init_latents, init_noise=init_noise, mask_latent=mask_latent,
+        style_processors=style_processors, style_cfg=style_cfg,
+        style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
     )

@@ -399,6 +399,51 @@ class Ideogram4Mixin:
               f"(nag={'on' if is_nag else 'off'})")
         return install_negpip(transformer, token_weights)
 
+    def _ideogram4_style_config(self, params: Dict[str, Any], height: int, width: int,
+                                device, dtype, model_key: Optional[str] = None):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached.
+
+        ``axes_dims`` is deliberately left unset (``None``): Ideogram 4's MRoPE is
+        INTERLEAVED (``Ideogram4MRoPE`` splices H/W frequencies into every-3rd
+        channel), which ``frequency_scale_vector``'s concatenated-per-axis-block
+        layout does not match -- ``core.models.ideogram4.style_ideogram4``'s hook
+        passes an all-ones frequency vector straight to ``inject_kv`` instead of
+        calling ``StyleTransferConfig.get_freq_scale_vector`` (which requires
+        ``axes_dims``; it is never read here).
+
+        Reuses ``ideogram4_pipeline_ops.vae_encode`` (already produces the exact
+        packed, patchified, BN-normalized token layout the transformer's image
+        region expects) rather than duplicating that encode path.
+        """
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from diffusers.utils.torch_utils import randn_tensor
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode
+        from core.keep_hot import is_resident, discard_resident
+
+        cfg = style_config_from_dict(style_dict)
+
+        if not is_resident(self, "vae", model_key):
+            self._ideogram4_move("vae", device)
+        vae_gpu = self.ideogram4_components["vae"]
+        ref_x0 = vae_encode(vae_gpu, style_dict["image"], height, width, device=device, dtype=dtype)
+        self._ideogram4_move("vae", "cpu")
+        discard_resident(self, "vae")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        seed = params.get("seed", -1)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+        generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+        eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
+        return cfg, ref_x0, eps_ref
+
     def _ideogram4_setup_block_swap(self, transformer, blocks_to_swap: int,
                                     use_pinned_memory: bool, device: str,
                                     h2d_only: bool = False, ring_size: int = 2):
@@ -623,10 +668,19 @@ class Ideogram4Mixin:
                 cfg["grid_h"], cfg["grid_w"], dtype=torch.float32, device=device, seed=cfg["seed"],
             )
 
-            nag_cfg = self._ideogram4_encode_nag_negative(
-                params, cfg, cond, device, dtype,
-                skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
-            )
+            # Training-free reference-style transfer: mutually exclusive with NAG/NegPip for
+            # the WHOLE generation (both rewrite the attention-time token/value layout, same
+            # conflict as FBCache below) -- decided BEFORE either is set up so neither text
+            # encode nor auto-activation ever runs when style is active.
+            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
+            if style_active:
+                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
+                nag_cfg = None
+            else:
+                nag_cfg = self._ideogram4_encode_nag_negative(
+                    params, cfg, cond, device, dtype,
+                    skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
+                )
 
             print("[Ideogram4] Stage 3: Denoising (dual-branch)...")
             if is_resident(self, "transformer", _kh_model_key):
@@ -639,10 +693,30 @@ class Ideogram4Mixin:
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
             )
+            if style_active:
+                # Mask-extension correctness (see core.models.ideogram4.style_ideogram4) is only
+                # implemented for the dense (B,1,L,L) boolean-mask "native" path -- the "flash"
+                # backend bypasses attention_mask entirely via cu_seqlens, which would silently
+                # miss the appended reference-K columns. Force native for the whole generation.
+                set_ideogram4_attention_backend(transformer, uncond_transformer, "normal")
+                print("[Ideogram4] Style transfer active: forcing native attention backend "
+                      "(flash's cu_seqlens path cannot see the appended reference-K columns)")
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
-            negpip_handle = self._ideogram4_maybe_negpip(
+            negpip_handle = None if style_active else self._ideogram4_maybe_negpip(
                 transformer, params, cfg, cond, device, dtype)
+
+            style_processors: List[Any] = []
+            style_saved: List[Any] = []
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if style_active:
+                style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
+                    params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
+                )
+                if style_cfg is not None:
+                    from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
+                    style_processors, style_saved = install_ideogram4_style_processors(transformer)
+
             try:
                 latents = denoise_loop(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -652,8 +726,13 @@ class Ideogram4Mixin:
                     mu=cfg["mu"], std=cfg["std"],
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                     spectrum_params=params,
+                    style_processors=style_processors, style_cfg=style_cfg,
+                    style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
+                if style_saved:
+                    from core.models.ideogram4.style_ideogram4 import restore_ideogram4_style_processors
+                    restore_ideogram4_style_processors(style_saved)
                 if negpip_handle is not None:
                     negpip_handle["restore"]()
                 transformer = self._ideogram4_unwrap_nag(transformer)
@@ -772,10 +851,15 @@ class Ideogram4Mixin:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            nag_cfg = self._ideogram4_encode_nag_negative(
-                params, cfg, cond, device, dtype,
-                skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
-            )
+            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
+            if style_active:
+                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
+                nag_cfg = None
+            else:
+                nag_cfg = self._ideogram4_encode_nag_negative(
+                    params, cfg, cond, device, dtype,
+                    skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
+                )
 
             print("[Ideogram4] Stage 3: Denoising (SDEdit)...")
             if is_resident(self, "transformer", _kh_model_key):
@@ -788,10 +872,26 @@ class Ideogram4Mixin:
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
             )
+            if style_active:
+                set_ideogram4_attention_backend(transformer, uncond_transformer, "normal")
+                print("[Ideogram4] Style transfer active: forcing native attention backend "
+                      "(flash's cu_seqlens path cannot see the appended reference-K columns)")
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
-            negpip_handle = self._ideogram4_maybe_negpip(
+            negpip_handle = None if style_active else self._ideogram4_maybe_negpip(
                 transformer, params, cfg, cond, device, dtype)
+
+            style_processors: List[Any] = []
+            style_saved: List[Any] = []
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if style_active:
+                style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
+                    params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
+                )
+                if style_cfg is not None:
+                    from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
+                    style_processors, style_saved = install_ideogram4_style_processors(transformer)
+
             try:
                 latents = denoise_loop_img2img(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -802,8 +902,13 @@ class Ideogram4Mixin:
                     mu=cfg["mu"], std=cfg["std"], seed=cfg["seed"],
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                     spectrum_params=params,
+                    style_processors=style_processors, style_cfg=style_cfg,
+                    style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
+                if style_saved:
+                    from core.models.ideogram4.style_ideogram4 import restore_ideogram4_style_processors
+                    restore_ideogram4_style_processors(style_saved)
                 if negpip_handle is not None:
                     negpip_handle["restore"]()
                 transformer = self._ideogram4_unwrap_nag(transformer)
@@ -936,10 +1041,15 @@ class Ideogram4Mixin:
                 mask_image, cfg["grid_h"], cfg["grid_w"], device=device, dtype=torch.float32,
             )
 
-            nag_cfg = self._ideogram4_encode_nag_negative(
-                params, cfg, cond, device, dtype,
-                skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
-            )
+            style_active = bool(params.get("style_transfer") and params["style_transfer"].get("image"))
+            if style_active:
+                print("[Ideogram4] Style transfer active: disabling NAG/NegPip for this generation")
+                nag_cfg = None
+            else:
+                nag_cfg = self._ideogram4_encode_nag_negative(
+                    params, cfg, cond, device, dtype,
+                    skip_gpu_stage=_kh_keep_te, skip_cpu_offload=_kh_keep_te,
+                )
 
             print("[Ideogram4] Stage 3: Denoising (repaint)...")
             if is_resident(self, "transformer", _kh_model_key):
@@ -952,10 +1062,26 @@ class Ideogram4Mixin:
                 transformer, uncond_transformer,
                 params.get("attention_type", settings.attention_type),
             )
+            if style_active:
+                set_ideogram4_attention_backend(transformer, uncond_transformer, "normal")
+                print("[Ideogram4] Style transfer active: forcing native attention backend "
+                      "(flash's cu_seqlens path cannot see the appended reference-K columns)")
             applied_lora = self._load_lora_ideogram4(params.get("loras") or [])
             transformer = self._ideogram4_wrap_nag(transformer, nag_cfg)
-            negpip_handle = self._ideogram4_maybe_negpip(
+            negpip_handle = None if style_active else self._ideogram4_maybe_negpip(
                 transformer, params, cfg, cond, device, dtype)
+
+            style_processors: List[Any] = []
+            style_saved: List[Any] = []
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if style_active:
+                style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
+                    params, height, width, device, dtype, model_key=_kh_model_key,
+                )
+                if style_cfg is not None:
+                    from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
+                    style_processors, style_saved = install_ideogram4_style_processors(transformer)
+
             try:
                 latents = denoise_loop_inpaint(
                     transformer=transformer, unconditional_transformer=uncond_transformer,
@@ -966,8 +1092,13 @@ class Ideogram4Mixin:
                     mu=cfg["mu"], std=cfg["std"], seed=cfg["seed"],
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                     spectrum_params=params,
+                    style_processors=style_processors, style_cfg=style_cfg,
+                    style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
+                if style_saved:
+                    from core.models.ideogram4.style_ideogram4 import restore_ideogram4_style_processors
+                    restore_ideogram4_style_processors(style_saved)
                 if negpip_handle is not None:
                     negpip_handle["restore"]()
                 transformer = self._ideogram4_unwrap_nag(transformer)

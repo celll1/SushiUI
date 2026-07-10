@@ -175,6 +175,75 @@ def apply_reference_guide_blend(
     return latents, pred_original_sample
 
 
+# ---------------------------------------------------------------------------
+# Training-free reference-style transfer (SD1.5/SDXL U-Net wiring)
+# ---------------------------------------------------------------------------
+
+def prepare_style_reference_latent(image, pipeline, width, height, device, dtype, seed):
+    """VAE-encode the style reference image to the SAME latent shape/scaling as
+    the target latents (so it can be re-noised to any step's sigma and its
+    self-attention K/V injected into the target's own self-attention), and draw
+    the ONE fixed reference noise tensor used for every active step's
+    re-noising (drawing fresh noise per step would make the injected reference
+    K/V flicker step to step). Mirrors `prepare_reference_guide_latents`'
+    VAE-encode convention (shift_factor + scaling_factor) and Krea2's
+    `prepare_style_reference` fixed-seed-offset convention.
+
+    Resizing the reference image to the exact target (width, height) is what
+    keeps every U-Net block's spatial resolution -- and therefore its
+    self-attention sequence length -- identical between the reference capture
+    forward and the target's own forward, which is required for the per-block
+    K/V injection to line up (see `attention_processors.UnifiedAttnProcessor`).
+    """
+    vae_dtype = next(pipeline.vae.parameters()).dtype
+    img = image.convert("RGB") if image.mode != "RGB" else image
+    if img.size != (width, height):
+        img = img.resize((width, height), Image.Resampling.LANCZOS)
+
+    img_tensor = torch.from_numpy(np.array(img)).float() / 255.0
+    img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
+    img_tensor = img_tensor * 2.0 - 1.0  # [-1, 1]
+
+    with torch.no_grad():
+        ref_x0 = pipeline.vae.encode(img_tensor.to(device=device, dtype=vae_dtype)).latent_dist.mode()
+        ref_x0 = (ref_x0 - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
+        ref_x0 = ref_x0.to(dtype=dtype)
+
+    ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+    generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+    eps_ref = torch.randn(ref_x0.shape, generator=generator, device=device, dtype=dtype)
+    return ref_x0, eps_ref
+
+
+def build_style_transfer(params, pipeline, width, height, device, dtype, seed=-1):
+    """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+    ``params["style_transfer"]`` (assembled by
+    ``generation_utils.process_controlnet_configs`` from an ``is_style_transfer``
+    ControlNet-shaped entry), or ``(None, None, None)`` when no style reference
+    is attached.
+
+    SD1.5/SDXL-specific note: this U-Net has NO RoPE, so (unlike Krea2/Flux2)
+    ``cfg.axes_dims`` is intentionally left ``None`` and
+    ``cfg.get_freq_scale_vector`` is never called for this arch -- the
+    per-block hook (`attention_processors.UnifiedAttnProcessor`) substitutes a
+    constant ``torch.ones(head_dim)`` frequency-scale vector directly, relying
+    on block selection (``style_blocks`` / ``block_range``) + AdaIN +
+    ``ref_k_strength`` for content/style control instead (StyleAligned's
+    original recipe, since there is no RoPE-frequency axis to suppress).
+    """
+    style_dict = params.get("style_transfer")
+    if not style_dict or not style_dict.get("image"):
+        return None, None, None
+
+    from core.inference.reference_style import style_config_from_dict
+
+    cfg = style_config_from_dict(style_dict)
+    ref_x0, eps_ref = prepare_style_reference_latent(
+        style_dict["image"], pipeline, width, height, device, dtype, seed,
+    )
+    return cfg, ref_x0, eps_ref
+
+
 def vae_output_to_pil(
     image: torch.Tensor,
     color_flatten_strength: int = 0,
@@ -659,6 +728,9 @@ def custom_sampling_loop(
     flatten_in_loop: bool = False,  # in-loop hard-flatten of the flat background (SD1.5/SDXL)
     flatten_in_loop_last_steps: int = 3,  # inject on the last N ACTUAL denoise steps
     flatten_in_loop_min_region: float = 0.02,  # flat-region area gate (fraction of frame)
+    style_cfg=None,  # core.inference.reference_style.StyleTransferConfig, or None (default off)
+    style_ref_x0: Optional[torch.Tensor] = None,  # VAE-encoded style reference latent (build_style_transfer)
+    style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -728,6 +800,16 @@ def custom_sampling_loop(
     # Get components
     unet = pipeline.unet
     scheduler = pipeline.scheduler
+
+    # Training-free reference-style transfer (StyleAligned/VSP-style KV injection).
+    # No style config => style_active is False and nothing below this ever runs
+    # (byte-identical to the pre-style-transfer code path).
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    if style_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        num_style_blocks = ensure_style_block_indices(unet)
+        print(f"[CustomSampling] Style transfer active: {num_style_blocks} self-attention layers "
+              f"eligible, block_range={style_cfg.block_range} (None = all)")
 
     # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
@@ -1071,11 +1153,14 @@ def custom_sampling_loop(
                 nag_negative_prompt_embeds_padded
             ], dim=0)
         elif do_classifier_free_guidance:
-            if is_deus:
-                # DEUS: 2-Pass CFG - prepare single latent (will call U-Net twice with different embeds)
-                # This is required because DEUS has variable sequence length embeddings
+            if is_deus or style_active:
+                # DEUS (variable seq-len embeds) or active style transfer: prepare a
+                # single (batch=1) latent -- the U-Net is called twice below with
+                # different embeds/context instead of a batch-2 concatenation, so
+                # style's reference-K/V injection can be isolated to ONLY the
+                # conditional pass (mirrors the Krea2 wiring's split forward).
                 latent_model_input = scheduler.scale_model_input(latents, t)
-                # prompt_embeds_input is not used for DEUS (we use separate negative/positive passes)
+                # prompt_embeds_input is not used for this path (separate negative/positive passes below)
                 prompt_embeds_input = None
             else:
                 # Standard CFG (SDXL/SD1.5): Use batch approach [negative, positive] (batch=2)
@@ -1254,6 +1339,80 @@ def custom_sampling_loop(
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif style_active and do_classifier_free_guidance:
+                # Active style transfer: 2-Pass CFG (separate uncond/cond U-Net calls),
+                # so the reference-style KV injection can be isolated to ONLY the
+                # conditional (positive) pass -- the unconditional pass is always run
+                # with no style context (untouched), exactly like the Krea2 wiring.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no style context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- style capture + inject,
+                # only when this step falls within the style config's active range.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                if style_cfg.is_step_active(i, num_inference_steps):
+                    ref_t = scheduler.add_noise(style_ref_x0, style_eps_ref, t.unsqueeze(0))
+                    ref_t_scaled = scheduler.scale_model_input(ref_t, t)
+                    progress = style_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+                    set_style_context(unet, capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+                    set_style_context(unet, inject_ctx)
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked
@@ -1317,8 +1476,9 @@ def custom_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus:
-                # DEUS: noise_pred_uncond and noise_pred_text are already separate (from 2-Pass CFG above)
+            if is_deus or style_active:
+                # DEUS / active style transfer: noise_pred_uncond and noise_pred_text are
+                # already separate (from the 2-Pass CFG block above).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
@@ -1541,6 +1701,9 @@ def custom_img2img_sampling_loop(
     flatten_in_loop: bool = False,  # in-loop hard-flatten of the flat background (SD1.5/SDXL)
     flatten_in_loop_last_steps: int = 3,  # inject on the last N ACTUAL denoise steps
     flatten_in_loop_min_region: float = 0.02,  # flat-region area gate (fraction of frame)
+    style_cfg=None,  # core.inference.reference_style.StyleTransferConfig, or None (default off)
+    style_ref_x0: Optional[torch.Tensor] = None,  # VAE-encoded style reference latent (build_style_transfer)
+    style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1606,6 +1769,16 @@ def custom_img2img_sampling_loop(
     # Get components
     unet = pipeline.unet
     scheduler = pipeline.scheduler
+
+    # Training-free reference-style transfer (StyleAligned/VSP-style KV injection).
+    # No style config => style_active is False and nothing below this ever runs
+    # (byte-identical to the pre-style-transfer code path).
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    if style_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        num_style_blocks = ensure_style_block_indices(unet)
+        print(f"[CustomSampling] [img2img] Style transfer active: {num_style_blocks} self-attention layers "
+              f"eligible, block_range={style_cfg.block_range} (None = all)")
 
     # Resize init_image if width/height are specified
     if width is not None and height is not None:
@@ -2109,6 +2282,80 @@ def custom_img2img_sampling_loop(
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+            elif style_active and do_classifier_free_guidance:
+                # Active style transfer: 2-Pass CFG (separate uncond/cond U-Net calls),
+                # so the reference-style KV injection can be isolated to ONLY the
+                # conditional (positive) pass -- the unconditional pass is always run
+                # with no style context (untouched), exactly like the txt2img wiring.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no style context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- style capture + inject,
+                # only when this step falls within the style config's active range.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                if style_cfg.is_step_active(i, num_inference_steps):
+                    ref_t = scheduler.add_noise(style_ref_x0, style_eps_ref, t.unsqueeze(0))
+                    ref_t_scaled = scheduler.scale_model_input(ref_t, t)
+                    progress = style_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+                    set_style_context(unet, capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+                    set_style_context(unet, inject_ctx)
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked
@@ -2395,6 +2642,9 @@ def custom_inpaint_sampling_loop(
     flatten_in_loop: bool = False,  # in-loop hard-flatten of the flat background (SD1.5/SDXL)
     flatten_in_loop_last_steps: int = 3,  # inject on the last N ACTUAL denoise steps
     flatten_in_loop_min_region: float = 0.02,  # flat-region area gate (fraction of frame)
+    style_cfg=None,  # core.inference.reference_style.StyleTransferConfig, or None (default off)
+    style_ref_x0: Optional[torch.Tensor] = None,  # VAE-encoded style reference latent (build_style_transfer)
+    style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2437,6 +2687,16 @@ def custom_inpaint_sampling_loop(
     unet = pipeline.unet
     vae = pipeline.vae
     scheduler = pipeline.scheduler
+
+    # Training-free reference-style transfer (StyleAligned/VSP-style KV injection).
+    # No style config => style_active is False and nothing below this ever runs
+    # (byte-identical to the pre-style-transfer code path).
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    if style_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        num_style_blocks = ensure_style_block_indices(unet)
+        print(f"[CustomSampling] [inpaint] Style transfer active: {num_style_blocks} self-attention layers "
+              f"eligible, block_range={style_cfg.block_range} (None = all)")
 
     # Resize init_image and mask_image if width/height are specified
     if width is not None and height is not None:
@@ -3007,6 +3267,80 @@ def custom_inpaint_sampling_loop(
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+            elif style_active and do_classifier_free_guidance:
+                # Active style transfer: 2-Pass CFG (separate uncond/cond U-Net calls),
+                # so the reference-style KV injection can be isolated to ONLY the
+                # conditional (positive) pass -- the unconditional pass is always run
+                # with no style context (untouched), exactly like the txt2img wiring.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no style context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- style capture + inject,
+                # only when this step falls within the style config's active range.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                if style_cfg.is_step_active(i, num_inference_steps):
+                    ref_t = scheduler.add_noise(style_ref_x0, style_eps_ref, t.unsqueeze(0))
+                    ref_t_scaled = scheduler.scale_model_input(ref_t, t)
+                    progress = style_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+                    set_style_context(unet, capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+                    set_style_context(unet, inject_ctx)
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked

@@ -2626,12 +2626,28 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 else:
                     print(f"[Pipeline] Attention processor already set to: {attention_type} (skipping)")
 
+            # Training-free reference-style transfer (StyleAligned/VSP-style KV
+            # injection): build the (config, ref_x0, ref_noise) triple from
+            # params["style_transfer"] (assembled by process_controlnet_configs from
+            # an is_style_transfer ControlNet-shaped entry), or (None, None, None)
+            # when no style reference is attached -- fully gated OFF by default.
+            from core.inference.custom_sampling import build_style_transfer
+            _unet_dtype_for_style = next(pipeline_to_use.unet.parameters()).dtype
+            style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(
+                params, pipeline_to_use,
+                width=gen_params["width"], height=gen_params["height"],
+                device=device, dtype=_unet_dtype_for_style, seed=actual_seed,
+            )
+
             # Call custom sampling loop. The legacy SD/SDXL path folds VAE decode
             # into this loop, so denoise and decode are not separable here — the
             # combined span is recorded as the "denoise" phase.
             _t_denoise = time.perf_counter()
             image = custom_sampling_loop(
                 pipeline=pipeline_to_use,
+                style_cfg=style_cfg,
+                style_ref_x0=style_ref_x0,
+                style_eps_ref=style_eps_ref,
                 color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
                 flatten_in_loop=getattr(self, "_flatten_in_loop", False),
                 flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
@@ -3319,11 +3335,27 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
             log_device_status("Ready for U-Net inference (img2img)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
+            # Training-free reference-style transfer (StyleAligned/VSP-style KV
+            # injection): build the (config, ref_x0, ref_noise) triple from
+            # params["style_transfer"] (assembled by process_controlnet_configs from
+            # an is_style_transfer ControlNet-shaped entry), or (None, None, None)
+            # when no style reference is attached -- fully gated OFF by default.
+            from core.inference.custom_sampling import build_style_transfer
+            _unet_dtype_for_style = next(pipeline_to_use.unet.parameters()).dtype
+            style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(
+                params, pipeline_to_use,
+                width=init_image.width, height=init_image.height,
+                device=self.device, dtype=_unet_dtype_for_style, seed=actual_seed,
+            )
+
             # Call custom img2img sampling loop. VAE decode is folded into the loop
             # on this legacy path, so the combined span is recorded as "denoise".
             _t_denoise = time.perf_counter()
             image = custom_img2img_sampling_loop(
                 pipeline=pipeline_to_use,
+                style_cfg=style_cfg,
+                style_ref_x0=style_ref_x0,
+                style_eps_ref=style_eps_ref,
                 color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
                 flatten_in_loop=getattr(self, "_flatten_in_loop", False),
                 flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
@@ -3867,12 +3899,28 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         log_device_status("Ready for U-Net inference (inpaint)", pipeline_to_use, vision_encoder=getattr(self, 'vision_encoder', None))
 
+        # Training-free reference-style transfer (StyleAligned/VSP-style KV
+        # injection): build the (config, ref_x0, ref_noise) triple from
+        # params["style_transfer"] (assembled by process_controlnet_configs from
+        # an is_style_transfer ControlNet-shaped entry), or (None, None, None)
+        # when no style reference is attached -- fully gated OFF by default.
+        from core.inference.custom_sampling import build_style_transfer
+        _unet_dtype_for_style = next(pipeline_to_use.unet.parameters()).dtype
+        style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(
+            params, pipeline_to_use,
+            width=init_image.width, height=init_image.height,
+            device=self.device, dtype=_unet_dtype_for_style, seed=seed,
+        )
+
         # Use custom inpaint sampling loop. VAE decode is folded into the loop on
         # this legacy path, so the combined span is recorded as "denoise".
         try:
             _t_denoise = time.perf_counter()
             image = custom_inpaint_sampling_loop(
             pipeline=pipeline_to_use,
+            style_cfg=style_cfg,
+            style_ref_x0=style_ref_x0,
+            style_eps_ref=style_eps_ref,
             color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
             vae_drift_correction=getattr(self, "_vae_drift_correction", False),
             flatten_in_loop=getattr(self, "_flatten_in_loop", False),

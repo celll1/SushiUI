@@ -149,6 +149,24 @@ class Ltx2BlockLoopWrapper(nn.Module):
         # restructure the block loop) and with Block Swap (folding requires all
         # blocks resident); enforced in ``attach_blockskip`` and ``base_trainer``.
         self._blockskip_config = None
+        # Training-free reference-style transfer (StyleAligned/VSP-style KV
+        # injection over attn1 video self-attention; see
+        # ``core.inference.style_ltx2`` module docstring). INFERENCE-ONLY
+        # (asserted in ``_custom_forward``) and mutually exclusive with FBCache
+        # / Spectrum (both disabled by the caller, ``pipeline_backends/ltx2.py``,
+        # whenever style is requested) and with Block Swap (style forces Block
+        # Swap off; see ``attach_style``). ``_style_processors`` is the list of
+        # installed ``StyleLtx2Attn1Processor`` instances (patched directly onto
+        # the INNER transformer's ``attn1`` modules, independent of whether this
+        # wrapper's fast path or custom path runs the block loop); the wrapper
+        # only needs to drive the per-step ref-capture sub-pass and stamp the
+        # capture/inject ``StyleContext`` onto them.
+        self._style_processors = None
+        self._style_cfg = None
+        self._style_ref_x0 = None     # [1, S_ref, C_in] packed ref latent (pre proj_in), float32
+        self._style_eps_ref = None    # same shape, fixed per-generation noise
+        self._style_step_idx = 0
+        self._style_total_steps = 1
 
         # Compatibility attributes (diffusers pipeline + LoRA introspection).
         self.config = transformer.config
@@ -269,6 +287,57 @@ class Ltx2BlockLoopWrapper(nn.Module):
         self._spectrum_audio = audio_forecaster
         self._spectrum_step = 0
 
+    def attach_style(
+        self,
+        processors: Optional[list] = None,
+        cfg: Optional[Any] = None,
+        ref_x0: Optional[torch.Tensor] = None,
+        eps_ref: Optional[torch.Tensor] = None,
+    ) -> None:
+        """Attach (or clear with all ``None``) training-free reference-style
+        transfer. ``processors`` are the ``StyleLtx2Attn1Processor`` instances
+        already installed onto the INNER transformer's ``attn1`` modules by
+        ``core.inference.style_ltx2.install_ltx2_style_processors`` (the caller,
+        ``pipeline_backends/ltx2.py``, owns install/restore around the whole
+        generation); this wrapper only stamps capture/inject contexts onto them
+        per step and drives the ref-capture sub-pass. ``ref_x0``/``eps_ref`` are
+        the packed (pre-``proj_in``) one-frame reference video latent and its
+        fixed noise draw (see ``core.inference.style_ltx2`` module docstring for
+        the still -> single-frame-video-latent construction).
+
+        Style transfer is INFERENCE-ONLY (asserted in ``_custom_forward``) and
+        mutually exclusive with FBCache / Spectrum (the caller disables both
+        whenever style is requested, mirroring every other arch's audited
+        finding that a trajectory-redundancy skip desyncs the per-block style
+        capture/inject store). Block Swap must also be off (the caller forces
+        ``blocks_to_swap = 0`` whenever style is requested); asserted here
+        defensively.
+        """
+        assert processors is None or self._fbcache is None, (
+            "Ltx2BlockLoopWrapper: style transfer and FBCache must never be attached "
+            "simultaneously (a cache hit skips the block loop, desyncing the "
+            "per-block style capture/inject store; guarded in ltx2.py)."
+        )
+        assert processors is None or self._spectrum_video is None, (
+            "Ltx2BlockLoopWrapper: style transfer and Spectrum must never be attached "
+            "simultaneously (a forecast skip bypasses the block loop, desyncing the "
+            "per-block style capture/inject store; guarded in ltx2.py)."
+        )
+        assert processors is None or not (
+            self._block_offloader is not None and getattr(self._block_offloader, "blocks_to_swap", 0) > 0
+        ), (
+            "Ltx2BlockLoopWrapper: style transfer and Block Swap must never be attached "
+            "simultaneously (the ref-capture sub-pass does not thread the offloader's "
+            "wait/submit calls; guarded in ltx2.py, which forces blocks_to_swap=0 "
+            "whenever style transfer is requested)."
+        )
+        self._style_processors = processors
+        self._style_cfg = cfg
+        self._style_ref_x0 = ref_x0
+        self._style_eps_ref = eps_ref
+        self._style_step_idx = 0
+        self._style_total_steps = 1
+
     def _any_feature_active(self) -> bool:
         swap_on = (
             self._block_offloader is not None
@@ -276,7 +345,7 @@ class Ltx2BlockLoopWrapper(nn.Module):
         )
         return bool(swap_on or self._fbcache is not None or self._spectrum_video is not None
                     or self._tread_router is not None or self._block_dropout is not None
-                    or self._blockskip_config is not None)
+                    or self._blockskip_config is not None or self._style_cfg is not None)
 
     # ------------------------------------------------------------------
     # Forward
@@ -571,6 +640,31 @@ class Ltx2BlockLoopWrapper(nn.Module):
                 batch_size, -1, audio_hidden_states.size(-1)
             )
 
+        # === Training-free reference-style transfer: REF CAPTURE sub-pass ===
+        # Runs BEFORE the real (stage 5) block loop below so the per-block
+        # StyleContext store is fully populated by the time attn1's patched
+        # processors (installed on t.transformer_blocks[*].attn1 by
+        # core.inference.style_ltx2.install_ltx2_style_processors, independent
+        # of this wrapper) run for the target. See core.inference.style_ltx2
+        # module docstring for the full design (CFG row split, still -> video
+        # ref encoding, RoPE reuse, FBCache/Spectrum/Block-Swap interop).
+        if self._style_cfg is not None:
+            assert not torch.is_grad_enabled(), (
+                "Ltx2BlockLoopWrapper: style transfer (_style_cfg) must not be "
+                "attached while autograd is enabled (inference-only feature)."
+            )
+            self._style_run_capture_and_arm_inject(
+                t, sigma, hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
+                temb, temb_audio,
+                video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+                video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+                temb_prompt, temb_prompt_audio,
+                video_rotary_emb, audio_rotary_emb,
+                video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+                encoder_attention_mask, audio_encoder_attention_mask,
+                isolate_modalities,
+            )
+
         # === 5. Run transformer blocks (RE-OWNED) ===
         spatio_temporal_guidance_blocks = spatio_temporal_guidance_blocks or []
         if len(spatio_temporal_guidance_blocks) > 0 and perturbation_mask is None:
@@ -819,6 +913,16 @@ class Ltx2BlockLoopWrapper(nn.Module):
         if fbcache is not None and not fb_hit:
             fbcache.store((hidden_states - original_video, audio_hidden_states - original_audio))
 
+        # Style transfer: disarm the context on every installed processor right
+        # after the (real) block loop that consumed it. Defense in depth only --
+        # the authoritative disarm/restore is the caller's ``finally`` block in
+        # ``pipeline_backends/ltx2.py`` (mirrors the FBCache/Spectrum pattern:
+        # restore/patch-removal must run on exception too, else style state
+        # leaks into the next generation -- see the FLUX.2 audit finding).
+        if self._style_processors is not None:
+            from core.inference.style_ltx2 import set_ltx2_style_context
+            set_ltx2_style_context(self._style_processors, None)
+
         # === 6. Output layers (including unpatchification) ===
         return self._finish_stage6(
             t, hidden_states, audio_hidden_states,
@@ -848,6 +952,160 @@ class Ltx2BlockLoopWrapper(nn.Module):
         if not return_dict:
             return (output, audio_output)
         return AudioVisualModelOutput(sample=output, audio_sample=audio_output)
+
+    def _style_run_capture_and_arm_inject(
+        self, t, sigma, hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
+        temb, temb_audio,
+        video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+        video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+        temb_prompt, temb_prompt_audio,
+        video_rotary_emb, audio_rotary_emb,
+        video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+        encoder_attention_mask, audio_encoder_attention_mask,
+        isolate_modalities,
+    ):
+        """Run the ref-capture sub-pass (batch=1, the style reference re-noised
+        to THIS step's sigma) through every ``transformer_block`` in capture
+        mode, then arm the SAME installed ``attn1`` processors in inject mode
+        for the upcoming real (target) block loop. See
+        ``core.inference.style_ltx2`` module docstring for the full design.
+
+        Reuses the TARGET's own stage-1-4 conditioning tensors (temb, cross-attn
+        modulation, RoPE), sliced to a single batch row -- valid because
+        LTX-2.3's per-step timestep/sigma is identical across every CFG row (see
+        ``core.inference.style_ltx2``'s CFG-composition note) and the ref is
+        conceptually "the same generation, different content" at the SAME
+        position grid (frame-0 spatial tokens, see the still -> video-latent ref
+        note in that module).
+        """
+        from core.inference.reference_style import StyleContext
+        from core.inference.style_ltx2 import set_ltx2_style_context
+
+        cfg = self._style_cfg
+        processors = self._style_processors
+        ref_x0 = self._style_ref_x0
+        eps_ref = self._style_eps_ref
+        if processors is None or ref_x0 is None or eps_ref is None:
+            return
+
+        step_idx = int(self._style_step_idx)
+        total_steps = int(self._style_total_steps)
+        progress = cfg.step_progress(step_idx, total_steps)
+        if not cfg.is_step_active(step_idx, total_steps):
+            set_ltx2_style_context(processors, None)
+            return
+
+        n = ref_x0.shape[1]
+        dtype = hidden_states.dtype
+        device = hidden_states.device
+
+        # Sigma for re-noising: the LTX-2.3 pipeline passes `sigma == timestep`
+        # (the raw scheduler timestep, see pipeline_ltx2.py's denoise loop:
+        # `sigma=timestep`) into the transformer; dividing by the scheduler's
+        # num_train_timesteps (1000) recovers the flow-matching sigma in [0, 1]
+        # for `x_t = (1 - sigma) * x0 + sigma * eps` -- the IDENTICAL /1000
+        # convention already used by the FLUX.2 style wiring
+        # (pipeline_backends/flux2.py's `_flux2_style_step`).
+        sigma_now = float(sigma.flatten()[0].item()) / 1000.0
+        sigma_now = max(0.0, min(1.0, sigma_now))
+        ref_t = (1.0 - sigma_now) * ref_x0.to(device=device, dtype=torch.float32) \
+            + sigma_now * eps_ref.to(device=device, dtype=torch.float32)
+        ref_t = ref_t.to(dtype=dtype)
+
+        ref_hidden_states = t.proj_in(ref_t)
+        if ref_hidden_states.shape[1] != n:
+            raise RuntimeError(
+                f"Ltx2BlockLoopWrapper style transfer: proj_in changed the ref "
+                f"token count ({n} -> {ref_hidden_states.shape[1]}); ref/target "
+                "token layout assumption violated."
+            )
+
+        # CFG row split (mirrors core.inference.style_ltx2's identical
+        # derivation): under CFG the pipeline concatenates
+        # [uncond rows..., cond rows...], so row 0 is the NEGATIVE-prompt
+        # conditioning. The ref-capture pass must run under the POSITIVE (cond)
+        # conditioning that the cond target's own forward attends -- slicing
+        # row 0 unconditionally would evolve the reference through the deep
+        # blocks under uncond cross-attn embeds instead. `cond_row` is the
+        # first cond row (0 when there is no CFG doubling, in which case every
+        # row already IS cond).
+        target_batch = hidden_states.shape[0]
+        cond_row = (target_batch // 2) if (target_batch >= 2 and target_batch % 2 == 0) else 0
+
+        def _b0(x):
+            if x is None:
+                return None
+            if isinstance(x, tuple):
+                return tuple(_b0(e) for e in x)
+            return x[cond_row:cond_row + 1]
+
+        ref_audio_hidden_states = _b0(audio_hidden_states)
+        ref_encoder_hidden_states = _b0(encoder_hidden_states)
+        ref_audio_encoder_hidden_states = _b0(audio_encoder_hidden_states)
+        ref_temb = _b0(temb)
+        ref_temb_audio = _b0(temb_audio)
+        ref_video_ca_scale_shift = _b0(video_cross_attn_scale_shift)
+        ref_audio_ca_scale_shift = _b0(audio_cross_attn_scale_shift)
+        ref_video_ca_gate = _b0(video_cross_attn_a2v_gate)
+        ref_audio_ca_gate = _b0(audio_cross_attn_v2a_gate)
+        ref_temb_prompt = _b0(temb_prompt)
+        ref_temb_prompt_audio = _b0(temb_prompt_audio)
+        ref_audio_rotary_emb = _b0(audio_rotary_emb)
+        ref_ca_video_rotary_emb = _b0(video_cross_attn_rotary_emb)
+        ref_ca_audio_rotary_emb = _b0(audio_cross_attn_rotary_emb)
+        ref_encoder_attention_mask = _b0(encoder_attention_mask)
+        ref_audio_encoder_attention_mask = _b0(audio_encoder_attention_mask)
+
+        rope_device = video_rotary_emb[0].device
+        idx = torch.arange(n, device=rope_device)
+        ref_video_rotary_emb = _gather_video_rope(video_rotary_emb, idx)
+
+        capture_ctx = StyleContext(mode="capture", config=cfg, progress=progress)
+        capture_ctx.img_start = 0
+        capture_ctx.img_end = n
+        set_ltx2_style_context(processors, capture_ctx)
+
+        with torch.no_grad():
+            hs, ahs = ref_hidden_states, ref_audio_hidden_states
+            for block in t.transformer_blocks:
+                hs, ahs = block(
+                    hidden_states=hs,
+                    audio_hidden_states=ahs,
+                    encoder_hidden_states=ref_encoder_hidden_states,
+                    audio_encoder_hidden_states=ref_audio_encoder_hidden_states,
+                    temb=ref_temb,
+                    temb_audio=ref_temb_audio,
+                    temb_ca_scale_shift=ref_video_ca_scale_shift,
+                    temb_ca_audio_scale_shift=ref_audio_ca_scale_shift,
+                    temb_ca_gate=ref_video_ca_gate,
+                    temb_ca_audio_gate=ref_audio_ca_gate,
+                    temb_prompt=ref_temb_prompt,
+                    temb_prompt_audio=ref_temb_prompt_audio,
+                    video_rotary_emb=ref_video_rotary_emb,
+                    audio_rotary_emb=ref_audio_rotary_emb,
+                    ca_video_rotary_emb=ref_ca_video_rotary_emb,
+                    ca_audio_rotary_emb=ref_ca_audio_rotary_emb,
+                    encoder_attention_mask=ref_encoder_attention_mask,
+                    audio_encoder_attention_mask=ref_audio_encoder_attention_mask,
+                    self_attention_mask=None,
+                    audio_self_attention_mask=None,
+                    a2v_cross_attention_mask=None,
+                    v2a_cross_attention_mask=None,
+                    use_a2v_cross_attention=not isolate_modalities,
+                    use_v2a_cross_attention=not isolate_modalities,
+                    perturbation_mask=None,
+                    all_perturbed=False,
+                )
+
+        # Arm the SAME processors in inject mode for the real (target) block
+        # loop that runs right after this method returns (either the wrapper's
+        # own stage-5 loop, or -- when style is the ONLY active feature and
+        # _any_feature_active() still routes through _custom_forward because
+        # _style_cfg is checked there too -- the same loop below).
+        inject_ctx = StyleContext(mode="inject", config=cfg, store=capture_ctx.store, progress=progress)
+        inject_ctx.img_start = 0
+        inject_ctx.img_end = n
+        set_ltx2_style_context(processors, inject_ctx)
 
     def _blockskip_forward(
         self, cfg, t, hidden_states, audio_hidden_states,

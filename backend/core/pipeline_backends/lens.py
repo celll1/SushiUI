@@ -311,6 +311,55 @@ class LensMixin:
         offloader.prepare_block_devices_before_forward()
         return offloader
 
+    def _lens_style_config(self, params: Dict[str, Any], transformer, height: int, width: int,
+                           device, dtype, model_key: Optional[str] = None):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached.
+
+        ``axes_dims`` is filled in from Lens's own RoPE axis split
+        (``transformer.config.axes_dims_rope``, default ``(8, 28, 28)`` summing to
+        ``attention_head_dim == 64``). Lens's complex RoPE (``apply_rotary_emb_lens``
+        does ``view_as_complex`` over adjacent head-dim pairs, then ``view_as_real``
+        + ``flatten``) uses the EXACT same per-axis / repeat-interleave(2) layout
+        ``frequency_scale_vector`` expects (a real magnitude scale on an
+        already-rotated real Key commutes with the rotation), so the actual
+        RoPE-frequency suppression applies directly here -- no ``torch.ones``
+        fallback needed, unlike an architecture whose axis split can't be
+        cleanly derived.
+
+        Reuses ``lens_pipeline_ops.vae_encode`` (already produces the exact
+        flat-sequence, patchified, BN-normalized token layout the transformer
+        expects) rather than duplicating that encode path.
+        """
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from diffusers.utils.torch_utils import randn_tensor
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.lens.lens_pipeline_ops import vae_encode
+        from core.keep_hot import is_resident, discard_resident
+
+        cfg = style_config_from_dict(style_dict)
+        cfg.axes_dims = tuple(transformer.config.axes_dims_rope)
+
+        if not is_resident(self, "vae", model_key):
+            self._lens_move("vae", device)
+        vae_gpu = self.lens_components["vae"]
+        ref_x0 = vae_encode(vae_gpu, style_dict["image"], height, width, device=device, dtype=dtype)
+        self._lens_move("vae", "cpu")
+        discard_resident(self, "vae")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        seed = params.get("seed", -1)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+        generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+        eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
+        return cfg, ref_x0, eps_ref
+
     def _lens_set_attention_backend(self, transformer, params: Dict[str, Any]) -> str:
         """Stamp the inference attention backend on every LensJointAttention module.
 
@@ -522,6 +571,16 @@ class LensMixin:
             # Stage 2: Prepare latents
             latents = prepare_latents(height, width, dtype=dtype, device=device, seed=seed)
 
+            # Training-free reference-style transfer setup (no-op / None when no style
+            # reference is attached -- byte-identical default path below). VAE-encodes
+            # the style image (staging the VAE to GPU just for this, then back off) --
+            # a self-contained extra VAE round-trip separate from Stage 4's decode.
+            style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
+                params, transformer, height, width, device, dtype, model_key=_kh_model_key
+            )
+            if style_cfg is not None:
+                print("[Lens] Style transfer active")
+
             # Stage 3: Denoising
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
@@ -542,6 +601,7 @@ class LensMixin:
                     nag_params=nag_params,
                     negpip_params=negpip_params,
                     tokenizer=tokenizer,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if applied_lora_count:
@@ -695,6 +755,14 @@ class LensMixin:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+            # Training-free reference-style transfer setup (no-op / None when no style
+            # reference is attached -- byte-identical default path below).
+            style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
+                params, transformer, height, width, device, dtype, model_key=_kh_model_key
+            )
+            if style_cfg is not None:
+                print("[Lens] Style transfer active")
+
             # Stage 3: Denoising (SDEdit)
             print("[Lens] Stage 3: Denoising...")
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
@@ -716,6 +784,7 @@ class LensMixin:
                     nag_params=nag_params,
                     negpip_params=negpip_params,
                     tokenizer=tokenizer,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if applied_lora_count:
@@ -880,6 +949,14 @@ class LensMixin:
 
             mask_latent = prepare_mask_latent(mask_image, latent_h, latent_w, device=device, dtype=dtype)
 
+            # Training-free reference-style transfer setup (no-op / None when no style
+            # reference is attached -- byte-identical default path below).
+            style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
+                params, transformer, height, width, device, dtype, model_key=_kh_model_key
+            )
+            if style_cfg is not None:
+                print("[Lens] Style transfer active")
+
             # Stage 3: Denoising with repaint
             print("[Lens] Stage 3: Denoising (repaint)...")
             transformer = self._lens_stage_transformer(params, device, transformer_quantization,
@@ -902,6 +979,7 @@ class LensMixin:
                     nag_params=nag_params,
                     negpip_params=negpip_params,
                     tokenizer=tokenizer,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if applied_lora_count:

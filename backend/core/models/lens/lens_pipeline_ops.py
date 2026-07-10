@@ -561,7 +561,7 @@ def _unwrap_transformer(driver):
     return real
 
 
-def _build_lens_fbcache(spectrum_params, spectrum):
+def _build_lens_fbcache(spectrum_params, spectrum, style_active: bool = False):
     """Build a single FBCache instance for the Lens denoise loop, or None.
 
     Lens runs ONE BATCHED transformer forward per step (cond/uncond — and the NAG negative —
@@ -571,7 +571,11 @@ def _build_lens_fbcache(spectrum_params, spectrum):
       (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
       (b) Block Swap -- a cache hit skips transformer_blocks[1:], desyncing the block-swap
           rotation (the offloader expects every block to run each step).
-    It runs only when BOTH are off."""
+      (c) Reference-style transfer -- a cache hit skips transformer_blocks[1:] on the
+          capture AND/OR inject forward, leaving the per-block K/V store only partially
+          populated (or the inject forward silently reusing a stale cached residual
+          instead of reading the just-captured reference), desyncing exactly like (b).
+    It runs only when ALL three are off."""
     from core.inference.fbcache import build_fbcache, fbcache_active
     if spectrum_params is None or not fbcache_active(spectrum_params):
         return None
@@ -582,6 +586,9 @@ def _build_lens_fbcache(spectrum_params, spectrum):
         return None
     if block_swap_on:
         print("[FBCache] Lens disabled: Block Swap is enabled (block skip desyncs rotation)")
+        return None
+    if style_active:
+        print("[FBCache] Lens disabled: Style transfer is active (block skip desyncs the per-block K/V store)")
         return None
     return build_fbcache(spectrum_params, label="Lens")
 
@@ -595,6 +602,99 @@ def _cleanup_lens_fbcache(real_transformer, fbcache):
         real_transformer._fbcache = None
     if hasattr(real_transformer, "_fbcache_step"):
         real_transformer._fbcache_step = None
+
+
+# ---------------------------------------------------------------------------
+# Training-free reference-style transfer (StyleAligned/VSP-style KV injection)
+# ---------------------------------------------------------------------------
+
+def _lens_style_step(
+    real_transformer,
+    style_cfg,
+    style_ref_x0: torch.Tensor,
+    style_eps_ref: torch.Tensor,
+    step_idx: int,
+    total_steps: int,
+    t,
+    latents: torch.Tensor,
+    encoder_features: List[torch.Tensor],
+    encoder_mask: torch.Tensor,
+    guidance_scale: float,
+    img_shapes,
+    advanced_cfg: Optional[Dict[str, Any]],
+) -> Tuple[torch.Tensor, Any]:
+    """One style-active denoise step for Lens: a REF capture forward (the style
+    reference re-noised to this step's CURRENT sigma, using the TARGET's own
+    POSITIVE-prompt conditioning so the image-token layout lines up exactly)
+    stashes post-RoPE image-token Q/K/V per block; the COND forward then reads/
+    injects them via ``inject_kv``. The UNCOND forward is always run with the
+    style context disarmed (untouched), matching the Krea2/FLUX.2 wiring.
+
+    Bypasses Lens's normal batched-CFG single-forward fast path for this step:
+    capture + cond + uncond become THREE single-batch (bsz=1) forwards instead
+    of one batch-2 forward, since the style hook only stashes/reads ONE
+    reference K/V set and mixing it into a [cond, uncond] batched forward would
+    inject the reference into the uncond branch too (undefined for StyleAligned).
+    NAG/NegPip/FBCache are already disabled for the WHOLE generation whenever
+    style transfer is active (see the ``style_active`` gate in each
+    ``denoise_loop*`` below), so this never has to reconcile with those wrappers.
+
+    ``encoder_features``/``encoder_mask`` are the CFG-batched (cond-first,
+    uncond-second) tensors built by ``encode_prompt``; slicing ``[0:1]``/``[1:2]``
+    recovers the single-batch positive/negative conditioning.
+
+    Noising convention (verified against this loop's own scheduler stepping):
+    flow-matching ``x_t = (1 - sigma) * x0 + sigma * eps``, ``sigma = t / 1000``
+    -- identical to Krea2's/FLUX.2's reference-noising convention and to this
+    module's own img2img/inpaint SDEdit re-noising.
+    """
+    from core.inference.reference_style import StyleContext
+
+    sigma_now = float(t.item()) / 1000.0
+    ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
+    progress = style_cfg.step_progress(step_idx, total_steps)
+
+    cond_features = [f[0:1] for f in encoder_features]
+    cond_mask = encoder_mask[0:1]
+    uncond_features = [f[1:2] for f in encoder_features]
+    uncond_mask = encoder_mask[1:2]
+    timestep1 = t.expand(1).to(latents.dtype)
+
+    try:
+        capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+        real_transformer._style_ctx = capture_ctx
+        real_transformer(
+            hidden_states=ref_t.to(latents.dtype),
+            encoder_hidden_states=cond_features,
+            encoder_hidden_states_mask=cond_mask,
+            timestep=timestep1 / 1000,
+            img_shapes=img_shapes,
+        )
+
+        inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+        real_transformer._style_ctx = inject_ctx
+        noise_pred_cond = real_transformer(
+            hidden_states=latents.to(latents.dtype),
+            encoder_hidden_states=cond_features,
+            encoder_hidden_states_mask=cond_mask,
+            timestep=timestep1 / 1000,
+            img_shapes=img_shapes,
+        )
+    finally:
+        real_transformer._style_ctx = None
+
+    noise_pred_uncond = real_transformer(
+        hidden_states=latents.to(latents.dtype),
+        encoder_hidden_states=uncond_features,
+        encoder_hidden_states_mask=uncond_mask,
+        timestep=timestep1 / 1000,
+        img_shapes=img_shapes,
+    )
+
+    noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+        noise_pred_cond, noise_pred_uncond, guidance_scale, sigma_now, 1.0, advanced_cfg,
+    )
+    return noise_pred, cfg_metrics
 
 
 # ---------------------------------------------------------------------------
@@ -614,6 +714,9 @@ def denoise_loop(
     nag_params: Optional[Dict[str, Any]] = None,
     negpip_params: Optional[Dict[str, Any]] = None,
     tokenizer=None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Flow-matching denoising loop for txt2img."""
     seq_len = latent_h * latent_w
@@ -622,6 +725,19 @@ def denoise_loop(
     scheduler.set_timesteps(sigmas=sigmas, device=latents.device, mu=mu)
 
     img_shapes = [(1, latent_h, latent_w)]
+    total_steps = len(scheduler.timesteps)
+
+    # Training-free reference-style transfer (see core.inference.reference_style):
+    # active only when a style reference image is attached. Mutually exclusive
+    # with NAG/NegPip/FBCache for the WHOLE generation (not just the style-active
+    # steps) -- all three rewrite the attention-time token layout or cache
+    # attention outputs, which a per-block reference K/V store cannot coexist with.
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    if style_active and (nag_params is not None or negpip_params is not None):
+        print("[Lens] Style transfer active: disabling NAG/NegPip for this generation "
+              "(both rewrite the attention-time token layout, same conflict as FBCache)")
+        nag_params = None
+        negpip_params = None
 
     transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
         transformer, encoder_features, encoder_mask, nag_params,
@@ -633,48 +749,67 @@ def denoise_loop(
 
     spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
-    fbcache = _build_lens_fbcache(spectrum_params, spectrum)
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=style_active)
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
-    for i, t in enumerate(scheduler.timesteps):
-        raise_if_cancelled()
-        timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
-        hidden_states = latents.repeat(2, 1, 1)            # [cond, uncond]
+    try:
+        for i, t in enumerate(scheduler.timesteps):
+            raise_if_cancelled()
+            timestep = t.expand(2).to(latents.dtype)           # CFG: 2 × batch=1
+            hidden_states = latents.repeat(2, 1, 1)            # [cond, uncond]
 
-        # Spectrum: forecast the model output on skip steps
-        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
-        if spectrum_skip:
-            noise_pred = spectrum.forecast(i)
-            cfg_metrics = None
-        else:
-            # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
-            if fbcache is not None:
-                real_transformer._fbcache = fbcache
-                real_transformer._fbcache_step = i
-            noise_out = transformer(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_features,
-                encoder_hidden_states_mask=encoder_mask,
-                timestep=timestep / 1000,
-                img_shapes=img_shapes,
-            )
+            # Spectrum: forecast the model output on skip steps
+            spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+            style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
+            if spectrum_skip:
+                noise_pred = spectrum.forecast(i)
+                cfg_metrics = None
+                sigma_t = t.item() / 1000.0
+            elif style_active_step:
+                sigma_t = t.item() / 1000.0
+                noise_pred, cfg_metrics = _lens_style_step(
+                    real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    guidance_scale, img_shapes, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            else:
+                # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
+                if fbcache is not None:
+                    real_transformer._fbcache = fbcache
+                    real_transformer._fbcache_step = i
+                noise_out = transformer(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_features,
+                    encoder_hidden_states_mask=encoder_mask,
+                    timestep=timestep / 1000,
+                    img_shapes=img_shapes,
+                )
 
-            cond, uncond = noise_out.chunk(2)
-            sigma_t = t.item() / 1000.0
-            noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
-                cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
-            )
-            if spectrum is not None:
-                spectrum.record(i, noise_pred)
+                cond, uncond = noise_out.chunk(2)
+                sigma_t = t.item() / 1000.0
+                noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+                    cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
-        # pred_x0 = x_t - σ·v  (Flow Matching clean-image estimate)
-        pred_x0 = latents - sigma_t * noise_pred
+            # pred_x0 = x_t - σ·v  (Flow Matching clean-image estimate)
+            pred_x0 = latents - sigma_t * noise_pred
 
-        latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-        if progress_callback is not None:
-            progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+            if progress_callback is not None:
+                progress_callback(i, num_inference_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+    finally:
+        # Defensive clear: never let a stale StyleContext leak into a later forward
+        # (e.g. a subsequent non-style generation reusing this transformer instance,
+        # or an exception/cancellation mid-loop) -- mirrors the Z-Image style commit's
+        # defensive clear.
+        if hasattr(real_transformer, "_style_ctx"):
+            real_transformer._style_ctx = None
 
     _cleanup_lens_fbcache(real_transformer, fbcache)
     if _negpip_modules is not None:
@@ -701,12 +836,22 @@ def denoise_loop_img2img(
     nag_params: Optional[Dict[str, Any]] = None,
     negpip_params: Optional[Dict[str, Any]] = None,
     tokenizer=None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on flow-matching schedule."""
     seq_len = latent_h * latent_w
     mu = compute_empirical_mu(seq_len, num_inference_steps)
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
+
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    if style_active and (nag_params is not None or negpip_params is not None):
+        print("[Lens] Style transfer active: disabling NAG/NegPip for this generation "
+              "(both rewrite the attention-time token layout, same conflict as FBCache)")
+        nag_params = None
+        negpip_params = None
 
     transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
         transformer, encoder_features, encoder_mask, nag_params,
@@ -734,47 +879,62 @@ def denoise_loop_img2img(
 
     spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
-    fbcache = _build_lens_fbcache(spectrum_params, spectrum)
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=style_active)
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
-    for i, t in enumerate(timesteps_to_use):
-        raise_if_cancelled()
-        timestep = t.expand(2).to(latents.dtype)
-        hidden_states = latents.repeat(2, 1, 1)
+    try:
+        for i, t in enumerate(timesteps_to_use):
+            raise_if_cancelled()
+            timestep = t.expand(2).to(latents.dtype)
+            hidden_states = latents.repeat(2, 1, 1)
 
-        # Spectrum: forecast the model output on skip steps
-        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
-        if spectrum_skip:
-            noise_pred = spectrum.forecast(i)
-            cfg_metrics = None
-        else:
-            # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
-            if fbcache is not None:
-                real_transformer._fbcache = fbcache
-                real_transformer._fbcache_step = i
-            noise_out = transformer(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_features,
-                encoder_hidden_states_mask=encoder_mask,
-                timestep=timestep / 1000,
-                img_shapes=img_shapes,
-            )
+            # Spectrum: forecast the model output on skip steps
+            spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+            style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
+            if spectrum_skip:
+                noise_pred = spectrum.forecast(i)
+                cfg_metrics = None
+                sigma_t = t.item() / 1000.0
+            elif style_active_step:
+                sigma_t = t.item() / 1000.0
+                noise_pred, cfg_metrics = _lens_style_step(
+                    real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    guidance_scale, img_shapes, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            else:
+                # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
+                if fbcache is not None:
+                    real_transformer._fbcache = fbcache
+                    real_transformer._fbcache_step = i
+                noise_out = transformer(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_features,
+                    encoder_hidden_states_mask=encoder_mask,
+                    timestep=timestep / 1000,
+                    img_shapes=img_shapes,
+                )
 
-            cond, uncond = noise_out.chunk(2)
-            sigma_t = t.item() / 1000.0
-            noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
-                cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
-            )
-            if spectrum is not None:
-                spectrum.record(i, noise_pred)
+                cond, uncond = noise_out.chunk(2)
+                sigma_t = t.item() / 1000.0
+                noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+                    cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
-        pred_x0 = latents - sigma_t * noise_pred
+            pred_x0 = latents - sigma_t * noise_pred
 
-        latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-        if progress_callback is not None:
-            progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+            if progress_callback is not None:
+                progress_callback(i, total_steps, latents.detach(), cfg_metrics, pred_x0.detach())
+    finally:
+        if hasattr(real_transformer, "_style_ctx"):
+            real_transformer._style_ctx = None
 
     _cleanup_lens_fbcache(real_transformer, fbcache)
     if _negpip_modules is not None:
@@ -802,6 +962,9 @@ def denoise_loop_inpaint(
     nag_params: Optional[Dict[str, Any]] = None,
     negpip_params: Optional[Dict[str, Any]] = None,
     tokenizer=None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Repaint-style inpaint on flow-matching schedule.
 
@@ -811,6 +974,13 @@ def denoise_loop_inpaint(
     mu = compute_empirical_mu(seq_len, num_inference_steps)
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
+
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    if style_active and (nag_params is not None or negpip_params is not None):
+        print("[Lens] Style transfer active: disabling NAG/NegPip for this generation "
+              "(both rewrite the attention-time token layout, same conflict as FBCache)")
+        nag_params = None
+        negpip_params = None
 
     transformer, encoder_features, encoder_mask, _nag_wrapper = _maybe_setup_nag(
         transformer, encoder_features, encoder_mask, nag_params,
@@ -842,53 +1012,68 @@ def denoise_loop_inpaint(
 
     spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
-    fbcache = _build_lens_fbcache(spectrum_params, spectrum)
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=style_active)
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
-    for i, t in enumerate(timesteps_to_use):
-        raise_if_cancelled()
-        timestep = t.expand(2).to(latents.dtype)
-        hidden_states = latents.repeat(2, 1, 1)
+    try:
+        for i, t in enumerate(timesteps_to_use):
+            raise_if_cancelled()
+            timestep = t.expand(2).to(latents.dtype)
+            hidden_states = latents.repeat(2, 1, 1)
 
-        # Spectrum: forecast the model output on skip steps
-        spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
-        if spectrum_skip:
-            noise_pred = spectrum.forecast(i)
-            cfg_metrics = None
-        else:
-            # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
-            if fbcache is not None:
-                real_transformer._fbcache = fbcache
-                real_transformer._fbcache_step = i
-            noise_out = transformer(
-                hidden_states=hidden_states,
-                encoder_hidden_states=encoder_features,
-                encoder_hidden_states_mask=encoder_mask,
-                timestep=timestep / 1000,
-                img_shapes=img_shapes,
-            )
+            # Spectrum: forecast the model output on skip steps
+            spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
+            style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
+            if spectrum_skip:
+                noise_pred = spectrum.forecast(i)
+                cfg_metrics = None
+                sigma_t = t.item() / 1000.0
+            elif style_active_step:
+                sigma_t = t.item() / 1000.0
+                noise_pred, cfg_metrics = _lens_style_step(
+                    real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    guidance_scale, img_shapes, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            else:
+                # FBCache: attach this step's cache to the real transformer (None -> forward unchanged).
+                if fbcache is not None:
+                    real_transformer._fbcache = fbcache
+                    real_transformer._fbcache_step = i
+                noise_out = transformer(
+                    hidden_states=hidden_states,
+                    encoder_hidden_states=encoder_features,
+                    encoder_hidden_states_mask=encoder_mask,
+                    timestep=timestep / 1000,
+                    img_shapes=img_shapes,
+                )
 
-            cond, uncond = noise_out.chunk(2)
-            sigma_t = t.item() / 1000.0
-            noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
-                cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
-            )
-            if spectrum is not None:
-                spectrum.record(i, noise_pred)
+                cond, uncond = noise_out.chunk(2)
+                sigma_t = t.item() / 1000.0
+                noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+                    cond, uncond, guidance_scale, sigma_t, 1.0, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
 
-        pred_x0 = latents - sigma_t * noise_pred
+            pred_x0 = latents - sigma_t * noise_pred
 
-        latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+            latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
 
-        # Repaint: replace non-masked region with noised init at current t level
-        noised_init = (1.0 - sigma_t) * init_latents + sigma_t * init_noise
-        latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
+            # Repaint: replace non-masked region with noised init at current t level
+            noised_init = (1.0 - sigma_t) * init_latents + sigma_t * init_noise
+            latents = mask_latent * latents + (1.0 - mask_latent) * noised_init
 
-        if progress_callback is not None:
-            # Blend pred_x0 with known region for a geometry-aware preview
-            preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
-            progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
+            if progress_callback is not None:
+                # Blend pred_x0 with known region for a geometry-aware preview
+                preview_x0 = mask_latent * pred_x0 + (1.0 - mask_latent) * init_latents
+                progress_callback(i, total_steps, latents.detach(), cfg_metrics, preview_x0.detach())
+    finally:
+        if hasattr(real_transformer, "_style_ctx"):
+            real_transformer._style_ctx = None
 
     _cleanup_lens_fbcache(real_transformer, fbcache)
     if _negpip_modules is not None:

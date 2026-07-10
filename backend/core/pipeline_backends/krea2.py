@@ -96,6 +96,31 @@ class Krea2Mixin:
         print(f"[Krea2] Attention backend: {backend} "
               f"(from attention_type={params.get('attention_type')!r})")
 
+    def _krea2_style_config(self, params: Dict[str, Any], transformer, device):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached. ``axes_dims`` is filled in from the
+        loaded transformer's own RoPE config (arch-specific; the shared
+        ``reference_style`` module has no universal default for it)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.krea2.krea2_pipeline_ops import prepare_style_reference
+
+        cfg = style_config_from_dict(style_dict)
+        cfg.axes_dims = tuple(transformer.config.axes_dims_rope)
+
+        common = self._krea2_common_params(params, style_dict["image"].width, style_dict["image"].height)
+        ref_x0, eps_ref = prepare_style_reference(
+            self.krea2_components["vae"], style_dict["image"],
+            common["height"], common["width"], common["patch_size"],
+            device=device, seed=common["seed"],
+        )
+        return cfg, ref_x0, eps_ref
+
     @staticmethod
     def _krea2_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -246,12 +271,24 @@ class Krea2Mixin:
             else:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
+
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                if not is_resident(self, "vae", _kh_model_key):
+                    self._krea2_move("vae", device)
+                style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             try:
                 latents = denoise_loop(
                     transformer, scheduler, latents, prompt_embeds, prompt_mask,
                     neg_embeds, neg_mask, cfg["guidance"], cfg["num_inference_steps"],
                     cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], cfg["is_distilled"], device,
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if _kh_keep_transformer:
@@ -332,6 +369,16 @@ class Krea2Mixin:
             else:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
+
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                self._krea2_move("vae", device)
+                style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             try:
                 latents = denoise_loop_img2img(
                     transformer, scheduler, init_latents, denoising_strength,
@@ -339,6 +386,7 @@ class Krea2Mixin:
                     cfg["guidance"], cfg["num_inference_steps"],
                     cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], cfg["is_distilled"], device,
                     seed=cfg["seed"], progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if _kh_keep_transformer:
@@ -432,6 +480,16 @@ class Krea2Mixin:
             else:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
+
+            style_cfg = style_ref_x0 = style_eps_ref = None
+            if params.get("style_transfer"):
+                self._krea2_move("vae", device)
+                style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+                self._krea2_move("vae", "cpu")
+                discard_resident(self, "vae")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             try:
                 latents = denoise_loop_inpaint(
                     transformer, scheduler, init_latents, mask_latent, denoising_strength,
@@ -439,6 +497,7 @@ class Krea2Mixin:
                     cfg["guidance"], cfg["num_inference_steps"],
                     cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], cfg["is_distilled"], device,
                     seed=cfg["seed"], progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if _kh_keep_transformer:

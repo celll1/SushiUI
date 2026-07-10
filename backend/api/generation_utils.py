@@ -18,26 +18,61 @@ import os
 def process_controlnet_configs(
     controlnet_configs: List[Dict],
     generation_type: str = "txt2img"
-) -> List[Dict]:
+) -> "tuple[List[Dict], Optional[Dict]]":
     """
     ControlNet設定を処理し、base64画像をデコード
 
     重複削減: 105行 → 35行（70行削減）
+
+    An entry with ``is_style_transfer: true`` is NOT a ControlNet: it carries a
+    training-free reference-style-transfer request (StyleAligned/VSP-style KV
+    injection, see ``core.inference.reference_style``). It is extracted into
+    a separate style-config dict (arch-agnostic keys) instead of being appended
+    to the returned ControlNet image list.
 
     Args:
         controlnet_configs: ControlNet設定のリスト
         generation_type: 生成タイプ（ログ用）
 
     Returns:
-        処理済みのControlNet画像リスト
+        (処理済みのControlNet画像リスト, style_transfer dict or None)
     """
     controlnet_images = []
+    style_transfer = None
     if not controlnet_configs:
-        return controlnet_images
+        return controlnet_images, style_transfer
 
     print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
 
     for idx, cn_config in enumerate(controlnet_configs):
+        if cn_config.get("is_style_transfer"):
+            if not cn_config.get("image_base64"):
+                print(f"[ControlNet {idx}] WARNING: is_style_transfer entry has no image_base64; skipping.")
+                continue
+            try:
+                image_data = base64.b64decode(cn_config["image_base64"])
+                image = Image.open(BytesIO(image_data)).convert("RGB")
+                print(f"[StyleTransfer {idx}] Reference image decoded successfully: {image.size}")
+                style_transfer = {
+                    "image": image,
+                    "ref_k_strength": cn_config.get("strength", 1.0),
+                    "adain_strength": cn_config.get("style_adain_strength"),
+                    "block_range": cn_config.get("style_blocks"),
+                    "start_step": cn_config.get("start_step", 0),
+                    "end_step": cn_config.get("end_step", 1000),
+                    "low_scale_end": cn_config.get("style_low_scale_end"),
+                    "high_scale": cn_config.get("style_high_scale"),
+                    "beta": cn_config.get("style_beta"),
+                    "value_mode": cn_config.get("style_value_mode"),
+                    "value_adain_strength": cn_config.get("style_value_adain_strength"),
+                    "ref_value_mix": cn_config.get("style_ref_value_mix"),
+                    "late_release": cn_config.get("style_late_release"),
+                    "rope_offset": cn_config.get("style_rope_offset"),
+                }
+            except Exception as e:
+                print(f"[StyleTransfer {idx}] Error decoding reference image: {e}")
+            continue
+
         print(f"[ControlNet {idx}] model_path: {cn_config.get('model_path')}, "
               f"has_image_base64: {bool(cn_config.get('image_base64'))}")
 
@@ -65,7 +100,7 @@ def process_controlnet_configs(
                   "ControlNet will be skipped.")
 
     print(f"[Routes] Total controlnet_images added to params: {len(controlnet_images)}")
-    return controlnet_images
+    return controlnet_images, style_transfer
 
 
 def create_progress_callback_factory(

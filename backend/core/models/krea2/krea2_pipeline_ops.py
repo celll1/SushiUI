@@ -197,6 +197,23 @@ def _vae_norm_stats(vae, device, dtype):
     return mean, std
 
 
+def prepare_style_reference(
+    vae, style_image: Image.Image, height: int, width: int, patch_size: int, device, seed: Optional[int] = None,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """VAE-encode the style reference image to the SAME packed-latent shape as
+    the target (so it can be re-noised/attended alongside the target's own
+    latents), and draw the ONE fixed reference noise tensor used for every
+    step's re-noising (drawing fresh noise per step would make the reference
+    K/V flicker step to step). Uses a seed offset from the main generation
+    seed so the reference noise is decorrelated from the target's own init
+    noise but still reproducible."""
+    ref_x0 = vae_encode(vae, style_image, height, width, patch_size, device=device, dtype=torch.float32)
+    ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+    generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+    eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
+    return ref_x0, eps_ref
+
+
 @torch.no_grad()
 def vae_encode(vae, image: Image.Image, height: int, width: int, patch_size: int, device, dtype) -> torch.Tensor:
     """Encode a PIL image -> packed normalized latent (1, grid_h*grid_w, C*p*p)."""
@@ -338,14 +355,31 @@ def _run_loop(
     init_latents: Optional[torch.Tensor] = None,
     init_noise: Optional[torch.Tensor] = None,
     mask_latent: Optional[torch.Tensor] = None,
+    style_cfg=None,
+    style_ref_x0: Optional[torch.Tensor] = None,
+    style_eps_ref: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Shared flow-matching Euler loop (txt2img / img2img / inpaint)."""
+    """Shared flow-matching Euler loop (txt2img / img2img / inpaint).
+
+    Training-free reference-style transfer (``style_cfg`` is a
+    ``core.inference.reference_style.StyleTransferConfig``, non-None only when
+    a style reference is attached): per active step, does a REF capture
+    forward (transformer run on the style reference re-noised to this step's
+    sigma, using the TARGET's own prompt_embeds/position_ids so the image-token
+    offsets match exactly) to stash post-RoPE image-token K/V per block, then
+    the normal cond forward reads/injects them. The uncond forward is always
+    run with no style context (untouched). ``style_eps_ref`` is drawn ONCE per
+    generation by the caller (not per step) -- re-noising with fresh noise each
+    step would make the reference K/V flicker step to step.
+    """
     from core.inference.cancellation import raise_if_cancelled
+    from core.inference.reference_style import StyleContext
 
     num_train = scheduler.config.num_train_timesteps
     total_steps = len(timesteps)
     do_cfg = neg_prompt_embeds is not None and guidance > 0.0
     t_dtype = transformer.dtype
+    style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
 
     for i, t in enumerate(timesteps):
         raise_if_cancelled()
@@ -354,14 +388,44 @@ def _run_loop(
         sigma_now = float(t.item()) / num_train
         timestep = (t / num_train).expand(latents.shape[0]).to(t_dtype)
 
-        v_cond = transformer(
-            hidden_states=latents.to(t_dtype),
-            encoder_hidden_states=prompt_embeds,
-            timestep=timestep,
-            position_ids=position_ids,
-            encoder_attention_mask=prompt_embeds_mask,
-            return_dict=False,
-        )[0].to(torch.float32)
+        if style_active and style_cfg.is_step_active(i, total_steps):
+            # Re-noise the (fixed) style reference latent to the CURRENT sigma,
+            # using the SAME noising convention as img2img/inpaint SDEdit
+            # (x_t = (1-sigma)*x0 + sigma*eps) and the SAME fixed eps every step.
+            ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
+            progress = style_cfg.step_progress(i, total_steps)
+
+            capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+            transformer._style_ctx = capture_ctx
+            transformer(
+                hidden_states=ref_t.to(t_dtype),
+                encoder_hidden_states=prompt_embeds,
+                timestep=timestep,
+                position_ids=position_ids,
+                encoder_attention_mask=prompt_embeds_mask,
+                return_dict=False,
+            )
+
+            inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+            transformer._style_ctx = inject_ctx
+            v_cond = transformer(
+                hidden_states=latents.to(t_dtype),
+                encoder_hidden_states=prompt_embeds,
+                timestep=timestep,
+                position_ids=position_ids,
+                encoder_attention_mask=prompt_embeds_mask,
+                return_dict=False,
+            )[0].to(torch.float32)
+            transformer._style_ctx = None
+        else:
+            v_cond = transformer(
+                hidden_states=latents.to(t_dtype),
+                encoder_hidden_states=prompt_embeds,
+                timestep=timestep,
+                position_ids=position_ids,
+                encoder_attention_mask=prompt_embeds_mask,
+                return_dict=False,
+            )[0].to(torch.float32)
 
         v_uncond = None
         if do_cfg:
@@ -401,6 +465,7 @@ def denoise_loop(
     neg_prompt_embeds, neg_prompt_embeds_mask, guidance, num_inference_steps,
     grid_h, grid_w, patch_size, is_distilled, device,
     progress_callback=None, advanced_cfg=None,
+    style_cfg=None, style_ref_x0=None, style_eps_ref=None,
 ) -> torch.Tensor:
     """txt2img flow-matching loop."""
     timesteps = _set_scheduler_timesteps(scheduler, num_inference_steps, latents.shape[1], is_distilled, device)
@@ -414,6 +479,7 @@ def denoise_loop(
         neg_prompt_embeds, neg_prompt_embeds_mask, position_ids, neg_position_ids,
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
     )
 
 
@@ -424,6 +490,7 @@ def denoise_loop_img2img(
     prompt_embeds, prompt_embeds_mask, neg_prompt_embeds, neg_prompt_embeds_mask,
     guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, device,
     seed=None, progress_callback=None, advanced_cfg=None,
+    style_cfg=None, style_ref_x0=None, style_eps_ref=None,
 ) -> torch.Tensor:
     """SDEdit-style img2img on the flow-matching schedule."""
     all_timesteps = _set_scheduler_timesteps(scheduler, num_inference_steps, init_latents.shape[1], is_distilled, device)
@@ -449,6 +516,7 @@ def denoise_loop_img2img(
         neg_prompt_embeds, neg_prompt_embeds_mask, position_ids, neg_position_ids,
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
+        style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
     )
 
 
@@ -459,6 +527,7 @@ def denoise_loop_inpaint(
     prompt_embeds, prompt_embeds_mask, neg_prompt_embeds, neg_prompt_embeds_mask,
     guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, device,
     seed=None, progress_callback=None, advanced_cfg=None,
+    style_cfg=None, style_ref_x0=None, style_eps_ref=None,
 ) -> torch.Tensor:
     """Repaint-style inpaint. mask_latent: (1, grid_h*grid_w, 1), 1=inpaint."""
     all_timesteps = _set_scheduler_timesteps(scheduler, num_inference_steps, init_latents.shape[1], is_distilled, device)
@@ -485,4 +554,5 @@ def denoise_loop_inpaint(
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         init_latents=init_latents, init_noise=init_noise, mask_latent=mask_latent,
+        style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
     )

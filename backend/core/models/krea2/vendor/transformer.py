@@ -74,7 +74,17 @@ class Krea2RMSNorm(nn.Module):
 
 class Krea2Attention(nn.Module):
     """Self-attention with grouped-query projections, q/k RMSNorm, rotary embeddings
-    and a sigmoid output gate. Attention runs through SushiUI's unified conduit."""
+    and a sigmoid output gate. Attention runs through SushiUI's unified conduit.
+
+    ``_style_ctx`` / ``block_idx`` support training-free reference-style KV
+    injection (see ``core.inference.reference_style``). Both default to
+    ``None`` at the class level: attention modules that are never stamped
+    (the text-fusion attention blocks, or any main block when no style
+    transfer is requested) take the byte-identical original code path.
+    """
+
+    _style_ctx = None
+    block_idx = None
 
     def __init__(
         self, hidden_size: int, num_heads: int, num_kv_heads: Optional[int] = None, eps: float = 1e-5
@@ -113,6 +123,49 @@ class Krea2Attention(nn.Module):
         if image_rotary_emb is not None:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
             key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
+
+        # --- Reference-style KV injection (training-free) ---
+        # Must run strictly AFTER qk-RMSNorm and AFTER RoPE: scaling/AdaIN-ing K
+        # before RMSNorm would be silently erased (RMSNorm is scale-invariant),
+        # and RoPE must already be baked into K before it is stashed/injected
+        # (the rotary phase carries the token position; injecting pre-RoPE K
+        # would desync the reference's positions from the target's).
+        ctx = self._style_ctx
+        if ctx is not None and self.block_idx is not None and ctx.active_for_block(self.block_idx):
+            img_start, img_end = ctx.img_start, ctx.img_end
+            if ctx.mode == "capture":
+                # Stash post-norm/post-RoPE image-token Q/K/V. The reference
+                # QUERY is captured (not just K/V) because target-Q's AdaIN
+                # alignment is stylized by the REFERENCE Query, not the
+                # reference Key (verbatim ComfyUI-Krea2-StyleTransfer
+                # ``_cross_batch_adain_qk``).
+                ctx.store[self.block_idx] = (
+                    query[:, img_start:img_end].detach().clone(),
+                    key[:, img_start:img_end].detach().clone(),
+                    value[:, img_start:img_end].detach().clone(),
+                )
+            elif ctx.mode == "inject":
+                ref_qkv = ctx.store.get(self.block_idx)
+                if ref_qkv is not None:
+                    from core.inference.reference_style import inject_kv, make_ref_value
+
+                    ref_q, ref_k, ref_v = ref_qkv
+                    cfg = ctx.config
+                    if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
+                        freq_vec = cfg.get_freq_scale_vector(self.head_dim, ctx.progress, key.device, key.dtype)
+                        target_v_img = value[:, img_start:img_end]
+                        ref_v_final = make_ref_value(
+                            target_v_img, ref_v, cfg.value_mode, cfg.value_adain_strength, cfg.ref_value_mix
+                        )
+                        ref_len_before = key.shape[1]
+                        key, value, query = inject_kv(
+                            key, value, ref_k, ref_v_final, img_start, img_end,
+                            cfg.ref_k_strength, freq_vec, cfg.adain_strength, q=query, ref_q=ref_q,
+                        )
+                        if attention_mask is not None and key.shape[1] != ref_len_before:
+                            ref_len = ref_k.shape[1]
+                            pad = attention_mask.new_ones(attention_mask.shape[0], 1, 1, ref_len)
+                            attention_mask = torch.cat([attention_mask, pad], dim=-1)
 
         hidden_states = dispatch_attention(
             query,
@@ -401,6 +454,23 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
     def disable_gradient_checkpointing(self) -> None:
         self.gradient_checkpointing = False
 
+    def _stamp_style_context(self, text_seq_len: int, image_seq_len: int) -> None:
+        """Propagate ``self._style_ctx`` (set externally by the pipeline_ops
+        denoise loop, ``None`` by default) to every main ``transformer_blocks``
+        attention module and its static ``block_idx``, and record this
+        forward's image-token range on the context. Does NOT touch the
+        text-fusion attention blocks (style transfer only targets the main
+        DiT self-attention). When ``self._style_ctx`` is absent/None this is a
+        cheap no-op assignment loop -- attention forward remains byte-identical.
+        """
+        ctx = getattr(self, "_style_ctx", None)
+        if ctx is not None:
+            ctx.img_start = text_seq_len
+            ctx.img_end = text_seq_len + image_seq_len
+        for idx, block in enumerate(self.transformer_blocks):
+            block.attn.block_idx = idx
+            block.attn._style_ctx = ctx
+
     def _stamp_attention_backend(self) -> None:
         """Propagate this model's ``_attn_backend`` to every attention module and derive
         the mode from the autograd state (inference under no_grad -> sage allowed;
@@ -429,6 +499,7 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
 
         batch_size, image_seq_len, _ = hidden_states.shape
         text_seq_len = encoder_hidden_states.shape[1]
+        self._stamp_style_context(text_seq_len, image_seq_len)
 
         temb = self.time_embed(timestep, dtype=hidden_states.dtype)
         temb_mod = self.time_mod_proj(F.gelu(temb, approximate="tanh"))

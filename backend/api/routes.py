@@ -117,6 +117,22 @@ class ControlNetConfig(BaseModel):
     is_reference_guide: bool = False  # Reference Guide mode: blend latent toward reference image
     preprocessor: Optional[str] = None  # Preprocessor type (auto-detected if None)
     enable_preprocessor: bool = True  # Whether to apply preprocessing
+    # Training-free reference-style transfer (StyleAligned/VSP-style KV injection).
+    # When true, this entry is NOT a real ControlNet: image_base64 is the style
+    # reference image, strength maps to ref_k_strength, start_step/end_step gate
+    # the denoise-loop step range. See core.inference.reference_style.
+    is_style_transfer: Optional[bool] = None
+    style_adain_strength: Optional[float] = None
+    style_blocks: Optional[str] = None  # "lo-hi" block range string; None = all blocks
+    # Deferred/advanced knobs (carried for parity; no-op at these defaults).
+    style_low_scale_end: Optional[float] = None
+    style_high_scale: Optional[float] = None
+    style_beta: Optional[float] = None
+    style_value_mode: Optional[str] = None
+    style_value_adain_strength: Optional[float] = None
+    style_ref_value_mix: Optional[float] = None
+    style_late_release: Optional[float] = None
+    style_rope_offset: Optional[int] = None
 
 class AddTagRequest(BaseModel):
     tag: str
@@ -638,8 +654,9 @@ async def generate_txt2img(
                 processed_controlnet_images.append(cn_image)
 
         # Also process base64 images from controlnets JSON
+        style_transfer = None
         if controlnet_configs:
-            base64_images = process_controlnet_configs(
+            base64_images, style_transfer = process_controlnet_configs(
                 controlnet_configs,
                 generation_type="txt2img"
             )
@@ -647,6 +664,7 @@ async def generate_txt2img(
 
         params["controlnet_images"] = processed_controlnet_images
         params["controlnets"] = controlnet_configs
+        params["style_transfer"] = style_transfer
 
         # Detect model type
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
@@ -1339,7 +1357,7 @@ async def generate_img2img(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
-        controlnet_images = process_controlnet_configs(
+        controlnet_images, style_transfer = process_controlnet_configs(
             controlnet_configs,
             generation_type="img2img"
         )
@@ -1440,6 +1458,7 @@ async def generate_img2img(
             "resampling_method": resampling_method,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
+            "style_transfer": style_transfer,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
             "cfg_schedule_min": cfg_schedule_min,
@@ -2401,7 +2420,7 @@ async def generate_inpaint(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
-        controlnet_images = process_controlnet_configs(
+        controlnet_images, style_transfer = process_controlnet_configs(
             controlnet_configs,
             generation_type="inpaint"
         )
@@ -2506,6 +2525,7 @@ async def generate_inpaint(
             "inpaint_blur_strength": inpaint_blur_strength,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
+            "style_transfer": style_transfer,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
             "cfg_schedule_min": cfg_schedule_min,

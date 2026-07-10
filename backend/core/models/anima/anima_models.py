@@ -125,7 +125,20 @@ class GPT2FeedForward(nn.Module):
 # ----- DiT Attention -----
 
 class Attention(nn.Module):
-    """Multi-head attention with QK-norm and optional RoPE (self-attention only)."""
+    """Multi-head attention with QK-norm and optional RoPE (self-attention only).
+
+    ``_style_ctx`` / ``block_idx`` support training-free reference-style KV
+    injection (see ``core.inference.reference_style``). Both default to
+    ``None`` at the class level: attention modules that are never stamped
+    (cross-attention, or any self-attention block when no style transfer is
+    requested) take the byte-identical original code path. Only stamped on
+    ``self_attn`` modules (see ``Anima._stamp_style_context``) -- Anima's
+    cross-attention reads text tokens (``crossattn_emb``), not the image
+    K/V, so style transfer never targets it.
+    """
+
+    _style_ctx = None
+    block_idx = None
 
     def __init__(
         self,
@@ -195,6 +208,63 @@ class Attention(nn.Module):
         if q.dtype != v.dtype and torch.is_autocast_enabled():
             q = q.to(v.dtype)
             k = k.to(v.dtype)
+
+        # --- Reference-style KV injection (training-free, self-attention only) ---
+        # Must run strictly AFTER qk-RMSNorm and AFTER RoPE (both already applied
+        # inside compute_qkv for self-attention): scaling/AdaIN-ing K before
+        # RMSNorm would be silently erased (RMSNorm is scale-invariant), and RoPE
+        # must already be baked into K before it is stashed/injected (the rotary
+        # phase carries the token position; injecting pre-RoPE K would desync the
+        # reference's positions from the target's).
+        #
+        # Anima's self-attention sequence is IMAGE-ONLY (no text concatenation --
+        # ``is_selfattn`` implies ``context is None``, and the caller always
+        # passes the flattened image stream ``b (t h w) d``), so the injected
+        # image-token range is the WHOLE sequence: no text/image split is needed,
+        # unlike Krea2's combined text+image self-attention stream.
+        ctx = self._style_ctx
+        if self.is_selfattn and ctx is not None and self.block_idx is not None and ctx.active_for_block(self.block_idx):
+            img_start, img_end = 0, q.shape[1]
+            if ctx.mode == "capture":
+                # Stash post-norm/post-RoPE image-token Q/K/V. The reference
+                # QUERY is captured (not just K/V) because target-Q's AdaIN
+                # alignment is stylized by the REFERENCE Query, not the
+                # reference Key (verbatim ComfyUI-Krea2-StyleTransfer
+                # ``_cross_batch_adain_qk``).
+                ctx.store[self.block_idx] = (
+                    q[:, img_start:img_end].detach().clone(),
+                    k[:, img_start:img_end].detach().clone(),
+                    v[:, img_start:img_end].detach().clone(),
+                )
+            elif ctx.mode == "inject":
+                ref_qkv = ctx.store.get(self.block_idx)
+                if ref_qkv is not None:
+                    from core.inference.reference_style import inject_kv, make_ref_value
+
+                    ref_q, ref_k, ref_v = ref_qkv
+                    cfg = ctx.config
+                    if cfg.ref_k_strength != 0.0 or cfg.adain_strength > 0.0:
+                        # Anima's 3D video RoPE uses the "rotate-half" convention
+                        # (interleaved=False in apply_rotary_pos_emb), NOT the
+                        # per-axis interleave-real layout that
+                        # ``frequency_scale_vector`` assumes (Krea2/FLUX-style).
+                        # Deriving a correct per-axis frequency-suppression curve
+                        # for this layout is a separate RoPE-layout adaptation;
+                        # until that is done, use an all-ones vector (no
+                        # frequency-content suppression on the reference Key --
+                        # a quality knob, not a correctness requirement: the
+                        # ref_k_strength scale + AdaIN alignment below still
+                        # apply in full).
+                        freq_vec = torch.ones(self.head_dim, device=k.device, dtype=k.dtype)
+                        target_v_img = v[:, img_start:img_end]
+                        ref_v_final = make_ref_value(
+                            target_v_img, ref_v, cfg.value_mode, cfg.value_adain_strength, cfg.ref_value_mix
+                        )
+                        k, v, q = inject_kv(
+                            k, v, ref_k, ref_v_final, img_start, img_end,
+                            cfg.ref_k_strength, freq_vec, cfg.adain_strength, q=q, ref_q=ref_q,
+                        )
+
         result = attention.attention([q, k, v], attn_params=attn_params)
         return self.output_dropout(self.output_proj(result))
 
@@ -1043,6 +1113,25 @@ class Anima(nn.Module):
         for block in self.blocks:
             block.gradient_checkpoint_mode = "none"
 
+    def _stamp_style_context(self) -> None:
+        """Propagate ``self._style_ctx`` (set externally by the inference
+        pipeline's denoise loop, ``None`` by default) to every block's
+        SELF-attention module and its static ``block_idx``. Does NOT touch
+        ``block.cross_attn`` (style transfer only targets the image
+        self-attention stream). Training-only features (TREAD, BlockSkip,
+        stochastic depth) are gated on ``self.training`` and style transfer is
+        inference-only, so the two never overlap on the same forward -- but
+        gate here defensively too (``self.training`` -> force ``None``) so a
+        stray ``_style_ctx`` left set on the module can never leak into a
+        training forward. When ``self._style_ctx`` is absent/None (the default)
+        this is a cheap no-op assignment loop -- attention forward remains
+        byte-identical.
+        """
+        ctx = None if self.training else getattr(self, "_style_ctx", None)
+        for idx, block in enumerate(self.blocks):
+            block.self_attn.block_idx = idx
+            block.self_attn._style_ctx = ctx
+
     def build_patch_embed(self) -> None:
         in_channels = self.in_channels + 1 if self.concat_padding_mask else self.in_channels
         self.x_embedder = PatchEmbed(
@@ -1190,6 +1279,11 @@ class Anima(nn.Module):
 
         attn_params = attention.AttentionParams.create_attention_params(self.attn_mode, self.split_attn)
         use_fp32 = x_B_T_H_W_D.dtype == torch.float16
+
+        # Training-free reference-style transfer: stamp block_idx + the
+        # (possibly None) style context onto every self-attention module
+        # before any block runs. Cheap no-op when style transfer is inactive.
+        self._stamp_style_context()
 
         # Optional block-swap offloader (set by the pipeline backend for VRAM
         # optimization): streams each block's weights between CPU and GPU around

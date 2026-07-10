@@ -203,6 +203,66 @@ class MiniT2IMixin:
                 torch.cuda.empty_cache()
         return text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask
 
+    def _minit2i_style_config(self, params: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
+                              model_key: Optional[str] = None):
+        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached (byte-identical default path -- the
+        caller never installs the style block patch in that case).
+
+        No ``axes_dims`` is set here (unlike Krea2/Z-Image): MiniT2I uses interleaved
+        (rotate_half) RoPE, not the ``repeat_interleave_real=True`` layout
+        ``frequency_scale_vector`` assumes, so ``core.inference.style_minit2i`` bypasses
+        the frequency-scale machinery entirely (all-ones vector) rather than calling
+        ``get_freq_scale_vector`` -- see that module's docstring.
+
+        The reference is encoded the SAME way this generation consumes images: pixel-
+        space checkpoints (``cfg["is_latent"] is False``, the MiniT2I default) get the
+        raw normalized pixel tensor; the optional latent-VAE variant gets a VAE-encoded
+        normalized latent, exactly like the target's own init_image path in img2img/
+        inpaint. Resized to this generation's own PIXEL (height, width) -- vae_encode_image
+        downsamples by 8 internally, so pixel dims are passed for BOTH the pixel and the
+        latent-VAE path (never the already-divided latent_h/latent_w).
+        """
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        from core.inference.reference_style import style_config_from_dict
+        from core.models.minit2i.minit2i_pipeline_ops import prepare_style_reference
+        from core.keep_hot import is_resident, discard_resident
+
+        style_cfg = style_config_from_dict(style_dict)
+
+        is_latent = cfg["is_latent"]
+        if is_latent:
+            # PIXEL dims: vae_encode_image resizes the PIL image to (width,height) pixels
+            # then downsamples by 8, yielding the [latent_h, latent_w] latent that matches
+            # the target's working latent (same as the target's own init-image encode).
+            height, width = cfg["height"], cfg["width"]
+            # VAE encode needs the VAE on-device; mirrors the img2img/inpaint init-image
+            # encode path (brief on-GPU use, offloaded again right after -- the VAE is
+            # not part of this generation's keep-models-hot residency decision here).
+            if model_key is not None and is_resident(self, "vae", model_key):
+                vae = self.minit2i_components["vae"]
+            else:
+                vae = self._minit2i_move("vae", device)
+            ref_x0, eps_ref = prepare_style_reference(
+                vae, style_dict["image"], height, width, device, dtype,
+                is_latent=True, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=cfg["seed"],
+            )
+            self._minit2i_move("vae", "cpu")
+            if model_key is not None:
+                discard_resident(self, "vae")
+        else:
+            height, width = cfg["height"], cfg["width"]
+            ref_x0, eps_ref = prepare_style_reference(
+                None, style_dict["image"], height, width, device, dtype,
+                is_latent=False, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=cfg["seed"],
+            )
+        return style_cfg, ref_x0, eps_ref
+
     def _minit2i_nag_wrap(self, params, transformer, nag_text, nag_mask):
         """Install the MiniT2I NAG wrapper when NAG is active; returns (call_target,
         wrapper_or_None). The call target is what the euler loop uses as ``transformer``:
@@ -519,10 +579,21 @@ class MiniT2IMixin:
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
-            call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
-            call_target, negpip_wrapper = self._minit2i_negpip_wrap(
-                params, call_target, nag_wrapper, transformer,
-                cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
+            style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
+                params, cfg, device, dtype, model_key=_kh_model_key)
+            style_active = style_cfg is not None
+            # Style transfer is mutually exclusive with NAG/NegPip: both ALSO monkey-patch
+            # DoubleStreamDiTBlock.forward (core.inference.style_minit2i), so installing
+            # both would have one wrapper silently clobber the other's patch. Skip the
+            # NAG/NegPip wrap entirely for a style-active generation.
+            if style_active:
+                call_target, nag_wrapper, negpip_wrapper = transformer, None, None
+                print("[MiniT2I] Style transfer active: NAG/NegPip wrapping skipped for this generation")
+            else:
+                call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
+                call_target, negpip_wrapper = self._minit2i_negpip_wrap(
+                    params, call_target, nag_wrapper, transformer,
+                    cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
             try:
                 if cfg["is_latent"]:
                     # work in latent space: [1, C, H/vsf, W/vsf]
@@ -533,6 +604,7 @@ class MiniT2IMixin:
                         progress_callback=progress_callback,
                         channels=cfg["channels"], noise_scale=cfg["noise_scale"], clamp_output=False,
                         spectrum_params=params,
+                        style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     )
                 else:
                     x = denoise_loop(
@@ -541,6 +613,7 @@ class MiniT2IMixin:
                         device, dtype, seed=cfg["seed"], neg_text=neg_text, neg_mask=neg_mask,
                         progress_callback=progress_callback,
                         spectrum_params=params,
+                        style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                     )
             finally:
                 if negpip_wrapper is not None:
@@ -597,10 +670,17 @@ class MiniT2IMixin:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
-            call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
-            call_target, negpip_wrapper = self._minit2i_negpip_wrap(
-                params, call_target, nag_wrapper, transformer,
-                cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
+            style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
+                params, cfg, device, dtype, model_key=_kh_model_key)
+            style_active = style_cfg is not None
+            if style_active:
+                call_target, nag_wrapper, negpip_wrapper = transformer, None, None
+                print("[MiniT2I] Style transfer active: NAG/NegPip wrapping skipped for this generation")
+            else:
+                call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
+                call_target, negpip_wrapper = self._minit2i_negpip_wrap(
+                    params, call_target, nag_wrapper, transformer,
+                    cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
             try:
                 x = denoise_loop_img2img(
                     call_target, init_t, denoising_strength, text, mask,
@@ -609,6 +689,7 @@ class MiniT2IMixin:
                     progress_callback=progress_callback,
                     noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
                     spectrum_params=params,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if negpip_wrapper is not None:
@@ -668,10 +749,17 @@ class MiniT2IMixin:
                 mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
-            call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
-            call_target, negpip_wrapper = self._minit2i_negpip_wrap(
-                params, call_target, nag_wrapper, transformer,
-                cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
+            style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
+                params, cfg, device, dtype, model_key=_kh_model_key)
+            style_active = style_cfg is not None
+            if style_active:
+                call_target, nag_wrapper, negpip_wrapper = transformer, None, None
+                print("[MiniT2I] Style transfer active: NAG/NegPip wrapping skipped for this generation")
+            else:
+                call_target, nag_wrapper = self._minit2i_nag_wrap(params, transformer, nag_text, nag_mask)
+                call_target, negpip_wrapper = self._minit2i_negpip_wrap(
+                    params, call_target, nag_wrapper, transformer,
+                    cfg["prompt"], cfg["negative_prompt"], text.shape[1], device, dtype)
             try:
                 x = denoise_loop_inpaint(
                     call_target, init_t, mask_latent, denoising_strength, text, mask,
@@ -680,6 +768,7 @@ class MiniT2IMixin:
                     progress_callback=progress_callback,
                     noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
                     spectrum_params=params,
+                    style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
                 )
             finally:
                 if negpip_wrapper is not None:

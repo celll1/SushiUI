@@ -2638,6 +2638,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 width=gen_params["width"], height=gen_params["height"],
                 device=device, dtype=_unet_dtype_for_style, seed=actual_seed,
             )
+            # The style KV-injection hook lives ONLY in UnifiedAttnProcessor, but the
+            # default attention_type "normal" leaves diffusers' stock AttnProcessor2_0
+            # on the U-Net -> style would be a SILENT no-op. When style is active and
+            # the stock processor is still installed (no attention-backend swap above),
+            # force-install UnifiedAttnProcessor (backend "normal" == native SDPA,
+            # byte-identical to stock when no _style_ctx is attached). Restored via
+            # self.original_processors in the finally. Skip under NAG (it owns the
+            # processors and style yields to it downstream).
+            if style_cfg is not None and self.original_processors is None and not params.get("nag_enable", False):
+                from core.inference.attention_processors import set_attention_processor
+                print("[Pipeline] Style transfer active with attention_type=normal; installing UnifiedAttnProcessor so the KV-injection hook is present")
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, "normal")
+                self.current_attention_type = "normal"
 
             # Call custom sampling loop. The legacy SD/SDXL path folds VAE decode
             # into this loop, so denoise and decode are not separable here — the
@@ -3347,6 +3360,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 width=init_image.width, height=init_image.height,
                 device=self.device, dtype=_unet_dtype_for_style, seed=actual_seed,
             )
+            # Force-install UnifiedAttnProcessor when style is active but the stock
+            # processor is still on the U-Net (default attention_type="normal") so the
+            # KV-injection hook is present (see the txt2img site for the full rationale).
+            if style_cfg is not None and self.original_processors is None and not params.get("nag_enable", False):
+                from core.inference.attention_processors import set_attention_processor
+                print("[Pipeline] Style transfer (img2img) active with attention_type=normal; installing UnifiedAttnProcessor")
+                self.original_processors = set_attention_processor(pipeline_to_use.unet, "normal")
+                self.current_attention_type = "normal"
 
             # Call custom img2img sampling loop. VAE decode is folded into the loop
             # on this legacy path, so the combined span is recorded as "denoise".
@@ -3911,6 +3932,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             width=init_image.width, height=init_image.height,
             device=self.device, dtype=_unet_dtype_for_style, seed=seed,
         )
+        # Force-install UnifiedAttnProcessor when style is active but the stock
+        # processor is still on the U-Net (default attention_type="normal") so the
+        # KV-injection hook is present (see the txt2img site for the full rationale).
+        if style_cfg is not None and self.original_processors is None and not params.get("nag_enable", False):
+            from core.inference.attention_processors import set_attention_processor
+            print("[Pipeline] Style transfer (inpaint) active with attention_type=normal; installing UnifiedAttnProcessor")
+            self.original_processors = set_attention_processor(pipeline_to_use.unet, "normal")
+            self.current_attention_type = "normal"
 
         # Use custom inpaint sampling loop. VAE decode is folded into the loop on
         # this legacy path, so the combined span is recorded as "denoise".

@@ -52,6 +52,14 @@ class StyleTransferConfig:
     the RoPE axis split is architecture-specific.
     """
 
+    # --- transfer type (R&D) --- "style" = appearance/texture (default); "character"
+    # = identity transfer (early blocks + raw reference Value + minimal AdaIN). Carried
+    # here so the arch injection path stays shared; the recipe is applied via the
+    # knobs below (block_range/value_mode/ref_value_mix/value_adain_strength/adain_
+    # strength/freq curve). "character" does not (yet) auto-preset those — the caller
+    # sets them — but the field lets us codify a preset once experiments settle it.
+    transfer_type: str = "style"
+
     # --- v1 (exercised) --- (verbatim ComfyUI-Krea2-StyleTransfer single-ref defaults)
     ref_k_strength: float = 1.06
     block_range: Optional[Tuple[int, int]] = None  # inclusive (lo, hi); None = all blocks
@@ -397,6 +405,7 @@ def style_config_from_dict(d: Dict[str, Any]) -> StyleTransferConfig:
         return None
 
     return StyleTransferConfig(
+        transfer_type=str(d.get("transfer_type", "style") or "style"),
         ref_k_strength=float(d.get("ref_k_strength", 1.06) if d.get("ref_k_strength") is not None else 1.06),
         block_range=_block_range(d.get("block_range")),
         adain_strength=float(d.get("adain_strength", 0.85) if d.get("adain_strength") is not None else 0.85),

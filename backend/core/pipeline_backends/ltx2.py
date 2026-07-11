@@ -637,6 +637,7 @@ class LTX2Mixin:
                 style_target.attach_style(
                     style_processors, style_cfg, style_ref_x0, style_eps_ref,
                     style_refs=style_refs, combine_mode=style_combine_mode,
+                    guidance_scale=guidance_scale,
                 )
                 style_target._style_total_steps = num_inference_steps
                 ref_suffix = f" ({len(style_refs)} references, combine={style_combine_mode})" if style_refs else ""
@@ -836,6 +837,7 @@ class LTX2Mixin:
                 style_target.attach_style(
                     style_processors, style_cfg, style_ref_x0, style_eps_ref,
                     style_refs=style_refs, combine_mode=style_combine_mode,
+                    guidance_scale=guidance_scale,
                 )
                 style_target._style_total_steps = num_inference_steps
                 ref_suffix = f" ({len(style_refs)} references, combine={style_combine_mode})" if style_refs else ""

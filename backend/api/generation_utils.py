@@ -18,7 +18,7 @@ import os
 def process_controlnet_configs(
     controlnet_configs: List[Dict],
     generation_type: str = "txt2img"
-) -> "tuple[List[Dict], Optional[Dict]]":
+) -> "tuple[List[Dict], Optional[Dict], List[Dict], str]":
     """
     ControlNet設定を処理し、base64画像をデコード
 
@@ -30,17 +30,34 @@ def process_controlnet_configs(
     a separate style-config dict (arch-agnostic keys) instead of being appended
     to the returned ControlNet image list.
 
+    Multi-reference (N-ref) support: MULTIPLE ``is_style_transfer`` entries are
+    now collected into ``style_transfers`` (one dict per reference, in the
+    order the caller supplied them), each still built with its own knobs
+    (``ref_k_strength``, ``block_range``, freq curve, etc. -- see the dict
+    below). ``style_transfer`` (singular) stays populated with
+    ``style_transfers[0]`` for back-compat with the architectures that only
+    read the single key (this is a FIRST-wins semantic; the pre-multi-ref
+    code was last-wins by accident when multiple ``is_style_transfer`` entries
+    were present, which never happened in practice since only one was ever
+    sent). ``style_combine_mode`` (``"stack"`` or ``"common_concept"``) is
+    read from the FIRST style entry's ``style_combine_mode`` key (frontend
+    multi-ref selector, not yet wired at intake time as of this change) and
+    defaults to ``"stack"``.
+
     Args:
         controlnet_configs: ControlNet設定のリスト
         generation_type: 生成タイプ（ログ用）
 
     Returns:
-        (処理済みのControlNet画像リスト, style_transfer dict or None)
+        (処理済みのControlNet画像リスト, style_transfer dict or None,
+         style_transfers list (0+ entries), style_combine_mode str)
     """
     controlnet_images = []
     style_transfer = None
+    style_transfers: List[Dict] = []
+    style_combine_mode = "stack"
     if not controlnet_configs:
-        return controlnet_images, style_transfer
+        return controlnet_images, style_transfer, style_transfers, style_combine_mode
 
     print(f"Processing {len(controlnet_configs)} ControlNet(s)...")
 
@@ -53,7 +70,7 @@ def process_controlnet_configs(
                 image_data = base64.b64decode(cn_config["image_base64"])
                 image = Image.open(BytesIO(image_data)).convert("RGB")
                 print(f"[StyleTransfer {idx}] Reference image decoded successfully: {image.size}")
-                style_transfer = {
+                entry = {
                     "image": image,
                     # transfer_type selects the injection recipe: "style" (default,
                     # appearance/texture) or "character" (identity — early blocks +
@@ -86,6 +103,10 @@ def process_controlnet_configs(
                     "late_release": cn_config.get("style_late_release"),
                     "rope_offset": cn_config.get("style_rope_offset"),
                 }
+                style_transfers.append(entry)
+                if style_transfer is None:
+                    style_transfer = entry
+                    style_combine_mode = str(cn_config.get("style_combine_mode", "stack") or "stack")
             except Exception as e:
                 print(f"[StyleTransfer {idx}] Error decoding reference image: {e}")
             continue
@@ -117,7 +138,7 @@ def process_controlnet_configs(
                   "ControlNet will be skipped.")
 
     print(f"[Routes] Total controlnet_images added to params: {len(controlnet_images)}")
-    return controlnet_images, style_transfer
+    return controlnet_images, style_transfer, style_transfers, style_combine_mode
 
 
 def create_progress_callback_factory(
@@ -410,6 +431,22 @@ def prepare_params_for_db(params: Dict[str, Any], calculate_image_hash) -> Dict[
             k: (calculate_image_hash(v) if k == "image" else v)
             for k, v in _st.items()
         }
+
+    # Multi-reference (N-ref): params["style_transfers"] is the plural LIST of
+    # style entries (one dict per reference), each also carrying a raw PIL Image
+    # under "image". routes.py sets this whenever ANY style entry is present
+    # (single- or multi-ref), so it must be hashed here too -- otherwise the DB
+    # commit raises "Object of type Image is not JSON serializable" -> HTTP 500,
+    # which would break the single-ref path as well.
+    _sts = params_for_db.get("style_transfers")
+    if isinstance(_sts, list):
+        params_for_db["style_transfers"] = [
+            {
+                k: (calculate_image_hash(v) if k == "image" else v)
+                for k, v in entry.items()
+            } if isinstance(entry, dict) else entry
+            for entry in _sts
+        ]
 
     # FLUX.2 Image Edit: Convert ref_images to hashes
     if "ref_images" in params_for_db and params_for_db["ref_images"]:

@@ -516,6 +516,32 @@ def _anima_style_capture(
     return capture_ctx
 
 
+def _anima_style_capture_multi(
+    real_transformer, style_refs, sp_i: int, num_steps_for_gating: int,
+    sigma_now_f: float, cond_embeds: Dict[str, torch.Tensor],
+    padding_mask: torch.Tensor, timestep_batch: torch.Tensor, dtype: torch.dtype,
+):
+    """Multi-reference (N>1) capture: run one ``_anima_style_capture`` forward
+    PER reference (each with ITS OWN ``StyleTransferConfig`` -- block_range,
+    strengths, freq curve, step gating -- all independent), skipping refs that
+    are not step-active at this step (mirrors the single-ref
+    ``elif style_active: real_transformer._style_ctx = None`` gate, applied
+    per-ref instead of globally). Returns a list of ``(store_i, config_i)``
+    tuples (only for the refs that WERE captured this step) ready to hand to
+    ``StyleContext(mode="inject", refs=..., combine_mode=...)``."""
+    active_refs = []
+    for cfg_i, x0_i, eps_i in style_refs:
+        if not cfg_i.is_step_active(sp_i, num_steps_for_gating):
+            continue
+        progress_i = cfg_i.step_progress(sp_i, num_steps_for_gating)
+        capture_ctx_i = _anima_style_capture(
+            real_transformer, cfg_i, x0_i, eps_i, sigma_now_f, progress_i,
+            cond_embeds, padding_mask, timestep_batch, dtype,
+        )
+        active_refs.append((capture_ctx_i.store, cfg_i))
+    return active_refs
+
+
 @torch.no_grad()
 @time_phase("denoise")
 def sample_txt2img(
@@ -538,6 +564,8 @@ def sample_txt2img(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """Run the Rectified-Flow Euler denoising loop and return latents
     of shape [1, 16, 1, H/8, W/8].
@@ -552,6 +580,18 @@ def sample_txt2img(
     context (untouched). ``style_eps_ref`` is drawn ONCE per generation by the
     caller (not per step) -- re-noising with fresh noise each step would make
     the reference K/V flicker step to step.
+
+    ``style_refs`` (optional, multi-reference): a list of ``(StyleTransferConfig,
+    ref_x0, ref_eps)`` triples, one per reference image, each keeping its OWN
+    config (block_range, strengths, freq curve, step gating). Only consulted
+    when it has 2+ entries -- ``len(style_refs) <= 1`` is intentionally NOT
+    specially handled here (callers route that case through the ``style_cfg``/
+    ``style_ref_x0``/``style_eps_ref`` single-ref path instead so the exact
+    pre-multi-ref code executes byte-identically). ``style_combine_mode``
+    selects how the N refs combine: ``"stack"`` injects every ref's own scaled
+    K/V (style from one ref + structure from another simultaneously) or
+    ``"common_concept"`` averages the N refs' K/V into one consensus before a
+    single injection (keeps only what the refs share in common).
 
     ``nag_transformer`` (optional): when supplied, the CONDITIONAL forward pass
     is routed through it (an ``AnimaNAGWrapper`` and/or ``AnimaNegPipWrapper``)
@@ -615,7 +655,25 @@ def sample_txt2img(
             # Training-free reference-style transfer: capture the style
             # reference's self-attention K/V at this step's sigma, then let
             # the conditional pass read/inject them.
-            if style_active and style_cfg.is_step_active(sp_i, num_inference_steps):
+            if style_refs is not None and len(style_refs) > 1:
+                # Multi-reference (N>1): each ref's own capture + StyleContext
+                # holding the full ``refs`` list. len(style_refs) <= 1 is
+                # NEVER routed here by the caller (see docstring) so this
+                # branch does not affect single-ref behavior at all.
+                active_style_refs = _anima_style_capture_multi(
+                    real_transformer, style_refs, sp_i, num_inference_steps,
+                    sigma_now_f, cond_embeds, padding_mask, timestep_batch, dtype,
+                )
+                if active_style_refs:
+                    from core.inference.reference_style import StyleContext
+                    overall_progress = active_style_refs[0][1].step_progress(sp_i, num_inference_steps)
+                    real_transformer._style_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                else:
+                    real_transformer._style_ctx = None
+            elif style_active and style_cfg.is_step_active(sp_i, num_inference_steps):
                 progress = style_cfg.step_progress(sp_i, num_inference_steps)
                 capture_ctx = _anima_style_capture(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
@@ -638,7 +696,7 @@ def sample_txt2img(
                 source_attention_mask=cond_embeds["source_mask"],
             )
 
-            if style_active:
+            if style_active or (style_refs is not None and len(style_refs) > 1):
                 # Unconditional pass is always run with no style context.
                 real_transformer._style_ctx = None
 
@@ -708,6 +766,8 @@ def sample_img2img(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """img2img: start from `init_latents` partially noised. Returns final latents.
 
@@ -721,6 +781,10 @@ def sample_img2img(
     reference-style transfer -- see ``sample_txt2img``'s docstring. Step
     indexing uses the RELATIVE index within this (possibly trimmed by
     ``denoising_strength``) trajectory, matching ``spectrum``'s ``sp_i``.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``sample_txt2img``'s docstring; only consulted when ``style_refs`` has 2+
+    entries.
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
@@ -771,7 +835,21 @@ def sample_img2img(
                 real_transformer._fbcache_step = i
 
             # Training-free reference-style transfer (see sample_txt2img).
-            if style_active and style_cfg.is_step_active(sp_i, total_style_steps):
+            if style_refs is not None and len(style_refs) > 1:
+                active_style_refs = _anima_style_capture_multi(
+                    real_transformer, style_refs, sp_i, total_style_steps,
+                    sigma_now_f, cond_embeds, padding_mask, timestep_batch, dtype,
+                )
+                if active_style_refs:
+                    from core.inference.reference_style import StyleContext
+                    overall_progress = active_style_refs[0][1].step_progress(sp_i, total_style_steps)
+                    real_transformer._style_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                else:
+                    real_transformer._style_ctx = None
+            elif style_active and style_cfg.is_step_active(sp_i, total_style_steps):
                 progress = style_cfg.step_progress(sp_i, total_style_steps)
                 capture_ctx = _anima_style_capture(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
@@ -792,7 +870,7 @@ def sample_img2img(
                 source_attention_mask=cond_embeds["source_mask"],
             )
 
-            if style_active:
+            if style_active or (style_refs is not None and len(style_refs) > 1):
                 real_transformer._style_ctx = None
 
             if do_cfg:
@@ -858,6 +936,8 @@ def sample_inpaint(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """Latent-space inpainting via per-step blending.
 
@@ -872,6 +952,10 @@ def sample_inpaint(
 
     ``style_cfg``/``style_ref_x0``/``style_eps_ref`` (optional): training-free
     reference-style transfer -- see ``sample_txt2img``'s docstring.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``sample_txt2img``'s docstring; only consulted when ``style_refs`` has 2+
+    entries.
     """
     cond_transformer = nag_transformer if nag_transformer is not None else transformer
     uncond_transformer = negpip_uncond_transformer if negpip_uncond_transformer is not None else transformer
@@ -928,7 +1012,21 @@ def sample_inpaint(
                 real_transformer._fbcache_step = i
 
             # Training-free reference-style transfer (see sample_txt2img).
-            if style_active and style_cfg.is_step_active(sp_i, total_style_steps):
+            if style_refs is not None and len(style_refs) > 1:
+                active_style_refs = _anima_style_capture_multi(
+                    real_transformer, style_refs, sp_i, total_style_steps,
+                    sigma_now_f, cond_embeds, padding_mask, timestep_batch, dtype,
+                )
+                if active_style_refs:
+                    from core.inference.reference_style import StyleContext
+                    overall_progress = active_style_refs[0][1].step_progress(sp_i, total_style_steps)
+                    real_transformer._style_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                else:
+                    real_transformer._style_ctx = None
+            elif style_active and style_cfg.is_step_active(sp_i, total_style_steps):
                 progress = style_cfg.step_progress(sp_i, total_style_steps)
                 capture_ctx = _anima_style_capture(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
@@ -949,7 +1047,7 @@ def sample_inpaint(
                 source_attention_mask=cond_embeds["source_mask"],
             )
 
-            if style_active:
+            if style_active or (style_refs is not None and len(style_refs) > 1):
                 real_transformer._style_ctx = None
 
             if do_cfg:

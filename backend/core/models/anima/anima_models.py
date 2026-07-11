@@ -236,6 +236,21 @@ class Attention(nn.Module):
                     k[:, img_start:img_end].detach().clone(),
                     v[:, img_start:img_end].detach().clone(),
                 )
+            elif ctx.mode == "inject" and ctx.refs is not None:
+                # Multi-reference ("stack" / "common_concept"): centralizes the
+                # per-ref active/freq/make_ref_value logic in
+                # StyleContext.collect_block_refs so this hook stays thin. The
+                # single-ref path below (``ctx.refs is None``) is completely
+                # untouched -- this branch is only ever reached for 2+ refs
+                # (see anima_pipeline_ops._anima_style_capture_multi and the
+                # ``style_refs``/``StyleContext(refs=...)`` wiring in
+                # sample_txt2img/sample_img2img/sample_inpaint).
+                from core.inference.reference_style import inject_kv_multi
+
+                target_v_img = v[:, img_start:img_end]
+                block_refs = ctx.collect_block_refs(self.block_idx, target_v_img, k.device, k.dtype)
+                if block_refs:
+                    k, v, q = inject_kv_multi(k, v, q, img_start, img_end, block_refs, ctx.combine_mode)
             elif ctx.mode == "inject":
                 ref_qkv = ctx.store.get(self.block_idx)
                 if ref_qkv is not None:

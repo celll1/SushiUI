@@ -34,7 +34,7 @@ node this port matches is the community ComfyUI-Krea2-StyleTransfer custom node
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 
@@ -378,6 +378,130 @@ def inject_kv(
 
 
 # ---------------------------------------------------------------------------
+# Multi-reference KV injection ("stack" / "common_concept" combine modes)
+# ---------------------------------------------------------------------------
+
+# One active reference's already-finalized per-block state, as produced by
+# ``StyleContext.collect_block_refs``: ``(ref_k, ref_v, ref_q, ref_k_strength,
+# adain_strength, freq_scale_vec)``. ``ref_v`` is expected to already be the
+# FINAL value to inject (i.e. ``make_ref_value`` has already been applied by
+# the caller against this forward's own target Value) so both combine modes
+# below only need to combine/concat tensors, mirroring exactly what a
+# single-ref ``inject_kv`` call receives.
+BlockRef = Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], float, float, torch.Tensor]
+
+
+def inject_kv_multi(
+    k: torch.Tensor,
+    v: torch.Tensor,
+    q: Optional[torch.Tensor],
+    img_start: int,
+    img_end: int,
+    block_refs: List[BlockRef],
+    combine_mode: str,
+):
+    """Multi-reference generalization of ``inject_kv``.
+
+    ``combine_mode="common_concept"``: average every active ref's K/V/Q (and
+    ``ref_k_strength``/``adain_strength``) into ONE consensus reference, then
+    perform a SINGLE ``inject_kv`` call with the averaged tensors -- shared
+    directions across refs survive the mean, idiosyncratic per-ref directions
+    partially cancel.
+
+    ``combine_mode="stack"``: AdaIN the target Q/K ONCE toward the MEAN
+    reference (avoids compounding N sequential AdaIN passes), then append
+    EACH ref's own (independently) scaled K/V as its own extra block of
+    image-token columns, so the target attends to every reference's tokens
+    simultaneously with its own ``ref_k_strength``/frequency curve.
+
+    For ``len(block_refs) == 1`` BOTH modes are mathematically identical to a
+    plain ``inject_kv`` call with that ref's tensors (this is asserted by the
+    scratch verification script, not by this function -- callers should
+    prefer the single-ref ``inject_kv`` fast path directly and only reach
+    this function when there are 2+ refs).
+    """
+    if not block_refs:
+        if q is not None:
+            return k, v, q
+        return k, v
+
+    if combine_mode == "common_concept":
+        ref_k = torch.stack([r[0] for r in block_refs], dim=0).mean(dim=0)
+        ref_v = torch.stack([r[1] for r in block_refs], dim=0).mean(dim=0)
+        if all(r[2] is not None for r in block_refs):
+            ref_q = torch.stack([r[2] for r in block_refs], dim=0).mean(dim=0)
+        else:
+            ref_q = None
+        strength = sum(r[3] for r in block_refs) / len(block_refs)
+        adain_strength = sum(r[4] for r in block_refs) / len(block_refs)
+        freq_vec = block_refs[0][5]
+        return inject_kv(
+            k, v, ref_k, ref_v, img_start, img_end,
+            strength, freq_vec, adain_strength, q=q, ref_q=ref_q,
+        )
+
+    if combine_mode == "stack":
+        # A ref whose ref_k_strength==0 AND adain_strength<=0 contributes
+        # nothing (same no-op test as inject_kv's own fast path) -- drop it
+        # rather than appending a zero-scaled (but still softmax-visible)
+        # extra K/V block.
+        active = [r for r in block_refs if not (r[3] == 0.0 and r[4] <= 0.0)]
+        if not active:
+            if q is not None:
+                return k, v, q
+            return k, v
+
+        batch = k.shape[0]
+        img_q = q[:, img_start:img_end] if q is not None else None
+        img_k = k[:, img_start:img_end]
+
+        mean_ref_k = torch.stack([r[0] for r in active], dim=0).mean(dim=0)
+        if all(r[2] is not None for r in active):
+            mean_ref_q = torch.stack([r[2] for r in active], dim=0).mean(dim=0)
+        else:
+            mean_ref_q = None
+        max_adain = max(r[4] for r in active)
+
+        if max_adain > 0.0:
+            if img_q is not None and mean_ref_q is not None:
+                img_q, img_k = cross_batch_adain_qk(img_q, img_k, mean_ref_q, mean_ref_k, max_adain)
+            elif img_q is not None:
+                img_q, img_k = cross_batch_adain_qk(img_q, img_k, mean_ref_k, mean_ref_k, max_adain)
+            else:
+                _, img_k = cross_batch_adain_qk(img_k, img_k, mean_ref_k, mean_ref_k, max_adain)
+
+        if q is not None and img_q is not None:
+            q = torch.cat([q[:, :img_start], img_q, q[:, img_end:]], dim=1)
+        k = torch.cat([k[:, :img_start], img_k, k[:, img_end:]], dim=1)
+
+        # Per-ref strength normalization: stacking appends N reference blocks of
+        # image-token columns, so at full per-ref strength the target attends to
+        # N x as many reference tokens as a single ref and the reference mass
+        # overwhelms the target's own content (empirically: 2-3 stacked refs at
+        # default 0.75 collapse the target into an abstract blob). Divide each
+        # ref's strength by N so the TOTAL appended reference influence stays
+        # comparable to a single-ref injection; the relative weighting between
+        # refs (their own ref_k_strength ratios) is preserved. For N==1 this is a
+        # 1.0 factor -> identical to inject_kv (byte-identity property intact).
+        strength_norm = 1.0 / len(active)
+
+        k_out, v_out = k, v
+        for ref_k_i, ref_v_i, _ref_q_i, strength_i, _adain_i, freq_i in active:
+            scaled_ref_k = ref_k_i * freq_i.view(1, 1, 1, -1) * (strength_i * strength_norm)
+            if scaled_ref_k.shape[0] != batch:
+                scaled_ref_k = scaled_ref_k.expand(batch, -1, -1, -1)
+            ref_v_i_b = ref_v_i if ref_v_i.shape[0] == batch else ref_v_i.expand(batch, -1, -1, -1)
+            k_out = torch.cat([k_out, scaled_ref_k], dim=1)
+            v_out = torch.cat([v_out, ref_v_i_b], dim=1)
+
+        if q is not None:
+            return k_out, v_out, q
+        return k_out, v_out
+
+    raise ValueError(f"Unknown combine_mode: {combine_mode!r} (expected 'stack' or 'common_concept')")
+
+
+# ---------------------------------------------------------------------------
 # Runtime context (capture / inject) shared by the per-block attention hook
 # ---------------------------------------------------------------------------
 
@@ -388,13 +512,27 @@ class StyleContext:
     by a prior capture forward on the SAME context's ``store`` dict) and
     performs the injection. ``img_start``/``img_end`` are set once per forward
     by the arch-specific transformer (they depend on that call's text sequence
-    length) -- NOT per-block."""
+    length) -- NOT per-block.
 
-    __slots__ = ("mode", "config", "store", "img_start", "img_end", "progress")
+    Multi-reference (N-ref) support: when ``refs`` is left ``None`` (default)
+    the context behaves EXACTLY as before -- single-ref ``mode``/``config``/
+    ``store`` drive ``active_for_block`` and the arch hook reads ``store``
+    directly and calls ``inject_kv``. When ``refs`` is a non-empty list of
+    ``(per_ref_store, per_ref_config)`` tuples (one entry per reference image,
+    each with its OWN ``StyleTransferConfig``), the arch hook should instead
+    call ``collect_block_refs`` + ``inject_kv_multi`` with ``combine_mode``.
+    ``config``/``store`` are ignored by ``inject_kv_multi``-based callers in
+    this mode but are still required by the constructor (a harmless unused
+    placeholder, e.g. the first ref's config) since ``StyleContext`` is a
+    single dataclass-like carrier for both paths."""
+
+    __slots__ = ("mode", "config", "store", "img_start", "img_end", "progress", "refs", "combine_mode")
 
     def __init__(
         self, mode: str, config: StyleTransferConfig, store: Optional[Dict[int, Any]] = None,
         progress: float = 0.0,
+        refs: Optional[List[Tuple[Dict[int, Any], StyleTransferConfig]]] = None,
+        combine_mode: str = "stack",
     ):
         if mode not in ("capture", "inject"):
             raise ValueError(f"StyleContext.mode must be 'capture' or 'inject', got {mode!r}")
@@ -407,9 +545,66 @@ class StyleContext:
         # drives the step-dependent frequency-scale curve (fix #2). Only
         # meaningful in "inject" mode (capture doesn't scale anything).
         self.progress: float = progress
+        # Multi-ref state (see class docstring). None => single-ref (unchanged
+        # behavior); a non-empty list => multi-ref inject via
+        # collect_block_refs()/inject_kv_multi().
+        self.refs: Optional[List[Tuple[Dict[int, Any], StyleTransferConfig]]] = refs
+        self.combine_mode: str = combine_mode
 
     def active_for_block(self, block_idx: int) -> bool:
-        return self.config.is_block_active(block_idx)
+        if self.refs is None:
+            return self.config.is_block_active(block_idx)
+        return any(cfg.is_block_active(block_idx) for _store, cfg in self.refs)
+
+    def collect_block_refs(
+        self, block_idx: int, target_v_img: torch.Tensor, device: torch.device, dtype: torch.dtype,
+    ) -> list:
+        """Multi-ref only (``self.refs`` must be set): for every
+        ``(store_i, config_i)`` where ``config_i.is_block_active(block_idx)``
+        AND ``block_idx`` was actually captured into ``store_i`` (a ref's
+        capture forward may skip blocks outside its own active range),
+        compute that ref's per-block state and return it as a
+        ``reference_style.BlockRef`` tuple ready for ``inject_kv_multi``:
+        ``(ref_k, ref_v, ref_q, ref_k_strength, adain_strength,
+        freq_scale_vec)``.
+
+        ``ref_v`` is already the FINAL value to inject -- ``make_ref_value``
+        is applied here (per-ref ``value_mode``/``value_adain_strength``/
+        ``ref_value_mix``, against the CURRENT forward's own ``target_v_img``)
+        so ``inject_kv_multi`` only has to combine/concat tensors, exactly
+        mirroring what a single-ref hook does before calling ``inject_kv``.
+
+        The frequency-scale vector is derived the same way a single-ref hook
+        would: ``config_i.get_freq_scale_vector(head_dim, self.progress,
+        device, dtype)`` when ``config_i.axes_dims`` was set by the arch
+        wiring, and an all-ones vector otherwise (mirrors archs like Anima
+        whose RoPE layout is incompatible with the interleave-real frequency
+        curve and always use an all-ones vector regardless of ``axes_dims``).
+        ``head_dim`` is read from the captured ``ref_k`` tensor's last
+        dimension so no extra arch-specific parameter is needed here.
+
+        Returns ``[]`` when ``self.refs`` is None/empty or no ref is active
+        for this block."""
+        if not self.refs:
+            return []
+        out = []
+        for store_i, config_i in self.refs:
+            if not config_i.is_block_active(block_idx):
+                continue
+            entry = store_i.get(block_idx)
+            if entry is None:
+                continue
+            ref_q, ref_k, ref_v_raw = entry
+            head_dim = ref_k.shape[-1]
+            if config_i.axes_dims is not None:
+                freq_vec = config_i.get_freq_scale_vector(head_dim, self.progress, device, dtype)
+            else:
+                freq_vec = torch.ones(head_dim, device=device, dtype=dtype)
+            ref_v_final = make_ref_value(
+                target_v_img, ref_v_raw, config_i.value_mode, config_i.value_adain_strength, config_i.ref_value_mix,
+            )
+            out.append((ref_k, ref_v_final, ref_q, config_i.ref_k_strength, config_i.adain_strength, freq_vec))
+        return out
 
 
 # ---------------------------------------------------------------------------

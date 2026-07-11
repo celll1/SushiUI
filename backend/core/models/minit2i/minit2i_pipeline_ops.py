@@ -138,7 +138,21 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
     is the SAME x0-prediction convention as ``_predict_x0_cfg`` -- re-noising the
     (fixed) reference to the step's noise level only changes what the model SEES as
     input, it does not change what the model predicts (x0) or how the blend combines
-    cond/uncond x0 estimates."""
+    cond/uncond x0 estimates.
+
+    CFG-decoupled style guidance (``style_cfg.style_guidance_scale``, lambda):
+    disabled by default (None/<=0) -- this is the untouched byte-identical path
+    above. When enabled (>0) AND CFG is active this step (``use_cfg``, i.e. an
+    ``uncond`` is actually computed below), one EXTRA cond forward is run with
+    style disarmed (identical ``x``/``t``/``text``/``mask`` conditioning, just no
+    style injection) to get ``cond_ns``; ``cond`` is then rewritten to
+    ``cond_ns + (lambda/cfg_scale)*(cond_s - cond_ns)`` so the UNCHANGED shared
+    CFG blend below reproduces the style-guidance target in x0-space:
+      uncond + cfg_scale*(cond_ns-uncond) + lambda*(cond_s-cond_ns)
+    -- prompt guidance stays at cfg_scale, style strength is lambda, decoupled
+    from cfg (same derivation as the SDXL/Anima prototypes, just applied to the
+    x0 quantity this loop's CFG blend actually operates on, not epsilon/velocity).
+    """
     from core.inference.reference_style import StyleContext
     from core.inference.style_minit2i import set_minit2i_style_context
 
@@ -167,6 +181,16 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
     else:
         u_text, u_mask = text, torch.zeros_like(mask)
     uncond = net(x, t, u_text, u_mask)
+
+    # --- CFG-decoupled style guidance (MiniT2I) --- see docstring above. Style
+    # context is already disarmed (the `finally` above set it to None on every
+    # double block), so this extra forward is a plain no-style cond pass.
+    lam = style_cfg.style_guidance_scale
+    if lam is not None and lam > 0 and cfg_scale > 1e-6:
+        cond_s = cond
+        cond_ns = net(x, t, text, mask)
+        cond = cond_ns + (lam / cfg_scale) * (cond_s - cond_ns)
+
     return uncond + (cond - uncond) * cfg_scale
 
 

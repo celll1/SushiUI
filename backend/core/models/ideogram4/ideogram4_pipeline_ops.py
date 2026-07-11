@@ -501,10 +501,18 @@ def _blend_guidance(
     gw: float,
     sigma_now: float,
     advanced_cfg: Optional[Dict[str, Any]] = None,
-) -> Tuple[torch.Tensor, Any]:
+) -> Tuple[torch.Tensor, Any, float]:
     """Asymmetric CFG blend (== standard CFG with cfg=gw) plus optional schedule/threshold.
 
-    Returns (velocity, cfg_metrics).
+    Returns (velocity, cfg_metrics, cfg_now) -- same 3-tuple order/convention as
+    ``krea2_pipeline_ops._blend_guidance``'s existing CFG-decoupled style-guidance
+    rollout. ``cfg_now`` (the per-step scale actually used for the combine, after any
+    schedule/SNR-rescale resolution) is exposed so the CFG-decoupled style-guidance
+    rewrite (see ``_ideogram4_style_step``) can force a SECOND call to this SAME
+    function with ``cfg_schedule_type="constant"`` and ``cfg_base=cfg_now`` to
+    reproduce the identical scale with no re-derivation (mirrors
+    ``anima_pipeline_ops._apply_advanced_cfg``'s pre-existing 3-tuple return, which the
+    Anima rollout of this feature already relied on unmodified).
     """
     cfg = advanced_cfg or {}
     schedule_type = cfg.get("cfg_schedule_type", "constant") or "constant"
@@ -546,29 +554,24 @@ def _blend_guidance(
     cfg_metrics = (
         calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) if developer_mode else None
     )
-    return v, cfg_metrics
+    return v, cfg_metrics, cfg_now
 
 
-def _dual_branch_velocity(
+def _ideogram4_cond_pass(
     transformer,
-    unconditional_transformer,
     latents: torch.Tensor,
     cond: Dict[str, Any],
     t_model: torch.Tensor,
-    gw_i: float,
-    sigma_t: float,
-    advanced_cfg: Optional[Dict[str, Any]],
-) -> Tuple[torch.Tensor, Any]:
-    """One dual-branch forward pass returning the guided velocity (float32)."""
+) -> torch.Tensor:
+    """Single conditional-branch forward: packs ``[text-pad][image]`` latents through
+    ``transformer``, returns the float32 image-token velocity slice. Extracted out of
+    ``_dual_branch_velocity`` so the CFG-decoupled style-guidance rewrite (see
+    ``_ideogram4_style_step``) can reuse the IDENTICAL call for its extra no-style cond
+    forward (with the style context disarmed beforehand by the caller so
+    ``_apply_style_hook`` short-circuits and no ref K/V gets injected) without
+    duplicating the pack/slice logic."""
     max_text = cond["max_text_tokens"]
     t_dtype = transformer.dtype
-
-    # NAG: hand the doubled-batch nag-negative text features to the wrapped conditional
-    # transformer for this step (no-op when NAG is off / transformer is not the wrapper).
-    if cond.get("nag_llm_features") is not None and hasattr(transformer, "_procs"):
-        transformer._nag_llm_features = cond["nag_llm_features"]
-
-    # Conditional pass on the full packed [text-pad-latent][image-latent] sequence.
     text_z_padding = torch.zeros(
         latents.shape[0], max_text, latents.shape[-1], dtype=latents.dtype, device=latents.device
     )
@@ -582,7 +585,34 @@ def _dual_branch_velocity(
         indicator=cond["indicator"],
         return_dict=False,
     )[0]
-    pos_v = pos_out[:, max_text:].to(torch.float32)
+    return pos_out[:, max_text:].to(torch.float32)
+
+
+def _dual_branch_velocity(
+    transformer,
+    unconditional_transformer,
+    latents: torch.Tensor,
+    cond: Dict[str, Any],
+    t_model: torch.Tensor,
+    gw_i: float,
+    sigma_t: float,
+    advanced_cfg: Optional[Dict[str, Any]],
+) -> Tuple[torch.Tensor, Any, float, torch.Tensor, torch.Tensor]:
+    """One dual-branch forward pass returning the guided velocity (float32).
+
+    Returns ``(v, cfg_metrics, cfg_now, pos_v, neg_v)`` -- the extra ``cfg_now``/
+    ``pos_v``/``neg_v`` (beyond the pre-existing ``v``/``cfg_metrics``) are consumed
+    ONLY by the CFG-decoupled style-guidance rewrite in ``_ideogram4_style_step``;
+    every other caller destructures and discards them, so this is a plumbing-only
+    signature change (identical ``v``/``cfg_metrics`` values as before).
+    """
+    # NAG: hand the doubled-batch nag-negative text features to the wrapped conditional
+    # transformer for this step (no-op when NAG is off / transformer is not the wrapper).
+    if cond.get("nag_llm_features") is not None and hasattr(transformer, "_procs"):
+        transformer._nag_llm_features = cond["nag_llm_features"]
+
+    # Conditional pass on the full packed [text-pad-latent][image-latent] sequence.
+    pos_v = _ideogram4_cond_pass(transformer, latents, cond, t_model)
 
     # Unconditional pass on the image-only positions with zeroed text features.
     neg_out = unconditional_transformer(
@@ -596,7 +626,8 @@ def _dual_branch_velocity(
     )[0]
     neg_v = neg_out.to(torch.float32)
 
-    return _blend_guidance(pos_v, neg_v, gw_i, sigma_t, advanced_cfg)
+    v, cfg_metrics, cfg_now = _blend_guidance(pos_v, neg_v, gw_i, sigma_t, advanced_cfg)
+    return v, cfg_metrics, cfg_now, pos_v, neg_v
 
 
 # ---------------------------------------------------------------------------
@@ -676,9 +707,62 @@ def _ideogram4_style_step(
         inject_ctx.img_end = img_end
         set_ideogram4_style_context(style_processors, inject_ctx)
 
-        v, cfg_metrics = _dual_branch_velocity(
+        v, cfg_metrics, cfg_now, cond_s, v_uncond = _dual_branch_velocity(
             transformer, unconditional_transformer, latents, cond, t_model, gw_i, sigma_t, advanced_cfg,
         )
+
+        # --- CFG-decoupled style guidance (Ideogram4) ---
+        # Disabled by default (style_guidance_scale is None/<=0): this block is
+        # skipped entirely and `v`/`cfg_metrics` stay exactly the combine above --
+        # byte-identical to before this feature (zero extra forwards). Mirrors the
+        # SDXL/Anima rollout (see anima_pipeline_ops.py's matching block): `cfg_now`
+        # is the SAME per-step scale `_dual_branch_velocity`/`_blend_guidance`
+        # already derived from the TRUE styled (cond_s, v_uncond) pair above
+        # (Ideogram4's `calculate_dynamic_cfg` only reads sigma/snr from the
+        # ALREADY-computed preds, so re-deriving it from the rewritten cond below
+        # would desync any SNR-based schedule -- exactly the same reasoning as
+        # Anima's docstring).
+        #
+        # Enabled (>0) (this function is only ever called when the caller's
+        # `style_active_step` gate -- the SAME `is_step_active` check -- is already
+        # True, see `_run_loop`): run ONE extra conditional forward with the style
+        # context disarmed (the SAME `_ideogram4_cond_pass` call
+        # `_dual_branch_velocity` used to compute `cond_s` above, on the SAME
+        # `transformer` object, but with `_style_ctx` cleared so `_apply_style_hook`
+        # short-circuits and no ref K/V gets injected) to get the un-styled cond
+        # prediction `cond_ns`. No FBCache disarm is needed here (unlike Anima):
+        # `_run_loop`'s `_build_ideogram4_fbcache(..., style_active=...)` already
+        # forces BOTH `fbcache_cond`/`fbcache_uncond` to `None` for the WHOLE
+        # generation whenever style transfer is active, so `transformer`'s
+        # `_fbcache` is already `None` and this extra forward is a real compute,
+        # not a cache read -- verified via `_build_ideogram4_fbcache`'s
+        # `style_active` guard, not re-asserted here.
+        #
+        # Rewriting cond' = cond_ns + (lambda/cfg_now)*(cond_s - cond_ns) and
+        # re-running the SAME `_blend_guidance` combine forced to
+        # `cfg_schedule_type="constant"` with `cfg_base=cfg_now` (so it reproduces
+        # the IDENTICAL cfg_now with no re-derivation, while still re-applying
+        # dynamic thresholding and cfg_metrics against the corrected pred) yields:
+        #   uncond + cfg_now*(cond' - uncond)
+        # = uncond + cfg_now*(cond_ns-uncond) + cfg_now*(lambda/cfg_now)*(cond_s-cond_ns)
+        # = uncond + cfg_now*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+        # -- prompt guidance stays at cfg_now, style strength is lambda, decoupled
+        # from cfg, exactly like SDXL/Anima. Guarded on cfg_now > 1e-6 (else `v`/
+        # `cfg_metrics` above stay untouched, i.e. the plain styled-cond pass).
+        if (
+            style_cfg.style_guidance_scale is not None
+            and style_cfg.style_guidance_scale > 0
+            and cfg_now > 1e-6
+        ):
+            set_ideogram4_style_context(style_processors, None)
+            cond_ns = _ideogram4_cond_pass(transformer, latents, cond, t_model)
+            lam = style_cfg.style_guidance_scale
+            cond_rewritten = cond_ns + (lam / cfg_now) * (cond_s - cond_ns)
+            forced_advanced_cfg = dict(advanced_cfg or {})
+            forced_advanced_cfg["cfg_schedule_type"] = "constant"
+            v, cfg_metrics, _ = _blend_guidance(
+                cond_rewritten, v_uncond, cfg_now, sigma_t, forced_advanced_cfg,
+            )
     finally:
         set_ideogram4_style_context(style_processors, None)
 
@@ -768,7 +852,10 @@ def _ideogram4_style_step_multi(
         else:
             set_ideogram4_style_context(style_processors, None)
 
-        v, cfg_metrics = _dual_branch_velocity(
+        # Multi-reference lambda (CFG-decoupled style guidance) is out of scope for
+        # this rollout (see `_ideogram4_style_step`'s single-ref-only feature) --
+        # the extra `cfg_now`/`cond_s`/`v_uncond` returns are discarded unused.
+        v, cfg_metrics, _cfg_now, _cond_s, _v_uncond = _dual_branch_velocity(
             transformer, unconditional_transformer, latents, cond, t_model, gw_i, sigma_t, advanced_cfg,
         )
     finally:
@@ -958,7 +1045,7 @@ def _run_loop(
                 real_cond._fbcache_step = i
             if fbcache_uncond is not None:
                 real_uncond._fbcache_step = i
-            v, cfg_metrics = _dual_branch_velocity(
+            v, cfg_metrics, _cfg_now, _pos_v, _neg_v = _dual_branch_velocity(
                 transformer, unconditional_transformer, latents, cond, t_model,
                 guidance[i], sigma_t, advanced_cfg,
             )

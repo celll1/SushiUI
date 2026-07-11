@@ -2071,12 +2071,55 @@ class ZImageMixin:
                     _attn._style_ctx = None
                     _attn.block_idx = None
 
+        # --- CFG-decoupled style guidance (single-ref only) ---
+        # Disabled by default (style_guidance_scale None/<=0, or the multi-ref
+        # path -- style_refs with 2+ entries is out of scope here): this block is
+        # skipped entirely and cond_out stays exactly the styled cond prediction
+        # above -- byte-identical to before this feature (zero extra forwards).
+        # Enabled (>0), single-ref, AND CFG is actually being applied this step
+        # (apply_cfg -- with no uncond pred there is nothing to decouple style
+        # from): run one more forward -- the SAME latents_list/prompt_embeds_list
+        # as the styled cond_out above -- but with transformer._style_ctx already
+        # cleared by the finally block above (and the per-layer ctx/block_idx
+        # reset alongside it), so this is a plain no-style cond forward (cond_ns).
+        # Z-Image's own combine below is:
+        #   noise_pred = neg + guidance_scale * (pos - neg)
+        # Rewriting the cond term to pos' = cond_ns + (lambda/guidance_scale) *
+        # (cond_s - cond_ns) makes that SAME combine reproduce the
+        # style-guidance target:
+        #   neg + guidance_scale*(pos' - neg)
+        # = neg + guidance_scale*(cond_ns-neg) + guidance_scale*(lambda/guidance_scale)*(cond_s-cond_ns)
+        # = neg + guidance_scale*(cond_ns - neg) + lambda*(cond_s - cond_ns)
+        # -- prompt guidance stays at guidance_scale (this step's, already resolved
+        # by the caller's CFG-truncation schedule before this function was
+        # called), style strength is lambda, decoupled from guidance_scale, exactly
+        # like the SDXL/Anima prototypes. FBCache is already forced off for the
+        # whole generation whenever style transfer is active (see
+        # ``_zimage_denoising_loop``), so this extra forward cannot desync a
+        # cache. Guarded on guidance_scale > 1e-6 (else this block is skipped and
+        # cond_out is used as-is, i.e. the plain styled-cond pass).
+        style_guidance_active = (
+            style_cfg is not None
+            and not (style_refs is not None and len(style_refs) > 1)
+            and style_cfg.style_guidance_scale is not None
+            and style_cfg.style_guidance_scale > 0
+            and apply_cfg
+            and guidance_scale > 1e-6
+        )
+        cond_ns_out = None
+        if style_guidance_active:
+            cond_ns_out = _forward(latents_list, prompt_embeds_list)
+
         if apply_cfg:
             uncond_out = _forward(latents_list, negative_prompt_embeds_list)
             combined = []
             for j in range(batch_size):
                 neg = uncond_out[j].float()
                 pos = cond_out[j].float()
+                if style_guidance_active:
+                    pos_ns = cond_ns_out[j].float()
+                    lam = style_cfg.style_guidance_scale
+                    pos = pos_ns + (lam / guidance_scale) * (pos - pos_ns)
                 combined.append(neg + guidance_scale * (pos - neg))
             noise_pred = torch.stack(combined, dim=0)
         else:

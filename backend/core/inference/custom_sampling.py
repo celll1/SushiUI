@@ -824,6 +824,7 @@ def custom_sampling_loop(
     if style_active:
         from core.inference.attention_processors import ensure_style_block_indices
         num_style_blocks = ensure_style_block_indices(unet)
+        style_cfg.resolve_default_block_range(num_style_blocks)
         print(f"[CustomSampling] Style transfer active: {num_style_blocks} self-attention layers "
               f"eligible, block_range={style_cfg.block_range} (None = all)")
 
@@ -1813,6 +1814,7 @@ def custom_img2img_sampling_loop(
     if style_active:
         from core.inference.attention_processors import ensure_style_block_indices
         num_style_blocks = ensure_style_block_indices(unet)
+        style_cfg.resolve_default_block_range(num_style_blocks)
         print(f"[CustomSampling] [img2img] Style transfer active: {num_style_blocks} self-attention layers "
               f"eligible, block_range={style_cfg.block_range} (None = all)")
 
@@ -2746,6 +2748,7 @@ def custom_inpaint_sampling_loop(
     if style_active:
         from core.inference.attention_processors import ensure_style_block_indices
         num_style_blocks = ensure_style_block_indices(unet)
+        style_cfg.resolve_default_block_range(num_style_blocks)
         print(f"[CustomSampling] [inpaint] Style transfer active: {num_style_blocks} self-attention layers "
               f"eligible, block_range={style_cfg.block_range} (None = all)")
 

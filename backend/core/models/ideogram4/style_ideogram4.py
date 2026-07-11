@@ -279,5 +279,7 @@ def set_ideogram4_style_context(processors: List[StyleIdeogram4AttnProcessor], c
     """Stamp the SAME ``StyleContext`` (or ``None`` to disarm) onto every installed
     style processor. Called once per capture/inject/disarm phase per active step by
     ``ideogram4_pipeline_ops._ideogram4_style_step``."""
+    if ctx is not None:
+        ctx.config.resolve_default_block_range(len(processors))
     for p in processors:
         p._style_ctx = ctx

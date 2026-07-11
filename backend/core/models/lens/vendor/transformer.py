@@ -390,6 +390,8 @@ class LensTransformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOrig
         image-token range is implicitly ``[0, seq_img)`` of THAT tensor, so
         nothing needs to be recorded here beyond the context object and block_idx."""
         ctx = self._style_ctx
+        if ctx is not None:
+            ctx.config.resolve_default_block_range(len(self.transformer_blocks))
         for idx, block in enumerate(self.transformer_blocks):
             block.attn.block_idx = idx
             block.attn._style_ctx = ctx

@@ -987,6 +987,7 @@ class Ltx2BlockLoopWrapper(nn.Module):
         eps_ref = self._style_eps_ref
         if processors is None or ref_x0 is None or eps_ref is None:
             return
+        cfg.resolve_default_block_range(len(t.transformer_blocks))
 
         step_idx = int(self._style_step_idx)
         total_steps = int(self._style_total_steps)

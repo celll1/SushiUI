@@ -178,5 +178,7 @@ def restore_minit2i_style_blocks(net, saved: Dict[int, Any]) -> None:
 def set_minit2i_style_context(net, ctx: Optional[Any]) -> None:
     """Stamp the SAME ``StyleContext`` (or ``None`` to disarm) onto every patched
     double block. Called once per capture/inject/disarm phase per active step."""
+    if ctx is not None:
+        ctx.config.resolve_default_block_range(len(net.double_blocks))
     for block in net.double_blocks:
         block._style_ctx = ctx

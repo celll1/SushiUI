@@ -765,6 +765,7 @@ class ZImageTransformer2DModel(nn.Module):
         if style_ctx is not None:
             style_ctx.img_start = 0
             style_ctx.img_end = x_item_seqlens[0]
+            style_ctx.config.resolve_default_block_range(len(self.layers))
             for idx, layer in enumerate(self.layers):
                 layer.attention.block_idx = idx
                 layer.attention._style_ctx = style_ctx

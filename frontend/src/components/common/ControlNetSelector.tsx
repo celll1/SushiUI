@@ -43,6 +43,7 @@ export interface ControlNetConfig {
   style_ref_value_mix?: number;
   style_late_release?: number;
   style_rope_offset?: boolean;
+  style_combine_mode?: string;  // "stack" | "common_concept" — multi-reference combine mode (N-ref style transfer only)
 }
 
 interface ControlNetSelectorProps {
@@ -383,6 +384,11 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   };
 
   const addStyleTransfer = () => {
+    // Determine the current combine mode from existing style-transfer entries
+    // (defaults to "stack" if this is the first entry, or none was set yet).
+    const existingStyleEntry = value.find((cn) => cn.is_style_transfer);
+    const combineMode = existingStyleEntry?.style_combine_mode ?? "stack";
+
     const newStyleTransfer: ControlNetConfig = {
       model_path: "__style_transfer__",
       strength: 0.75,
@@ -397,8 +403,23 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       // StyleTransferConfig.resolve_default_block_range). A fixed "7-27"
       // range is only correct for a 28-block model and is wrong (too early)
       // for archs with a different total block count (e.g. SDXL's 70).
+      style_combine_mode: combineMode,
     };
-    notifyChange([...value, newStyleTransfer]);
+
+    // Keep style_combine_mode consistent across all style-transfer entries.
+    // The backend only reads it from the first style entry, but writing it
+    // to all entries keeps the data consistent and future-proof.
+    const updatedValue = value.map((cn) =>
+      cn.is_style_transfer ? { ...cn, style_combine_mode: combineMode } : cn
+    );
+    notifyChange([...updatedValue, newStyleTransfer]);
+  };
+
+  const setStyleCombineMode = (combineMode: string) => {
+    const updatedValue = value.map((cn) =>
+      cn.is_style_transfer ? { ...cn, style_combine_mode: combineMode } : cn
+    );
+    notifyChange(updatedValue);
   };
 
   const removeControlNet = async (index: number) => {
@@ -597,6 +618,9 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
       return newMap;
     });
   };
+
+  const styleTransferEntries = value.filter((cn) => cn.is_style_transfer);
+  const styleCombineMode = styleTransferEntries[0]?.style_combine_mode ?? "stack";
 
   return (
     <>
@@ -1089,6 +1113,30 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
             }
           </div>
         ))}
+
+        {/* Multi-reference Style Transfer combine mode - only shown with 2+ style-transfer entries */}
+        {styleTransferEntries.length >= 2 && (
+          <div className="p-3 bg-gray-800 rounded-lg border border-purple-700">
+            <label className="block text-sm font-medium text-gray-300 mb-2">
+              Multi-Reference Combine Mode
+            </label>
+            <select
+              value={styleCombineMode}
+              onChange={(e) => setStyleCombineMode(e.target.value)}
+              disabled={disabled}
+              className="w-full bg-gray-700 text-white px-3 py-2 rounded text-sm"
+            >
+              <option value="stack">Stack (layer all references)</option>
+              <option value="common_concept">Common concept (average references)</option>
+            </select>
+            <p className="mt-2 text-xs text-gray-400">
+              Stack layers all references sequentially, applying each reference's style with the
+              configured per-entry strength. Common concept averages the references' style
+              statistics before applying them, transferring only the appearance shared across
+              all references.
+            </p>
+          </div>
+        )}
 
         {/* Add ControlNet / Reference Guide Buttons */}
         <div className="flex gap-2">

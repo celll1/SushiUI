@@ -160,6 +160,7 @@ export interface ControlNetConfig {
   style_ref_value_mix?: number;
   style_late_release?: number;
   style_rope_offset?: boolean;
+  style_combine_mode?: string;  // "stack" | "common_concept" — multi-reference combine mode (N-ref style transfer only)
 }
 
 export interface GenerationParams {

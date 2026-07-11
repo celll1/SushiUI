@@ -60,10 +60,23 @@ class StyleTransferConfig:
     # sets them — but the field lets us codify a preset once experiments settle it.
     transfer_type: str = "style"
 
-    # --- v1 (exercised) --- (verbatim ComfyUI-Krea2-StyleTransfer single-ref defaults)
-    ref_k_strength: float = 1.06
-    block_range: Optional[Tuple[int, int]] = None  # inclusive (lo, hi); None = all blocks
-    adain_strength: float = 0.85
+    # --- v1 (exercised) --- tuned defaults (validated by GPU experiments across
+    # SDXL/SD1.5/Anima): the verbatim ComfyUI-Krea2-StyleTransfer constants
+    # (1.06 / all-blocks / 0.85) over-copy the reference's CONTENT (and on
+    # freq-suppressing DiT archs like Anima, destabilize into artifacts).
+    ref_k_strength: float = 0.75
+    block_range: Optional[Tuple[int, int]] = None  # inclusive (lo, hi); None = resolve to the
+    # proportional mid-late default via ``resolve_default_block_range`` (below)
+    # once the arch's total block count is known -- NOT "all blocks".
+    adain_strength: float = 0.6
+
+    # Fraction of an arch's total style-injectable blocks (lo_frac, hi_frac)
+    # used to build the default ``block_range`` when the caller leaves it
+    # unset (None). Default = inject only in the LAST 50% of blocks (mid-late),
+    # matching the reference node's own "7-27 of 28" (~25-96%) mid-late subset
+    # rather than truly all blocks. Scales automatically per-arch (SDXL ~70
+    # self-attn layers, Krea2 28, etc.) via ``resolve_default_block_range``.
+    block_range_frac: Tuple[float, float] = (0.5, 1.0)
 
     # --- frequency-scale: STEP-PROGRESS dependent (interpolated start->end over
     # the denoise progress, progress=0 at the first step -> 1 at the last).
@@ -94,6 +107,22 @@ class StyleTransferConfig:
 
     # internal cache: (device, dtype, rounded progress) -> frequency scale vector
     _freq_cache: Dict[Tuple[Any, Any, float], torch.Tensor] = field(default_factory=dict, repr=False, compare=False)
+
+    def resolve_default_block_range(self, total_blocks: int) -> None:
+        """Fill in ``block_range`` from ``block_range_frac`` scaled to this
+        arch's ``total_blocks``, but ONLY if the caller left ``block_range``
+        unset (None) -- an explicit user/config ``block_range`` always wins
+        and this is a no-op. Idempotent: once ``block_range`` is set (by this
+        call or by the user), subsequent calls do nothing. No-op when
+        ``total_blocks <= 0`` (arch couldn't report a count)."""
+        if self.block_range is not None:
+            return
+        if total_blocks <= 0:
+            return
+        lo_frac, hi_frac = self.block_range_frac
+        lo = round(lo_frac * total_blocks)
+        hi = total_blocks - 1
+        self.block_range = (lo, hi)
 
     def is_block_active(self, block_idx: int) -> bool:
         if self.block_range is None:
@@ -406,9 +435,9 @@ def style_config_from_dict(d: Dict[str, Any]) -> StyleTransferConfig:
 
     return StyleTransferConfig(
         transfer_type=str(d.get("transfer_type", "style") or "style"),
-        ref_k_strength=float(d.get("ref_k_strength", 1.06) if d.get("ref_k_strength") is not None else 1.06),
+        ref_k_strength=float(d.get("ref_k_strength", 0.75) if d.get("ref_k_strength") is not None else 0.75),
         block_range=_block_range(d.get("block_range")),
-        adain_strength=float(d.get("adain_strength", 0.85) if d.get("adain_strength") is not None else 0.85),
+        adain_strength=float(d.get("adain_strength", 0.6) if d.get("adain_strength") is not None else 0.6),
         high_scale_start=float(d.get("high_scale_start", 1.04) if d.get("high_scale_start") is not None else 1.04),
         high_scale_end=float(d.get("high_scale_end", 0.0) if d.get("high_scale_end") is not None else 0.0),
         low_scale_start=float(d.get("low_scale_start", 1.0) if d.get("low_scale_start") is not None else 1.0),

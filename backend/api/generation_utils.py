@@ -60,7 +60,12 @@ def process_controlnet_configs(
                     # raw reference Value + minimal AdaIN). Carried through to
                     # StyleTransferConfig; the arch injection path is shared.
                     "transfer_type": cn_config.get("style_transfer_type", "style"),
-                    "ref_k_strength": cn_config.get("strength", 1.0),
+                    # No literal fallback here: let None propagate so
+                    # style_config_from_dict applies the StyleTransferConfig
+                    # dataclass default (0.75). A hardcoded 1.0 here would be a
+                    # second, stale source of truth that masks the dataclass
+                    # default (matches how adain_strength below is wired).
+                    "ref_k_strength": cn_config.get("strength"),
                     "adain_strength": cn_config.get("style_adain_strength"),
                     "block_range": cn_config.get("style_blocks"),
                     "start_step": cn_config.get("start_step", 0),

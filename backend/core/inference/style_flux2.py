@@ -324,5 +324,7 @@ def set_flux2_style_context(processors: List[Any], ctx) -> None:
     ``_stamp_style_context`` does per-forward, except here there is no single
     vendored model forward to hook -- FLUX.2 attention lives behind the
     diffusers processor pattern, so the context is pushed explicitly instead)."""
+    if ctx is not None:
+        ctx.config.resolve_default_block_range(len(processors))
     for p in processors:
         p._style_ctx = ctx

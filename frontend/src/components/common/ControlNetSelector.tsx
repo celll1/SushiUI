@@ -385,14 +385,18 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
   const addStyleTransfer = () => {
     const newStyleTransfer: ControlNetConfig = {
       model_path: "__style_transfer__",
-      strength: 1.06,
+      strength: 0.75,
       start_step: 0,
       end_step: 1000,
       is_lllite: false,
       is_style_transfer: true,
       enable_preprocessor: false,
-      style_adain_strength: 0.85,
-      style_blocks: "7-27",
+      style_adain_strength: 0.6,
+      // style_blocks intentionally left unset: the backend resolves an
+      // arch-aware proportional mid-late block range by default (see
+      // StyleTransferConfig.resolve_default_block_range). A fixed "7-27"
+      // range is only correct for a 28-block model and is wrong (too early)
+      // for archs with a different total block count (e.g. SDXL's 70).
     };
     notifyChange([...value, newStyleTransfer]);
   };

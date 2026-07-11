@@ -467,6 +467,7 @@ class Krea2Transformer2DModel(ModelMixin, ConfigMixin):
         if ctx is not None:
             ctx.img_start = text_seq_len
             ctx.img_end = text_seq_len + image_seq_len
+            ctx.config.resolve_default_block_range(len(self.transformer_blocks))
         for idx, block in enumerate(self.transformer_blocks):
             block.attn.block_idx = idx
             block.attn._style_ctx = ctx

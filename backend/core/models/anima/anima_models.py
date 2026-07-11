@@ -1128,6 +1128,8 @@ class Anima(nn.Module):
         byte-identical.
         """
         ctx = None if self.training else getattr(self, "_style_ctx", None)
+        if ctx is not None:
+            ctx.config.resolve_default_block_range(len(self.blocks))
         for idx, block in enumerate(self.blocks):
             block.self_attn.block_idx = idx
             block.self_attn._style_ctx = ctx

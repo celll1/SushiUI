@@ -203,19 +203,19 @@ class MiniT2IMixin:
                 torch.cuda.empty_cache()
         return text.to(dtype), mask, neg_text, neg_mask, nag_text, nag_mask
 
-    def _minit2i_style_config(self, params: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
-                              model_key: Optional[str] = None):
-        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
-        when no style reference is attached (byte-identical default path -- the
-        caller never installs the style block patch in that case).
+    def _minit2i_style_triple(self, style_dict: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
+                              model_key: Optional[str] = None, ref_index: int = 0):
+        """Build a single ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from one
+        style_transfer dict.
 
         No ``axes_dims`` is set here (unlike Krea2/Z-Image): MiniT2I uses interleaved
         (rotate_half) RoPE, not the ``repeat_interleave_real=True`` layout
         ``frequency_scale_vector`` assumes, so ``core.inference.style_minit2i`` bypasses
         the frequency-scale machinery entirely (all-ones vector) rather than calling
-        ``get_freq_scale_vector`` -- see that module's docstring.
+        ``get_freq_scale_vector`` -- see that module's docstring. This is unaffected by
+        multi-reference support: ``StyleContext.collect_block_refs`` falls back to the
+        SAME all-ones vector whenever a config's ``axes_dims`` is unset (it never is,
+        for any ref, here).
 
         The reference is encoded the SAME way this generation consumes images: pixel-
         space checkpoints (``cfg["is_latent"] is False``, the MiniT2I default) get the
@@ -224,16 +224,20 @@ class MiniT2IMixin:
         inpaint. Resized to this generation's own PIXEL (height, width) -- vae_encode_image
         downsamples by 8 internally, so pixel dims are passed for BOTH the pixel and the
         latent-VAE path (never the already-divided latent_h/latent_w).
-        """
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across multiple
+        simultaneous references (each ref would otherwise draw the EXACT same noise from
+        ``prepare_style_reference``'s internal ``seed+991`` offset applied to the SAME
+        ``cfg["seed"]``, since that offset does not depend on which reference is being
+        prepared). ``ref_index=0`` (the default, used by the single-ref path) reproduces
+        the pre-multi-ref ``cfg["seed"]`` exactly.
+        """
         from core.inference.reference_style import style_config_from_dict
         from core.models.minit2i.minit2i_pipeline_ops import prepare_style_reference
         from core.keep_hot import is_resident, discard_resident
 
         style_cfg = style_config_from_dict(style_dict)
+        ref_seed = cfg["seed"] if ref_index == 0 else cfg["seed"] + ref_index
 
         is_latent = cfg["is_latent"]
         if is_latent:
@@ -250,7 +254,7 @@ class MiniT2IMixin:
                 vae = self._minit2i_move("vae", device)
             ref_x0, eps_ref = prepare_style_reference(
                 vae, style_dict["image"], height, width, device, dtype,
-                is_latent=True, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=cfg["seed"],
+                is_latent=True, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=ref_seed,
             )
             self._minit2i_move("vae", "cpu")
             if model_key is not None:
@@ -259,9 +263,57 @@ class MiniT2IMixin:
             height, width = cfg["height"], cfg["width"]
             ref_x0, eps_ref = prepare_style_reference(
                 None, style_dict["image"], height, width, device, dtype,
-                is_latent=False, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=cfg["seed"],
+                is_latent=False, channels=cfg["channels"], noise_scale=cfg["noise_scale"], seed=ref_seed,
             )
         return style_cfg, ref_x0, eps_ref
+
+    def _minit2i_style_config(self, params: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
+                              model_key: Optional[str] = None):
+        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached (byte-identical default path -- the
+        caller never installs the style block patch in that case). Single-reference
+        path, BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_minit2i_style_triple`` with ``ref_index=0``, which reproduces the original
+        ``cfg["seed"]`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        return self._minit2i_style_triple(style_dict, cfg, device, dtype, model_key=model_key, ref_index=0)
+
+    def _minit2i_style_configs(self, params: Dict[str, Any], cfg: Dict[str, Any], device, dtype,
+                               model_key: Optional[str] = None):
+        """Build the full style-transfer configuration for MiniT2I generation,
+        covering both the single-reference path (legacy ``(style_cfg, style_ref_x0,
+        style_eps_ref)`` triple, exactly as ``_minit2i_style_config`` would return)
+        and the multi-reference path (``style_refs``, a list of per-ref triples,
+        populated ONLY when ``params["style_transfers"]`` has more than one entry).
+        A single-entry ``style_transfers`` list is intentionally routed through the
+        single-ref triple instead (``style_refs`` stays ``None``), so the
+        pre-multi-ref code path executes byte-identically end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._minit2i_style_triple(style_dict, cfg, device, dtype, model_key=model_key, ref_index=idx))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                style_cfg_single, x0, eps = refs[0]
+                return style_cfg_single, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(params, cfg, device, dtype, model_key=model_key)
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _minit2i_nag_wrap(self, params, transformer, nag_text, nag_mask):
         """Install the MiniT2I NAG wrapper when NAG is active; returns (call_target,
@@ -579,9 +631,9 @@ class MiniT2IMixin:
                 model_key=_kh_model_key, keep_te=_kh_keep_te)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
-            style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
-                params, cfg, device, dtype, model_key=_kh_model_key)
-            style_active = style_cfg is not None
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
+            style_active = style_cfg is not None or style_refs is not None
             # Style transfer is mutually exclusive with NAG/NegPip: both ALSO monkey-patch
             # DoubleStreamDiTBlock.forward (core.inference.style_minit2i), so installing
             # both would have one wrapper silently clobber the other's patch. Skip the
@@ -605,6 +657,7 @@ class MiniT2IMixin:
                         channels=cfg["channels"], noise_scale=cfg["noise_scale"], clamp_output=False,
                         spectrum_params=params,
                         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                        style_refs=style_refs, style_combine_mode=style_combine_mode,
                     )
                 else:
                     x = denoise_loop(
@@ -614,6 +667,7 @@ class MiniT2IMixin:
                         progress_callback=progress_callback,
                         spectrum_params=params,
                         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                        style_refs=style_refs, style_combine_mode=style_combine_mode,
                     )
             finally:
                 if negpip_wrapper is not None:
@@ -670,9 +724,9 @@ class MiniT2IMixin:
                 init_t = image_to_tensor(init_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
-            style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
-                params, cfg, device, dtype, model_key=_kh_model_key)
-            style_active = style_cfg is not None
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
+            style_active = style_cfg is not None or style_refs is not None
             if style_active:
                 call_target, nag_wrapper, negpip_wrapper = transformer, None, None
                 print("[MiniT2I] Style transfer active: NAG/NegPip wrapping skipped for this generation")
@@ -690,6 +744,7 @@ class MiniT2IMixin:
                     noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
                     spectrum_params=params,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if negpip_wrapper is not None:
@@ -749,9 +804,9 @@ class MiniT2IMixin:
                 mask_latent = prepare_mask(mask_image, cfg["height"], cfg["width"], device, dtype)
             transformer = self._minit2i_stage_transformer(device, params, model_key=_kh_model_key)
             applied_lora = self._load_lora_minit2i(params.get("loras") or [])
-            style_cfg, style_ref_x0, style_eps_ref = self._minit2i_style_config(
-                params, cfg, device, dtype, model_key=_kh_model_key)
-            style_active = style_cfg is not None
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._minit2i_style_configs(params, cfg, device, dtype, model_key=_kh_model_key)
+            style_active = style_cfg is not None or style_refs is not None
             if style_active:
                 call_target, nag_wrapper, negpip_wrapper = transformer, None, None
                 print("[MiniT2I] Style transfer active: NAG/NegPip wrapping skipped for this generation")
@@ -769,6 +824,7 @@ class MiniT2IMixin:
                     noise_scale=cfg["noise_scale"], clamp_output=not cfg["is_latent"],
                     spectrum_params=params,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if negpip_wrapper is not None:

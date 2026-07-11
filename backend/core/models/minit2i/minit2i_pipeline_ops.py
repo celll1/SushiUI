@@ -171,6 +171,67 @@ def _predict_x0_style_step(net, x, t, text, mask, neg_text, neg_mask, cfg_scale,
 
 
 @torch.no_grad()
+def _predict_x0_style_step_multi(net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
+                                 style_refs, style_combine_mode, step_idx, num_steps):
+    """Multi-reference (N>1) variant of ``_predict_x0_style_step``: one capture
+    forward PER reference (each with its OWN ``StyleTransferConfig`` -- block_range,
+    strengths, freq curve, step gating -- skipped if not step-active THIS step,
+    mirroring the single-ref ``is_step_active`` gate applied per-ref instead of
+    globally), then a SINGLE ``StyleContext(mode="inject", refs=...)`` for the
+    conditional forward. When no ref is active this step, ``cond`` falls back to a
+    plain (style-disarmed) forward -- mathematically identical to what
+    ``_predict_x0_cfg`` would compute for this step, just as two separate
+    forwards instead of one batched pass (a performance detail only, matching the
+    same tradeoff the single-ref ``_predict_x0_style_step`` already makes). The
+    UNCOND forward (when CFG is active) is ALWAYS run with the style context
+    disarmed (untouched), same as ``_predict_x0_style_step``.
+
+    ``_euler_run`` routes ``len(style_refs) <= 1`` through the untouched
+    single-ref ``_predict_x0_style_step`` path instead, so this function is only
+    ever reached for 2+ refs."""
+    from core.inference.reference_style import StyleContext
+    from core.inference.style_minit2i import set_minit2i_style_context
+
+    t_val = float(t.reshape(-1)[0].item())
+    use_cfg = (cfg_scale != 1.0) and (cfg_interval[0] <= t_val <= cfg_interval[1])
+
+    try:
+        active_refs = []
+        for cfg_i, x0_i, eps_i in style_refs:
+            if not cfg_i.is_step_active(step_idx, num_steps):
+                continue
+            progress_i = cfg_i.step_progress(step_idx, num_steps)
+            ref_input_i = (x0_i * t_val + eps_i * (1.0 - t_val)).to(x.dtype)
+            capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
+            set_minit2i_style_context(net, capture_ctx_i)
+            net(ref_input_i, t, text, mask)
+            active_refs.append((capture_ctx_i.store, cfg_i))
+
+        if active_refs:
+            overall_progress = active_refs[0][1].step_progress(step_idx, num_steps)
+            inject_ctx = StyleContext(
+                mode="inject", config=active_refs[0][1], refs=active_refs,
+                combine_mode=style_combine_mode, progress=overall_progress,
+            )
+            set_minit2i_style_context(net, inject_ctx)
+        else:
+            set_minit2i_style_context(net, None)
+        cond = net(x, t, text, mask)
+    finally:
+        set_minit2i_style_context(net, None)
+
+    if not use_cfg:
+        return cond
+
+    if neg_text is not None:
+        u_text, u_mask = neg_text, neg_mask
+    else:
+        u_text, u_mask = text, torch.zeros_like(mask)
+    uncond = net(x, t, u_text, u_mask)
+    return uncond + (cond - uncond) * cfg_scale
+
+
+@torch.no_grad()
 def _unwrap_minit2i_net(transformer):
     """Return the raw MMJiT net (whose forward reads _fbcache) from the call target.
 
@@ -258,7 +319,8 @@ def _predict_x0_cfg(transformer, x, t, text, mask, neg_text, neg_mask, cfg_scale
 def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                start_idx=0, progress_callback=None, mask_latent=None, init_image=None, fixed_noise=None,
                clamp_output=True, spectrum_params=None,
-               style_cfg=None, style_ref_x0=None, style_eps_ref=None):
+               style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+               style_refs=None, style_combine_mode="stack"):
     """Shared Euler loop from ts[start_idx] -> 1.
 
     Returns the final tensor. clamp_output=True clamps to [-1,1] (pixel RGB);
@@ -279,23 +341,36 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
     ``_build_minit2i_fbcache``). Uninstalled in a ``finally`` so a raised exception
     mid-loop never leaves the style patch (or a stale ``_style_ctx``) installed on the
     net for a later, non-style generation.
+
+    ``style_refs`` (optional, multi-reference): a list of ``(StyleTransferConfig,
+    ref_x0, ref_eps)`` triples, one per reference image, each keeping its OWN
+    config (block_range, strengths, freq curve, step gating). Only consulted
+    when it has 2+ entries -- ``len(style_refs) <= 1`` is intentionally NOT
+    specially handled here (callers route that case through the ``style_cfg``/
+    ``style_ref_x0``/``style_eps_ref`` single-ref path instead so the exact
+    pre-multi-ref code executes byte-identically). ``style_combine_mode``
+    selects how the N refs combine ("stack" or "common_concept", see
+    ``core.inference.reference_style.inject_kv_multi``).
     """
     from core.inference.cancellation import raise_if_cancelled
     n = len(ts) - 1
     total = n - start_idx
     spectrum = build_output_forecaster(spectrum_params, total, "MiniT2I")
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+    style_multi_active = style_refs is not None and len(style_refs) > 1
+    style_any_active = style_active or style_multi_active
     # FBCache: single instance (batched CFG). None when inactive/guarded (Spectrum/Block Swap/Style).
     _fb_net = _unwrap_minit2i_net(transformer)
-    fbcache = _build_minit2i_fbcache(_fb_net, spectrum, spectrum_params, style_active=style_active)
+    fbcache = _build_minit2i_fbcache(_fb_net, spectrum, spectrum_params, style_active=style_any_active)
     if fbcache is not None and _fb_net is not None:
         _fb_net._fbcache = fbcache
 
     _style_saved = None
-    if style_active:
+    if style_any_active:
         if _fb_net is None:
             print("[Style] MiniT2I disabled: could not locate MMJiT net on call target")
             style_active = False
+            style_multi_active = False
         else:
             from core.inference.style_minit2i import install_minit2i_style_blocks
             _style_saved = install_minit2i_style_blocks(_fb_net)
@@ -309,6 +384,17 @@ def _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cf
             spectrum_skip = spectrum is not None and not spectrum.is_anchor(j)
             if spectrum_skip:
                 pred_x0 = spectrum.forecast(j)
+            elif style_multi_active:
+                # Multi-reference (N>1): each ref's own capture + StyleContext
+                # holding the full ``refs`` list. len(style_refs) <= 1 is NEVER
+                # routed here by the caller (see docstring) so this branch does
+                # not affect single-ref behavior at all.
+                pred_x0 = _predict_x0_style_step_multi(
+                    _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
+                    style_refs, style_combine_mode, j, total,
+                )
+                if spectrum is not None:
+                    spectrum.record(j, pred_x0)
             elif style_active and style_cfg.is_step_active(j, total):
                 pred_x0 = _predict_x0_style_step(
                     _fb_net, x, t, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
@@ -344,7 +430,8 @@ def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cf
                  cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
                  progress_callback=None, channels: int = 3, noise_scale: float = NOISE_SCALE,
                  clamp_output: bool = True, spectrum_params=None,
-                 style_cfg=None, style_ref_x0=None, style_eps_ref=None):
+                 style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+                 style_refs=None, style_combine_mode="stack"):
     """txt2img: start from pure noise, integrate t:0->1.
 
     Pixel: channels=3, noise_scale=2, height/width = image dims, clamp_output=True.
@@ -354,7 +441,8 @@ def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cf
     ts = torch.linspace(0.0, 1.0, num_inference_steps + 1, device=device, dtype=dtype)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       progress_callback=progress_callback, clamp_output=clamp_output, spectrum_params=spectrum_params,
-                      style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref)
+                      style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                      style_refs=style_refs, style_combine_mode=style_combine_mode)
 
 
 @torch.no_grad()
@@ -362,7 +450,8 @@ def denoise_loop(transformer, text, mask, height, width, num_inference_steps, cf
 def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask, num_inference_steps,
                          cfg_scale, cfg_interval, device, dtype, seed=None, neg_text=None, neg_mask=None,
                          progress_callback=None, noise_scale: float = NOISE_SCALE, clamp_output: bool = True, spectrum_params=None,
-                         style_cfg=None, style_ref_x0=None, style_eps_ref=None):
+                         style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+                         style_refs=None, style_combine_mode="stack"):
     """img2img (SDEdit): start at t_start = 1 - strength with the noised init.
 
     init_image is the working tensor: pixel RGB [1,3,H,W] or (latent) a normalized
@@ -378,7 +467,8 @@ def denoise_loop_img2img(transformer, init_image, denoising_strength, text, mask
     x = init_image.to(dtype) * ti + noise * (1.0 - ti)
     return _euler_run(transformer, x, ts, text, mask, neg_text, neg_mask, cfg_scale, cfg_interval,
                       start_idx=start_idx, progress_callback=progress_callback, clamp_output=clamp_output, spectrum_params=spectrum_params,
-                      style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref)
+                      style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                      style_refs=style_refs, style_combine_mode=style_combine_mode)
 
 
 def prepare_mask(mask_image: Image.Image, height, width, device, dtype) -> torch.Tensor:
@@ -394,7 +484,8 @@ def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strengt
                          num_inference_steps, cfg_scale, cfg_interval, device, dtype, seed=None,
                          neg_text=None, neg_mask=None, progress_callback=None,
                          noise_scale: float = NOISE_SCALE, clamp_output: bool = True, spectrum_params=None,
-                         style_cfg=None, style_ref_x0=None, style_eps_ref=None):
+                         style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+                         style_refs=None, style_combine_mode="stack"):
     """inpaint (repaint): keep non-masked pixels pinned to the noised init each step.
 
     init_image is the working tensor (pixel RGB or normalized VAE latent); mask_latent
@@ -413,4 +504,5 @@ def denoise_loop_inpaint(transformer, init_image, mask_latent, denoising_strengt
                       start_idx=start_idx, progress_callback=progress_callback,
                       mask_latent=mask_latent, init_image=init_image, fixed_noise=fixed_noise,
                       clamp_output=clamp_output, spectrum_params=spectrum_params,
-                      style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref)
+                      style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                      style_refs=style_refs, style_combine_mode=style_combine_mode)

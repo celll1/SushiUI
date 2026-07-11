@@ -46,6 +46,16 @@ whenever style transfer is requested (mirrors Z-Image/FLUX.2: a cache hit skips
 ``double_blocks[1:]``, which would desync the per-block style capture/inject store across
 steps) -- enforced by ``minit2i_pipeline_ops._build_minit2i_fbcache``'s caller. Block Swap
 composes unchanged (it only changes WHERE compute happens, not what attention sees).
+
+Multi-reference (N-ref) support: when ``ctx.refs`` is set (2+ simultaneous
+references, see ``core.inference.reference_style.StyleContext``), the inject
+branch of ``_apply_style_hook`` calls ``ctx.collect_block_refs`` +
+``inject_kv_multi`` instead of the single-ref ``inject_kv`` call. This is a
+pure addition -- the single-ref branch (``ctx.refs is None``) is byte-identical
+to before, and ``minit2i_pipeline_ops``/``pipeline_backends.minit2i`` only ever
+populate ``ctx.refs`` when 2+ references are attached (a single reference,
+however supplied, always routes through the original ``style_cfg``/
+``style_ref_x0``/``style_eps_ref`` triple).
 """
 
 from __future__ import annotations
@@ -82,7 +92,26 @@ def _apply_style_hook(
         )
         return q, k, v
 
-    # mode == "inject"
+    if ctx.mode == "inject" and ctx.refs is not None:
+        # Multi-reference ("stack" / "common_concept"): centralizes the
+        # per-ref active/freq/make_ref_value logic in
+        # StyleContext.collect_block_refs so this hook stays thin. The
+        # single-ref branch below (``ctx.refs is None``) is completely
+        # untouched -- this branch is only ever reached for 2+ refs (see
+        # ``minit2i_pipeline_ops._predict_x0_style_step_multi`` and the
+        # ``style_refs``/``StyleContext(refs=...)`` wiring in
+        # ``pipeline_backends.minit2i``). No attention_mask exists here to pad
+        # (MiniT2I's joint sequence is dense, see ``mem_efficient_sdpa``'s
+        # docstring), unlike Krea2's equivalent hook.
+        from core.inference.reference_style import inject_kv_multi
+
+        target_v_img = v[:, img_start:img_end]
+        block_refs = ctx.collect_block_refs(block_idx, target_v_img, k.device, k.dtype)
+        if block_refs:
+            k, v, q = inject_kv_multi(k, v, q, img_start, img_end, block_refs, ctx.combine_mode)
+        return q, k, v
+
+    # mode == "inject" (single-ref)
     ref_qkv = ctx.store.get(block_idx)
     if ref_qkv is None:
         return q, k, v

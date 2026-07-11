@@ -649,20 +649,32 @@ class ZImageMixin:
                     "vae": vae
                 })
 
-            # Training-free reference-style transfer setup (no-op / None when no style
-            # reference is attached -- byte-identical default path below). txt2img has no
-            # other VAE-encode stage (unlike img2img/inpaint), so the VAE is briefly staged
-            # to GPU here just to encode the reference, then offloaded again.
+            # Training-free reference-style transfer setup. OFF by default
+            # (style_transfer/style_transfers absent -> (None, None, None, None, "stack"), no-op
+            # below). ``style_refs`` is populated (and style_cfg/style_ref_x0/style_eps_ref left
+            # None) ONLY when ``params["style_transfers"]`` carries 2+ references -- a single
+            # reference (via either key) always resolves through the
+            # style_cfg/style_ref_x0/style_eps_ref triple, so that code path (both here and inside
+            # ``_zimage_denoising_loop``/``_zimage_style_step``) is untouched. txt2img has no other
+            # VAE-encode stage (unlike img2img/inpaint), so the VAE is briefly staged to GPU here
+            # just to encode the reference(s), then offloaded again.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 if not is_resident(self, "vae", _kh_model_key):
                     move_zimage_vae_to_gpu(vae)
-                style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
-                    params, vae, height, width, torch.device(self.device), generator=generator
-                )
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._zimage_style_configs(
+                        params, vae, height, width, torch.device(self.device), generator=generator
+                    )
                 move_zimage_vae_to_cpu(vae)
-                print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
-                      f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
+                if style_refs is not None:
+                    print(f"[Z-Image] Multi-reference style transfer active: {len(style_refs)} refs, "
+                          f"combine_mode={style_combine_mode}")
+                elif style_cfg is not None:
+                    print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
+                          f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
 
             latents = self._zimage_denoising_loop(
                 transformer, scheduler, prompt_embeds_list, negative_prompt_embeds_list,
@@ -672,6 +684,7 @@ class ZImageMixin:
                 nag_negative_embeds_list=nag_negative_embeds_list,
                 nag_params=params,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                style_refs=style_refs, style_combine_mode=style_combine_mode,
             )
 
             # Offload Transformer to CPU to free VRAM for VAE (unless kept hot --
@@ -971,17 +984,24 @@ class ZImageMixin:
 
             print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
 
-            # Training-free reference-style transfer setup (no-op / None when no style
-            # reference is attached -- byte-identical default path below). VAE is already
-            # resident on GPU from the init-image encode above, so the reference encode
-            # piggybacks on it before the offload below.
+            # Training-free reference-style transfer setup (see the txt2img comment above for the
+            # single-ref/multi-ref routing invariant). VAE is already resident on GPU from the
+            # init-image encode above, so the reference encode(s) piggyback on it before the
+            # offload below.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
-                style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
-                    params, vae, height, width, torch.device(self.device), generator=generator
-                )
-                print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
-                      f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._zimage_style_configs(
+                        params, vae, height, width, torch.device(self.device), generator=generator
+                    )
+                if style_refs is not None:
+                    print(f"[Z-Image] Multi-reference style transfer active: {len(style_refs)} refs, "
+                          f"combine_mode={style_combine_mode}")
+                elif style_cfg is not None:
+                    print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
+                          f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
 
             # Offload VAE to CPU after encoding
             move_zimage_vae_to_cpu(vae)
@@ -1090,6 +1110,7 @@ class ZImageMixin:
                 nag_negative_embeds_list=nag_negative_embeds_list,
                 nag_params=params,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                style_refs=style_refs, style_combine_mode=style_combine_mode,
             )
 
             # Offload Transformer to CPU (unless kept hot -- only possible when
@@ -1399,17 +1420,24 @@ class ZImageMixin:
             print(f"[Z-Image] Encoded input image to latents: {init_latents.shape}")
             print(f"[Z-Image] Mask latent shape: {mask_latent.shape}")
 
-            # Training-free reference-style transfer setup (no-op / None when no style
-            # reference is attached -- byte-identical default path below). VAE is already
-            # resident on GPU from the init-image encode above, so the reference encode
-            # piggybacks on it before the offload below.
+            # Training-free reference-style transfer setup (see the txt2img comment above for the
+            # single-ref/multi-ref routing invariant). VAE is already resident on GPU from the
+            # init-image encode above, so the reference encode(s) piggyback on it before the
+            # offload below.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
-                style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
-                    params, vae, height, width, torch.device(self.device), generator=generator
-                )
-                print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
-                      f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._zimage_style_configs(
+                        params, vae, height, width, torch.device(self.device), generator=generator
+                    )
+                if style_refs is not None:
+                    print(f"[Z-Image] Multi-reference style transfer active: {len(style_refs)} refs, "
+                          f"combine_mode={style_combine_mode}")
+                elif style_cfg is not None:
+                    print(f"[Z-Image] Style transfer active: ref_k_strength={style_cfg.ref_k_strength}, "
+                          f"adain_strength={style_cfg.adain_strength}, block_range={style_cfg.block_range}")
 
             # Offload VAE to CPU after encoding
             move_zimage_vae_to_cpu(vae)
@@ -1521,6 +1549,7 @@ class ZImageMixin:
                 nag_negative_embeds_list=nag_negative_embeds_list,
                 nag_params=params,
                 style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                style_refs=style_refs, style_combine_mode=style_combine_mode,
             )
 
             # Offload Transformer to CPU (unless kept hot -- only possible when
@@ -1827,13 +1856,10 @@ class ZImageMixin:
             del h, mean, logvar, std
         return ref_x0.float()
 
-    def _zimage_style_config(self, params: Dict[str, Any], vae, height: int, width: int,
-                              device, generator=None):
-        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)`` when no
-        style reference is attached (byte-identical default path -- the caller never installs
-        ``transformer._style_ctx`` in that case).
+    def _zimage_style_triple(self, style_dict: Dict[str, Any], vae, height: int, width: int,
+                              device, generator, seed, ref_index: int = 0):
+        """Build a single ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from one
+        ``style_transfer`` dict.
 
         ``axes_dims`` is filled in from ``core.models.zimage_transformer.ROPE_AXES_DIMS``,
         Z-Image's RoPE axis split (t, h, w) = (32, 48, 48) -- the SAME axis layout Krea2 uses, so
@@ -1847,11 +1873,16 @@ class ZImageMixin:
         ``repeat_interleave(2)`` pairing in ``frequency_scale_vector`` exactly matches Z-Image's
         own ``view_as_complex(x.reshape(..., -1, 2))`` pairing (adjacent real slots), so no
         ones-vector fallback is needed here (unlike architectures whose RoPE axis order can't be
-        cleanly recovered)."""
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
+        cleanly recovered).
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across multiple simultaneous
+        references (each ref would otherwise draw the EXACT same ``eps_ref`` from the
+        ``seed+991`` offset, since that offset does not depend on which reference is being
+        prepared). ``ref_index=0`` (the default, used by the single-ref path) reproduces the
+        pre-multi-ref ``seed+991`` offset exactly. The VAE reparameterization noise inside
+        ``_zimage_prepare_style_reference`` needs no separate decorrelation: it consumes the
+        SAME shared ``generator`` object passed in by the caller, whose state naturally advances
+        (and thus decorrelates) across successive per-ref calls."""
         from diffusers.utils.torch_utils import randn_tensor
         from core.inference.reference_style import style_config_from_dict
         from core.models.zimage_transformer import ROPE_AXES_DIMS
@@ -1863,17 +1894,69 @@ class ZImageMixin:
             vae, style_dict["image"], height, width, device, generator=generator
         )
 
-        seed = params.get("seed", -1)
-        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2 ** 32)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2 ** 32)
         ref_generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
         eps_ref = randn_tensor(ref_x0.shape, generator=ref_generator, device=device, dtype=ref_x0.dtype)
         return cfg, ref_x0, eps_ref
+
+    def _zimage_style_config(self, params: Dict[str, Any], vae, height: int, width: int,
+                              device, generator=None):
+        """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)`` when no
+        style reference is attached (byte-identical default path -- the caller never installs
+        ``transformer._style_ctx`` in that case). Single-reference path, BYTE-IDENTICAL to the
+        pre-multi-ref implementation (delegates to ``_zimage_style_triple`` with ``ref_index=0``,
+        which reproduces the original ``seed+991`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        seed = params.get("seed", -1)
+        return self._zimage_style_triple(style_dict, vae, height, width, device, generator, seed, ref_index=0)
+
+    def _zimage_style_configs(self, params: Dict[str, Any], vae, height: int, width: int,
+                               device, generator=None):
+        """Build the full style-transfer configuration for Z-Image generation, covering both
+        the single-reference path (legacy ``(style_cfg, style_ref_x0, style_eps_ref)`` triple,
+        exactly as ``_zimage_style_config`` would return) and the multi-reference path
+        (``style_refs``, a list of per-ref triples, populated ONLY when
+        ``params["style_transfers"]`` has more than one entry). A single-entry
+        ``style_transfers`` list is intentionally routed through the single-ref triple instead
+        (``style_refs`` stays ``None``), so the pre-multi-ref code path executes
+        byte-identically end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            seed = params.get("seed", -1)
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._zimage_style_triple(
+                    style_dict, vae, height, width, device, generator, seed, ref_index=idx
+                ))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._zimage_style_config(
+            params, vae, height, width, device, generator=generator
+        )
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _zimage_style_step(
         self, transformer, style_cfg, style_ref_x0, style_eps_ref,
         t, latents, prompt_embeds_list, negative_prompt_embeds_list,
         apply_cfg: bool, guidance_scale: float, has_fp8_weights: bool,
         step_idx: int, num_inference_steps: int,
+        style_refs=None, style_combine_mode: str = "stack",
     ):
         """One style-active denoise step for Z-Image: bypasses the batched
         ``[negative; positive(; nag_negative)]`` CFG fast path entirely for this step (mirrors
@@ -1892,6 +1975,14 @@ class ZImageMixin:
         ``forward()`` layer loop (and its ``_block_offloader`` calls) runs exactly the same way
         for these calls as for the normal batched path.
 
+        ``style_refs`` (optional, multi-reference): a list of ``(StyleTransferConfig, ref_x0,
+        ref_eps)`` triples, one per reference image, each keeping its OWN config (block_range,
+        strengths, freq curve, step gating). Only consulted when it has 2+ entries -- callers
+        route ``len(style_refs) <= 1`` through the ``style_cfg``/``style_ref_x0``/
+        ``style_eps_ref`` single-ref path below instead (untouched), so single-ref behavior stays
+        byte-identical. ``style_combine_mode`` selects how the N refs combine ("stack" or
+        "common_concept", see ``core.inference.reference_style.inject_kv_multi``).
+
         Returns the final signed noise_pred (``-model_output.squeeze(2)``, same convention the
         non-style branch produces) ready for ``scheduler.step``.
         """
@@ -1899,18 +1990,11 @@ class ZImageMixin:
 
         batch_size = len(prompt_embeds_list)
         sigma_now = float(t.item()) / 1000.0
-        ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
-        progress = style_cfg.step_progress(step_idx, num_inference_steps)
 
         input_dtype = torch.bfloat16 if has_fp8_weights else next(transformer.parameters()).dtype
         timestep = t.expand(latents.shape[0]).to(input_dtype)
         timestep = (1000 - timestep) / 1000
 
-        # Per-item lists: the reference image is IDENTICAL (same style ref) for every batch item,
-        # only the caption differs -- exactly how the target's own ``latents`` are shared across
-        # the pos/neg/nag groups in the normal batched path (repeat, not distinct content).
-        ref_item = ref_t[0].to(input_dtype).unsqueeze(1)  # (C, 1, H, W)
-        ref_list = [ref_item for _ in range(batch_size)]
         latents_list = list(latents.to(input_dtype).unsqueeze(2).unbind(dim=0))
 
         def _forward(x_list, cap_list):
@@ -1921,13 +2005,58 @@ class ZImageMixin:
                 return transformer(x_list, timestep, cap_list)[0]
 
         try:
-            capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
-            transformer._style_ctx = capture_ctx
-            _forward(ref_list, prompt_embeds_list)
+            if style_refs is not None and len(style_refs) > 1:
+                # Multi-reference (N>1): one capture forward PER reference (each skipped if not
+                # step-active this step, mirroring the single-ref ``is_step_active`` gate applied
+                # per-ref instead of globally), then a single StyleContext holding the full
+                # ``refs`` list for the conditional forward. len(style_refs) <= 1 is NEVER routed
+                # here by the caller (see docstring) so this branch does not affect single-ref
+                # behavior at all.
+                active_refs = []
+                for cfg_i, x0_i, eps_i in style_refs:
+                    if not cfg_i.is_step_active(step_idx, num_inference_steps):
+                        continue
+                    ref_t_i = (1.0 - sigma_now) * x0_i + sigma_now * eps_i
+                    progress_i = cfg_i.step_progress(step_idx, num_inference_steps)
+                    # Per-item lists: the reference image is IDENTICAL (same ref) for every batch
+                    # item, only the caption differs -- exactly how the target's own ``latents``
+                    # are shared across the pos/neg/nag groups in the normal batched path.
+                    ref_item_i = ref_t_i[0].to(input_dtype).unsqueeze(1)  # (C, 1, H, W)
+                    ref_list_i = [ref_item_i for _ in range(batch_size)]
 
-            inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
-            transformer._style_ctx = inject_ctx
-            cond_out = _forward(latents_list, prompt_embeds_list)
+                    capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
+                    transformer._style_ctx = capture_ctx_i
+                    _forward(ref_list_i, prompt_embeds_list)
+                    active_refs.append((capture_ctx_i.store, cfg_i))
+
+                if active_refs:
+                    overall_progress = active_refs[0][1].step_progress(step_idx, num_inference_steps)
+                    inject_ctx = StyleContext(
+                        mode="inject", config=active_refs[0][1], refs=active_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                    transformer._style_ctx = inject_ctx
+                    cond_out = _forward(latents_list, prompt_embeds_list)
+                else:
+                    cond_out = _forward(latents_list, prompt_embeds_list)
+            else:
+                ref_t = (1.0 - sigma_now) * style_ref_x0 + sigma_now * style_eps_ref
+                progress = style_cfg.step_progress(step_idx, num_inference_steps)
+
+                # Per-item lists: the reference image is IDENTICAL (same style ref) for every
+                # batch item, only the caption differs -- exactly how the target's own
+                # ``latents`` are shared across the pos/neg/nag groups in the normal batched path
+                # (repeat, not distinct content).
+                ref_item = ref_t[0].to(input_dtype).unsqueeze(1)  # (C, 1, H, W)
+                ref_list = [ref_item for _ in range(batch_size)]
+
+                capture_ctx = StyleContext(mode="capture", config=style_cfg, progress=progress)
+                transformer._style_ctx = capture_ctx
+                _forward(ref_list, prompt_embeds_list)
+
+                inject_ctx = StyleContext(mode="inject", config=style_cfg, store=capture_ctx.store, progress=progress)
+                transformer._style_ctx = inject_ctx
+                cond_out = _forward(latents_list, prompt_embeds_list)
         finally:
             transformer._style_ctx = None
             # Defense-in-depth: if a style forward raised after stamping but before
@@ -1969,6 +2098,8 @@ class ZImageMixin:
         style_cfg=None,
         style_ref_x0: Optional[torch.Tensor] = None,
         style_eps_ref: Optional[torch.Tensor] = None,
+        style_refs=None,
+        style_combine_mode: str = "stack",
     ):
         """
         Stage 2: Denoising Loop for Z-Image
@@ -1980,6 +2111,12 @@ class ZImageMixin:
             timesteps_override: Optional timesteps for img2img/inpaint (partial timesteps from t_start)
             mask_latent: Optional mask for inpainting (1 = inpaint, 0 = keep original)
             original_latents: Optional original unnoised latents for inpaint blending
+            style_refs: Optional multi-reference (N>1) list of ``(StyleTransferConfig, ref_x0,
+                ref_eps)`` triples -- see ``_zimage_style_step``'s docstring. Only consulted when
+                it has 2+ entries; ``style_cfg``/``style_ref_x0``/``style_eps_ref`` drive the
+                (untouched) single-ref path otherwise.
+            style_combine_mode: "stack" or "common_concept", see
+                ``core.inference.reference_style.inject_kv_multi``.
 
         Returns:
             latents: Denoised latents (torch.Tensor)
@@ -2077,8 +2214,12 @@ class ZImageMixin:
 
         # Training-free reference-style transfer: active only when a style reference was
         # attached (style_cfg is not None -- built by ``_zimage_style_config``, byte-identical
-        # no-op otherwise).
-        style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+        # no-op otherwise). ``style_multi_active`` covers the multi-reference (N>1) path built by
+        # ``_zimage_style_configs`` -- ``style_cfg``/``style_refs`` are mutually exclusive (never
+        # both set), so this OR simply widens the "style transfer is on" gate to cover both.
+        style_active_single = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
+        style_multi_active = style_refs is not None and len(style_refs) > 1
+        style_active = style_active_single or style_multi_active
 
         # First Block Cache (FBCache): dynamic per-step residual reuse. Mutually exclusive with:
         #   (a) Spectrum -- both target the same trajectory redundancy; combining compounds error.
@@ -2226,7 +2367,18 @@ class ZImageMixin:
             # [negative;positive(;nag_negative)] CFG fast path (and Spectrum/NAG/NegPip/FBCache)
             # entirely for this step -- see ``_zimage_style_step``'s docstring. Takes priority over
             # Spectrum's skip-step forecast since a forecast has no attention to inject style into.
-            style_active_step = style_active and style_cfg.is_step_active(normalized_step, num_inference_steps)
+            # Multi-reference (N>1): active this step when ANY of the N refs is step-active (each
+            # ref's own ``is_step_active`` gate, mirroring the single-ref check applied per-ref
+            # instead of globally) -- when none are active, this step falls through to the normal
+            # batched path below exactly like the single-ref "step outside range" case does.
+            if style_multi_active:
+                style_active_step = any(
+                    cfg_i.is_step_active(normalized_step, num_inference_steps) for _s, cfg_i in style_refs
+                )
+            elif style_active_single:
+                style_active_step = style_cfg.is_step_active(normalized_step, num_inference_steps)
+            else:
+                style_active_step = False
 
             # Spectrum: forecast the post-CFG velocity on skip steps (skip transformer + CFG)
             spectrum_skip = not style_active_step and spectrum is not None and not spectrum.is_anchor(i)
@@ -2236,6 +2388,7 @@ class ZImageMixin:
                     t, latents, prompt_embeds_list, negative_prompt_embeds_list,
                     apply_cfg, current_guidance_scale, has_fp8_weights,
                     normalized_step, num_inference_steps,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
                 if spectrum is not None:
                     spectrum.record(i, noise_pred)

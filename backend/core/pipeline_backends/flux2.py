@@ -1127,6 +1127,27 @@ class Flux2Mixin:
                 # body) is skipped, and this attr tells cleanup to restore instead. On the
                 # happy path this is cleared back to None right after the in-try restore.
                 self._flux2_active_style_saved = style_saved_processors
+                # CFG-decoupled style guidance (style_guidance_scale) needs a real
+                # uncond/cond CFG split to decouple lambda from (see
+                # _flux2_style_step); a distilled model (do_classifier_free_guidance
+                # False) has no uncond pass at all, so the knob is a silent no-op
+                # there. Single-ref only (style_cfg is None on the multi-ref path).
+                if (
+                    style_cfg is not None
+                    and style_cfg.style_guidance_scale is not None
+                    and style_cfg.style_guidance_scale > 0
+                    and not do_classifier_free_guidance
+                ):
+                    print("[FLUX.2] style_guidance_scale has no effect: model is distilled "
+                          "(no classifier-free guidance split to decouple from)")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "FLUX.2 style_guidance_scale ignored: distilled model has no CFG split",
+                            code="style_guidance_scale_needs_cfg",
+                        )
+                    except Exception:
+                        pass
 
             # Denoising loop
             # Spectrum output-mode acceleration (forecast per-step model output). Also
@@ -1863,6 +1884,62 @@ class Flux2Mixin:
                 return_dict=False,
             )[0]
         set_flux2_style_context(style_processors, None)
+
+        # --- CFG-decoupled style guidance (FLUX.2) --- see the SDXL prototype
+        # (core.inference.custom_sampling) for the full derivation; identical
+        # mechanism, adapted to this function's own combine below. Disabled by
+        # default (style_cfg.style_guidance_scale is None/<=0): this block is
+        # skipped and noise_pred_cond stays exactly the styled cond pred above
+        # (cond_s) -- byte-identical to before this feature (zero extra forwards).
+        #
+        # Only applicable when ``do_classifier_free_guidance`` is True -- i.e. a
+        # real uncond/cond CFG split exists for this generation (non-distilled
+        # model, guidance_scale > 1.0). When the model is distilled
+        # (``do_classifier_free_guidance`` False), FLUX.2 has no uncond pass at
+        # all: ``guidance_scale`` feeds the transformer's own distilled
+        # guidance-embed input instead of a classic CFG combine, so there is no
+        # (uncond, cond) delta for a SECOND lambda-scaled delta to decouple
+        # from -- style_guidance_scale has no defined effect there and is left
+        # a no-op (warned about once at generation setup; see the style_cfg
+        # setup block above the denoise loop).
+        #
+        # Enabled (>0) AND CFG-active: run one extra cond forward -- SAME
+        # latents/timestep/guidance/encoder_hidden_states/txt_ids/img_ids as the
+        # styled cond forward above -- with the style context already cleared
+        # (line above) to get the cond prediction WITHOUT style (cond_ns), then
+        # rewrite noise_pred_cond so the UNCHANGED combine below
+        # (noise_pred = uncond + cfg*(cond - uncond)) reproduces the
+        # style-guidance target:
+        #   uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+        # Algebra: let cond' = cond_ns + (lambda/cfg)*(cond_s - cond_ns).
+        # Substituting into the combine:
+        #   uncond + cfg*(cond' - uncond)
+        # = uncond + cfg*(cond_ns - uncond) + cfg*(lambda/cfg)*(cond_s - cond_ns)
+        # = uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+        # which is exactly the target above -- so assigning
+        # noise_pred_cond = cond' lets the untouched combine line below produce
+        # style guidance decoupled from cfg. cfg is guarded (>1e-6) even though
+        # do_classifier_free_guidance implies guidance_scale > 1.0 here; if it
+        # were ever ~0 we skip the rewrite and keep noise_pred_cond = cond_s.
+        if (
+            do_classifier_free_guidance
+            and style_cfg.style_guidance_scale is not None
+            and style_cfg.style_guidance_scale > 0
+        ):
+            cond_s = noise_pred_cond
+            with torch.no_grad():
+                cond_ns = transformer_wrapper(
+                    hidden_states=latents.to(transformer_input_dtype),
+                    timestep=timestep,
+                    guidance=guidance_vec,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=text_ids,
+                    img_ids=latent_ids,
+                    return_dict=False,
+                )[0]
+            lam = style_cfg.style_guidance_scale
+            if guidance_scale > 1e-6:
+                noise_pred_cond = cond_ns + (lam / guidance_scale) * (cond_s - cond_ns)
 
         if do_classifier_free_guidance:
             with torch.no_grad():
@@ -2623,6 +2700,27 @@ class Flux2Mixin:
                 # body) is skipped, and this attr tells cleanup to restore instead. On the
                 # happy path this is cleared back to None right after the in-try restore.
                 self._flux2_active_style_saved = style_saved_processors
+                # CFG-decoupled style guidance (style_guidance_scale) needs a real
+                # uncond/cond CFG split to decouple lambda from (see
+                # _flux2_style_step); a distilled model (do_classifier_free_guidance
+                # False) has no uncond pass at all, so the knob is a silent no-op
+                # there. Single-ref only (style_cfg is None on the multi-ref path).
+                if (
+                    style_cfg is not None
+                    and style_cfg.style_guidance_scale is not None
+                    and style_cfg.style_guidance_scale > 0
+                    and not do_classifier_free_guidance
+                ):
+                    print("[FLUX.2] style_guidance_scale has no effect: model is distilled "
+                          "(no classifier-free guidance split to decouple from)")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "FLUX.2 style_guidance_scale ignored: distilled model has no CFG split",
+                            code="style_guidance_scale_needs_cfg",
+                        )
+                    except Exception:
+                        pass
 
             # Spectrum output-mode acceleration (forecast per-step model output). Also
             # yields to style transfer: Spectrum records the final noise_pred and skips
@@ -3468,6 +3566,27 @@ class Flux2Mixin:
                 # body) is skipped, and this attr tells cleanup to restore instead. On the
                 # happy path this is cleared back to None right after the in-try restore.
                 self._flux2_active_style_saved = style_saved_processors
+                # CFG-decoupled style guidance (style_guidance_scale) needs a real
+                # uncond/cond CFG split to decouple lambda from (see
+                # _flux2_style_step); a distilled model (do_classifier_free_guidance
+                # False) has no uncond pass at all, so the knob is a silent no-op
+                # there. Single-ref only (style_cfg is None on the multi-ref path).
+                if (
+                    style_cfg is not None
+                    and style_cfg.style_guidance_scale is not None
+                    and style_cfg.style_guidance_scale > 0
+                    and not do_classifier_free_guidance
+                ):
+                    print("[FLUX.2] style_guidance_scale has no effect: model is distilled "
+                          "(no classifier-free guidance split to decouple from)")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "FLUX.2 style_guidance_scale ignored: distilled model has no CFG split",
+                            code="style_guidance_scale_needs_cfg",
+                        )
+                    except Exception:
+                        pass
 
             # Spectrum output-mode acceleration (forecast per-step model output). Also
             # yields to style transfer: Spectrum records the final noise_pred and skips

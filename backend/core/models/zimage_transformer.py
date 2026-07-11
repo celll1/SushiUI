@@ -171,6 +171,33 @@ class ZImageAttention(nn.Module):
                     key[:, img_start:img_end].detach().clone(),
                     value[:, img_start:img_end].detach().clone(),
                 )
+            elif style_ctx.mode == "inject" and style_ctx.refs is not None:
+                # Multi-reference ("stack" / "common_concept"): centralizes the
+                # per-ref active/freq/make_ref_value logic in
+                # StyleContext.collect_block_refs so this hook stays thin. The
+                # single-ref branch below (``style_ctx.mode == "inject"`` reached
+                # only when ``style_ctx.refs is None``) is completely untouched --
+                # this branch is only ever reached for 2+ refs (see
+                # ``pipeline_backends.zimage.ZImageMixin._zimage_style_step``'s
+                # multi-ref capture and the ``style_refs``/``StyleContext(refs=...)``
+                # wiring in ``ZImageMixin._zimage_denoising_loop``).
+                from core.inference.reference_style import inject_kv_multi
+
+                target_v_img = value[:, img_start:img_end]
+                block_refs = style_ctx.collect_block_refs(self.block_idx, target_v_img, key.device, key.dtype)
+                if block_refs:
+                    ref_len_before = key.shape[1]
+                    key, value, query = inject_kv_multi(
+                        key, value, query, img_start, img_end, block_refs, style_ctx.combine_mode
+                    )
+                    # attention_mask arrives here as a 2D [B, S_k] bool mask (see the
+                    # single-ref branch's comment below) -- pad by the ACTUAL appended
+                    # key-length delta (multiple refs of potentially different lengths
+                    # may have been concatenated by inject_kv_multi's "stack" mode).
+                    if attention_mask is not None and key.shape[1] != ref_len_before:
+                        pad_len = key.shape[1] - ref_len_before
+                        pad = attention_mask.new_ones(attention_mask.shape[0], pad_len)
+                        attention_mask = torch.cat([attention_mask, pad], dim=-1)
             elif style_ctx.mode == "inject":
                 ref_qkv = style_ctx.store.get(self.block_idx)
                 if ref_qkv is not None:

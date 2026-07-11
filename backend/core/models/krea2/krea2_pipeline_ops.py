@@ -269,16 +269,22 @@ def _blend_guidance(
     guidance: float,
     sigma_now: float,
     advanced_cfg: Optional[Dict[str, Any]] = None,
-) -> Tuple[torch.Tensor, Any]:
+) -> Tuple[torch.Tensor, Any, Optional[float]]:
     """CFG blend. ``guidance`` is the Krea convention scale (== cfg_scale - 1).
 
     When uncond is None (guidance <= 0), returns v_cond unchanged. Otherwise blends
     ``v_uncond + cfg_now * (v_cond - v_uncond)`` where ``cfg_now = 1 + guidance``,
     matching the Krea velocity ``cond + guidance*(cond - uncond)`` while exposing a
     standard CFG scale to the shared Advanced-CFG schedule/threshold helpers.
+
+    Returns ``(v, cfg_metrics, cfg_now)`` -- ``cfg_now`` is the per-step CFG scale
+    actually applied (post schedule/SNR-rescale derivation, ``None`` when the
+    early-return no-CFG branch is taken), exposed so callers (CFG-decoupled style
+    guidance) can force-reproduce the SAME scale on a corrected cond without
+    re-deriving it from a different (cond, uncond) pair.
     """
     if v_uncond is None or guidance <= 0.0:
-        return v_cond, None
+        return v_cond, None, None
 
     cfg = advanced_cfg or {}
     schedule_type = cfg.get("cfg_schedule_type", "constant") or "constant"
@@ -318,7 +324,7 @@ def _blend_guidance(
     cfg_metrics = (
         calculate_cfg_metrics(v_uncond, v_cond, cfg_now, developer_mode) if developer_mode else None
     )
-    return v, cfg_metrics
+    return v, cfg_metrics, cfg_now
 
 
 # ---------------------------------------------------------------------------
@@ -501,7 +507,82 @@ def _run_loop(
                 return_dict=False,
             )[0].to(torch.float32)
 
-        v, cfg_metrics = _blend_guidance(v_cond, v_uncond, guidance, sigma_now, advanced_cfg)
+        v, cfg_metrics, cfg_now = _blend_guidance(v_cond, v_uncond, guidance, sigma_now, advanced_cfg)
+
+        # --- CFG-decoupled style guidance (Krea2) ---
+        # Disabled by default (style_guidance_scale is None/<=0): this block is
+        # skipped entirely and `v`/`cfg_metrics` stay exactly the combine above --
+        # byte-identical to before this feature (zero extra forwards). Single-ref
+        # style_active ONLY: `style_active` requires `style_cfg is not None`, and
+        # the caller (pipeline_backends/krea2.py) never sets `style_cfg` alongside
+        # a 2+-entry `style_refs` (see `_run_loop`'s own docstring) -- so this
+        # block can never fire during the multi-ref branch above.
+        #
+        # Enabled (>0) AND this step actually injected style (the SAME
+        # `is_step_active` gate used for the capture/inject in the `elif
+        # style_active` branch above) AND CFG is active (`v_uncond is not None`,
+        # which for Krea2's `do_cfg` gate also guarantees `guidance > 0.0`, so
+        # `_blend_guidance` always took its full-derivation path and `cfg_now` is
+        # never `None` here): run one more cond forward -- the SAME transformer()
+        # call as the styled `v_cond` above (identical hidden_states/
+        # encoder_hidden_states/timestep/position_ids/encoder_attention_mask) but
+        # with the style context disarmed (already cleared to `None` right after
+        # the styled call above -- Krea2 has no FBCache to desync, unlike Anima,
+        # so no extra disarming is needed) -- to get the cond prediction WITHOUT
+        # style (`cond_ns`).
+        #
+        # Krea2's OWN combine (inside `_blend_guidance`) is:
+        #   v = v_uncond + cfg_now * (v_cond - v_uncond)
+        # where `cfg_now` is derived PER STEP from the styled (cond_s, v_uncond)
+        # pair via `calculate_dynamic_cfg` (schedule/SNR-rescale), exactly like
+        # Anima's `_apply_advanced_cfg` -- so the lambda rewrite reuses the SAME
+        # `cfg_now` `_blend_guidance` already derived above (now returned as its
+        # 3rd value) rather than re-deriving it from a different cond, keeping the
+        # algebra exact for both constant and dynamic (schedule/SNR) CFG.
+        # Rewriting the cond term to
+        #   cond' = cond_ns + (lambda/cfg_now) * (cond_s - cond_ns)
+        # and re-running `_blend_guidance` with the schedule forced to
+        # "constant" and `guidance` set so `cfg_base == cfg_now` (Krea2's
+        # `_blend_guidance` takes the "cfg_scale - 1" convention, so
+        # `guidance = cfg_now - 1.0` reproduces `cfg_base = 1.0 + guidance ==
+        # cfg_now` with NO re-derivation) reproduces the style-guidance target:
+        #   uncond + cfg_now*(cond' - uncond)
+        # = uncond + cfg_now*(cond_ns-uncond) + cfg_now*(lambda/cfg_now)*(cond_s-cond_ns)
+        # = uncond + cfg_now*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+        # -- prompt guidance stays at cfg_now, style strength is lambda, decoupled
+        # from cfg_scale, exactly like the SDXL/Anima prototypes. The forced
+        # "constant" schedule also re-applies dynamic thresholding and recomputes
+        # cfg_metrics against the corrected pred (same as the original call).
+        # Guarded on cfg_now > 1e-6 (else `v`/`cfg_metrics` above stay untouched,
+        # i.e. the plain styled-cond pass).
+        if (
+            style_active
+            and v_uncond is not None
+            and style_cfg.style_guidance_scale is not None
+            and style_cfg.style_guidance_scale > 0
+            and style_cfg.is_step_active(i, total_steps)
+            and cfg_now is not None
+            and cfg_now > 1e-6
+        ):
+            cond_s = v_cond
+            # Style context is already disarmed (set to None) right after the
+            # styled forward above; re-clearing here is defensive/explicit.
+            transformer._style_ctx = None
+            cond_ns = transformer(
+                hidden_states=latents.to(t_dtype),
+                encoder_hidden_states=prompt_embeds,
+                timestep=timestep,
+                position_ids=position_ids,
+                encoder_attention_mask=prompt_embeds_mask,
+                return_dict=False,
+            )[0].to(torch.float32)
+            lam = style_cfg.style_guidance_scale
+            cond_rewritten = cond_ns + (lam / cfg_now) * (cond_s - cond_ns)
+            forced_advanced_cfg = dict(advanced_cfg or {})
+            forced_advanced_cfg["cfg_schedule_type"] = "constant"
+            v, cfg_metrics, _ = _blend_guidance(
+                cond_rewritten, v_uncond, cfg_now - 1.0, sigma_now, forced_advanced_cfg,
+            )
 
         # x0 estimate for preview: x_t = (1-sigma)x0 + sigma*noise, v = noise - x0.
         pred_x0 = latents - sigma_now * v

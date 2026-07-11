@@ -137,6 +137,21 @@ def process_controlnet_configs(
             print(f"[ControlNet {idx}] WARNING: No image_base64 provided for {generation_type}. "
                   "ControlNet will be skipped.")
 
+    # Multi-reference default: AdaIN (the Q/K distribution pull toward the
+    # reference) is the DOMINANT content-destroying knob when 2+ references are
+    # combined (stack OR common_concept). At the single-ref default (0.6) the
+    # target collapses into an abstract blob when 2+ refs are supplied
+    # (GPU-validated: a clean 2x2 sweep showed adain=0.2 blobs at every strength
+    # while adain=0.0 stays legible). So when the caller supplies 2+ style
+    # entries and did NOT explicitly set an AdaIN strength on an entry, default
+    # that entry's AdaIN to 0.0 (content-preserving) instead of the single-ref
+    # 0.6. An explicit per-entry style_adain_strength always wins, and single-ref
+    # (len<=1) is untouched (keeps the 0.6 default that single-ref was tuned for).
+    if len(style_transfers) > 1:
+        for entry in style_transfers:
+            if entry.get("adain_strength") is None:
+                entry["adain_strength"] = 0.0
+
     print(f"[Routes] Total controlnet_images added to params: {len(controlnet_images)}")
     return controlnet_images, style_transfer, style_transfers, style_combine_mode
 

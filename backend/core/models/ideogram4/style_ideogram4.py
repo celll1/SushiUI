@@ -62,6 +62,16 @@ block-diagonal case (as opposed to SDXL/Krea2/Lens's simpler "all rows may atten
 extra columns" additive-mask pad, which is valid there only because those masks are
 purely padding-exclusion, not a multi-segment block-diagonal partition).
 
+Multi-reference (N-ref) transfer: when ``ctx.refs`` is set (2+ simultaneous style
+references, see ``core.inference.reference_style.StyleContext``/``inject_kv_multi``),
+``_apply_style_hook`` takes a separate branch that calls ``collect_block_refs`` +
+``inject_kv_multi`` instead of the single-ref ``inject_kv``. The SAME mask-extension
+recipe above applies unchanged -- it derives ``extra`` from the actual post-injection
+key length rather than assuming a fixed per-ref column count, so it is correct whether
+``inject_kv_multi`` appended ONE column block per active reference ("stack" mode) or a
+single averaged consensus block ("common_concept" mode). The single-ref branch
+(``ctx.refs is None``) is completely untouched by this addition.
+
 Because the mask extension above is only implemented for the DENSE ``(B,1,L,L)``
 boolean-mask path (the ``ideogram4_dispatch_attention`` "native"/default branch, which
 passes ``attn_mask`` straight through to ``dispatch_attention_fn``), style-active
@@ -185,7 +195,58 @@ def _apply_style_hook(
         )
         return query, key, value, attention_mask
 
-    # mode == "inject"
+    if ctx.mode == "inject" and ctx.refs is not None:
+        # Multi-reference ("stack" / "common_concept"): centralizes the
+        # per-ref active/freq/make_ref_value logic in
+        # ``StyleContext.collect_block_refs`` so this hook stays thin. The
+        # single-ref branch below (reached only when ``ctx.refs is None``) is
+        # completely untouched -- this branch is only ever reached for 2+
+        # refs (see ``ideogram4_pipeline_ops._ideogram4_style_step_multi`` and
+        # the ``style_refs``/``StyleContext(refs=...)`` wiring in
+        # ``pipeline_backends.ideogram4``).
+        from core.inference.reference_style import inject_kv_multi
+
+        target_v_img = value[:, img_start:img_end]
+        block_refs = ctx.collect_block_refs(proc.block_idx, target_v_img, key.device, key.dtype)
+        if not block_refs:
+            return query, key, value, attention_mask
+
+        seq_len_before = key.shape[1]
+        key, value, query = inject_kv_multi(
+            key, value, query, img_start, img_end, block_refs, ctx.combine_mode
+        )
+
+        if attention_mask is not None and key.shape[1] != seq_len_before:
+            # Same block-diagonal mask extension as the single-ref path below,
+            # generalized to N appended reference-K/V blocks: in "stack" mode
+            # ``inject_kv_multi`` appends ONE column block PER active
+            # reference (each independently scaled), and in "common_concept"
+            # mode it appends a SINGLE averaged consensus block -- either way
+            # every appended block lands contiguously at the END of the key
+            # axis (the image region is already the sequence's own suffix, so
+            # there is nothing trailing it to displace) and needs the exact
+            # same visibility rule as the single-ref case: visible ONLY to
+            # image QUERY rows ([img_start:img_end) on the query axis, i.e.
+            # the same range used for K/V capture); text/pad query rows get
+            # False, leaving their existing block-diagonal visibility over the
+            # ORIGINAL keys unchanged. Computing ``extra`` from the actual
+            # post-injection key length (rather than assuming a fixed
+            # per-ref column count) means this is correct regardless of how
+            # many refs contributed or which combine_mode was used. See the
+            # module docstring's "Attention-mask extension" section for why
+            # this differs from the simpler "all rows visible" additive-mask
+            # padding used by SDXL/Krea2/Lens.
+            extra = key.shape[1] - seq_len_before
+            batch = attention_mask.shape[0]
+            seq_len_q = attention_mask.shape[2]
+            img_rows = torch.zeros(seq_len_q, dtype=torch.bool, device=attention_mask.device)
+            img_rows[img_start:img_end] = True
+            col_block = img_rows.view(1, 1, seq_len_q, 1).expand(batch, 1, seq_len_q, extra)
+            attention_mask = torch.cat([attention_mask, col_block], dim=-1)
+
+        return query, key, value, attention_mask
+
+    # mode == "inject" (single-ref, ctx.refs is None) -- untouched
     ref_qkv = ctx.store.get(proc.block_idx)
     if ref_qkv is None:
         return query, key, value, attention_mask

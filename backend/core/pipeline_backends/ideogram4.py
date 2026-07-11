@@ -399,29 +399,40 @@ class Ideogram4Mixin:
               f"(nag={'on' if is_nag else 'off'})")
         return install_negpip(transformer, token_weights)
 
-    def _ideogram4_style_config(self, params: Dict[str, Any], height: int, width: int,
-                                device, dtype, model_key: Optional[str] = None):
-        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
-        when no style reference is attached.
+    def _ideogram4_style_triple(self, params: Dict[str, Any], style_dict: Dict[str, Any],
+                                height: int, width: int, device, dtype,
+                                model_key: Optional[str] = None, ref_index: int = 0):
+        """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
+        style_transfer dict.
 
         ``axes_dims`` is deliberately left unset (``None``): Ideogram 4's MRoPE is
         INTERLEAVED (``Ideogram4MRoPE`` splices H/W frequencies into every-3rd
         channel), which ``frequency_scale_vector``'s concatenated-per-axis-block
         layout does not match -- ``core.models.ideogram4.style_ideogram4``'s hook
-        passes an all-ones frequency vector straight to ``inject_kv`` instead of
-        calling ``StyleTransferConfig.get_freq_scale_vector`` (which requires
-        ``axes_dims``; it is never read here).
+        passes an all-ones frequency vector straight to ``inject_kv``/
+        ``inject_kv_multi`` instead of calling ``StyleTransferConfig.get_freq_scale_vector``
+        (which requires ``axes_dims``; it is never read here).
 
         Reuses ``ideogram4_pipeline_ops.vae_encode`` (already produces the exact
         packed, patchified, BN-normalized token layout the transformer's image
         region expects) rather than duplicating that encode path.
-        """
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across
+        multiple simultaneous references (each ref would otherwise draw the
+        EXACT same noise from the ``seed+991`` offset, since that offset does
+        not depend on which reference is being prepared). ``ref_index=0`` (the
+        default, used by the single-ref path) reproduces the pre-multi-ref
+        ``seed+991`` offset exactly.
+
+        Moves the VAE to ``device`` (if not already resident) for THIS ref's
+        encode, then back to CPU afterwards -- the same round-trip the
+        original single-ref implementation performed. For N>1 references this
+        means N independent VAE round-trips rather than one shared residency
+        window across all refs; functionally correct, just not the most
+        efficient sequencing (a known perf follow-up, mirrors the "default
+        per-ref strength tuning pending" disclosure on the Anima N-ref
+        commit).
+        """
         from diffusers.utils.torch_utils import randn_tensor
         from core.inference.reference_style import style_config_from_dict
         from core.models.ideogram4.ideogram4_pipeline_ops import vae_encode
@@ -439,10 +450,65 @@ class Ideogram4Mixin:
             torch.cuda.empty_cache()
 
         seed = params.get("seed", -1)
-        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)
         generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
         eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
         return cfg, ref_x0, eps_ref
+
+    def _ideogram4_style_config(self, params: Dict[str, Any], height: int, width: int,
+                                device, dtype, model_key: Optional[str] = None):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached. Single-reference path,
+        BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_ideogram4_style_triple`` with ``ref_index=0``, which reproduces the
+        original ``seed+991`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        return self._ideogram4_style_triple(
+            params, style_dict, height, width, device, dtype, model_key=model_key, ref_index=0,
+        )
+
+    def _ideogram4_style_configs(self, params: Dict[str, Any], height: int, width: int,
+                                 device, dtype, model_key: Optional[str] = None):
+        """Build the full style-transfer configuration for Ideogram 4 generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple, exactly as ``_ideogram4_style_config``
+        would return) and the multi-reference path (``style_refs``, a list of
+        per-ref triples, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry). A single-entry ``style_transfers`` list is
+        intentionally routed through the single-ref triple instead (``style_refs``
+        stays ``None``), so the pre-multi-ref code path executes
+        byte-identically end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._ideogram4_style_triple(
+                    params, style_dict, height, width, device, dtype,
+                    model_key=model_key, ref_index=idx,
+                ))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
+            params, height, width, device, dtype, model_key=model_key,
+        )
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _ideogram4_setup_block_swap(self, transformer, blocks_to_swap: int,
                                     use_pinned_memory: bool, device: str,
@@ -709,11 +775,19 @@ class Ideogram4Mixin:
             style_processors: List[Any] = []
             style_saved: List[Any] = []
             style_cfg = style_ref_x0 = style_eps_ref = None
+            style_refs = None
+            style_combine_mode = "stack"
             if style_active:
-                style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
-                    params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
-                )
-                if style_cfg is not None:
+                # ``style_refs`` is populated (and style_cfg/style_ref_x0/style_eps_ref
+                # left None) ONLY when ``params["style_transfers"]`` carries 2+
+                # references -- a single reference always resolves through the
+                # style_cfg/style_ref_x0/style_eps_ref triple, so that code path
+                # (both here and inside denoise_loop/_run_loop) is untouched.
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._ideogram4_style_configs(
+                        params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
+                    )
+                if style_cfg is not None or style_refs is not None:
                     from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
                     style_processors, style_saved = install_ideogram4_style_processors(transformer)
 
@@ -728,6 +802,7 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                     style_processors=style_processors, style_cfg=style_cfg,
                     style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if style_saved:
@@ -884,11 +959,16 @@ class Ideogram4Mixin:
             style_processors: List[Any] = []
             style_saved: List[Any] = []
             style_cfg = style_ref_x0 = style_eps_ref = None
+            style_refs = None
+            style_combine_mode = "stack"
             if style_active:
-                style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
-                    params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
-                )
-                if style_cfg is not None:
+                # See the txt2img comment above for the single-ref/multi-ref
+                # routing invariant.
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._ideogram4_style_configs(
+                        params, cfg["height"], cfg["width"], device, dtype, model_key=_kh_model_key,
+                    )
+                if style_cfg is not None or style_refs is not None:
                     from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
                     style_processors, style_saved = install_ideogram4_style_processors(transformer)
 
@@ -904,6 +984,7 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                     style_processors=style_processors, style_cfg=style_cfg,
                     style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if style_saved:
@@ -1074,11 +1155,16 @@ class Ideogram4Mixin:
             style_processors: List[Any] = []
             style_saved: List[Any] = []
             style_cfg = style_ref_x0 = style_eps_ref = None
+            style_refs = None
+            style_combine_mode = "stack"
             if style_active:
-                style_cfg, style_ref_x0, style_eps_ref = self._ideogram4_style_config(
-                    params, height, width, device, dtype, model_key=_kh_model_key,
-                )
-                if style_cfg is not None:
+                # See the txt2img comment above for the single-ref/multi-ref
+                # routing invariant.
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._ideogram4_style_configs(
+                        params, height, width, device, dtype, model_key=_kh_model_key,
+                    )
+                if style_cfg is not None or style_refs is not None:
                     from core.models.ideogram4.style_ideogram4 import install_ideogram4_style_processors
                     style_processors, style_saved = install_ideogram4_style_processors(transformer)
 
@@ -1094,6 +1180,7 @@ class Ideogram4Mixin:
                     spectrum_params=params,
                     style_processors=style_processors, style_cfg=style_cfg,
                     style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if style_saved:

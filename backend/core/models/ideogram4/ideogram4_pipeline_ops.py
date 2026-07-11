@@ -685,6 +685,98 @@ def _ideogram4_style_step(
     return v, cfg_metrics
 
 
+def _ideogram4_style_step_multi(
+    transformer,
+    unconditional_transformer,
+    style_refs: List[Tuple[Any, torch.Tensor, torch.Tensor]],
+    style_combine_mode: str,
+    style_processors: List[Any],
+    step_idx: int,
+    total_steps: int,
+    t,
+    latents: torch.Tensor,
+    cond: Dict[str, Any],
+    gw_i: float,
+    sigma_t: float,
+    num_train_timesteps: int,
+    advanced_cfg: Optional[Dict[str, Any]],
+) -> Tuple[torch.Tensor, Any]:
+    """Multi-reference (N>1) style-active denoise step for Ideogram 4: one REF
+    capture forward PER reference (each with its OWN ``StyleTransferConfig`` --
+    block_range, strengths, freq curve, step gating -- skipped when not
+    step-active this step, mirroring the single-ref ``is_step_active`` gate in
+    ``_ideogram4_style_step`` applied per-ref instead of globally), then a
+    SINGLE inject context holding the full ``refs`` list armed for the
+    conditional forward of the normal ``_dual_branch_velocity`` call. Mirrors
+    ``_ideogram4_style_step``'s capture/inject/cleanup structure exactly,
+    generalized to N references (same packed ``[left-pad][text][image]``
+    layout, same target-conditioning reuse for every ref's capture forward,
+    same ``img_start``/``img_end`` span, same unconditional-branch-untouched
+    invariant). Only ever called when ``len(style_refs) > 1`` (see
+    ``_run_loop``) -- ``len(style_refs) <= 1`` always routes through
+    ``_ideogram4_style_step`` instead, so that function stays byte-identical.
+    """
+    from core.inference.reference_style import StyleContext
+    from core.models.ideogram4.style_ideogram4 import set_ideogram4_style_context
+
+    sigma_now = float(t.item()) / num_train_timesteps
+    max_text = cond["max_text_tokens"]
+    t_dtype = transformer.dtype
+    batch = latents.shape[0]
+    t_model = (1.0 - (t.float() / num_train_timesteps)).expand(batch).to(t_dtype)
+
+    img_start = max_text
+    img_end = max_text + latents.shape[1]
+
+    active_refs = []
+    try:
+        for cfg_i, x0_i, eps_i in style_refs:
+            if not cfg_i.is_step_active(step_idx, total_steps):
+                continue
+            progress_i = cfg_i.step_progress(step_idx, total_steps)
+            ref_t_i = (1.0 - sigma_now) * x0_i + sigma_now * eps_i
+
+            capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
+            capture_ctx_i.img_start = img_start
+            capture_ctx_i.img_end = img_end
+            set_ideogram4_style_context(style_processors, capture_ctx_i)
+
+            ref_text_padding = torch.zeros(
+                batch, max_text, ref_t_i.shape[-1], dtype=ref_t_i.dtype, device=ref_t_i.device
+            )
+            ref_pos_z = torch.cat([ref_text_padding, ref_t_i], dim=1).to(t_dtype)
+            transformer(
+                hidden_states=ref_pos_z,
+                timestep=t_model,
+                encoder_hidden_states=cond["llm_features"],
+                position_ids=cond["position_ids"],
+                segment_ids=cond["segment_ids"],
+                indicator=cond["indicator"],
+                return_dict=False,
+            )
+            active_refs.append((capture_ctx_i.store, cfg_i))
+
+        if active_refs:
+            overall_progress = active_refs[0][1].step_progress(step_idx, total_steps)
+            inject_ctx = StyleContext(
+                mode="inject", config=active_refs[0][1], refs=active_refs,
+                combine_mode=style_combine_mode, progress=overall_progress,
+            )
+            inject_ctx.img_start = img_start
+            inject_ctx.img_end = img_end
+            set_ideogram4_style_context(style_processors, inject_ctx)
+        else:
+            set_ideogram4_style_context(style_processors, None)
+
+        v, cfg_metrics = _dual_branch_velocity(
+            transformer, unconditional_transformer, latents, cond, t_model, gw_i, sigma_t, advanced_cfg,
+        )
+    finally:
+        set_ideogram4_style_context(style_processors, None)
+
+    return v, cfg_metrics
+
+
 # ---------------------------------------------------------------------------
 # First Block Cache (FBCache) helpers
 # ---------------------------------------------------------------------------
@@ -778,8 +870,21 @@ def _run_loop(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
-    """Shared dual-branch flow-matching loop (txt2img / img2img / inpaint)."""
+    """Shared dual-branch flow-matching loop (txt2img / img2img / inpaint).
+
+    ``style_refs`` (optional, multi-reference): a list of ``(StyleTransferConfig,
+    ref_x0, ref_eps)`` triples, one per reference image, each keeping its OWN
+    config (block_range, strengths, freq curve, step gating). Only consulted
+    when it has 2+ entries -- ``len(style_refs) <= 1`` is intentionally NOT
+    specially handled here (callers route that case through the ``style_cfg``/
+    ``style_ref_x0``/``style_eps_ref`` single-ref path instead so the exact
+    pre-multi-ref code executes byte-identically). ``style_combine_mode``
+    selects how the N refs combine ("stack" or "common_concept", see
+    ``core.inference.reference_style.inject_kv_multi``).
+    """
     from core.inference.cancellation import raise_if_cancelled
     total_steps = len(timesteps)
     spectrum = build_output_forecaster(spectrum_params, total_steps, "Ideogram4")
@@ -794,6 +899,12 @@ def _run_loop(
         style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
         and style_processors
     )
+    # Multi-reference (N>1): style_cfg/style_ref_x0/style_eps_ref stay None in
+    # this case (see pipeline_backends.ideogram4._ideogram4_style_configs), so
+    # style_active and style_multi_active are mutually exclusive by construction.
+    style_multi_active = (
+        style_refs is not None and len(style_refs) > 1 and bool(style_processors)
+    )
 
     # FBCache: two instances (cond/uncond) for the two-transformer-object CFG. None when
     # inactive/guarded (Spectrum, block swap, or style transfer). Attached to the REAL
@@ -801,7 +912,7 @@ def _run_loop(
     # _fbcache; the step index is refreshed each step (mirrors how _block_offloader is
     # attached to both transformers).
     fbcache_cond, fbcache_uncond = _build_ideogram4_fbcache(
-        spectrum_params, spectrum, True, style_active=style_active,
+        spectrum_params, spectrum, True, style_active=(style_active or style_multi_active),
     )
     real_cond = _unwrap_ideogram4_transformer(transformer)
     real_uncond = _unwrap_ideogram4_transformer(unconditional_transformer)
@@ -821,6 +932,17 @@ def _run_loop(
         if spectrum_skip:
             v = spectrum.forecast(i)
             cfg_metrics = None
+        elif style_multi_active:
+            # Multi-reference (N>1): len(style_refs) <= 1 is NEVER routed here
+            # by the caller (see denoise_loop*'s docstrings), so this branch
+            # does not affect single-ref behavior at all.
+            v, cfg_metrics = _ideogram4_style_step_multi(
+                transformer, unconditional_transformer, style_refs, style_combine_mode,
+                style_processors, i, total_steps, t, latents, cond, guidance[i], sigma_t,
+                num_train_timesteps, advanced_cfg,
+            )
+            if spectrum is not None:
+                spectrum.record(i, v)
         elif style_active_step:
             v, cfg_metrics = _ideogram4_style_step(
                 transformer, unconditional_transformer, style_cfg, style_ref_x0, style_eps_ref,
@@ -887,8 +1009,15 @@ def denoise_loop(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
-    """Flow-matching denoising loop for txt2img (dual-branch asymmetric CFG)."""
+    """Flow-matching denoising loop for txt2img (dual-branch asymmetric CFG).
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``_run_loop``'s docstring; only consulted when ``style_refs`` has 2+
+    entries.
+    """
     device = latents.device
     timesteps = setup_schedule(scheduler, num_inference_steps, height, width, mu, std, device)
     guidance = resolve_guidance_schedule(num_inference_steps, guidance_scale, guidance_schedule)
@@ -900,6 +1029,7 @@ def denoise_loop(
         spectrum_params=spectrum_params,
         style_processors=style_processors, style_cfg=style_cfg,
         style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+        style_refs=style_refs, style_combine_mode=style_combine_mode,
     )
 
 
@@ -929,8 +1059,15 @@ def denoise_loop_img2img(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
-    """SDEdit-style img2img on the flow-matching schedule."""
+    """SDEdit-style img2img on the flow-matching schedule.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``_run_loop``'s docstring; only consulted when ``style_refs`` has 2+
+    entries.
+    """
     device = init_latents.device
     all_timesteps = setup_schedule(scheduler, num_inference_steps, height, width, mu, std, device)
     full_guidance = resolve_guidance_schedule(num_inference_steps, guidance_scale, guidance_schedule)
@@ -955,6 +1092,7 @@ def denoise_loop_img2img(
         spectrum_params=spectrum_params,
         style_processors=style_processors, style_cfg=style_cfg,
         style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+        style_refs=style_refs, style_combine_mode=style_combine_mode,
     )
 
 
@@ -985,10 +1123,16 @@ def denoise_loop_inpaint(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """Repaint-style inpaint on the flow-matching schedule.
 
     mask_latent: (1, grid_h*grid_w, 1) — 1.0 = inpaint, 0.0 = keep.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``_run_loop``'s docstring; only consulted when ``style_refs`` has 2+
+    entries.
     """
     device = init_latents.device
     all_timesteps = setup_schedule(scheduler, num_inference_steps, height, width, mu, std, device)
@@ -1016,4 +1160,5 @@ def denoise_loop_inpaint(
         init_latents=init_latents, init_noise=init_noise, mask_latent=mask_latent,
         style_processors=style_processors, style_cfg=style_cfg,
         style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+        style_refs=style_refs, style_combine_mode=style_combine_mode,
     )

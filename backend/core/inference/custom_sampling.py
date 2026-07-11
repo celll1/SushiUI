@@ -179,7 +179,7 @@ def apply_reference_guide_blend(
 # Training-free reference-style transfer (SD1.5/SDXL U-Net wiring)
 # ---------------------------------------------------------------------------
 
-def prepare_style_reference_latent(image, pipeline, width, height, device, dtype, seed):
+def prepare_style_reference_latent(image, pipeline, width, height, device, dtype, seed, ref_index: int = 0):
     """VAE-encode the style reference image to the SAME latent shape/scaling as
     the target latents (so it can be re-noised to any step's sigma and its
     self-attention K/V injected into the target's own self-attention), and draw
@@ -194,6 +194,13 @@ def prepare_style_reference_latent(image, pipeline, width, height, device, dtype
     self-attention sequence length -- identical between the reference capture
     forward and the target's own forward, which is required for the per-block
     K/V injection to line up (see `attention_processors.UnifiedAttnProcessor`).
+
+    ``ref_index`` (multi-reference only): decorrelates the fixed re-noising
+    noise tensor across simultaneous references -- without it every reference
+    would draw the EXACT same noise from the ``seed+991`` offset below, since
+    that offset does not depend on which reference is being prepared.
+    ``ref_index=0`` (the default, used by the single-ref ``build_style_transfer``
+    caller) reproduces the pre-multi-ref ``seed+991`` offset exactly.
     """
     vae = pipeline.vae
     vae_dtype = next(vae.parameters()).dtype
@@ -225,7 +232,7 @@ def prepare_style_reference_latent(image, pipeline, width, height, device, dtype
         if _staged:
             vae.to(_orig_vae_device)
 
-    ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+    ref_seed = None if seed is None or seed < 0 else (int(seed) + ref_index + 991) % (2**32)
     generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
     eps_ref = torch.randn(ref_x0.shape, generator=generator, device=device, dtype=dtype)
     return ref_x0, eps_ref
@@ -258,6 +265,47 @@ def build_style_transfer(params, pipeline, width, height, device, dtype, seed=-1
         style_dict["image"], pipeline, width, height, device, dtype, seed,
     )
     return cfg, ref_x0, eps_ref
+
+
+def build_style_transfer_all(params, pipeline, width, height, device, dtype, seed=-1):
+    """Build the FULL style-transfer configuration for SDXL/SD1.5 generation,
+    covering both the single-reference path (legacy ``(style_cfg, style_ref_x0,
+    style_eps_ref)`` triple, exactly as ``build_style_transfer`` would return)
+    and the multi-reference path (``style_refs``, a list of per-ref
+    ``(StyleTransferConfig, ref_x0, eps_ref)`` triples, populated ONLY when
+    ``params["style_transfers"]`` has more than one valid entry). A single-entry
+    ``style_transfers`` list (or the legacy singular ``style_transfer`` key) is
+    intentionally routed through the single-ref triple instead (``style_refs``
+    stays ``None``), so the pre-multi-ref code path executes byte-identically
+    end to end.
+
+    Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+    style_combine_mode)``.
+    """
+    style_list = params.get("style_transfers")
+    if style_list and len(style_list) > 1:
+        from core.inference.reference_style import style_config_from_dict
+
+        combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+        refs = []
+        for idx, style_dict in enumerate(style_list):
+            if not style_dict or not style_dict.get("image"):
+                continue
+            cfg = style_config_from_dict(style_dict)
+            ref_x0, eps_ref = prepare_style_reference_latent(
+                style_dict["image"], pipeline, width, height, device, dtype, seed, ref_index=idx,
+            )
+            refs.append((cfg, ref_x0, eps_ref))
+
+        if len(refs) > 1:
+            return None, None, None, refs, combine_mode
+        if len(refs) == 1:
+            cfg, ref_x0, eps_ref = refs[0]
+            return cfg, ref_x0, eps_ref, None, combine_mode
+        return None, None, None, None, combine_mode
+
+    style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(params, pipeline, width, height, device, dtype, seed)
+    return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
 
 def vae_output_to_pil(
@@ -747,6 +795,8 @@ def custom_sampling_loop(
     style_cfg=None,  # core.inference.reference_style.StyleTransferConfig, or None (default off)
     style_ref_x0: Optional[torch.Tensor] = None,  # VAE-encoded style reference latent (build_style_transfer)
     style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,  # multi-reference (N>1): list of (StyleTransferConfig, ref_x0, eps_ref) triples, one per reference image; only consulted when len>1 (build_style_transfer_multi)
+    style_combine_mode: str = "stack",  # "stack" | "common_concept" -- multi-reference combine mode (core.inference.reference_style.inject_kv_multi)
 ) -> Image.Image:
     """Custom sampling loop with prompt editing and ControlNet support
 
@@ -827,6 +877,19 @@ def custom_sampling_loop(
         style_cfg.resolve_default_block_range(num_style_blocks)
         print(f"[CustomSampling] Style transfer active: {num_style_blocks} self-attention layers "
               f"eligible, block_range={style_cfg.block_range} (None = all)")
+
+    # Multi-reference (N>1) style transfer: style_refs is populated (and style_cfg/
+    # style_ref_x0/style_eps_ref left None) ONLY when the caller collected 2+
+    # references -- a single reference always resolves through style_active above,
+    # so this is mutually exclusive with it and never affects single-ref behavior.
+    style_refs_active = style_refs is not None and len(style_refs) > 1
+    if style_refs_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        num_style_blocks = ensure_style_block_indices(unet)
+        for _style_cfg_i, _style_x0_i, _style_eps_i in style_refs:
+            _style_cfg_i.resolve_default_block_range(num_style_blocks)
+        print(f"[CustomSampling] Multi-ref style transfer active: {len(style_refs)} references, "
+              f"{num_style_blocks} self-attention layers eligible")
 
     # Check if ControlNet is present
     controlnet = getattr(pipeline, 'controlnet', None)
@@ -983,6 +1046,17 @@ def custom_sampling_loop(
         )
         style_active = False
 
+    # Multi-reference style transfer has the exact same batch-layout incompatibility
+    # (separate per-ref capture forwards + a 2-Pass CFG cond/uncond split).
+    if style_refs_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] Multi-ref style transfer disabled: not compatible with NAG / "
+              "ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
+            code="style_incompatible",
+        )
+        style_refs_active = False
+
     # FBCache (First Block Cache): dynamic per-step deep-block caching via the same
     # per-block interception as Spectrum block mode. Mutually exclusive with Spectrum
     # (same monkey-patch), and auto-disabled for the same unstable-conditioning cases
@@ -1001,7 +1075,7 @@ def custom_sampling_loop(
                 "same block interception (mutually exclusive)",
                 code="feature_auto_disabled",
             )
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active:
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
             print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
                   "style transfer change the block outputs per step; needs stable conditioning)")
             _add_generation_warning(
@@ -1190,12 +1264,13 @@ def custom_sampling_loop(
                 nag_negative_prompt_embeds_padded
             ], dim=0)
         elif do_classifier_free_guidance:
-            if is_deus or style_active:
-                # DEUS (variable seq-len embeds) or active style transfer: prepare a
-                # single (batch=1) latent -- the U-Net is called twice below with
-                # different embeds/context instead of a batch-2 concatenation, so
-                # style's reference-K/V injection can be isolated to ONLY the
-                # conditional pass (mirrors the Krea2 wiring's split forward).
+            if is_deus or style_active or style_refs_active:
+                # DEUS (variable seq-len embeds) or active style transfer (single- or
+                # multi-reference): prepare a single (batch=1) latent -- the U-Net is
+                # called twice below with different embeds/context instead of a
+                # batch-2 concatenation, so style's reference-K/V injection can be
+                # isolated to ONLY the conditional pass (mirrors the Krea2 wiring's
+                # split forward).
                 latent_model_input = scheduler.scale_model_input(latents, t)
                 # prompt_embeds_input is not used for this path (separate negative/positive passes below)
                 prompt_embeds_input = None
@@ -1450,6 +1525,99 @@ def custom_sampling_loop(
                 set_style_context(unet, None)
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif style_refs_active and do_classifier_free_guidance:
+                # Multi-reference (N>1) style transfer: 2-Pass CFG identical to the
+                # single-ref branch above, but the conditional pass runs ONE capture
+                # forward PER reference (each with its OWN StyleTransferConfig --
+                # block_range, strengths, freq curve, step gating -- fully
+                # independent) into its own store, then a single multi-ref inject via
+                # inject_kv_multi (see attention_processors.UnifiedAttnProcessor).
+                # style_refs_active requires 2+ entries (see its definition above),
+                # so this branch never fires for a single reference -- that case is
+                # always routed through style_active above, unchanged.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no style context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- one capture forward PER
+                # active reference (skipping refs not step-active this step, mirroring
+                # the single-ref "not is_step_active -> no injection" case), then a
+                # single multi-ref inject.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                active_style_refs = []
+                for _sref_cfg, _sref_x0, _sref_eps in style_refs:
+                    if not _sref_cfg.is_step_active(i, num_inference_steps):
+                        continue
+                    ref_t = scheduler.add_noise(_sref_x0, _sref_eps, t.unsqueeze(0))
+                    ref_t_scaled = scheduler.scale_model_input(ref_t, t)
+                    ref_progress = _sref_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    ref_capture_ctx = StyleContext(mode="capture", config=_sref_cfg, progress=ref_progress)
+                    set_style_context(unet, ref_capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    active_style_refs.append((ref_capture_ctx.store, _sref_cfg))
+
+                if active_style_refs:
+                    overall_progress = active_style_refs[0][1].step_progress(i, num_inference_steps)
+                    inject_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                    set_style_context(unet, inject_ctx)
+                # else: no reference active this step -- context stays None (set by
+                # Pass 1 above), matching the single-ref "not step-active" case.
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked
@@ -1513,9 +1681,9 @@ def custom_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_active:
-                # DEUS / active style transfer: noise_pred_uncond and noise_pred_text are
-                # already separate (from the 2-Pass CFG block above).
+            if is_deus or style_active or style_refs_active:
+                # DEUS / active style transfer (single- or multi-reference): noise_pred_uncond
+                # and noise_pred_text are already separate (from the 2-Pass CFG block above).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
@@ -1741,6 +1909,8 @@ def custom_img2img_sampling_loop(
     style_cfg=None,  # core.inference.reference_style.StyleTransferConfig, or None (default off)
     style_ref_x0: Optional[torch.Tensor] = None,  # VAE-encoded style reference latent (build_style_transfer)
     style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,  # multi-reference (N>1): list of (StyleTransferConfig, ref_x0, eps_ref) triples, one per reference image; only consulted when len>1 (build_style_transfer_multi)
+    style_combine_mode: str = "stack",  # "stack" | "common_concept" -- multi-reference combine mode (core.inference.reference_style.inject_kv_multi)
 ) -> Image.Image:
     """Custom img2img sampling loop with prompt editing and ControlNet support
 
@@ -1817,6 +1987,17 @@ def custom_img2img_sampling_loop(
         style_cfg.resolve_default_block_range(num_style_blocks)
         print(f"[CustomSampling] [img2img] Style transfer active: {num_style_blocks} self-attention layers "
               f"eligible, block_range={style_cfg.block_range} (None = all)")
+
+    # Multi-reference (N>1) style transfer -- see the txt2img loop for the full
+    # rationale; mutually exclusive with style_active (single-ref) above.
+    style_refs_active = style_refs is not None and len(style_refs) > 1
+    if style_refs_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        num_style_blocks = ensure_style_block_indices(unet)
+        for _style_cfg_i, _style_x0_i, _style_eps_i in style_refs:
+            _style_cfg_i.resolve_default_block_range(num_style_blocks)
+        print(f"[CustomSampling] [img2img] Multi-ref style transfer active: {len(style_refs)} references, "
+              f"{num_style_blocks} self-attention layers eligible")
 
     # Resize init_image if width/height are specified
     if width is not None and height is not None:
@@ -2016,6 +2197,17 @@ def custom_img2img_sampling_loop(
         )
         style_active = False
 
+    # Multi-reference style transfer has the exact same batch-layout incompatibility
+    # (separate per-ref capture forwards + a 2-Pass CFG cond/uncond split).
+    if style_refs_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] Multi-ref style transfer disabled: not compatible with NAG / "
+              "ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
+            code="style_incompatible",
+        )
+        style_refs_active = False
+
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
     # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
     # and also for style transfer (its capture forward would pollute the cache; see
@@ -2024,7 +2216,7 @@ def custom_img2img_sampling_loop(
     if fbcache_enable:
         if spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active:
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
             print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
                   "style transfer; needs stable conditioning)")
         else:
@@ -2159,8 +2351,13 @@ def custom_img2img_sampling_loop(
             ], dim=0)
 
         elif do_classifier_free_guidance:
-            if is_deus:
-                # DEUS: 2-Pass CFG - prepare single latent (will call U-Net twice with different embeds)
+            if is_deus or style_refs_active:
+                # DEUS (variable seq-len embeds) or active multi-reference style
+                # transfer: prepare a single (batch=1) latent -- the U-Net is called
+                # twice below with different embeds/context instead of a batch-2
+                # concatenation (see the txt2img loop's style branch for the
+                # rationale; style_refs_active requires 2+ references, so this never
+                # affects the single-ref style_active path, which is unchanged here).
                 latent_model_input = scheduler.scale_model_input(latents, t)
                 prompt_embeds_input = None
             else:
@@ -2409,6 +2606,99 @@ def custom_img2img_sampling_loop(
                 set_style_context(unet, None)
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif style_refs_active and do_classifier_free_guidance:
+                # Multi-reference (N>1) style transfer: 2-Pass CFG identical to the
+                # single-ref branch above, but the conditional pass runs ONE capture
+                # forward PER reference (each with its OWN StyleTransferConfig --
+                # block_range, strengths, freq curve, step gating -- fully
+                # independent) into its own store, then a single multi-ref inject via
+                # inject_kv_multi (see attention_processors.UnifiedAttnProcessor).
+                # style_refs_active requires 2+ entries (see its definition above),
+                # so this branch never fires for a single reference -- that case is
+                # always routed through style_active above, unchanged.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no style context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- one capture forward PER
+                # active reference (skipping refs not step-active this step, mirroring
+                # the single-ref "not is_step_active -> no injection" case), then a
+                # single multi-ref inject.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                active_style_refs = []
+                for _sref_cfg, _sref_x0, _sref_eps in style_refs:
+                    if not _sref_cfg.is_step_active(i, num_inference_steps):
+                        continue
+                    ref_t = scheduler.add_noise(_sref_x0, _sref_eps, t.unsqueeze(0))
+                    ref_t_scaled = scheduler.scale_model_input(ref_t, t)
+                    ref_progress = _sref_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    ref_capture_ctx = StyleContext(mode="capture", config=_sref_cfg, progress=ref_progress)
+                    set_style_context(unet, ref_capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    active_style_refs.append((ref_capture_ctx.store, _sref_cfg))
+
+                if active_style_refs:
+                    overall_progress = active_style_refs[0][1].step_progress(i, num_inference_steps)
+                    inject_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                    set_style_context(unet, inject_ctx)
+                # else: no reference active this step -- context stays None (set by
+                # Pass 1 above), matching the single-ref "not step-active" case.
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked
@@ -2472,8 +2762,11 @@ def custom_img2img_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus:
-                # DEUS: noise_pred_uncond and noise_pred_text are already separate (from 2-Pass CFG above)
+            if is_deus or style_refs_active:
+                # DEUS / active multi-reference style transfer: noise_pred_uncond and
+                # noise_pred_text are already separate (from the 2-Pass CFG block
+                # above). style_refs_active requires 2+ references, so this never
+                # affects the single-ref style_active path.
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
@@ -2698,6 +2991,8 @@ def custom_inpaint_sampling_loop(
     style_cfg=None,  # core.inference.reference_style.StyleTransferConfig, or None (default off)
     style_ref_x0: Optional[torch.Tensor] = None,  # VAE-encoded style reference latent (build_style_transfer)
     style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,  # multi-reference (N>1): list of (StyleTransferConfig, ref_x0, eps_ref) triples, one per reference image; only consulted when len>1 (build_style_transfer_multi)
+    style_combine_mode: str = "stack",  # "stack" | "common_concept" -- multi-reference combine mode (core.inference.reference_style.inject_kv_multi)
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -2751,6 +3046,17 @@ def custom_inpaint_sampling_loop(
         style_cfg.resolve_default_block_range(num_style_blocks)
         print(f"[CustomSampling] [inpaint] Style transfer active: {num_style_blocks} self-attention layers "
               f"eligible, block_range={style_cfg.block_range} (None = all)")
+
+    # Multi-reference (N>1) style transfer -- see the txt2img loop for the full
+    # rationale; mutually exclusive with style_active (single-ref) above.
+    style_refs_active = style_refs is not None and len(style_refs) > 1
+    if style_refs_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        num_style_blocks = ensure_style_block_indices(unet)
+        for _style_cfg_i, _style_x0_i, _style_eps_i in style_refs:
+            _style_cfg_i.resolve_default_block_range(num_style_blocks)
+        print(f"[CustomSampling] [inpaint] Multi-ref style transfer active: {len(style_refs)} references, "
+              f"{num_style_blocks} self-attention layers eligible")
 
     # Resize init_image and mask_image if width/height are specified
     if width is not None and height is not None:
@@ -3028,6 +3334,17 @@ def custom_inpaint_sampling_loop(
         )
         style_active = False
 
+    # Multi-reference style transfer has the exact same batch-layout incompatibility
+    # (separate per-ref capture forwards + a 2-Pass CFG cond/uncond split).
+    if style_refs_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] Multi-ref style transfer disabled: not compatible with NAG / "
+              "ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Style transfer disabled: not compatible with NAG / ControlNet / Spectrum in this version.",
+            code="style_incompatible",
+        )
+        style_refs_active = False
+
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
     # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
     # and also for style transfer (its capture forward would pollute the cache; see
@@ -3036,7 +3353,7 @@ def custom_inpaint_sampling_loop(
     if fbcache_enable:
         if spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active:
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
             print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
                   "style transfer; needs stable conditioning)")
         else:
@@ -3148,8 +3465,11 @@ def custom_inpaint_sampling_loop(
             prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
 
         elif do_classifier_free_guidance:
-            if is_deus:
-                # DEUS: 2-Pass CFG - prepare single latent (will call U-Net twice with different embeds)
+            if is_deus or style_refs_active:
+                # DEUS (variable seq-len embeds) or active multi-reference style
+                # transfer: prepare a single (batch=1) latent (see the txt2img loop's
+                # style branch for the rationale; style_refs_active requires 2+
+                # references, so this never affects the single-ref style_active path).
                 latent_model_input = scheduler.scale_model_input(latents, t)
 
                 # Only concatenate mask and masked image for inpaint-specific UNets
@@ -3410,6 +3730,99 @@ def custom_inpaint_sampling_loop(
                 set_style_context(unet, None)
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif style_refs_active and do_classifier_free_guidance:
+                # Multi-reference (N>1) style transfer: 2-Pass CFG identical to the
+                # single-ref branch above, but the conditional pass runs ONE capture
+                # forward PER reference (each with its OWN StyleTransferConfig --
+                # block_range, strengths, freq curve, step gating -- fully
+                # independent) into its own store, then a single multi-ref inject via
+                # inject_kv_multi (see attention_processors.UnifiedAttnProcessor).
+                # style_refs_active requires 2+ entries (see its definition above),
+                # so this branch never fires for a single reference -- that case is
+                # always routed through style_active above, unchanged.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no style context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- one capture forward PER
+                # active reference (skipping refs not step-active this step, mirroring
+                # the single-ref "not is_step_active -> no injection" case), then a
+                # single multi-ref inject.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                active_style_refs = []
+                for _sref_cfg, _sref_x0, _sref_eps in style_refs:
+                    if not _sref_cfg.is_step_active(i, num_inference_steps):
+                        continue
+                    ref_t = scheduler.add_noise(_sref_x0, _sref_eps, t.unsqueeze(0))
+                    ref_t_scaled = scheduler.scale_model_input(ref_t, t)
+                    ref_progress = _sref_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    ref_capture_ctx = StyleContext(mode="capture", config=_sref_cfg, progress=ref_progress)
+                    set_style_context(unet, ref_capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_t_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    active_style_refs.append((ref_capture_ctx.store, _sref_cfg))
+
+                if active_style_refs:
+                    overall_progress = active_style_refs[0][1].step_progress(i, num_inference_steps)
+                    inject_ctx = StyleContext(
+                        mode="inject", config=active_style_refs[0][1], refs=active_style_refs,
+                        combine_mode=style_combine_mode, progress=overall_progress,
+                    )
+                    set_style_context(unet, inject_ctx)
+                # else: no reference active this step -- context stays None (set by
+                # Pass 1 above), matching the single-ref "not step-active" case.
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked
@@ -3473,8 +3886,11 @@ def custom_inpaint_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus:
-                # DEUS: noise_pred_uncond and noise_pred_text are already separate (from 2-Pass CFG above)
+            if is_deus or style_refs_active:
+                # DEUS / active multi-reference style transfer: noise_pred_uncond and
+                # noise_pred_text are already separate (from the 2-Pass CFG block
+                # above). style_refs_active requires 2+ references, so this never
+                # affects the single-ref style_active path.
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches

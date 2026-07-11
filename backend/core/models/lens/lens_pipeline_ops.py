@@ -694,6 +694,72 @@ def _lens_style_step(
     noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
         noise_pred_cond, noise_pred_uncond, guidance_scale, sigma_now, 1.0, advanced_cfg,
     )
+
+    # --- CFG-decoupled style guidance (Lens) ---
+    # Disabled by default (style_guidance_scale is None/<=0): this block is
+    # skipped entirely and `noise_pred`/`cfg_metrics` stay exactly the combine
+    # above -- byte-identical to before this feature (zero extra forwards).
+    # Enabled (>0): this function is ONLY ever called on a style-active step
+    # (the caller's own ``is_step_active`` gate selects ``_lens_style_step``
+    # instead of the plain branch), so no extra gating is needed here -- run a
+    # 4th forward -- the SAME cond forward as ``noise_pred_cond`` above
+    # (identical ``latents``/``timestep1``/``cond_features``/``cond_mask``/
+    # ``img_shapes``) but with ``_style_ctx`` disarmed (already ``None`` from
+    # the ``finally`` above) -- to get the cond prediction WITHOUT style
+    # (cond_ns).
+    #
+    # FBCache note: ``_build_lens_fbcache`` unconditionally returns ``None``
+    # whenever style transfer is active (see its ``style_active`` guard), so
+    # ``real_transformer._fbcache`` is already ``None`` for the ENTIRE
+    # style-active generation -- unlike Anima, Lens never needs a defensive
+    # disarm here.
+    #
+    # Lens's OWN combine (``_apply_advanced_cfg_lens``) is:
+    #   comb = v_uncond + cfg_now * (v_cond - v_uncond)
+    #   noise_pred = comb * (||v_cond|| / ||comb||)   [+ optional thresholding]
+    # Rewriting the cond term to cond' = cond_ns + (lambda/cfg_now)*(cond_s -
+    # cond_ns) makes the LINEAR part of that combine reproduce the
+    # style-guidance target:
+    #   uncond + cfg_now*(cond' - uncond)
+    # = uncond + cfg_now*(cond_ns-uncond) + cfg_now*(lambda/cfg_now)*(cond_s-cond_ns)
+    # = uncond + cfg_now*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+    # -- prompt guidance stays at cfg_now, style strength is lambda, decoupled
+    # from cfg_now, exactly like the SDXL/Anima prototypes. The norm-rescale
+    # and dynamic-thresholding steps inside ``_apply_advanced_cfg_lens`` are
+    # left completely untouched -- they simply run against ``cond'`` instead
+    # of the plain styled cond, exactly as Anima re-runs its OWN combine
+    # helper against ``cond_rewritten`` rather than hand-rolling the
+    # norm-scale/threshold logic here.
+    #
+    # ``_cfg_now`` above is the SAME per-step value ``_apply_advanced_cfg_lens``
+    # already derived from the TRUE styled (cond_s, noise_pred_uncond) pair
+    # (relevant for the SNR-rescale schedule, which reads norms of the actual
+    # cond/uncond passed in) -- so any CFG schedule sees the real styled
+    # output, unaffected by this rewrite. The second call below is forced to
+    # ``cfg_schedule_type="constant"`` with the SAME ``_cfg_now`` (no
+    # re-derivation from the rewritten cond) so it reproduces the identical
+    # cfg_now while still re-applying the norm-rescale/dynamic-thresholding
+    # against the corrected pred. Guarded on ``_cfg_now > 1e-6`` (else
+    # ``noise_pred``/``cfg_metrics`` above stay untouched, i.e. the plain
+    # styled-cond combine).
+    if style_cfg.style_guidance_scale is not None and style_cfg.style_guidance_scale > 0:
+        cond_s = noise_pred_cond
+        cond_ns = real_transformer(
+            hidden_states=latents.to(latents.dtype),
+            encoder_hidden_states=cond_features,
+            encoder_hidden_states_mask=cond_mask,
+            timestep=timestep1 / 1000,
+            img_shapes=img_shapes,
+        )
+        lam = style_cfg.style_guidance_scale
+        if _cfg_now > 1e-6:
+            cond_rewritten = cond_ns + (lam / _cfg_now) * (cond_s - cond_ns)
+            forced_advanced_cfg = dict(advanced_cfg or {})
+            forced_advanced_cfg["cfg_schedule_type"] = "constant"
+            noise_pred, _, cfg_metrics = _apply_advanced_cfg_lens(
+                cond_rewritten, noise_pred_uncond, _cfg_now, sigma_now, 1.0, forced_advanced_cfg,
+            )
+
     return noise_pred, cfg_metrics
 
 

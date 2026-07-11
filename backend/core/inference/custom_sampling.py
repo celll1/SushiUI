@@ -1536,6 +1536,46 @@ def custom_sampling_loop(
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
 
+                # --- CFG-decoupled style guidance (SDXL/SD1.5 prototype) ---
+                # Disabled by default (style_guidance_scale is None/<=0): this block
+                # is skipped entirely and noise_pred_text stays exactly the styled
+                # cond pred above (cond_s) -- byte-identical to before this feature.
+                # Enabled (>0) AND this step actually injected style (is_step_active
+                # above, same gate as the capture/inject pass): run a 3rd forward --
+                # SAME unet_kwargs_cond (same encoder_hidden_states/residuals/
+                # added_cond_kwargs as the styled pass) but with style context
+                # cleared -- to get the cond prediction WITHOUT style (cond_ns), then
+                # rewrite noise_pred_text so the UNCHANGED shared CFG combine
+                # (noise_pred = uncond + cfg*(text - uncond)) reproduces the
+                # style-guidance target:
+                #   uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+                # Algebra: let text' = cond_ns + (lambda/cfg)*(cond_s - cond_ns).
+                # Substituting into the shared combine:
+                #   uncond + cfg*(text' - uncond)
+                # = uncond + cfg*(cond_ns - uncond) + cfg*(lambda/cfg)*(cond_s-cond_ns)
+                # = uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+                # which is exactly the target above -- so assigning
+                # noise_pred_text = text' lets the untouched shared combine line
+                # produce style guidance decoupled from cfg. cfg is guarded (>1e-6)
+                # even though do_classifier_free_guidance guarantees cfg>1 here; if
+                # it were ever ~0 we skip the rewrite and keep noise_pred_text=cond_s.
+                if (
+                    style_cfg.style_guidance_scale is not None
+                    and style_cfg.style_guidance_scale > 0
+                    and style_cfg.is_step_active(i, num_inference_steps)
+                ):
+                    cond_s = noise_pred_text
+                    set_style_context(unet, None)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            cond_ns = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                    else:
+                        cond_ns = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                    cfg = current_guidance_scale
+                    lam = style_cfg.style_guidance_scale
+                    if cfg > 1e-6:
+                        noise_pred_text = cond_ns + (lam / cfg) * (cond_s - cond_ns)
+
                 set_style_context(unet, None)
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
@@ -2619,6 +2659,46 @@ def custom_img2img_sampling_loop(
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                # --- CFG-decoupled style guidance (SDXL/SD1.5 prototype) ---
+                # Disabled by default (style_guidance_scale is None/<=0): this block
+                # is skipped entirely and noise_pred_text stays exactly the styled
+                # cond pred above (cond_s) -- byte-identical to before this feature.
+                # Enabled (>0) AND this step actually injected style (is_step_active
+                # above, same gate as the capture/inject pass): run a 3rd forward --
+                # SAME unet_kwargs_cond (same encoder_hidden_states/residuals/
+                # added_cond_kwargs as the styled pass) but with style context
+                # cleared -- to get the cond prediction WITHOUT style (cond_ns), then
+                # rewrite noise_pred_text so the UNCHANGED shared CFG combine
+                # (noise_pred = uncond + cfg*(text - uncond)) reproduces the
+                # style-guidance target:
+                #   uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+                # Algebra: let text' = cond_ns + (lambda/cfg)*(cond_s - cond_ns).
+                # Substituting into the shared combine:
+                #   uncond + cfg*(text' - uncond)
+                # = uncond + cfg*(cond_ns - uncond) + cfg*(lambda/cfg)*(cond_s-cond_ns)
+                # = uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+                # which is exactly the target above -- so assigning
+                # noise_pred_text = text' lets the untouched shared combine line
+                # produce style guidance decoupled from cfg. cfg is guarded (>1e-6)
+                # even though do_classifier_free_guidance guarantees cfg>1 here; if
+                # it were ever ~0 we skip the rewrite and keep noise_pred_text=cond_s.
+                if (
+                    style_cfg.style_guidance_scale is not None
+                    and style_cfg.style_guidance_scale > 0
+                    and style_cfg.is_step_active(i, num_inference_steps)
+                ):
+                    cond_s = noise_pred_text
+                    set_style_context(unet, None)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            cond_ns = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                    else:
+                        cond_ns = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                    cfg = current_guidance_scale
+                    lam = style_cfg.style_guidance_scale
+                    if cfg > 1e-6:
+                        noise_pred_text = cond_ns + (lam / cfg) * (cond_s - cond_ns)
 
                 set_style_context(unet, None)
 
@@ -3745,6 +3825,46 @@ def custom_inpaint_sampling_loop(
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
                 else:
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                # --- CFG-decoupled style guidance (SDXL/SD1.5 prototype) ---
+                # Disabled by default (style_guidance_scale is None/<=0): this block
+                # is skipped entirely and noise_pred_text stays exactly the styled
+                # cond pred above (cond_s) -- byte-identical to before this feature.
+                # Enabled (>0) AND this step actually injected style (is_step_active
+                # above, same gate as the capture/inject pass): run a 3rd forward --
+                # SAME unet_kwargs_cond (same encoder_hidden_states/residuals/
+                # added_cond_kwargs as the styled pass) but with style context
+                # cleared -- to get the cond prediction WITHOUT style (cond_ns), then
+                # rewrite noise_pred_text so the UNCHANGED shared CFG combine
+                # (noise_pred = uncond + cfg*(text - uncond)) reproduces the
+                # style-guidance target:
+                #   uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+                # Algebra: let text' = cond_ns + (lambda/cfg)*(cond_s - cond_ns).
+                # Substituting into the shared combine:
+                #   uncond + cfg*(text' - uncond)
+                # = uncond + cfg*(cond_ns - uncond) + cfg*(lambda/cfg)*(cond_s-cond_ns)
+                # = uncond + cfg*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+                # which is exactly the target above -- so assigning
+                # noise_pred_text = text' lets the untouched shared combine line
+                # produce style guidance decoupled from cfg. cfg is guarded (>1e-6)
+                # even though do_classifier_free_guidance guarantees cfg>1 here; if
+                # it were ever ~0 we skip the rewrite and keep noise_pred_text=cond_s.
+                if (
+                    style_cfg.style_guidance_scale is not None
+                    and style_cfg.style_guidance_scale > 0
+                    and style_cfg.is_step_active(i, num_inference_steps)
+                ):
+                    cond_s = noise_pred_text
+                    set_style_context(unet, None)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            cond_ns = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                    else:
+                        cond_ns = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                    cfg = current_guidance_scale
+                    lam = style_cfg.style_guidance_scale
+                    if cfg > 1e-6:
+                        noise_pred_text = cond_ns + (lam / cfg) * (cond_s - cond_ns)
 
                 set_style_context(unet, None)
 

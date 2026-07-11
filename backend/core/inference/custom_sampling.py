@@ -2351,13 +2351,16 @@ def custom_img2img_sampling_loop(
             ], dim=0)
 
         elif do_classifier_free_guidance:
-            if is_deus or style_refs_active:
+            if is_deus or style_active or style_refs_active:
                 # DEUS (variable seq-len embeds) or active multi-reference style
                 # transfer: prepare a single (batch=1) latent -- the U-Net is called
                 # twice below with different embeds/context instead of a batch-2
                 # concatenation (see the txt2img loop's style branch for the
-                # rationale; style_refs_active requires 2+ references, so this never
-                # affects the single-ref style_active path, which is unchanged here).
+                # rationale). Both single-ref (style_active) and multi-ref
+                # (style_refs_active) need this batch=1 latent because the style
+                # branch below runs two separate forwards; style_active was
+                # previously MISSING from this img2img/inpaint gate (a pre-existing
+                # single-ref crash -- txt2img always had it).
                 latent_model_input = scheduler.scale_model_input(latents, t)
                 prompt_embeds_input = None
             else:
@@ -2762,11 +2765,13 @@ def custom_img2img_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_refs_active:
+            if is_deus or style_active or style_refs_active:
                 # DEUS / active multi-reference style transfer: noise_pred_uncond and
                 # noise_pred_text are already separate (from the 2-Pass CFG block
-                # above). style_refs_active requires 2+ references, so this never
-                # affects the single-ref style_active path.
+                # above), for both single-ref (style_active) and multi-ref
+                # (style_refs_active). style_active was previously MISSING from this
+                # img2img/inpaint gate (a pre-existing single-ref crash: the else
+                # branch chunks a batch-2 noise_pred that the 2-pass block never set).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
@@ -3465,7 +3470,7 @@ def custom_inpaint_sampling_loop(
             prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
 
         elif do_classifier_free_guidance:
-            if is_deus or style_refs_active:
+            if is_deus or style_active or style_refs_active:
                 # DEUS (variable seq-len embeds) or active multi-reference style
                 # transfer: prepare a single (batch=1) latent (see the txt2img loop's
                 # style branch for the rationale; style_refs_active requires 2+
@@ -3886,11 +3891,13 @@ def custom_inpaint_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_refs_active:
+            if is_deus or style_active or style_refs_active:
                 # DEUS / active multi-reference style transfer: noise_pred_uncond and
                 # noise_pred_text are already separate (from the 2-Pass CFG block
-                # above). style_refs_active requires 2+ references, so this never
-                # affects the single-ref style_active path.
+                # above), for both single-ref (style_active) and multi-ref
+                # (style_refs_active). style_active was previously MISSING from this
+                # img2img/inpaint gate (a pre-existing single-ref crash: the else
+                # branch chunks a batch-2 noise_pred that the 2-pass block never set).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches

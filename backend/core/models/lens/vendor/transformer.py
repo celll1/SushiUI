@@ -200,6 +200,32 @@ class LensJointAttention(nn.Module):
                     img_k.detach().clone(),
                     img_v.detach().clone(),
                 )
+            elif ctx.mode == "inject" and ctx.refs is not None:
+                # Multi-reference ("stack" / "common_concept"): centralizes the
+                # per-ref active/freq/make_ref_value logic in
+                # StyleContext.collect_block_refs so this hook stays thin. The
+                # single-ref branch below (``ctx.mode == "inject"`` reached only
+                # when ``ctx.refs is None``) is completely untouched -- this
+                # branch is only ever reached for 2+ refs (see
+                # ``lens_pipeline_ops._lens_style_step_multi``'s multi-ref
+                # capture and the ``style_refs``/``StyleContext(refs=...)``
+                # wiring in ``pipeline_backends.lens``). Same img_start=0/
+                # img_end=seq_img slicing as the single-ref branch below, since
+                # Lens's dual-stream image tokens are their own BSHD tensor.
+                from core.inference.reference_style import inject_kv_multi
+
+                block_refs = ctx.collect_block_refs(self.block_idx, img_v, img_k.device, img_k.dtype)
+                if block_refs:
+                    ref_len_before = img_k.shape[1]
+                    img_k, img_v, img_q = inject_kv_multi(
+                        img_k, img_v, img_q, 0, ref_len_before, block_refs, ctx.combine_mode
+                    )
+                    if attention_mask is not None and img_k.shape[1] != ref_len_before:
+                        extra = img_k.shape[1] - ref_len_before
+                        pad = attention_mask.new_zeros((attention_mask.shape[0], 1, 1, extra))
+                        attention_mask = torch.cat(
+                            [attention_mask[..., :seq_img], pad, attention_mask[..., seq_img:]], dim=-1
+                        )
             elif ctx.mode == "inject":
                 ref_qkv = ctx.store.get(self.block_idx)
                 if ref_qkv is not None:

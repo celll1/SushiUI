@@ -311,12 +311,11 @@ class LensMixin:
         offloader.prepare_block_devices_before_forward()
         return offloader
 
-    def _lens_style_config(self, params: Dict[str, Any], transformer, height: int, width: int,
-                           device, dtype, model_key: Optional[str] = None):
-        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
-        when no style reference is attached.
+    def _lens_style_triple(self, style_dict: Dict[str, Any], params: Dict[str, Any],
+                           transformer, height: int, width: int,
+                           device, dtype, model_key: Optional[str] = None, ref_index: int = 0):
+        """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
+        style_transfer dict.
 
         ``axes_dims`` is filled in from Lens's own RoPE axis split
         (``transformer.config.axes_dims_rope``, default ``(8, 28, 28)`` summing to
@@ -332,11 +331,14 @@ class LensMixin:
         Reuses ``lens_pipeline_ops.vae_encode`` (already produces the exact
         flat-sequence, patchified, BN-normalized token layout the transformer
         expects) rather than duplicating that encode path.
-        """
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across
+        multiple simultaneous references (each ref would otherwise draw the
+        EXACT same noise from the ``seed+991`` offset, since that offset does
+        not depend on which reference is being prepared). ``ref_index=0``
+        (the default, used by the single-ref path) reproduces the
+        pre-multi-ref ``seed+991`` offset exactly.
+        """
         from diffusers.utils.torch_utils import randn_tensor
         from core.inference.reference_style import style_config_from_dict
         from core.models.lens.lens_pipeline_ops import vae_encode
@@ -355,10 +357,64 @@ class LensMixin:
             torch.cuda.empty_cache()
 
         seed = params.get("seed", -1)
-        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)
         generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
         eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
         return cfg, ref_x0, eps_ref
+
+    def _lens_style_config(self, params: Dict[str, Any], transformer, height: int, width: int,
+                           device, dtype, model_key: Optional[str] = None):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached. Single-reference path,
+        BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_lens_style_triple`` with ``ref_index=0``, which reproduces the
+        original ``seed+991`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        return self._lens_style_triple(style_dict, params, transformer, height, width,
+                                       device, dtype, model_key=model_key, ref_index=0)
+
+    def _lens_style_configs(self, params: Dict[str, Any], transformer, height: int, width: int,
+                            device, dtype, model_key: Optional[str] = None):
+        """Build the full style-transfer configuration for Lens generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple, exactly as ``_lens_style_config``
+        would return) and the multi-reference path (``style_refs``, a list of
+        per-ref triples, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry). A single-entry ``style_transfers`` list is
+        intentionally routed through the single-ref triple instead (``style_refs``
+        stays ``None``), so the pre-multi-ref code path executes
+        byte-identically end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._lens_style_triple(
+                    style_dict, params, transformer, height, width,
+                    device, dtype, model_key=model_key, ref_index=idx,
+                ))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
+            params, transformer, height, width, device, dtype, model_key=model_key
+        )
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _lens_set_attention_backend(self, transformer, params: Dict[str, Any]) -> str:
         """Stamp the inference attention backend on every LensJointAttention module.
@@ -575,10 +631,15 @@ class LensMixin:
             # reference is attached -- byte-identical default path below). VAE-encodes
             # the style image (staging the VAE to GPU just for this, then back off) --
             # a self-contained extra VAE round-trip separate from Stage 4's decode.
-            style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
-                params, transformer, height, width, device, dtype, model_key=_kh_model_key
-            )
-            if style_cfg is not None:
+            # ``style_refs`` is populated (and style_cfg/style_ref_x0/style_eps_ref
+            # left None) ONLY when ``params["style_transfers"]`` carries 2+
+            # references -- a single reference (via either key) always resolves
+            # through the style_cfg/style_ref_x0/style_eps_ref triple, so that
+            # code path (both here and inside denoise_loop) is untouched.
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._lens_style_configs(params, transformer, height, width, device, dtype,
+                                        model_key=_kh_model_key)
+            if style_cfg is not None or style_refs is not None:
                 print("[Lens] Style transfer active")
 
             # Stage 3: Denoising
@@ -602,6 +663,7 @@ class LensMixin:
                     negpip_params=negpip_params,
                     tokenizer=tokenizer,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if applied_lora_count:
@@ -756,11 +818,12 @@ class LensMixin:
                 torch.cuda.empty_cache()
 
             # Training-free reference-style transfer setup (no-op / None when no style
-            # reference is attached -- byte-identical default path below).
-            style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
-                params, transformer, height, width, device, dtype, model_key=_kh_model_key
-            )
-            if style_cfg is not None:
+            # reference is attached -- byte-identical default path below). See the
+            # txt2img comment above for the single-ref/multi-ref routing invariant.
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._lens_style_configs(params, transformer, height, width, device, dtype,
+                                        model_key=_kh_model_key)
+            if style_cfg is not None or style_refs is not None:
                 print("[Lens] Style transfer active")
 
             # Stage 3: Denoising (SDEdit)
@@ -785,6 +848,7 @@ class LensMixin:
                     negpip_params=negpip_params,
                     tokenizer=tokenizer,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if applied_lora_count:
@@ -950,11 +1014,12 @@ class LensMixin:
             mask_latent = prepare_mask_latent(mask_image, latent_h, latent_w, device=device, dtype=dtype)
 
             # Training-free reference-style transfer setup (no-op / None when no style
-            # reference is attached -- byte-identical default path below).
-            style_cfg, style_ref_x0, style_eps_ref = self._lens_style_config(
-                params, transformer, height, width, device, dtype, model_key=_kh_model_key
-            )
-            if style_cfg is not None:
+            # reference is attached -- byte-identical default path below). See the
+            # txt2img comment above for the single-ref/multi-ref routing invariant.
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._lens_style_configs(params, transformer, height, width, device, dtype,
+                                        model_key=_kh_model_key)
+            if style_cfg is not None or style_refs is not None:
                 print("[Lens] Style transfer active")
 
             # Stage 3: Denoising with repaint
@@ -980,6 +1045,7 @@ class LensMixin:
                     negpip_params=negpip_params,
                     tokenizer=tokenizer,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if applied_lora_count:

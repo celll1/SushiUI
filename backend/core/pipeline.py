@@ -2631,9 +2631,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # params["style_transfer"] (assembled by process_controlnet_configs from
             # an is_style_transfer ControlNet-shaped entry), or (None, None, None)
             # when no style reference is attached -- fully gated OFF by default.
-            from core.inference.custom_sampling import build_style_transfer
+            # build_style_transfer_all also covers multi-reference (N>1):
+            # params["style_transfers"] with 2+ entries populates style_refs instead
+            # (style_cfg/style_ref_x0/style_eps_ref stay None in that case) and a
+            # single-entry style_transfers routes through the single-ref triple, so
+            # single-ref behavior is unaffected either way.
+            from core.inference.custom_sampling import build_style_transfer_all
             _unet_dtype_for_style = next(pipeline_to_use.unet.parameters()).dtype
-            style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = build_style_transfer_all(
                 params, pipeline_to_use,
                 width=gen_params["width"], height=gen_params["height"],
                 device=device, dtype=_unet_dtype_for_style, seed=actual_seed,
@@ -2646,7 +2651,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # byte-identical to stock when no _style_ctx is attached). Restored via
             # self.original_processors in the finally. Skip under NAG (it owns the
             # processors and style yields to it downstream).
-            if style_cfg is not None and self.original_processors is None and not params.get("nag_enable", False):
+            if (style_cfg is not None or style_refs is not None) and self.original_processors is None and not params.get("nag_enable", False):
                 from core.inference.attention_processors import set_attention_processor
                 print("[Pipeline] Style transfer active with attention_type=normal; installing UnifiedAttnProcessor so the KV-injection hook is present")
                 self.original_processors = set_attention_processor(pipeline_to_use.unet, "normal")
@@ -2661,6 +2666,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 style_cfg=style_cfg,
                 style_ref_x0=style_ref_x0,
                 style_eps_ref=style_eps_ref,
+                style_refs=style_refs,
+                style_combine_mode=style_combine_mode,
                 color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
                 flatten_in_loop=getattr(self, "_flatten_in_loop", False),
                 flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
@@ -3353,9 +3360,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # params["style_transfer"] (assembled by process_controlnet_configs from
             # an is_style_transfer ControlNet-shaped entry), or (None, None, None)
             # when no style reference is attached -- fully gated OFF by default.
-            from core.inference.custom_sampling import build_style_transfer
+            # build_style_transfer_all also covers multi-reference (N>1) -- see the
+            # txt2img site for the full rationale.
+            from core.inference.custom_sampling import build_style_transfer_all
             _unet_dtype_for_style = next(pipeline_to_use.unet.parameters()).dtype
-            style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = build_style_transfer_all(
                 params, pipeline_to_use,
                 width=init_image.width, height=init_image.height,
                 device=self.device, dtype=_unet_dtype_for_style, seed=actual_seed,
@@ -3363,7 +3372,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # Force-install UnifiedAttnProcessor when style is active but the stock
             # processor is still on the U-Net (default attention_type="normal") so the
             # KV-injection hook is present (see the txt2img site for the full rationale).
-            if style_cfg is not None and self.original_processors is None and not params.get("nag_enable", False):
+            if (style_cfg is not None or style_refs is not None) and self.original_processors is None and not params.get("nag_enable", False):
                 from core.inference.attention_processors import set_attention_processor
                 print("[Pipeline] Style transfer (img2img) active with attention_type=normal; installing UnifiedAttnProcessor")
                 self.original_processors = set_attention_processor(pipeline_to_use.unet, "normal")
@@ -3377,6 +3386,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 style_cfg=style_cfg,
                 style_ref_x0=style_ref_x0,
                 style_eps_ref=style_eps_ref,
+                style_refs=style_refs,
+                style_combine_mode=style_combine_mode,
                 color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
                 flatten_in_loop=getattr(self, "_flatten_in_loop", False),
                 flatten_in_loop_last_steps=getattr(self, "_flatten_in_loop_last_steps", 3),
@@ -3925,9 +3936,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # params["style_transfer"] (assembled by process_controlnet_configs from
         # an is_style_transfer ControlNet-shaped entry), or (None, None, None)
         # when no style reference is attached -- fully gated OFF by default.
-        from core.inference.custom_sampling import build_style_transfer
+        # build_style_transfer_all also covers multi-reference (N>1) -- see the
+        # txt2img site for the full rationale.
+        from core.inference.custom_sampling import build_style_transfer_all
         _unet_dtype_for_style = next(pipeline_to_use.unet.parameters()).dtype
-        style_cfg, style_ref_x0, style_eps_ref = build_style_transfer(
+        style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = build_style_transfer_all(
             params, pipeline_to_use,
             width=init_image.width, height=init_image.height,
             device=self.device, dtype=_unet_dtype_for_style, seed=seed,
@@ -3935,7 +3948,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # Force-install UnifiedAttnProcessor when style is active but the stock
         # processor is still on the U-Net (default attention_type="normal") so the
         # KV-injection hook is present (see the txt2img site for the full rationale).
-        if style_cfg is not None and self.original_processors is None and not params.get("nag_enable", False):
+        if (style_cfg is not None or style_refs is not None) and self.original_processors is None and not params.get("nag_enable", False):
             from core.inference.attention_processors import set_attention_processor
             print("[Pipeline] Style transfer (inpaint) active with attention_type=normal; installing UnifiedAttnProcessor")
             self.original_processors = set_attention_processor(pipeline_to_use.unet, "normal")
@@ -3950,6 +3963,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             style_cfg=style_cfg,
             style_ref_x0=style_ref_x0,
             style_eps_ref=style_eps_ref,
+            style_refs=style_refs,
+            style_combine_mode=style_combine_mode,
             color_flatten_strength=getattr(self, "_color_flatten_strength", 0),
             vae_drift_correction=getattr(self, "_vae_drift_correction", False),
             flatten_in_loop=getattr(self, "_flatten_in_loop", False),

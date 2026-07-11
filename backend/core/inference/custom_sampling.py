@@ -291,6 +291,20 @@ def build_style_transfer_all(params, pipeline, width, height, device, dtype, see
         for idx, style_dict in enumerate(style_list):
             if not style_dict or not style_dict.get("image"):
                 continue
+            # U-Net-family multi-ref strength damping: the U-Net attention path has
+            # NO RoPE frequency curve (collect_block_refs uses an all-ones freq
+            # vector), so it lacks the implicit high-frequency reference-Key damping
+            # that RoPE DiT archs get for free. At the single-ref-tuned default
+            # ref_k_strength=0.75, stacking 2+ refs collapses the target content into
+            # a blob on U-Net (GPU-validated), whereas the same 0.75 stays legible on
+            # DiT archs. So for the U-Net multi-ref case, when the caller did NOT set
+            # an explicit strength, default it to 0.35 (GPU sweep winner: content
+            # preserved, strictly >= the 0.75 result) instead of 0.75. An explicit
+            # per-entry strength always wins. This is the U-Net analog of the
+            # arch-agnostic multi-ref AdaIN=0 default applied at intake; it lives here
+            # (not intake) because it must NOT lower strength for the DiT archs.
+            if style_dict.get("ref_k_strength") is None:
+                style_dict = {**style_dict, "ref_k_strength": 0.35}
             cfg = style_config_from_dict(style_dict)
             ref_x0, eps_ref = prepare_style_reference_latent(
                 style_dict["image"], pipeline, width, height, device, dtype, seed, ref_index=idx,

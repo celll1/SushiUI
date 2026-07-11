@@ -80,6 +80,7 @@ export interface LoopGenerationStep {
     style_ref_value_mix?: number;
     style_late_release?: number;
     style_rope_offset?: boolean;
+    style_combine_mode?: string;
   }>;
 
   // Inpaint specific
@@ -865,6 +866,7 @@ export default function LoopGenerationPanel({
                         style_ref_value_mix: cn.style_ref_value_mix,
                         style_late_release: cn.style_late_release,
                         style_rope_offset: cn.style_rope_offset,
+                        style_combine_mode: cn.style_combine_mode,
                       }))}
                       onChange={(controlnets) => {
                         // Map ControlNets from selector and preserve useLoopImage flag by model_path

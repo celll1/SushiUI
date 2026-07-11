@@ -175,6 +175,17 @@ class Ltx2BlockLoopWrapper(nn.Module):
         self._style_combine_mode = "stack"
         self._style_step_idx = 0
         self._style_total_steps = 1
+        # CFG-decoupled style guidance (lambda; SDXL/SD1.5/Anima prototype,
+        # single-ref only -- see ``attach_style``'s ``guidance_scale`` param and
+        # the lambda-rewrite block in ``_custom_forward``). This is the
+        # CONSTANT prompt guidance_scale the caller (``pipeline_backends/
+        # ltx2.py``) passes to the diffusers pipeline for the whole generation
+        # (LTX-2.3 has no per-step dynamic CFG schedule, unlike Anima), stashed
+        # here so the wrapper's forward -- which never otherwise sees
+        # guidance_scale -- can reproduce the SAME combine the outer pipeline
+        # applies post-hoc. Default 1.0 is inert (only read when
+        # ``style_guidance_scale`` > 0).
+        self._style_guidance_cfg = 1.0
 
         # Compatibility attributes (diffusers pipeline + LoRA introspection).
         self.config = transformer.config
@@ -303,6 +314,7 @@ class Ltx2BlockLoopWrapper(nn.Module):
         eps_ref: Optional[torch.Tensor] = None,
         style_refs: Optional[list] = None,
         combine_mode: str = "stack",
+        guidance_scale: float = 1.0,
     ) -> None:
         """Attach (or clear with all ``None``) training-free reference-style
         transfer. ``processors`` are the ``StyleLtx2Attn1Processor`` instances
@@ -314,6 +326,14 @@ class Ltx2BlockLoopWrapper(nn.Module):
         the packed (pre-``proj_in``) one-frame reference video latent and its
         fixed noise draw (see ``core.inference.style_ltx2`` module docstring for
         the still -> single-frame-video-latent construction).
+
+        ``guidance_scale`` (CFG-decoupled style guidance, single-ref only): the
+        CONSTANT prompt ``guidance_scale`` the caller passes to the diffusers
+        pipeline for this whole generation (LTX-2.3 has no per-step dynamic CFG
+        schedule). Stashed as ``self._style_guidance_cfg`` and read ONLY by the
+        lambda-rewrite block in ``_custom_forward`` when ``cfg.
+        style_guidance_scale`` is set (> 0) and ``style_refs is None``; inert
+        otherwise (default 1.0 is never read on the disabled path).
 
         ``style_refs`` (optional, multi-reference): a list of
         ``(StyleTransferConfig, ref_x0, ref_eps)`` triples, one per reference
@@ -361,6 +381,7 @@ class Ltx2BlockLoopWrapper(nn.Module):
         self._style_combine_mode = combine_mode
         self._style_step_idx = 0
         self._style_total_steps = 1
+        self._style_guidance_cfg = float(guidance_scale)
 
     def _any_feature_active(self) -> bool:
         swap_on = (
@@ -947,6 +968,110 @@ class Ltx2BlockLoopWrapper(nn.Module):
         if self._style_processors is not None:
             from core.inference.style_ltx2 import set_ltx2_style_context
             set_ltx2_style_context(self._style_processors, None)
+
+        # --- CFG-decoupled style guidance (LTX-2.3, single-ref only) ---
+        # Disabled by default (``style_guidance_scale`` is None/<=0, or multi-ref
+        # is active): this block is skipped entirely and the plain single-pass
+        # ``_finish_stage6`` call below runs unchanged -- byte-identical to
+        # before this feature.
+        #
+        # Enabled (>0, single-ref) AND this step actually injected style (the
+        # SAME ``cfg.is_step_active`` gate ``_style_run_capture_and_arm_inject``
+        # used above to decide whether to arm inject for this step): the video
+        # stream's real (just-computed) block-loop output above is the STYLED
+        # cond/uncond pair (``cond_s`` on its cond rows; audio and uncond rows
+        # are never touched by style at all -- see ``core.inference.style_ltx2``
+        # module docstring's "Scope: video self-attention ONLY"). Re-run the
+        # IDENTICAL block loop from the SAME pre-loop tensors
+        # (``original_video``/``original_audio``, captured before stage 5 above)
+        # with style already disarmed (immediately above) to get the plain
+        # (un-styled) pair, then rewrite the video output's cond rows so the
+        # UNCHANGED downstream CFG combine in ``diffusers.pipelines.ltx2.
+        # pipeline_ltx2.LTX2Pipeline.__call__`` -- ``video_cfg_delta = (cfg-1)*
+        # (cond-uncond)``, applied AFTER ``convert_velocity_to_x0`` -- reproduces
+        # the style-guidance target. ``convert_velocity_to_x0`` is
+        # ``x0 = sample - v*sigma[i]``, i.e. AFFINE (hence LINEAR w.r.t. a
+        # constant-offset rewrite) in the model's raw velocity output ``v`` for
+        # a FIXED ``(sample, sigma[i])`` pair (identical for cond_s/cond_ns at
+        # this step), so performing the SDXL-prototype rewrite here in raw
+        # velocity space (pre-x0-conversion, which this wrapper -- unlike SDXL's
+        # UNet -- is the last stop before) commutes exactly with that later
+        # x0 conversion + CFG combine:
+        #   let v' = cond_ns + (lambda/cfg)*(cond_s - cond_ns)
+        #   x0' = sample - v'*sigma = x0_ns + (lambda/cfg)*(x0_s - x0_ns)
+        #   (uncond + cfg*(x0' - uncond)) = uncond + cfg*(x0_ns-uncond) + lambda*(x0_s-x0_ns)
+        # -- prompt guidance stays at cfg, style strength is lambda, decoupled
+        # from cfg, exactly like the SDXL/Anima prototypes. STG (Spatiotemporal
+        # Guidance) is out of scope: SushiUI never wires ``stg_scale``/
+        # ``audio_stg_scale`` for LTX-2.3 (``do_spatio_temporal_guidance`` is
+        # always False; see ``pipeline_backends/ltx2.py``'s defensive guards and
+        # ``core.inference.style_ltx2``'s STG mutual-exclusion note), so the
+        # ONLY guidance term this rewrite needs to reproduce is the plain CFG
+        # delta above.
+        style_guidance_scale = None
+        if self._style_cfg is not None and self._style_refs is None:
+            style_guidance_scale = self._style_cfg.style_guidance_scale
+        if (
+            style_guidance_scale is not None
+            and style_guidance_scale > 0
+            and self._style_processors
+            and self._style_ref_x0 is not None
+            and self._style_cfg.is_step_active(int(self._style_step_idx), int(self._style_total_steps))
+        ):
+            hidden_states_ns, audio_hidden_states_ns = original_video, original_audio
+            with torch.no_grad():
+                for block in t.transformer_blocks:
+                    hidden_states_ns, audio_hidden_states_ns = block(
+                        hidden_states=hidden_states_ns,
+                        audio_hidden_states=audio_hidden_states_ns,
+                        encoder_hidden_states=encoder_hidden_states,
+                        audio_encoder_hidden_states=audio_encoder_hidden_states,
+                        temb=temb,
+                        temb_audio=temb_audio,
+                        temb_ca_scale_shift=video_cross_attn_scale_shift,
+                        temb_ca_audio_scale_shift=audio_cross_attn_scale_shift,
+                        temb_ca_gate=video_cross_attn_a2v_gate,
+                        temb_ca_audio_gate=audio_cross_attn_v2a_gate,
+                        temb_prompt=temb_prompt,
+                        temb_prompt_audio=temb_prompt_audio,
+                        video_rotary_emb=video_rotary_emb,
+                        audio_rotary_emb=audio_rotary_emb,
+                        ca_video_rotary_emb=video_cross_attn_rotary_emb,
+                        ca_audio_rotary_emb=audio_cross_attn_rotary_emb,
+                        encoder_attention_mask=encoder_attention_mask,
+                        audio_encoder_attention_mask=audio_encoder_attention_mask,
+                        self_attention_mask=None,
+                        audio_self_attention_mask=None,
+                        a2v_cross_attention_mask=None,
+                        v2a_cross_attention_mask=None,
+                        use_a2v_cross_attention=not isolate_modalities,
+                        use_v2a_cross_attention=not isolate_modalities,
+                        perturbation_mask=None,
+                        all_perturbed=False,
+                    )
+            output_ns, _audio_output_ns = self._finish_stage6(
+                t, hidden_states_ns, audio_hidden_states_ns,
+                embedded_timestep, audio_embedded_timestep, False,
+            )
+            output_s, audio_output_s = self._finish_stage6(
+                t, hidden_states, audio_hidden_states,
+                embedded_timestep, audio_embedded_timestep, False,
+            )
+            cfg_now = float(self._style_guidance_cfg or 1.0)
+            lam = float(style_guidance_scale)
+            batch_v = output_s.shape[0]
+            half = batch_v // 2 if (batch_v >= 2 and batch_v % 2 == 0) else 0
+            cond_s = output_s[half:]
+            cond_ns = output_ns[half:]
+            output_final = output_s
+            if cfg_now > 1e-6:
+                cond_rewritten = cond_ns + (lam / cfg_now) * (cond_s - cond_ns)
+                output_final = (
+                    torch.cat([output_s[:half], cond_rewritten], dim=0) if half > 0 else cond_rewritten
+                )
+            if not return_dict:
+                return (output_final, audio_output_s)
+            return AudioVisualModelOutput(sample=output_final, audio_sample=audio_output_s)
 
         # === 6. Output layers (including unpatchification) ===
         return self._finish_stage6(

@@ -1972,11 +1972,17 @@ async def generate_txt2vid(
     # Training-free reference-style transfer (video). No image-conditioning
     # ControlNets are supported for LTX-2.3 -- `controlnets` exists only to
     # carry an `is_style_transfer` entry (see core.inference.style_ltx2).
-    _, style_transfer, _, _ = process_controlnet_configs(
+    # style_transfers (plural, 0+ entries) + style_combine_mode are threaded
+    # through so multi-reference (N>1) style transfer reaches the LTX-2.3
+    # backend (pipeline_backends/ltx2.py._ltx2_style_configs); style_transfer
+    # (singular) stays for the untouched single-ref path.
+    _, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
         params.get("controlnets") or [],
         generation_type="txt2vid",
     )
     params["style_transfer"] = style_transfer
+    params["style_transfers"] = style_transfers
+    params["style_combine_mode"] = style_combine_mode
     params.pop("controlnets", None)
 
     start_generation("txt2vid")
@@ -2155,10 +2161,18 @@ async def generate_img2vid(
 
     # Training-free reference-style transfer (video). See generate_txt2vid's
     # identical wiring / core.inference.style_ltx2 for the mechanism.
+    # style_transfers (plural, 0+ entries) + style_combine_mode are threaded
+    # through so multi-reference (N>1) style transfer reaches the LTX-2.3
+    # backend (pipeline_backends/ltx2.py._ltx2_style_configs); style_transfer
+    # (singular) stays for the untouched single-ref path.
     import json
     _controlnet_configs = json.loads(controlnets) if controlnets else []
-    _, style_transfer, _, _ = process_controlnet_configs(_controlnet_configs, generation_type="img2vid")
+    _, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
+        _controlnet_configs, generation_type="img2vid"
+    )
     params["style_transfer"] = style_transfer
+    params["style_transfers"] = style_transfers
+    params["style_combine_mode"] = style_combine_mode
 
     # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
     if width % 32 != 0 or height % 32 != 0:

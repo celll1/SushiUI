@@ -165,6 +165,14 @@ class Ltx2BlockLoopWrapper(nn.Module):
         self._style_cfg = None
         self._style_ref_x0 = None     # [1, S_ref, C_in] packed ref latent (pre proj_in), float32
         self._style_eps_ref = None    # same shape, fixed per-generation noise
+        # Multi-reference (N>1) state: a list of (StyleTransferConfig, ref_x0,
+        # eps_ref) triples, one per reference image, populated ONLY when 2+
+        # references are active (see pipeline_backends.ltx2._ltx2_style_configs).
+        # None (the default) -> single-ref path above drives capture/inject
+        # unchanged; _style_cfg/_style_ref_x0/_style_eps_ref are left None by
+        # the caller whenever _style_refs is populated (mutually exclusive).
+        self._style_refs = None
+        self._style_combine_mode = "stack"
         self._style_step_idx = 0
         self._style_total_steps = 1
 
@@ -293,6 +301,8 @@ class Ltx2BlockLoopWrapper(nn.Module):
         cfg: Optional[Any] = None,
         ref_x0: Optional[torch.Tensor] = None,
         eps_ref: Optional[torch.Tensor] = None,
+        style_refs: Optional[list] = None,
+        combine_mode: str = "stack",
     ) -> None:
         """Attach (or clear with all ``None``) training-free reference-style
         transfer. ``processors`` are the ``StyleLtx2Attn1Processor`` instances
@@ -304,6 +314,18 @@ class Ltx2BlockLoopWrapper(nn.Module):
         the packed (pre-``proj_in``) one-frame reference video latent and its
         fixed noise draw (see ``core.inference.style_ltx2`` module docstring for
         the still -> single-frame-video-latent construction).
+
+        ``style_refs`` (optional, multi-reference): a list of
+        ``(StyleTransferConfig, ref_x0, ref_eps)`` triples, one per reference
+        image, populated ONLY when ``params["style_transfers"]`` carries 2+
+        entries (see ``pipeline_backends.ltx2._ltx2_style_configs``); when set,
+        the caller leaves ``cfg``/``ref_x0``/``eps_ref`` as ``None`` and
+        ``_style_run_capture_and_arm_inject``'s multi-ref branch drives one
+        capture sub-pass PER reference instead of the single-ref one.
+        ``combine_mode`` selects ``"stack"`` or ``"common_concept"`` (see
+        ``core.inference.reference_style.inject_kv_multi``). A single
+        reference (``style_refs is None``) is unaffected -- the pre-multi-ref
+        code path runs unchanged.
 
         Style transfer is INFERENCE-ONLY (asserted in ``_custom_forward``) and
         mutually exclusive with FBCache / Spectrum (the caller disables both
@@ -335,6 +357,8 @@ class Ltx2BlockLoopWrapper(nn.Module):
         self._style_cfg = cfg
         self._style_ref_x0 = ref_x0
         self._style_eps_ref = eps_ref
+        self._style_refs = style_refs
+        self._style_combine_mode = combine_mode
         self._style_step_idx = 0
         self._style_total_steps = 1
 
@@ -345,7 +369,8 @@ class Ltx2BlockLoopWrapper(nn.Module):
         )
         return bool(swap_on or self._fbcache is not None or self._spectrum_video is not None
                     or self._tread_router is not None or self._block_dropout is not None
-                    or self._blockskip_config is not None or self._style_cfg is not None)
+                    or self._blockskip_config is not None or self._style_cfg is not None
+                    or self._style_refs is not None)
 
     # ------------------------------------------------------------------
     # Forward
@@ -648,10 +673,10 @@ class Ltx2BlockLoopWrapper(nn.Module):
         # of this wrapper) run for the target. See core.inference.style_ltx2
         # module docstring for the full design (CFG row split, still -> video
         # ref encoding, RoPE reuse, FBCache/Spectrum/Block-Swap interop).
-        if self._style_cfg is not None:
+        if self._style_cfg is not None or self._style_refs is not None:
             assert not torch.is_grad_enabled(), (
-                "Ltx2BlockLoopWrapper: style transfer (_style_cfg) must not be "
-                "attached while autograd is enabled (inference-only feature)."
+                "Ltx2BlockLoopWrapper: style transfer (_style_cfg/_style_refs) must "
+                "not be attached while autograd is enabled (inference-only feature)."
             )
             self._style_run_capture_and_arm_inject(
                 t, sigma, hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
@@ -953,8 +978,9 @@ class Ltx2BlockLoopWrapper(nn.Module):
             return (output, audio_output)
         return AudioVisualModelOutput(sample=output, audio_sample=audio_output)
 
-    def _style_run_capture_and_arm_inject(
-        self, t, sigma, hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
+    def _style_capture_ref(
+        self, t, sigma, cfg, ref_x0, eps_ref, progress,
+        hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
         temb, temb_audio,
         video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
         video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
@@ -964,38 +990,26 @@ class Ltx2BlockLoopWrapper(nn.Module):
         encoder_attention_mask, audio_encoder_attention_mask,
         isolate_modalities,
     ):
-        """Run the ref-capture sub-pass (batch=1, the style reference re-noised
-        to THIS step's sigma) through every ``transformer_block`` in capture
-        mode, then arm the SAME installed ``attn1`` processors in inject mode
-        for the upcoming real (target) block loop. See
-        ``core.inference.style_ltx2`` module docstring for the full design.
-
-        Reuses the TARGET's own stage-1-4 conditioning tensors (temb, cross-attn
-        modulation, RoPE), sliced to a single batch row -- valid because
-        LTX-2.3's per-step timestep/sigma is identical across every CFG row (see
-        ``core.inference.style_ltx2``'s CFG-composition note) and the ref is
-        conceptually "the same generation, different content" at the SAME
-        position grid (frame-0 spatial tokens, see the still -> video-latent ref
-        note in that module).
+        """Run ONE ref-capture sub-pass (batch=1, ``ref_x0``/``eps_ref``
+        re-noised to THIS step's ``sigma`` under ``cfg``) through every
+        ``transformer_block`` in capture mode and return the resulting
+        per-block K/V/Q store. Factored out of
+        ``_style_run_capture_and_arm_inject`` so BOTH the single-reference
+        path (one call, using ``self._style_cfg``/``self._style_ref_x0``/
+        ``self._style_eps_ref``) and the multi-reference path
+        (``len(self._style_refs) > 1``, one call PER reference, each with its
+        OWN ``(cfg, ref_x0, eps_ref)``) share the IDENTICAL block-loop
+        replication -- see ``_style_run_capture_and_arm_inject`` for the
+        surrounding step-gating / ``StyleContext``-arming logic this helper
+        does NOT own (only the capture sub-pass itself). Reuses the TARGET's
+        own stage-1-4 conditioning tensors (temb, cross-attn modulation, RoPE),
+        sliced to a single batch row -- see that method's docstring for why
+        this is valid.
         """
         from core.inference.reference_style import StyleContext
         from core.inference.style_ltx2 import set_ltx2_style_context
 
-        cfg = self._style_cfg
         processors = self._style_processors
-        ref_x0 = self._style_ref_x0
-        eps_ref = self._style_eps_ref
-        if processors is None or ref_x0 is None or eps_ref is None:
-            return
-        cfg.resolve_default_block_range(len(t.transformer_blocks))
-
-        step_idx = int(self._style_step_idx)
-        total_steps = int(self._style_total_steps)
-        progress = cfg.step_progress(step_idx, total_steps)
-        if not cfg.is_step_active(step_idx, total_steps):
-            set_ltx2_style_context(processors, None)
-            return
-
         n = ref_x0.shape[1]
         dtype = hidden_states.dtype
         device = hidden_states.device
@@ -1098,12 +1112,127 @@ class Ltx2BlockLoopWrapper(nn.Module):
                     all_perturbed=False,
                 )
 
+        return capture_ctx.store
+
+    def _style_run_capture_and_arm_inject(
+        self, t, sigma, hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
+        temb, temb_audio,
+        video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+        video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+        temb_prompt, temb_prompt_audio,
+        video_rotary_emb, audio_rotary_emb,
+        video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+        encoder_attention_mask, audio_encoder_attention_mask,
+        isolate_modalities,
+    ):
+        """Run the ref-capture sub-pass (batch=1, the style reference re-noised
+        to THIS step's sigma) through every ``transformer_block`` in capture
+        mode, then arm the SAME installed ``attn1`` processors in inject mode
+        for the upcoming real (target) block loop. See
+        ``core.inference.style_ltx2`` module docstring for the full design.
+
+        Reuses the TARGET's own stage-1-4 conditioning tensors (temb, cross-attn
+        modulation, RoPE), sliced to a single batch row -- valid because
+        LTX-2.3's per-step timestep/sigma is identical across every CFG row (see
+        ``core.inference.style_ltx2``'s CFG-composition note) and the ref is
+        conceptually "the same generation, different content" at the SAME
+        position grid (frame-0 spatial tokens, see the still -> video-latent ref
+        note in that module).
+
+        Multi-reference (N>1): when ``self._style_refs`` holds 2+ ``(cfg,
+        ref_x0, eps_ref)`` triples, this drives one ``_style_capture_ref`` call
+        PER reference (each independently step-gated by its OWN config,
+        mirroring the single-ref ``is_step_active`` gate applied per-ref
+        instead of globally) and arms a single ``StyleContext`` holding the
+        full ``refs`` list for the upcoming real (target) block loop.
+        ``self._style_refs`` is populated ONLY when 2+ references are active
+        (see ``pipeline_backends.ltx2._ltx2_style_configs`` /
+        ``Ltx2BlockLoopWrapper.attach_style``) -- a single reference always
+        leaves ``self._style_refs`` as ``None`` and is routed through the
+        untouched single-ref branch below, so this addition does not affect
+        single-ref behavior at all.
+        """
+        from core.inference.reference_style import StyleContext
+        from core.inference.style_ltx2 import set_ltx2_style_context
+
+        processors = self._style_processors
+        if processors is None:
+            return
+
+        style_refs = self._style_refs
+        if style_refs is not None and len(style_refs) > 1:
+            step_idx = int(self._style_step_idx)
+            total_steps = int(self._style_total_steps)
+            active_refs = []
+            for cfg_i, ref_x0_i, eps_ref_i in style_refs:
+                if ref_x0_i is None or eps_ref_i is None:
+                    continue
+                cfg_i.resolve_default_block_range(len(t.transformer_blocks))
+                if not cfg_i.is_step_active(step_idx, total_steps):
+                    continue
+                progress_i = cfg_i.step_progress(step_idx, total_steps)
+                store_i = self._style_capture_ref(
+                    t, sigma, cfg_i, ref_x0_i, eps_ref_i, progress_i,
+                    hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
+                    temb, temb_audio,
+                    video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+                    video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+                    temb_prompt, temb_prompt_audio,
+                    video_rotary_emb, audio_rotary_emb,
+                    video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+                    encoder_attention_mask, audio_encoder_attention_mask,
+                    isolate_modalities,
+                )
+                active_refs.append((store_i, cfg_i))
+
+            if active_refs:
+                overall_progress = active_refs[0][1].step_progress(step_idx, total_steps)
+                n = style_refs[0][1].shape[1]
+                inject_ctx = StyleContext(
+                    mode="inject", config=active_refs[0][1], refs=active_refs,
+                    combine_mode=self._style_combine_mode, progress=overall_progress,
+                )
+                inject_ctx.img_start = 0
+                inject_ctx.img_end = n
+                set_ltx2_style_context(processors, inject_ctx)
+            else:
+                set_ltx2_style_context(processors, None)
+            return
+
+        cfg = self._style_cfg
+        ref_x0 = self._style_ref_x0
+        eps_ref = self._style_eps_ref
+        if ref_x0 is None or eps_ref is None:
+            return
+        cfg.resolve_default_block_range(len(t.transformer_blocks))
+
+        step_idx = int(self._style_step_idx)
+        total_steps = int(self._style_total_steps)
+        progress = cfg.step_progress(step_idx, total_steps)
+        if not cfg.is_step_active(step_idx, total_steps):
+            set_ltx2_style_context(processors, None)
+            return
+
+        store = self._style_capture_ref(
+            t, sigma, cfg, ref_x0, eps_ref, progress,
+            hidden_states, audio_hidden_states, encoder_hidden_states, audio_encoder_hidden_states,
+            temb, temb_audio,
+            video_cross_attn_scale_shift, audio_cross_attn_scale_shift,
+            video_cross_attn_a2v_gate, audio_cross_attn_v2a_gate,
+            temb_prompt, temb_prompt_audio,
+            video_rotary_emb, audio_rotary_emb,
+            video_cross_attn_rotary_emb, audio_cross_attn_rotary_emb,
+            encoder_attention_mask, audio_encoder_attention_mask,
+            isolate_modalities,
+        )
+
         # Arm the SAME processors in inject mode for the real (target) block
         # loop that runs right after this method returns (either the wrapper's
         # own stage-5 loop, or -- when style is the ONLY active feature and
         # _any_feature_active() still routes through _custom_forward because
         # _style_cfg is checked there too -- the same loop below).
-        inject_ctx = StyleContext(mode="inject", config=cfg, store=capture_ctx.store, progress=progress)
+        n = ref_x0.shape[1]
+        inject_ctx = StyleContext(mode="inject", config=cfg, store=store, progress=progress)
         inject_ctx.img_start = 0
         inject_ctx.img_end = n
         set_ltx2_style_context(processors, inject_ctx)

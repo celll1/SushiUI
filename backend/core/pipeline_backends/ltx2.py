@@ -131,36 +131,101 @@ class LTX2Mixin:
 
         return packed.to(device=device, dtype=torch.float32)
 
+    def _ltx2_style_triple(self, style_dict: Dict[str, Any], width: int, height: int, device,
+                            seed, ref_index: int = 0):
+        """Build a single ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
+        one ``style_transfer`` dict. ``axes_dims`` is intentionally left unset
+        (LTX-2.3's interleaved RoPE does not match ``frequency_scale_vector``'s
+        layout -- see ``core.inference.style_ltx2`` module docstring; the attn1
+        hook always passes an all-ones frequency vector regardless).
+
+        ``value_mode`` is forced to ``"ref_raw"`` here (overriding whatever
+        ``style_config_from_dict`` parsed from the request) -- see
+        ``core.inference.style_ltx2`` module docstring's "Value-mode
+        deviation" section: ``make_ref_value``'s "target_adain" blend requires
+        the target's own image-token region and the reference to share the
+        SAME token count, which never holds for LTX-2.3 (still ref = ``H*W``
+        tokens; target video = ``num_frames*H*W`` tokens). The single-ref
+        attention hook (``style_ltx2._apply_style_hook``) works around this by
+        bypassing ``make_ref_value`` entirely and is UNAFFECTED by this
+        override (it never reads ``cfg.value_mode``); the multi-reference hook
+        instead goes through the shared ``StyleContext.collect_block_refs``/
+        ``make_ref_value`` API (not modified for this port), so forcing
+        ``"ref_raw"`` here is what keeps that call shape-safe.
+
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across
+        multiple simultaneous references (each ref would otherwise draw the
+        EXACT same noise from the ``seed+991`` offset, since that offset does
+        not depend on which reference is being prepared). ``ref_index=0`` (the
+        default, used by the single-ref path) reproduces the pre-multi-ref
+        ``seed+991`` offset exactly.
+        """
+        from diffusers.utils.torch_utils import randn_tensor
+        from core.inference.reference_style import style_config_from_dict
+
+        cfg = style_config_from_dict(style_dict)
+        cfg.value_mode = "ref_raw"
+
+        ref_x0 = self._ltx2_prepare_style_reference(style_dict["image"], width, height, device)
+
+        try:
+            seed_i = int(seed)
+        except (TypeError, ValueError):
+            seed_i = -1
+        ref_seed = None if seed_i < 0 else (seed_i + 991 + ref_index) % (2 ** 32)
+        generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
+        eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
+        return cfg, ref_x0, eps_ref
+
     def _ltx2_style_config(self, params: Dict[str, Any], width: int, height: int, device):
         """Build a ``(StyleTransferConfig, ref_x0, eps_ref)`` triple from
         ``params["style_transfer"]`` (assembled by
         ``generation_utils.process_controlnet_configs``), or ``(None, None,
-        None)`` when no style reference is attached. ``axes_dims`` is
-        intentionally left unset (LTX-2.3's interleaved RoPE does not match
-        ``frequency_scale_vector``'s layout -- see
-        ``core.inference.style_ltx2`` module docstring; the attn1 hook always
-        passes an all-ones frequency vector regardless).
+        None)`` when no style reference is attached. Single-reference path,
+        BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_ltx2_style_triple`` with ``ref_index=0``, which reproduces the
+        original ``seed+991`` re-noising offset exactly).
         """
         style_dict = params.get("style_transfer")
         if not style_dict or not style_dict.get("image"):
             return None, None, None
 
-        from diffusers.utils.torch_utils import randn_tensor
-        from core.inference.reference_style import style_config_from_dict
-
-        cfg = style_config_from_dict(style_dict)
-
-        ref_x0 = self._ltx2_prepare_style_reference(style_dict["image"], width, height, device)
-
         seed = params.get("seed", -1)
-        try:
-            seed = int(seed)
-        except (TypeError, ValueError):
-            seed = -1
-        ref_seed = None if seed < 0 else (seed + 991) % (2 ** 32)
-        generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
-        eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
-        return cfg, ref_x0, eps_ref
+        return self._ltx2_style_triple(style_dict, width, height, device, seed, ref_index=0)
+
+    def _ltx2_style_configs(self, params: Dict[str, Any], width: int, height: int, device):
+        """Build the full style-transfer configuration for LTX-2.3 generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple, exactly as ``_ltx2_style_config``
+        would return) and the multi-reference path (``style_refs``, a list of
+        per-ref triples, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry). A single-entry ``style_transfers`` list is
+        intentionally routed through the single-ref triple instead (``style_refs``
+        stays ``None``), so the pre-multi-ref code path executes
+        byte-identically end to end. Mirrors ``_krea2_style_configs`` /
+        ``_anima_style_configs``.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            seed = params.get("seed", -1)
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._ltx2_style_triple(style_dict, width, height, device, seed, ref_index=idx))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._ltx2_style_config(params, width, height, device)
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _ltx2_resolve_style(self, params: Dict[str, Any]) -> bool:
         """Returns whether style transfer is requested for this generation and,
@@ -171,8 +236,14 @@ class LTX2Mixin:
         desync the per-block style capture/inject store), and Block Swap is
         forced off (``blocks_to_swap = 0``; the ref-capture sub-pass does not
         thread the block-offloader's wait/submit calls).
+
+        ``style_active`` is true when EITHER ``params["style_transfer"]``
+        (singular, legacy single-ref key) carries an image OR
+        ``params["style_transfers"]`` (plural, 0+ entries) is non-empty --
+        mirrors the Anima/Krea2 ``params.get("style_transfer") or
+        params.get("style_transfers")`` truthy check.
         """
-        style_active = bool((params.get("style_transfer") or {}).get("image"))
+        style_active = bool((params.get("style_transfer") or {}).get("image")) or bool(params.get("style_transfers"))
         if not style_active:
             return False
         if params.get("stg_scale") or params.get("audio_stg_scale"):
@@ -185,6 +256,7 @@ class LTX2Mixin:
             print("[StyleLTX2] Style transfer disabled: Spatio-Temporal Guidance is active "
                   "(extra per-step transformer calls are not modeled by the CFG row-split logic)")
             params["style_transfer"] = None
+            params["style_transfers"] = None
             return False
         if params.get("fbcache_enable"):
             print("[StyleLTX2] FBCache disabled: style transfer is active (capture-forward cache pollution)")
@@ -553,18 +625,26 @@ class LTX2Mixin:
         style_processors: List[Any] = []
         style_saved_processors: List[Any] = []
         style_cfg = None
+        style_refs = None
+        style_combine_mode = "stack"
         if style_active and style_target is not None:
             device = next(style_target.transformer.parameters()).device
-            style_cfg, style_ref_x0, style_eps_ref = self._ltx2_style_config(params, width, height, device)
-            if style_cfg is not None:
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._ltx2_style_configs(params, width, height, device)
+            if style_cfg is not None or style_refs is not None:
                 from core.inference.style_ltx2 import install_ltx2_style_processors
                 style_processors, style_saved_processors = install_ltx2_style_processors(style_target.transformer)
-                style_target.attach_style(style_processors, style_cfg, style_ref_x0, style_eps_ref)
+                style_target.attach_style(
+                    style_processors, style_cfg, style_ref_x0, style_eps_ref,
+                    style_refs=style_refs, combine_mode=style_combine_mode,
+                )
                 style_target._style_total_steps = num_inference_steps
-                print(f"[StyleLTX2] Style transfer active: {len(style_processors)} attn1 processors stamped")
+                ref_suffix = f" ({len(style_refs)} references, combine={style_combine_mode})" if style_refs else ""
+                print(f"[StyleLTX2] Style transfer active: {len(style_processors)} attn1 processors stamped{ref_suffix}")
         elif style_active:
             print("[StyleLTX2]: could not attach (transformer not wrapped)")
             style_cfg = None
+            style_refs = None
 
         # Normalize the keyframe to RGB PIL; the pipeline's video_processor
         # handles the resize/fit to (width, height).
@@ -590,7 +670,8 @@ class LTX2Mixin:
         # advance _fbcache_step / _spectrum_step / _style_step_idx to i+1 there
         # (primed for the NEXT step's forward call); step 0 uses the wrapper's
         # default (0) from attach_fbcache() / attach_spectrum() / attach_style().
-        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None or style_cfg is not None:
+        style_wants_step_advance = style_cfg is not None or style_refs is not None
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None or style_wants_step_advance:
             def _cb(pipe, step_index, timestep, callback_kwargs):
                 if progress_callback is not None:
                     try:
@@ -601,7 +682,7 @@ class LTX2Mixin:
                     fbcache_target._fbcache_step = step_index + 1
                 if spectrum_target is not None:
                     spectrum_target._spectrum_step = step_index + 1
-                if style_cfg is not None and style_target is not None:
+                if style_wants_step_advance and style_target is not None:
                     style_target._style_step_idx = step_index + 1
                 return callback_kwargs
             callback = _cb
@@ -743,18 +824,26 @@ class LTX2Mixin:
         style_processors: List[Any] = []
         style_saved_processors: List[Any] = []
         style_cfg = None
+        style_refs = None
+        style_combine_mode = "stack"
         if style_active and style_target is not None:
             device = next(style_target.transformer.parameters()).device
-            style_cfg, style_ref_x0, style_eps_ref = self._ltx2_style_config(params, width, height, device)
-            if style_cfg is not None:
+            style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                self._ltx2_style_configs(params, width, height, device)
+            if style_cfg is not None or style_refs is not None:
                 from core.inference.style_ltx2 import install_ltx2_style_processors
                 style_processors, style_saved_processors = install_ltx2_style_processors(style_target.transformer)
-                style_target.attach_style(style_processors, style_cfg, style_ref_x0, style_eps_ref)
+                style_target.attach_style(
+                    style_processors, style_cfg, style_ref_x0, style_eps_ref,
+                    style_refs=style_refs, combine_mode=style_combine_mode,
+                )
                 style_target._style_total_steps = num_inference_steps
-                print(f"[StyleLTX2] Style transfer active: {len(style_processors)} attn1 processors stamped")
+                ref_suffix = f" ({len(style_refs)} references, combine={style_combine_mode})" if style_refs else ""
+                print(f"[StyleLTX2] Style transfer active: {len(style_processors)} attn1 processors stamped{ref_suffix}")
         elif style_active:
             print("[StyleLTX2]: could not attach (transformer not wrapped)")
             style_cfg = None
+            style_refs = None
 
         # Seed: -1 (or negative/None) -> random draw, recorded back for the caller.
         seed = params.get("seed", -1)
@@ -773,7 +862,8 @@ class LTX2Mixin:
         # advance _fbcache_step / _spectrum_step / _style_step_idx to i+1 there
         # (primed for the NEXT step's forward call); step 0 uses the wrapper's
         # default (0) from attach_fbcache() / attach_spectrum() / attach_style().
-        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None or style_cfg is not None:
+        style_wants_step_advance = style_cfg is not None or style_refs is not None
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None or style_wants_step_advance:
             def _cb(pipe, step_index, timestep, callback_kwargs):
                 if progress_callback is not None:
                     try:
@@ -784,7 +874,7 @@ class LTX2Mixin:
                     fbcache_target._fbcache_step = step_index + 1
                 if spectrum_target is not None:
                     spectrum_target._spectrum_step = step_index + 1
-                if style_cfg is not None and style_target is not None:
+                if style_wants_step_advance and style_target is not None:
                     style_target._style_step_idx = step_index + 1
                 return callback_kwargs
             callback = _cb

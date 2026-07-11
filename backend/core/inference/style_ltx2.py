@@ -103,7 +103,28 @@ still reference has ``H*W`` tokens; the target video has ``num_frames*H*W``
 tokens), so this wiring ALWAYS uses the raw reference Value directly (the
 "ref_raw" mode's result) regardless of the user's requested ``value_mode`` /
 ``value_adain_strength`` / ``ref_value_mix`` -- those three knobs are no-ops
-for this arch (see ``_apply_style_hook``).
+for this arch (see ``_apply_style_hook``). The single-ref branch bypasses
+``make_ref_value`` entirely (``ref_v_final = ref_v``); the multi-reference
+branch instead forces every LTX-2.3 ``StyleTransferConfig.value_mode`` to
+``"ref_raw"`` (in ``pipeline_backends.ltx2._ltx2_style_triple``) so the
+shared ``StyleContext.collect_block_refs``/``make_ref_value`` call (part of
+the arch-agnostic core, not modified for this port) resolves to the same
+raw-reference-Value result without ever computing the shape-mismatched
+"target_adain" blend.
+
+Multi-reference (N>1) support: mirrors the Anima/Krea2 N-ref wiring
+(``core.inference.reference_style.inject_kv_multi`` / ``StyleContext.refs`` /
+``collect_block_refs``). ``_apply_style_hook``'s inject branch dispatches on
+``ctx.refs is not None``; single-ref (``ctx.refs is None``) is byte-identical
+to the pre-multi-ref implementation. The multi-ref branch reproduces the
+SAME CFG row-split / uncond-column-masking / cond-rows-only AdaIN handling
+described above, applied to the MEAN of the active references' Q/K instead of
+one reference's own. ``Ltx2BlockLoopWrapper._style_run_capture_and_arm_inject``
+drives one capture sub-pass PER reference (each independently step-gated by
+its own config) whenever ``len(style_refs) > 1``; a single reference (via
+either ``style_transfer`` or a length-1 ``style_transfers``) always resolves
+through the untouched single-ref ``(cfg, ref_x0, eps_ref)`` triple in
+``pipeline_backends.ltx2._ltx2_style_configs``.
 
 FBCache/Spectrum interop: FBCache and Spectrum MUST be disabled for the whole
 generation whenever style transfer is active (a cache hit / forecast skip
@@ -262,6 +283,89 @@ def _apply_style_hook(
         return query, key, value, attention_mask
 
     # mode == "inject"
+    if ctx.refs is not None:
+        # Multi-reference ("stack" / "common_concept"): centralizes the
+        # per-ref active/freq/make_ref_value logic in
+        # ``StyleContext.collect_block_refs`` so this hook stays thin. The
+        # single-ref branch below (reached only when ``ctx.refs is None``) is
+        # completely untouched -- this branch is only ever reached for 2+
+        # refs (see ``Ltx2BlockLoopWrapper._style_run_capture_and_arm_inject``'s
+        # multi-ref branch and the ``style_refs``/``StyleContext(refs=...)``
+        # wiring in ``pipeline_backends.ltx2``). Preserves the SAME CFG
+        # row-split / uncond-column-masking / cond-rows-only AdaIN handling as
+        # the single-ref branch below -- only the reference tensors and the
+        # injection call (``inject_kv_multi`` instead of ``inject_kv``) differ.
+        #
+        # ``value_mode`` is forced to "ref_raw" for every LTX-2.3 style config
+        # by ``pipeline_backends.ltx2._ltx2_style_triple`` (mirrors this
+        # module's "Value-mode deviation" docstring section), so
+        # ``StyleContext.collect_block_refs``'s unconditional ``make_ref_value``
+        # call always resolves to the raw reference Value here too, matching
+        # the single-ref branch's explicit ``ref_v_final = ref_v`` bypass
+        # below (``make_ref_value``'s "target_adain" blend would otherwise
+        # raise a shape mismatch: ref = H*W tokens, target = num_frames*H*W).
+        from core.inference.reference_style import inject_kv_multi, cross_batch_adain_qk
+
+        m_batch = query.shape[0]
+        m_seq = query.shape[1]
+        m_half = m_batch // 2 if (m_batch >= 2 and m_batch % 2 == 0) else 0
+
+        target_v_img = value[:, 0:m_seq]
+        block_refs = ctx.collect_block_refs(proc.block_idx, target_v_img, key.device, key.dtype)
+        if not block_refs:
+            return query, key, value, attention_mask
+
+        # AdaIN: cond rows ONLY, never uncond (identical rationale to the
+        # single-ref branch below) -- toward the MEAN of the active refs'
+        # Q/K, applied ONCE here rather than letting ``inject_kv_multi``'s own
+        # "stack"/"common_concept" AdaIN fire against the FULL batch (which
+        # would stylize the uncond rows' Q/K too). ``adain_strength`` is then
+        # zeroed in the ``block_refs`` handed to ``inject_kv_multi`` so its
+        # internal AdaIN branch is a no-op (avoids a redundant second align).
+        max_adain = max(r[4] for r in block_refs)
+        if max_adain > 0.0:
+            mean_ref_k = torch.stack([r[0] for r in block_refs], dim=0).mean(dim=0)
+            if all(r[2] is not None for r in block_refs):
+                mean_ref_q = torch.stack([r[2] for r in block_refs], dim=0).mean(dim=0)
+            else:
+                mean_ref_q = None
+            q_cond = query[m_half:]
+            k_cond = key[m_half:]
+            if mean_ref_q is not None:
+                q_cond_aligned, k_cond_aligned = cross_batch_adain_qk(
+                    q_cond, k_cond, mean_ref_q, mean_ref_k, max_adain
+                )
+            else:
+                q_cond_aligned, k_cond_aligned = cross_batch_adain_qk(
+                    q_cond, k_cond, mean_ref_k, mean_ref_k, max_adain
+                )
+            if m_half > 0:
+                query = torch.cat([query[:m_half], q_cond_aligned], dim=0)
+                key = torch.cat([key[:m_half], k_cond_aligned], dim=0)
+            else:
+                query, key = q_cond_aligned, k_cond_aligned
+            block_refs = [(rk, rv, rq, rs, 0.0, rf) for (rk, rv, rq, rs, _ra, rf) in block_refs]
+
+        seq_len_before = key.shape[1]
+        key, value, query = inject_kv_multi(key, value, query, 0, m_seq, block_refs, ctx.combine_mode)
+
+        extra = key.shape[1] - seq_len_before
+        if extra > 0 and m_half > 0:
+            # Same uncond-masking as the single-ref branch below: the
+            # appended ref-K/V columns land at the end of the key axis;
+            # invisible (large negative bias) to uncond rows, visible (bias 0)
+            # to cond rows.
+            neg = torch.finfo(key.dtype).min
+            extra_bias = torch.zeros(m_batch, 1, 1, extra, device=key.device, dtype=key.dtype)
+            extra_bias[:m_half] = neg
+            if attention_mask is None:
+                base_bias = torch.zeros(m_batch, 1, 1, seq_len_before, device=key.device, dtype=key.dtype)
+                attention_mask = torch.cat([base_bias, extra_bias], dim=-1)
+            else:
+                attention_mask = torch.cat([attention_mask, extra_bias], dim=-1)
+
+        return query, key, value, attention_mask
+
     ref_qkv = ctx.store.get(proc.block_idx)
     if ref_qkv is None:
         return query, key, value, attention_mask

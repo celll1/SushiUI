@@ -105,6 +105,16 @@ class StyleTransferConfig:
     start_step: int = 0
     end_step: int = 1000
 
+    # --- CFG-decoupled style guidance (SDXL/SD1.5 prototype only) --- a SECOND
+    # guidance axis (lambda) that dials style strength independently of the
+    # prompt CFG scale. None or <= 0 = DISABLED (the classic 2-pass: style
+    # rides on the cond-uncond delta and is scaled by cfg like the prompt is,
+    # so it weakens at low cfg). > 0 enables a 3rd (cond, no-style) forward
+    # per style-active step and rewrites the two preds so the SAME shared CFG
+    # combine yields: uncond + cfg*(cond_noStyle - uncond) + lambda*(cond_style
+    # - cond_noStyle) -- i.e. style strength no longer depends on cfg.
+    style_guidance_scale: Optional[float] = None
+
     # internal cache: (device, dtype, rounded progress) -> frequency scale vector
     _freq_cache: Dict[Tuple[Any, Any, float], torch.Tensor] = field(default_factory=dict, repr=False, compare=False)
 
@@ -645,4 +655,5 @@ def style_config_from_dict(d: Dict[str, Any]) -> StyleTransferConfig:
         rope_offset=int(d.get("rope_offset", 0) or 0),
         start_step=int(d.get("start_step", 0) or 0),
         end_step=int(d.get("end_step", 1000) if d.get("end_step") is not None else 1000),
+        style_guidance_scale=(float(d["style_guidance_scale"]) if d.get("style_guidance_scale") is not None else None),
     )

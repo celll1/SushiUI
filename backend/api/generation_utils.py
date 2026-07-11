@@ -102,6 +102,9 @@ def process_controlnet_configs(
                     "ref_value_mix": cn_config.get("style_ref_value_mix"),
                     "late_release": cn_config.get("style_late_release"),
                     "rope_offset": cn_config.get("style_rope_offset"),
+                    # CFG-decoupled style guidance (SDXL/SD1.5 prototype only):
+                    # None/<=0 = disabled (classic 2-pass, unchanged cost/behavior).
+                    "style_guidance_scale": cn_config.get("style_guidance_scale"),
                 }
                 style_transfers.append(entry)
                 if style_transfer is None:

@@ -224,6 +224,23 @@ def _apply_style_hook(
         )
         return query, key, value
 
+    if ctx.mode == "inject" and ctx.refs is not None:
+        # Multi-reference ("stack" / "common_concept"): centralizes the
+        # per-ref active/freq/make_ref_value logic in
+        # StyleContext.collect_block_refs so this hook stays thin. The
+        # single-ref path below (``ctx.refs is None``) is completely
+        # untouched -- this branch is only ever reached for 2+ refs (see
+        # pipeline_backends.flux2._flux2_style_step_multi and the
+        # ``style_refs``/``StyleContext(refs=...)`` wiring around
+        # ``_flux2_style_configs``).
+        from core.inference.reference_style import inject_kv_multi
+
+        target_v_img = value[:, img_start:img_end]
+        block_refs = ctx.collect_block_refs(proc.block_idx, target_v_img, key.device, key.dtype)
+        if block_refs:
+            key, value, query = inject_kv_multi(key, value, query, img_start, img_end, block_refs, ctx.combine_mode)
+        return query, key, value
+
     # mode == "inject"
     ref_qkv = ctx.store.get(proc.block_idx)
     if ref_qkv is None:

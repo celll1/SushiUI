@@ -721,6 +721,77 @@ def sample_txt2img(
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
             )
+
+            # --- CFG-decoupled style guidance (Anima) ---
+            # Disabled by default (style_guidance_scale is None/<=0): this block is
+            # skipped entirely and `v`/`cfg_metrics` stay exactly the combine above --
+            # byte-identical to before this feature (zero extra forwards).
+            # Enabled (>0) AND this step actually injected style (the SAME
+            # is_step_active gate used for the capture/inject above, and CFG must be
+            # active -- v_uncond is not None): run a 4th forward -- the SAME
+            # cond_transformer call as v_cond above (identical latents/timestep/
+            # context/padding_mask/target ids/masks) but with the style context
+            # disarmed -- to get the cond prediction WITHOUT style (cond_ns).
+            #
+            # Anima's OWN combine (inside _apply_advanced_cfg) is:
+            #   v = v_uncond + cfg_now * (v_cond - v_uncond)
+            # Rewriting the cond term to cond' = cond_ns + (lambda/cfg_now)*(cond_s -
+            # cond_ns) makes that SAME combine reproduce the style-guidance target:
+            #   uncond + cfg_now*(cond' - uncond)
+            # = uncond + cfg_now*(cond_ns-uncond) + cfg_now*(lambda/cfg_now)*(cond_s-cond_ns)
+            # = uncond + cfg_now*(cond_ns - uncond) + lambda*(cond_s - cond_ns)
+            # -- prompt guidance stays at cfg_now, style strength is lambda, decoupled
+            # from cfg, exactly like the SDXL prototype.
+            #
+            # `cfg_now` (`_cfg_now` above) is the SAME per-step value
+            # _apply_advanced_cfg already derived from the TRUE styled (cond_s,
+            # v_uncond) pair above, so any CFG schedule / SNR-rescale sees the real
+            # styled output, unaffected by this rewrite (Anima has no cross-step
+            # "previous_snr" cache like SDXL -- it derives snr fresh from THIS
+            # step's preds every call, so reusing the already-derived cfg_now here
+            # -- instead of re-deriving it from the rewritten cond -- is what keeps
+            # the algebra exact for BOTH constant and dynamic CFG schedules). The
+            # second _apply_advanced_cfg call below is forced to
+            # cfg_schedule_type="constant" with cfg_base=cfg_now so it reproduces
+            # the IDENTICAL cfg_now (no re-derivation) while still re-applying
+            # dynamic thresholding and recomputing cfg_metrics against the
+            # corrected pred. Guarded on cfg_now > 1e-6 (else `v`/`cfg_metrics`
+            # above stay untouched, i.e. the plain styled-cond pass).
+            if (
+                style_active
+                and v_uncond is not None
+                and style_cfg.style_guidance_scale is not None
+                and style_cfg.style_guidance_scale > 0
+                and style_cfg.is_step_active(sp_i, num_inference_steps)
+            ):
+                cond_s = v_cond
+                # Style context is already disarmed above (uncond pass always runs
+                # without it); re-clearing here is defensive/explicit.
+                real_transformer._style_ctx = None
+                if fbcache_cond is not None:
+                    # This is an extra one-off forward outside the normal per-step
+                    # cond/uncond trajectory -- force a real compute (no cache
+                    # read/write) so it can't desync the FBCache cond/uncond
+                    # instances built for the 2-pass loop.
+                    real_transformer._fbcache = None
+                cond_ns = cond_transformer(
+                    x=latents,
+                    timesteps=timestep_batch,
+                    context=cond_embeds["prompt_embeds"],
+                    padding_mask=padding_mask,
+                    target_input_ids=cond_embeds["t5_input_ids"],
+                    target_attention_mask=cond_embeds["t5_attn_mask"],
+                    source_attention_mask=cond_embeds["source_mask"],
+                )
+                lam = style_cfg.style_guidance_scale
+                if _cfg_now > 1e-6:
+                    cond_rewritten = cond_ns + (lam / _cfg_now) * (cond_s - cond_ns)
+                    forced_advanced_cfg = dict(advanced_cfg or {})
+                    forced_advanced_cfg["cfg_schedule_type"] = "constant"
+                    v, _, cfg_metrics = _apply_advanced_cfg(
+                        cond_rewritten, v_uncond, _cfg_now, sigma_now_f, sigma_max_f, forced_advanced_cfg,
+                    )
+
             if spectrum is not None:
                 spectrum.record(sp_i, v)
 
@@ -891,6 +962,38 @@ def sample_img2img(
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
             )
+
+            # --- CFG-decoupled style guidance (Anima) --- see sample_txt2img's
+            # matching block for the full derivation/rationale; identical mechanism,
+            # only the step-gating denominator differs (total_style_steps, matching
+            # this loop's own is_step_active call above).
+            if (
+                style_active
+                and v_uncond is not None
+                and style_cfg.style_guidance_scale is not None
+                and style_cfg.style_guidance_scale > 0
+                and style_cfg.is_step_active(sp_i, total_style_steps)
+            ):
+                cond_s = v_cond
+                real_transformer._style_ctx = None
+                if fbcache_cond is not None:
+                    real_transformer._fbcache = None
+                cond_ns = cond_transformer(
+                    x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
+                    padding_mask=padding_mask,
+                    target_input_ids=cond_embeds["t5_input_ids"],
+                    target_attention_mask=cond_embeds["t5_attn_mask"],
+                    source_attention_mask=cond_embeds["source_mask"],
+                )
+                lam = style_cfg.style_guidance_scale
+                if _cfg_now > 1e-6:
+                    cond_rewritten = cond_ns + (lam / _cfg_now) * (cond_s - cond_ns)
+                    forced_advanced_cfg = dict(advanced_cfg or {})
+                    forced_advanced_cfg["cfg_schedule_type"] = "constant"
+                    v, _, cfg_metrics = _apply_advanced_cfg(
+                        cond_rewritten, v_uncond, _cfg_now, sigma_now_f, sigma_max_f, forced_advanced_cfg,
+                    )
+
             if spectrum is not None:
                 spectrum.record(sp_i, v)
 
@@ -1068,6 +1171,38 @@ def sample_inpaint(
             v, _cfg_now, cfg_metrics = _apply_advanced_cfg(
                 v_cond, v_uncond, guidance_scale, sigma_now_f, sigma_max_f, advanced_cfg,
             )
+
+            # --- CFG-decoupled style guidance (Anima) --- see sample_txt2img's
+            # matching block for the full derivation/rationale; identical mechanism,
+            # only the step-gating denominator differs (total_style_steps, matching
+            # this loop's own is_step_active call above).
+            if (
+                style_active
+                and v_uncond is not None
+                and style_cfg.style_guidance_scale is not None
+                and style_cfg.style_guidance_scale > 0
+                and style_cfg.is_step_active(sp_i, total_style_steps)
+            ):
+                cond_s = v_cond
+                real_transformer._style_ctx = None
+                if fbcache_cond is not None:
+                    real_transformer._fbcache = None
+                cond_ns = cond_transformer(
+                    x=latents, timesteps=timestep_batch, context=cond_embeds["prompt_embeds"],
+                    padding_mask=padding_mask,
+                    target_input_ids=cond_embeds["t5_input_ids"],
+                    target_attention_mask=cond_embeds["t5_attn_mask"],
+                    source_attention_mask=cond_embeds["source_mask"],
+                )
+                lam = style_cfg.style_guidance_scale
+                if _cfg_now > 1e-6:
+                    cond_rewritten = cond_ns + (lam / _cfg_now) * (cond_s - cond_ns)
+                    forced_advanced_cfg = dict(advanced_cfg or {})
+                    forced_advanced_cfg["cfg_schedule_type"] = "constant"
+                    v, _, cfg_metrics = _apply_advanced_cfg(
+                        cond_rewritten, v_uncond, _cfg_now, sigma_now_f, sigma_max_f, forced_advanced_cfg,
+                    )
+
             if spectrum is not None:
                 spectrum.record(sp_i, v)
 

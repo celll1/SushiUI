@@ -55,13 +55,25 @@ def process_controlnet_configs(
                 print(f"[StyleTransfer {idx}] Reference image decoded successfully: {image.size}")
                 style_transfer = {
                     "image": image,
+                    # transfer_type selects the injection recipe: "style" (default,
+                    # appearance/texture) or "character" (identity — early blocks +
+                    # raw reference Value + minimal AdaIN). Carried through to
+                    # StyleTransferConfig; the arch injection path is shared.
+                    "transfer_type": cn_config.get("style_transfer_type", "style"),
                     "ref_k_strength": cn_config.get("strength", 1.0),
                     "adain_strength": cn_config.get("style_adain_strength"),
                     "block_range": cn_config.get("style_blocks"),
                     "start_step": cn_config.get("start_step", 0),
                     "end_step": cn_config.get("end_step", 1000),
+                    # Frequency-scale curve (RoPE-freq content suppression). Emit the
+                    # exact keys style_config_from_dict reads (start/end for both
+                    # high and low) so they actually plumb -- the old "high_scale"
+                    # key was silently dropped (style_config_from_dict reads
+                    # high_scale_start/high_scale_end).
+                    "high_scale_start": cn_config.get("style_high_scale_start"),
+                    "high_scale_end": cn_config.get("style_high_scale_end"),
+                    "low_scale_start": cn_config.get("style_low_scale_start"),
                     "low_scale_end": cn_config.get("style_low_scale_end"),
-                    "high_scale": cn_config.get("style_high_scale"),
                     "beta": cn_config.get("style_beta"),
                     "value_mode": cn_config.get("style_value_mode"),
                     "value_adain_strength": cn_config.get("style_value_adain_strength"),
@@ -381,6 +393,18 @@ def prepare_params_for_db(params: Dict[str, Any], calculate_image_hash) -> Dict[
             }
             for cn in params_for_db["controlnet_images"]
         ]
+
+    # Style transfer: params["style_transfer"] carries the decoded PIL reference
+    # image under the "image" key (consumed at generation time). A raw PIL Image is
+    # NOT JSON-serializable and would make the generated_images.parameters DB commit
+    # raise "Object of type Image is not JSON serializable" -> HTTP 500. Replace it
+    # with a stable hash for the DB record (mirrors the controlnet_images handling).
+    _st = params_for_db.get("style_transfer")
+    if isinstance(_st, dict):
+        params_for_db["style_transfer"] = {
+            k: (calculate_image_hash(v) if k == "image" else v)
+            for k, v in _st.items()
+        }
 
     # FLUX.2 Image Edit: Convert ref_images to hashes
     if "ref_images" in params_for_db and params_for_db["ref_images"]:

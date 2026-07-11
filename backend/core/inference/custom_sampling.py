@@ -195,7 +195,8 @@ def prepare_style_reference_latent(image, pipeline, width, height, device, dtype
     forward and the target's own forward, which is required for the per-block
     K/V injection to line up (see `attention_processors.UnifiedAttnProcessor`).
     """
-    vae_dtype = next(pipeline.vae.parameters()).dtype
+    vae = pipeline.vae
+    vae_dtype = next(vae.parameters()).dtype
     img = image.convert("RGB") if image.mode != "RGB" else image
     if img.size != (width, height):
         img = img.resize((width, height), Image.Resampling.LANCZOS)
@@ -204,10 +205,25 @@ def prepare_style_reference_latent(image, pipeline, width, height, device, dtype
     img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0)  # HWC -> BCHW
     img_tensor = img_tensor * 2.0 - 1.0  # [-1, 1]
 
-    with torch.no_grad():
-        ref_x0 = pipeline.vae.encode(img_tensor.to(device=device, dtype=vae_dtype)).latent_dist.mode()
-        ref_x0 = (ref_x0 - (getattr(pipeline.vae.config, "shift_factor", None) or 0.0)) * pipeline.vae.config.scaling_factor
-        ref_x0 = ref_x0.to(dtype=dtype)
+    # The txt2img path does not stage the VAE to GPU before this point (only U-Net
+    # is on GPU), so the VAE is typically still on CPU here. Encoding a cuda input
+    # against a cpu VAE crashes ("input is cuda, weight is cpu"), and a cpu fp16
+    # conv is unsupported/very slow -- so temporarily stage the VAE to the target
+    # device for the (one-image) reference encode, then restore its original
+    # placement so the normal offload flow (decode-time VAE staging) is unaffected.
+    _orig_vae_device = next(vae.parameters()).device
+    _target_device = torch.device(device)
+    _staged = _orig_vae_device != _target_device
+    try:
+        if _staged:
+            vae.to(_target_device)
+        with torch.no_grad():
+            ref_x0 = vae.encode(img_tensor.to(device=_target_device, dtype=vae_dtype)).latent_dist.mode()
+            ref_x0 = (ref_x0 - (getattr(vae.config, "shift_factor", None) or 0.0)) * vae.config.scaling_factor
+            ref_x0 = ref_x0.to(device=_target_device, dtype=dtype)
+    finally:
+        if _staged:
+            vae.to(_orig_vae_device)
 
     ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
     generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None

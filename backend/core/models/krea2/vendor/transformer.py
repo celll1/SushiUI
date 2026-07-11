@@ -144,6 +144,29 @@ class Krea2Attention(nn.Module):
                     key[:, img_start:img_end].detach().clone(),
                     value[:, img_start:img_end].detach().clone(),
                 )
+            elif ctx.mode == "inject" and ctx.refs is not None:
+                # Multi-reference ("stack" / "common_concept"): centralizes the
+                # per-ref active/freq/make_ref_value logic in
+                # StyleContext.collect_block_refs so this hook stays thin. The
+                # single-ref branch below (``ctx.mode == "inject"`` reached only
+                # when ``ctx.refs is None``) is completely untouched -- this
+                # branch is only ever reached for 2+ refs (see
+                # ``krea2_pipeline_ops._run_loop``'s multi-ref capture and the
+                # ``style_refs``/``StyleContext(refs=...)`` wiring in
+                # ``pipeline_backends.krea2``).
+                from core.inference.reference_style import inject_kv_multi
+
+                target_v_img = value[:, img_start:img_end]
+                block_refs = ctx.collect_block_refs(self.block_idx, target_v_img, key.device, key.dtype)
+                if block_refs:
+                    ref_len_before = key.shape[1]
+                    key, value, query = inject_kv_multi(
+                        key, value, query, img_start, img_end, block_refs, ctx.combine_mode
+                    )
+                    if attention_mask is not None and key.shape[1] != ref_len_before:
+                        pad_len = key.shape[1] - ref_len_before
+                        pad = attention_mask.new_ones(attention_mask.shape[0], 1, 1, pad_len)
+                        attention_mask = torch.cat([attention_mask, pad], dim=-1)
             elif ctx.mode == "inject":
                 ref_qkv = ctx.store.get(self.block_idx)
                 if ref_qkv is not None:

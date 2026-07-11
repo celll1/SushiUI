@@ -358,6 +358,8 @@ def _run_loop(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """Shared flow-matching Euler loop (txt2img / img2img / inpaint).
 
@@ -371,6 +373,16 @@ def _run_loop(
     run with no style context (untouched). ``style_eps_ref`` is drawn ONCE per
     generation by the caller (not per step) -- re-noising with fresh noise each
     step would make the reference K/V flicker step to step.
+
+    ``style_refs`` (optional, multi-reference): a list of ``(StyleTransferConfig,
+    ref_x0, ref_eps)`` triples, one per reference image, each keeping its OWN
+    config (block_range, strengths, freq curve, step gating). Only consulted
+    when it has 2+ entries -- ``len(style_refs) <= 1`` is intentionally NOT
+    specially handled here (callers route that case through the ``style_cfg``/
+    ``style_ref_x0``/``style_eps_ref`` single-ref path instead so the exact
+    pre-multi-ref code executes byte-identically). ``style_combine_mode``
+    selects how the N refs combine ("stack" or "common_concept", see
+    ``core.inference.reference_style.inject_kv_multi``).
     """
     from core.inference.cancellation import raise_if_cancelled
     from core.inference.reference_style import StyleContext
@@ -388,7 +400,58 @@ def _run_loop(
         sigma_now = float(t.item()) / num_train
         timestep = (t / num_train).expand(latents.shape[0]).to(t_dtype)
 
-        if style_active and style_cfg.is_step_active(i, total_steps):
+        if style_refs is not None and len(style_refs) > 1:
+            # Multi-reference (N>1): one capture forward PER reference (each
+            # skipped if not step-active this step, mirroring the single-ref
+            # ``is_step_active`` gate applied per-ref instead of globally),
+            # then a single StyleContext holding the full ``refs`` list for
+            # the conditional forward. len(style_refs) <= 1 is NEVER routed
+            # here by the caller (see docstring) so this branch does not
+            # affect single-ref behavior at all.
+            active_refs = []
+            for cfg_i, x0_i, eps_i in style_refs:
+                if not cfg_i.is_step_active(i, total_steps):
+                    continue
+                ref_t_i = (1.0 - sigma_now) * x0_i + sigma_now * eps_i
+                progress_i = cfg_i.step_progress(i, total_steps)
+                capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
+                transformer._style_ctx = capture_ctx_i
+                transformer(
+                    hidden_states=ref_t_i.to(t_dtype),
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=timestep,
+                    position_ids=position_ids,
+                    encoder_attention_mask=prompt_embeds_mask,
+                    return_dict=False,
+                )
+                active_refs.append((capture_ctx_i.store, cfg_i))
+
+            if active_refs:
+                overall_progress = active_refs[0][1].step_progress(i, total_steps)
+                inject_ctx = StyleContext(
+                    mode="inject", config=active_refs[0][1], refs=active_refs,
+                    combine_mode=style_combine_mode, progress=overall_progress,
+                )
+                transformer._style_ctx = inject_ctx
+                v_cond = transformer(
+                    hidden_states=latents.to(t_dtype),
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=timestep,
+                    position_ids=position_ids,
+                    encoder_attention_mask=prompt_embeds_mask,
+                    return_dict=False,
+                )[0].to(torch.float32)
+                transformer._style_ctx = None
+            else:
+                v_cond = transformer(
+                    hidden_states=latents.to(t_dtype),
+                    encoder_hidden_states=prompt_embeds,
+                    timestep=timestep,
+                    position_ids=position_ids,
+                    encoder_attention_mask=prompt_embeds_mask,
+                    return_dict=False,
+                )[0].to(torch.float32)
+        elif style_active and style_cfg.is_step_active(i, total_steps):
             # Re-noise the (fixed) style reference latent to the CURRENT sigma,
             # using the SAME noising convention as img2img/inpaint SDEdit
             # (x_t = (1-sigma)*x0 + sigma*eps) and the SAME fixed eps every step.
@@ -466,6 +529,7 @@ def denoise_loop(
     grid_h, grid_w, patch_size, is_distilled, device,
     progress_callback=None, advanced_cfg=None,
     style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+    style_refs=None, style_combine_mode="stack",
 ) -> torch.Tensor:
     """txt2img flow-matching loop."""
     timesteps = _set_scheduler_timesteps(scheduler, num_inference_steps, latents.shape[1], is_distilled, device)
@@ -480,6 +544,7 @@ def denoise_loop(
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+        style_refs=style_refs, style_combine_mode=style_combine_mode,
     )
 
 
@@ -491,6 +556,7 @@ def denoise_loop_img2img(
     guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, device,
     seed=None, progress_callback=None, advanced_cfg=None,
     style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+    style_refs=None, style_combine_mode="stack",
 ) -> torch.Tensor:
     """SDEdit-style img2img on the flow-matching schedule."""
     all_timesteps = _set_scheduler_timesteps(scheduler, num_inference_steps, init_latents.shape[1], is_distilled, device)
@@ -517,6 +583,7 @@ def denoise_loop_img2img(
         timesteps, guidance, grid_h, grid_w, patch_size,
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+        style_refs=style_refs, style_combine_mode=style_combine_mode,
     )
 
 
@@ -528,6 +595,7 @@ def denoise_loop_inpaint(
     guidance, num_inference_steps, grid_h, grid_w, patch_size, is_distilled, device,
     seed=None, progress_callback=None, advanced_cfg=None,
     style_cfg=None, style_ref_x0=None, style_eps_ref=None,
+    style_refs=None, style_combine_mode="stack",
 ) -> torch.Tensor:
     """Repaint-style inpaint. mask_latent: (1, grid_h*grid_w, 1), 1=inpaint."""
     all_timesteps = _set_scheduler_timesteps(scheduler, num_inference_steps, init_latents.shape[1], is_distilled, device)
@@ -555,4 +623,5 @@ def denoise_loop_inpaint(
         progress_callback=progress_callback, advanced_cfg=advanced_cfg,
         init_latents=init_latents, init_noise=init_noise, mask_latent=mask_latent,
         style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+        style_refs=style_refs, style_combine_mode=style_combine_mode,
     )

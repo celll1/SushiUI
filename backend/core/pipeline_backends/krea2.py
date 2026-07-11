@@ -96,17 +96,20 @@ class Krea2Mixin:
         print(f"[Krea2] Attention backend: {backend} "
               f"(from attention_type={params.get('attention_type')!r})")
 
-    def _krea2_style_config(self, params: Dict[str, Any], transformer, device):
-        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
-        when no style reference is attached. ``axes_dims`` is filled in from the
-        loaded transformer's own RoPE config (arch-specific; the shared
-        ``reference_style`` module has no universal default for it)."""
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
+    def _krea2_style_triple(self, params: Dict[str, Any], style_dict: Dict[str, Any],
+                             transformer, device, ref_index: int = 0):
+        """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
+        style_transfer dict. ``axes_dims`` is filled in from the loaded
+        transformer's own RoPE config (arch-specific; the shared
+        ``reference_style`` module has no universal default for it).
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across
+        multiple simultaneous references (each ref would otherwise draw the
+        EXACT same noise from ``prepare_style_reference``'s ``seed+991``
+        offset applied to the SAME ``common["seed"]``, since that offset does
+        not depend on which reference is being prepared). ``ref_index=0``
+        (the default, used by the single-ref path) reproduces the
+        pre-multi-ref ``common["seed"]`` offset exactly."""
         from core.inference.reference_style import style_config_from_dict
         from core.models.krea2.krea2_pipeline_ops import prepare_style_reference
 
@@ -114,12 +117,59 @@ class Krea2Mixin:
         cfg.axes_dims = tuple(transformer.config.axes_dims_rope)
 
         common = self._krea2_common_params(params, style_dict["image"].width, style_dict["image"].height)
+        ref_seed = common["seed"] if ref_index == 0 else common["seed"] + ref_index
         ref_x0, eps_ref = prepare_style_reference(
             self.krea2_components["vae"], style_dict["image"],
             common["height"], common["width"], common["patch_size"],
-            device=device, seed=common["seed"],
+            device=device, seed=ref_seed,
         )
         return cfg, ref_x0, eps_ref
+
+    def _krea2_style_config(self, params: Dict[str, Any], transformer, device):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached. Single-reference path,
+        BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_krea2_style_triple`` with ``ref_index=0``, which reproduces the
+        original ``common["seed"]`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        return self._krea2_style_triple(params, style_dict, transformer, device, ref_index=0)
+
+    def _krea2_style_configs(self, params: Dict[str, Any], transformer, device):
+        """Build the full style-transfer configuration for Krea 2 generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple, exactly as ``_krea2_style_config``
+        would return) and the multi-reference path (``style_refs``, a list of
+        per-ref triples, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry). A single-entry ``style_transfers`` list is
+        intentionally routed through the single-ref triple instead (``style_refs``
+        stays ``None``), so the pre-multi-ref code path executes
+        byte-identically end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._krea2_style_triple(params, style_dict, transformer, device, ref_index=idx))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     @staticmethod
     def _krea2_advanced_cfg(params: Dict[str, Any]) -> Dict[str, Any]:
@@ -272,11 +322,22 @@ class Krea2Mixin:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
 
+            # Training-free reference-style transfer. OFF by default
+            # (style_transfer/style_transfers absent -> (None, None, None,
+            # None, "stack"), no-op below). ``style_refs`` is populated (and
+            # style_cfg/style_ref_x0/style_eps_ref left None) ONLY when
+            # ``params["style_transfers"]`` carries 2+ references -- a single
+            # reference (via either key) always resolves through the
+            # style_cfg/style_ref_x0/style_eps_ref triple, so that code path
+            # (both here and inside _run_loop) is untouched.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 if not is_resident(self, "vae", _kh_model_key):
                     self._krea2_move("vae", device)
-                style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._krea2_style_configs(params, transformer, device)
                 self._krea2_move("vae", "cpu")
                 discard_resident(self, "vae")
                 if torch.cuda.is_available():
@@ -289,6 +350,7 @@ class Krea2Mixin:
                     cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], cfg["is_distilled"], device,
                     progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if _kh_keep_transformer:
@@ -370,10 +432,15 @@ class Krea2Mixin:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
 
+            # Training-free reference-style transfer (see the txt2img comment
+            # above for the single-ref/multi-ref routing invariant).
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 self._krea2_move("vae", device)
-                style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._krea2_style_configs(params, transformer, device)
                 self._krea2_move("vae", "cpu")
                 discard_resident(self, "vae")
                 if torch.cuda.is_available():
@@ -387,6 +454,7 @@ class Krea2Mixin:
                     cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], cfg["is_distilled"], device,
                     seed=cfg["seed"], progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if _kh_keep_transformer:
@@ -481,10 +549,15 @@ class Krea2Mixin:
                 transformer = self.krea2_components["transformer"]
             self._krea2_apply_attention_backend(transformer, params)
 
+            # Training-free reference-style transfer (see the txt2img comment
+            # above for the single-ref/multi-ref routing invariant).
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 self._krea2_move("vae", device)
-                style_cfg, style_ref_x0, style_eps_ref = self._krea2_style_config(params, transformer, device)
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._krea2_style_configs(params, transformer, device)
                 self._krea2_move("vae", "cpu")
                 discard_resident(self, "vae")
                 if torch.cuda.is_available():
@@ -498,6 +571,7 @@ class Krea2Mixin:
                     cfg["grid_h"], cfg["grid_w"], cfg["patch_size"], cfg["is_distilled"], device,
                     seed=cfg["seed"], progress_callback=progress_callback, advanced_cfg=advanced_cfg,
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                 )
             finally:
                 if _kh_keep_transformer:

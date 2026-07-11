@@ -44,6 +44,7 @@ export interface ControlNetConfig {
   style_late_release?: number;
   style_rope_offset?: boolean;
   style_combine_mode?: string;  // "stack" | "common_concept" — multi-reference combine mode (N-ref style transfer only)
+  style_guidance_scale?: number;  // extra guidance pass strengthening style independently of cfg_scale (0/undefined = off)
 }
 
 interface ControlNetSelectorProps {
@@ -937,6 +938,21 @@ export default function ControlNetSelector({ value, onChange, disabled, storageK
                         placeholder="e.g. 7-27"
                         className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                       />
+                    </div>
+                    <div>
+                      <Slider
+                        label="Style Guidance"
+                        min={0}
+                        max={15}
+                        step={0.5}
+                        value={cn.style_guidance_scale ?? 0}
+                        onChange={(e) => updateControlNet(index, { style_guidance_scale: parseFloat(e.target.value) })}
+                        disabled={disabled}
+                      />
+                      <p className="text-xs text-gray-400 mt-1">
+                        Adds an extra guidance pass that strengthens style independently of the CFG scale (0 = off, classic behavior).
+                        Useful when CFG is low or the style looks weak. Higher values increase style strength; very high values may erode content.
+                      </p>
                     </div>
                   </>
                 )}

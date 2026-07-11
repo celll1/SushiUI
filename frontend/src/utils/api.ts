@@ -161,6 +161,7 @@ export interface ControlNetConfig {
   style_late_release?: number;
   style_rope_offset?: boolean;
   style_combine_mode?: string;  // "stack" | "common_concept" — multi-reference combine mode (N-ref style transfer only)
+  style_guidance_scale?: number;  // extra guidance pass strengthening style independently of cfg_scale (0/undefined = off)
 }
 
 export interface GenerationParams {

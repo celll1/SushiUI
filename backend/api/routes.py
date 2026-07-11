@@ -662,8 +662,10 @@ async def generate_txt2img(
 
         # Also process base64 images from controlnets JSON
         style_transfer = None
+        style_transfers: list = []
+        style_combine_mode = "stack"
         if controlnet_configs:
-            base64_images, style_transfer = process_controlnet_configs(
+            base64_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
                 controlnet_configs,
                 generation_type="txt2img"
             )
@@ -672,6 +674,8 @@ async def generate_txt2img(
         params["controlnet_images"] = processed_controlnet_images
         params["controlnets"] = controlnet_configs
         params["style_transfer"] = style_transfer
+        params["style_transfers"] = style_transfers
+        params["style_combine_mode"] = style_combine_mode
 
         # Detect model type
         is_sdxl = pipeline_manager.txt2img_pipeline is not None and \
@@ -1364,7 +1368,7 @@ async def generate_img2img(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
-        controlnet_images, style_transfer = process_controlnet_configs(
+        controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
             generation_type="img2img"
         )
@@ -1466,6 +1470,8 @@ async def generate_img2img(
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,
+            "style_transfers": style_transfers,
+            "style_combine_mode": style_combine_mode,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
             "cfg_schedule_min": cfg_schedule_min,
@@ -1966,7 +1972,7 @@ async def generate_txt2vid(
     # Training-free reference-style transfer (video). No image-conditioning
     # ControlNets are supported for LTX-2.3 -- `controlnets` exists only to
     # carry an `is_style_transfer` entry (see core.inference.style_ltx2).
-    _, style_transfer = process_controlnet_configs(
+    _, style_transfer, _, _ = process_controlnet_configs(
         params.get("controlnets") or [],
         generation_type="txt2vid",
     )
@@ -2151,7 +2157,7 @@ async def generate_img2vid(
     # identical wiring / core.inference.style_ltx2 for the mechanism.
     import json
     _controlnet_configs = json.loads(controlnets) if controlnets else []
-    _, style_transfer = process_controlnet_configs(_controlnet_configs, generation_type="img2vid")
+    _, style_transfer, _, _ = process_controlnet_configs(_controlnet_configs, generation_type="img2vid")
     params["style_transfer"] = style_transfer
 
     # Validate LTX-2.3 dimensional constraints before any GPU work (4xx, not 5xx).
@@ -2445,7 +2451,7 @@ async def generate_inpaint(
 
         # Parse ControlNet configs
         controlnet_configs = json.loads(controlnets) if controlnets else []
-        controlnet_images, style_transfer = process_controlnet_configs(
+        controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
             controlnet_configs,
             generation_type="inpaint"
         )
@@ -2551,6 +2557,8 @@ async def generate_inpaint(
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,
+            "style_transfers": style_transfers,
+            "style_combine_mode": style_combine_mode,
             "developer_mode": developer_mode,
             "cfg_schedule_type": cfg_schedule_type,
             "cfg_schedule_min": cfg_schedule_min,

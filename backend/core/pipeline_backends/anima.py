@@ -382,11 +382,10 @@ class AnimaMixin:
             self.current_attention_type = backend
         anima_attention.set_attention_backend(backend)
 
-    def _anima_style_config(self, params: Dict[str, Any], width: int, height: int, device):
-        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None,
-        None)`` when no style reference is attached.
+    def _anima_style_triple(self, style_dict: Dict[str, Any], width: int, height: int, device,
+                             seed, ref_index: int = 0):
+        """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
+        style_transfer dict.
 
         ``axes_dims`` is intentionally left UNSET (``None``): Anima's 3D video
         RoPE (``apply_rotary_pos_emb(..., interleaved=False)``) uses the
@@ -394,31 +393,83 @@ class AnimaMixin:
         ``reference_style.frequency_scale_vector`` assumes (Krea2/FLUX-style).
         Deriving a correct per-axis frequency-suppression curve for Anima's
         RoPE layout is a separate adaptation; until then the attention hook
-        (``anima_models.Attention.forward``) uses an all-ones frequency vector
-        instead of calling ``cfg.get_freq_scale_vector`` -- this only disables
-        the RoPE-frequency-content suppression (a quality knob), NOT the
+        (``anima_models.Attention.forward`` / ``StyleContext.collect_block_refs``)
+        uses an all-ones frequency vector instead of calling
+        ``cfg.get_freq_scale_vector`` -- this only disables the
+        RoPE-frequency-content suppression (a quality knob), NOT the
         ``ref_k_strength`` scale or AdaIN alignment, which still apply in full.
 
         ``width``/``height`` must be the TARGET generation's already-snapped
         resolution (not the style image's own size) so the encoded reference
         latent aligns token-for-token with the target latent grid at every
         denoise step.
-        """
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across
+        multiple simultaneous references (each ref would otherwise draw the
+        EXACT same noise from ``prepare_style_reference``'s ``seed+991``
+        offset, since that offset does not depend on which reference is being
+        prepared). ``ref_index=0`` (the default, used by the single-ref path)
+        reproduces the pre-multi-ref ``seed+991`` offset exactly.
+        """
         from core.inference.reference_style import style_config_from_dict
         from core.models.anima.anima_pipeline_ops import prepare_style_reference
 
         cfg = style_config_from_dict(style_dict)
 
-        seed = params.get("seed", -1)
+        ref_seed = seed if seed is None or seed < 0 else int(seed) + ref_index
         ref_x0, eps_ref = prepare_style_reference(
             self.anima_components["vae"], style_dict["image"], height, width,
-            device=device, dtype=torch.bfloat16, seed=seed,
+            device=device, dtype=torch.bfloat16, seed=ref_seed,
         )
         return cfg, ref_x0, eps_ref
+
+    def _anima_style_config(self, params: Dict[str, Any], width: int, height: int, device):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None,
+        None)`` when no style reference is attached. Single-reference path,
+        BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_anima_style_triple`` with ``ref_index=0``, which reproduces the
+        original ``seed+991`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        seed = params.get("seed", -1)
+        return self._anima_style_triple(style_dict, width, height, device, seed, ref_index=0)
+
+    def _anima_style_configs(self, params: Dict[str, Any], width: int, height: int, device):
+        """Build the full style-transfer configuration for Anima generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple, exactly as ``_anima_style_config``
+        would return) and the multi-reference path (``style_refs``, a list of
+        per-ref triples, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry). A single-entry ``style_transfers`` list is
+        intentionally routed through the single-ref triple instead (``style_refs``
+        stays ``None``), so the pre-multi-ref code path executes
+        byte-identically end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            seed = params.get("seed", -1)
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(self._anima_style_triple(style_dict, width, height, device, seed, ref_index=idx))
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _generate_txt2img_anima(self, params: Dict[str, Any],
                                  progress_callback=None, step_callback=None
@@ -580,12 +631,21 @@ class AnimaMixin:
             negpip_cond = cond_driver if cond_driver is not base_cond else None
 
             # Training-free reference-style transfer. OFF by default
-            # (style_transfer absent -> (None, None, None), no-op below).
+            # (style_transfer/style_transfers absent -> (None, None, None,
+            # None, "stack"), no-op below). ``style_refs`` is populated (and
+            # style_cfg/style_ref_x0/style_eps_ref left None) ONLY when
+            # ``params["style_transfers"]`` carries 2+ references -- a single
+            # reference (via either key) always resolves through the
+            # style_cfg/style_ref_x0/style_eps_ref triple, so that code path
+            # (both here and inside sample_*) is untouched.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 if not is_resident(self, "vae", _kh_model_key):
                     self._anima_move("vae", device)
-                style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._anima_style_configs(params, width, height, device)
                 self._anima_move("vae", "cpu")
                 discard_resident(self, "vae")
                 if torch.cuda.is_available():
@@ -601,6 +661,7 @@ class AnimaMixin:
                     generator=generator, device=device, dtype=compute_dtype,
                     step_callback=(progress_callback or step_callback),
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
                     nag_transformer=cond_driver if cond_driver is not transformer else None,
@@ -849,12 +910,21 @@ class AnimaMixin:
             negpip_cond = cond_driver if cond_driver is not base_cond else None
 
             # Training-free reference-style transfer. OFF by default
-            # (style_transfer absent -> (None, None, None), no-op below).
+            # (style_transfer/style_transfers absent -> (None, None, None,
+            # None, "stack"), no-op below). ``style_refs`` is populated (and
+            # style_cfg/style_ref_x0/style_eps_ref left None) ONLY when
+            # ``params["style_transfers"]`` carries 2+ references -- a single
+            # reference (via either key) always resolves through the
+            # style_cfg/style_ref_x0/style_eps_ref triple, so that code path
+            # (both here and inside sample_*) is untouched.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 if not is_resident(self, "vae", _kh_model_key):
                     self._anima_move("vae", device)
-                style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._anima_style_configs(params, width, height, device)
                 self._anima_move("vae", "cpu")
                 discard_resident(self, "vae")
                 if torch.cuda.is_available():
@@ -871,6 +941,7 @@ class AnimaMixin:
                     generator=generator, device=device, dtype=compute_dtype,
                     step_callback=(progress_callback or step_callback),
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
                     nag_transformer=cond_driver if cond_driver is not transformer else None,
@@ -1128,12 +1199,21 @@ class AnimaMixin:
             negpip_cond = cond_driver if cond_driver is not base_cond else None
 
             # Training-free reference-style transfer. OFF by default
-            # (style_transfer absent -> (None, None, None), no-op below).
+            # (style_transfer/style_transfers absent -> (None, None, None,
+            # None, "stack"), no-op below). ``style_refs`` is populated (and
+            # style_cfg/style_ref_x0/style_eps_ref left None) ONLY when
+            # ``params["style_transfers"]`` carries 2+ references -- a single
+            # reference (via either key) always resolves through the
+            # style_cfg/style_ref_x0/style_eps_ref triple, so that code path
+            # (both here and inside sample_*) is untouched.
             style_cfg = style_ref_x0 = style_eps_ref = None
-            if params.get("style_transfer"):
+            style_refs = None
+            style_combine_mode = "stack"
+            if params.get("style_transfer") or params.get("style_transfers"):
                 if not is_resident(self, "vae", _kh_model_key):
                     self._anima_move("vae", device)
-                style_cfg, style_ref_x0, style_eps_ref = self._anima_style_config(params, width, height, device)
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = \
+                    self._anima_style_configs(params, width, height, device)
                 self._anima_move("vae", "cpu")
                 discard_resident(self, "vae")
                 if torch.cuda.is_available():
@@ -1150,6 +1230,7 @@ class AnimaMixin:
                     generator=generator, device=device, dtype=compute_dtype,
                     step_callback=(progress_callback or step_callback),
                     style_cfg=style_cfg, style_ref_x0=style_ref_x0, style_eps_ref=style_eps_ref,
+                    style_refs=style_refs, style_combine_mode=style_combine_mode,
                     advanced_cfg=self._anima_advanced_cfg(params),
                     spectrum_params=params,
                     nag_transformer=cond_driver if cond_driver is not transformer else None,

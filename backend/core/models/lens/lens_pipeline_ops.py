@@ -697,6 +697,104 @@ def _lens_style_step(
     return noise_pred, cfg_metrics
 
 
+def _lens_style_step_multi(
+    real_transformer,
+    style_refs: List[Tuple[Any, torch.Tensor, torch.Tensor]],
+    style_combine_mode: str,
+    step_idx: int,
+    total_steps: int,
+    t,
+    latents: torch.Tensor,
+    encoder_features: List[torch.Tensor],
+    encoder_mask: torch.Tensor,
+    guidance_scale: float,
+    img_shapes,
+    advanced_cfg: Optional[Dict[str, Any]],
+) -> Tuple[torch.Tensor, Any]:
+    """Multi-reference (N>1) generalization of ``_lens_style_step``: ONE REF
+    capture forward PER reference (each with its OWN ``StyleTransferConfig`` --
+    block_range, strengths, freq curve, step gating -- all independent, and
+    skipped if not step-active this step, mirroring ``_lens_style_step``'s
+    single-ref ``is_step_active`` gate applied per-ref instead of globally),
+    then a single COND forward reading a ``StyleContext`` holding the full
+    ``refs`` list (``collect_block_refs``/``inject_kv_multi`` do the
+    combining). The UNCOND forward always runs with the style context
+    disarmed, exactly like ``_lens_style_step``.
+
+    Bypasses Lens's normal batched-CFG single-forward fast path for this step
+    (same reasoning as ``_lens_style_step``): N capture forwards + 1 cond +
+    1 uncond, all single-batch (bsz=1), since the style hook only stashes/
+    reads reference K/V for one image-token layout at a time and mixing it
+    into a [cond, uncond] batched forward would inject the reference into the
+    uncond branch too (undefined for StyleAligned). NAG/NegPip/FBCache are
+    already disabled for the WHOLE generation whenever multi-reference style
+    transfer is active (see the ``style_multi_active`` gate in each
+    ``denoise_loop*`` below).
+
+    Only ever called when ``len(style_refs) > 1`` (callers route a single
+    reference through ``_lens_style_step`` instead so that exact pre-multi-ref
+    code path executes byte-identically)."""
+    from core.inference.reference_style import StyleContext
+
+    sigma_now = float(t.item()) / 1000.0
+
+    cond_features = [f[0:1] for f in encoder_features]
+    cond_mask = encoder_mask[0:1]
+    uncond_features = [f[1:2] for f in encoder_features]
+    uncond_mask = encoder_mask[1:2]
+    timestep1 = t.expand(1).to(latents.dtype)
+
+    try:
+        active_refs = []
+        for cfg_i, x0_i, eps_i in style_refs:
+            if not cfg_i.is_step_active(step_idx, total_steps):
+                continue
+            ref_t_i = (1.0 - sigma_now) * x0_i + sigma_now * eps_i
+            progress_i = cfg_i.step_progress(step_idx, total_steps)
+            capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
+            real_transformer._style_ctx = capture_ctx_i
+            real_transformer(
+                hidden_states=ref_t_i.to(latents.dtype),
+                encoder_hidden_states=cond_features,
+                encoder_hidden_states_mask=cond_mask,
+                timestep=timestep1 / 1000,
+                img_shapes=img_shapes,
+            )
+            active_refs.append((capture_ctx_i.store, cfg_i))
+
+        if active_refs:
+            overall_progress = active_refs[0][1].step_progress(step_idx, total_steps)
+            real_transformer._style_ctx = StyleContext(
+                mode="inject", config=active_refs[0][1], refs=active_refs,
+                combine_mode=style_combine_mode, progress=overall_progress,
+            )
+        else:
+            real_transformer._style_ctx = None
+
+        noise_pred_cond = real_transformer(
+            hidden_states=latents.to(latents.dtype),
+            encoder_hidden_states=cond_features,
+            encoder_hidden_states_mask=cond_mask,
+            timestep=timestep1 / 1000,
+            img_shapes=img_shapes,
+        )
+    finally:
+        real_transformer._style_ctx = None
+
+    noise_pred_uncond = real_transformer(
+        hidden_states=latents.to(latents.dtype),
+        encoder_hidden_states=uncond_features,
+        encoder_hidden_states_mask=uncond_mask,
+        timestep=timestep1 / 1000,
+        img_shapes=img_shapes,
+    )
+
+    noise_pred, _cfg_now, cfg_metrics = _apply_advanced_cfg_lens(
+        noise_pred_cond, noise_pred_uncond, guidance_scale, sigma_now, 1.0, advanced_cfg,
+    )
+    return noise_pred, cfg_metrics
+
+
 # ---------------------------------------------------------------------------
 # Denoising loops
 # ---------------------------------------------------------------------------
@@ -717,8 +815,21 @@ def denoise_loop(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
-    """Flow-matching denoising loop for txt2img."""
+    """Flow-matching denoising loop for txt2img.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): a list
+    of ``(StyleTransferConfig, ref_x0, ref_eps)`` triples, one per reference
+    image, each keeping its OWN config (block_range, strengths, freq curve,
+    step gating). Only consulted when it has 2+ entries -- ``len(style_refs)
+    <= 1`` is intentionally NOT specially handled here (callers route that
+    case through the ``style_cfg``/``style_ref_x0``/``style_eps_ref`` single-
+    ref path instead so the exact pre-multi-ref code executes
+    byte-identically). ``style_combine_mode`` selects how the N refs combine
+    ("stack" or "common_concept", see
+    ``core.inference.reference_style.inject_kv_multi``)."""
     seq_len = latent_h * latent_w
     mu = compute_empirical_mu(seq_len, num_inference_steps)
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
@@ -733,7 +844,12 @@ def denoise_loop(
     # steps) -- all three rewrite the attention-time token layout or cache
     # attention outputs, which a per-block reference K/V store cannot coexist with.
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
-    if style_active and (nag_params is not None or negpip_params is not None):
+    # Multi-reference (N>1): populated (with style_cfg/style_ref_x0/style_eps_ref
+    # left None) ONLY when the caller resolved 2+ references -- a single
+    # reference always goes through the style_active path above instead, so
+    # that code path stays byte-identical.
+    style_multi_active = style_refs is not None and len(style_refs) > 1
+    if (style_active or style_multi_active) and (nag_params is not None or negpip_params is not None):
         print("[Lens] Style transfer active: disabling NAG/NegPip for this generation "
               "(both rewrite the attention-time token layout, same conflict as FBCache)")
         nag_params = None
@@ -749,7 +865,7 @@ def denoise_loop(
 
     spectrum = build_output_forecaster(spectrum_params, len(scheduler.timesteps), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
-    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=style_active)
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=(style_active or style_multi_active))
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
@@ -762,6 +878,9 @@ def denoise_loop(
             # Spectrum: forecast the model output on skip steps
             spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
             style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
+            style_multi_active_step = style_multi_active and any(
+                cfg_i.is_step_active(i, total_steps) for cfg_i, _x0_i, _eps_i in style_refs
+            )
             if spectrum_skip:
                 noise_pred = spectrum.forecast(i)
                 cfg_metrics = None
@@ -770,6 +889,15 @@ def denoise_loop(
                 sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    guidance_scale, img_shapes, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            elif style_multi_active_step:
+                sigma_t = t.item() / 1000.0
+                noise_pred, cfg_metrics = _lens_style_step_multi(
+                    real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
@@ -839,15 +967,22 @@ def denoise_loop_img2img(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
-    """SDEdit-style img2img on flow-matching schedule."""
+    """SDEdit-style img2img on flow-matching schedule.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``denoise_loop``'s docstring; only consulted when ``style_refs`` has 2+
+    entries."""
     seq_len = latent_h * latent_w
     mu = compute_empirical_mu(seq_len, num_inference_steps)
     sigmas = np.linspace(1.0, 1.0 / num_inference_steps, num_inference_steps)
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
 
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
-    if style_active and (nag_params is not None or negpip_params is not None):
+    style_multi_active = style_refs is not None and len(style_refs) > 1
+    if (style_active or style_multi_active) and (nag_params is not None or negpip_params is not None):
         print("[Lens] Style transfer active: disabling NAG/NegPip for this generation "
               "(both rewrite the attention-time token layout, same conflict as FBCache)")
         nag_params = None
@@ -879,7 +1014,7 @@ def denoise_loop_img2img(
 
     spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
-    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=style_active)
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=(style_active or style_multi_active))
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
@@ -892,6 +1027,9 @@ def denoise_loop_img2img(
             # Spectrum: forecast the model output on skip steps
             spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
             style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
+            style_multi_active_step = style_multi_active and any(
+                cfg_i.is_step_active(i, total_steps) for cfg_i, _x0_i, _eps_i in style_refs
+            )
             if spectrum_skip:
                 noise_pred = spectrum.forecast(i)
                 cfg_metrics = None
@@ -900,6 +1038,15 @@ def denoise_loop_img2img(
                 sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    guidance_scale, img_shapes, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            elif style_multi_active_step:
+                sigma_t = t.item() / 1000.0
+                noise_pred, cfg_metrics = _lens_style_step_multi(
+                    real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )
@@ -965,10 +1112,16 @@ def denoise_loop_inpaint(
     style_cfg=None,
     style_ref_x0: Optional[torch.Tensor] = None,
     style_eps_ref: Optional[torch.Tensor] = None,
+    style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,
+    style_combine_mode: str = "stack",
 ) -> torch.Tensor:
     """Repaint-style inpaint on flow-matching schedule.
 
     mask_latent: float tensor (1, latent_h * latent_w, 1)  — 1.0 = inpaint, 0.0 = keep.
+
+    ``style_refs``/``style_combine_mode`` (optional, multi-reference): see
+    ``denoise_loop``'s docstring; only consulted when ``style_refs`` has 2+
+    entries.
     """
     seq_len = latent_h * latent_w
     mu = compute_empirical_mu(seq_len, num_inference_steps)
@@ -976,7 +1129,8 @@ def denoise_loop_inpaint(
     scheduler.set_timesteps(sigmas=sigmas, device=init_latents.device, mu=mu)
 
     style_active = style_cfg is not None and style_ref_x0 is not None and style_eps_ref is not None
-    if style_active and (nag_params is not None or negpip_params is not None):
+    style_multi_active = style_refs is not None and len(style_refs) > 1
+    if (style_active or style_multi_active) and (nag_params is not None or negpip_params is not None):
         print("[Lens] Style transfer active: disabling NAG/NegPip for this generation "
               "(both rewrite the attention-time token layout, same conflict as FBCache)")
         nag_params = None
@@ -1012,7 +1166,7 @@ def denoise_loop_inpaint(
 
     spectrum = build_output_forecaster(spectrum_params, len(timesteps_to_use), "Lens")
     # FBCache: one instance for the batched-CFG forward. None when inactive/guarded.
-    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=style_active)
+    fbcache = _build_lens_fbcache(spectrum_params, spectrum, style_active=(style_active or style_multi_active))
     real_transformer = _unwrap_transformer(transformer)
     if hasattr(real_transformer, "_fbcache"):
         real_transformer._fbcache = None
@@ -1025,6 +1179,9 @@ def denoise_loop_inpaint(
             # Spectrum: forecast the model output on skip steps
             spectrum_skip = spectrum is not None and not spectrum.is_anchor(i)
             style_active_step = style_active and style_cfg.is_step_active(i, total_steps)
+            style_multi_active_step = style_multi_active and any(
+                cfg_i.is_step_active(i, total_steps) for cfg_i, _x0_i, _eps_i in style_refs
+            )
             if spectrum_skip:
                 noise_pred = spectrum.forecast(i)
                 cfg_metrics = None
@@ -1033,6 +1190,15 @@ def denoise_loop_inpaint(
                 sigma_t = t.item() / 1000.0
                 noise_pred, cfg_metrics = _lens_style_step(
                     real_transformer, style_cfg, style_ref_x0, style_eps_ref,
+                    i, total_steps, t, latents, encoder_features, encoder_mask,
+                    guidance_scale, img_shapes, advanced_cfg,
+                )
+                if spectrum is not None:
+                    spectrum.record(i, noise_pred)
+            elif style_multi_active_step:
+                sigma_t = t.item() / 1000.0
+                noise_pred, cfg_metrics = _lens_style_step_multi(
+                    real_transformer, style_refs, style_combine_mode,
                     i, total_steps, t, latents, encoder_features, encoder_mask,
                     guidance_scale, img_shapes, advanced_cfg,
                 )

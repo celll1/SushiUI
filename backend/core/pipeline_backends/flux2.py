@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Tuple
 from PIL import Image
 import torch
 import json
@@ -1096,18 +1096,25 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Training-free reference-style transfer setup (no-op / None when no
-            # style reference is attached -- byte-identical default path below). Gated on
-            # style_requested, which the NAG/NegPip precedence check above may already have
-            # forced to False (see Stage 1.5).
+            # style reference / style reference list is attached -- byte-identical
+            # default path below). Gated on style_requested, which the NAG/NegPip
+            # precedence check above may already have forced to False (see Stage 1.5).
+            # ``style_refs`` is populated (and style_cfg/style_ref_x0/style_eps_ref
+            # left None) ONLY when ``params["style_transfers"]`` carries 2+
+            # references -- a single reference (via either key) always resolves
+            # through the style_cfg/style_ref_x0/style_eps_ref triple, so that
+            # code path (both here and in the per-step branch below) is untouched.
+            style_refs = None
+            style_combine_mode = "stack"
             if style_requested:
-                style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = self._flux2_style_configs(
                     params, transformer, height, width, self.device
                 )
             else:
                 style_cfg, style_ref_x0, style_eps_ref = None, None, None
             style_processors: List[Any] = []
             style_saved_processors: List[Any] = []
-            if style_cfg is not None:
+            if style_cfg is not None or style_refs is not None:
                 from core.attention import AttentionMode, normalize_backend
                 from core.inference.style_flux2 import install_flux2_style_processors
                 style_canonical_backend = normalize_backend(params.get("attention_type", settings.attention_type))
@@ -1164,7 +1171,16 @@ class Flux2Mixin:
                     if fbcache_target is not None:
                         fbcache_target._fbcache_step = i
 
-                    style_active_step = style_cfg is not None and style_cfg.is_step_active(i, total_steps)
+                    if style_refs is not None:
+                        # Multi-reference (N>1): step-active if ANY ref's own
+                        # StyleTransferConfig is step-active (mirrors the
+                        # single-ref gate below, applied per-ref instead of
+                        # globally -- see _flux2_style_step_multi).
+                        style_active_step = any(
+                            cfg_i.is_step_active(i, total_steps) for cfg_i, _, _ in style_refs
+                        )
+                    else:
+                        style_active_step = style_cfg is not None and style_cfg.is_step_active(i, total_steps)
                     if style_active_step:
                         # Training-free reference-style transfer: bypasses the Image-Edit
                         # ref-token concat + batched-CFG fast path below (mutually exclusive
@@ -1175,13 +1191,22 @@ class Flux2Mixin:
                                 (latents.shape[0],), guidance_scale,
                                 device=latents.device, dtype=transformer_input_dtype,
                             )
-                        noise_pred = self._flux2_style_step(
-                            transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
-                            i, total_steps, t, latents, prompt_embeds, text_ids,
-                            negative_prompt_embeds, negative_text_ids, latent_ids,
-                            do_classifier_free_guidance, guidance_scale, style_guidance_vec,
-                            transformer_input_dtype,
-                        )
+                        if style_refs is not None:
+                            noise_pred = self._flux2_style_step_multi(
+                                transformer_wrapper, style_refs, style_combine_mode, style_processors,
+                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                negative_prompt_embeds, negative_text_ids, latent_ids,
+                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                transformer_input_dtype,
+                            )
+                        else:
+                            noise_pred = self._flux2_style_step(
+                                transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
+                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                negative_prompt_embeds, negative_text_ids, latent_ids,
+                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                transformer_input_dtype,
+                            )
                     else:
                         latent_model_input = latents.to(transformer_input_dtype)
                         latent_image_ids = latent_ids
@@ -1677,17 +1702,21 @@ class Flux2Mixin:
         ref_x0 = self._flux2_pack_latents(latent).to(device=device, dtype=torch.float32)
         return ref_x0
 
-    def _flux2_style_config(self, params: Dict[str, Any], transformer, height: int, width: int, device):
-        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
-        ``params["style_transfer"]`` (assembled by
-        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
-        when no style reference is attached. ``axes_dims`` is filled in from the
-        loaded transformer's own RoPE config (``axes_dims_rope``, default
-        ``(32, 32, 32, 32)`` -- sums to ``attention_head_dim`` == 128)."""
-        style_dict = params.get("style_transfer")
-        if not style_dict or not style_dict.get("image"):
-            return None, None, None
+    def _flux2_style_triple(
+        self, style_dict: Dict[str, Any], transformer, height: int, width: int, device, seed, ref_index: int = 0,
+    ):
+        """Build a single (StyleTransferConfig, ref_x0, eps_ref) triple from one
+        style_transfer dict. ``axes_dims`` is filled in from the loaded
+        transformer's own RoPE config (``axes_dims_rope``, default
+        ``(32, 32, 32, 32)`` -- sums to ``attention_head_dim`` == 128).
 
+        ``ref_index`` decorrelates the fixed re-noising noise tensor across
+        multiple simultaneous references (each ref would otherwise draw the
+        EXACT same noise from the ``seed+991`` offset, since that offset does
+        not depend on which reference is being prepared). ``ref_index=0``
+        (the default, used by the single-ref path) reproduces the pre-multi-ref
+        ``seed+991`` offset exactly.
+        """
         from diffusers.utils.torch_utils import randn_tensor
         from core.inference.reference_style import style_config_from_dict
 
@@ -1698,11 +1727,60 @@ class Flux2Mixin:
 
         ref_x0 = self._flux2_prepare_style_reference(style_dict["image"], height, width, device)
 
-        seed = params.get("seed", -1)
-        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991) % (2**32)
+        ref_seed = None if seed is None or seed < 0 else (int(seed) + 991 + ref_index) % (2**32)
         generator = torch.Generator(device=device).manual_seed(ref_seed) if ref_seed is not None else None
         eps_ref = randn_tensor(ref_x0.shape, generator=generator, device=device, dtype=ref_x0.dtype)
         return cfg, ref_x0, eps_ref
+
+    def _flux2_style_config(self, params: Dict[str, Any], transformer, height: int, width: int, device):
+        """Build a (StyleTransferConfig, ref_x0, eps_ref) triple from
+        ``params["style_transfer"]`` (assembled by
+        ``generation_utils.process_controlnet_configs``), or ``(None, None, None)``
+        when no style reference is attached. Single-reference path,
+        BYTE-IDENTICAL to the pre-multi-ref implementation (delegates to
+        ``_flux2_style_triple`` with ``ref_index=0``, which reproduces the
+        original ``seed+991`` re-noising offset exactly)."""
+        style_dict = params.get("style_transfer")
+        if not style_dict or not style_dict.get("image"):
+            return None, None, None
+
+        seed = params.get("seed", -1)
+        return self._flux2_style_triple(style_dict, transformer, height, width, device, seed, ref_index=0)
+
+    def _flux2_style_configs(self, params: Dict[str, Any], transformer, height: int, width: int, device):
+        """Build the full style-transfer configuration for FLUX.2 generation,
+        covering both the single-reference path (legacy ``(style_cfg,
+        style_ref_x0, style_eps_ref)`` triple, exactly as ``_flux2_style_config``
+        would return) and the multi-reference path (``style_refs``, a list of
+        per-ref triples, populated ONLY when ``params["style_transfers"]`` has
+        more than one entry). A single-entry ``style_transfers`` list is
+        intentionally routed through the single-ref triple instead (``style_refs``
+        stays ``None``), so the pre-multi-ref code path executes byte-identically
+        end to end.
+
+        Returns ``(style_cfg, style_ref_x0, style_eps_ref, style_refs,
+        style_combine_mode)``.
+        """
+        style_list = params.get("style_transfers")
+        if style_list and len(style_list) > 1:
+            seed = params.get("seed", -1)
+            combine_mode = str(params.get("style_combine_mode", "stack") or "stack")
+            refs = []
+            for idx, style_dict in enumerate(style_list):
+                if not style_dict or not style_dict.get("image"):
+                    continue
+                refs.append(
+                    self._flux2_style_triple(style_dict, transformer, height, width, device, seed, ref_index=idx)
+                )
+            if len(refs) > 1:
+                return None, None, None, refs, combine_mode
+            if len(refs) == 1:
+                cfg, x0, eps = refs[0]
+                return cfg, x0, eps, None, combine_mode
+            return None, None, None, None, combine_mode
+
+        style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(params, transformer, height, width, device)
+        return style_cfg, style_ref_x0, style_eps_ref, None, "stack"
 
     def _flux2_style_step(
         self,
@@ -1774,6 +1852,116 @@ class Flux2Mixin:
         inject_ctx.img_start = capture_ctx.img_start
         inject_ctx.img_end = capture_ctx.img_end
         set_flux2_style_context(style_processors, inject_ctx)
+        with torch.no_grad():
+            noise_pred_cond = transformer_wrapper(
+                hidden_states=latents.to(transformer_input_dtype),
+                timestep=timestep,
+                guidance=guidance_vec,
+                encoder_hidden_states=prompt_embeds,
+                txt_ids=text_ids,
+                img_ids=latent_ids,
+                return_dict=False,
+            )[0]
+        set_flux2_style_context(style_processors, None)
+
+        if do_classifier_free_guidance:
+            with torch.no_grad():
+                noise_pred_uncond = transformer_wrapper(
+                    hidden_states=latents.to(transformer_input_dtype),
+                    timestep=timestep,
+                    guidance=None,
+                    encoder_hidden_states=negative_prompt_embeds,
+                    txt_ids=negative_text_ids,
+                    img_ids=latent_ids,
+                    return_dict=False,
+                )[0]
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+        else:
+            noise_pred = noise_pred_cond
+        return noise_pred
+
+    def _flux2_style_step_multi(
+        self,
+        transformer_wrapper,
+        style_refs: List[Tuple[Any, torch.Tensor, torch.Tensor]],
+        style_combine_mode: str,
+        style_processors: List[Any],
+        step_idx: int,
+        total_steps: int,
+        t,
+        latents: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        text_ids: torch.Tensor,
+        negative_prompt_embeds,
+        negative_text_ids,
+        latent_ids: torch.Tensor,
+        do_classifier_free_guidance: bool,
+        guidance_scale: float,
+        guidance_vec,
+        transformer_input_dtype,
+    ) -> torch.Tensor:
+        """Multi-reference (N>1) generalization of ``_flux2_style_step``: one REF
+        capture forward PER reference (each with ITS OWN ``StyleTransferConfig``
+        -- block_range, strengths, freq curve, step gating -- all independent),
+        skipping refs that are not step-active at this step (mirrors the
+        single-ref caller's ``style_cfg.is_step_active`` gate, applied per-ref
+        instead of globally). The COND forward then reads ALL active refs'
+        stores via a single ``StyleContext(mode="inject", refs=...,
+        combine_mode=...)`` (see ``reference_style.StyleContext.collect_block_refs``
+        / ``inject_kv_multi``). The UNCOND forward (CFG) is always run with the
+        style context disarmed, same as the single-ref path. Only ever called
+        when ``len(style_refs) > 1`` -- the denoise loop's ``style_refs is not
+        None`` branch routes ``len(style_refs) <= 1`` through the byte-identical
+        ``_flux2_style_step`` instead (see ``_flux2_style_configs``).
+        """
+        from core.inference.reference_style import StyleContext
+        from core.inference.style_flux2 import set_flux2_style_context
+
+        sigma_now = float(t.item()) / 1000.0
+        text_seq_len = text_ids.shape[1]
+        image_seq_len = latents.shape[1]
+        timestep = t.expand(latents.shape[0]).to(transformer_input_dtype) / 1000
+
+        active_refs = []
+        overall_progress = 0.0
+        for cfg_i, x0_i, eps_i in style_refs:
+            if not cfg_i.is_step_active(step_idx, total_steps):
+                continue
+            progress_i = cfg_i.step_progress(step_idx, total_steps)
+            overall_progress = progress_i
+            ref_t = (1.0 - sigma_now) * x0_i + sigma_now * eps_i
+
+            capture_ctx_i = StyleContext(mode="capture", config=cfg_i, progress=progress_i)
+            capture_ctx_i.img_start = text_seq_len
+            capture_ctx_i.img_end = text_seq_len + image_seq_len
+            set_flux2_style_context(style_processors, capture_ctx_i)
+            with torch.no_grad():
+                transformer_wrapper(
+                    hidden_states=ref_t.to(transformer_input_dtype),
+                    timestep=timestep,
+                    guidance=guidance_vec,
+                    encoder_hidden_states=prompt_embeds,
+                    txt_ids=text_ids,
+                    img_ids=latent_ids,
+                    return_dict=False,
+                )
+            active_refs.append((capture_ctx_i.store, cfg_i))
+
+        if active_refs:
+            inject_ctx = StyleContext(
+                mode="inject", config=active_refs[0][1], refs=active_refs,
+                combine_mode=style_combine_mode, progress=overall_progress,
+            )
+            inject_ctx.img_start = text_seq_len
+            inject_ctx.img_end = text_seq_len + image_seq_len
+            set_flux2_style_context(style_processors, inject_ctx)
+        else:
+            # No ref is step-active this step (mirrors the single-ref path's
+            # ``style_active_step`` gate never even entering this function in
+            # that case) -- run the cond forward with the style context
+            # disarmed, i.e. a plain forward.
+            set_flux2_style_context(style_processors, None)
+
         with torch.no_grad():
             noise_pred_cond = transformer_wrapper(
                 hidden_states=latents.to(transformer_input_dtype),
@@ -2404,18 +2592,25 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Training-free reference-style transfer setup (no-op / None when no
-            # style reference is attached -- byte-identical default path below). Gated on
-            # style_requested, which the NAG/NegPip precedence check above may already have
-            # forced to False (see Stage 1.5).
+            # style reference / style reference list is attached -- byte-identical
+            # default path below). Gated on style_requested, which the NAG/NegPip
+            # precedence check above may already have forced to False (see Stage 1.5).
+            # ``style_refs`` is populated (and style_cfg/style_ref_x0/style_eps_ref
+            # left None) ONLY when ``params["style_transfers"]`` carries 2+
+            # references -- a single reference (via either key) always resolves
+            # through the style_cfg/style_ref_x0/style_eps_ref triple, so that
+            # code path (both here and in the per-step branch below) is untouched.
+            style_refs = None
+            style_combine_mode = "stack"
             if style_requested:
-                style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = self._flux2_style_configs(
                     params, transformer, height, width, self.device
                 )
             else:
                 style_cfg, style_ref_x0, style_eps_ref = None, None, None
             style_processors: List[Any] = []
             style_saved_processors: List[Any] = []
-            if style_cfg is not None:
+            if style_cfg is not None or style_refs is not None:
                 from core.attention import AttentionMode, normalize_backend
                 from core.inference.style_flux2 import install_flux2_style_processors
                 style_canonical_backend = normalize_backend(params.get("attention_type", settings.attention_type))
@@ -2469,7 +2664,16 @@ class Flux2Mixin:
                     if fbcache_target is not None:
                         fbcache_target._fbcache_step = i
 
-                    style_active_step = style_cfg is not None and style_cfg.is_step_active(i, total_steps)
+                    if style_refs is not None:
+                        # Multi-reference (N>1): step-active if ANY ref's own
+                        # StyleTransferConfig is step-active (mirrors the
+                        # single-ref gate below, applied per-ref instead of
+                        # globally -- see _flux2_style_step_multi).
+                        style_active_step = any(
+                            cfg_i.is_step_active(i, total_steps) for cfg_i, _, _ in style_refs
+                        )
+                    else:
+                        style_active_step = style_cfg is not None and style_cfg.is_step_active(i, total_steps)
                     if style_active_step:
                         # Training-free reference-style transfer: bypasses the Image-Edit
                         # ref-token concat + batched-CFG fast path below (mutually exclusive
@@ -2480,13 +2684,22 @@ class Flux2Mixin:
                                 (latents.shape[0],), guidance_scale,
                                 device=latents.device, dtype=transformer_input_dtype,
                             )
-                        noise_pred = self._flux2_style_step(
-                            transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
-                            i, total_steps, t, latents, prompt_embeds, text_ids,
-                            negative_prompt_embeds, negative_text_ids, latent_ids,
-                            do_classifier_free_guidance, guidance_scale, style_guidance_vec,
-                            transformer_input_dtype,
-                        )
+                        if style_refs is not None:
+                            noise_pred = self._flux2_style_step_multi(
+                                transformer_wrapper, style_refs, style_combine_mode, style_processors,
+                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                negative_prompt_embeds, negative_text_ids, latent_ids,
+                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                transformer_input_dtype,
+                            )
+                        else:
+                            noise_pred = self._flux2_style_step(
+                                transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
+                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                negative_prompt_embeds, negative_text_ids, latent_ids,
+                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                transformer_input_dtype,
+                            )
                     else:
                         latent_model_input = latents.to(transformer_input_dtype)
                         latent_image_ids = latent_ids
@@ -3224,18 +3437,25 @@ class Flux2Mixin:
             print(f"[FLUX.2] Transformer FP8 detection: {transformer_has_fp8}, input dtype = {transformer_input_dtype}")
 
             # Training-free reference-style transfer setup (no-op / None when no
-            # style reference is attached -- byte-identical default path below). Gated on
-            # style_requested, which the NAG/NegPip precedence check above may already have
-            # forced to False (see Stage 1.5).
+            # style reference / style reference list is attached -- byte-identical
+            # default path below). Gated on style_requested, which the NAG/NegPip
+            # precedence check above may already have forced to False (see Stage 1.5).
+            # ``style_refs`` is populated (and style_cfg/style_ref_x0/style_eps_ref
+            # left None) ONLY when ``params["style_transfers"]`` carries 2+
+            # references -- a single reference (via either key) always resolves
+            # through the style_cfg/style_ref_x0/style_eps_ref triple, so that
+            # code path (both here and in the per-step branch below) is untouched.
+            style_refs = None
+            style_combine_mode = "stack"
             if style_requested:
-                style_cfg, style_ref_x0, style_eps_ref = self._flux2_style_config(
+                style_cfg, style_ref_x0, style_eps_ref, style_refs, style_combine_mode = self._flux2_style_configs(
                     params, transformer, height, width, self.device
                 )
             else:
                 style_cfg, style_ref_x0, style_eps_ref = None, None, None
             style_processors: List[Any] = []
             style_saved_processors: List[Any] = []
-            if style_cfg is not None:
+            if style_cfg is not None or style_refs is not None:
                 from core.attention import AttentionMode, normalize_backend
                 from core.inference.style_flux2 import install_flux2_style_processors
                 style_canonical_backend = normalize_backend(params.get("attention_type", settings.attention_type))
@@ -3289,7 +3509,16 @@ class Flux2Mixin:
                     if fbcache_target is not None:
                         fbcache_target._fbcache_step = i
 
-                    style_active_step = style_cfg is not None and style_cfg.is_step_active(i, total_steps)
+                    if style_refs is not None:
+                        # Multi-reference (N>1): step-active if ANY ref's own
+                        # StyleTransferConfig is step-active (mirrors the
+                        # single-ref gate below, applied per-ref instead of
+                        # globally -- see _flux2_style_step_multi).
+                        style_active_step = any(
+                            cfg_i.is_step_active(i, total_steps) for cfg_i, _, _ in style_refs
+                        )
+                    else:
+                        style_active_step = style_cfg is not None and style_cfg.is_step_active(i, total_steps)
                     if style_active_step:
                         # Training-free reference-style transfer: bypasses the Image-Edit
                         # ref-token concat + batched-CFG fast path below (mutually exclusive
@@ -3300,13 +3529,22 @@ class Flux2Mixin:
                                 (latents.shape[0],), guidance_scale,
                                 device=latents.device, dtype=transformer_input_dtype,
                             )
-                        noise_pred = self._flux2_style_step(
-                            transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
-                            i, total_steps, t, latents, prompt_embeds, text_ids,
-                            negative_prompt_embeds, negative_text_ids, latent_ids,
-                            do_classifier_free_guidance, guidance_scale, style_guidance_vec,
-                            transformer_input_dtype,
-                        )
+                        if style_refs is not None:
+                            noise_pred = self._flux2_style_step_multi(
+                                transformer_wrapper, style_refs, style_combine_mode, style_processors,
+                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                negative_prompt_embeds, negative_text_ids, latent_ids,
+                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                transformer_input_dtype,
+                            )
+                        else:
+                            noise_pred = self._flux2_style_step(
+                                transformer_wrapper, style_cfg, style_ref_x0, style_eps_ref, style_processors,
+                                i, total_steps, t, latents, prompt_embeds, text_ids,
+                                negative_prompt_embeds, negative_text_ids, latent_ids,
+                                do_classifier_free_guidance, guidance_scale, style_guidance_vec,
+                                transformer_input_dtype,
+                            )
                     else:
                         latent_model_input = latents.to(transformer_input_dtype)
                         latent_image_ids = latent_ids

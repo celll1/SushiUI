@@ -38,6 +38,7 @@ from .adapters import (
     MiniT2ILoRAAdapter,
     Krea2LoRAAdapter,
     Ltx2LoRAAdapter,
+    AceStepLoRAAdapter,
 )
 
 
@@ -116,6 +117,8 @@ class LoRATrainer(BaseTrainer):
             self.setup_ltx2_wrapper()
         if hasattr(self, "setup_ltx2_block_swap"):
             self.setup_ltx2_block_swap()
+        if hasattr(self, "setup_acestep_block_swap"):
+            self.setup_acestep_block_swap()
 
         print(f"{self.log_prefix} Initialized (rank={self.lora_rank}, alpha={self.lora_alpha})")
         ve_status = getattr(self, '_train_vision_encoder', False)
@@ -220,6 +223,20 @@ class LoRATrainer(BaseTrainer):
                 self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
             )
             print(f"{self.log_prefix} Using Ltx2LoRAAdapter (scope={scope})")
+        elif self.is_acestep:
+            # Parse scope from config; default to attention-only (audio LoRA).
+            scope_csv = (getattr(self, "acestep_lora_scope", "")
+                          or self.config.get("acestep_lora_scope", "")
+                          or "attention")
+            wanted = {tok.strip(): True for tok in scope_csv.split(",") if tok.strip()}
+            scope = {
+                "attention": wanted.get("attention", True),
+                "mlp": wanted.get("mlp", False),
+            }
+            self.adapter = AceStepLoRAAdapter(
+                self, self.lora_rank, self.lora_alpha, self.lora_dtype, scope=scope,
+            )
+            print(f"{self.log_prefix} Using AceStepLoRAAdapter (scope={scope})")
         elif self.is_sdxl:
             self.adapter = SDXLLoRAAdapter(self, self.lora_rank, self.lora_alpha, self.lora_dtype)
             print(f"{self.log_prefix} Using SDXLLoRAAdapter")

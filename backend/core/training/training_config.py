@@ -273,6 +273,9 @@ def _build_train_section(
     train["krea2_lr_factor"] = p.get("krea2_lr_factor", 1.0)
     train["krea2_discrete_flow_shift"] = p.get("krea2_discrete_flow_shift", 2.5)
 
+    # ---- ACE-Step 1.5 (turbo audio DiT) — other archs ignore. ----
+    train["acestep_lora_scope"] = p.get("acestep_lora_scope", "attention")
+
     # ---- REPA (Representation Alignment) — MiniT2I only. SSoT: param_defaults. ----
     train["repa_enable"] = p.get("repa_enable", False)
     train["repa_encoder_source"] = p.get("repa_encoder_source", "tagger")

@@ -115,3 +115,16 @@ LTX2_WIRING = ComponentWiringSpec(
     latent_channels=128, latent_ndim=5, latent_packing="none",
     vae_scale_factor=32, vae_norm="identity",
 )
+
+# ACE-Step 1.5 (turbo): 64ch TEMPORAL-ONLY latents [B, T, 64] (Oobleck VAE,
+# 48kHz stereo, hop=1920 -> 25Hz raw latent rate; the DiT additionally
+# patch_size=2 halves that to 12.5Hz inside the transformer, not exposed at
+# the VAE boundary). Qwen3-Embedding-0.6B TE (1024-dim) feeds BOTH the
+# "# Caption" text conditioning and the lyric embedding table
+# (embed_tokens only, no lyric transformer forward). latent_ndim=3 reflects
+# [B, T, C] (no spatial H/W axis, unlike every image/video arch above).
+ACESTEP_WIRING = ComponentWiringSpec(
+    te_out_dim=1024, te_pooled_dim=None, te_seq_packing="raw", added_cond=None,
+    latent_channels=64, latent_ndim=3, latent_packing="none",
+    vae_scale_factor=1920, vae_norm="identity",
+)

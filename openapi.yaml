@@ -5490,6 +5490,28 @@ components:
           default: "en"
           description: "Language folded into the lyrics/metas conditioning text."
           example: "en"
+        loras:
+          type: array
+          default: []
+          description: |
+            Optional LoRA(s) to apply to the ACE-Step DiT for this generation.
+            Wrapped as forward-time addition layers (not merged into weights)
+            and restored after generation unless the next request reuses them.
+            Matches the ACE-Step LoRA training scope: decoder attention
+            Linears only (`decoder.layers.{i}.{self_attn,cross_attn}.{q,k,v,o}_proj}`).
+            A LoRA trained for a different architecture (mismatched keys) is
+            skipped with a server-side warning, not an error.
+          items:
+            type: object
+            properties:
+              path:
+                type: string
+                description: "LoRA .safetensors filename (relative to the LoRA directory or an additional configured directory)."
+              strength:
+                type: number
+                default: 1.0
+                description: "LoRA strength multiplier."
+          example: []
 
     Aud2AudRequest:
       type: object
@@ -5538,6 +5560,14 @@ components:
           default: "en"
           description: "Language folded into the lyrics/metas conditioning text."
           example: "en"
+        loras:
+          type: string
+          default: "[]"
+          description: |
+            JSON-encoded string (sent via multipart Form) containing an array
+            of LoRA config objects (e.g. path/strength). Same apply/restore
+            contract as `Txt2AudRequest.loras` -- see there for details.
+          example: '[{"path": "acestep_lora.safetensors", "strength": 1.0}]'
         reference_audio:
           type: string
           format: binary

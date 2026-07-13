@@ -218,6 +218,239 @@ class AceStepMixin:
         return torch.clamp(wav, -1.0, 1.0)
 
     # ------------------------------------------------------------------
+    # LoRA (generation-time apply/restore for a trained ACE-Step LoRA).
+    #
+    # ACE-Step uses the same component-based (not diffusers-pipeline-based)
+    # architecture as Z-Image/FLUX.2, so this mirrors
+    # `ZImageMixin._load_lora_zimage`/`_wrap_with_lora`/`_unload_lora_zimage`
+    # and `FluxMixin._load_lora_flux2` (pipeline_backends/zimage.py,
+    # pipeline_backends/flux2.py): LoRAs wrap the original nn.Linear via
+    # forward-time addition (`core.training.adapters.sd15_adapter.LoRALinearLayer`),
+    # not weight merging, so they can be unloaded by restoring the original
+    # module reference (no drift, no leak across generations).
+    #
+    # Key format matches the training adapter
+    # (`core.training.adapters.acestep_adapter.AceStepLoRAAdapter`/
+    # `iter_acestep_lora_targets`) exactly: sd-scripts native
+    # `lora_unet_decoder_layers_{i}_{self_attn|cross_attn}_{q,k,v,o}_proj`,
+    # mapping onto `dit.decoder.layers[i].{self_attn,cross_attn}.{q,k,v,o}_proj`.
+    # Feed-forward (`mlp`) LoRA (opt-in on the training side) is intentionally
+    # NOT applied at inference in this phase -- only the always-on
+    # attention scope is supported here; unmatched keys (mlp scope, or an
+    # unrelated-architecture LoRA) are skipped with a warning, not a crash.
+    # ------------------------------------------------------------------
+
+    _ACESTEP_LORA_ATTN_NAMES = ("self_attn", "cross_attn")
+    _ACESTEP_LORA_ATTN_LEAVES = ("q_proj", "k_proj", "v_proj", "o_proj")
+
+    def _load_lora_acestep(self, lora_configs: list):
+        """Load LoRAs onto the ACE-Step DiT's decoder attention Linears.
+
+        Args:
+            lora_configs: list of {"path": str, "strength": float, ...}
+                (same shape as every other arch's `params["loras"]`).
+        """
+        if not lora_configs:
+            return
+
+        if not self.acestep_components:
+            print("[AceStep LoRA] WARNING: ACE-Step components not loaded")
+            return
+
+        dit = self.acestep_components.get("dit")
+        decoder = getattr(dit, "decoder", None)
+        layers = getattr(decoder, "layers", None) if decoder is not None else None
+        if layers is None:
+            print("[AceStep LoRA] WARNING: DiT has no decoder.layers -- cannot apply LoRA")
+            return
+
+        if not hasattr(self, "_acestep_lora_original_modules"):
+            self._acestep_lora_original_modules = {}
+            self._acestep_lora_wrapped_modules = set()
+
+        # Use global lora_manager instance (has user-configured additional_dirs)
+        from core.extensions.lora_manager import lora_manager
+
+        print(f"[AceStep LoRA] Loading {len(lora_configs)} LoRA(s)...")
+
+        for i, lora_config in enumerate(lora_configs):
+            lora_path = lora_config.get("path", "")
+            lora_strength = lora_config.get("strength", 1.0)
+
+            resolved_path = lora_manager._resolve_lora_path(lora_path)
+            if resolved_path is None:
+                print(f"[AceStep LoRA] WARNING: LoRA file not found: {lora_path}")
+                print(f"[AceStep LoRA]   Searched in: {lora_manager.lora_dir}")
+                print(f"[AceStep LoRA]   Additional dirs: {lora_manager.additional_dirs}")
+                continue
+
+            print(f"[AceStep LoRA] Loading LoRA {i+1}/{len(lora_configs)}: {lora_path} (strength={lora_strength})")
+
+            from safetensors import safe_open
+
+            try:
+                with safe_open(str(resolved_path), framework="pt", device="cpu") as f:
+                    lora_state_dict = {key: f.get_tensor(key) for key in f.keys()}
+
+                print(f"[AceStep LoRA] Loaded {len(lora_state_dict)} tensors from {lora_path}")
+
+                total_pairs = sum(1 for k in lora_state_dict if k.endswith(".lora_down.weight"))
+                applied_count = 0
+
+                for layer_idx, layer in enumerate(layers):
+                    for attn_name in self._ACESTEP_LORA_ATTN_NAMES:
+                        attn = getattr(layer, attn_name, None)
+                        if attn is None:
+                            continue
+
+                        for leaf in self._ACESTEP_LORA_ATTN_LEAVES:
+                            original_linear = getattr(attn, leaf, None)
+                            if not isinstance(original_linear, torch.nn.Linear):
+                                # Either absent, or already LoRA-wrapped (the call
+                                # site always unloads before reloading -- see
+                                # `_generate_txt2aud_acestep`/`_generate_aud2aud_acestep`).
+                                continue
+
+                            lora_key_prefix = f"lora_unet_decoder_layers_{layer_idx}_{attn_name}_{leaf}"
+                            lora_down_key = f"{lora_key_prefix}.lora_down.weight"
+                            lora_up_key = f"{lora_key_prefix}.lora_up.weight"
+
+                            if lora_down_key not in lora_state_dict or lora_up_key not in lora_state_dict:
+                                continue
+
+                            lora_down_weight = lora_state_dict[lora_down_key]
+                            lora_up_weight = lora_state_dict[lora_up_key]
+                            lora_alpha_key = f"{lora_key_prefix}.alpha"
+                            lora_alpha = lora_state_dict.get(lora_alpha_key, None)
+
+                            module_key = f"decoder.layers.{layer_idx}.{attn_name}.{leaf}"
+                            wrapped = self._wrap_with_lora_acestep(
+                                attn, leaf, original_linear,
+                                lora_down_weight, lora_up_weight, lora_strength, lora_alpha, module_key,
+                            )
+                            if wrapped:
+                                applied_count += 1
+
+                print(f"[AceStep LoRA] Applied LoRA to {applied_count} modules "
+                      f"({total_pairs} lora_down/up pair(s) present in file)")
+                if applied_count == 0:
+                    sample_keys = list(lora_state_dict.keys())[:5]
+                    print(
+                        f"[AceStep LoRA] WARNING: 0 modules matched in {lora_path!r} -- this LoRA does not "
+                        f"target the ACE-Step decoder.layers.*.{{self_attn,cross_attn}}.* scope this backend "
+                        f"applies (skipped entirely, not an error). Either it uses a different key convention "
+                        f"(e.g. `.lora_A.`/`.lora_B.` PEFT-style instead of `.lora_down.`/`.lora_up.`), or it "
+                        f"was trained for a different component/architecture entirely (e.g. a lyric/text "
+                        f"encoder LoRA). Expected key prefix: "
+                        f"'lora_unet_decoder_layers_<i>_<self_attn|cross_attn>_<q,k,v,o>_proj.lora_down.weight'. "
+                        f"Sample keys found in file: {sample_keys}"
+                    )
+                elif applied_count < total_pairs:
+                    sample_keys = list(lora_state_dict.keys())[:5]
+                    print(
+                        f"[AceStep LoRA] WARNING: {total_pairs - applied_count} LoRA tensor pair(s) in "
+                        f"{lora_path!r} did not match any ACE-Step decoder.layers.*.{{self_attn,cross_attn}}.* "
+                        f"module (skipped, not an error -- e.g. mlp-scope keys, or a different architecture's "
+                        f"LoRA entirely). Expected key prefix: "
+                        f"'lora_unet_decoder_layers_<i>_<self_attn|cross_attn>_<q,k,v,o>_proj'. "
+                        f"Sample keys found in file: {sample_keys}"
+                    )
+
+            except Exception as e:
+                print(f"[AceStep LoRA] ERROR: Failed to load LoRA {lora_path}: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _wrap_with_lora_acestep(self, parent_module, attr_name, original_linear,
+                                 lora_down_weight, lora_up_weight, strength, alpha, module_key):
+        """Wrap a decoder attention Linear with a LoRA forward-addition layer.
+
+        Mirrors `ZImageMixin._wrap_with_lora`/`FluxMixin._wrap_with_lora_flux2`.
+        """
+        from core.training.adapters.sd15_adapter import LoRALinearLayer
+
+        if isinstance(original_linear, LoRALinearLayer):
+            true_original = original_linear.original_module
+        else:
+            true_original = original_linear
+
+        if module_key not in self._acestep_lora_original_modules:
+            self._acestep_lora_original_modules[module_key] = true_original
+
+        rank = lora_down_weight.shape[0]
+        alpha_value = alpha.item() if alpha is not None else rank
+
+        lora_wrapper = LoRALinearLayer(
+            true_original, rank=rank, alpha=alpha_value, lora_name=module_key
+        )
+
+        device = true_original.weight.device
+        dtype = true_original.weight.dtype
+
+        with torch.no_grad():
+            lora_wrapper.lora_down.weight.data = lora_down_weight.to(device=device, dtype=dtype)
+            lora_wrapper.lora_up.weight.data = lora_up_weight.to(device=device, dtype=dtype)
+
+        # Apply strength by overriding the default alpha/rank scale.
+        lora_wrapper.scale = (alpha_value / rank) * strength
+
+        setattr(parent_module, attr_name, lora_wrapper)
+
+        self._acestep_lora_wrapped_modules.add(module_key)
+        return True
+
+    def _unload_lora_acestep(self):
+        """Restore original (un-wrapped) Linear modules on the ACE-Step DiT."""
+        if not hasattr(self, "_acestep_lora_original_modules"):
+            print("[AceStep LoRA] No LoRAs loaded")
+            return
+
+        if not self.acestep_components:
+            print("[AceStep LoRA] WARNING: ACE-Step components not loaded")
+            return
+
+        dit = self.acestep_components.get("dit")
+        decoder = getattr(dit, "decoder", None)
+        layers = getattr(decoder, "layers", None) if decoder is not None else None
+        if layers is None:
+            print("[AceStep LoRA] WARNING: DiT has no decoder.layers -- cannot unload LoRA")
+            return
+
+        unloaded_count = 0
+        print(f"[AceStep LoRA] Unloading LoRAs ({len(self._acestep_lora_wrapped_modules)} modules)...")
+
+        for layer_idx, layer in enumerate(layers):
+            for attn_name in self._ACESTEP_LORA_ATTN_NAMES:
+                attn = getattr(layer, attn_name, None)
+                if attn is None:
+                    continue
+                for leaf in self._ACESTEP_LORA_ATTN_LEAVES:
+                    module_key = f"decoder.layers.{layer_idx}.{attn_name}.{leaf}"
+                    if module_key in self._acestep_lora_original_modules:
+                        setattr(attn, leaf, self._acestep_lora_original_modules[module_key])
+                        unloaded_count += 1
+
+        self._acestep_lora_wrapped_modules.clear()
+        print(f"[AceStep LoRA] Unloaded {unloaded_count} LoRA modules")
+        print("[AceStep LoRA] Original modules preserved for future LoRA loads")
+
+    def _apply_or_clear_lora_acestep(self, lora_configs: list):
+        """Shared load/unload gate, called at the top of both txt2aud and
+        aud2aud before the DiT forward pass. Mirrors the call-site pattern in
+        `_generate_txt2img_zimage`/`_generate_txt2img_flux2`: always unload
+        any previously-wrapped modules first (so switching to a different
+        LoRA, a different strength, or no LoRA at all never leaves stale
+        wrappers around), then load the newly requested set (if any)."""
+        if lora_configs:
+            if getattr(self, "_acestep_lora_wrapped_modules", None):
+                self._unload_lora_acestep()
+            self._load_lora_acestep(lora_configs)
+        else:
+            if getattr(self, "_acestep_lora_wrapped_modules", None):
+                print("[AceStep LoRA] No LoRAs in params, unloading existing LoRAs")
+                self._unload_lora_acestep()
+
+    # ------------------------------------------------------------------
     # Main entry points
     # ------------------------------------------------------------------
 
@@ -269,6 +502,9 @@ class AceStepMixin:
                 detail=f"dit={dit is not None}, vae={vae is not None}, "
                        f"text_encoder={text_encoder is not None}, tokenizer={tokenizer is not None}",
             )
+
+        # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
+        self._apply_or_clear_lora_acestep(params.get("loras") or [])
 
         device = self.device
         model_dtype = next(dit.parameters()).dtype
@@ -504,6 +740,9 @@ class AceStepMixin:
                 "Audio-to-audio (cover) generation requires a reference audio file",
                 detail="No reference_audio was provided.",
             )
+
+        # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
+        self._apply_or_clear_lora_acestep(params.get("loras") or [])
 
         device = self.device
         model_dtype = next(dit.parameters()).dtype

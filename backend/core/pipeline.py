@@ -26,11 +26,11 @@ from core.prompts.processors import PromptEditingProcessor
 from core.inference.schedulers import get_scheduler
 from core.inference.custom_sampling import custom_sampling_loop, custom_img2img_sampling_loop, custom_inpaint_sampling_loop
 from core.inference.generation_timing import generation_timer
-from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin
+from core.pipeline_backends import ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin
 
 LAST_MODEL_CONFIG_FILE = Path("last_model.json")
 
-class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin):
+class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, Ideogram4Mixin, MiniT2IMixin, Krea2Mixin, LTX2Mixin, AceStepMixin):
     def __init__(self):
         self.txt2img_pipeline: Optional[StableDiffusionPipeline] = None
         self.img2img_pipeline: Optional[StableDiffusionImg2ImgPipeline] = None
@@ -2185,6 +2185,29 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         raise ValidationError(
             "Image-to-video generation requires an LTX-2.3 model",
             detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/img2vid.",
+        )
+
+    def generate_txt2aud(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
+        """Generate music/audio from text (ACE-Step 1.5 only).
+
+        Args:
+            params: Generation parameters -- caption/prompt, lyrics,
+                audio_duration, seed, inference_steps, guidance_scale, shift,
+                sampler_mode, bpm, key_scale, time_signature, vocal_language.
+            progress_callback: Called as (step, total_steps).
+            step_callback: Reserved (unused for ACE-Step txt2aud).
+
+        Returns:
+            tuple: (waveform, sample_rate, actual_seed) where waveform is a
+            torch.FloatTensor [2, samples] on CPU and sample_rate is 48000.
+        """
+        if self.is_acestep_model:
+            return self._generate_txt2aud_acestep(params, progress_callback, step_callback)
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Text-to-audio generation requires an ACE-Step model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/txt2aud.",
         )
 
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:

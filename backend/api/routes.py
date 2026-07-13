@@ -6366,14 +6366,16 @@ async def scan_dataset(
         print(f"[Dataset Scan] Using existing suffix configuration: "
               f"ref={dataset.reference_suffixes}, target={dataset.target_suffixes}")
 
-    # Supported image + video extensions
+    # Supported image + video + audio extensions
     from utils.dataset_scanner import (
         VIDEO_EXTS as video_exts,
+        AUDIO_EXTS as audio_exts,
         probe_video_metadata,
+        probe_audio_metadata,
         extract_poster_frame,
     )
     image_exts = {".png", ".jpg", ".jpeg", ".webp"}
-    media_exts = image_exts | video_exts
+    media_exts = image_exts | video_exts | audio_exts
     caption_exts = {".txt", ".json"}
 
     # Load taglist for caption format detection (once at start)
@@ -6744,7 +6746,9 @@ async def scan_dataset(
                 else:
                     _ext_lower = os.path.splitext(image_path)[1].lower()
                     is_video = _ext_lower in video_exts
+                    is_audio = _ext_lower in audio_exts
                     video_meta = None
+                    audio_meta = None
 
                     if is_video:
                         # New video — probe metadata via ffprobe WITHOUT decoding
@@ -6762,6 +6766,23 @@ async def scan_dataset(
                             continue
                         width = video_meta["width"]
                         height = video_meta["height"]
+                    elif is_audio:
+                        # New audio clip — probe metadata via soundfile/ffprobe
+                        # WITHOUT decoding the whole file. Audio clips have no
+                        # spatial dimensions (width/height stored as 0).
+                        audio_meta = probe_audio_metadata(image_path)
+                        if not audio_meta:
+                            print(f"[Dataset Scan] Skipping unreadable audio {image_path}")
+                            files_processed += 1
+                            if files_processed % 10 == 0 or total_images < 100:
+                                manager.send_progress_sync(
+                                    files_processed,
+                                    total_steps,
+                                    f"Scanning: {files_processed}/{total_images} images | {items_found} new img | {_fstat_msg()}"
+                                )
+                            continue
+                        width = 0
+                        height = 0
                     else:
                         # New image — open it ONCE for dimensions, then register.
                         try:
@@ -6789,19 +6810,29 @@ async def scan_dataset(
                         related_images_data["reference"] = reference_images
                         print(f"[Dataset Scan] Group '{base_name}': {len(reference_images)} reference image(s)")
 
+                    if is_video:
+                        item_type = "video"
+                    elif is_audio:
+                        item_type = "audio"
+                    elif use_reference_mode:
+                        item_type = "reference"
+                    else:
+                        item_type = "single"
+
                     item = DatasetItem(
                         dataset_id=dataset_id,
-                        # image_path stores the video file path for video items
-                        # (it is just a path string). Per-clip metadata lives in
-                        # exif_data (surfaced as video_meta in to_dict).
-                        item_type="video" if is_video else ("reference" if use_reference_mode else "single"),
+                        # image_path stores the video/audio file path for
+                        # video/audio items (it is just a path string).
+                        # Per-clip metadata lives in exif_data (surfaced as
+                        # video_meta / audio_meta in to_dict).
+                        item_type=item_type,
                         base_name=base_name,
                         image_path=image_path,
                         width=width,
                         height=height,
                         file_size=file_size,
                         image_hash=None,  # SHA256 no longer computed at scan time
-                        exif_data=video_meta if is_video else None,
+                        exif_data=video_meta if is_video else (audio_meta if is_audio else None),
                         related_images=related_images_data if related_images_data else None
                     )
                     db.add(item)
@@ -6834,6 +6865,32 @@ async def scan_dataset(
                                             pass
                         except Exception as _pe:
                             print(f"[Dataset Scan] poster thumbnail failed for {image_path}: {_pe}")
+
+                    # Waveform thumbnail for audio clips: render a peak-envelope
+                    # PNG via soundfile + the shared audio waveform writer, then
+                    # run it through the same PNG+WebP thumbnail generator keyed
+                    # by base_name, so the dataset UI has a preview to show
+                    # (mirrors the video poster-frame path above).
+                    if is_audio:
+                        try:
+                            import tempfile
+                            import soundfile as sf
+                            from utils.audio_utils import _write_waveform_png
+                            wave_named = os.path.join(tempfile.gettempdir(), f"{base_name}.png")
+                            try:
+                                data, _sr = sf.read(image_path, dtype="float32", always_2d=True)
+                                # soundfile returns [samples, channels]; waveform
+                                # writer expects [channels, samples].
+                                arr = data.T
+                                _write_waveform_png(arr, wave_named)
+                                create_thumbnail(wave_named)
+                            finally:
+                                try:
+                                    os.remove(wave_named)
+                                except OSError:
+                                    pass
+                        except Exception as _ae:
+                            print(f"[Dataset Scan] waveform thumbnail failed for {image_path}: {_ae}")
 
                     if files_processed % 10 == 0 or total_images < 100:
                         manager.send_progress_sync(

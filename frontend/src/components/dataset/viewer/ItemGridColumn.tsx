@@ -351,7 +351,7 @@ export default function ItemGridColumn({
                   />
                 </div>
 
-                {/* Image / video poster */}
+                {/* Image / video poster / audio waveform */}
                 <div className="aspect-square bg-gray-900 relative">
                   {item.item_type === "video" ? (
                     item.thumbnail_url ? (
@@ -372,6 +372,21 @@ export default function ItemGridColumn({
                         preload="metadata"
                       />
                     )
+                  ) : item.item_type === "audio" ? (
+                    item.thumbnail_url ? (
+                      // Waveform PNG generated at scan time (see
+                      // backend/utils/audio_utils.py _write_waveform_png).
+                      <img
+                        src={item.thumbnail_url}
+                        alt={item.base_name}
+                        className="w-full h-full object-contain bg-black rounded-t"
+                        loading="lazy"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-gray-500 text-2xl">
+                        ♪
+                      </div>
+                    )
                   ) : (
                     <img
                       src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
@@ -383,6 +398,11 @@ export default function ItemGridColumn({
                   {item.item_type === "video" && (
                     <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1 rounded">
                       ▶
+                    </span>
+                  )}
+                  {item.item_type === "audio" && (
+                    <span className="absolute bottom-1 right-1 bg-black/60 text-white text-[10px] px-1 rounded">
+                      ♪
                     </span>
                   )}
                 </div>

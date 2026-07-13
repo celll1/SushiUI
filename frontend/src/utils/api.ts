@@ -2408,9 +2408,29 @@ export interface DatasetItem {
   image_hash: string;
   created_at: string;
   updated_at: string;
-  // For item_type="video": public URL of the first-frame poster thumbnail
-  // generated at scan time (served via the /thumbnails static mount).
+  // For item_type="video"/"audio": public URL of the first-frame poster /
+  // waveform thumbnail generated at scan time (served via the /thumbnails
+  // static mount).
   thumbnail_url?: string | null;
+  // For item_type="video": per-clip metadata (fps, num_frames, duration,
+  // width, height, codec) captured at scan time via ffprobe.
+  video_meta?: {
+    video_path?: string;
+    fps?: number;
+    num_frames?: number;
+    duration?: number;
+    width?: number;
+    height?: number;
+    codec?: string | null;
+  } | null;
+  // For item_type="audio": per-clip metadata captured at scan time via
+  // soundfile/ffprobe (mirrors video_meta above).
+  audio_meta?: {
+    audio_path?: string;
+    sample_rate?: number;
+    duration?: number;
+    channels?: number;
+  } | null;
   captions?: DatasetCaptionData[];
   related_images?: {
     reference?: string[];  // Reference image paths for training

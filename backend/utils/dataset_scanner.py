@@ -14,8 +14,10 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp"}
 VIDEO_EXTS = {".webm", ".mp4", ".mkv", ".mov", ".avi"}
-# Both images and videos participate in stem grouping / caption sidecar matching.
-MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS
+AUDIO_EXTS = {".flac", ".wav", ".mp3", ".ogg", ".opus", ".m4a"}
+# Images, videos, and audio clips all participate in stem grouping / caption
+# sidecar matching.
+MEDIA_EXTS = IMAGE_EXTS | VIDEO_EXTS | AUDIO_EXTS
 CAPTION_EXTS = {".txt", ".json"}
 
 # Below this file size a frame-accurate ffprobe frame count (-count_frames,
@@ -159,6 +161,77 @@ def probe_video_metadata(video_path: str) -> Optional[Dict[str, Any]]:
         }
     except Exception as e:  # noqa: BLE001 - probe is best-effort, never crash scan
         print(f"[VideoProbe] probe error for {video_path}: {e}")
+        return None
+
+
+def probe_audio_metadata(audio_path: str) -> Optional[Dict[str, Any]]:
+    """Probe an audio clip's metadata without decoding the whole file.
+
+    Returns a dict {audio_path, sample_rate, duration, channels} or None
+    when the file cannot be probed (caller should skip + log).
+
+    Resolution order:
+      1. soundfile.info() (libsndfile) -- fast header read, no full decode.
+      2. ffprobe fallback (for containers/codecs libsndfile can't parse,
+         e.g. mp3/m4a/opus in some builds).
+    """
+    try:
+        import soundfile as sf
+        info = sf.info(audio_path)
+        duration = float(info.frames) / info.samplerate if info.samplerate else 0.0
+        return {
+            "audio_path": audio_path,
+            "sample_rate": int(info.samplerate),
+            "duration": round(duration, 6),
+            "channels": int(info.channels),
+        }
+    except Exception as e:  # noqa: BLE001 - fall through to ffprobe
+        print(f"[AudioProbe] soundfile probe failed for {audio_path} ({e}); trying ffprobe")
+
+    ffprobe = _find_ffprobe()
+    if not ffprobe:
+        print(f"[AudioProbe] ffprobe not found on PATH or common dirs; cannot probe {audio_path}")
+        return None
+    try:
+        cmd = [
+            ffprobe, "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=sample_rate,channels,duration:format=duration",
+            "-of", "json", audio_path,
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        if out.returncode != 0:
+            print(f"[AudioProbe] ffprobe failed for {audio_path}: {out.stderr.strip()[:200]}")
+            return None
+        data = json.loads(out.stdout)
+        streams = data.get("streams") or []
+        if not streams:
+            print(f"[AudioProbe] no audio stream found in {audio_path}")
+            return None
+        st = streams[0]
+
+        sample_rate = int(st.get("sample_rate") or 0)
+        channels = int(st.get("channels") or 0)
+        if sample_rate <= 0 or channels <= 0:
+            print(f"[AudioProbe] invalid stream ({sample_rate}Hz, {channels}ch) for {audio_path}")
+            return None
+
+        duration = 0.0
+        for src in (st.get("duration"), (data.get("format") or {}).get("duration")):
+            try:
+                if src is not None and float(src) > 0:
+                    duration = float(src)
+                    break
+            except (ValueError, TypeError):
+                continue
+
+        return {
+            "audio_path": audio_path,
+            "sample_rate": sample_rate,
+            "duration": round(duration, 6),
+            "channels": channels,
+        }
+    except Exception as e:  # noqa: BLE001 - probe is best-effort, never crash scan
+        print(f"[AudioProbe] probe error for {audio_path}: {e}")
         return None
 
 

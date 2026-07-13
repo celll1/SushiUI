@@ -404,11 +404,16 @@ class DatasetItem(DatasetBase):
             # num_frames, duration, width, height, codec) is stored in the
             # reused exif_data JSON column and surfaced here as video_meta.
             "video_meta": self.exif_data if self.item_type == "video" else None,
-            # For item_type="video", the scanner extracts a first-frame poster
-            # and writes it via create_thumbnail() keyed by base_name (see
-            # routes.py dataset scan + utils/image_utils.py create_thumbnail),
-            # published at the /thumbnails static mount (backend/main.py).
-            "thumbnail_url": f"/thumbnails/{self.base_name}.png" if self.item_type == "video" else None,
+            # For item_type="audio", per-clip metadata (sample_rate, duration,
+            # channels) is stored in the reused exif_data JSON column and
+            # surfaced here as audio_meta (mirrors video_meta above).
+            "audio_meta": self.exif_data if self.item_type == "audio" else None,
+            # For item_type="video"/"audio", the scanner extracts a poster
+            # frame / waveform PNG and writes it via create_thumbnail() keyed
+            # by base_name (see routes.py dataset scan +
+            # utils/image_utils.py create_thumbnail), published at the
+            # /thumbnails static mount (backend/main.py).
+            "thumbnail_url": f"/thumbnails/{self.base_name}.png" if self.item_type in ("video", "audio") else None,
             "total_captions": self.total_captions,
             "total_tags": self.total_tags,
             "created_at": self.created_at.isoformat() if self.created_at else None,

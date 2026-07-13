@@ -68,6 +68,8 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
   const [isImageExpanded, setIsImageExpanded] = useState(false);
   const [expandedImageWidth, setExpandedImageWidth] = useState(800); // Pixels
   const [isResizing, setIsResizing] = useState(false);
+  const [lyricsDraft, setLyricsDraft] = useState<string>("");
+  const [isSavingLyrics, setIsSavingLyrics] = useState(false);
 
   // Notify parent when tagger settings change
   useEffect(() => {
@@ -133,6 +135,18 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       loadItemDetails();
     }
   }, [item, loadItemDetails]);
+
+  // Sync the lyrics draft textarea from the loaded item's "lyrics" caption
+  // (audio items only). Re-syncs whenever detailedItem is (re)loaded, e.g.
+  // after switching items or after a successful save.
+  useEffect(() => {
+    if (detailedItem?.item_type === "audio") {
+      const lyricsCaption = detailedItem.captions?.find(c => c.caption_type === "lyrics");
+      setLyricsDraft(lyricsCaption?.content || "");
+    } else {
+      setLyricsDraft("");
+    }
+  }, [detailedItem]);
 
   // Update item reference when item changes
   useEffect(() => {
@@ -266,6 +280,28 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
       } catch (err) {
         console.error("[ItemDetailColumn] Failed to save tags:", err);
       }
+    }
+  };
+
+  const handleSaveLyrics = async () => {
+    if (!item) return;
+
+    setIsSavingLyrics(true);
+    try {
+      await updateItemCaption(item.id, {
+        caption_type: "lyrics",
+        content: lyricsDraft,
+      });
+      console.log("[ItemDetailColumn] Lyrics saved to DB");
+
+      // Refresh detailedItem so the "lyrics" caption (and any tab that
+      // reflects it) stays in sync with what was just saved.
+      await loadItemDetails();
+    } catch (err) {
+      console.error("[ItemDetailColumn] Failed to save lyrics:", err);
+      alert("Failed to save lyrics");
+    } finally {
+      setIsSavingLyrics(false);
     }
   };
 
@@ -717,6 +753,37 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
             );
           })()}
         </div>
+
+        {/* Lyrics Editor - Audio items only. Lyrics are stored as a
+            DatasetCaption with caption_type=="lyrics" and consumed by the
+            ACE-Step training path for lyric-conditioned generation. Leave
+            empty for instrumental tracks. */}
+        {item.item_type === "audio" && (
+          <div className="flex-shrink-0 bg-gray-800 rounded-lg p-2 flex flex-col">
+            <div className="flex items-center justify-between mb-1">
+              <h4 className="text-xs font-semibold">Lyrics</h4>
+              <button
+                onClick={handleSaveLyrics}
+                disabled={isSavingLyrics}
+                className="px-2 py-0.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded text-[10px] font-medium text-white transition-colors"
+                title="Save lyrics"
+              >
+                {isSavingLyrics ? "Saving..." : "Save"}
+              </button>
+            </div>
+            <textarea
+              value={lyricsDraft}
+              onChange={(e) => setLyricsDraft(e.target.value)}
+              placeholder="Leave empty for instrumental tracks."
+              rows={6}
+              className="w-full bg-gray-900 border border-gray-700 rounded p-2 text-xs text-gray-200 font-mono resize-y focus:outline-none focus:border-blue-500"
+              spellCheck={false}
+            />
+            <div className="mt-1 text-[10px] text-gray-500">
+              Used as the lyrics conditioning input for ACE-Step lyric-conditioned training.
+            </div>
+          </div>
+        )}
 
         {/* Caption Display Area - Unified */}
         <div className="flex-1 bg-gray-800 rounded-lg p-2 flex flex-col min-h-0">

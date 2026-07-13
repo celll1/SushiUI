@@ -531,7 +531,17 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-semibold">Item Details</h3>
           <div className="text-[10px] text-gray-400">
-            {item.width}×{item.height} • {(item.file_size / 1024).toFixed(1)}KB
+            {item.item_type === "audio" ? (
+              <>
+                {item.audio_meta?.sample_rate ? `${item.audio_meta.sample_rate}Hz` : ""}
+                {item.audio_meta?.channels ? ` • ${item.audio_meta.channels}ch` : ""}
+                {item.audio_meta?.duration ? ` • ${item.audio_meta.duration.toFixed(1)}s` : ""}
+                {" • "}
+              </>
+            ) : (
+              <>{item.width}×{item.height} • </>
+            )}
+            {(item.file_size / 1024).toFixed(1)}KB
           </div>
         </div>
       </div>
@@ -552,6 +562,22 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
                 onDoubleClick={() => setIsImageExpanded(true)}
                 title="Double-click to expand"
               />
+            ) : item.item_type === "audio" ? (
+              <div className="w-full h-full flex flex-col bg-gray-900">
+                {item.thumbnail_url && (
+                  <img
+                    src={item.thumbnail_url}
+                    alt={item.base_name}
+                    className="w-full flex-1 object-contain min-h-0"
+                  />
+                )}
+                <audio
+                  src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                  controls
+                  preload="metadata"
+                  className="w-full flex-shrink-0"
+                />
+              </div>
             ) : (
               <img
                 src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
@@ -854,6 +880,22 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
                 controls
                 preload="metadata"
               />
+            ) : item.item_type === "audio" ? (
+              <div className="flex flex-col items-center gap-4 w-full max-w-2xl">
+                {item.thumbnail_url && (
+                  <img
+                    src={item.thumbnail_url}
+                    alt={item.base_name}
+                    className="max-w-full max-h-[60vh] object-contain"
+                  />
+                )}
+                <audio
+                  src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}
+                  controls
+                  preload="metadata"
+                  className="w-full"
+                />
+              </div>
             ) : (
               <img
                 src={`/api/serve-image?path=${encodeURIComponent(item.image_path)}`}

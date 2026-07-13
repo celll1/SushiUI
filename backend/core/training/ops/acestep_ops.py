@@ -28,12 +28,24 @@ prediction) audio DiT:
 
 SCOPE DECISIONS (Phase 8a, documented per-task; see also adapters/acestep_adapter.py
 and audio_loader.py):
-  * Lyrics are NOT sourced per-item (no ``lyrics`` field exists in the current
-    dataset schema) -- every training item is treated as instrumental /
-    no-lyrics, matching the vendored model's own well-defined empty-lyrics
-    behavior (mirrors ``_generate_txt2aud_acestep``'s default ``lyrics=""``).
-    The empty-lyrics embedding is caption-INDEPENDENT, so it is computed once
-    at load time (``_build_empty_lyrics``), not per-caption.
+  * Lyrics ARE sourced per-item (follow-up to Phase 8a): a dataset item may
+    carry a ``lyrics`` string (populated from a ``DatasetCaption`` row with
+    ``caption_type=="lyrics"``, a SEPARATE signal from whichever caption_type
+    is selected as the item's primary caption -- see
+    ``train_runner.get_dataset_items_fast``). Items with no lyrics caption
+    default to ``""`` and are treated as instrumental / no-lyrics, matching
+    the vendored model's own well-defined empty-lyrics behavior (mirrors
+    ``_generate_txt2aud_acestep``'s default ``lyrics=""``) -- fully backward
+    compatible with every dataset that has never had a lyrics caption added.
+    ``encode_prompt`` reuses the ONE caption-INDEPENDENT empty-lyrics asset
+    precomputed at load time (``_build_empty_lyrics``) as a fast path whenever
+    an item's lyrics are empty; a non-empty per-item lyrics string is run
+    through the SAME Qwen3 ``embed_tokens`` lookup (no transformer forward)
+    on demand. The vocal language tag baked into the lyrics text block is
+    hardcoded to ``"en"`` (mirrors ``_build_empty_lyrics``) -- no per-item
+    language field exists in the dataset schema yet; this is a scoped
+    simplification, not a correctness issue (the language tag only affects
+    the model's own language-conditioning heuristic, not tokenization).
   * The "# Metas" block (BPM/Duration/Key/Time Signature) that
     ``AceStepMixin._acestep_build_text_prompt`` renders needs per-item audio
     duration/tempo metadata this text-embedding CACHE layer doesn't have (the
@@ -244,14 +256,23 @@ def setup_attention_backend(trainer, backend: str):
 # Text encoding (cache phase) — Qwen3-Embedding-0.6B, frozen no_grad
 # ----------------------------------------------------------------------
 
-def encode_prompt(trainer, prompt: str):
-    """Encode a caption for ACE-Step (Qwen3 "# Caption" hidden states, cached
-    detached, dtype-native). See module docstring for the lyrics/Metas scope
-    decisions.
+def encode_prompt(trainer, prompt: str, lyrics: str = ""):
+    """Encode a caption (+ optional per-item lyrics) for ACE-Step (Qwen3
+    "# Caption" hidden states, cached detached, dtype-native). See module
+    docstring for the lyrics/Metas scope decisions.
+
+    Args:
+        prompt: The item's caption text ("# Caption" block).
+        lyrics: The item's lyrics text, or ``""`` for instrumental (default;
+            fully backward compatible with datasets that have no lyrics
+            caption). Sourced from a ``caption_type=="lyrics"``
+            ``DatasetCaption`` row -- a SEPARATE per-item signal from
+            ``prompt`` (see ``train_runner.get_dataset_items_fast``).
 
     Returns ``(text_hidden_states, aux_dict)`` where aux_dict carries the
-    caption's own attention mask for train_step / collate_aux (mirrors
-    ltx2_ops's ``(video_emb, aux)`` contract).
+    caption's own attention mask PLUS the per-item lyric conditioning
+    (``lyric_hidden_states``, ``lyric_attention_mask``) for train_step /
+    collate_aux (mirrors ltx2_ops's ``(video_emb, aux)`` contract).
     """
     from core.models.acestep.defaults import DEFAULT_DIT_INSTRUCTION
 
@@ -274,38 +295,98 @@ def encode_prompt(trainer, prompt: str):
         text_hidden_states = text_encoder(input_ids=text_ids).last_hidden_state
 
     dtype = next(text_encoder.parameters()).dtype
+    lyric_hidden_states, lyric_attention_mask = _encode_lyrics(trainer, lyrics, device=device, dtype=dtype)
+
     return text_hidden_states[0].detach().to(dtype), {
         "text_attention_mask": text_attention_mask[0].detach(),
+        "lyric_hidden_states": lyric_hidden_states,
+        "lyric_attention_mask": lyric_attention_mask,
     }
+
+
+def _encode_lyrics(
+    trainer, lyrics: str, *, device: torch.device, dtype: torch.dtype
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Build the PER-SAMPLE (batch dim dropped) lyric conditioning tensors for
+    one dataset item's lyrics text.
+
+    Empty lyrics (``""`` -- the default / instrumental case) reuse the
+    precomputed caption-INDEPENDENT empty-lyrics asset built once at load time
+    (``_build_empty_lyrics``) instead of re-running ``embed_tokens`` -- cheap
+    either way (no transformer forward), but this keeps the common case a
+    pure tensor slice/cast with no tokenizer call. A non-empty lyrics string
+    is tokenized and looked up on demand (also no transformer forward --
+    ``AceStepLyricEncoder`` is an ``embed_tokens`` lookup only, per the module
+    docstring).
+
+    Returns:
+        ``(lyric_hidden_states [L, 1024], lyric_attention_mask [L])`` on
+        ``device``/``dtype`` (mask stays bool), batch dim dropped so
+        ``collate_aux`` can pad+stack per-item rows exactly like
+        ``text_attention_mask``.
+    """
+    if not lyrics:
+        return (
+            trainer.acestep_empty_lyric_hidden_states[0].detach().to(device=device, dtype=dtype),
+            trainer.acestep_empty_lyric_attention_mask[0].detach().to(device=device).bool(),
+        )
+
+    from core.pipeline_backends.acestep import AceStepMixin
+
+    lyrics_text = AceStepMixin._acestep_format_lyrics(lyrics, "en")
+    tokenizer = trainer.tokenizer
+    text_encoder = trainer.text_encoder
+    with torch.no_grad():
+        tok = tokenizer(
+            lyrics_text, padding="longest", truncation=True, max_length=2048, return_tensors="pt"
+        )
+        lyric_ids = tok.input_ids.to(device)
+        lyric_attention_mask = tok.attention_mask.to(device).bool()
+        lyric_hidden_states = text_encoder.embed_tokens(lyric_ids)
+
+    return lyric_hidden_states[0].detach().to(dtype), lyric_attention_mask[0].detach()
 
 
 def collate_aux(trainer, aux_list):
     """Collate a list of per-item ACE-Step aux dicts into ONE dict of batched
-    tensors ``{text_attention_mask [B, L]}``, padding the sequence dim with
-    False (mirrors ltx2_ops.collate_aux)."""
-    key = "text_attention_mask"
+    tensors ``{text_attention_mask [B, L], lyric_hidden_states [B, L2, 1024],
+    lyric_attention_mask [B, L2]}``, padding each field's sequence dim
+    independently (text and lyric sequences have unrelated lengths) with a
+    per-field pad value (mirrors ltx2_ops.collate_aux's multi-key pattern)."""
+    keys = ("text_attention_mask", "lyric_hidden_states", "lyric_attention_mask")
     if not aux_list:
         raise ValueError("[ACE-Step collation] empty auxiliary_data_list")
-    tensors: List[torch.Tensor] = []
     for idx, aux in enumerate(aux_list):
-        if not isinstance(aux, dict) or key not in aux or not isinstance(aux[key], torch.Tensor):
+        if not isinstance(aux, dict):
             raise ValueError(
-                f"[ACE-Step collation] item {idx} is missing tensor key '{key}' "
-                f"(got {aux!r})"
+                f"[ACE-Step collation] item {idx} auxiliary data is "
+                f"{type(aux).__name__}, expected a dict with keys {keys}"
             )
-        tensors.append(aux[key])
+        for k in keys:
+            if k not in aux or not isinstance(aux[k], torch.Tensor):
+                raise ValueError(
+                    f"[ACE-Step collation] item {idx} is missing tensor key '{k}' "
+                    f"(got keys {list(aux.keys())})"
+                )
 
-    max_len = max(t.shape[0] for t in tensors)
-    if any(t.shape[0] != max_len for t in tensors):
-        padded = []
-        for t in tensors:
-            if t.shape[0] < max_len:
-                pad = torch.zeros(max_len - t.shape[0], dtype=t.dtype, device=t.device)
-                t = torch.cat([t, pad], dim=0)
-            padded.append(t)
-        tensors = padded
+    pad_values = {"text_attention_mask": 0, "lyric_hidden_states": 0.0, "lyric_attention_mask": 0}
 
-    return {key: torch.stack(tensors, dim=0)}
+    batched: Dict[str, torch.Tensor] = {}
+    for k in keys:
+        tensors = [aux[k] for aux in aux_list]
+        max_len = max(t.shape[0] for t in tensors)
+        if any(t.shape[0] != max_len for t in tensors):
+            padded = []
+            for t in tensors:
+                if t.shape[0] < max_len:
+                    pad_shape = (max_len - t.shape[0],) + tuple(t.shape[1:])
+                    pad = torch.full(pad_shape, pad_values[k], dtype=t.dtype, device=t.device)
+                    t = torch.cat([t, pad], dim=0)
+                padded.append(t)
+            tensors = padded
+        batched[k] = torch.stack(tensors, dim=0)
+
+    return batched
 
 
 # ----------------------------------------------------------------------
@@ -398,6 +479,20 @@ def train_step(
         )
     text_attention_mask = text_attention_mask.to(device=device, non_blocking=True).bool()
 
+    # Per-item lyric conditioning (collate_aux output; see encode_prompt /
+    # _encode_lyrics). Items with no lyrics caption carry the shared
+    # empty-lyrics embedding here (per-item, not batch-uniform expand) --
+    # collate_aux already padded+stacked these to [B, L, 1024] / [B, L].
+    lyric_hidden_states = aux.get("lyric_hidden_states") if isinstance(aux, dict) else None
+    lyric_attention_mask = aux.get("lyric_attention_mask") if isinstance(aux, dict) else None
+    if lyric_hidden_states is None or lyric_attention_mask is None:
+        raise ValueError(
+            "[train_step_acestep] aux is missing 'lyric_hidden_states'/"
+            "'lyric_attention_mask' (expected collate_aux's output dict)"
+        )
+    lyric_hidden_states = lyric_hidden_states.to(device=device, dtype=dtype, non_blocking=True)
+    lyric_attention_mask = lyric_attention_mask.to(device=device, non_blocking=True).bool()
+
     if latents.dim() != 3:
         raise ValueError(
             f"[train_step_acestep] expected 3D latents [B, T, 64], got "
@@ -409,15 +504,12 @@ def train_step(
 
     dit = trainer.transformer  # AceStepConditionGenerationModel (LoRA-wrapped decoder)
 
-    # Caption-independent conditioning assets, precomputed at load time
-    # (see _build_silence_latent / _build_empty_lyrics).
+    # Caption-independent conditioning asset, precomputed at load time (see
+    # _build_silence_latent). Per-item lyric conditioning (lyric_hidden_states
+    # / lyric_attention_mask) is read from aux above -- collate_aux already
+    # batched it per-item (empty-lyrics items carry the shared empty-lyrics
+    # embedding there, not a batch-uniform expand()).
     silence_latent = trainer.acestep_silence_latent.to(device=device, dtype=dtype)  # [1, 750, 64]
-    lyric_hidden_states = trainer.acestep_empty_lyric_hidden_states.to(
-        device=device, dtype=dtype
-    ).expand(batch_size, -1, -1)
-    lyric_attention_mask = trainer.acestep_empty_lyric_attention_mask.to(device=device).expand(
-        batch_size, -1
-    )
 
     # Plain text2music conditioning (no reference audio): silence timbre +
     # silence src_latents/context, matching _generate_txt2aud_acestep's

@@ -121,12 +121,14 @@ class CpuTextEncoderPrefetcher:
     ):
         """
         Args:
-            encode_batch_fn: Callable[[List[str]], List[Tuple[emb, aux]]].
-                Receives all captions of one batch and returns one
-                (embedding, auxiliary) tuple per caption in order.
-                Architectures with a true batched TE forward (e.g. Anima)
-                amortise per-call overhead through this API; others fall
-                back to a loop internally.
+            encode_batch_fn: Callable[[List[str], Optional[List[str]]], List[Tuple[emb, aux]]].
+                Receives all captions of one batch (and, second positional
+                arg, the parallel per-item lyrics strings -- ACE-Step only;
+                every other arch's callable ignores/defaults this) and
+                returns one (embedding, auxiliary) tuple per caption in
+                order. Architectures with a true batched TE forward (e.g.
+                Anima) amortise per-call overhead through this API; others
+                fall back to a loop internally.
             batches: epoch's pre-built list of [(item, dataset), ...] groups
             prefetch_depth: queue size — number of batches the worker may
                 run ahead of the main thread before back-pressure kicks in
@@ -155,6 +157,10 @@ class CpuTextEncoderPrefetcher:
                 # forward (e.g. Anima Qwen3) get the amortisation win.
                 paths: List[Any] = []
                 captions: List[str] = []
+                # Parallel per-item lyrics (ACE-Step only; every other item
+                # dict never has a "lyrics" key, so this is always "" for
+                # them -- encode_batch_fn's default handles that uniformly).
+                lyrics_list: List[str] = []
                 for entry in batch:
                     if self._stop_event.is_set():
                         break
@@ -166,12 +172,13 @@ class CpuTextEncoderPrefetcher:
                         continue
                     paths.append(ip)
                     captions.append(item.get("caption", "") or "")
+                    lyrics_list.append(item.get("lyrics", "") or "")
 
                 t0 = time.time()
                 payload: dict = {}
                 if captions:
                     try:
-                        results = self._encode_batch_fn(captions)
+                        results = self._encode_batch_fn(captions, lyrics_list)
                     except Exception as e:
                         self.stats.worker_errors.append(
                             f"batch {batch_idx} ({len(captions)} captions): {e}"

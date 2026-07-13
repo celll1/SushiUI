@@ -3582,9 +3582,16 @@ class BaseTrainer(ABC):
         from core.training.ops import minit2i_ops
         return minit2i_ops.encode_prompt(self, prompt, requires_grad=requires_grad)
 
-    def encode_caption(self, caption: str, requires_grad: bool = False):
+    def encode_caption(self, caption: str, requires_grad: bool = False, lyrics: str = ""):
         """
         Unified caption encoding for all architectures.
+
+        Args:
+            caption: The item's caption text.
+            requires_grad: Whether to keep a gradient-carrying graph (trainable TE).
+            lyrics: ACE-Step ONLY -- the item's per-item lyrics text ("" for
+                instrumental / no-lyrics, the default; every other arch ignores
+                this argument). See ``ops/acestep_ops.py``'s module docstring.
 
         Returns:
             Tuple of (embeddings, auxiliary_data):
@@ -3595,6 +3602,8 @@ class BaseTrainer(ABC):
             - Anima: (prompt_embeds, anima_aux_dict) where aux dict has
               {source_mask, t5_input_ids, t5_attn_mask}
             - Lens: (stacked_features [num_layers, L, D], encoder_mask [L])
+            - ACE-Step: (text_hidden_states, aux_dict) where aux dict has
+              {text_attention_mask, lyric_hidden_states, lyric_attention_mask}
         """
         if self.is_zimage:
             return self.encode_prompt_zimage(caption)
@@ -3625,10 +3634,11 @@ class BaseTrainer(ABC):
             return video_emb, aux
         elif self.is_acestep:
             # ACE-Step: Qwen3 "# Caption" hidden states + aux dict
-            # {text_attention_mask} handed to train_step_acestep as a bundle
-            # (mirrors ltx2's payload contract).
+            # {text_attention_mask, lyric_hidden_states, lyric_attention_mask}
+            # handed to train_step_acestep as a bundle (mirrors ltx2's payload
+            # contract). `lyrics` is per-item (see docstring above).
             from core.training.ops import acestep_ops
-            text_emb, aux = acestep_ops.encode_prompt(self, caption)
+            text_emb, aux = acestep_ops.encode_prompt(self, caption, lyrics=lyrics)
             return text_emb, aux
         elif self.is_flux2:
             # FLUX.2: Use Qwen3 text encoder with hidden state extraction
@@ -3672,7 +3682,7 @@ class BaseTrainer(ABC):
     # Call sites in the train loop now dispatch via ``self.arch.collate_aux``;
     # only the anima handler overrides the base_arch no-op default.
 
-    def encode_captions_batched(self, captions, requires_grad: bool = False):
+    def encode_captions_batched(self, captions, requires_grad: bool = False, lyrics=None):
         """Encode a list of captions in one forward pass when possible.
 
         Returns a list of (embedding, auxiliary_data) tuples in the same
@@ -3683,6 +3693,12 @@ class BaseTrainer(ABC):
         Anima has a true batched path (single Qwen3 forward); the other
         architectures currently fall back to per-sample encode_caption.
         Override in subclasses that can add a real batched implementation.
+
+        Args:
+            lyrics: ACE-Step ONLY -- an optional list of per-item lyrics
+                strings, parallel to ``captions`` (same length/order). ``None``
+                (default) is treated as all-``""`` (every other arch ignores
+                this argument entirely).
         """
         if not captions:
             return []
@@ -3712,6 +3728,16 @@ class BaseTrainer(ABC):
             return out
 
         # Fallback: per-sample. No speedup but correct for any arch.
+        if lyrics is not None:
+            if len(lyrics) != len(captions):
+                raise ValueError(
+                    f"[encode_captions_batched] lyrics list length ({len(lyrics)}) "
+                    f"!= captions list length ({len(captions)})"
+                )
+            return [
+                self.encode_caption(c, requires_grad=requires_grad, lyrics=(lyr or ""))
+                for c, lyr in zip(captions, lyrics)
+            ]
         return [self.encode_caption(c, requires_grad=requires_grad) for c in captions]
 
     # ============================================================
@@ -6000,6 +6026,82 @@ class BaseTrainer(ABC):
 
         return latent
 
+    def _load_or_regenerate_acestep_audio_latent(self, item: Dict[str, Any], cache: Any) -> torch.Tensor:
+        """Load (or regenerate-and-cache) the ACE-Step audio-clip latent for one
+        dataset item, mirroring ``_regenerate_single_latent``'s role for still
+        images/``_regenerate_single_latent``'s device-offload dance -- but keyed
+        by ``(audio_path, clip_seconds, sample_rate)`` via
+        ``LatentCache.load_audio_latent``/``save_audio_latent``
+        (``compute_audio_hash``), NOT the image ``(width, height)`` scheme
+        ``_regenerate_single_latent`` uses (audio latents have no spatial axis
+        at all -- see ``audio_loader.py`` / this module's ACE-Step docstrings).
+
+        Cache hit: returns the cached ``[1, T, 64]`` latent directly (moved to
+        ``self.device``), no model movement needed. Cache miss: offloads the
+        DiT (and text encoder, if resident) to CPU, moves the VAE to GPU,
+        VAE-encodes the audio file fresh via
+        ``audio_loader.encode_and_cache_audio`` (which also persists the
+        result, so subsequent items / epochs / resumed runs hit the cache),
+        then restores the pre-call device layout -- exactly the same
+        offload/restore contract as ``_regenerate_single_latent``, adapted for
+        ACE-Step's component set (``.transformer``/``.text_encoder``, no
+        U-Net / text_encoder_2).
+        """
+        from core.training.audio_loader import encode_and_cache_audio
+
+        audio_path = item.get("audio_path") or item["image_path"]
+        _clip_seconds = item.get("clip_seconds")
+        clip_seconds = float(_clip_seconds) if _clip_seconds else None
+        sample_rate = int(getattr(self, "acestep_sample_rate", 48000))
+
+        cached = cache.load_audio_latent(audio_path, clip_seconds, sample_rate, device=str(self.device))
+        if cached is not None:
+            return cached
+
+        print(f"{self.log_prefix} [Latent Regeneration] Audio cache miss for "
+              f"{os.path.basename(str(audio_path))}, regenerating...")
+
+        transformer_device = next(self.transformer.parameters()).device
+        text_encoder_device = (
+            next(self.text_encoder.parameters()).device if self.text_encoder is not None else None
+        )
+        vae_device = next(self.vae.parameters()).device
+
+        try:
+            if transformer_device != torch.device('cpu'):
+                print(f"{self.log_prefix} [Latent Regeneration] Moving ACE-Step DiT to CPU...")
+                self.transformer.to('cpu')
+            if text_encoder_device is not None and text_encoder_device != torch.device('cpu'):
+                print(f"{self.log_prefix} [Latent Regeneration] Moving Text Encoder to CPU...")
+                self.text_encoder.to('cpu')
+
+            torch.cuda.empty_cache()
+
+            if vae_device != self.device:
+                print(f"{self.log_prefix} [Latent Regeneration] Moving VAE to GPU...")
+                self.vae.to(device=self.device, dtype=self.vae_dtype)
+
+            latent = encode_and_cache_audio(
+                cache=cache,
+                audio_path=audio_path,
+                clip_seconds=clip_seconds,
+                vae_encode_audio=lambda wav: self.arch.vae_encode_audio(self, wav),
+                sample_rate=sample_rate,
+                device=str(self.device),
+            )
+            print(f"{self.log_prefix} [Latent Regeneration] Audio latent regenerated and saved to cache")
+        finally:
+            print(f"{self.log_prefix} [Latent Regeneration] Restoring models...")
+            if transformer_device != torch.device('cpu'):
+                self.transformer.to(transformer_device)
+            if text_encoder_device is not None and text_encoder_device != torch.device('cpu'):
+                self.text_encoder.to(text_encoder_device)
+            if vae_device != self.device:
+                self.vae.to(device=vae_device, dtype=self.vae_dtype)
+            torch.cuda.empty_cache()
+
+        return latent.to(self.device)
+
     def _setup_text_encoder_caches(self, datasets: List[Any]) -> Dict[str, Path]:
         """
         Setup per-dataset text encoder cache directories for all architectures.
@@ -6033,6 +6135,24 @@ class BaseTrainer(ABC):
 
         return text_encoder_caches
 
+    def _text_cache_key(self, caption: str, lyrics: str = "") -> str:
+        """Compute the on-disk text-embedding cache hash for one (caption,
+        lyrics) pair.
+
+        ``lyrics`` is ACE-Step ONLY (see ``ops/acestep_ops.py``'s module
+        docstring); every other arch always calls this with ``lyrics=""``.
+        When lyrics is empty this returns EXACTLY the historical
+        ``md5(caption)`` key (so every existing cache entry, and every
+        non-ACE-Step arch, is byte-identical / fully backward compatible).
+        A non-empty lyrics string folds into the hash so two items sharing a
+        caption but differing in lyrics never collide on the same cache file
+        (the critical correctness point for per-item lyrics support).
+        """
+        import hashlib
+        if lyrics:
+            return hashlib.md5(f"{caption}\x1elyrics:{lyrics}".encode()).hexdigest()
+        return hashlib.md5(caption.encode()).hexdigest()
+
     def _validate_and_generate_text_encoder_caches(
         self,
         datasets: List[Any],
@@ -6050,8 +6170,6 @@ class BaseTrainer(ABC):
             progress_callback: Progress callback function
             epoch_num: Current epoch number (for logging)
         """
-        import hashlib
-
         arch_name = ("Z-Image" if self.is_zimage else
                      "Lens" if self.is_lens else
                      ("SDXL" if self.is_sdxl else "SD1.5"))
@@ -6063,23 +6181,31 @@ class BaseTrainer(ABC):
         total_captions = 0
 
         for dataset in datasets:
-            unique_captions = set()
+            unique_pairs = set()
             caption_samples = []
             for item in dataset.items:
                 caption = item.get("caption", "")
-                # Cache EVERY caption, including the empty string. An empty
-                # caption is a legitimate (unconditional) conditioning; skipping
-                # it here would leave those items with no disk cache entry, so at
+                # ACE-Step ONLY: lyrics is a SEPARATE per-item conditioning
+                # signal (see ops/acestep_ops.py's module docstring); every
+                # other arch's item dicts never carry a "lyrics" key, so this
+                # is always "" for them (identical dedup/hash behavior as
+                # before this field existed).
+                lyrics = item.get("lyrics", "") if self.is_acestep else ""
+                # Cache EVERY (caption, lyrics) pair, including the empty
+                # string(s). An empty caption/lyrics is a legitimate
+                # (unconditional / instrumental) conditioning; skipping it here
+                # would leave those items with no disk cache entry, so at
                 # train time they fall into the pre_encoded on-the-fly fallback
                 # while the Text Encoder is offloaded to CPU -> device-mismatch
                 # crash. md5("") is a valid key and encode_caption("") is the
                 # same unconditional encode the swap_onthefly path already runs.
-                unique_captions.add(caption)
+                unique_pairs.add((caption, lyrics))
                 if caption and len(caption_samples) < 3:
                     caption_samples.append(caption)
-            dataset_captions[dataset.unique_id] = unique_captions
-            total_captions += len(unique_captions)
-            print(f"{self.log_prefix} Dataset '{dataset.unique_id}': {len(unique_captions)} unique captions")
+            dataset_captions[dataset.unique_id] = unique_pairs
+            total_captions += len(unique_pairs)
+            _pair_note = " (caption+lyrics pairs)" if self.is_acestep else ""
+            print(f"{self.log_prefix} Dataset '{dataset.unique_id}': {len(unique_pairs)} unique captions{_pair_note}")
             if caption_samples and epoch_num is not None:
                 print(f"{self.log_prefix}   Sample captions (epoch {epoch_num + 1}):")
                 for i, sample in enumerate(caption_samples[:3], 1):
@@ -6097,12 +6223,12 @@ class BaseTrainer(ABC):
         try:
             for dataset in datasets:
                 cache_dir = text_encoder_caches[dataset.unique_id]
-                captions = dataset_captions[dataset.unique_id]
+                pairs = dataset_captions[dataset.unique_id]
 
-                # Check which captions are missing
+                # Check which (caption, lyrics) pairs are missing
                 captions_to_encode = []
-                for caption in captions:
-                    caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                for caption, lyrics in pairs:
+                    caption_hash = self._text_cache_key(caption, lyrics)
                     embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                     # Check auxiliary data file (architecture-specific)
@@ -6113,9 +6239,15 @@ class BaseTrainer(ABC):
                         # persisted (cannot be cheaply reconstructed like anima).
                         auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
                     elif self.is_acestep:
-                        # ACE-Step aux is a dict {text_attention_mask}; persisted
-                        # (mirrors ltx2's aux-dict pattern).
-                        auxiliary_path = cache_dir / f"{caption_hash}_acestepaux.pt"
+                        # ACE-Step aux is a dict {text_attention_mask,
+                        # lyric_hidden_states, lyric_attention_mask}; persisted
+                        # (mirrors ltx2's aux-dict pattern). "v2" suffix: the aux
+                        # schema gained the two lyric_* keys (per-item lyrics
+                        # follow-up) -- old "_acestepaux.pt" files predate them
+                        # and would fail collate_aux's key check, so this bumps
+                        # the on-disk filename to force a clean regeneration
+                        # instead of silently loading a stale/incompatible dict.
+                        auxiliary_path = cache_dir / f"{caption_hash}_acestepauxv2.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
                     else:
@@ -6124,32 +6256,32 @@ class BaseTrainer(ABC):
                     # Check if all required files exist
                     if auxiliary_path is not None:
                         if not (embeds_path.exists() and auxiliary_path.exists()):
-                            captions_to_encode.append(caption)
+                            captions_to_encode.append((caption, lyrics))
                         else:
                             total_cached += 1
                     else:
                         if not embeds_path.exists():
-                            captions_to_encode.append(caption)
+                            captions_to_encode.append((caption, lyrics))
                         else:
                             total_cached += 1
 
                 if len(captions_to_encode) == 0:
-                    print(f"{self.log_prefix} Dataset '{dataset.unique_id}': All {len(captions)} captions already cached")
+                    print(f"{self.log_prefix} Dataset '{dataset.unique_id}': All {len(pairs)} captions already cached")
                 else:
-                    print(f"{self.log_prefix} Dataset '{dataset.unique_id}': Encoding {len(captions_to_encode)}/{len(captions)} captions...")
+                    print(f"{self.log_prefix} Dataset '{dataset.unique_id}': Encoding {len(captions_to_encode)}/{len(pairs)} captions...")
 
-                    for idx, caption in enumerate(tqdm(captions_to_encode, desc=f"Encoding captions [{dataset.unique_id}]")):
+                    for idx, (caption, lyrics) in enumerate(tqdm(captions_to_encode, desc=f"Encoding captions [{dataset.unique_id}]")):
                         # Abort promptly on user stop (raises KeyboardInterrupt; the
                         # finally below moves the text encoder(s) back to CPU).
                         self._check_stop_requested()
 
                         # Encode caption (unified method)
-                        embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
+                        embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False, lyrics=lyrics)
                         embeds_cpu = embeddings.cpu()
                         auxiliary_cpu = self._aux_to_cpu(auxiliary_data)
 
                         # Save immediately to disk to avoid memory accumulation
-                        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+                        caption_hash = self._text_cache_key(caption, lyrics)
                         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
                         try:
@@ -6164,7 +6296,7 @@ class BaseTrainer(ABC):
                                 ltx2aux_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
                                 torch.save(auxiliary_cpu, ltx2aux_path)
                             elif self.is_acestep and auxiliary_cpu is not None:
-                                acestepaux_path = cache_dir / f"{caption_hash}_acestepaux.pt"
+                                acestepaux_path = cache_dir / f"{caption_hash}_acestepauxv2.pt"
                                 torch.save(auxiliary_cpu, acestepaux_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
                                 pooled_path = cache_dir / f"{caption_hash}_pooled.pt"
@@ -6201,7 +6333,8 @@ class BaseTrainer(ABC):
         self,
         caption: str,
         dataset_unique_id: str,
-        text_encoder_caches: Dict[str, Path]
+        text_encoder_caches: Dict[str, Path],
+        lyrics: str = "",
     ) -> Optional[Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         """
         Load caption embedding from disk cache for all architectures.
@@ -6210,6 +6343,10 @@ class BaseTrainer(ABC):
             caption: Caption text
             dataset_unique_id: Dataset unique ID
             text_encoder_caches: Dictionary mapping dataset_unique_id to cache directory
+            lyrics: ACE-Step ONLY -- the item's per-item lyrics text ("" default;
+                every other arch ignores this). Must match the value passed to
+                encode_caption()/the cache-generation pass for the SAME item, or
+                the lookup misses (see _text_cache_key).
 
         Returns:
             Tuple of (embeddings, auxiliary_data) if cached, None otherwise:
@@ -6217,13 +6354,11 @@ class BaseTrainer(ABC):
             - SD1.5: (text_embeddings, None)
             - SDXL: (text_embeddings, pooled_embeddings)
         """
-        import hashlib
-
         cache_dir = text_encoder_caches.get(dataset_unique_id)
         if cache_dir is None:
             return None
 
-        caption_hash = hashlib.md5(caption.encode()).hexdigest()
+        caption_hash = self._text_cache_key(caption, lyrics)
         embeds_path = cache_dir / f"{caption_hash}_embeds.pt"
 
         # Check architecture-specific auxiliary file
@@ -6232,7 +6367,9 @@ class BaseTrainer(ABC):
         elif self.is_ltx2:
             auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
         elif self.is_acestep:
-            auxiliary_path = cache_dir / f"{caption_hash}_acestepaux.pt"
+            # "v2" suffix -- see _validate_and_generate_text_encoder_caches's
+            # matching comment (aux schema gained lyric_* keys).
+            auxiliary_path = cache_dir / f"{caption_hash}_acestepauxv2.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
         else:
@@ -7054,6 +7191,25 @@ class BaseTrainer(ABC):
                   f"'onthefly_gpu' (was '{latent_encoding_mode}') — disk/swap latent caches "
                   f"cannot represent per-epoch crops")
             latent_encoding_mode = "onthefly_gpu"
+
+        # ACE-Step audio items: the only latent-cache pass that knows how to
+        # encode audio clips is _validate_and_generate_latent_caches's
+        # item_type=="audio" branch (encode_and_cache_audio), which only runs
+        # under pre_encoded_cache mode (see the mode-dependent setup just
+        # below). swap_onthefly's in-memory buffer and onthefly_gpu's
+        # per-batch encode were built only for still-image / LTX-2.3-video
+        # items and have no audio-clip branch -- selecting them for an audio
+        # dataset would crash deep inside the training loop instead of at
+        # setup. Force pre_encoded_cache (mirrors the minit2i / crop_planner
+        # force-overrides above) so an audio dataset always gets a
+        # working (and cache-hit-on-resume) latent path.
+        if self.is_acestep and latent_encoding_mode != "pre_encoded_cache" and any(
+            item.get("item_type") == "audio" for dataset in datasets for item in dataset.items
+        ):
+            print(f"{self.log_prefix} ACE-Step audio dataset detected: forcing "
+                  f"latent_encoding_mode='pre_encoded_cache' (was '{latent_encoding_mode}') — "
+                  f"swap_onthefly/onthefly_gpu have no audio-clip encode path yet")
+            latent_encoding_mode = "pre_encoded_cache"
 
         # Setup latent caches (mode-dependent)
         latent_caches = None
@@ -8024,7 +8180,9 @@ class BaseTrainer(ABC):
                     if self.text_encoder is not None:
                         self.text_encoder.to("cpu").eval().requires_grad_(False)
                     te_prefetcher = CpuTextEncoderPrefetcher(
-                        encode_batch_fn=lambda caps: self.encode_captions_batched(caps, requires_grad=False),
+                        encode_batch_fn=lambda caps, lyr=None: self.encode_captions_batched(
+                            caps, requires_grad=False, lyrics=lyr
+                        ),
                         batches=list(batches),
                         prefetch_depth=int(text_encoding_prefetch_depth or 4),
                         log_prefix=f"{self.log_prefix} [cpu_prefetch]",
@@ -8062,7 +8220,9 @@ class BaseTrainer(ABC):
 
                         caption = item.get("caption", "")
                         image_path = item["image_path"]
-                        embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
+                        embeddings, auxiliary_data = self.encode_caption(
+                            caption, requires_grad=False, lyrics=item.get("lyrics", "")
+                        )
                         # Store on CPU to save GPU VRAM, keyed by image_path
                         # auxiliary_data: attention_mask (Z-Image), pooled_embeddings (SDXL), None (SD1.5)
                         swap_buffer[image_path] = (
@@ -8526,7 +8686,9 @@ class BaseTrainer(ABC):
                         for idx, (item, dataset) in enumerate(tqdm(buffer_items, desc="Encoding captions", leave=False)):
                             caption = item.get("caption", "")
                             image_path = item["image_path"]
-                            embeddings, auxiliary_data = self.encode_caption(caption, requires_grad=False)
+                            embeddings, auxiliary_data = self.encode_caption(
+                                caption, requires_grad=False, lyrics=item.get("lyrics", "")
+                            )
                             # Store on CPU to save GPU VRAM, keyed by image_path
                             swap_buffer[image_path] = (
                                 embeddings.cpu(),
@@ -8739,61 +8901,85 @@ class BaseTrainer(ABC):
                                     break
 
                         elif latent_encoding_mode == "pre_encoded_cache":
-                            # Load from disk cache
                             cache = latent_caches[dataset.unique_id]
-                            latent = cache.load_latent(item["image_path"], width, height)
 
-                            # On-the-fly regeneration if cache is corrupted or incompatible
-                            if latent is None:
-                                print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
-                                latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
-
-                            # Validate latent shape.
-                            # Lens / Ideogram4 latents are [1, N, 128] (3D flat sequence); skip the 4D check.
-                            if self.is_minit2i and getattr(self, "minit2i_latent", False):
-                                # Latent-space: VAE latent [1, C, H/vsf, W/vsf].
-                                vsf = getattr(self, "minit2i_vae_scale_factor", 8)
-                                eh, ew = height // vsf, width // vsf
-                                if latent.ndim != 4 or latent.shape[2] != eh or latent.shape[3] != ew:
-                                    print(f"{self.log_prefix} WARNING: MiniT2I latent shape mismatch for {item['image_path']}")
-                                    print(f"{self.log_prefix}   Expected: [1, C, {eh}, {ew}]  Got: {list(latent.shape)}")
-                                    print(f"{self.log_prefix}   Regenerating latent...")
-                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
-                            elif self.is_minit2i:
-                                # Pixel-space: "latent" is the [-1,1] RGB image [1, 3, H, W] (full res, no VAE downscale).
-                                if (latent.ndim != 4 or latent.shape[1] != 3
-                                        or latent.shape[2] != height or latent.shape[3] != width):
-                                    print(f"{self.log_prefix} WARNING: MiniT2I pixel-latent shape mismatch for {item['image_path']}")
-                                    print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
-                                    print(f"{self.log_prefix}   Regenerating latent...")
-                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
-                            elif self.is_krea2:
-                                # Krea 2: packed latent [1, (H//16)*(W//16), 64].
-                                expected_seq_len = (height // 16) * (width // 16)
-                                if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 64:
-                                    print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
-                                    print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 64]  Got: {list(latent.shape)}")
-                                    print(f"{self.log_prefix}   Regenerating latent...")
-                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
-                            elif not (self.is_lens or self.is_ideogram4):
-                                expected_latent_height = height // 8
-                                expected_latent_width = width // 8
-                                if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
-                                    print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
-                                    print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
-                                    print(f"{self.log_prefix}   Got: {list(latent.shape)}")
-                                    print(f"{self.log_prefix}   Regenerating latent...")
-                                    latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                            # ACE-Step audio-clip item: [1, T, 64] temporal-only latent,
+                            # no width/height/bucket concept at all (see module docstring
+                            # / audio_loader.py) -- keyed by (audio_path, clip_seconds,
+                            # sample_rate) via compute_audio_hash, NOT compute_image_hash,
+                            # so it must go through load_audio_latent/save_audio_latent,
+                            # never the generic load_latent(width, height) below (which
+                            # would silently miss on a different hash scheme and fall
+                            # into _regenerate_single_latent's Image.open/encode_image --
+                            # NotImplementedError for this audio-only arch, and the
+                            # width/height-keyed shape-validation chain below would also
+                            # crash on None//int). Mirrors the LTX-2.3 video-clip
+                            # special-case elsewhere in this same loop
+                            # (_encode_ltx2_video_clip), except audio clips ARE
+                            # disk-cached (no random per-step re-crop -- audio_loader.py's
+                            # docstring: clips are taken from a fixed START offset, so a
+                            # cache hit is always valid, unlike video's intentional
+                            # random window). Skips straight to latents_list.append() --
+                            # the caption/text-embedding encode below this if/elif chain
+                            # still runs normally for this item (no `continue`).
+                            if self.is_acestep and item.get("item_type") == "audio":
+                                latent = self._load_or_regenerate_acestep_audio_latent(item, cache)
+                                latents_list.append(latent)
                             else:
-                                # Lens: [1, latent_h*latent_w, 128]
-                                expected_seq_len = (height // 16) * (width // 16)
-                                if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 128:
-                                    print(f"{self.log_prefix} WARNING: Lens latent shape mismatch for {item['image_path']}")
-                                    print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 128]  Got: {list(latent.shape)}")
-                                    print(f"{self.log_prefix}   Regenerating latent...")
+                                # Load from disk cache
+                                latent = cache.load_latent(item["image_path"], width, height)
+
+                                # On-the-fly regeneration if cache is corrupted or incompatible
+                                if latent is None:
+                                    print(f"{self.log_prefix} WARNING: Latent cache miss or corrupted for {item['image_path']}, regenerating...")
                                     latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
 
-                            latents_list.append(latent)
+                                # Validate latent shape.
+                                # Lens / Ideogram4 latents are [1, N, 128] (3D flat sequence); skip the 4D check.
+                                if self.is_minit2i and getattr(self, "minit2i_latent", False):
+                                    # Latent-space: VAE latent [1, C, H/vsf, W/vsf].
+                                    vsf = getattr(self, "minit2i_vae_scale_factor", 8)
+                                    eh, ew = height // vsf, width // vsf
+                                    if latent.ndim != 4 or latent.shape[2] != eh or latent.shape[3] != ew:
+                                        print(f"{self.log_prefix} WARNING: MiniT2I latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix}   Expected: [1, C, {eh}, {ew}]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Regenerating latent...")
+                                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                                elif self.is_minit2i:
+                                    # Pixel-space: "latent" is the [-1,1] RGB image [1, 3, H, W] (full res, no VAE downscale).
+                                    if (latent.ndim != 4 or latent.shape[1] != 3
+                                            or latent.shape[2] != height or latent.shape[3] != width):
+                                        print(f"{self.log_prefix} WARNING: MiniT2I pixel-latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix}   Expected: [1, 3, {height}, {width}]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Regenerating latent...")
+                                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                                elif self.is_krea2:
+                                    # Krea 2: packed latent [1, (H//16)*(W//16), 64].
+                                    expected_seq_len = (height // 16) * (width // 16)
+                                    if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 64:
+                                        print(f"{self.log_prefix} WARNING: Krea 2 latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 64]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Regenerating latent...")
+                                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                                elif not (self.is_lens or self.is_ideogram4):
+                                    expected_latent_height = height // 8
+                                    expected_latent_width = width // 8
+                                    if latent.shape[2] != expected_latent_height or latent.shape[3] != expected_latent_width:
+                                        print(f"{self.log_prefix} WARNING: Latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix}   Expected: [1, {self.vae_latent_channels}, {expected_latent_height}, {expected_latent_width}]")
+                                        print(f"{self.log_prefix}   Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Regenerating latent...")
+                                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+                                else:
+                                    # Lens: [1, latent_h*latent_w, 128]
+                                    expected_seq_len = (height // 16) * (width // 16)
+                                    if latent.ndim != 3 or latent.shape[1] != expected_seq_len or latent.shape[2] != 128:
+                                        print(f"{self.log_prefix} WARNING: Lens latent shape mismatch for {item['image_path']}")
+                                        print(f"{self.log_prefix}   Expected: [1, {expected_seq_len}, 128]  Got: {list(latent.shape)}")
+                                        print(f"{self.log_prefix}   Regenerating latent...")
+                                        latent = self._regenerate_single_latent(item["image_path"], width, height, cache, latent_caches)
+
+                                latents_list.append(latent)
 
                         elif latent_encoding_mode == "onthefly_gpu":
                             # Encode on GPU without cache. Ensure the VAE is on GPU first:
@@ -8877,7 +9063,9 @@ class BaseTrainer(ABC):
                             else:
                                 # Fallback to on-the-fly encoding (image not in buffer)
                                 print(f"{self.log_prefix} WARNING: Image not in text swap buffer, encoding on-the-fly: {image_path}")
-                                embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                                embeddings, auxiliary = self.encode_caption(
+                                    caption, requires_grad=True, lyrics=item.get("lyrics", "")
+                                )
                                 text_embeddings_list.append(embeddings)
                                 auxiliary_data_list.append(auxiliary)
 
@@ -8886,7 +9074,8 @@ class BaseTrainer(ABC):
                             cached_result = self._load_caption_embedding_from_disk(
                                 caption=caption,
                                 dataset_unique_id=dataset.unique_id,
-                                text_encoder_caches=text_encoder_caches
+                                text_encoder_caches=text_encoder_caches,
+                                lyrics=item.get("lyrics", ""),
                             )
                             if cached_result is not None:
                                 embeddings_cpu, auxiliary_cpu = cached_result
@@ -8912,7 +9101,9 @@ class BaseTrainer(ABC):
                                       f"one-off on-the-fly encode: '{caption[:30]}...'")
                                 self.move_text_encoder_to_gpu()
                                 try:
-                                    embeddings, auxiliary = self.encode_caption(caption, requires_grad=False)
+                                    embeddings, auxiliary = self.encode_caption(
+                                        caption, requires_grad=False, lyrics=item.get("lyrics", "")
+                                    )
                                 finally:
                                     self.move_text_encoder_to_cpu()
                                 text_embeddings_list.append(embeddings)
@@ -8920,7 +9111,9 @@ class BaseTrainer(ABC):
 
                         elif text_encoding_mode == "onthefly_gpu":
                             # Encode on GPU without cache
-                            embeddings, auxiliary = self.encode_caption(caption, requires_grad=True)
+                            embeddings, auxiliary = self.encode_caption(
+                                caption, requires_grad=True, lyrics=item.get("lyrics", "")
+                            )
                             text_embeddings_list.append(embeddings)
                             auxiliary_data_list.append(auxiliary)
 
@@ -9239,7 +9432,10 @@ class BaseTrainer(ABC):
                         # Handle text embeddings based on training mode
                         if need_recompute_text_embeddings:
                             # Text Encoder trainable + MNT > 1: Re-encode text for each iteration
-                            # This creates a fresh computation graph with gradient flow to Text Encoder
+                            # This creates a fresh computation graph with gradient flow to Text Encoder.
+                            # NOTE: unreachable for ACE-Step (text_encoder is unconditionally frozen in
+                            # acestep_ops.load_components, so text_encoder_trainable is always False) --
+                            # `caption`-only (no per-item lyrics) here is therefore never a lyrics gap.
                             mnt_text_embeddings_list = []
                             mnt_auxiliary_data_list = []
                             for caption in batch_captions:

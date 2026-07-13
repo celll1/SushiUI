@@ -486,6 +486,21 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
             "height": item.height,
             "related_images": item.related_images,
         }
+        # ACE-Step audio items: source LYRICS from a SEPARATE, dedicated
+        # caption_type=="lyrics" DatasetCaption row -- independent of whichever
+        # caption_type was selected above as the primary "caption" (tags /
+        # natural_language). Lyrics is a second, parallel conditioning signal
+        # (not a substitute for the caption), so it is looked up on its own
+        # rather than folded into the caption_types priority search. Missing
+        # ("" default) preserves the pre-existing instrumental-only behavior
+        # for every item/dataset that has never had a lyrics caption added.
+        if item.item_type == "audio":
+            lyrics_caption = None
+            for caption in item.captions:
+                if caption.caption_type == "lyrics":
+                    lyrics_caption = caption
+                    break
+            item_dict["lyrics"] = lyrics_caption.content if lyrics_caption else ""
         # LTX-2.3 video items: carry item_type + probed video metadata so the
         # trainer's video-clip encode path (item_type=="video") and
         # VideoBucketManager see it. Image items are unchanged (item_type="single").
@@ -713,7 +728,7 @@ def _process_cached_items(
                     processed_item[_vk] = item[_vk]
         elif item.get("item_type") == "audio":
             processed_item["item_type"] = "audio"
-            for _ak in ("audio_path", "sample_rate", "duration", "channels"):
+            for _ak in ("audio_path", "sample_rate", "duration", "channels", "lyrics"):
                 if _ak in item:
                     processed_item[_ak] = item[_ak]
         else:

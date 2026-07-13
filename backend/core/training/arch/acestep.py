@@ -31,9 +31,9 @@ class AceStepArchHandler(ArchHandler):
         from core.training.ops import acestep_ops
         acestep_ops.setup_attention_backend(trainer, trainer.attention_backend)
 
-    def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False):
+    def encode_prompt(self, trainer, prompt, *, requires_grad: bool = False, lyrics: str = ""):
         from core.training.ops import acestep_ops
-        return acestep_ops.encode_prompt(trainer, prompt)
+        return acestep_ops.encode_prompt(trainer, prompt, lyrics=lyrics)
 
     def collate_aux(self, trainer, batch) -> dict:
         from core.training.ops import acestep_ops

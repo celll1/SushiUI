@@ -77,6 +77,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.is_ltx2_model: bool = False
         self._ltx2_offload_enabled: bool = False
 
+        # ACE-Step 1.5 components (2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B
+        # text encoder). Audio/music model; flow matching. Phase 0+1: loadable/
+        # slot-switchable only — no sampler/generation entry point yet (Phase 2).
+        self.acestep_components: Optional[Dict[str, Any]] = None
+        self.is_acestep_model: bool = False
+
         # SigLIP2 Vision Encoder (optional, for SD/SDXL vision-conditioned generation)
         self.vision_encoder: Optional[Any] = None
         self._vision_encoder_path: Optional[str] = None
@@ -132,6 +138,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return "krea2"
         if self.is_ltx2_model:
             return "ltx2"
+        if self.is_acestep_model:
+            return "acestep"
         # Detect SDXL vs SD1.5 by inspecting the loaded pipeline class
         pipe = self.txt2img_pipeline
         if pipe is not None:
@@ -323,6 +331,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 # Reset offload guard so a later LTX-2.3 load re-attaches the
                 # cpu-offload hooks on the fresh pipeline.
                 self._ltx2_offload_enabled = False
+
+            # Clean up ACE-Step 1.5 components
+            if self.acestep_components is not None:
+                print("[Pipeline] Cleaning up ACE-Step 1.5 components...")
+                for comp_name, comp in self.acestep_components.items():
+                    if comp is not None and hasattr(comp, 'to'):
+                        try:
+                            comp.to('cpu')
+                        except Exception:
+                            pass
+                    del comp
+                self.acestep_components = None
+                self.is_acestep_model = False
 
             # Force garbage collection
             gc.collect()
@@ -670,6 +691,62 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 }
                 self._save_last_model(source_type, source, pipeline_type)
                 print("[Pipeline] LTX-2.3 model loaded successfully")
+                return
+
+            # Check if ACE-Step 1.5 (2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B
+            # text encoder). Before the generic Z-Image check (which matches any
+            # dict carrying a "transformer" key — ACE-Step's DiT key is "dit", so
+            # it would not collide, but the explicit type-tag check runs first
+            # for clarity, matching the LTX-2.3 pattern above). Phase 0+1:
+            # loadable/slot-switchable only; no sampler/generation entry point yet.
+            if isinstance(model_result, dict) and model_result.get("type") == "acestep":
+                print("[Pipeline] ACE-Step 1.5 audio model detected (component-based dict returned)")
+                self.acestep_components = model_result
+                self.is_acestep_model = True
+                self.is_ltx2_model = False
+                self.is_krea2_model = False
+                self.is_minit2i_model = False
+                self.is_ideogram4_model = False
+                self.is_lens_model = False
+                self.is_anima_model = False
+                self.is_zimage_model = False
+                self.is_flux2_model = False
+                self.current_model = model_id
+                self.current_attention_type = "normal"
+
+                # Keep components on CPU (VRAM discipline; GPU staging is Phase 2).
+                for comp_name in ("dit", "vae", "text_encoder"):
+                    comp = self.acestep_components.get(comp_name)
+                    if comp is not None and hasattr(comp, "to"):
+                        try:
+                            comp.to("cpu")
+                        except Exception:
+                            pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[VRAM] ACE-Step 1.5 components on CPU. GPU staging happens at generate time (Phase 2).")
+
+                model_hash = ""
+                if source_type in ["safetensors", "diffusers"] and os.path.exists(source):
+                    try:
+                        from utils.hash_cache import get_cached_file_hash
+                        model_hash = get_cached_file_hash(source)
+                    except Exception as e:
+                        print(f"[Pipeline] Hash compute skipped: {e}")
+
+                self.current_model_info = {
+                    "source_type": source_type,
+                    "source": source,
+                    "type": "acestep",
+                    "is_v_prediction": False,  # flow matching, velocity prediction
+                    "model_hash": model_hash,
+                    "is_audio": True,
+                    "sample_rate": self.acestep_components.get("sample_rate", 48000),
+                    "latent_frame_rate": self.acestep_components.get("latent_frame_rate", 25),
+                    "latent_channels": self.acestep_components.get("latent_channels", 64),
+                }
+                self._save_last_model(source_type, source, pipeline_type)
+                print("[Pipeline] ACE-Step 1.5 model loaded successfully")
                 return
 
             # Check if Z-Image

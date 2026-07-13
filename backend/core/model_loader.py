@@ -10,7 +10,7 @@ from pathlib import Path
 ModelSource = Literal["safetensors", "diffusers", "huggingface"]
 # DEUS support removed - architecture no longer maintained
 # ModelType = Literal["sd15", "sdxl", "zimage", "deus", "flux2"]
-ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2"]
+ModelType = Literal["sd15", "sdxl", "zimage", "flux2", "anima", "lens", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]
 
 class ModelLoader:
     """Handles loading models from various sources"""
@@ -420,6 +420,23 @@ class ModelLoader:
             return False
 
     @staticmethod
+    def _looks_like_acestep_dir(model_path: str) -> bool:
+        """ACE-Step 1.5 flat ComfyUI-style tree: a `diffusion_models/` subfolder
+        containing one of the EXACT known `acestep_v1.5_{turbo,sft,base}.safetensors`
+        filenames. Exact-name (not glob) so this cannot collide with Anima's
+        similarly-shaped bare `diffusion_models/+text_encoders/+vae/` layout."""
+        try:
+            if not os.path.isdir(model_path):
+                return False
+            from core.models.acestep.loader import ACESTEP_DIT_PATTERNS
+            dit_dir = os.path.join(model_path, "diffusion_models")
+            if not os.path.isdir(dit_dir):
+                return False
+            return any(os.path.isfile(os.path.join(dit_dir, name)) for name in ACESTEP_DIT_PATTERNS)
+        except Exception:
+            return False
+
+    @staticmethod
     def _is_krea2_safetensors(model_path: str) -> bool:
         """Open a .safetensors file and check for the Krea 2 key signature."""
         try:
@@ -525,6 +542,14 @@ class ModelLoader:
                         return "lens"
                 except Exception:
                     pass
+
+            # ACE-Step 1.5 detection (flat ComfyUI-style tree: diffusion_models/
+            # + vae/ + text_encoders/, no model_index.json / config.json anywhere).
+            # Matched on an EXACT acestep_v1.5_{turbo,sft,base}.safetensors filename
+            # inside diffusion_models/ so this cannot collide with Anima's bare
+            # diffusion_models/+text_encoders/+vae/ layout (different filenames).
+            if ModelLoader._looks_like_acestep_dir(model_path):
+                return "acestep"
 
             # LTX-2.3 detection (diffusers directory only: model_index.json with
             # _class_name == "LTX2Pipeline"). Unique class name, so it cannot
@@ -2112,6 +2137,11 @@ class ModelLoader:
             print(f"[ModelLoader] Loading as LTX-2.3 (diffusers directory)")
             return ModelLoader.load_ltx2_from_path(model_path, torch.bfloat16)
 
+        # ACE-Step 1.5 flat ComfyUI-style tree (2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B)
+        if model_type == "acestep":
+            print(f"[ModelLoader] Loading as ACE-Step 1.5 (flat model tree)")
+            return ModelLoader.load_acestep_from_path(model_path, torch.bfloat16)
+
         is_v_prediction = ModelLoader.detect_v_prediction(model_path)
 
         if model_type == "sdxl":
@@ -2401,3 +2431,17 @@ class ModelLoader:
         """
         from core.models.ltx2.loader import load_ltx2_from_diffusers
         return load_ltx2_from_diffusers(model_path=path, torch_dtype=torch_dtype)
+
+    @staticmethod
+    def load_acestep_from_path(
+        path: str,
+        torch_dtype: torch.dtype = torch.bfloat16,
+    ) -> dict:
+        """Load ACE-Step 1.5 from its flat ComfyUI-style model tree
+        (diffusion_models/ + vae/ + text_encoders/, no diffusers subfolders).
+
+        Returns a component dict consumed by PipelineManager.load_model()
+        (type == "acestep"). Phase 0+1: components load; no sampler yet.
+        """
+        from core.models.acestep.loader import load_acestep_from_path as _load_acestep
+        return _load_acestep(model_path=path, torch_dtype=torch_dtype)

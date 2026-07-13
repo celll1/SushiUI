@@ -60,6 +60,13 @@ export default function ImageGrid() {
     selectedImage.generation_type === "txt2vid" ||
     selectedImage.generation_type === "img2vid"
   );
+  // Whether the selected item is audio (flac/wav/mp3/ogg or is_audio flag / audio type).
+  const isSelectedAudio = !!selectedImage && (
+    selectedImage.is_audio === true ||
+    /\.(flac|wav|mp3|ogg)$/i.test(selectedImage.filename) ||
+    selectedImage.generation_type === "txt2aud" ||
+    selectedImage.generation_type === "aud2aud"
+  );
   const [sendImage, setSendImage] = useState(true);
   const [sendPrompt, setSendPrompt] = useState(true);
   const [sendParameters, setSendParameters] = useState(true);
@@ -113,6 +120,12 @@ export default function ImageGrid() {
       if (filterInpaint) types.push("inpaint");
       if (filterTxt2Vid) types.push("txt2vid");
       if (filterImg2Vid) types.push("img2vid");
+      // Audio (ACE-Step) generations have no dedicated filter checkbox yet;
+      // keep them visible whenever the type filter is otherwise restrictive
+      // (mirroring the "all on" default) so they aren't silently excluded by
+      // the generation_types whitelist below. If every checkbox above is off,
+      // `types` stays empty and the query remains unfiltered (all types show).
+      if (types.length > 0) types.push("txt2aud", "aud2aud");
 
       const filters: ImageFilters = {
         skip: (currentPage - 1) * imagesPerPage,
@@ -935,6 +948,25 @@ export default function ImageGrid() {
                         </div>
                       </div>
                     </>
+                  ) : isSelectedAudio ? (
+                    <>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-gray-400">Duration:</span>{' '}
+                          {selectedImage.duration ?? selectedImage.parameters?.duration}s
+                        </div>
+                        <div>
+                          <span className="text-gray-400">Sample Rate:</span>{' '}
+                          {selectedImage.sample_rate ?? selectedImage.parameters?.sample_rate} Hz
+                        </div>
+                      </div>
+                      {selectedImage.parameters?.lyrics && (
+                        <div>
+                          <span className="text-gray-400">Lyrics:</span>
+                          <p className="text-gray-100 break-words whitespace-pre-wrap">{selectedImage.parameters.lyrics}</p>
+                        </div>
+                      )}
+                    </>
                   ) : (
                     <>
                       <div className="grid grid-cols-2 gap-2">
@@ -956,9 +988,11 @@ export default function ImageGrid() {
                     </>
                   )}
                   <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <span className="text-gray-400">Size:</span> {selectedImage.width}x{selectedImage.height}
-                    </div>
+                    {!isSelectedAudio && (
+                      <div>
+                        <span className="text-gray-400">Size:</span> {selectedImage.width}x{selectedImage.height}
+                      </div>
+                    )}
                     <div>
                       <span className="text-gray-400">Seed:</span> {selectedImage.seed}
                     </div>
@@ -1447,7 +1481,7 @@ export default function ImageGrid() {
                           onClick={() => sendToImg2Img(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={!sendImage && !sendPrompt && !sendParameters}
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
                         >
                           img2img
                         </Button>
@@ -1455,7 +1489,7 @@ export default function ImageGrid() {
                           onClick={() => sendToInpaint(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={!sendImage && !sendPrompt && !sendParameters}
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
                         >
                           inpaint
                         </Button>
@@ -1463,6 +1497,7 @@ export default function ImageGrid() {
                           onClick={() => sendToUpscale(selectedImage)}
                           variant="secondary"
                           size="sm"
+                          disabled={isSelectedAudio}
                         >
                           Upscale
                         </Button>
@@ -1470,7 +1505,7 @@ export default function ImageGrid() {
                           onClick={() => sendToImg2Vid(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={isSelectedVideo}
+                          disabled={isSelectedVideo || isSelectedAudio}
                           title={isSelectedVideo ? "Use Capture frame for videos" : "Send image to img2vid as a keyframe"}
                         >
                           img2vid
@@ -1569,6 +1604,19 @@ export default function ImageGrid() {
                     loop
                     playsInline
                   />
+                ) : isSelectedAudio ? (
+                  <div className="w-full max-w-xl flex flex-col items-center gap-4 p-8">
+                    <img
+                      src={`/thumbnails/${selectedImage.filename.replace(/\.[^/.]+$/, "")}.png`}
+                      alt="Waveform"
+                      className="max-w-full rounded-lg"
+                    />
+                    <audio
+                      src={`/outputs/${selectedImage.filename}`}
+                      className="w-full"
+                      controls
+                    />
+                  </div>
                 ) : (
                   <img
                     src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
@@ -1713,7 +1761,7 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToImg2Img(selectedImage)}
-                disabled={!sendImage && !sendPrompt && !sendParameters}
+                disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Send to img2img"
               >
@@ -1721,7 +1769,7 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToInpaint(selectedImage)}
-                disabled={!sendImage && !sendPrompt && !sendParameters}
+                disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Send to inpaint"
               >
@@ -1729,6 +1777,7 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToUpscale(selectedImage)}
+                disabled={isSelectedAudio}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Send to upscale"
               >
@@ -1756,7 +1805,8 @@ export default function ImageGrid() {
               ) : (
                 <button
                   onClick={() => sendToImg2Vid(selectedImage)}
-                  className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded"
+                  disabled={isSelectedAudio}
+                  className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
                   title="Send image to img2vid as a keyframe"
                 >
                   img2vid

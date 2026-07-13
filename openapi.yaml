@@ -343,6 +343,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /generate/txt2aud:
+    post:
+      tags: [generation]
+      summary: Generate music/audio from a text caption (ACE-Step 1.5)
+      description: |
+        Text-to-audio (music) generation using a loaded ACE-Step 1.5 (turbo)
+        model. Produces a lossless FLAC file and a gallery row.
+
+        **Requirements:**
+        - An ACE-Step model must be loaded (otherwise 400).
+
+        **Key parameters:**
+        - `prompt`: caption text describing the desired music.
+        - `lyrics`: optional lyrics text; empty for instrumental.
+        - `audio_duration`: target length in seconds.
+
+        **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
+        is CFG-distilled; a non-default value is overridden back to 1.0),
+        shift=3.0.
+      operationId: generateTxt2Aud
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Txt2AudRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 1234567890
+                image:
+                  id: 45
+                  filename: "txt2aud_20260713_120000_1234567890.flac"
+                  generation_type: "txt2aud"
+        '400':
+          description: Invalid parameters or no ACE-Step model loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /generate/img2img:
     post:
       tags: [generation]
@@ -5323,6 +5376,55 @@ components:
               type: string
               format: binary
               description: "First-frame keyframe image (multipart file upload). Resized to (width, height) before conditioning."
+
+    Txt2AudRequest:
+      type: object
+      properties:
+        prompt:
+          type: string
+          default: ""
+          description: "Caption text describing the desired music (also accepted server-side as `caption`)."
+          example: "upbeat synthpop, driving bassline, female vocals"
+        lyrics:
+          type: string
+          default: ""
+          description: "Lyrics text. Empty for instrumental generation."
+          example: ""
+        audio_duration:
+          type: number
+          default: 30.0
+          description: "Target audio length in seconds."
+          example: 30.0
+        seed:
+          type: integer
+          default: -1
+          description: "Random seed. -1 draws a random seed (returned in actual_seed)."
+          example: -1
+        inference_steps:
+          type: integer
+          default: 8
+          description: "Number of denoising steps (turbo distilled default: 8)."
+          example: 8
+        guidance_scale:
+          type: number
+          default: 1.0
+          description: "Classifier-free guidance scale. Turbo is CFG-distilled (no twin forward pass); a non-1.0 value is overridden back to 1.0."
+          example: 1.0
+        shift:
+          type: number
+          default: 3.0
+          description: "Flow-matching timestep shift used to select the distilled step schedule."
+          example: 3.0
+        sampler_mode:
+          type: string
+          default: "euler"
+          description: "Accepted for forward-compatibility. The vendored generate_audio has no sampler_mode knob (Euler-only ODE/SDE integration); a non-default value is logged and ignored."
+          example: "euler"
+        vocal_language:
+          type: string
+          default: "en"
+          description: "Language folded into the lyrics/metas conditioning text."
+          example: "en"
 
     Img2ImgRequest:
       allOf:

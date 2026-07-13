@@ -67,8 +67,8 @@ FEATURE_LABELS: Dict[str, str] = {
 # ARCH_UNSUPPORTED[arch][feature] = short factual reason the feature has no
 # effect on that architecture.
 # ---------------------------------------------------------------------------
-_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2"]
-_SPECTRUM_UNSUPPORTED = ["zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2"]
+_DIT_ARCHS = ["zimage", "flux2", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep"]
+_SPECTRUM_UNSUPPORTED = ["zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep"]
 
 ARCH_UNSUPPORTED: Dict[str, Dict[str, str]] = {}
 
@@ -111,20 +111,29 @@ _add("ltx2", "advanced_cfg",
 _add("ltx2", "nag", "Normalized Attention Guidance is not implemented for the LTX-2.3 video model")
 _add("ltx2", "controlnets", "ControlNet is not supported for the LTX-2.3 video model")
 
+# ACE-Step 1.5 is an audio model (own DiT + flow-matching turbo sampler, driven
+# through /generate/txt2aud); none of the image-oriented guidance/conditioning
+# features apply. Image endpoints reject an ACE-Step model outright (see
+# _reject_if_audio_model), so these entries are defensive/documentation only.
+_add("acestep", "advanced_cfg",
+     "CFG scheduling / dynamic thresholding / CFG-rescale run only in the U-Net sampling loop, not in the ACE-Step turbo sampler")
+_add("acestep", "nag", "Normalized Attention Guidance is not implemented for the ACE-Step audio model")
+_add("acestep", "controlnets", "ControlNet is not supported for the ACE-Step audio model")
+
 # Text-encoder quantization: not applied on these architectures' text-encoder paths.
-for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2"]:
+for _a in ["sd15", "sdxl", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:
     _add(_a, "text_encoder_quantization",
          "text-encoder quantization is not applied on this architecture's text-encoder path")
 
 # CPU text encoding: not honored by these architectures' encode paths.
-for _a in ["zimage", "flux2", "ideogram4", "minit2i", "krea2", "ltx2"]:
+for _a in ["zimage", "flux2", "ideogram4", "minit2i", "krea2", "ltx2", "acestep"]:
     _add(_a, "cpu_text_encoding",
          "CPU text encoding is not honored by this architecture's encode path")
 
 # attention_impl (generation side): only the FLUX.2 inference path consumes it;
 # every other arch is conduit-only or ignores the selector.
 # "deus" is intentionally omitted: model_loader never assigns arch type "deus".
-for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2"]:
+for _a in ["sd15", "sdxl", "zimage", "ideogram4", "lens", "minit2i", "anima", "krea2", "ltx2", "acestep"]:
     _add(_a, "attention_impl",
          "attention_impl is only consumed by the FLUX.2 inference path; this architecture is conduit-only or ignores it")
 
@@ -154,11 +163,14 @@ for _a in _DIT_ARCHS:
          "text-encoder override is only supported on SD1.5/SDXL; this architecture's text encoder feeds arch-specific fusion trained for that exact geometry")
 
 # VAE override: unsupported on LTX-2.3 (a component swap invalidates the cpu-offload
-# hook chain and there is no compatible 5D VAE) and on MiniT2I (pixel-space, no VAE).
+# hook chain and there is no compatible 5D VAE), on MiniT2I (pixel-space, no VAE),
+# and on ACE-Step (audio Oobleck VAE, not an image/video component override target).
 _add("ltx2", "vae_override",
      "VAE override is not supported on the LTX-2.3 video model: a component swap invalidates the cpu-offload hook chain and there is no compatible 5D VAE")
 _add("minit2i", "vae_override",
      "VAE override is not supported on this pixel-space architecture, which has no VAE")
+_add("acestep", "vae_override",
+     "VAE override is not supported on the ACE-Step audio model: its Oobleck VAE is audio-specific and not a per-generation image/video override target")
 
 
 def arch_supports_feature(arch: Optional[str], feature: str) -> bool:

@@ -21,7 +21,8 @@ tipo-kgen>=0.1.0  # TIPO prompt optimization library
 vector_quantize_pytorch>=1.30.1  # ResidualFSQ used by the ACE-Step DiT audio tokenizer
 einx>=0.4.3  # tensor-op dependency of vector_quantize_pytorch
 frozendict>=2.4.7  # dependency of vector_quantize_pytorch
-torchaudio>=2.1.0  # aud2aud reference-audio load/resample (ACE-Step)
+soundfile>=0.12.1  # primary FLAC writer + aud2aud reference-audio loader (ACE-Step); libsndfile, no torchcodec needed
+torchaudio>=2.1.0  # aud2aud reference-audio load/resample fallback (ACE-Step); note: 2.x .save(flac) needs torchcodec, so ffmpeg is the reliable FLAC fallback
 
 # Image Processing
 Pillow>=10.2.0

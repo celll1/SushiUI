@@ -45,26 +45,34 @@ def _to_numpy_waveform(waveform) -> np.ndarray:
 
 
 def _write_flac_soundfile(arr: np.ndarray, sample_rate: int, flac_path: str) -> bool:
-    """Try writing FLAC via soundfile (libsndfile). Returns False if unavailable."""
+    """Try writing FLAC via soundfile (libsndfile). Returns False (fall through to
+    the next writer) if soundfile is missing OR the write fails for any reason."""
     try:
         import soundfile as sf
-    except ImportError:
+        # soundfile expects [samples, channels].
+        sf.write(flac_path, arr.T, int(sample_rate), format="FLAC", subtype="PCM_16")
+        return True
+    except Exception as e:  # noqa: BLE001 - any failure -> fall through to next writer
+        print(f"[AudioSave] soundfile writer unavailable/failed ({type(e).__name__}: {e}); trying next")
         return False
-    # soundfile expects [samples, channels].
-    sf.write(flac_path, arr.T, int(sample_rate), format="FLAC", subtype="PCM_16")
-    return True
 
 
 def _write_flac_torchaudio(arr: np.ndarray, sample_rate: int, flac_path: str) -> bool:
-    """Try writing FLAC via torchaudio. Returns False if unavailable."""
+    """Try writing FLAC via torchaudio. Returns False (fall through to the next
+    writer) if torchaudio is missing OR the write fails for any reason. NOTE: recent
+    torchaudio (2.x) routes .save() through torchcodec and raises ImportError at
+    CALL time (not import time) when torchcodec is absent -- so we must catch broad
+    exceptions here, not just the import-time ImportError, or the ffmpeg fallback is
+    never reached."""
     try:
         import torch
         import torchaudio
-    except ImportError:
+        tensor = torch.from_numpy(arr)
+        torchaudio.save(flac_path, tensor, int(sample_rate), format="flac", bits_per_sample=16)
+        return True
+    except Exception as e:  # noqa: BLE001 - any failure -> fall through to ffmpeg
+        print(f"[AudioSave] torchaudio writer unavailable/failed ({type(e).__name__}: {e}); trying next")
         return False
-    tensor = torch.from_numpy(arr)
-    torchaudio.save(flac_path, tensor, int(sample_rate), format="flac", bits_per_sample=16)
-    return True
 
 
 def _write_flac_ffmpeg(arr: np.ndarray, sample_rate: int, flac_path: str) -> None:

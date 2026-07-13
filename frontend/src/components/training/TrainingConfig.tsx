@@ -608,6 +608,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     return model?.architecture === "krea2";
   };
 
+  const isAceStepModel = (modelPath: string): boolean => {
+    const model = availableModels.find(m => m.path === modelPath);
+    return model?.architecture === "acestep";
+  };
+
   const getModelArchitecture = (modelPath: string): string | undefined => {
     if (modelPath.startsWith("scratch:minit2i:")) return "minit2i";
     const model = availableModels.find(m => m.path === modelPath);
@@ -3585,14 +3590,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                   id="train-text-encoder"
                   checked={trainTextEncoder}
                   onChange={(e) => updateParam("train_text_encoder", e.target.checked)}
-                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath)}
+                  disabled={isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) || isAceStepModel(baseModelPath)}
                   className="w-4 h-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 />
-                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
+                <label htmlFor="train-text-encoder" className={`text-xs cursor-pointer ${isZImageModel(baseModelPath) || isAnimaModel(baseModelPath) || isLensModel(baseModelPath) || isIdeogram4Model(baseModelPath) || isAceStepModel(baseModelPath) ? 'text-gray-500' : 'text-gray-300'}`}>
                   Train Text Encoder {isZImageModel(baseModelPath) && '(Not supported for Z-Image)'}
                   {isAnimaModel(baseModelPath) && '(Not supported for Anima)'}
                   {isLensModel(baseModelPath) && '(Not supported for Lens)'}
                   {isMiniT2IModel(baseModelPath) && '(FLAN-T5)'}
+                  {isAceStepModel(baseModelPath) && '(Not supported for ACE-Step)'}
                 </label>
               </div>
 

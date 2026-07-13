@@ -44,6 +44,10 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
           // existing /thumbnails path renders the poster frame. Detect by
           // is_video flag or file extension.
           const isVideo = image.is_video === true || /\.(mp4|webm)$/i.test(image.filename);
+          // Audio (ACE-Step) records share a waveform-PNG thumbnail with the
+          // .flac base name, generated the same way as the video poster frame.
+          const isAudio = image.is_audio === true || /\.(flac|wav|mp3|ogg)$/i.test(image.filename) ||
+            image.generation_type === "txt2aud" || image.generation_type === "aud2aud";
           return (
             <div
               key={image.id}
@@ -54,12 +58,13 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
                 {/* Use picture element for WebP with fallback to original filename
                     - New thumbnails: WebP preferred, PNG fallback
                     - Old thumbnails: Falls back to original filename
-                    - Video: poster thumbnail shares the mp4 base name */}
+                    - Video: poster thumbnail shares the mp4 base name
+                    - Audio: waveform thumbnail shares the flac base name */}
                 <picture>
                   <source srcSet={`/thumbnails/${baseName}.webp`} type="image/webp" />
                   <source srcSet={`/thumbnails/${baseName}.png`} type="image/png" />
                   <img
-                    src={isVideo ? `/thumbnails/${baseName}.png` : `/thumbnails/${image.filename}`}
+                    src={(isVideo || isAudio) ? `/thumbnails/${baseName}.png` : `/thumbnails/${image.filename}`}
                     alt={image.prompt}
                     loading="lazy"
                     className="w-full h-full object-cover group-hover:scale-105 transition-transform"
@@ -77,6 +82,11 @@ const ImageList: React.FC<ImageListProps> = memo(({ images, gridColumns, onImage
                       Video
                     </span>
                   </>
+                )}
+                {isAudio && (
+                  <span className="absolute top-1 right-1 px-1.5 py-0.5 rounded bg-black bg-opacity-70 text-white text-[10px] font-medium pointer-events-none">
+                    Audio
+                  </span>
                 )}
               </div>
               <p className="mt-2 text-xs text-gray-400 truncate hidden lg:block">{image.prompt}</p>

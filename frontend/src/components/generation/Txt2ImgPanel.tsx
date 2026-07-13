@@ -7,6 +7,7 @@ import Card from "../common/Card";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
+import Textarea from "../common/Textarea";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
@@ -23,7 +24,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { migrateLoopGenerationConfig } from "@/utils/loopGenerationInheritance";
-import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { generateTxt2Img, generateImg2Img, generateTxt2Vid, Txt2VidParams, generateTxt2Aud, Txt2AudParams, generateTxt2ImgTrainingPreview, GenerationParams, getSamplers, getScheduleTypes, tokenizePrompt, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -113,6 +114,14 @@ const DEFAULT_PARAMS: GenerationParams = {
   num_videos_per_prompt: 1,
   audio_enable: true,
   max_sequence_length: 1024,
+  // Music generation fields (used when an audio model (ACE-Step) is loaded;
+  // the panel maps these into Txt2AudParams for txt2aud requests).
+  lyrics: "",
+  audio_duration: 30.0,
+  inference_steps: 8,
+  shift: 3.0,
+  sampler_mode: "euler",
+  vocal_language: "en",
 };
 
 // num_frames must be 8k+1 (LTX-2.3). Offer common lengths.
@@ -132,7 +141,7 @@ interface Txt2ImgPanelProps {
 }
 
 export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio } = useStartup();
   const pathname = usePathname();
   const [params, setParams] = useState<GenerationParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -140,6 +149,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
   // Video output (produced when a video model is loaded / txt2vid queue item).
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  // Audio output (produced when an audio model is loaded / txt2aud queue item).
+  const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
+  const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
   const [generatedImageParams, setGeneratedImageParams] = useState<GenerationParams | null>(null);
@@ -1132,6 +1144,29 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     // Create loop group ID if loop generation is enabled
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
 
+    // Audio mode: an audio model (ACE-Step) is loaded -> enqueue a txt2aud item
+    // built from the shared params. Audio loop-generation is out of scope;
+    // enqueue one item. Checked before the video branch (mutually exclusive).
+    if (isAudio) {
+      const audioParams: Txt2AudParams = {
+        prompt: processedPrompt,
+        lyrics: params.lyrics,
+        audio_duration: params.audio_duration,
+        seed: params.seed,
+        inference_steps: params.inference_steps,
+        guidance_scale: params.guidance_scale,
+        shift: params.shift,
+        sampler_mode: params.sampler_mode,
+        vocal_language: params.vocal_language,
+      };
+      addToQueue({
+        type: "txt2aud",
+        params: audioParams as any,
+        prompt: processedPrompt,
+      });
+      return;
+    }
+
     // Video mode: a video model is loaded -> enqueue a txt2vid item built from
     // the shared params. Video loop-generation is out of scope; enqueue one item.
     if (isVideo) {
@@ -1495,6 +1530,43 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     console.log("[Txt2Img] Next item from queue:", nextItem);
     if (!nextItem) {
       console.log("[Txt2Img] No items in queue");
+      return;
+    }
+
+    // Audio branch: txt2aud item (an audio model is loaded). Produces a .flac
+    // and renders an <audio> instead of an <img>. No loop-generation handling.
+    if (nextItem.type === "txt2aud") {
+      setIsGenerating(true);
+      setProgress(0);
+      setTotalSteps((nextItem.params as any).inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedAudio(null);
+      try {
+        const result = await generateTxt2Aud(nextItem.params as Txt2AudParams);
+        const audioUrl = `/outputs/${result.image.filename}`;
+        setGeneratedAudio(audioUrl);
+        setGeneratedAudioInfo({
+          duration: result.image.duration,
+          sample_rate: result.image.sample_rate,
+        });
+        if (onImageGenerated) onImageGenerated(audioUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Txt2Img] txt2aud generation failed:", error);
+        alert("txt2aud generation failed. Please check console for details.");
+        setIsGenerating(false);
+        setProgress(0);
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
       return;
     }
 
@@ -2061,6 +2133,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           </Card>
         )}
 
+        {!isAudio && (
         <Card title="Prompt">
           <div className="relative">
             <TextareaWithTagSuggestions
@@ -2130,6 +2203,97 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </div>
         </Card>
+        )}
+
+        {isAudio && (
+          <Card title="Audio">
+            <Textarea
+              label="Caption"
+              placeholder="Describe the music (genre, mood, instruments)..."
+              rows={4}
+              value={params.prompt}
+              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+            />
+            <Textarea
+              label="Lyrics"
+              placeholder="Enter lyrics (optional)..."
+              rows={6}
+              value={params.lyrics ?? ""}
+              onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+            />
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <NumberInput
+                label="Duration (seconds)"
+                value={params.audio_duration ?? 30.0}
+                onCommit={(v) => setParams({ ...params, audio_duration: v })}
+                min={1}
+                max={600}
+                step={1}
+                parse="float"
+              />
+              <NumberInput
+                label="Steps"
+                value={params.inference_steps ?? 8}
+                onCommit={(v) => setParams({ ...params, inference_steps: v })}
+                min={1}
+                max={100}
+                step={1}
+                parse="int"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <NumberInput
+                label="Shift"
+                value={params.shift ?? 3.0}
+                onCommit={(v) => setParams({ ...params, shift: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+              />
+              <NumberInput
+                label="Guidance Scale"
+                value={params.guidance_scale ?? 1.0}
+                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <Input
+                type="number"
+                label="Seed"
+                value={params.seed ?? -1}
+                onChange={(e) => {
+                  const parsed = parseInt(e.target.value);
+                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                }}
+              />
+              <Select
+                label="Vocal Language"
+                value={params.vocal_language ?? "en"}
+                onChange={(e) => setParams({ ...params, vocal_language: e.target.value })}
+                options={[
+                  { value: "en", label: "English" },
+                  { value: "zh", label: "Chinese" },
+                  { value: "ja", label: "Japanese" },
+                  { value: "ko", label: "Korean" },
+                  { value: "es", label: "Spanish" },
+                  { value: "fr", label: "French" },
+                  { value: "de", label: "German" },
+                  { value: "ru", label: "Russian" },
+                  { value: "it", label: "Italian" },
+                  { value: "pt", label: "Portuguese" },
+                ]}
+              />
+            </div>
+          </Card>
+        )}
 
         {isVideo && (
           <Card title="Video">
@@ -2213,7 +2377,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           </Card>
         )}
 
-        {!isVideo && (<>
+        {!isVideo && !isAudio && (<>
         <Card title="Parameters">
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -3412,6 +3576,20 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                       {generatedVideoInfo.num_frames != null && <span>{generatedVideoInfo.num_frames} frames</span>}
                       {generatedVideoInfo.fps != null && <span> · {generatedVideoInfo.fps} fps</span>}
                       {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
+                    </div>
+                  )}
+                </div>
+              ) : isAudio && generatedAudio ? (
+                <div className="w-full space-y-2">
+                  <audio
+                    src={generatedAudio}
+                    className="w-full"
+                    controls
+                  />
+                  {generatedAudioInfo && (
+                    <div className="text-xs text-gray-400">
+                      {generatedAudioInfo.duration != null && Number.isFinite(Number(generatedAudioInfo.duration)) && <span>{Number(generatedAudioInfo.duration).toFixed(2)}s</span>}
+                      {generatedAudioInfo.sample_rate != null && <span> · {generatedAudioInfo.sample_rate} Hz</span>}
                     </div>
                   )}
                 </div>

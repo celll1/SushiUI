@@ -15,6 +15,7 @@ import {
 export interface ModelInfo {
   type?: string;
   is_video?: boolean;
+  is_audio?: boolean;
   source?: string;
   is_v_prediction?: boolean;
   [key: string]: unknown;
@@ -27,6 +28,8 @@ interface StartupContextType {
   modelInfo: ModelInfo | null;
   // Derived convenience flag: modelInfo?.is_video === true.
   isVideo: boolean;
+  // Derived convenience flag: modelInfo?.is_audio === true.
+  isAudio: boolean;
   // Re-fetch modelInfo (call after a (re)load so the shared source updates).
   refreshModelInfo: () => Promise<void>;
   generationDefaults: GenerationDefaultsResponse | null;
@@ -41,6 +44,7 @@ const StartupContext = createContext<StartupContextType>({
   modelLoaded: false,
   modelInfo: null,
   isVideo: false,
+  isAudio: false,
   refreshModelInfo: async () => {},
   generationDefaults: null,
   trainingDefaults: null,
@@ -156,6 +160,7 @@ export function StartupProvider({ children }: StartupProviderProps) {
       modelLoaded,
       modelInfo,
       isVideo: modelInfo?.is_video === true,
+      isAudio: modelInfo?.is_audio === true,
       refreshModelInfo,
       generationDefaults,
       trainingDefaults,

@@ -264,9 +264,18 @@ export interface GenerationParams {
   num_frames?: number;              // 8k+1 (default 121)
   frame_rate?: number;              // default 24.0
   num_inference_steps?: number;     // video sampler steps (default 8, distilled)
-  guidance_scale?: number;          // video guidance (default 1.0)
+  guidance_scale?: number;          // video/audio guidance (default 1.0)
   num_videos_per_prompt?: number;   // default 1
   audio_enable?: boolean;           // default true
+  // Music generation fields (used when an audio model (ACE-Step) is loaded;
+  // the panel maps these into Txt2AudParams for txt2aud requests). `prompt`
+  // above doubles as the caption text.
+  lyrics?: string;
+  audio_duration?: number;          // seconds, default 30.0
+  inference_steps?: number;         // ACE-Step sampler steps (default 8, turbo distilled)
+  shift?: number;                   // default 3.0
+  sampler_mode?: string;            // accepted for forward-compat; currently a no-op
+  vocal_language?: string;          // default "en"
   // Keep model components GPU-resident between back-to-back generations
   // (queue sets this automatically based on whether a next item is queued)
   keep_models_hot?: boolean;
@@ -393,6 +402,10 @@ export interface GeneratedImage {
   fps?: number;
   duration?: number;
   audio_enable?: boolean;
+  // Audio parameters (generation_type === 'txt2aud' / 'aud2aud'; filename is a .flac)
+  is_audio?: boolean;
+  sample_rate?: number;
+  audio_duration?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +435,24 @@ export interface Img2VidParams extends Txt2VidParams {
 }
 
 // ---------------------------------------------------------------------------
+// Audio generation (ACE-Step 1.5) — txt2aud (JSON). Standalone request shape
+// (does not extend GenerationParams -- audio has no width/height/steps/sampler
+// concept beyond the fields below).
+// ---------------------------------------------------------------------------
+
+export interface Txt2AudParams {
+  prompt: string;             // caption text
+  lyrics?: string;
+  audio_duration?: number;    // seconds, default 30.0
+  seed?: number;               // default -1
+  inference_steps?: number;   // turbo distilled default 8
+  guidance_scale?: number;    // turbo is CFG-distilled; default 1.0
+  shift?: number;              // default 3.0
+  sampler_mode?: string;       // accepted for forward-compat; currently a no-op
+  vocal_language?: string;     // default "en"
+}
+
+// ---------------------------------------------------------------------------
 // Schema defaults — fetched once at startup, backend is source of truth
 // ---------------------------------------------------------------------------
 
@@ -432,6 +463,7 @@ export interface GenerationDefaultsResponse {
   upscale: Partial<UpscaleParams> & Record<string, unknown>;
   txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
   img2vid: Partial<Img2VidParams> & Record<string, unknown>;
+  txt2aud: Partial<Txt2AudParams> & Record<string, unknown>;
 }
 
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
@@ -1060,6 +1092,30 @@ export const generateImg2Vid = async (params: Img2VidParams, image: File | strin
   const response = await api.post("/generate/img2vid", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
+  return response.data;
+};
+
+// ---------------------------------------------------------------------------
+// Audio generation (ACE-Step 1.5)
+// ---------------------------------------------------------------------------
+
+// txt2aud: JSON POST /generate/txt2aud. Response is the standard
+// GenerationResponse ({ success, image, actual_seed, warnings }); image.filename
+// is a .flac file under /outputs/.
+export const generateTxt2Aud = async (params: Txt2AudParams) => {
+  const body = {
+    prompt: params.prompt,
+    lyrics: params.lyrics || "",
+    audio_duration: params.audio_duration ?? 30.0,
+    seed: params.seed ?? -1,
+    inference_steps: params.inference_steps ?? 8,
+    guidance_scale: params.guidance_scale ?? 1.0,
+    shift: params.shift ?? 3.0,
+    sampler_mode: params.sampler_mode ?? "euler",
+    vocal_language: params.vocal_language ?? "en",
+  };
+
+  const response = await api.post("/generate/txt2aud", body);
   return response.data;
 };
 

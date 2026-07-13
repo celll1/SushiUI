@@ -166,6 +166,20 @@ class GeneratedImage(GalleryBase):
                 if "num_inference_steps" in self.parameters:
                     result["num_inference_steps"] = str(self.parameters["num_inference_steps"])
 
+            # Audio parameters (generation_type == "txt2aud")
+            if self.parameters.get("is_audio"):
+                result["is_audio"] = True
+                if "duration" in self.parameters:
+                    result["duration"] = str(self.parameters["duration"])
+                if "sample_rate" in self.parameters:
+                    result["sample_rate"] = str(self.parameters["sample_rate"])
+                if "audio_duration" in self.parameters:
+                    result["audio_duration"] = str(self.parameters["audio_duration"])
+                if "inference_steps" in self.parameters:
+                    result["inference_steps"] = str(self.parameters["inference_steps"])
+                if "guidance_scale" in self.parameters:
+                    result["guidance_scale"] = str(self.parameters["guidance_scale"])
+
             # Advanced CFG parameters (can coexist with NAG)
             if "cfg_schedule_type" in self.parameters:
                 result["cfg_schedule_type"] = self.parameters["cfg_schedule_type"]

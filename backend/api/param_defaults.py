@@ -273,6 +273,34 @@ TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 IMG2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 
 # ---------------------------------------------------------------------------
+# Audio generation (POST /generate/txt2aud — ACE-Step 1.5 turbo)
+# ---------------------------------------------------------------------------
+# Audio-only keys, kept out of GENERATION_DEFAULTS (no overlap with the image
+# txt2img/img2img/inpaint parameter set). Authoritative source:
+# `core.pipeline_backends.acestep.AceStepMixin._generate_txt2aud_acestep`.
+
+AUDIO_GEN_DEFAULTS: Dict[str, Any] = {
+    "prompt": "",              # caption text (also accepted as "caption")
+    "lyrics": "",
+    "audio_duration": 30.0,    # seconds
+    "seed": -1,                # -1 = random
+    "inference_steps": 8,      # turbo distilled default
+    "guidance_scale": 1.0,     # turbo is CFG-distilled; overridden to 1.0 if != 1.0
+    "shift": 3.0,
+    "sampler_mode": "euler",   # accepted for forward-compat; currently a no-op
+    "vocal_language": "en",
+    # aud2aud (audio-to-audio / cover) stub keys -- not yet wired to a route
+    # (Phase 4+). Kept here now so the schema key-set is stable once aud2aud
+    # ships, avoiding a later SSOT migration.
+    "reference_audio_path": None,
+    "reference_audio_enable": False,
+    "is_cover": False,
+    "denoising_strength": GENERATION_DEFAULTS["denoising_strength"],
+}
+
+TXT2AUD_DEFAULTS: Dict[str, Any] = dict(AUDIO_GEN_DEFAULTS)
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

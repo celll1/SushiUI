@@ -41,7 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
-    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS,
+    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -190,6 +190,25 @@ class Txt2VidRequest(BaseModel):
     controlnets: Optional[List[ControlNetConfig]] = []
 
 
+class Txt2AudRequest(BaseModel):
+    """Text-to-audio (music) generation request (ACE-Step 1.5 turbo).
+
+    Standalone request model (does not extend GenerationParams -- audio has
+    no width/height/steps/cfg_scale/sampler concept). See
+    `core.pipeline_backends.acestep.AceStepMixin._generate_txt2aud_acestep`
+    for how each field is consumed.
+    """
+    prompt: str = TXT2AUD_DEFAULTS["prompt"]
+    lyrics: Optional[str] = TXT2AUD_DEFAULTS["lyrics"]
+    audio_duration: float = TXT2AUD_DEFAULTS["audio_duration"]
+    seed: int = TXT2AUD_DEFAULTS["seed"]
+    inference_steps: int = TXT2AUD_DEFAULTS["inference_steps"]
+    guidance_scale: float = TXT2AUD_DEFAULTS["guidance_scale"]
+    shift: float = TXT2AUD_DEFAULTS["shift"]
+    sampler_mode: str = TXT2AUD_DEFAULTS["sampler_mode"]
+    vocal_language: str = TXT2AUD_DEFAULTS["vocal_language"]
+
+
 class GenerationParams(BaseModel):
     prompt: str
     negative_prompt: Optional[str] = ""
@@ -302,6 +321,19 @@ def _reject_if_video_model():
         )
 
 
+def _reject_if_audio_model():
+    """Reject an image-generation request when an audio model (ACE-Step) is loaded.
+
+    Raised before the executor so it surfaces as a 4xx ValidationError instead of
+    being re-wrapped as a 500 GenerationError by the route's broad except.
+    """
+    if getattr(pipeline_manager, "is_acestep_model", False):
+        raise CustomValidationError(
+            "The loaded model is an audio model (ACE-Step); use /generate/txt2aud",
+            detail="ACE-Step produces audio, not still images. Load an image model for txt2img/img2img/inpaint.",
+        )
+
+
 @router.get("/schema/generation-defaults")
 async def get_generation_defaults():
     """Return default parameter values for all generation modes."""
@@ -312,6 +344,7 @@ async def get_generation_defaults():
         "upscale": UPSCALE_DEFAULTS,
         "txt2vid": TXT2VID_DEFAULTS,
         "img2vid": IMG2VID_DEFAULTS,
+        "txt2aud": TXT2AUD_DEFAULTS,
     }
 
 @router.get("/schema/training-defaults")
@@ -365,6 +398,7 @@ _PEAK_VRAM_GB_BY_KIND = {
     "minit2i": 8.0,    # small pixel-space DiT (B/L ~0.3-1.8GB) + FLAN-T5 staged
     "krea2": 26.0,     # ~12.9B bf16 MMDiT staged on GPU + Qwen3-VL TE + Qwen-Image VAE
     "ltx2": 40.0,      # ~19B bf16 video MM-DiT + Gemma-3 TE + LTX2 VAEs, cpu-offload staged
+    "acestep": 8.0,    # 2B DiT + Oobleck VAE + Qwen3-Embedding-0.6B TE, sequential CPU/GPU staging
     "unknown": 14.0,   # safe default
 }
 
@@ -458,6 +492,7 @@ async def generate_txt2img(
 ):
     """Generate image from text"""
     _reject_if_video_model()
+    _reject_if_audio_model()
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -1348,6 +1383,7 @@ async def generate_img2img(
 ):
     """Generate image from image"""
     _reject_if_video_model()
+    _reject_if_audio_model()
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
@@ -2082,6 +2118,120 @@ async def generate_txt2vid(
         )
 
 
+@router.post("/generate/txt2aud")
+async def generate_txt2aud(
+    request: Txt2AudRequest,
+    db: Session = Depends(get_gallery_db)
+):
+    """Generate music/audio from a text caption + lyrics using the loaded
+    ACE-Step 1.5 model.
+
+    Produces a lossless FLAC file and a gallery row. Requires an ACE-Step
+    model to be loaded.
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.audio_utils import save_audio_with_metadata
+
+    params = request.dict()
+
+    if not getattr(pipeline_manager, "is_acestep_model", False):
+        raise CustomValidationError(
+            "No ACE-Step model loaded",
+            detail="Load an ACE-Step 1.5 audio model before calling /generate/txt2aud.",
+        )
+
+    start_generation("txt2aud")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        from api.arch_capabilities import check_arch_capabilities
+        _acestep_arch = (pipeline_manager.current_model_info or {}).get("type")
+        check_arch_capabilities(params, _acestep_arch)
+
+        print(f"txt2aud generation params: {sanitize_params_for_logging(params)}")
+
+        # Progress via the shared WebSocket step broadcast (mirrors txt2vid).
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating audio: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+            waveform, sample_rate, actual_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_txt2aud(params, progress_callback=progress_callback)
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        params["seed"] = actual_seed
+
+        # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
+        filename = save_audio_with_metadata(
+            waveform,
+            sample_rate,
+            params,
+            "txt2aud",
+            model_info=pipeline_manager.current_model_info,
+        )
+
+        # Thumbnail from the waveform PNG (same base name as the FLAC).
+        base_name = os.path.splitext(filename)[0]
+        waveform_png_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(waveform_png_path):
+            create_thumbnail(waveform_png_path)
+
+        # Record audio-specific fields into parameters JSON for the gallery.
+        num_samples = int(waveform.shape[-1])
+        duration_s = (num_samples / sample_rate) if sample_rate else 0.0
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        # Audio has no visual dimensions; do not let create_db_image_record's
+        # width/height fallback (512) fabricate a fake resolution.
+        params_for_db["width"] = 0
+        params_for_db["height"] = 0
+        params_for_db["duration"] = duration_s
+        params_for_db["sample_rate"] = sample_rate
+        params_for_db["is_audio"] = True
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="txt2aud",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Text-to-audio generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
 @router.post("/generate/img2vid")
 async def generate_img2vid(
     prompt: str = Form(...),
@@ -2431,6 +2581,7 @@ async def generate_inpaint(
 ):
     """Generate inpainted image"""
     _reject_if_video_model()
+    _reject_if_audio_model()
     lora_configs = []
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities

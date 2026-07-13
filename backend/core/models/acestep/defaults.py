@@ -114,3 +114,27 @@ SAMPLE_RATE = 48000
 # VAE hop_length: prod(downsampling_ratios) = 2*4*4*6*10 = 1920 -> 48000/1920 = 25Hz
 LATENT_FRAME_RATE = 25
 LATENT_CHANNELS = 64
+
+# ---------------------------------------------------------------------------
+# Prompt-assembly constants (Phase 2: txt2aud). Mirrored verbatim from the
+# official ACE-Step 1.5 repo's ``acestep/constants.py`` (DEFAULT_DIT_INSTRUCTION,
+# SFT_GEN_PROMPT) so the DiT's text-conditioning branch sees the same prompt
+# shape it was trained on.
+# ---------------------------------------------------------------------------
+DEFAULT_DIT_INSTRUCTION = "Fill the audio semantic mask based on the given conditions:"
+
+SFT_GEN_PROMPT = """# Instruction
+{}
+
+# Caption
+{}
+
+# Metas
+{}<|endoftext|>
+"""
+
+# Reference-audio timbre latent length (30s @ 25Hz) used for the silence
+# timbre condition in text2music (no reference audio). Matches
+# ACESTEP_DIT_CONFIG["timbre_fix_frame"] and the official
+# ``infer_refer_latent``'s ``self.silence_latent[:, :750, :]`` slice.
+SILENCE_LATENT_FRAMES = 750

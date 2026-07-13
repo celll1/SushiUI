@@ -357,13 +357,20 @@ def _save_dataset_cache(cache_path: Path, cache_data: dict):
 
 
 def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str) -> None:
-    """Propagate LTX-2.3 video metadata onto an item dict (in place).
+    """Propagate LTX-2.3 video / ACE-Step audio metadata onto an item dict (in place).
 
     For item_type=="video" (LTX-2.3 VIDEO datasets), spreads the probed metadata
     stored in DatasetItem.exif_data ({video_path, fps, num_frames, duration,
     width, height, codec} per P4a) so the trainer's video-clip encode guards
-    (item_type=="video") and VideoBucketManager see it. Image items get
-    item_type="single" and are otherwise untouched.
+    (item_type=="video") and VideoBucketManager see it.
+
+    For item_type=="audio" (ACE-Step datasets, Phase 8a), spreads the probed
+    metadata stored in DatasetItem.exif_data ({audio_path, sample_rate,
+    duration, channels} per ``dataset_scanner.probe_audio_metadata``) so the
+    trainer's audio-clip encode guard (item_type=="audio") and the
+    acestep_audio_batches grouping (keyed by duration) see it.
+
+    Image items get item_type="single" and are otherwise untouched.
     """
     if item_type == "video":
         item_dict["item_type"] = "video"
@@ -380,6 +387,16 @@ def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str
             item_dict["width"] = meta.get("width")
         if not item_dict.get("height") and meta.get("height"):
             item_dict["height"] = meta.get("height")
+    elif item_type == "audio":
+        item_dict["item_type"] = "audio"
+        meta = exif_data if isinstance(exif_data, dict) else {}
+        item_dict["audio_path"] = meta.get("audio_path") or image_path
+        if meta.get("sample_rate") is not None:
+            item_dict["sample_rate"] = meta.get("sample_rate")
+        if meta.get("duration") is not None:
+            item_dict["duration"] = meta.get("duration")
+        if meta.get("channels") is not None:
+            item_dict["channels"] = meta.get("channels")
     else:
         item_dict["item_type"] = item_type or "single"
 
@@ -686,13 +703,19 @@ def _process_cached_items(
             "height": item.get("height"),
         }
 
-        # Carry LTX-2.3 video fields through this re-copy (item is a dict from the
-        # fast/DB load above, so item_type + video metadata already live on it).
+        # Carry LTX-2.3 video / ACE-Step audio fields through this re-copy (item
+        # is a dict from the fast/DB load above, so item_type + media metadata
+        # already live on it).
         if item.get("item_type") == "video":
             processed_item["item_type"] = "video"
             for _vk in ("video_path", "fps", "num_frames", "duration"):
                 if _vk in item:
                     processed_item[_vk] = item[_vk]
+        elif item.get("item_type") == "audio":
+            processed_item["item_type"] = "audio"
+            for _ak in ("audio_path", "sample_rate", "duration", "channels"):
+                if _ak in item:
+                    processed_item[_ak] = item[_ak]
         else:
             processed_item["item_type"] = item.get("item_type", "single")
 

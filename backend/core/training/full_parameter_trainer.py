@@ -37,6 +37,7 @@ from .adapters import (
     MiniT2IFullParameterAdapter,
     Krea2FullParameterAdapter,
     Ltx2FullParameterAdapter,
+    AceStepFullParameterAdapter,
 )
 
 
@@ -99,6 +100,8 @@ class FullParameterTrainer(BaseTrainer):
             self.setup_ltx2_wrapper()
         if hasattr(self, "setup_ltx2_block_swap"):
             self.setup_ltx2_block_swap()
+        if hasattr(self, "setup_acestep_block_swap"):
+            self.setup_acestep_block_swap()
 
         print(f"{self.log_prefix} Initialized")
         # Note: Vision Encoder training status is determined in train() after VE is loaded
@@ -136,6 +139,9 @@ class FullParameterTrainer(BaseTrainer):
         elif self.is_ltx2:
             self.adapter = Ltx2FullParameterAdapter(self)
             print(f"{self.log_prefix} Using Ltx2FullParameterAdapter")
+        elif self.is_acestep:
+            self.adapter = AceStepFullParameterAdapter(self)
+            print(f"{self.log_prefix} Using AceStepFullParameterAdapter")
         elif self.is_sdxl:
             self.adapter = SDXLFullParameterAdapter(self)
             print(f"{self.log_prefix} Using SDXLFullParameterAdapter")

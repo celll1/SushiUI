@@ -441,6 +441,109 @@ class LatentCache:
             print(f"[LatentCache] Warning: Failed to load cached clip latent {cache_path}: {e}")
             return None
 
+    @staticmethod
+    def compute_audio_hash(
+        audio_path: str,
+        clip_seconds: Optional[float],
+        sample_rate: int,
+    ) -> str:
+        """
+        Compute hash for an AUDIO CLIP cache key (ACE-Step, temporal-only 3D latents).
+
+        Mirrors ``compute_clip_hash`` (video) but keyed by clip duration + sample
+        rate instead of width/height, since audio latents have no spatial axis
+        (``[1, T, 64]``). ``clip_seconds=None`` means "encode the full file"
+        (no truncation), a distinct key from any explicit duration.
+
+        Args:
+            audio_path: Path to the source audio file.
+            clip_seconds: Target clip duration in seconds, or None for full-length.
+            sample_rate: Target sample rate (part of the key so a resampled
+                source does not collide with a differently-resampled one).
+
+        Returns:
+            Hash string.
+        """
+        dur_token = "full" if clip_seconds is None else f"{float(clip_seconds):.3f}"
+        key = f"{audio_path}_dur{dur_token}_sr{int(sample_rate)}"
+        return hashlib.md5(key.encode()).hexdigest()
+
+    def save_audio_latent(
+        self,
+        audio_path: str,
+        clip_seconds: Optional[float],
+        sample_rate: int,
+        latents: torch.Tensor,
+        skip_existing: bool = True,
+    ) -> bool:
+        """
+        Save a 3D temporal VAE latent for an audio clip (ACE-Step).
+
+        ADDITIVE: shares the ``latents/`` dir and torch.save mechanism with the
+        4D image / 5D video paths, keyed by ``compute_audio_hash`` so entries
+        never collide across modalities.
+
+        Args:
+            audio_path: Source audio file path.
+            clip_seconds/sample_rate: Clip window parameters (part of the key).
+            latents: 3D latent tensor ``[1, T, 64]`` (ACE-Step Oobleck VAE).
+            skip_existing: Skip write if the cache file already exists.
+
+        Returns:
+            True if written, False if skipped.
+        """
+        cache_hash = self.compute_audio_hash(audio_path, clip_seconds, sample_rate)
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+
+        if skip_existing and cache_path.exists():
+            return False
+
+        torch.save({
+            'latents': latents.cpu(),
+            'audio_path': audio_path,
+            'clip_seconds': (None if clip_seconds is None else float(clip_seconds)),
+            'sample_rate': int(sample_rate),
+            'is_audio_clip': True,
+            'created_at': datetime.utcnow().isoformat(),
+        }, cache_path)
+        return True
+
+    def has_audio_latent(
+        self,
+        audio_path: str,
+        clip_seconds: Optional[float],
+        sample_rate: int,
+    ) -> bool:
+        """Check if a 3D audio-clip latent exists in cache without loading it."""
+        cache_hash = self.compute_audio_hash(audio_path, clip_seconds, sample_rate)
+        return (self.latents_dir / f"{cache_hash}.pt").exists()
+
+    def load_audio_latent(
+        self,
+        audio_path: str,
+        clip_seconds: Optional[float],
+        sample_rate: int,
+        device: str = 'cuda',
+    ) -> Optional[torch.Tensor]:
+        """
+        Load a 3D temporal VAE latent for an audio clip (ACE-Step).
+
+        Returns the 3D latent tensor ``[1, T, 64]`` or None if not cached.
+        """
+        cache_hash = self.compute_audio_hash(audio_path, clip_seconds, sample_rate)
+        cache_path = self.latents_dir / f"{cache_hash}.pt"
+
+        if not cache_path.exists():
+            return None
+
+        try:
+            data = torch.load(cache_path, map_location=device)
+            latents = data['latents'] if isinstance(data, dict) else data
+            return latents
+        except Exception as e:
+            print(f"[LatentCache] Warning: Failed to load cached audio latent {cache_path}: {e}")
+            return None
+
     def save_text_embeddings(
         self,
         caption: str,

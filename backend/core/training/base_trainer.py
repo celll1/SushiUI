@@ -1182,6 +1182,7 @@ class BaseTrainer(ABC):
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
         self.is_ltx2 = (model_type == "ltx2")
+        self.is_acestep = (model_type == "acestep")
         self.is_sdxl = False
 
         # P3a: zimage + sd/sdxl loader BODIES moved to ops/ free functions. They
@@ -1194,10 +1195,12 @@ class BaseTrainer(ABC):
         # base_trainer._vramdiag at its top.)
         from core.training.ops import (
             sd_sdxl_ops, zimage_ops, anima_ops, lens_ops, ideogram4_ops,
-            minit2i_ops, krea2_ops, flux2_ops, ltx2_ops,
+            minit2i_ops, krea2_ops, flux2_ops, ltx2_ops, acestep_ops,
         )
         if self.is_ltx2:
             ltx2_ops.load_components(self)
+        elif self.is_acestep:
+            acestep_ops.load_components(self)
         elif self.is_zimage:
             zimage_ops.load_components(self)
         # DEUS support removed
@@ -1284,6 +1287,16 @@ class BaseTrainer(ABC):
         """
         from core.training.ops import ltx2_ops
         return ltx2_ops.setup_block_swap(self)
+
+    def setup_acestep_block_swap(self):
+        """Delegator (Phase 8a): body lives in ``ops/acestep_ops.setup_block_swap``.
+        Kept on the trainer because mode subclasses (full_parameter_trainer /
+        lora_trainer) call it LATE via ``hasattr(self, "setup_acestep_block_swap")``
+        after adapter setup (mirrors ``setup_ltx2_block_swap``); ``arch/acestep.py``
+        calls the same ops function so the body is defined exactly once.
+        """
+        from core.training.ops import acestep_ops
+        return acestep_ops.setup_block_swap(self)
 
     def _setup_attention_backend_krea2(self, backend: str):
         """Delegator (plan P3c): body lives in
@@ -1770,6 +1783,7 @@ class BaseTrainer(ABC):
         self.is_minit2i = (model_type == "minit2i")
         self.is_krea2 = (model_type == "krea2")
         self.is_ltx2 = (model_type == "ltx2")
+        self.is_acestep = (model_type == "acestep")
         self.is_sdxl = False
 
         # DEUS support removed
@@ -3609,6 +3623,13 @@ class BaseTrainer(ABC):
             from core.training.ops import ltx2_ops
             video_emb, aux = ltx2_ops.encode_prompt(self, caption)
             return video_emb, aux
+        elif self.is_acestep:
+            # ACE-Step: Qwen3 "# Caption" hidden states + aux dict
+            # {text_attention_mask} handed to train_step_acestep as a bundle
+            # (mirrors ltx2's payload contract).
+            from core.training.ops import acestep_ops
+            text_emb, aux = acestep_ops.encode_prompt(self, caption)
+            return text_emb, aux
         elif self.is_flux2:
             # FLUX.2: Use Qwen3 text encoder with hidden state extraction
             # Note: text_ids are generated dynamically in train_step_flux2, not cached
@@ -3755,7 +3776,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_gpu(self):
         """Move main model (U-Net or Transformer) to GPU for training."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep:
             if self.transformer_original is not None:
                 self.transformer_original.to(self.device)
         else:
@@ -3764,7 +3785,7 @@ class BaseTrainer(ABC):
 
     def move_main_model_to_cpu(self):
         """Move main model (U-Net or Transformer) to CPU to free VRAM."""
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep:
             if self.transformer_original is not None:
                 self.transformer_original.to("cpu")
         else:
@@ -3817,7 +3838,7 @@ class BaseTrainer(ABC):
         Mirrors the arch dispatch in move_main_model_to_cpu/gpu so the three stay
         consistent. Returns None if the module is not present.
         """
-        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2:
+        if self.is_zimage or self.is_anima or self.is_lens or self.is_ideogram4 or self.is_minit2i or self.is_krea2 or self.is_ltx2 or self.is_acestep:
             return getattr(self, "transformer_original", None)
         return getattr(self, "unet", None)
 
@@ -4644,6 +4665,24 @@ class BaseTrainer(ABC):
                 latents=mnt_latents,
                 text_embeddings=mnt_text_embeddings,
                 anima_aux=ltx2_aux,
+                timesteps=timesteps,
+                debug_save_path=debug_save_path,
+                debug_captions=batch_captions if debug_save_path else None,
+                debug_reference_image_paths=batch_reference_paths if debug_save_path else None,
+                profile_vram=self.debug_vram,
+                alphas_cumprod_cached=alphas_cumprod_cached,
+            )
+            loss, pred_loss, recon_loss = self.arch.train_step(self, ctx)
+        elif self.is_acestep:
+            # ACE-Step carries the caption's text_attention_mask in
+            # mnt_attention_mask as a dict (produced by collate_aux), same
+            # pattern as ltx2/anima. latents are 3D [B, T_lat, 64].
+            from core.training.arch.base_arch import TrainStepContext
+            acestep_aux = mnt_attention_mask if isinstance(mnt_attention_mask, dict) else {}
+            ctx = TrainStepContext(
+                latents=mnt_latents,
+                text_embeddings=mnt_text_embeddings,
+                anima_aux=acestep_aux,
                 timesteps=timesteps,
                 debug_save_path=debug_save_path,
                 debug_captions=batch_captions if debug_save_path else None,
@@ -5637,6 +5676,35 @@ class BaseTrainer(ABC):
                                   f"({os.path.basename(str(item.get('video_path', '')))}): {e}")
                         continue
 
+                    # Audio-clip item (Phase 8a, ACE-Step): item_type=="audio"
+                    # carries an audio_path (no still-image concept for this
+                    # arch); encode a 3D [1, T, 64] latent via the ACE-Step
+                    # (Oobleck) VAE (encode_and_cache_audio seam). Mirrors the
+                    # LTX-2.3 video-clip branch above; audio has no random
+                    # clip-window sampling (see audio_loader.py's docstring —
+                    # dataset clips are expected pre-trimmed to a consistent
+                    # duration per training run).
+                    if self.is_acestep and item.get("item_type") == "audio":
+                        try:
+                            from core.training.audio_loader import encode_and_cache_audio
+                            a_path = item.get("audio_path") or item["image_path"]
+                            clip_seconds = item.get("clip_seconds")
+                            sample_rate = int(getattr(self, "acestep_sample_rate", 48000))
+                            encode_and_cache_audio(
+                                cache=cache,
+                                audio_path=a_path,
+                                clip_seconds=(float(clip_seconds) if clip_seconds else None),
+                                vae_encode_audio=lambda wav: self.arch.vae_encode_audio(self, wav),
+                                sample_rate=sample_rate,
+                                device=str(self.device),
+                            )
+                            iteration_count += 1
+                            processed_items += 1
+                        except Exception as e:  # noqa: BLE001
+                            print(f"{self.log_prefix} WARNING: audio clip encode failed "
+                                  f"({os.path.basename(str(item.get('audio_path', '')))}): {e}")
+                        continue
+
                     # Check if already cached (skip if force_recache is False)
                     image_path = item["image_path"]
                     width = item["width"]
@@ -6044,6 +6112,10 @@ class BaseTrainer(ABC):
                         # LTX-2.3 aux is a dict {audio_text_embedding, mask, fps};
                         # persisted (cannot be cheaply reconstructed like anima).
                         auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
+                    elif self.is_acestep:
+                        # ACE-Step aux is a dict {text_attention_mask}; persisted
+                        # (mirrors ltx2's aux-dict pattern).
+                        auxiliary_path = cache_dir / f"{caption_hash}_acestepaux.pt"
                     elif self.is_sdxl:
                         auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
                     else:
@@ -6091,6 +6163,9 @@ class BaseTrainer(ABC):
                             elif self.is_ltx2 and auxiliary_cpu is not None:
                                 ltx2aux_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
                                 torch.save(auxiliary_cpu, ltx2aux_path)
+                            elif self.is_acestep and auxiliary_cpu is not None:
+                                acestepaux_path = cache_dir / f"{caption_hash}_acestepaux.pt"
+                                torch.save(auxiliary_cpu, acestepaux_path)
                             elif self.is_sdxl and auxiliary_cpu is not None:
                                 pooled_path = cache_dir / f"{caption_hash}_pooled.pt"
                                 torch.save(auxiliary_cpu, pooled_path)
@@ -6156,6 +6231,8 @@ class BaseTrainer(ABC):
             auxiliary_path = cache_dir / f"{caption_hash}_mask.pt"
         elif self.is_ltx2:
             auxiliary_path = cache_dir / f"{caption_hash}_ltx2aux.pt"
+        elif self.is_acestep:
+            auxiliary_path = cache_dir / f"{caption_hash}_acestepaux.pt"
         elif self.is_sdxl:
             auxiliary_path = cache_dir / f"{caption_hash}_pooled.pt"
         else:
@@ -6847,7 +6924,11 @@ class BaseTrainer(ABC):
                     # LTX-2.3 video items already bucketed by VideoBucketManager
                     # (÷32 spatial + clip_length); never run them through the image
                     # BucketManager (would overwrite bucket dims / drop clip fields).
-                    if self.is_ltx2 and item.get("item_type") == "video":
+                    # ACE-Step audio items have no spatial dims at all (no
+                    # image_path-shaped width/height concept) — also skipped;
+                    # batched separately below (acestep_audio_batches).
+                    if (self.is_ltx2 and item.get("item_type") == "video") or \
+                       (self.is_acestep and item.get("item_type") == "audio"):
                         continue
                     # For ve_reconstruction_mode items: inject reference_images BEFORE bucketing
                     # so bucket_manager records has_reference=True and includes reference_images
@@ -6926,8 +7007,10 @@ class BaseTrainer(ABC):
             for dataset in datasets:
                 for item in dataset.items:
                     # LTX-2.3 video items keep their VideoBucketManager ÷32 dims
-                    # (do not re-fit into the still base-area path).
-                    if self.is_ltx2 and item.get("item_type") == "video":
+                    # (do not re-fit into the still base-area path). ACE-Step
+                    # audio items have no width/height concept — also skipped.
+                    if (self.is_ltx2 and item.get("item_type") == "video") or \
+                       (self.is_acestep and item.get("item_type") == "audio"):
                         continue
                     w = int(item.get("width") or 0)
                     h = int(item.get("height") or 0)
@@ -7695,12 +7778,41 @@ class BaseTrainer(ABC):
                         for _i in range(0, len(_members), batch_size):
                             ltx2_video_batches.append(_members[_i:_i + batch_size])
                 _has_ltx2_video = bool(ltx2_video_batches)
-                # When video items are present, exclude them from the IMAGE-side batching
-                # (priority classify + simple sequential chunking) so they are not
-                # double-counted or placed into ÷8 image buckets.
+
+                # ACE-Step AUDIO batching (Phase 8a): mirrors the LTX-2.3 video
+                # batching above exactly -- the image bucket_manager skips
+                # item_type=="audio" items (skip-guards added above), so a
+                # pure-audio dataset would otherwise yield zero batches. Group
+                # by the item's DECLARED clip duration (clip_seconds, falling
+                # back to the probed audio_meta duration, rounded to avoid
+                # float-probe jitter splitting an otherwise-uniform dataset
+                # into spurious groups) rather than the post-encode latent
+                # frame count, since encoding happens later and a shared
+                # declared duration deterministically yields a shared encoded
+                # T (same VAE, same input length). No-op (empty) for non-ACE-Step
+                # and for image/video-only datasets.
+                acestep_audio_batches = []
+                if self.is_acestep:
+                    from collections import OrderedDict as _OD2
+                    _agroups = _OD2()
+                    for _item, _dataset in all_items:
+                        if _item.get("item_type") != "audio":
+                            continue
+                        _araw = _item.get("clip_seconds") or _item.get("duration")
+                        _akey = round(float(_araw), 2) if _araw else None
+                        _agroups.setdefault(_akey, []).append((_item, _dataset))
+                    for _akey, _members in _agroups.items():
+                        for _i in range(0, len(_members), batch_size):
+                            acestep_audio_batches.append(_members[_i:_i + batch_size])
+                _has_acestep_audio = bool(acestep_audio_batches)
+
+                # When video/audio items are present, exclude them from the IMAGE-side
+                # batching (priority classify + simple sequential chunking) so they are
+                # not double-counted or placed into ÷8 image buckets.
                 _image_all_items = (
-                    [x for x in all_items if x[0].get("item_type") != "video"]
-                    if _has_ltx2_video else all_items
+                    [x for x in all_items
+                     if x[0].get("item_type") not in ("video", "audio")]
+                    if (_has_ltx2_video or _has_acestep_audio) else all_items
                 )
 
                 # Create batches
@@ -7749,12 +7861,14 @@ class BaseTrainer(ABC):
                             ]
                             normal_batches.append(batch_with_dataset)
 
-                        # Combine: priority x multiplier + normal + LTX-2.3 video
-                        batches = priority_batches * priority_config.multiplier + normal_batches + ltx2_video_batches
+                        # Combine: priority x multiplier + normal + LTX-2.3 video + ACE-Step audio
+                        batches = (priority_batches * priority_config.multiplier + normal_batches
+                                   + ltx2_video_batches + acestep_audio_batches)
                         print(f"{self.log_prefix} [PriorityTraining] Epoch batch structure: "
                               f"{len(priority_batches)} priority batches x {priority_config.multiplier} "
                               f"+ {len(normal_batches)} normal batches "
-                              f"+ {len(ltx2_video_batches)} video batches = {len(batches)} total")
+                              f"+ {len(ltx2_video_batches)} video batches "
+                              f"+ {len(acestep_audio_batches)} audio batches = {len(batches)} total")
                     else:
                         # Standard bucketed batching (no priority)
                         item_batches = bucket_manager.build_batch_indices(batch_size)
@@ -7765,25 +7879,29 @@ class BaseTrainer(ABC):
                                 for item in item_batch
                             ]
                             batches.append(batch_with_dataset)
-                        # Append LTX-2.3 video batches (empty for image-only datasets).
-                        batches = batches + ltx2_video_batches
+                        # Append LTX-2.3 video / ACE-Step audio batches (empty for
+                        # image-only datasets).
+                        batches = batches + ltx2_video_batches + acestep_audio_batches
                 else:
-                    # Simple sequential batching. LTX-2.3 video items are batched
-                    # separately (grouped by (spatial, clip_length)) and appended, so
-                    # video-only datasets still get non-empty, uniform batches here.
+                    # Simple sequential batching. LTX-2.3 video / ACE-Step audio items
+                    # are batched separately (grouped by (spatial, clip_length) /
+                    # clip duration) and appended, so video/audio-only datasets still
+                    # get non-empty, uniform batches here.
                     if priority_config and priority_config.entries:
                         priority_items, normal_items = classify_items(_image_all_items, priority_config)
                         p_items = [(item, dataset) for item, dataset, _ in priority_items]
                         priority_batches = [p_items[i:i+batch_size] for i in range(0, len(p_items), batch_size)]
                         normal_batches = [normal_items[i:i+batch_size] for i in range(0, len(normal_items), batch_size)]
-                        batches = priority_batches * priority_config.multiplier + normal_batches + ltx2_video_batches
+                        batches = (priority_batches * priority_config.multiplier + normal_batches
+                                   + ltx2_video_batches + acestep_audio_batches)
                         print(f"{self.log_prefix} [PriorityTraining] Epoch batch structure: "
                               f"{len(priority_batches)} priority x {priority_config.multiplier} "
                               f"+ {len(normal_batches)} normal "
-                              f"+ {len(ltx2_video_batches)} video = {len(batches)} total")
+                              f"+ {len(ltx2_video_batches)} video "
+                              f"+ {len(acestep_audio_batches)} audio = {len(batches)} total")
                     else:
                         batches = [_image_all_items[i:i+batch_size] for i in range(0, len(_image_all_items), batch_size)]
-                        batches = batches + ltx2_video_batches
+                        batches = batches + ltx2_video_batches + acestep_audio_batches
 
                 # Drop batches whose resolution bucket previously OOM'd at even one
                 # sample (un-fittable on this hardware/config). Covers the non-crop
@@ -9002,6 +9120,11 @@ class BaseTrainer(ABC):
                         # per-sample fps tensor [B] from the batch items here.
                         attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
                         attention_mask["fps"] = self._ltx2_batch_fps_tensor(batch)
+                    elif self.is_acestep:
+                        # ACE-Step aux is a per-item dict {text_attention_mask};
+                        # collate into one dict carried through attention_mask
+                        # (train_step_acestep reads it).
+                        attention_mask = self.arch.collate_aux(self, auxiliary_data_list)
                     elif self.is_sdxl and any(aux is not None for aux in auxiliary_data_list):
                         pooled_embeddings = torch.cat([aux for aux in auxiliary_data_list if aux is not None], dim=0)
 
@@ -9167,6 +9290,10 @@ class BaseTrainer(ABC):
                                 # the batch items (not the per-caption text aux).
                                 mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
                                 mnt_attention_mask["fps"] = self._ltx2_batch_fps_tensor(batch)
+                                mnt_pooled_embeddings = None
+                            elif self.is_acestep:
+                                # ACE-Step: per-item dict → one collated aux dict.
+                                mnt_attention_mask = self.arch.collate_aux(self, mnt_auxiliary_data_list)
                                 mnt_pooled_embeddings = None
                             elif self.is_sdxl and any(aux is not None for aux in mnt_auxiliary_data_list):
                                 mnt_pooled_embeddings = torch.cat([aux for aux in mnt_auxiliary_data_list if aux is not None], dim=0)

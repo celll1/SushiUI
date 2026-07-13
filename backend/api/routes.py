@@ -41,7 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
-    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS,
+    UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -345,6 +345,7 @@ async def get_generation_defaults():
         "txt2vid": TXT2VID_DEFAULTS,
         "img2vid": IMG2VID_DEFAULTS,
         "txt2aud": TXT2AUD_DEFAULTS,
+        "aud2aud": AUD2AUD_DEFAULTS,
     }
 
 @router.get("/schema/training-defaults")
@@ -2228,6 +2229,157 @@ async def generate_txt2aud(
         fail_generation(str(e))
         raise GenerationError(
             "Text-to-audio generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
+@router.post("/generate/aud2aud")
+async def generate_aud2aud(
+    prompt: str = Form(AUD2AUD_DEFAULTS["prompt"]),
+    lyrics: Optional[str] = Form(AUD2AUD_DEFAULTS["lyrics"]),
+    seed: int = Form(AUD2AUD_DEFAULTS["seed"]),
+    inference_steps: int = Form(AUD2AUD_DEFAULTS["inference_steps"]),
+    guidance_scale: float = Form(AUD2AUD_DEFAULTS["guidance_scale"]),
+    shift: float = Form(AUD2AUD_DEFAULTS["shift"]),
+    cover_strength: float = Form(AUD2AUD_DEFAULTS["cover_strength"]),
+    vocal_language: str = Form(AUD2AUD_DEFAULTS["vocal_language"]),
+    reference_audio: UploadFile = File(...),
+    db: Session = Depends(get_gallery_db)
+):
+    """Generate a cover (audio-to-audio) from a reference clip + a new
+    caption/lyrics using the loaded ACE-Step 1.5 model.
+
+    Multipart form: an uploaded reference audio clip plus the cover
+    parameters. The reference is VAE-encoded and fed back to the DiT as the
+    cover context (`is_covers=True`); duration is derived from the
+    reference's length, not user-supplied. Produces a lossless FLAC file and
+    a gallery row. Requires an ACE-Step model to be loaded. Repaint
+    (inpaint analog) is not supported by this endpoint -- see
+    `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`.
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.audio_utils import save_audio_with_metadata
+
+    params = {
+        "prompt": prompt,
+        "lyrics": lyrics,
+        "seed": seed,
+        "inference_steps": inference_steps,
+        "guidance_scale": guidance_scale,
+        "shift": shift,
+        "cover_strength": cover_strength,
+        "vocal_language": vocal_language,
+    }
+
+    if not getattr(pipeline_manager, "is_acestep_model", False):
+        raise CustomValidationError(
+            "No ACE-Step model loaded",
+            detail="Load an ACE-Step 1.5 audio model before calling /generate/aud2aud.",
+        )
+
+    # Read the uploaded reference audio clip.
+    try:
+        reference_audio_bytes = await reference_audio.read()
+        if not reference_audio_bytes:
+            raise ValueError("uploaded file is empty")
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to read the uploaded reference audio",
+            detail=str(e),
+        )
+
+    start_generation("aud2aud")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        from api.arch_capabilities import check_arch_capabilities
+        _acestep_arch = (pipeline_manager.current_model_info or {}).get("type")
+        check_arch_capabilities(params, _acestep_arch)
+
+        print(f"aud2aud generation params: {sanitize_params_for_logging(params)}")
+
+        # Progress via the shared WebSocket step broadcast (mirrors txt2aud).
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating cover: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+            waveform, sample_rate, actual_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_aud2aud(params, reference_audio_bytes, progress_callback=progress_callback)
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        params["seed"] = actual_seed
+
+        # Hash the reference clip (mirrors img2img/img2vid's source_image_hash).
+        params["source_audio_hash"] = hashlib.sha256(reference_audio_bytes).hexdigest()
+
+        # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
+        filename = save_audio_with_metadata(
+            waveform,
+            sample_rate,
+            params,
+            "aud2aud",
+            model_info=pipeline_manager.current_model_info,
+        )
+
+        # Thumbnail from the waveform PNG (same base name as the FLAC).
+        base_name = os.path.splitext(filename)[0]
+        waveform_png_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(waveform_png_path):
+            create_thumbnail(waveform_png_path)
+
+        # Record audio-specific fields into parameters JSON for the gallery.
+        num_samples = int(waveform.shape[-1])
+        duration_s = (num_samples / sample_rate) if sample_rate else 0.0
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        # Audio has no visual dimensions; do not let create_db_image_record's
+        # width/height fallback (512) fabricate a fake resolution.
+        params_for_db["width"] = 0
+        params_for_db["height"] = 0
+        params_for_db["duration"] = duration_s
+        params_for_db["sample_rate"] = sample_rate
+        params_for_db["is_audio"] = True
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="aud2aud",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+            source_image_hash=params["source_audio_hash"],
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Audio-to-audio generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
         )
 

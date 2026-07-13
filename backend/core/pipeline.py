@@ -2210,6 +2210,33 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/txt2aud.",
         )
 
+    def generate_aud2aud(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):
+        """Generate a cover (audio-to-audio) from a reference clip + text conditioning
+        (ACE-Step 1.5 only). Repaint (inpaint analog) is not supported -- see
+        `AceStepMixin._generate_aud2aud_acestep` docstring.
+
+        Args:
+            params: Generation parameters -- caption/prompt, lyrics,
+                cover_strength, seed, inference_steps, guidance_scale, shift,
+                vocal_language/bpm/key_scale/time_signature.
+            reference_audio: a file path (str) or raw audio bytes for the
+                cover reference clip.
+            progress_callback: Called as (step, total_steps).
+            step_callback: Reserved (unused for ACE-Step aud2aud).
+
+        Returns:
+            tuple: (waveform, sample_rate, actual_seed) -- identical contract
+            to generate_txt2aud.
+        """
+        if self.is_acestep_model:
+            return self._generate_aud2aud_acestep(params, reference_audio, progress_callback, step_callback)
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Audio-to-audio generation requires an ACE-Step model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/aud2aud.",
+        )
+
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
         """Generate image from text
 

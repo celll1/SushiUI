@@ -203,6 +203,10 @@ def save_audio_with_metadata(
         "sampler_mode": params.get("sampler_mode"),
         "vocal_language": params.get("vocal_language"),
     }
+    if "cover_strength" in params:
+        sidecar["cover_strength"] = params.get("cover_strength")
+    if "source_audio_hash" in params:
+        sidecar["source_audio_hash"] = params.get("source_audio_hash")
     try:
         with open(os.path.join(settings.outputs_dir, f"{base_name}.json"), "w", encoding="utf-8") as f:
             json.dump(sidecar, f, ensure_ascii=False, indent=2)

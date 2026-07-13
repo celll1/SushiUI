@@ -289,6 +289,10 @@ AUDIO_GEN_DEFAULTS: Dict[str, Any] = {
     "shift": 3.0,
     "sampler_mode": "euler",   # accepted for forward-compat; currently a no-op
     "vocal_language": "en",
+    # Generation-time LoRA (same shape as every other arch's params["loras"]:
+    # list of {"path": str, "strength": float, ...}). See
+    # `core.pipeline_backends.acestep.AceStepMixin._load_lora_acestep`.
+    "loras": [],
     # aud2aud (audio-to-audio / cover) stub keys -- not yet wired to a route
     # (Phase 4+). Kept here now so the schema key-set is stable once aud2aud
     # ships, avoiding a later SSOT migration.
@@ -326,6 +330,10 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
     # to the reference.
     "cover_strength": 1.0,
     "vocal_language": "en",
+    # Generation-time LoRA (same shape as every other arch's params["loras"]:
+    # list of {"path": str, "strength": float, ...}). See
+    # `core.pipeline_backends.acestep.AceStepMixin._load_lora_acestep`.
+    "loras": [],
 }
 
 # ---------------------------------------------------------------------------

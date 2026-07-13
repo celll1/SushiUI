@@ -207,6 +207,7 @@ class Txt2AudRequest(BaseModel):
     shift: float = TXT2AUD_DEFAULTS["shift"]
     sampler_mode: str = TXT2AUD_DEFAULTS["sampler_mode"]
     vocal_language: str = TXT2AUD_DEFAULTS["vocal_language"]
+    loras: Optional[List[LoRAConfig]] = TXT2AUD_DEFAULTS["loras"]
 
 
 class GenerationParams(BaseModel):
@@ -2209,7 +2210,7 @@ async def generate_txt2aud(
             actual_seed=actual_seed,
             generation_type="txt2aud",
             image_hash="",
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
         )
@@ -2243,6 +2244,7 @@ async def generate_aud2aud(
     shift: float = Form(AUD2AUD_DEFAULTS["shift"]),
     cover_strength: float = Form(AUD2AUD_DEFAULTS["cover_strength"]),
     vocal_language: str = Form(AUD2AUD_DEFAULTS["vocal_language"]),
+    loras: str = Form("[]"),  # JSON string of LoRA configs
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
@@ -2260,6 +2262,9 @@ async def generate_aud2aud(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.audio_utils import save_audio_with_metadata
 
+    # Parse LoRA configs (same JSON-string-of-configs convention as txt2img/img2img/inpaint)
+    lora_configs = json.loads(loras) if loras else []
+
     params = {
         "prompt": prompt,
         "lyrics": lyrics,
@@ -2269,6 +2274,7 @@ async def generate_aud2aud(
         "shift": shift,
         "cover_strength": cover_strength,
         "vocal_language": vocal_language,
+        "loras": lora_configs,
     }
 
     if not getattr(pipeline_manager, "is_acestep_model", False):
@@ -2359,7 +2365,7 @@ async def generate_aud2aud(
             actual_seed=actual_seed,
             generation_type="aud2aud",
             image_hash="",
-            lora_names=None,
+            lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,
             model_hash=model_hash,
             source_image_hash=params["source_audio_hash"],

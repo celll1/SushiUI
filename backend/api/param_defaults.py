@@ -301,6 +301,34 @@ AUDIO_GEN_DEFAULTS: Dict[str, Any] = {
 TXT2AUD_DEFAULTS: Dict[str, Any] = dict(AUDIO_GEN_DEFAULTS)
 
 # ---------------------------------------------------------------------------
+# Audio-to-audio COVER (POST /generate/aud2aud — ACE-Step 1.5 turbo, img2img
+# analog). Repaint (inpaint analog) is out of scope -- the vendored
+# generate_audio has no repaint kwargs (see
+# `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`).
+# ---------------------------------------------------------------------------
+# Note: distinct from the `reference_audio_path` / `is_cover` /
+# `denoising_strength` stub keys left in AUDIO_GEN_DEFAULTS above -- those
+# predate this implementation and do not match its actual contract
+# (multipart file upload; `cover_strength` is a step-count blend, not a
+# denoise-strength/start-timestep knob). Authoritative source:
+# `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`.
+
+AUD2AUD_DEFAULTS: Dict[str, Any] = {
+    "prompt": "",              # caption text (also accepted as "caption") -- the ref is re-rendered under this
+    "lyrics": "",
+    "seed": -1,                # -1 = random
+    "inference_steps": 8,      # turbo distilled default
+    "guidance_scale": 1.0,     # turbo is CFG-distilled; overridden to 1.0 if != 1.0
+    "shift": 3.0,
+    # Fraction of steps that keep the reference's semantic context before
+    # switching to a text2music-style (silence) context (step-count blend,
+    # NOT an img2img start-timestep/partial-denoise knob). Higher = closer
+    # to the reference.
+    "cover_strength": 1.0,
+    "vocal_language": "en",
+}
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

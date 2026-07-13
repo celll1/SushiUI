@@ -396,6 +396,71 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /generate/aud2aud:
+    post:
+      tags: [generation]
+      summary: Generate a cover (audio-to-audio) from a reference clip (ACE-Step 1.5)
+      description: |
+        Audio-to-audio COVER generation using a loaded ACE-Step 1.5 (turbo)
+        model -- the img2img analog for audio. The uploaded reference clip is
+        VAE-encoded and fed back to the model as the cover context
+        (`is_covers=true`); the reference is re-rendered under the new
+        `prompt`/`lyrics`. Produces a lossless FLAC file and a gallery row.
+
+        **Requirements:**
+        - An ACE-Step model must be loaded (otherwise 400).
+        - Sent as multipart/form-data with the `reference_audio` file plus
+          the cover parameters as form fields.
+
+        **Key parameters:**
+        - `prompt`: caption text the reference is re-rendered under.
+        - `cover_strength`: fraction of steps that keep the reference's
+          semantic context (step-count blend, NOT an img2img
+          start-timestep/partial-denoise knob). Higher = closer to the
+          reference.
+        - Output duration is derived from the reference clip's length, not
+          user-supplied.
+
+        **Not supported:** repaint (inpaint analog) -- the vendored model
+        has no repaint kwargs; only cover is available.
+
+        **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
+        is CFG-distilled; a non-default value is overridden back to 1.0),
+        shift=3.0.
+      operationId: generateAud2Aud
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Aud2AudRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 1234567890
+                image:
+                  id: 46
+                  filename: "aud2aud_20260713_120000_1234567890.flac"
+                  generation_type: "aud2aud"
+        '400':
+          description: Invalid parameters or no ACE-Step model loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /generate/img2img:
     post:
       tags: [generation]
@@ -5425,6 +5490,58 @@ components:
           default: "en"
           description: "Language folded into the lyrics/metas conditioning text."
           example: "en"
+
+    Aud2AudRequest:
+      type: object
+      required:
+        - reference_audio
+      properties:
+        prompt:
+          type: string
+          default: ""
+          description: "Caption text describing the desired re-render (also accepted server-side as `caption`). The reference audio is re-rendered under this new caption/lyrics."
+          example: "lo-fi hip hop, chill, jazzy piano"
+        lyrics:
+          type: string
+          default: ""
+          description: "Lyrics text. Empty for instrumental generation."
+          example: ""
+        seed:
+          type: integer
+          default: -1
+          description: "Random seed. -1 draws a random seed (returned in actual_seed)."
+          example: -1
+        inference_steps:
+          type: integer
+          default: 8
+          description: "Number of denoising steps (turbo distilled default: 8)."
+          example: 8
+        guidance_scale:
+          type: number
+          default: 1.0
+          description: "Classifier-free guidance scale. Turbo is CFG-distilled (no twin forward pass); a non-1.0 value is overridden back to 1.0."
+          example: 1.0
+        shift:
+          type: number
+          default: 3.0
+          description: "Flow-matching timestep shift used to select the distilled step schedule."
+          example: 3.0
+        cover_strength:
+          type: number
+          default: 1.0
+          minimum: 0.0
+          maximum: 1.0
+          description: "Fraction of denoising steps that keep the reference audio's semantic context before switching to a text2music-style (silence) context built from the same caption/lyrics. This is a step-count blend, NOT an img2img start-timestep/partial-denoise knob; xt always starts from full noise and runs every step. Higher = closer to the reference."
+          example: 1.0
+        vocal_language:
+          type: string
+          default: "en"
+          description: "Language folded into the lyrics/metas conditioning text."
+          example: "en"
+        reference_audio:
+          type: string
+          format: binary
+          description: "Reference audio clip (multipart file upload) used as the cover source. VAE-encoded and fed back to the model as the cover context (is_covers=true). Output duration is derived from this clip's length, not user-supplied."
 
     Img2ImgRequest:
       allOf:

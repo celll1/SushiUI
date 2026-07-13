@@ -452,6 +452,21 @@ export interface Txt2AudParams {
   vocal_language?: string;     // default "en"
 }
 
+// aud2aud (cover): multipart -- prompt/lyrics/cover params + an uploaded
+// `reference_audio` clip (handled by generateAud2Aud()). No audio_duration
+// (derived server-side from the reference clip's length) and no
+// sampler_mode (unlike txt2aud); adds cover_strength.
+export interface Aud2AudParams {
+  prompt: string;              // caption text (the reference is re-rendered under this)
+  lyrics?: string;
+  seed?: number;                // default -1
+  inference_steps?: number;    // turbo distilled default 8
+  guidance_scale?: number;     // turbo is CFG-distilled; default 1.0
+  shift?: number;               // default 3.0
+  cover_strength?: number;      // 0-1 step-count blend toward the reference; default 1.0
+  vocal_language?: string;      // default "en"
+}
+
 // ---------------------------------------------------------------------------
 // Schema defaults — fetched once at startup, backend is source of truth
 // ---------------------------------------------------------------------------
@@ -464,6 +479,7 @@ export interface GenerationDefaultsResponse {
   txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
   img2vid: Partial<Img2VidParams> & Record<string, unknown>;
   txt2aud: Partial<Txt2AudParams> & Record<string, unknown>;
+  aud2aud: Partial<Aud2AudParams> & Record<string, unknown>;
 }
 
 export const fetchGenerationDefaults = async (): Promise<GenerationDefaultsResponse> =>
@@ -1116,6 +1132,36 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
   };
 
   const response = await api.post("/generate/txt2aud", body);
+  return response.data;
+};
+
+// aud2aud (cover): multipart POST /generate/aud2aud with an uploaded
+// `reference_audio` clip. Every AUD2AUD field is appended explicitly
+// (CLAUDE.md param-threading), mirroring generateImg2Vid's FormData construction.
+export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: File | string) => {
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs (mirrors generateImg2Vid's `image` handling).
+  if (typeof referenceAudio === "string") {
+    const response = await fetch(referenceAudio);
+    const blob = await response.blob();
+    formData.append("reference_audio", blob, "reference.wav");
+  } else {
+    formData.append("reference_audio", referenceAudio);
+  }
+
+  formData.append("prompt", params.prompt);
+  formData.append("lyrics", params.lyrics || "");
+  formData.append("seed", String(params.seed ?? -1));
+  formData.append("inference_steps", String(params.inference_steps ?? 8));
+  formData.append("guidance_scale", String(params.guidance_scale ?? 1.0));
+  formData.append("shift", String(params.shift ?? 3.0));
+  formData.append("cover_strength", String(params.cover_strength ?? 1.0));
+  formData.append("vocal_language", params.vocal_language ?? "en");
+
+  const response = await api.post("/generate/aud2aud", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
   return response.data;
 };
 

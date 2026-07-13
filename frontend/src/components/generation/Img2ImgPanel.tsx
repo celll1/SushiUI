@@ -25,7 +25,7 @@ import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { migrateLoopGenerationConfig } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -89,6 +89,23 @@ interface Img2ImgParams {
   use_pinned_memory?: boolean;
   block_swap_h2d_only?: boolean;
   block_swap_ring_size?: number;
+  // Video generation fields (used when a video model is loaded; the panel maps
+  // these into Img2VidParams for img2vid requests, with the input image as the keyframe).
+  num_frames?: number;
+  frame_rate?: number;
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  num_videos_per_prompt?: number;
+  audio_enable?: boolean;
+  max_sequence_length?: number;
+  // Music cover fields (used when an audio model (ACE-Step) is loaded; the panel
+  // maps these into Aud2AudParams for aud2aud requests, with the uploaded
+  // reference clip as the cover source).
+  lyrics?: string;
+  inference_steps?: number;
+  shift?: number;
+  cover_strength?: number;
+  vocal_language?: string;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -176,6 +193,14 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   num_videos_per_prompt: 1,
   audio_enable: true,
   max_sequence_length: 1024,
+  // Music cover fields (used when an audio model (ACE-Step) is loaded; the panel
+  // maps these into Aud2AudParams for aud2aud requests, with the uploaded
+  // reference clip as the cover source). inference_steps/guidance_scale are
+  // shared with the video fields above (same defaults, 8 / 1.0).
+  lyrics: "",
+  shift: 3.0,
+  cover_strength: 1.0,
+  vocal_language: "en",
 };
 
 // num_frames must be 8k+1 (LTX-2.3). Offer common lengths.
@@ -196,13 +221,26 @@ interface Img2ImgPanelProps {
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {
-  const { modelLoaded, isBackendReady, generationDefaults, isVideo } = useStartup();
+  const { modelLoaded, isBackendReady, generationDefaults, isVideo, isAudio } = useStartup();
   const [params, setParams] = useState<Img2ImgParams>(DEFAULT_PARAMS);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   // Video output (produced when a video model is loaded / img2vid queue item).
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  // Audio output (produced when an audio model is loaded / aud2aud queue item).
+  const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
+  const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
+  // Reference audio clip (the aud2aud "input image" equivalent) -- kept as a
+  // File (not base64) so it can carry through the queue as `inputAudio`.
+  const [referenceAudioFile, setReferenceAudioFile] = useState<File | null>(null);
+  const [referenceAudioPreview, setReferenceAudioPreview] = useState<string | null>(null);
+  // Revoke the reference-audio blob URL on unmount (mirrors previewBlobUrlRef cleanup).
+  useEffect(() => {
+    return () => {
+      if (referenceAudioPreview) URL.revokeObjectURL(referenceAudioPreview);
+    };
+  }, [referenceAudioPreview]);
   // Client-side post-edit (brightness/saturation) for the current preview image.
   // Never sent to the backend; reset to neutral on each new generated image.
   const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
@@ -764,12 +802,19 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     }
   }, [loopGenerationConfig, isMounted]);
 
-  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
+  // aud2aud defaults are merged on top so the audio fields (lyrics, cover_strength,
+  // inference_steps, shift, guidance_scale, vocal_language) reflect param_defaults.py
+  // even though this panel's primary shape is img2img.
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.img2img as Partial<typeof DEFAULT_PARAMS>) }));
+      setParams(prev => ({
+        ...DEFAULT_PARAMS,
+        ...(generationDefaults.img2img as Partial<typeof DEFAULT_PARAMS>),
+        ...(generationDefaults.aud2aud as Partial<typeof DEFAULT_PARAMS>),
+      }));
     }
   }, [generationDefaults]);
 
@@ -921,6 +966,25 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
       }
     }
+  };
+
+  // Reference audio clip (aud2aud cover source). Kept in-memory only (a blob
+  // URL preview + the File itself); not persisted across reloads like
+  // inputImage/tempImageStorage -- audio models are a later phase and don't
+  // need loop-generation/reload survival yet.
+  const handleReferenceAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (referenceAudioPreview) URL.revokeObjectURL(referenceAudioPreview);
+      setReferenceAudioFile(file);
+      setReferenceAudioPreview(URL.createObjectURL(file));
+    }
+  };
+
+  const handleClearReferenceAudio = () => {
+    if (referenceAudioPreview) URL.revokeObjectURL(referenceAudioPreview);
+    setReferenceAudioFile(null);
+    setReferenceAudioPreview(null);
   };
 
   const handleSaveEditedImage = async (editedImageUrl: string) => {
@@ -1316,28 +1380,37 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       return;
     }
 
-    if (!inputImage && !inputImagePreview) {
+    // Audio mode (ACE-Step) uses an uploaded reference clip instead of an
+    // input image; skip the image-required check and base64 conversion below.
+    if (isAudio) {
+      if (!referenceAudioFile) {
+        alert("Please select a reference audio clip");
+        return;
+      }
+    } else if (!inputImage && !inputImagePreview) {
       alert("Please upload an input image");
       return;
     }
 
-    // Convert image to base64 for queue storage
-    let imageBase64: string;
-    const imageSource = inputImage || inputImagePreview;
+    // Convert image to base64 for queue storage (img2img/img2vid only)
+    let imageBase64: string = "";
+    if (!isAudio) {
+      const imageSource = inputImage || inputImagePreview;
 
-    if (typeof imageSource === 'string') {
-      // Already a base64 or URL
-      imageBase64 = imageSource;
-    } else if (imageSource instanceof File) {
-      // Convert File to base64
-      imageBase64 = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.readAsDataURL(imageSource);
-      });
-    } else {
-      alert("Invalid input image");
-      return;
+      if (typeof imageSource === 'string') {
+        // Already a base64 or URL
+        imageBase64 = imageSource;
+      } else if (imageSource instanceof File) {
+        // Convert File to base64
+        imageBase64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result as string);
+          reader.readAsDataURL(imageSource);
+        });
+      } else {
+        alert("Invalid input image");
+        return;
+      }
     }
 
     // Import wildcard replacement function dynamically
@@ -1379,6 +1452,29 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         console.error("TIPO generation failed in Feeling Lucky mode:", error);
         alert("Failed to generate prompt with TIPO. Using original prompt.");
       }
+    }
+
+    // Audio mode: an audio model (ACE-Step) is loaded -> enqueue an aud2aud item
+    // built from the shared params + the uploaded reference clip. Checked before
+    // the video branch (mutually exclusive). Audio loop-generation is out of scope.
+    if (isAudio) {
+      const audioParams: Aud2AudParams = {
+        prompt: processedPrompt,
+        lyrics: params.lyrics,
+        seed: params.seed,
+        inference_steps: params.inference_steps,
+        guidance_scale: params.guidance_scale,
+        shift: params.shift,
+        cover_strength: params.cover_strength,
+        vocal_language: params.vocal_language,
+      };
+      addToQueue({
+        type: "aud2aud",
+        params: audioParams as any,
+        inputAudio: referenceAudioFile!,
+        prompt: processedPrompt,
+      });
+      return;
     }
 
     // Video mode: a video model is loaded -> enqueue an img2vid item using the
@@ -1688,8 +1784,50 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     const nextItem = startNextInQueue();
     console.log("[Img2Img] Next item from queue:", nextItem);
-    if (!nextItem || (nextItem.type !== "img2img" && nextItem.type !== "img2vid")) {
-      console.log("[Img2Img] No img2img/img2vid items in queue");
+    if (!nextItem || (nextItem.type !== "img2img" && nextItem.type !== "img2vid" && nextItem.type !== "aud2aud")) {
+      console.log("[Img2Img] No img2img/img2vid/aud2aud items in queue");
+      return;
+    }
+
+    // Audio branch: aud2aud item (an audio model is loaded). The queued
+    // reference clip (a File) is the cover source. Produces a .flac and
+    // renders an <audio> instead of an <img>. No loop-generation handling.
+    if (nextItem.type === "aud2aud") {
+      setIsGenerating(true);
+      setProgress(0);
+      setTotalSteps((nextItem.params as any).inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedAudio(null);
+      try {
+        const referenceAudio = nextItem.inputAudio;
+        if (!referenceAudio) {
+          throw new Error("No reference audio available for aud2aud generation");
+        }
+        const result = await generateAud2Aud(nextItem.params as Aud2AudParams, referenceAudio);
+        const audioUrl = `/outputs/${result.image.filename}`;
+        setGeneratedAudio(audioUrl);
+        setGeneratedAudioInfo({
+          duration: result.image.duration,
+          sample_rate: result.image.sample_rate,
+        });
+        if (onImageGenerated) onImageGenerated(audioUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Img2Img] aud2aud generation failed:", error);
+        alert("aud2aud generation failed. Please check console for details.");
+        setIsGenerating(false);
+        setProgress(0);
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
       return;
     }
 
@@ -2028,7 +2166,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   // Auto-start queue processing when queue has pending items and not currently generating
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "img2img" || item.type === "img2vid"));
+    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "img2img" || item.type === "img2vid" || item.type === "aud2aud"));
     const isCurrentItemNull = currentItem === null;
 
     console.log("[Img2Img] Queue effect:", {
@@ -2102,6 +2240,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           storageKeyPrefix="img2img"
         />
 
+        {!isAudio && (
         <Card
           title="Input Image"
           collapsible={true}
@@ -2175,6 +2314,59 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             )}
           </div>
         </Card>
+        )}
+
+        {isAudio && (
+          <Card
+            title="Reference Audio"
+            collapsible={true}
+            defaultCollapsed={true}
+            storageKey="img2img_reference_audio_collapsed"
+            collapsedPreview={
+              referenceAudioPreview ? (
+                <span className="text-green-400 text-sm">✓ Audio loaded</span>
+              ) : (
+                <span className="text-gray-500 text-sm">No audio</span>
+              )
+            }
+          >
+            <div className="space-y-4">
+              <div className="flex gap-2">
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={handleReferenceAudioUpload}
+                  className="flex-1 block w-full text-sm text-gray-400
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-lg file:border-0
+                    file:text-sm file:font-medium
+                    file:bg-blue-600 file:text-white
+                    hover:file:bg-blue-700
+                    file:cursor-pointer cursor-pointer"
+                />
+                {referenceAudioPreview && (
+                  <Button
+                    onClick={handleClearReferenceAudio}
+                    variant="secondary"
+                    size="sm"
+                    title="Clear reference audio"
+                  >
+                    Clear
+                  </Button>
+                )}
+              </div>
+              {referenceAudioPreview ? (
+                <audio src={referenceAudioPreview} className="w-full" controls />
+              ) : (
+                <div className="bg-gray-800 rounded-lg border-2 border-dashed border-gray-600 py-6">
+                  <p className="text-gray-500 text-center text-sm px-4">
+                    Select a reference audio clip to cover. Duration is derived from the clip itself.
+                  </p>
+                </div>
+              )}
+            </div>
+          </Card>
+        )}
 
         {/* FLUX.2 Image Edit / Vision Encoder: Reference Images */}
         {(currentModelInfo?.model_info?.type === "flux2" || params.vision_encoder_path) && (
@@ -2298,6 +2490,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </Card>
         )}
 
+        {!isAudio && (
         <Card title="Prompt">
           <div className="relative">
             <TextareaWithTagSuggestions
@@ -2354,6 +2547,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             enableWeightControl={true}
           />
         </Card>
+        )}
 
         {isVideo && (
           <Card title="Video">
@@ -2437,7 +2631,95 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           </Card>
         )}
 
-        {!isVideo && (<>
+        {isAudio && (
+          <Card title="Audio (Cover)">
+            <Textarea
+              label="Caption"
+              placeholder="Describe the music (genre, mood, instruments)..."
+              rows={4}
+              value={params.prompt}
+              onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+            />
+            <Textarea
+              label="Lyrics"
+              placeholder="Enter lyrics (optional)..."
+              rows={6}
+              value={params.lyrics ?? ""}
+              onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+            />
+
+            <Slider
+              label="Cover Strength"
+              min={0}
+              max={1}
+              step={0.05}
+              value={params.cover_strength ?? 1.0}
+              onChange={(e) => setParams({ ...params, cover_strength: parseFloat(e.target.value) })}
+            />
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <NumberInput
+                label="Steps"
+                value={params.inference_steps ?? 8}
+                onCommit={(v) => setParams({ ...params, inference_steps: v })}
+                min={1}
+                max={100}
+                step={1}
+                parse="int"
+              />
+              <NumberInput
+                label="Shift"
+                value={params.shift ?? 3.0}
+                onCommit={(v) => setParams({ ...params, shift: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+              <NumberInput
+                label="Guidance Scale"
+                value={params.guidance_scale ?? 1.0}
+                onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+                min={0}
+                max={20}
+                step={0.1}
+                parse="float"
+              />
+              <Input
+                type="number"
+                label="Seed"
+                value={params.seed ?? -1}
+                onChange={(e) => {
+                  const parsed = parseInt(e.target.value);
+                  setParams({ ...params, seed: Number.isNaN(parsed) ? -1 : parsed });
+                }}
+              />
+            </div>
+
+            <Select
+              label="Vocal Language"
+              value={params.vocal_language ?? "en"}
+              onChange={(e) => setParams({ ...params, vocal_language: e.target.value })}
+              options={[
+                { value: "en", label: "English" },
+                { value: "zh", label: "Chinese" },
+                { value: "ja", label: "Japanese" },
+                { value: "ko", label: "Korean" },
+                { value: "es", label: "Spanish" },
+                { value: "fr", label: "French" },
+                { value: "de", label: "German" },
+                { value: "ru", label: "Russian" },
+                { value: "it", label: "Italian" },
+                { value: "pt", label: "Portuguese" },
+              ]}
+            />
+          </Card>
+        )}
+
+        {!isVideo && !isAudio && (<>
         <Card title="Parameters">
           <div className="space-y-4">
             <Slider
@@ -3691,6 +3973,20 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                         {generatedVideoInfo.num_frames != null && <span>{generatedVideoInfo.num_frames} frames</span>}
                         {generatedVideoInfo.fps != null && <span> · {generatedVideoInfo.fps} fps</span>}
                         {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
+                      </div>
+                    )}
+                  </div>
+                ) : isAudio && generatedAudio ? (
+                  <div className="w-full space-y-2">
+                    <audio
+                      src={generatedAudio}
+                      className="w-full"
+                      controls
+                    />
+                    {generatedAudioInfo && (
+                      <div className="text-xs text-gray-400">
+                        {generatedAudioInfo.duration != null && Number.isFinite(Number(generatedAudioInfo.duration)) && <span>{Number(generatedAudioInfo.duration).toFixed(2)}s</span>}
+                        {generatedAudioInfo.sample_rate != null && <span> · {generatedAudioInfo.sample_rate} Hz</span>}
                       </div>
                     )}
                   </div>

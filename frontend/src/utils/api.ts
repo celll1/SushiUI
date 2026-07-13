@@ -450,6 +450,7 @@ export interface Txt2AudParams {
   shift?: number;              // default 3.0
   sampler_mode?: string;       // accepted for forward-compat; currently a no-op
   vocal_language?: string;     // default "en"
+  loras?: LoRAConfig[];
 }
 
 // aud2aud (cover): multipart -- prompt/lyrics/cover params + an uploaded
@@ -465,6 +466,7 @@ export interface Aud2AudParams {
   shift?: number;               // default 3.0
   cover_strength?: number;      // 0-1 step-count blend toward the reference; default 1.0
   vocal_language?: string;      // default "en"
+  loras?: LoRAConfig[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,6 +1131,7 @@ export const generateTxt2Aud = async (params: Txt2AudParams) => {
     shift: params.shift ?? 3.0,
     sampler_mode: params.sampler_mode ?? "euler",
     vocal_language: params.vocal_language ?? "en",
+    loras: params.loras || [],
   };
 
   const response = await api.post("/generate/txt2aud", body);
@@ -1158,6 +1161,7 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
   formData.append("shift", String(params.shift ?? 3.0));
   formData.append("cover_strength", String(params.cover_strength ?? 1.0));
   formData.append("vocal_language", params.vocal_language ?? "en");
+  formData.append("loras", JSON.stringify(params.loras || []));
 
   const response = await api.post("/generate/aud2aud", formData, {
     headers: { "Content-Type": "multipart/form-data" },

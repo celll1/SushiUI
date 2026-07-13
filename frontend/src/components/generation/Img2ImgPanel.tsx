@@ -1467,6 +1467,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         shift: params.shift,
         cover_strength: params.cover_strength,
         vocal_language: params.vocal_language,
+        loras: params.loras,
       };
       addToQueue({
         type: "aud2aud",
@@ -2717,6 +2718,18 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               ]}
             />
           </Card>
+        )}
+
+        {isAudio && visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => {
+              console.log("[Img2Img] Audio LoRA onChange called with:", loras);
+              setParams({ ...params, loras });
+            }}
+            disabled={isGenerating}
+            storageKey="img2img_audio_lora_collapsed"
+          />
         )}
 
         {!isVideo && !isAudio && (<>

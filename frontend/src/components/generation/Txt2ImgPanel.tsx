@@ -1158,6 +1158,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         shift: params.shift,
         sampler_mode: params.sampler_mode,
         vocal_language: params.vocal_language,
+        loras: params.loras,
       };
       addToQueue({
         type: "txt2aud",
@@ -2293,6 +2294,18 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               />
             </div>
           </Card>
+        )}
+
+        {isAudio && visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras) => {
+              console.log("[Txt2Img] Audio LoRA onChange called with:", loras);
+              setParams({ ...params, loras });
+            }}
+            disabled={isGenerating}
+            storageKey="txt2img_audio_lora_collapsed"
+          />
         )}
 
         {isVideo && (

@@ -169,6 +169,33 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "inpaint_fill_mode": "original",
     "inpaint_fill_strength": 1.0,
     "inpaint_blur_strength": 1.0,
+    # Loop-generation decode mode (txt2img/img2img/inpaint, all steps of a
+    # client-driven loop). "full" = decode with the active VAE (PiD if
+    # overridden) + save + gallery (current/default behavior). "cheap" = if a
+    # PidVaeWrapper override is active, decode with its EMBEDDED real SDXL VAE
+    # instead of running the PiD student net (no-op -- identical to "full" --
+    # when no PiD override is active); still saves + galleries. "none" = skip
+    # decode/save/gallery entirely; the final latent is cached server-side
+    # (core.inference.latent_cache) and a latent_id is returned instead of an
+    # image, for the next loop step's input_latent_id (no VAE round-trip).
+    # SD1.5/SDXL only in this phase (the legacy custom_sampling.py pipeline);
+    # other architectures accept the field but always behave as "full".
+    "loop_decode": "full",
+    # img2img/inpaint: start denoising from a cached latent (see
+    # core.inference.latent_cache) instead of an uploaded image -- the
+    # loop-generation counterpart of loop_decode="none" on the PRODUCING step.
+    # None = normal image upload (default). SD1.5/SDXL img2img only; inpaint
+    # accepts the field but rejects a non-null value (mask compositing needs a
+    # real source image -- see the design doc).
+    "input_latent_id": None,
+    # Orthogonal to loop_decode: when true, the generated image is still saved
+    # to disk (so the loop can chain to the next step via the file path) but
+    # the gallery database record (thumbnail + DB row) is skipped. Used for
+    # loop-generation intermediate steps that decode cheaply (e.g. image-space
+    # upscale via loop_decode="cheap") but shouldn't clutter the gallery.
+    # Meaningless combined with loop_decode="none" (nothing is decoded/saved
+    # there either way).
+    "skip_gallery": False,
 }
 
 # Keys present only in img2img/inpaint (not txt2img)
@@ -177,6 +204,9 @@ _IMG2IMG_ONLY = frozenset({
     # VAE DC-drift correction requires an input image to measure the round-trip
     # bias, so it exists for img2img + inpaint only (excluded from txt2img).
     "vae_drift_correction",
+    # Latent-passthrough loop chaining: only meaningful where an input image
+    # would otherwise be required.
+    "input_latent_id",
 })
 # Keys present only in inpaint (not txt2img or img2img)
 _INPAINT_ONLY = frozenset({

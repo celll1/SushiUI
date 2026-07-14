@@ -376,7 +376,6 @@ def _extract_from_header(components: Dict[str, Any], header: Dict[str, Any],
     the classic single-file first_stage_model./conditioner./model. prefixes."""
     keys = [k for k in header.keys() if k != "__metadata__"]
 
-    has_vae = any(("vae." in k) or k.startswith("first_stage_model.") for k in keys)
     has_te = any(k.startswith(("text_encoder", "conditioner.", "te.")) for k in keys)
     has_backbone = any(k.startswith(("transformer.", "model.diffusion_model.",
                                      "unet.", "diffusion_model.", "net.",
@@ -384,6 +383,21 @@ def _extract_from_header(components: Dict[str, Any], header: Dict[str, Any],
                                      "img_in.", "transformer_blocks.",
                                      # ideogram4 dual-transformer second backbone
                                      "unconditional_transformer.")) for k in keys)
+
+    has_vae = any(("vae." in k) or k.startswith("first_stage_model.") for k in keys)
+    if not has_vae and not has_backbone and not has_te:
+        # Bare original/LDM-format AutoencoderKL VAE checkpoint: no "vae."/
+        # "first_stage_model." prefix at all (e.g. a plain `sdxl_vae.safetensors`
+        # with top-level `encoder.*`/`decoder.*`/`quant_conv.*` keys, no
+        # config.json). Recognized ONLY when the header is VAE-only (no
+        # diffusion-backbone or text-encoder keys), so a full model checkpoint's
+        # own (prefixed) VAE sub-weights are never mis-flagged as a standalone
+        # VAE by this branch.
+        has_vae = any(
+            k.endswith(("decoder.conv_in.weight", "encoder.conv_in.weight",
+                        "post_quant_conv.weight", "quant_conv.weight"))
+            for k in keys
+        )
 
     # VAE latent channels from decoder conv-in (shape[1])
     if has_vae:
@@ -658,7 +672,9 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 # v2: diffusers content_hash uses safetensors header identity (mtime-free).
 # v3: backbone detection extended (img_in./transformer_blocks./unconditional_transformer.);
 #     VAE latent_channels class-default fallback; lens/ideogram4/flux2 wiring latent=32.
-_REGISTRY_SCHEMA_VERSION = 3
+# v4: bare original/LDM-format AutoencoderKL VAE (un-prefixed decoder/encoder/
+#     quant_conv keys, no config.json) is now recognized as a standalone VAE.
+_REGISTRY_SCHEMA_VERSION = 4
 
 
 class ComponentRegistryCache:

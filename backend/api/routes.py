@@ -3474,13 +3474,18 @@ async def list_vision_encoders(db: Session = Depends(get_gallery_db)):
 
 
 def _override_scan_dirs(db: Session) -> List[str]:
-    """Configured model dirs plus the shared VAE store dir, de-duplicated."""
+    """Configured model dirs plus the shared VAE/text-encoder store dirs, de-duplicated."""
     settings_record = db.query(UserSettings).first()
     additional_model_dirs = settings_record.model_dirs if settings_record else []
     dirs = [settings.models_dir] + list(additional_model_dirs or [])
     vae_store = os.path.join(settings.models_dir, "vae")
     if vae_store not in dirs:
         dirs.append(vae_store)
+    # Shared text-encoder store (core.models.common.te_store) — e.g. a locally
+    # resolved Gemma-2-2b-it for PiD's opt-in runtime captioner.
+    te_store = os.path.join(settings.models_dir, "text_encoders")
+    if te_store not in dirs:
+        dirs.append(te_store)
     # unique, existing
     seen, out = set(), []
     for d in dirs:

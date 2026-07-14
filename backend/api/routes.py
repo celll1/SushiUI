@@ -3540,6 +3540,14 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
             return
         if cand is not None:
             seen_paths.add(path)
+            # Also dedup on the candidate's RESOLVED path: a PiD checkpoint is
+            # reachable both as its containing dir and as its .pth file, but both
+            # classify to the same concrete .pth — show it once.
+            cand_path = cand.get("path")
+            if cand_path and cand_path != path:
+                if cand_path in seen_paths:
+                    return
+                seen_paths.add(cand_path)
             results.append(cand)
 
     for scan_dir in _override_scan_dirs(db):

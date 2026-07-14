@@ -271,9 +271,12 @@ def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Opti
     """
     pid_pth = _is_pid_checkpoint(path)
     if pid_pth is not None:
+        # Always report the CONCRETE .pth path (not the containing dir when `path`
+        # is a directory that holds it), so a checkpoint reachable both as its
+        # dir and as its file collapses to one candidate after path-dedup.
         return {
             "name": _friendly_component_name(pid_pth),
-            "path": path,
+            "path": pid_pth,
             "arch": "sdxl",
             "latent_channels": 4,
             "vae_class": None,

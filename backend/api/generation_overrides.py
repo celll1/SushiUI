@@ -479,16 +479,20 @@ def apply_overrides(
     plan: Dict[str, Any],
     pid_sr_output: str = "4x",
     pid_use_gemma: bool = False,
+    pid_low_vram: bool = False,
     prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply (or restore, when a slot is None) the planned overrides.
 
-    ``pid_sr_output``/``pid_use_gemma`` only matter when ``plan["vae_kind"] ==
-    "pid_decoder"`` (ignored otherwise). ``prompt`` is forwarded to the active
-    ``PidVaeWrapper`` (via ``pipeline_manager.set_pid_prompt``) only when
-    ``pid_use_gemma`` is set — the wrapper's opt-in runtime Gemma captioner
-    needs the raw text prompt, which is not otherwise available at PiD's
-    Stage-3 decode call site (those sites only see pre-computed embeddings).
+    ``pid_sr_output``/``pid_use_gemma``/``pid_low_vram`` only matter when
+    ``plan["vae_kind"] == "pid_decoder"`` (ignored otherwise). ``prompt`` is
+    forwarded to the active ``PidVaeWrapper`` (via
+    ``pipeline_manager.set_pid_prompt``) only when ``pid_use_gemma`` is set —
+    the wrapper's opt-in runtime Gemma captioner needs the raw text prompt,
+    which is not otherwise available at PiD's Stage-3 decode call site (those
+    sites only see pre-computed embeddings). ``pid_low_vram`` opts into the
+    row-chunked PiTBlock/FinalLayer decode path (default False = the exact
+    original, unchunked forward — see ``PidVaeWrapper.low_vram_decode``).
 
     Returns a metadata dict to fold into the generation params for the DB.
     Never raises: an apply failure degrades to a warning so generation can
@@ -502,6 +506,7 @@ def apply_overrides(
             override_kind=plan.get("vae_kind"),
             pid_sr_output=pid_sr_output,
             pid_use_gemma=pid_use_gemma,
+            pid_low_vram=pid_low_vram,
         )
     except Exception as e:
         _warn(f"VAE override could not be applied: {e}", code="vae_override_error")

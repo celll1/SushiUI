@@ -90,6 +90,7 @@ class PidVaeWrapper:
         pid_sr_output: str = "4x",
         pid_use_gemma: bool = False,
         native_cap: int = 1280,
+        low_vram_decode: bool = False,
     ):
         if pid_sr_output not in ("4x", "original"):
             raise ValueError(f"pid_sr_output must be '4x' or 'original', got {pid_sr_output!r}")
@@ -109,6 +110,20 @@ class PidVaeWrapper:
         self.pid_sr_output = pid_sr_output
         self.pid_use_gemma = pid_use_gemma
         self.native_cap = native_cap
+        # SushiUI VRAM deviation (not upstream): opt-in low-VRAM decode.
+        # False (default) = PiTBlock/FinalLayer run their exact original,
+        # unchunked forward (bit-identical to a plain PiD checkout). True
+        # enables the row-chunked activation path (see
+        # `pixeldit_official.PixDiT_T2I.set_vram_chunk_rows` /
+        # `_DEFAULT_VRAM_CHUNK_ROWS`): ~6.6GB/42% less activation peak at
+        # 4096px decode (measured), at the cost of bf16 GEMM-tiling rounding
+        # drift that is NOT bit-identical (verified bit-identical in fp32;
+        # amplified by bf16's coarse precision through the 4-step SDE
+        # sampler — see scratchpad/pid_vram_proposal.md). Applied fresh on
+        # every `pid_final_decode` call (not just at construction) so an
+        # idempotent update (see `pipeline.load_override_vae`) takes effect
+        # on the very next decode.
+        self.low_vram_decode = low_vram_decode
 
         self.current_prompt: Optional[str] = None  # set via set_prompt() before a pid_use_gemma decode
 
@@ -357,6 +372,16 @@ class PidVaeWrapper:
             caption_embs = caption_embs.expand(B, *caption_embs.shape[1:]).contiguous()
 
         model = self._stage_pid_gpu()
+        # SushiUI VRAM deviation (not upstream): apply the current
+        # low_vram_decode flag on every decode (not just at construction) so
+        # an idempotent flag update on an already-cached net takes effect
+        # immediately. None (disabled) restores the exact original,
+        # unchunked PiTBlock/FinalLayer forward.
+        if self.low_vram_decode:
+            from core.models.pid.networks.pixeldit_official import _DEFAULT_VRAM_CHUNK_ROWS
+            model.net.set_vram_chunk_rows(_DEFAULT_VRAM_CHUNK_ROWS)
+        else:
+            model.net.set_vram_chunk_rows(None)
         try:
             lq_bf16 = lq.to(dtype=torch.bfloat16, device="cuda")
             data_batch = {

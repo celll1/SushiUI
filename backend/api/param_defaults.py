@@ -144,6 +144,14 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # mirror PiD was trained against) once per generation and encode the real
     # prompt for sharper, hallucination-reduced output (see phase 1b findings).
     "pid_use_gemma": False,
+    # False (default) = PiTBlock/FinalLayer run their exact original,
+    # unchunked forward pass (bit-identical output). True opts into a
+    # row-chunked activation path that cuts the PiD decoder's per-block VRAM
+    # peak (~6.6GB/42% measured at 4096px) at the cost of bf16 GEMM-tiling
+    # rounding drift that is NOT bit-identical (verified bit-identical in
+    # fp32; the drift is bf16-precision amplification through the 4-step SDE
+    # sampler, not an implementation bug — see scratchpad/pid_vram_proposal.md).
+    "pid_low_vram": False,
     # SDXL micro-conditioning override (inference). original_size for time_ids:
     # explicit w/h (0 = auto), else output size * scale. crop stays (0,0).
     "original_size_w": 0,

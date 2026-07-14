@@ -489,6 +489,7 @@ async def generate_txt2img(
     text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
     pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
     pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
+    pid_low_vram: bool = Form(GENERATION_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -598,7 +599,7 @@ async def generate_txt2img(
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
-            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, prompt=prompt,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram, prompt=prompt,
         )
 
         # Generate image
@@ -672,6 +673,7 @@ async def generate_txt2img(
             "text_encoder_path": text_encoder_path,
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
+            "pid_low_vram": pid_low_vram,
         }
         params.update(_override_meta)
 
@@ -1385,6 +1387,7 @@ async def generate_img2img(
     text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
     pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
     pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
+    pid_low_vram: bool = Form(GENERATION_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -1496,7 +1499,7 @@ async def generate_img2img(
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
-            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, prompt=prompt,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram, prompt=prompt,
         )
 
         # Generate image
@@ -1506,6 +1509,7 @@ async def generate_img2img(
             "text_encoder_path": text_encoder_path,
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
+            "pid_low_vram": pid_low_vram,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
@@ -2777,6 +2781,7 @@ async def generate_inpaint(
     text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
     pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
     pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
+    pid_low_vram: bool = Form(GENERATION_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -2903,7 +2908,7 @@ async def generate_inpaint(
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
-            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, prompt=prompt,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram, prompt=prompt,
         )
 
         # Generate image
@@ -2913,6 +2918,7 @@ async def generate_inpaint(
             "text_encoder_path": text_encoder_path,
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
+            "pid_low_vram": pid_low_vram,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,

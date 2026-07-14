@@ -1099,6 +1099,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         override_kind: Optional[str] = None,
         pid_sr_output: str = "4x",
         pid_use_gemma: bool = False,
+        pid_low_vram: bool = False,
     ):
         """Swap the model's VAE for the one at ``vae_path`` (idempotent).
 
@@ -1119,15 +1120,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self._restore_override_vae()
             return
         if self._override_vae_path == vae_path:
-            # Idempotent on the path, but pid_sr_output/pid_use_gemma may have
-            # changed between generations on the SAME PiD checkpoint — update
-            # the live wrapper's flags in place rather than silently ignoring them.
+            # Idempotent on the path, but pid_sr_output/pid_use_gemma/pid_low_vram
+            # may have changed between generations on the SAME PiD checkpoint —
+            # update the live wrapper's flags in place rather than silently
+            # ignoring them.
             if override_kind == "pid_decoder":
                 for _slot_kind, container, key in self._vae_override_targets():
                     active = getattr(container, key) if _slot_kind == "attr" else container.get(key)
                     if isinstance(active, PidVaeWrapper):
                         active.pid_sr_output = pid_sr_output
                         active.pid_use_gemma = pid_use_gemma
+                        active.low_vram_decode = pid_low_vram
                     break
             return  # idempotent — already applied
 
@@ -1145,12 +1148,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         if override_kind == "pid_decoder":
             print(f"[VAEOverride] Building PidVaeWrapper around the loaded model's own SDXL VAE "
-                  f"+ PiD checkpoint {vae_path} (pid_sr_output={pid_sr_output}, pid_use_gemma={pid_use_gemma})")
+                  f"+ PiD checkpoint {vae_path} (pid_sr_output={pid_sr_output}, pid_use_gemma={pid_use_gemma}, "
+                  f"pid_low_vram={pid_low_vram})")
             new_vae = PidVaeWrapper(
                 self._original_vae,
                 pid_pth_path=vae_path,
                 pid_sr_output=pid_sr_output,
                 pid_use_gemma=pid_use_gemma,
+                low_vram_decode=pid_low_vram,
             )
         else:
             # Resolve the candidate VAE directory + class.

@@ -26,6 +26,8 @@ interface GalleryFilterProps {
   setFilterTxt2Vid: (value: boolean) => void;
   filterImg2Vid: boolean;
   setFilterImg2Vid: (value: boolean) => void;
+  filterAudio: boolean;
+  setFilterAudio: (value: boolean) => void;
   dateFrom: string;
   setDateFrom: (value: string) => void;
   dateTo: string;
@@ -78,6 +80,8 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
   setFilterTxt2Vid,
   filterImg2Vid,
   setFilterImg2Vid,
+  filterAudio,
+  setFilterAudio,
   dateFrom,
   setDateFrom,
   dateTo,
@@ -166,6 +170,15 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
                   className="rounded"
                 />
                 <span className="text-sm text-gray-300">img2vid</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filterAudio}
+                  onChange={(e) => setFilterAudio(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">Audio</span>
               </label>
             </div>
           </div>

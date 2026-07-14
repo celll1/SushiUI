@@ -82,6 +82,9 @@ export default function ImageGrid() {
   const [filterInpaint, setFilterInpaint] = useState(true);
   const [filterTxt2Vid, setFilterTxt2Vid] = useState(true);
   const [filterImg2Vid, setFilterImg2Vid] = useState(true);
+  // Audio (ACE-Step) results: txt2aud/aud2aud/repaint. Shown by default,
+  // consistent with all the other type checkboxes above.
+  const [filterAudio, setFilterAudio] = useState(true);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [widthRange, setWidthRange] = useState<[number, number]>([0, 2048]);
@@ -120,12 +123,12 @@ export default function ImageGrid() {
       if (filterInpaint) types.push("inpaint");
       if (filterTxt2Vid) types.push("txt2vid");
       if (filterImg2Vid) types.push("img2vid");
-      // Audio (ACE-Step) generations have no dedicated filter checkbox yet;
-      // keep them visible whenever the type filter is otherwise restrictive
-      // (mirroring the "all on" default) so they aren't silently excluded by
-      // the generation_types whitelist below. If every checkbox above is off,
-      // `types` stays empty and the query remains unfiltered (all types show).
-      if (types.length > 0) types.push("txt2aud", "aud2aud");
+      // Audio (ACE-Step) generations: txt2aud/aud2aud/repaint, gated by the
+      // "Audio" checkbox like every other type above. If every checkbox is
+      // off, `types` stays empty and the query remains unfiltered (all types
+      // show) -- same "none selected = show everything" behavior as the
+      // pre-existing image/video checkboxes.
+      if (filterAudio) types.push("txt2aud", "aud2aud", "repaint");
 
       const filters: ImageFilters = {
         skip: (currentPage - 1) * imagesPerPage,
@@ -147,12 +150,12 @@ export default function ImageGrid() {
     } finally {
       setLoading(false);
     }
-  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Reset to page 1 when filters change, then load images
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Load images when filters or page change
   useEffect(() => {
@@ -1855,6 +1858,8 @@ export default function ImageGrid() {
             setFilterTxt2Vid={setFilterTxt2Vid}
             filterImg2Vid={filterImg2Vid}
             setFilterImg2Vid={setFilterImg2Vid}
+            filterAudio={filterAudio}
+            setFilterAudio={setFilterAudio}
             dateFrom={dateFrom}
             setDateFrom={setDateFrom}
             dateTo={dateTo}

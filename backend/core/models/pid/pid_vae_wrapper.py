@@ -333,6 +333,12 @@ class PidVaeWrapper:
         if caption_embs is None:
             caption_embs = self._load_null_caption_embs()
 
+        # Keep caption/LQ batch dims aligned. SushiUI's per-image decode is B=1, but
+        # the null asset (and a single-prompt Gemma encode) is [1, T, C]; expand so a
+        # B>1 latent never diverges from the caption batch.
+        if caption_embs.shape[0] == 1 and B > 1:
+            caption_embs = caption_embs.expand(B, *caption_embs.shape[1:]).contiguous()
+
         model = self._stage_pid_gpu()
         try:
             lq_bf16 = lq.to(dtype=torch.bfloat16, device="cuda")

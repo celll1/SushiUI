@@ -1176,6 +1176,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
             new_vae = new_vae.to("cpu")
 
+        # If an outgoing PiD wrapper occupies the slot (switching override A->B
+        # WITHOUT an intervening restore), release its cached PiD net before
+        # replacing it, rather than leaving a CPU-side orphan for the GC.
+        for _k, _c, _key in targets:
+            _cur = getattr(_c, _key) if _k == "attr" else _c.get(_key)
+            if isinstance(_cur, PidVaeWrapper) and _cur is not new_vae:
+                try:
+                    _cur.unload()
+                except Exception as _e:
+                    print(f"[VAEOverride] outgoing PiD wrapper unload failed (non-fatal): {_e}")
+            break
+
         for kind, container, key in targets:
             self._set_slot(kind, container, key, new_vae)
         self._override_vae_path = vae_path

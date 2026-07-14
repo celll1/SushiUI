@@ -219,6 +219,101 @@ class AceStepMixin:
         return torch.clamp(wav, -1.0, 1.0)
 
     # ------------------------------------------------------------------
+    # Repaint (inpaint analog) helpers. Citations:
+    # `scratchpad/acestep_repaint_feasibility.md` section 5 (recipe) and
+    # `core/generation/handler/conditioning_masks.py` /
+    # `repaint_step_injection.py` / `repaint_waveform_splice.py` (official
+    # reference, NOT vendored -- these are small, pure-tensor, orchestration-
+    # layer utilities we reimplement directly here, same pattern already
+    # used for the cover-mode conditioning-mask math above).
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _acestep_repaint_frame_range(
+        repaint_start: float, repaint_end: float, latent_frames: int
+    ) -> Tuple[int, int]:
+        """Convert repaint_start/end (seconds) to a [start, end) latent-frame
+        range, clamped to the reference's actual length (25 Hz latent rate,
+        matching `conditioning_masks.py`'s `sec * sample_rate // 1920` with
+        `sample_rate=48000` -- `48000 // 1920 == 25`). Negative starts (the
+        official service's "extend before the reference" mode) are NOT
+        supported here -- out of scope for "regenerate a time-range of a
+        reference clip, keeping the rest"; a negative start simply clamps to 0."""
+        s = int(round(max(0.0, repaint_start) * 25.0))
+        e = int(round(max(0.0, repaint_end) * 25.0))
+        s = max(0, min(s, latent_frames - 1))
+        e = max(s + 1, min(e, latent_frames))
+        return s, e
+
+    @staticmethod
+    def _acestep_apply_repaint_waveform_splice(
+        pred_wav: torch.Tensor,
+        ref_wav: torch.Tensor,
+        start_sec: float,
+        end_sec: float,
+        sample_rate: int = 48000,
+        crossfade_duration: float = 0.01,
+    ) -> torch.Tensor:
+        """Re-insert the ORIGINAL reference waveform into the KEPT (non-
+        repaint) region, with a short linear crossfade at each boundary, so
+        only the repainted `[start_sec, end_sec)` region actually changes.
+        Reimplementation (not a vendor copy) of the official
+        `repaint_waveform_splice.py::apply_repaint_waveform_splice` +
+        `_build_waveform_crossfade_mask` -- necessary because the VAE
+        reconstruction of the "kept" region still carries reconstruction
+        error the latent-level repaint hold (`repaint_mask`/
+        `clean_src_latents`, applied inside the vendored `generate_audio`)
+        doesn't fully erase.
+
+        Args:
+            pred_wav: VAE-decoded waveform, [channels, samples].
+            ref_wav: original (pre-VAE) reference waveform, [channels, samples].
+            start_sec/end_sec: repaint region boundaries in seconds --
+                pass the LATENT-frame-derived boundaries (`frame / 25.0`),
+                not the raw user input, so the sample-domain splice boundary
+                exactly matches the latent-domain repaint_mask boundary.
+            sample_rate: audio sample rate (48000 for ACE-Step).
+            crossfade_duration: crossfade length in seconds (default 0.01 = 10ms,
+                matching the official default).
+
+        Returns:
+            Spliced waveform, same shape as `pred_wav`.
+        """
+        min_samples = min(pred_wav.shape[-1], ref_wav.shape[-1])
+        pred = pred_wav[..., :min_samples]
+        ref = ref_wav[..., :min_samples].to(device=pred.device, dtype=pred.dtype)
+
+        start_sample = max(0, min(int(round(start_sec * sample_rate)), min_samples))
+        end_sample = max(start_sample, min(int(round(end_sec * sample_rate)), min_samples))
+        crossfade_samples = int(crossfade_duration * sample_rate)
+
+        if start_sample == 0 and end_sample >= min_samples:
+            # Whole-clip repaint -- nothing outside the region to splice back in.
+            result = pred.clone()
+        else:
+            mask = torch.zeros(min_samples, device=pred.device, dtype=pred.dtype)
+            mask[start_sample:end_sample] = 1.0
+            if crossfade_samples > 0:
+                fade_start = max(start_sample - crossfade_samples, 0)
+                ramp_len = start_sample - fade_start
+                if ramp_len > 0:
+                    mask[fade_start:start_sample] = torch.linspace(
+                        0.0, 1.0, ramp_len + 2, device=pred.device
+                    )[1:-1]
+                fade_end = min(end_sample + crossfade_samples, min_samples)
+                ramp_len = fade_end - end_sample
+                if ramp_len > 0:
+                    mask[end_sample:fade_end] = torch.linspace(
+                        1.0, 0.0, ramp_len + 2, device=pred.device
+                    )[1:-1]
+            m = mask.unsqueeze(0).expand_as(pred)
+            result = m * pred + (1.0 - m) * ref
+
+        if pred_wav.shape[-1] > min_samples:
+            result = torch.cat([result, pred_wav[..., min_samples:]], dim=-1)
+        return result
+
+    # ------------------------------------------------------------------
     # LoRA (generation-time apply/restore for a trained ACE-Step LoRA).
     #
     # ACE-Step uses the same component-based (not diffusers-pipeline-based)
@@ -967,14 +1062,17 @@ class AceStepMixin:
         return waveform[0].detach().cpu(), sample_rate, seed
 
     # ------------------------------------------------------------------
-    # aud2aud (audio-to-audio COVER, img2img analog). Repaint (inpaint
-    # analog) is intentionally NOT implemented -- the vendored
-    # `generate_audio` (this repo's `vendor/modeling_acestep_v15_turbo.py`,
-    # HEAD 6d467e4) has no `repaint_mask` / `clean_src_latents` /
-    # `repaint_crossfade_frames` / `repaint_injection_ratio` kwargs; they are
-    # silently swallowed by its trailing `**kwargs` (would need re-vendoring
-    # the newer main-branch modeling file). See
-    # `scratchpad/acestep_aud2aud_recipe.md` sections 2 and 6.
+    # aud2aud: COVER (audio-to-audio, img2img analog) and REPAINT (inpaint
+    # analog -- regenerate a time-range of a reference clip, keeping the
+    # rest). Both call the same vendored `generate_audio`
+    # (`vendor/modeling_acestep_v15_turbo.py`, re-vendored from the official
+    # main branch -- see `scratchpad/acestep_repaint_feasibility.md` for the
+    # GO/NO-GO state-dict-parity verification of that re-vendor), which now
+    # declares `repaint_mask` / `clean_src_latents` / `repaint_crossfade_
+    # frames` / `repaint_injection_ratio` for real (the OLDER vendored
+    # snapshot swallowed them silently via `**kwargs` -- see
+    # `scratchpad/acestep_aud2aud_recipe.md` sections 2 and 6 for that
+    # earlier NO-GO state, now superseded).
     # ------------------------------------------------------------------
 
     def _generate_aud2aud_acestep(
@@ -984,39 +1082,60 @@ class AceStepMixin:
         progress_callback: Optional[Callable] = None,
         step_callback: Optional[Callable] = None,
     ) -> Tuple[torch.Tensor, int, int]:
-        """Cover generation (audio-to-audio, img2img analog) for ACE-Step 1.5 turbo.
+        """Cover or repaint generation (audio-to-audio) for ACE-Step 1.5 turbo.
 
-        The reference audio is VAE-encoded and fed back to the DiT as
-        `src_latents` with `is_covers=True`; the vendored `generate_audio`
-        internally tokenizes/detokenizes it through the model's FSQ codec to
-        get a "semantic re-render" context (see
+        `params["mode"]` (or `params["audio_task"]`) selects the sub-mode,
+        default `"cover"`:
+
+        COVER (`mode="cover"`): the reference audio is VAE-encoded and fed
+        back to the DiT as `src_latents` with `is_covers=True`; the vendored
+        `generate_audio` internally tokenizes/detokenizes it through the
+        model's FSQ codec to get a "semantic re-render" context (see
         `scratchpad/acestep_aud2aud_recipe.md` section 1b) -- this is a
         semantic-only cover (timbre stays silence, same as txt2aud), not a
-        raw-latent passthrough.
+        raw-latent passthrough. `cover_strength` (`audio_cover_strength` on
+        the vendored model) is a STEP-COUNT blend, NOT an img2img
+        start-timestep / partial-denoise knob: `xt` always starts from full
+        noise and runs every step; the first `int(num_steps * cover_strength)`
+        steps use the reference's semantic context, the remaining steps
+        switch to a text2music-style (silence src_latents) context built
+        from the SAME caption/lyric text. Higher `cover_strength` => closer
+        to the reference. A true img2img-style partial-denoise
+        (`cover_noise_strength` on the vendored model) is NOT wired here --
+        out of scope for this phase.
 
-        `cover_strength` (`audio_cover_strength` on the vendored model) is a
-        STEP-COUNT blend, NOT an img2img start-timestep / partial-denoise
-        knob: `xt` always starts from full noise and runs every step; the
-        first `int(num_steps * cover_strength)` steps use the reference's
-        semantic context, the remaining steps switch to a
-        text2music-style (silence src_latents) context built from the SAME
-        caption/lyric text. Higher `cover_strength` => closer to the
-        reference. A true img2img-style partial-denoise (`cover_noise_strength`
-        on the official main-branch model) is NOT available on the vendored
-        model (recipe section 1c/6) and is out of scope here.
+        REPAINT (`mode="repaint"`): the `[repaint_start, repaint_end)`
+        (seconds) window of the reference is blanked to silence in
+        `src_latents` and marked `True` in `chunk_masks`/`repaint_mask`
+        (`is_covers=False`); the FULL, unmodified reference latent is passed
+        as `clean_src_latents`. The vendored sampler then (a) holds every
+        non-repaint frame to the correctly-noised original at each early
+        step (`repaint_mask`/`clean_src_latents`, default
+        `repaint_injection_ratio=0.5` => first half of steps), (b)
+        soft-blends generated vs. source at the boundaries post-loop
+        (default `repaint_crossfade_frames=10` LATENT frames), and (c) after
+        VAE decode we additionally splice the ORIGINAL reference waveform
+        back into the kept region with a short (10ms) crossfade
+        (`_acestep_apply_repaint_waveform_splice`) -- the VAE reconstruction
+        of the kept region is not bit-identical to the source even though
+        its latent was never touched by the sampler. See
+        `scratchpad/acestep_repaint_feasibility.md` section 5 for the full
+        recipe this mirrors.
 
         Args:
-            params: prompt/caption (str), lyrics (str), cover_strength
-                (float in [0, 1], default 1.0), seed (int, -1 = random),
-                inference_steps (int, default 8), guidance_scale (forced
-                1.0 -- turbo is CFG-distilled), shift (float, default 3.0),
-                vocal_language / bpm / key_scale / time_signature (folded
-                into the "# Metas" text block, see
+            params: prompt/caption (str), lyrics (str), mode
+                ("cover"|"repaint", default "cover"), cover_strength (float
+                in [0, 1], default 1.0, cover only), repaint_start/
+                repaint_end (float seconds, repaint only, required),
+                seed (int, -1 = random), inference_steps (int, default 8),
+                guidance_scale (forced 1.0 -- turbo is CFG-distilled), shift
+                (float, default 3.0), vocal_language / bpm / key_scale /
+                time_signature (folded into the "# Metas" text block, see
                 `_acestep_build_text_prompt`). `audio_duration` is NOT a
                 user param here -- duration is derived from the reference
-                audio's length (recipe section 4).
+                audio's length in BOTH modes (recipe section 4).
             reference_audio: a file path (str) or raw audio bytes for the
-                cover reference clip.
+                cover/repaint reference clip.
             progress_callback: called as (step, total_steps); coarse
                 (start/end) only, see `_generate_txt2aud_acestep`.
             step_callback: reserved, unused.
@@ -1046,9 +1165,17 @@ class AceStepMixin:
             )
         if reference_audio is None:
             raise ValidationError(
-                "Audio-to-audio (cover) generation requires a reference audio file",
+                "Audio-to-audio generation requires a reference audio file",
                 detail="No reference_audio was provided.",
             )
+
+        mode = (params.get("mode") or params.get("audio_task") or "cover").strip().lower()
+        if mode not in ("cover", "repaint"):
+            raise ValidationError(
+                "Invalid aud2aud mode",
+                detail=f"mode must be 'cover' or 'repaint', got {mode!r}.",
+            )
+        is_repaint = mode == "repaint"
 
         # ---- optional LoRA (see the "LoRA" section above for the apply/restore contract) ----
         self._apply_or_clear_lora_acestep(params.get("loras") or [])
@@ -1068,6 +1195,13 @@ class AceStepMixin:
         infer_method = params.get("infer_method", "ode")
         cover_strength = float(params.get("cover_strength", 1.0) or 1.0)
         cover_strength = min(max(cover_strength, 0.0), 1.0)
+        repaint_start = float(params.get("repaint_start", 0.0) or 0.0)
+        repaint_end = float(params.get("repaint_end", 0.0) or 0.0)
+        if is_repaint and repaint_end <= repaint_start:
+            raise ValidationError(
+                "Invalid repaint range",
+                detail=f"repaint_end ({repaint_end}) must be greater than repaint_start ({repaint_start}).",
+            )
         bpm = params.get("bpm")
         key_scale = params.get("key_scale", "") or ""
         time_signature = params.get("time_signature", "") or ""
@@ -1141,11 +1275,35 @@ class AceStepMixin:
             self._acestep_move("text_encoder", "cpu")
             self._acestep_empty_cache()
 
-        # ---- cover conditioning (recipe section 1a/1e) ----
-        src_latents = ref_latent  # [1, T, 64] -- the reference latent (NOT silence)
-        chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
-        is_covers = torch.ones(1, dtype=torch.bool, device=device)
-        # Silence timbre (semantic-only cover): matches txt2aud's timbre condition.
+        # ---- cover / repaint conditioning ----
+        repaint_frame_range = None  # (s, e) in latent frames, repaint only
+        clean_src_latents = None
+        repaint_mask = None
+        if is_repaint:
+            # ---- repaint conditioning (recipe section 5: mask/src_latents/repaint_mask) ----
+            s, e = self._acestep_repaint_frame_range(repaint_start, repaint_end, latent_frames)
+            repaint_frame_range = (s, e)
+
+            silence_slice = self._acestep_silence_slice(silence_latent, latent_frames).to(model_dtype)
+
+            src_latents = ref_latent.clone()  # [1, T, 64]
+            src_latents[:, s:e, :] = silence_slice[:, s:e, :]
+
+            chunk_masks = torch.zeros(1, latent_frames, 64, dtype=model_dtype, device=device)
+            chunk_masks[:, s:e, :] = 1.0  # True/1 INSIDE the repaint region (opposite fill from cover)
+
+            is_covers = torch.zeros(1, dtype=torch.bool, device=device)
+
+            repaint_mask = torch.zeros(1, latent_frames, dtype=torch.bool, device=device)
+            repaint_mask[:, s:e] = True  # True = generate (free), False = preserve (held to ref)
+            clean_src_latents = ref_latent  # FULL, unmodified reference latent (the "hold" target)
+        else:
+            # ---- cover conditioning (recipe section 1a/1e) ----
+            src_latents = ref_latent  # [1, T, 64] -- the reference latent (NOT silence)
+            chunk_masks = torch.ones(1, latent_frames, 64, dtype=model_dtype, device=device)
+            is_covers = torch.ones(1, dtype=torch.bool, device=device)
+
+        # Silence timbre (semantic-only cover/repaint): matches txt2aud's timbre condition.
         timbre_packed = silence_latent[:, :silence_latent.shape[1], :].to(model_dtype)  # [1, 750, 64]
         refer_audio_order_mask = torch.zeros(1, dtype=torch.long, device=device)
 
@@ -1157,6 +1315,27 @@ class AceStepMixin:
             if shift != 1.0:
                 raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
             custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
+
+        # ---- mode-specific generate_audio kwargs ----
+        # cover: audio_cover_strength + the non_cover_* fallback conditioning
+        #   (used only when strength<1.0; harmless to always pass).
+        # repaint: repaint_mask + clean_src_latents (audio_cover_strength stays
+        #   at the vendored default of 1.0 -- with is_covers all-False and no
+        #   repaint use of the cover-strength step-switch, leaving it at 1.0
+        #   also guarantees `encoder_hidden_states_non_cover` is never built
+        #   and the cover step-switch never fires, so non_cover_text_* must
+        #   NOT be passed here).
+        mode_kwargs: Dict[str, Any] = {}
+        if is_repaint:
+            mode_kwargs["repaint_mask"] = repaint_mask
+            mode_kwargs["clean_src_latents"] = clean_src_latents
+            # repaint_crossfade_frames (10 latent frames) / repaint_injection_ratio
+            # (0.5) intentionally left at the vendored generate_audio's own
+            # defaults -- not yet exposed as user params (recipe section 5/6).
+        else:
+            mode_kwargs["audio_cover_strength"] = cover_strength
+            mode_kwargs["non_cover_text_hidden_states"] = text_hidden_states
+            mode_kwargs["non_cover_text_attention_mask"] = text_attention_mask
 
         # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
         self._acestep_move("dit", device)
@@ -1177,20 +1356,14 @@ class AceStepMixin:
                     infer_method=infer_method,
                     shift=shift,
                     timesteps=custom_timesteps,
-                    audio_cover_strength=cover_strength,
-                    # Required whenever audio_cover_strength < 1.0 (the vendored
-                    # model builds a 2nd, text2music-style conditioning from
-                    # these + silence src_latents for the post-cover_steps
-                    # portion of the schedule -- None + strength<1 crashes).
-                    # Harmless to always pass (unused at strength==1.0).
-                    non_cover_text_hidden_states=text_hidden_states,
-                    non_cover_text_attention_mask=text_attention_mask,
                     # See the txt2aud call site for why this is explicit: DCW
                     # defaults to ON in the newer vendored generate_audio, but
                     # pytorch_wavelets isn't an installed dependency -- disable
-                    # explicitly to keep cover behavior identical to pre-re-vendor
-                    # (no DCW code path existed before) with no warning noise.
+                    # explicitly to keep cover/repaint behavior identical to
+                    # pre-re-vendor (no DCW code path existed before) with no
+                    # warning noise.
                     dcw_enabled=False,
+                    **mode_kwargs,
                 )
             pred_latents = outputs["target_latents"]  # [1, T, 64]
         finally:
@@ -1206,11 +1379,11 @@ class AceStepMixin:
         # ---- validate latents (mirrors generate_music_decode.py's guards) ----
         if torch.isnan(pred_latents).any() or torch.isinf(pred_latents).any():
             raise RuntimeError(
-                f"ACE-Step cover generation produced NaN/Inf latents "
+                f"ACE-Step {mode} generation produced NaN/Inf latents "
                 f"(shape={list(pred_latents.shape)}, dtype={pred_latents.dtype})."
             )
         if pred_latents.numel() > 0 and pred_latents.abs().sum() == 0:
-            raise RuntimeError("ACE-Step cover generation produced all-zero latents.")
+            raise RuntimeError(f"ACE-Step {mode} generation produced all-zero latents.")
 
         # ---- VAE decode stage ----
         self._acestep_move("vae", device)
@@ -1227,5 +1400,19 @@ class AceStepMixin:
             self._acestep_move("vae", "cpu")
             self._acestep_empty_cache()
 
+        waveform_out = waveform[0]  # [2, samples]
+
+        # ---- repaint-only: post-decode waveform splice (recipe section 5 step 8) ----
+        if is_repaint:
+            s, e = repaint_frame_range
+            waveform_out = self._acestep_apply_repaint_waveform_splice(
+                waveform_out,
+                ref_wav.to(device=waveform_out.device, dtype=waveform_out.dtype),
+                start_sec=s / 25.0,  # latent-frame-derived boundary, NOT the raw
+                end_sec=e / 25.0,    # user seconds -- exactly matches the mask.
+                sample_rate=48000,
+                crossfade_duration=0.01,
+            )
+
         sample_rate = int(comps.get("sample_rate", 48000))
-        return waveform[0].detach().cpu(), sample_rate, seed
+        return waveform_out.detach().cpu(), sample_rate, seed

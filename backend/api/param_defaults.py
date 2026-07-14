@@ -329,6 +329,13 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
     # NOT an img2img start-timestep/partial-denoise knob). Higher = closer
     # to the reference.
     "cover_strength": 1.0,
+    # aud2aud sub-mode: "cover" (re-render the whole reference under a new
+    # caption/lyrics) or "repaint" (regenerate only [repaint_start,
+    # repaint_end) seconds of the reference, keeping the rest). See
+    # `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`.
+    "mode": "cover",
+    "repaint_start": 0.0,      # seconds, repaint mode only
+    "repaint_end": 0.0,        # seconds, repaint mode only
     "vocal_language": "en",
     # Generation-time LoRA (same shape as every other arch's params["loras"]:
     # list of {"path": str, "strength": float, ...}). See

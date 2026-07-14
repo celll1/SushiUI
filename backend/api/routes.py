@@ -2243,27 +2243,47 @@ async def generate_aud2aud(
     guidance_scale: float = Form(AUD2AUD_DEFAULTS["guidance_scale"]),
     shift: float = Form(AUD2AUD_DEFAULTS["shift"]),
     cover_strength: float = Form(AUD2AUD_DEFAULTS["cover_strength"]),
+    mode: str = Form(AUD2AUD_DEFAULTS["mode"]),
+    repaint_start: float = Form(AUD2AUD_DEFAULTS["repaint_start"]),
+    repaint_end: float = Form(AUD2AUD_DEFAULTS["repaint_end"]),
     vocal_language: str = Form(AUD2AUD_DEFAULTS["vocal_language"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
     reference_audio: UploadFile = File(...),
     db: Session = Depends(get_gallery_db)
 ):
-    """Generate a cover (audio-to-audio) from a reference clip + a new
-    caption/lyrics using the loaded ACE-Step 1.5 model.
+    """Generate a cover OR repaint (audio-to-audio) from a reference clip
+    using the loaded ACE-Step 1.5 model.
 
-    Multipart form: an uploaded reference audio clip plus the cover
-    parameters. The reference is VAE-encoded and fed back to the DiT as the
-    cover context (`is_covers=True`); duration is derived from the
-    reference's length, not user-supplied. Produces a lossless FLAC file and
-    a gallery row. Requires an ACE-Step model to be loaded. Repaint
-    (inpaint analog) is not supported by this endpoint -- see
-    `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`.
+    Multipart form: an uploaded reference audio clip plus the cover/repaint
+    parameters. `mode="cover"` (default) re-renders the WHOLE reference
+    under a new caption/lyrics (the reference is VAE-encoded and fed back to
+    the DiT as the cover context, `is_covers=True`). `mode="repaint"`
+    regenerates only `[repaint_start, repaint_end)` seconds of the
+    reference, keeping everything outside that window (approximately)
+    unchanged -- see
+    `core.pipeline_backends.acestep.AceStepMixin._generate_aud2aud_acestep`
+    for the full mechanism (latent-domain repaint hold + boundary blend,
+    plus a post-decode waveform splice). Duration is always derived from
+    the reference's length, not user-supplied. Produces a lossless FLAC
+    file and a gallery row. Requires an ACE-Step model to be loaded.
     """
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from utils.audio_utils import save_audio_with_metadata
 
     # Parse LoRA configs (same JSON-string-of-configs convention as txt2img/img2img/inpaint)
     lora_configs = json.loads(loras) if loras else []
+
+    mode = (mode or "cover").strip().lower()
+    if mode not in ("cover", "repaint"):
+        raise CustomValidationError(
+            "Invalid aud2aud mode",
+            detail=f"mode must be 'cover' or 'repaint', got {mode!r}.",
+        )
+    if mode == "repaint" and repaint_end <= repaint_start:
+        raise CustomValidationError(
+            "Invalid repaint range",
+            detail=f"repaint_end ({repaint_end}) must be greater than repaint_start ({repaint_start}).",
+        )
 
     params = {
         "prompt": prompt,
@@ -2273,6 +2293,9 @@ async def generate_aud2aud(
         "guidance_scale": guidance_scale,
         "shift": shift,
         "cover_strength": cover_strength,
+        "mode": mode,
+        "repaint_start": repaint_start,
+        "repaint_end": repaint_end,
         "vocal_language": vocal_language,
         "loras": lora_configs,
     }
@@ -2304,11 +2327,20 @@ async def generate_aud2aud(
 
         print(f"aud2aud generation params: {sanitize_params_for_logging(params)}")
 
+        # "aud2aud" (cover) or "repaint" -- used for both the saved FLAC's
+        # filename prefix and the gallery's generation_type column. The
+        # `mode` field in params (and params_for_db below) already carries
+        # the same distinction, so this is purely for readability/filtering;
+        # nothing downstream (ImageGrid, GeneratedImage type) hardcodes an
+        # enum of generation_type values -- it is gated on `is_audio` instead.
+        _generation_type = "repaint" if mode == "repaint" else "aud2aud"
+
         # Progress via the shared WebSocket step broadcast (mirrors txt2aud).
         def progress_callback(step, total_steps):
             from api.generation_status import update_progress
             total = max(total_steps, 1)
-            manager.send_progress_sync(step, total, f"Generating cover: step {step}/{total}")
+            label = "repaint" if mode == "repaint" else "cover"
+            manager.send_progress_sync(step, total, f"Generating {label}: step {step}/{total}")
             update_progress(step, total)
 
         from core.gpu_coordinator import gpu_coordinator
@@ -2331,7 +2363,7 @@ async def generate_aud2aud(
             waveform,
             sample_rate,
             params,
-            "aud2aud",
+            _generation_type,
             model_info=pipeline_manager.current_model_info,
         )
 
@@ -2363,7 +2395,7 @@ async def generate_aud2aud(
             filename=filename,
             params=params_for_db,
             actual_seed=actual_seed,
-            generation_type="aud2aud",
+            generation_type=_generation_type,
             image_hash="",
             lora_names=extract_lora_names(params.get("loras") or []),
             model_name=model_name,

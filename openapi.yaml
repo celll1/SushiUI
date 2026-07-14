@@ -5273,6 +5273,22 @@ components:
             prompt for sharper output; on any resolution/load/encode failure
             it falls back to the null-caption embedding with a warning.
           example: false
+        pid_low_vram:
+          type: boolean
+          default: false
+          description: |
+            Only consulted when vae_path points at a PiD decoder checkpoint;
+            ignored otherwise. False (default) runs the decoder's PiTBlock
+            and FinalLayer forward passes exactly as originally implemented
+            (bit-identical output). True opts into a row-chunked activation
+            path that reduces the decoder's per-block VRAM peak at large
+            output resolutions (e.g. 4096px) at the cost of small bf16
+            floating-point rounding differences from the default path (the
+            underlying computation is mathematically row-independent and
+            bit-identical in fp32; bf16's lower precision amplifies ordinary
+            GEMM-tiling rounding noise through the decoder's iterative
+            sampler).
+          example: false
         ref_images:
           type: array
           items:

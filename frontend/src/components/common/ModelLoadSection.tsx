@@ -122,6 +122,36 @@ export default function ModelLoadSection({
 
   const showVE = showVisionEncoder && modelType !== "flux2" && !!onVisionEncoderChange;
 
+  // Concise summary of the active component overrides, shown in the Card header
+  // even while collapsed so a set override is visible at a glance.
+  const _basename = (p?: string | null): string | null => {
+    if (!p) return null;
+    const parts = p.split(/[\\/]/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : p;
+  };
+  const _vaeName = _basename(vaePath);
+  // Recognize a PiD checkpoint from the path too, so its flags show in the
+  // collapsed summary even before VaeOverrideSelector has mounted to report kind.
+  const _looksPid = isPidDecoder || (!!_vaeName && /^PiD_.*\.pth$/i.test(_vaeName));
+  const overrideSummary: string[] = [];
+  if (_vaeName) {
+    let v = `VAE: ${_vaeName}`;
+    if (_looksPid) {
+      const flags: string[] = [];
+      if (pidSrOutput && pidSrOutput !== "4x") flags.push(pidSrOutput);
+      if (pidUseGemma) flags.push("Gemma");
+      if (pidLowVram) flags.push("low-VRAM");
+      if (flags.length) v += ` (${flags.join(", ")})`;
+    }
+    overrideSummary.push(v);
+  }
+  if (showVE && visionEncoderPath) overrideSummary.push(`Vision: ${_basename(visionEncoderPath)}`);
+  if (textEncoderPath) overrideSummary.push(`TE: ${_basename(textEncoderPath)}`);
+  const collapsedPreview =
+    overrideSummary.length > 0 ? (
+      <p className="text-xs text-gray-400 break-words">{overrideSummary.join(" · ")}</p>
+    ) : undefined;
+
   return (
     <>
       <ModelSelector onModelLoad={handleModelLoad} />
@@ -130,6 +160,7 @@ export default function ModelLoadSection({
         title="Component overrides"
         collapsible={true}
         defaultCollapsed={true}
+        collapsedPreview={collapsedPreview}
         storageKey={`${storageKeyPrefix}_overrides_collapsed`}
       >
         <div className="space-y-3">

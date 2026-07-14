@@ -3741,9 +3741,22 @@ async def upload_model(file: UploadFile = File(...)):
 async def get_current_model():
     """Get currently loaded model info"""
     if pipeline_manager.current_model_info:
+        info = dict(pipeline_manager.current_model_info)
+        # Enrich with the loaded architecture's latent_channels from the component
+        # wiring spec (the single source of truth) so the frontend's compatible-only
+        # VAE-override filter can match on latent channels instead of hardcoding an
+        # arch->channels map. Best-effort; absent for archs without a wiring entry.
+        if "latent_channels" not in info:
+            try:
+                from core.models.component_registry import _WIRING_BY_ARCH
+                _spec = _WIRING_BY_ARCH.get(str(info.get("type") or "").lower())
+                if _spec is not None:
+                    info["latent_channels"] = _spec.latent_channels
+            except Exception:
+                pass
         return {
             "loaded": True,
-            "model_info": pipeline_manager.current_model_info
+            "model_info": info
         }
     else:
         return {"loaded": False}

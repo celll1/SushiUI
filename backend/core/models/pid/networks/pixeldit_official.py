@@ -42,7 +42,29 @@ from core.models.pid.utils.context_parallel import cat_outputs_cp_with_grad, spl
 # FLASH_ATTENTION does not (PiD's own decode path always passes mask=None, so
 # this does not change today's SDPA backend choice — see the individual call
 # sites below for that PiD-specific note).
+#
+# SushiUI VRAM deviation (not upstream): row-chunk size for the PiTBlock /
+# FinalLayer activation-chunking added below (see PiTBlock.forward /
+# FinalLayer.forward docstrings for the math-identity argument). This is an
+# OPT-IN low-VRAM decode path, DISABLED BY DEFAULT (`_vram_chunk_rows=None`
+# on every fresh PiTBlock/FinalLayer instance — see their `__init__`): with
+# it disabled, `forward` takes the exact original single-shot branch, byte-
+# for-byte identical to the pre-chunking code. `_DEFAULT_VRAM_CHUNK_ROWS`
+# (8192) is only the recommended chunk size to pass when explicitly opting
+# in via `PixDiT_T2I.set_vram_chunk_rows(...)` (see that method) — it cuts
+# the ~8GB/PiTBlock activation peak at 4096px decode (BL=65536, ~8 chunks)
+# by ~6.6GB/42% (measured), at the cost of NOT being bit-identical in bf16:
+# although the chunked math is provably per-row independent and IS bit-
+# identical in fp32 (verified: max abs diff ~3.6e-7 for a full-network
+# single forward pass), bf16's coarse 7-bit mantissa amplifies ordinary
+# GEMM-tiling/batch-size-dependent rounding differences (confirmed via a
+# bare nn.Linear repro, independent of any PiTBlock-specific code) to
+# visually-relevant magnitudes once run through PiD's iterative 4-step SDE
+# sampler. This is why chunking must stay opt-in, never the silent default
+# — see scratchpad/pid_vram_proposal.md for the full analysis and the A/B
+# comparison this finding is based on.
 # =============================================================================
+_DEFAULT_VRAM_CHUNK_ROWS = 8192
 
 # =============================================================================
 # From pixdit_core/modules.py
@@ -332,7 +354,7 @@ class RotaryAttention(nn.Module):
         v = v.view(B, -1, self.num_heads, C // self.num_heads).transpose(1, 2).contiguous()
 
         # SushiUI VRAM deviation (not upstream): explicit sdpa_kernel guard (see
-        # the module-level comment near the top of this file). PiD's own
+        # the module-level comment near `_DEFAULT_VRAM_CHUNK_ROWS`). PiD's own
         # decode path always calls this with mask=None, so FLASH_ATTENTION is
         # engaged exactly as before; EFFICIENT_ATTENTION is only kept in the
         # allow-list for other (non-PiD) callers of this shared class that may
@@ -369,11 +391,35 @@ class FinalLayer(nn.Module):
         super().__init__()
         self.norm = RMSNorm(hidden_size, eps=1e-6)
         self.linear = nn.Linear(hidden_size, out_channels, bias=True)
+        # SushiUI VRAM deviation (not upstream): same row-chunk knob as
+        # PiTBlock (see PiTBlock.forward / `_DEFAULT_VRAM_CHUNK_ROWS` above).
+        # Disabled by default (None) — opt in via
+        # `PixDiT_T2I.set_vram_chunk_rows(...)`, never on by default.
+        self._vram_chunk_rows: Optional[int] = None
 
     def forward(self, x):
-        x = self.norm(x)
-        x = self.linear(x)
-        return x
+        # SushiUI VRAM deviation (not upstream): row-chunk over the BL(=B*
+        # L_local patch) dimension when BL is large. `self.norm` (RMSNorm)
+        # reduces over the FEATURE dim only and `self.linear` is a per-row
+        # Linear, so neither ever mixes across BL rows — chunking here is
+        # bit-identical to running the whole [BL,P2,C] tensor at once; it
+        # only reduces the transient footprint of this layer's activations
+        # (this is the tail end of the pixel/PiTBlock phase, after the
+        # per-block ~8GB peak described in scratchpad/pid_vram_proposal.md).
+        BL = x.shape[0]
+        chunk_rows = getattr(self, "_vram_chunk_rows", None)
+        if not chunk_rows or chunk_rows <= 0 or BL <= chunk_rows:
+            x = self.norm(x)
+            x = self.linear(x)
+            return x
+        out = None
+        for row_start in range(0, BL, chunk_rows):
+            row_end = min(row_start + chunk_rows, BL)
+            chunk_out = self.linear(self.norm(x[row_start:row_end]))
+            if out is None:
+                out = chunk_out.new_empty(BL, *chunk_out.shape[1:])
+            out[row_start:row_end] = chunk_out
+        return out
 
 
 # =============================================================================
@@ -506,6 +552,11 @@ class PiTBlock(nn.Module):
         self._pos_cache = dict()
         # CP group; when set, the attention runs split-Q / gather-K,V across L.
         self._cp_group: Optional[ProcessGroup] = None
+        # SushiUI VRAM deviation (not upstream): row-chunk knob consumed by
+        # `forward` below. See `_DEFAULT_VRAM_CHUNK_ROWS` module comment.
+        # Disabled by default (None) — opt in via
+        # `PixDiT_T2I.set_vram_chunk_rows(...)`, never on by default.
+        self._vram_chunk_rows: Optional[int] = None
 
     def set_context_parallel_group(self, cp_group: Optional[ProcessGroup]):
         self._cp_group = cp_group
@@ -550,22 +601,102 @@ class PiTBlock(nn.Module):
         assert BL % L_local == 0, "Total sequences must be a multiple of local patch count"
         B = BL // L_local
 
-        cond_params = self.adaLN_modulation(s_cond)  # [BL, 6*pixel_dim*P2]
-        cond_params = cond_params.view(BL, P2, 6 * self.pixel_dim)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(cond_params, 6, dim=-1)
-        x_norm = apply_adaln(self.norm1(x), shift_msa, scale_msa)
-        x_flat = x_norm.view(BL, P2 * self.pixel_dim)
-        x_comp = self.compress_to_attn(x_flat).view(B, L_local, self.attn_dim)
         # attention across patch tokens (L) — pos is full-length; the CP-aware
         # RotaryAttention gathers k/v across CP ranks internally.
         pos_comp = self._fetch_pos(Hs, Ws, x.device)
+
+        # ---------------------------------------------------------------
+        # SushiUI VRAM deviation (not upstream): row-chunk this block's
+        # per-row math over the BL(=B*L_local patch) dimension when BL is
+        # large (e.g. 4096px decode: BL=65536, ~8GB/block activation peak —
+        # see scratchpad/pid_vram_proposal.md). Every op chunked below is
+        # provably per-row (per patch-token) independent and therefore
+        # bit-identical whether computed all at once or split into chunks:
+        #   - adaLN_modulation: a per-row nn.Linear on s_cond.
+        #   - norm1 / norm2 (RMSNorm, see class above): reduces
+        #     `.mean(-1)` over the FEATURE dim only, never across rows.
+        #   - apply_adaln: pointwise (x * (1+scale) + shift).
+        #   - compress_to_attn / expand_from_attn: Linear over one patch's
+        #     flattened (P2*pixel_dim) features, never mixing across rows.
+        #   - mlp: last-dim-only Linear/GELU/Linear, dropout=0 at inference.
+        # `self.attn` is the ONLY op that mixes across BL/L (full-length
+        # RoPE + cross-patch SDPA), so it is run exactly ONCE, unchunked,
+        # on a preallocated buffer assembled by the per-chunk pass below —
+        # this is what keeps the chunked path bit-identical to the
+        # original single-shot code below. Chunking only changes how much
+        # *transient* activation memory (the 6*pixel_dim*P2 adaLN
+        # cond_params tensor + the MLP's GELU-expanded hidden state) is
+        # alive at any one instant.
+        # ---------------------------------------------------------------
+        chunk_rows = getattr(self, "_vram_chunk_rows", None)
+        if not chunk_rows or chunk_rows <= 0 or BL <= chunk_rows:
+            # Small BL (e.g. <=8192-row decodes by default): identical to
+            # the original single-shot code, no extra compute/perf cost.
+            cond_params = self.adaLN_modulation(s_cond)  # [BL, 6*pixel_dim*P2]
+            cond_params = cond_params.view(BL, P2, 6 * self.pixel_dim)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(cond_params, 6, dim=-1)
+            x_norm = apply_adaln(self.norm1(x), shift_msa, scale_msa)
+            x_flat = x_norm.view(BL, P2 * self.pixel_dim)
+            x_comp = self.compress_to_attn(x_flat).view(B, L_local, self.attn_dim)
+            attn_out = self.attn(x_comp, pos_comp, mask)  # [B, L_local, attn_dim]
+            attn_flat = self.expand_from_attn(attn_out.view(B * L_local, self.attn_dim))
+            attn_exp = attn_flat.view(BL, P2, self.pixel_dim)
+            # residual & MLP locally
+            x = x + gate_msa * attn_exp
+            mlp_out = self.mlp(apply_adaln(self.norm2(x), shift_mlp, scale_mlp))
+            x = x + gate_mlp * mlp_out
+            return x
+
+        # PASS 1 — per chunk: adaLN(shift/scale_msa) + norm1 + compress_to_attn,
+        # written into a preallocated [BL, attn_dim] flat buffer (B*L_local row
+        # order matches how `x_comp`/`attn_out` are viewed below, identical to
+        # the single-shot path's `(B, L_local, ...)` reshape convention).
+        x_comp_flat = None
+        for row_start in range(0, BL, chunk_rows):
+            row_end = min(row_start + chunk_rows, BL)
+            cond_chunk = self.adaLN_modulation(s_cond[row_start:row_end])
+            cond_chunk = cond_chunk.view(row_end - row_start, P2, 6 * self.pixel_dim)
+            shift_msa, scale_msa, _, _, _, _ = torch.chunk(cond_chunk, 6, dim=-1)
+            x_norm_chunk = apply_adaln(self.norm1(x[row_start:row_end]), shift_msa, scale_msa)
+            x_flat_chunk = x_norm_chunk.reshape(row_end - row_start, P2 * self.pixel_dim)
+            x_comp_chunk = self.compress_to_attn(x_flat_chunk)  # [(row_end-row_start), attn_dim]
+            if x_comp_flat is None:
+                x_comp_flat = x_comp_chunk.new_empty(BL, self.attn_dim)
+            x_comp_flat[row_start:row_end] = x_comp_chunk
+
+        # ATTENTION — unchunked, exactly once: the only op mixing across BL/L.
+        x_comp = x_comp_flat.view(B, L_local, self.attn_dim)
         attn_out = self.attn(x_comp, pos_comp, mask)  # [B, L_local, attn_dim]
-        attn_flat = self.expand_from_attn(attn_out.view(B * L_local, self.attn_dim))
-        attn_exp = attn_flat.view(BL, P2, self.pixel_dim)
-        # residual & MLP locally
-        x = x + gate_msa * attn_exp
-        mlp_out = self.mlp(apply_adaln(self.norm2(x), shift_mlp, scale_mlp))
-        x = x + gate_mlp * mlp_out
+        attn_out_flat = attn_out.reshape(B * L_local, self.attn_dim)
+
+        # PASS 2 — per chunk: residual + MLP. `cond_chunk` is RECOMPUTED here
+        # (not cached from pass 1) so the full [BL, 6*pixel_dim*P2] adaLN
+        # tensor never exists as one pinned storage (this was the ~3.22GB
+        # cond_params pin at 4096px decode) — only one chunk's slice is alive
+        # at a time, at the cost of one extra adaLN_modulation Linear call per
+        # chunk. In-place `add_` is used only when NOT tracking autograd
+        # (inference decode is the only caller today) to avoid an extra copy;
+        # under grad tracking, plain `+` is used so autograd stays correct.
+        for row_start in range(0, BL, chunk_rows):
+            row_end = min(row_start + chunk_rows, BL)
+            cond_chunk = self.adaLN_modulation(s_cond[row_start:row_end])
+            cond_chunk = cond_chunk.view(row_end - row_start, P2, 6 * self.pixel_dim)
+            _, _, gate_msa, shift_mlp, scale_mlp, gate_mlp = torch.chunk(cond_chunk, 6, dim=-1)
+            attn_exp_chunk = self.expand_from_attn(attn_out_flat[row_start:row_end])
+            attn_exp_chunk = attn_exp_chunk.view(row_end - row_start, P2, self.pixel_dim)
+
+            x_chunk = x[row_start:row_end]
+            if torch.is_grad_enabled():
+                x_chunk = x_chunk + gate_msa * attn_exp_chunk
+            else:
+                x_chunk.add_(gate_msa * attn_exp_chunk)
+            mlp_out_chunk = self.mlp(apply_adaln(self.norm2(x_chunk), shift_mlp, scale_mlp))
+            if torch.is_grad_enabled():
+                x_chunk = x_chunk + gate_mlp * mlp_out_chunk
+            else:
+                x_chunk.add_(gate_mlp * mlp_out_chunk)
+            x[row_start:row_end] = x_chunk
+
         return x
 
 
@@ -675,9 +806,9 @@ class MMDiTJointAttention(nn.Module):
         v_joint = torch.cat([vy, vx], dim=2)
 
         # SushiUI VRAM deviation (not upstream): explicit sdpa_kernel guard (see
-        # the module-level comment near the top of this file). This site CAN
-        # receive a real `attn_mask` (text padding), so EFFICIENT_ATTENTION must
-        # stay in the allow-list alongside FLASH_ATTENTION (FLASH does not
+        # the module-level comment near `_DEFAULT_VRAM_CHUNK_ROWS`). This site
+        # CAN receive a real `attn_mask` (text padding), so EFFICIENT_ATTENTION
+        # must stay in the allow-list alongside FLASH_ATTENTION (FLASH does not
         # support attn_mask); listing both keeps whichever backend PyTorch was
         # already selecting, just raising instead of silently falling back to
         # the O(N^2)-materializing math backend on an unsupported shape.
@@ -1361,6 +1492,20 @@ class PixDiT_T2I(nn.Module):
             block.set_context_parallel_group(None)
         self._cp_group = None
         self._is_context_parallel_enabled = False
+
+    def set_vram_chunk_rows(self, chunk_rows: Optional[int]) -> None:
+        """SushiUI VRAM deviation (not upstream): opt-in/out of the low-VRAM
+        row-chunked PiTBlock/FinalLayer decode path (see `_DEFAULT_VRAM_CHUNK_ROWS`
+        module comment and `PiTBlock.forward`/`FinalLayer.forward` for the
+        math-identity + bf16-precision caveats). `None`/`<=0` disables chunking
+        (every `pixel_blocks[i]`/`final_layer` forward takes the exact original
+        single-shot code path — the default, and what every freshly constructed
+        net already has). A positive int (see `_DEFAULT_VRAM_CHUNK_ROWS`, 8192)
+        enables chunking with that row-chunk size. Not called anywhere by
+        default; callers (e.g. `PidVaeWrapper`) opt in explicitly per decode."""
+        for block in self.pixel_blocks:
+            block._vram_chunk_rows = chunk_rows
+        self.final_layer._vram_chunk_rows = chunk_rows
 
     def fetch_pos(self, height, width, device):
         use_cache = not is_torch_compiling()

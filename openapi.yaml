@@ -5295,6 +5295,31 @@ components:
             type: string
             format: binary
           description: "Reference images for FLUX.2 Image Edit or SigLIP2 vision encoder conditioning (multipart upload)"
+        loop_decode:
+          type: string
+          enum: [full, cheap, none]
+          default: full
+          description: |
+            Loop-generation decode mode (SD1.5/SDXL only in this phase; other
+            architectures accept the field but always behave as "full").
+            `full` decodes with the active VAE (the PiD decoder if a PiD VAE
+            override is applied) and saves + galleries as usual. `cheap`
+            decodes with the real SDXL VAE embedded in a PiD override instead
+            of running the PiD student net (identical to `full` when no PiD
+            override is active); still saves + galleries. `none` skips
+            decode/save/gallery entirely -- the final latent is cached
+            server-side and a `latent_id` is returned instead of an `image`,
+            for the next loop step's `input_latent_id` (no VAE round-trip).
+          example: "full"
+        skip_gallery:
+          type: boolean
+          default: false
+          description: |
+            Orthogonal to loop_decode. When true, the generated image is still
+            saved to disk (so a client-driven generation loop can chain to the
+            next step via the file path) but the gallery database record
+            (thumbnail + DB row) is skipped. Meaningless combined with
+            loop_decode="none" (nothing is decoded/saved there either way).
 
     Txt2ImgRequest:
       allOf:
@@ -5649,12 +5674,30 @@ components:
       allOf:
         - $ref: '#/components/schemas/GenerationParams'
         - type: object
-          required:
-            - image
+          description: |
+            Exactly one of `image` or `input_latent_id` must be supplied:
+            `image` for a normal img2img request, `input_latent_id` for a
+            loop-generation step chaining from a prior loop_decode="none" step
+            (no VAE round-trip). Omitting both, or supplying neither, is a 400.
           properties:
             image:
               type: string
               format: binary
+              description: "Input image. Required unless input_latent_id is supplied."
+            input_latent_id:
+              type: string
+              nullable: true
+              description: |
+                Loop-generation latent passthrough (SD1.5/SDXL only). Opaque id
+                returned by a prior request's loop_decode="none" response.
+                When set, `image` is not read (may be omitted) -- denoising
+                starts directly from the cached latent instead of an
+                encode(image) round-trip. If the cached latent's spatial size
+                doesn't match this request's width/height, it is resized
+                in latent space (using resampling_method) before denoising.
+                A missing/expired id (LRU-evicted or server restarted) returns
+                400 with a message asking the client to restart the loop.
+              example: "3f9a7c2e1b4d4a2c8e6f0a1b2c3d4e5f"
             denoising_strength:
               type: number
               minimum: 0
@@ -5702,6 +5745,16 @@ components:
             mask:
               type: string
               format: binary
+            input_latent_id:
+              type: string
+              nullable: true
+              description: |
+                Reserved for schema parity with Img2ImgRequest -- NOT currently
+                supported for inpaint. Inpaint's pixel-space mask compositing
+                needs the real source image, so a non-null value here returns
+                400. `image`/`mask` are always required for inpaint; use
+                loop_decode ("full"/"cheap") for loop-generation cost control
+                instead.
             denoising_strength:
               type: number
               minimum: 0
@@ -5871,6 +5924,14 @@ components:
           type: integer
         metadata:
           type: object
+        latent_id:
+          type: string
+          nullable: true
+          description: |
+            Present only when the request had loop_decode="none": an opaque id
+            for the cached final latent (no decode/save/gallery happened this
+            request). Pass it as the next loop step's input_latent_id. Absent
+            (or null) for a normal "full"/"cheap" decode response.
 
     GenerationStatusResponse:
       type: object

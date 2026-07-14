@@ -284,6 +284,15 @@ export interface GenerationParams {
   // Keep model components GPU-resident between back-to-back generations
   // (queue sets this automatically based on whether a next item is queued)
   keep_models_hot?: boolean;
+  // Loop-generation decode mode (heavy-decoder aware, e.g. PiD): "full" decodes
+  // with the active/overridden VAE as usual; "cheap" decodes with the
+  // standard/embedded VAE (bypassing a PiD override); "none" skips decode
+  // entirely and returns a cached latent_id instead of an image (img2img only;
+  // inpaint rejects "none"). Default "full" (current/legacy behavior).
+  loop_decode?: "full" | "cheap" | "none";
+  // Save the decoded image to disk (so it can still be chained/downloaded)
+  // but skip the gallery DB record/thumbnail. Orthogonal to loop_decode.
+  skip_gallery?: boolean;
 }
 
 export interface Img2ImgParams extends GenerationParams {
@@ -293,6 +302,10 @@ export interface Img2ImgParams extends GenerationParams {
   resampling_method?: string;
   // VAE encode/decode round-trip color-bias correction (img2img/inpaint only)
   vae_drift_correction?: boolean;
+  // Start from a server-cached latent (loop_decode="none" from a previous
+  // step) instead of an uploaded image. Mutually exclusive with the `image`
+  // argument passed to generateImg2Img — exactly one must be provided.
+  input_latent_id?: string | null;
 }
 
 export interface InpaintParams extends GenerationParams {
@@ -511,6 +524,29 @@ export const fetchTimestepDefaultsByArch = async (): Promise<Record<string, Reco
 export const fetchBundleVaeDefaultsByArch = async (): Promise<Record<string, boolean>> =>
   (await api.get("/schema/bundle-vae-defaults-by-arch")).data;
 
+// ---------------------------------------------------------------------------
+// Loop-generation decode-mode response helpers
+// ---------------------------------------------------------------------------
+// The 3 generation endpoints (txt2img/img2img/inpaint) accept `loop_decode`
+// ("full"|"cheap"|"none") + `skip_gallery` (img2img additionally accepts
+// `input_latent_id`). Depending on those flags the response shape varies:
+//   - normal decode:      { success, image: { filename, seed, ... }, actual_seed, warnings }
+//   - loop_decode="none": { success, latent_id, actual_seed, warnings }            (NO image)
+//   - skip_gallery=true:  { success, filename, image_path, actual_seed, warnings } (saved file, no DB record)
+// These helpers read whichever shape is present so loop-generation chaining
+// code doesn't need to special-case every call site.
+export const isLatentOnlyResult = (result: any): boolean =>
+  !!result?.latent_id && !result?.image;
+
+export const getResultFilename = (result: any): string | undefined =>
+  result?.image?.filename ?? result?.filename;
+
+export const getResultSeed = (result: any): number =>
+  result?.image?.seed ?? result?.actual_seed ?? -1;
+
+export const getResultAncestralSeed = (result: any): number | null =>
+  result?.image?.ancestral_seed ?? result?.actual_ancestral_seed ?? null;
+
 export const generateTxt2Img = async (params: GenerationParams) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
@@ -647,6 +683,10 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
   formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
   formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+
+  // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
+  formData.append("loop_decode", paramsWithImages.loop_decode || "full");
+  formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
   const response = await api.post("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -827,7 +867,15 @@ export const generateInpaintTrainingPreview = async (
 };
 
 
-export const generateImg2Img = async (params: Img2ImgParams, image: File | string) => {
+// `image` is optional when `latentId` (or `params.input_latent_id`) is set —
+// the backend requires EXACTLY ONE of `image` / `input_latent_id`. Used for
+// loop-generation latent passthrough (decodeMode "final-only", see
+// loopGenerationInheritance.ts computeLoopDecodeDirective).
+export const generateImg2Img = async (
+  params: Img2ImgParams,
+  image?: File | string | null,
+  latentId?: string | null,
+) => {
   // Get attention_type from localStorage
   const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
   const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
@@ -846,14 +894,25 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
 
   const formData = new FormData();
 
-  // Handle both File objects and data URLs
-  if (typeof image === 'string') {
-    // Convert data URL or URL to blob
-    const response = await fetch(image);
-    const blob = await response.blob();
-    formData.append("image", blob, "input.png");
+  const effectiveLatentId = latentId ?? paramsWithImages.input_latent_id ?? undefined;
+
+  if (effectiveLatentId) {
+    // Latent passthrough: skip the image upload entirely, start denoising
+    // from the cached latent instead.
+    formData.append("input_latent_id", effectiveLatentId);
   } else {
-    formData.append("image", image);
+    if (!image) {
+      throw new Error("generateImg2Img requires either an image or a latentId");
+    }
+    // Handle both File objects and data URLs
+    if (typeof image === 'string') {
+      // Convert data URL or URL to blob
+      const response = await fetch(image);
+      const blob = await response.blob();
+      formData.append("image", blob, "input.png");
+    } else {
+      formData.append("image", image);
+    }
   }
 
   formData.append("prompt", paramsWithImages.prompt);
@@ -974,6 +1033,10 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
   formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
   formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+
+  // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
+  formData.append("loop_decode", paramsWithImages.loop_decode || "full");
+  formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -1353,6 +1416,12 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
   formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
   formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+
+  // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts).
+  // NOTE: inpaint does NOT support loop_decode="none" / input_latent_id (backend
+  // rejects it) — loop steps fall back to "cheap"+skip_gallery for intermediates.
+  formData.append("loop_decode", paramsWithImages.loop_decode || "full");
+  formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

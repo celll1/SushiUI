@@ -133,9 +133,76 @@ export function migrateLoopGenerationConfig(
 
   const migrated: LoopGenerationConfig = {
     ...config,
+    // Older configs predate decodeMode; default to "every" (= current/legacy
+    // behavior: every step full-decodes + galleries).
+    decodeMode: config.decodeMode ?? "every",
     steps: config.steps.map((step) => migrateLoopGenerationStep(step)),
   };
   return migrated;
+}
+
+// ---------------------------------------------------------------------------
+// Decode-mode directive — heavy-decoder-aware loop generation
+// ---------------------------------------------------------------------------
+// See scratchpad/loop_decode_mode_design.md. Computes the per-step
+// `loop_decode` ("full"|"cheap"|"none") + `skip_gallery` directive a loop
+// step (or the main generation step that starts a loop) should send to the
+// backend, given the panel's decodeMode setting.
+
+export type LoopDecodeMode = "every" | "final-cheap" | "final-only";
+
+export interface LoopDecodeDirective {
+  loop_decode: "full" | "cheap" | "none";
+  skip_gallery: boolean;
+}
+
+/**
+ * @param decodeMode          LoopGenerationConfig.decodeMode.
+ * @param isFinalStep         True for the last enabled step (or the main step
+ *                            when no loop steps follow it).
+ * @param resizeMode          The step's upscale resize_mode ("image"|"latent").
+ *                            For the MAIN step (which has no resize_mode of its
+ *                            own), pass "latent" — this is moot when
+ *                            supportsLatentPassthrough is used to gate it, and
+ *                            correctly forces "none" for final-only when the
+ *                            main step is not itself final.
+ * @param supportsLatentPassthrough  False for inpaint (backend rejects
+ *                            loop_decode="none" / input_latent_id for inpaint;
+ *                            true for txt2img/img2img main + loop steps).
+ */
+export function computeLoopDecodeDirective(opts: {
+  decodeMode: LoopDecodeMode;
+  isFinalStep: boolean;
+  resizeMode?: "image" | "latent";
+  supportsLatentPassthrough: boolean;
+}): LoopDecodeDirective {
+  const { decodeMode, isFinalStep, resizeMode, supportsLatentPassthrough } = opts;
+
+  // The final enabled step in the loop (or the main step when it is not
+  // followed by any loop steps) always full-decodes + galleries — this is
+  // where a heavy decoder (e.g. PiD) runs.
+  if (isFinalStep) {
+    return { loop_decode: "full", skip_gallery: false };
+  }
+
+  switch (decodeMode) {
+    case "every":
+      return { loop_decode: "full", skip_gallery: false };
+    case "final-cheap":
+      return { loop_decode: "cheap", skip_gallery: false };
+    case "final-only":
+      if (supportsLatentPassthrough && resizeMode === "latent") {
+        // No decode at all — the latent is cached server-side and chained
+        // via input_latent_id to the next step.
+        return { loop_decode: "none", skip_gallery: false };
+      }
+      // resize_mode === "image", or this panel/step can't latent-passthrough
+      // (inpaint): decode with the cheap/embedded VAE, chain via the saved
+      // image file, but never gallery an intermediate (never runs PiD).
+      return { loop_decode: "cheap", skip_gallery: true };
+    default:
+      return { loop_decode: "full", skip_gallery: false };
+  }
 }
 
 export function migrateLoopGenerationStep(

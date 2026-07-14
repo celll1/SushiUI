@@ -91,6 +91,15 @@ export interface LoopGenerationStep {
 export interface LoopGenerationConfig {
   enabled: boolean;
   steps: LoopGenerationStep[];
+  // Heavy-decoder-aware decode mode (see docs/scratchpad loop_decode_mode_design.md):
+  //  - "every": every step full-decodes + galleries (current/legacy behavior).
+  //  - "final-cheap": intermediate steps decode with the cheap/embedded VAE +
+  //    gallery; only the final step full-decodes (e.g. runs PiD).
+  //  - "final-only": intermediate steps with a latent resize mode skip decode
+  //    entirely (latent passthrough, no gallery); intermediate steps with an
+  //    image resize mode fall back to a cheap decode (no gallery); only the
+  //    final step full-decodes + galleries.
+  decodeMode: "every" | "final-cheap" | "final-only";
 }
 
 interface LoopGenerationPanelProps {
@@ -310,6 +319,19 @@ export default function LoopGenerationPanel({
           + Add Step
         </Button>
       </div>
+
+      {config.enabled && (
+        <Select
+          label="Decode Mode"
+          options={[
+            { value: "every", label: "Decode every step" },
+            { value: "final-cheap", label: "Final step full-decode, intermediates cheap VAE" },
+            { value: "final-only", label: "Final step only (latent passthrough; image-upscale steps fall back to cheap VAE)" },
+          ]}
+          value={config.decodeMode ?? "every"}
+          onChange={(e) => onChange({ ...config, decodeMode: e.target.value as "every" | "final-cheap" | "final-only" })}
+        />
+      )}
 
       {config.enabled && config.steps.length === 0 && (
         <div className="text-xs text-gray-400 text-center py-4">

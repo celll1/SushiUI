@@ -709,7 +709,13 @@ export default function ItemDetailColumn({ item, datasetId, tagCategoryCache, on
         <div className="flex-shrink-0 flex gap-1 flex-wrap">
           {(() => {
             const captions = detailedItem?.captions || [];
-            const trainingCaptions = captions.filter(c => c.field_category !== 'metadata');
+            const trainingCaptions = captions.filter(c => {
+              if (c.field_category === 'metadata') return false;
+              // Audio items edit lyrics via the dedicated Lyrics card above,
+              // so suppress the duplicate read-only tab here.
+              if (item?.item_type === "audio" && c.caption_type === "lyrics") return false;
+              return true;
+            });
             const metadataCaptions = captions.filter(c => c.field_category === 'metadata');
 
             // Get unique caption types from training captions

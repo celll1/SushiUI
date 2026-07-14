@@ -2305,6 +2305,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             }}
             disabled={isGenerating}
             storageKey="txt2img_audio_lora_collapsed"
+            simpleMode
           />
         )}
 

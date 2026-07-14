@@ -183,3 +183,7 @@ run_tagger_inference.py
 docs/custom_loss_specs.md
 docs/TAGGER_DETAIL_SIDECHAIN_DESIGN.md
 tq-attention/
+
+# Scratch/working dir for throwaway smoke tests, research recipes, and generated
+# sample media (agent working files); not source. Keep locally, out of git.
+scratchpad/

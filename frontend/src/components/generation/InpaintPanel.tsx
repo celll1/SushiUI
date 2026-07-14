@@ -93,6 +93,7 @@ interface InpaintParams {
   // selects a PiD checkpoint; ignored otherwise.
   pid_sr_output?: string | null;
   pid_use_gemma?: boolean;
+  pid_low_vram?: boolean;
   // Block swap (model-global)
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
@@ -179,6 +180,7 @@ const DEFAULT_PARAMS: InpaintParams = {
   text_encoder_path: null,
   pid_sr_output: "4x",
   pid_use_gemma: false,
+  pid_low_vram: false,
   // Block swap (model-global; inherited by loop generation). Panel UI pending the Model/Environment section (phase 2).
   enable_block_swap: false,
   blocks_to_swap: 20,
@@ -1618,6 +1620,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         text_encoder_path: mainParams.text_encoder_path, // Inherit TE override (model-global)
         pid_sr_output: mainParams.pid_sr_output, // Inherit PiD decoder options (model-global)
         pid_use_gemma: mainParams.pid_use_gemma,
+        pid_low_vram: mainParams.pid_low_vram,
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1812,6 +1815,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         text_encoder_path: nextItem.params.text_encoder_path,
         pid_sr_output: nextItem.params.pid_sr_output,
         pid_use_gemma: nextItem.params.pid_use_gemma,
+        pid_low_vram: nextItem.params.pid_low_vram,
         // Spectrum acceleration
         spectrum_enable: nextItem.params.spectrum_enable,
         // First Block Cache
@@ -2210,6 +2214,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           onPidSrOutputChange={(value) => setParams({ ...params, pid_sr_output: value })}
           pidUseGemma={params.pid_use_gemma ?? false}
           onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
+          pidLowVram={params.pid_low_vram ?? false}
+          onPidLowVramChange={(value) => setParams({ ...params, pid_low_vram: value })}
           storageKeyPrefix="inpaint"
         />
 

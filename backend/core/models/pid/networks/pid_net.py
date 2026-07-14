@@ -295,6 +295,21 @@ class PidNet(PixDiT_T2I):
                 out_idx = self.lq_proj._get_output_index(i)
                 if out_idx < len(lq_features):
                     s_main = self.lq_proj.gate(s_main, lq_features[out_idx], sigma=degrade_sigma, out_idx=out_idx)
+                    # SushiUI VRAM deviation (not upstream): drop this entry
+                    # right after its one-and-only use. `_get_output_index`
+                    # (block_idx // interval) is monotone non-decreasing over
+                    # this loop and `is_gate_active` fires exactly once per
+                    # out_idx, so no later iteration ever re-reads
+                    # `lq_features[out_idx]`. `_compute_lq_features` eagerly
+                    # builds all `num_lq_outputs` (7 for the SDXL config)
+                    # projection-head outputs up front (~1.41GB total,
+                    # 201MB/head) and normally keeps every entry alive for the
+                    # whole patch_blocks loop even though only one is read per
+                    # iteration; freeing as we go lets that memory be
+                    # reclaimed well before the pixel/PiTBlock phase begins
+                    # (which needs the freed VRAM for its own ~8GB/block
+                    # activation peak — see scratchpad/pid_vram_proposal.md).
+                    lq_features[out_idx] = None
 
             s_main, y_emb = self.patch_blocks[i](
                 s_main,
@@ -461,6 +476,12 @@ class PidNet(PixDiT_T2I):
                     degrade_sigma=degrade_sigma,
                     feature_indices=feature_indices,
                 )
+                # SushiUI VRAM deviation (not upstream): every entry was
+                # already nulled out inside `_run_patch_blocks` as it was
+                # consumed; drop the (now-all-None) list reference itself
+                # here so it cannot be resurrected before the pixel/PiTBlock
+                # phase below (see the matching comment in `_run_patch_blocks`).
+                del lq_features
 
                 s_bottleneck2 = s_main if self.s_ed_proj_in is None else self.s_ed_proj_in(s_main)
                 if self.s_ed_in_norm is not None:
@@ -497,6 +518,11 @@ class PidNet(PixDiT_T2I):
                     degrade_sigma=degrade_sigma,
                     feature_indices=feature_indices,
                 )
+                # SushiUI VRAM deviation (not upstream): see the matching
+                # comment on the ED-path call above — every entry is already
+                # None by this point; drop the list reference before the
+                # pixel/PiTBlock phase's ~8GB/block activation peak begins.
+                del lq_features
 
                 s = torch.nn.functional.silu(t_emb + s_main)
 

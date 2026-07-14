@@ -24,8 +24,8 @@ import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import PromptEditor from "../common/PromptEditor";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { migrateLoopGenerationConfig } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
+import { getSamplers, getScheduleTypes, generateImg2Img, generateImg2Vid, Img2VidParams, generateAud2Aud, Aud2AudParams, generateImg2ImgTrainingPreview, toBase64, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, isLatentOnlyResult, getResultFilename, getResultSeed, getResultAncestralSeed } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -114,6 +114,12 @@ interface Img2ImgParams {
   mode?: "cover" | "repaint";
   repaint_start?: number;
   repaint_end?: number;
+  // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
+  loop_decode?: "full" | "cheap" | "none";
+  skip_gallery?: boolean;
+  // Start from a server-cached latent instead of an uploaded image (loop
+  // passthrough chaining; mutually exclusive with the uploaded image).
+  input_latent_id?: string | null;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -332,7 +338,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
-    steps: []
+    steps: [],
+    decodeMode: "every",
   });
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
   const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
@@ -1525,6 +1532,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     // Create loop group ID if loop generation is enabled
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
+    const hasEnabledLoopSteps = loopGenerationConfig.enabled && loopGenerationConfig.steps.some(s => s.enabled);
+    // Main step decode directive: resizeMode is moot for the main step (it has
+    // none of its own) — passing "latent" correctly forces loop_decode="none"
+    // for decodeMode "final-only" when loop steps follow (img2img supports
+    // latent passthrough for its main step).
+    const mainDecodeDirective = computeLoopDecodeDirective({
+      decodeMode: loopGenerationConfig.decodeMode ?? "every",
+      isFinalStep: !hasEnabledLoopSteps,
+      resizeMode: "latent",
+      supportsLatentPassthrough: true,
+    });
 
     addToQueue({
       type: "img2img",
@@ -1532,6 +1550,8 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
+        loop_decode: mainDecodeDirective.loop_decode,
+        skip_gallery: mainDecodeDirective.skip_gallery,
       },
       inputImage: imageBase64,
       prompt: processedPrompt,
@@ -1761,6 +1781,19 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         stepParams.resize_mode = "image";
       }
 
+      // Decode directive: computed AFTER the ControlNet resize_mode force above,
+      // since a ControlNet-conditioned step always needs a decoded image
+      // regardless of the user's selected upscale resize mode.
+      const isFinalStep = i === enabledSteps.length - 1;
+      const decodeDirective = computeLoopDecodeDirective({
+        decodeMode: loopGenerationConfig.decodeMode ?? "every",
+        isFinalStep,
+        resizeMode: stepParams.resize_mode as "image" | "latent",
+        supportsLatentPassthrough: true, // img2img loop steps support latent passthrough
+      });
+      stepParams.loop_decode = decodeDirective.loop_decode;
+      stepParams.skip_gallery = decodeDirective.skip_gallery;
+
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
       stepParams.unet_quantization = mainParams.unet_quantization;
@@ -1907,9 +1940,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     setCfgMetrics([]); // Clear previous metrics
 
     try {
-      // For loop steps, use the input image or fall back to previous image
-      const inputImageToUse = nextItem.inputImage || previousImage;
-      if (!inputImageToUse) {
+      // For loop steps, use the input image or fall back to previous image.
+      // Latent passthrough chaining (decodeMode "final-only"): when the
+      // previous step returned a cached latent_id, there is no image to fetch.
+      const inputImageToUse = nextItem.inputLatentId ? undefined : (nextItem.inputImage || previousImage);
+      if (!nextItem.inputLatentId && !inputImageToUse) {
         throw new Error("No input image available for img2img generation");
       }
 
@@ -1935,7 +1970,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       // Debug log for quantization
       console.log('[Img2Img] Generating with params.unet_quantization:', paramsWithDevMode.unet_quantization);
 
-      let imageUrl: string;
+      let imageUrl: string | undefined;
       let result: any;
       // Use the per-item flag (set at enqueue time) so loop steps queued under the
       // training model keep using it even though this panel's own checkbox may be off.
@@ -1945,6 +1980,11 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         // Training-preview branch: encode init image as base64 and route
         // to /generate/img2img/training-preview.  Result is a blob;
         // we wrap it in an object-URL for display (no gallery save).
+        // Not supported with latent passthrough (a separate, simpler preview
+        // flow that doesn't know about loop_decode/input_latent_id).
+        if (!inputImageToUse) {
+          throw new Error("Training-preview generation requires an input image (latent passthrough is not supported)");
+        }
         const initImageBase64 = await toBase64(inputImageToUse);
         const preview = await generateImg2ImgTrainingPreview({
           ...(paramsWithDevMode as any),
@@ -1975,23 +2015,34 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           },
         };
       } else {
-        result = await generateImg2Img(paramsWithDevMode, inputImageToUse);
-        imageUrl = `/outputs/${result.image.filename}`;
+        result = await generateImg2Img(paramsWithDevMode, inputImageToUse, nextItem.inputLatentId);
+        // loop_decode="none" (decodeMode "final-only", resize_mode "latent")
+        // returns { latent_id, actual_seed } with NO image.
+        imageUrl = isLatentOnlyResult(result) ? undefined : `/outputs/${getResultFilename(result)}`;
       }
-      setGeneratedImage(imageUrl);
-      setGeneratedImageSeed(result.image.seed);
-      setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
+
+      // Latent-only steps (loop_decode="none") produce no displayable image —
+      // leave the preview/gallery display untouched (already cleared to null
+      // above) rather than pointing it at an undefined imageUrl.
+      const resultSeed = getResultSeed(result);
+      const resultAncestralSeed = getResultAncestralSeed(result);
+      if (imageUrl) {
+        setGeneratedImage(imageUrl);
+      }
+      setGeneratedImageSeed(resultSeed);
+      setGeneratedImageAncestralSeed(resultAncestralSeed);
       // Save the params used for this generation (with actual result values)
       setGeneratedImageParams({
         ...nextItem.params,
-        seed: result.image.seed,
-        ancestral_seed: result.image.ancestral_seed || -1,
-        width: result.image.width,
-        height: result.image.height,
+        seed: resultSeed,
+        ancestral_seed: resultAncestralSeed ?? -1,
+        width: result.image?.width ?? nextItem.params.width,
+        height: result.image?.height ?? nextItem.params.height,
       });
       setPreviewImage(null);
 
-      if (onImageGenerated) {
+      // Notify parent component (skip for latent-only steps — nothing to show)
+      if (onImageGenerated && imageUrl) {
         onImageGenerated(imageUrl);
       }
 
@@ -2006,12 +2057,25 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           nextLoopStepIndex,
         });
 
+        if (isLatentOnlyResult(result)) {
+          // Latent passthrough chaining (decodeMode "final-only", resize_mode
+          // "latent"): no decoded image exists for this step — chain the next
+          // loop step via the cached latent_id instead of an image URL. Skip
+          // TIPO-prompt/ControlNet/scale-recompute below, all of which need a
+          // decoded image (ControlNet-conditioned steps always force
+          // resize_mode="image" at enqueue time, so they never land here).
+          console.log(`[Img2Img] Updating loop step ${nextLoopStepIndex} with cached latent:`, result.latent_id);
+          updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, {
+            inputLatentId: result.latent_id,
+            inputImage: undefined,
+          });
+        } else {
         // Update input image first
         console.log(`[Img2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
-        updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
+        updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl, inputLatentId: undefined });
 
         // If TIPO was used for base generation, update loop steps with TIPO-generated prompt
-        if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image.prompt) {
+        if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image?.prompt) {
           console.log(`[Img2Img] Base generation used TIPO, updating all loop steps with TIPO prompt`);
           console.log(`[Img2Img] Original prompt: ${nextItem.params.prompt?.substring(0, 100)}...`);
           console.log(`[Img2Img] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);
@@ -2124,6 +2188,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           });
 
           console.log(`[Img2Img] ControlNet images updated for loop step ${nextLoopStepIndex}`);
+        }
         }
       }
 

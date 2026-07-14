@@ -23,8 +23,8 @@ import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/pos
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
-import { migrateLoopGenerationConfig } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel } from "@/utils/api";
+import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -100,6 +100,11 @@ interface InpaintParams {
   use_pinned_memory?: boolean;
   block_swap_h2d_only?: boolean;
   block_swap_ring_size?: number;
+  // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts).
+  // NOTE: inpaint does NOT support loop_decode="none" / input_latent_id — the
+  // backend rejects it; intermediate loop steps fall back to "cheap"+skip_gallery.
+  loop_decode?: "full" | "cheap" | "none";
+  skip_gallery?: boolean;
 }
 
 const DEFAULT_PARAMS: InpaintParams = {
@@ -287,7 +292,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
   const [loopGenerationConfig, setLoopGenerationConfig] = useState<LoopGenerationConfig>({
     enabled: false,
-    steps: []
+    steps: [],
+    decodeMode: "every",
   });
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
   const [cfgMetrics, setCfgMetrics] = useState<CFGMetrics[]>([]);
@@ -1465,6 +1471,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     // Create loop group ID if loop generation is enabled
     const loopGroupId = loopGenerationConfig.enabled ? `loop_${Date.now()}_${Math.random().toString(36).substr(2, 9)}` : undefined;
+    const hasEnabledLoopSteps = loopGenerationConfig.enabled && loopGenerationConfig.steps.some(s => s.enabled);
+    // Main step decode directive. Inpaint never supports latent passthrough
+    // (backend rejects loop_decode="none"/input_latent_id for inpaint), so an
+    // intermediate main step falls back to "cheap"+skip_gallery, never "none".
+    const mainDecodeDirective = computeLoopDecodeDirective({
+      decodeMode: loopGenerationConfig.decodeMode ?? "every",
+      isFinalStep: !hasEnabledLoopSteps,
+      resizeMode: "image",
+      supportsLatentPassthrough: false,
+    });
 
     addToQueue({
       type: "inpaint",
@@ -1472,6 +1488,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         ...params,
         prompt: processedPrompt,
         negative_prompt: processedNegativePrompt,
+        loop_decode: mainDecodeDirective.loop_decode,
+        skip_gallery: mainDecodeDirective.skip_gallery,
       },
       inputImage: inputImagePreview,
       maskImage: maskImage,
@@ -1708,6 +1726,19 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         stepParams.resize_mode = "image";
       }
 
+      // Decode directive. Inpaint never supports latent passthrough (backend
+      // rejects loop_decode="none"/input_latent_id for inpaint) — intermediate
+      // steps fall back to "cheap"+skip_gallery regardless of resize_mode.
+      const isFinalStep = i === enabledSteps.length - 1;
+      const decodeDirective = computeLoopDecodeDirective({
+        decodeMode: loopGenerationConfig.decodeMode ?? "every",
+        isFinalStep,
+        resizeMode: stepParams.resize_mode as "image" | "latent",
+        supportsLatentPassthrough: false,
+      });
+      stepParams.loop_decode = decodeDirective.loop_decode;
+      stepParams.skip_gallery = decodeDirective.skip_gallery;
+
       stepParams.prompt_chunking_mode = mainParams.prompt_chunking_mode;
       stepParams.max_prompt_chunks = mainParams.max_prompt_chunks;
       stepParams.unet_quantization = mainParams.unet_quantization;
@@ -1847,6 +1878,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // Keep model components GPU-resident for the next queued generation
         // (value is set by the queue dispatcher's hasNext check)
         keep_models_hot: nextItem.params.keep_models_hot,
+        // Loop-generation decode mode (heavy-decoder aware). Inpaint never
+        // uses loop_decode="none" (backend rejects it) — intermediate loop
+        // steps fall back to "cheap"+skip_gallery instead (see addLoopStepsToQueueImmediate).
+        loop_decode: nextItem.params.loop_decode,
+        skip_gallery: nextItem.params.skip_gallery,
       };
 
       // Add FLUX.2 Image Edit / Vision Encoder reference images
@@ -1904,22 +1940,26 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         };
       } else {
         result = await generateInpaint(apiParams, nextItem.inputImage!, nextItem.maskImage!);
-        imageUrl = result.success ? `/outputs/${result.image.filename}` : "";
+        // skip_gallery=true (loop_decode="cheap" intermediate step) returns a
+        // top-level filename with NO nested `image` object.
+        imageUrl = result.success ? `/outputs/${getResultFilename(result)}` : "";
       }
 
       if (result.success) {
+        const resultSeed = getResultSeed(result);
+        const resultAncestralSeed = getResultAncestralSeed(result);
         setGeneratedImage(imageUrl);
-        setGeneratedImageSeed(result.actual_seed);
-        setGeneratedImageAncestralSeed(result.image.ancestral_seed || null);
+        setGeneratedImageSeed(resultSeed);
+        setGeneratedImageAncestralSeed(resultAncestralSeed);
         setPreviewImage(null);
 
         // Save the params used for this generation (with actual result values)
         setGeneratedImageParams({
           ...nextItem.params,
-          seed: result.image.seed,
-          ancestral_seed: result.image.ancestral_seed || -1,
-          width: result.image.width,
-          height: result.image.height,
+          seed: resultSeed,
+          ancestral_seed: resultAncestralSeed ?? -1,
+          width: result.image?.width ?? nextItem.params.width,
+          height: result.image?.height ?? nextItem.params.height,
         });
 
         // Add to gallery
@@ -1949,8 +1989,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           console.log(`[Inpaint] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);
           updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, { inputImage: imageUrl });
 
-          // If TIPO was used for base generation, update loop steps with TIPO-generated prompt
-          if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image.prompt) {
+          // If TIPO was used for base generation, update loop steps with TIPO-generated prompt.
+          // Guarded with optional chaining: skip_gallery=true responses have no nested `image`.
+          if (nextItem.loopStepIndex === -1 && nextItem.params.use_tipo && result.image?.prompt) {
             console.log(`[Inpaint] Base generation used TIPO, updating all loop steps with TIPO prompt`);
             console.log(`[Inpaint] Original prompt: ${nextItem.params.prompt?.substring(0, 100)}...`);
             console.log(`[Inpaint] TIPO prompt: ${result.image.prompt?.substring(0, 100)}...`);

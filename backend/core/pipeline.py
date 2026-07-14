@@ -7,6 +7,7 @@ import sys
 import gc
 import time
 import random
+import threading
 from pathlib import Path
 from diffusers import (
     StableDiffusionPipeline,
@@ -39,6 +40,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self.current_model_info: Optional[Dict[str, str]] = None
         self.extensions: List[BaseExtension] = []
         self.device = settings.device
+
+        # Serializes model loading. The boot-time auto-load runs in a background
+        # thread (main.py _auto_load_last_model) and can race a concurrent manual
+        # POST /models/load: interleaved cleanup (which resets every is_<arch>_model
+        # flag) + component/current_model assignment left is_<arch>_model False while
+        # current_model/current_model_info pointed at a loaded model, so a repeat
+        # /models/load with the same source hit the model-id early-return no-op and
+        # never restored the flag. Holding this lock makes each load atomic, so the
+        # early-return only fires against fully, consistently loaded state.
+        self._load_model_lock = threading.Lock()
 
         # Z-Image components (component-based, not pipeline-based)
         self.zimage_components: Optional[Dict[str, Any]] = None
@@ -153,6 +164,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         return "unknown"
 
     def load_model(
+        self,
+        source_type: ModelSource,
+        source: str,
+        pipeline_type: str = "txt2img",
+        **kwargs
+    ):
+        """Load a model, serialized against concurrent loads (boot auto-load vs a
+        manual /models/load) via ``_load_model_lock`` so state stays consistent."""
+        with self._load_model_lock:
+            return self._load_model_locked(source_type, source, pipeline_type, **kwargs)
+
+    def _load_model_locked(
         self,
         source_type: ModelSource,
         source: str,

@@ -24,7 +24,7 @@ import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import GenerationQueue from "../common/GenerationQueue";
 import LoopGenerationPanel, { LoopGenerationConfig } from "./LoopGenerationPanel";
 import { migrateLoopGenerationConfig, computeLoopDecodeDirective } from "@/utils/loopGenerationInheritance";
-import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed } from "@/utils/api";
+import { getSamplers, getScheduleTypes, generateInpaint, generateInpaintTrainingPreview, toBase64, InpaintParams as ApiInpaintParams, LoRAConfig, ControlNetConfig, generateTIPOPrompt, cancelGeneration, getCurrentModel, getResultFilename, getResultSeed, getResultAncestralSeed, isLatentOnlyResult } from "@/utils/api";
 import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
@@ -1962,8 +1962,16 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           height: result.image?.height ?? nextItem.params.height,
         });
 
-        // Add to gallery
-        setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+        // Add to the client-side session gallery — but NOT for latent-only or
+        // skip_gallery intermediate loop steps (decodeMode "final-only"
+        // fallback for inpaint, which never uses loop_decode="none"): the
+        // server intentionally skipped the DB record for these, so they'd
+        // show transiently then vanish on refresh. Only the final (fully
+        // galleried) step should populate it.
+        const isEphemeralStep = isLatentOnlyResult(result) || !result.image;
+        if (!isEphemeralStep) {
+          setGalleryImages(prev => [...prev, { url: imageUrl, timestamp: Date.now() }]);
+        }
 
         // Notify parent component
         if (onImageGenerated) {

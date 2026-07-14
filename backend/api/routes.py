@@ -586,10 +586,14 @@ async def generate_txt2img(
                 # Continue with original prompt on error
 
         # Process reference images (FLUX.2 Image Edit / Vision Encoder)
+        # NOTE: Image/io are already imported at module scope (top of file) —
+        # do NOT re-import them locally here. A local `from PIL import Image`/
+        # `import io` anywhere in this function body makes Python treat those
+        # names as function-local for the ENTIRE function, so when this branch
+        # is skipped (no ref_images, the common case) any later unconditional
+        # use of `Image`/`io` in generate_txt2img raises UnboundLocalError.
         ref_image_list = []
         if ref_images:
-            from PIL import Image
-            import io
             for ref_img_file in ref_images:
                 img_bytes = await ref_img_file.read()
                 ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
@@ -709,8 +713,7 @@ async def generate_txt2img(
         # Handle direct image uploads (multipart) or base64 (JSON)
         processed_controlnet_images = []
         if controlnet_images and len(controlnet_images) > 0:
-            # Direct image upload via multipart
-            import io
+            # Direct image upload via multipart (io is already imported at module scope)
             for uploaded_file in controlnet_images:
                 image_data = await uploaded_file.read()
                 cn_image = Image.open(io.BytesIO(image_data)).convert("RGB")
@@ -1449,6 +1452,11 @@ async def generate_img2img(
         )
     if image is None and not input_latent_id:
         raise ValidationError("img2img requires either an 'image' upload or 'input_latent_id'")
+    if image is not None and input_latent_id:
+        raise ValidationError(
+            "img2img accepts EXACTLY ONE of 'image' or 'input_latent_id', not both",
+            detail="Provide either an uploaded image or a cached latent_id from a previous loop_decode=\"none\" step, not both.",
+        )
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
     start_generation("img2img")
     try:

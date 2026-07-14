@@ -259,6 +259,10 @@ export interface GenerationParams {
   // Text encoder override: path to a standalone text encoder to swap in
   // (empty/null = use the loaded model's text encoder). SD1.5/SDXL only server-side.
   text_encoder_path?: string | null;
+  // PiD (Pixel Diffusion Decoder) options: only take effect when vae_path
+  // selects a PiD checkpoint (VaeEntry.kind === "pid_decoder"); ignored otherwise.
+  pid_sr_output?: string | null;   // "4x" | "original"
+  pid_use_gemma?: boolean;
   // Video generation fields (used when a video model is loaded; the merged
   // txt2img/img2img panels carry these and map them into Txt2VidParams/Img2VidParams).
   num_frames?: number;              // 8k+1 (default 121)
@@ -637,6 +641,10 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   if (paramsWithImages.text_encoder_path) {
     formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
   }
+  // PiD decoder options (only meaningful when vae_path selects a PiD checkpoint;
+  // ignored server-side for a normal VAE override / no override)
+  formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
+  formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
 
   const response = await api.post("/generate/txt2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -959,6 +967,10 @@ export const generateImg2Img = async (params: Img2ImgParams, image: File | strin
   if (paramsWithImages.text_encoder_path) {
     formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
   }
+  // PiD decoder options (only meaningful when vae_path selects a PiD checkpoint;
+  // ignored server-side for a normal VAE override / no override)
+  formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
+  formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
 
   const response = await api.post("/generate/img2img", formData, {
     headers: { "Content-Type": "multipart/form-data" },
@@ -1028,6 +1040,8 @@ export interface VaeEntry {
   vae_class?: string | null;
   scale_spatial?: number | null;
   scale_temporal?: number | null;
+  // "autoencoder" (normal VAE) | "pid_decoder" (PiD Pixel Diffusion Decoder checkpoint)
+  kind?: string | null;
 }
 
 export interface TextEncoderEntry {
@@ -1331,6 +1345,10 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   if (paramsWithImages.text_encoder_path) {
     formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
   }
+  // PiD decoder options (only meaningful when vae_path selects a PiD checkpoint;
+  // ignored server-side for a normal VAE override / no override)
+  formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
+  formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
 
   const response = await api.post("/generate/inpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },

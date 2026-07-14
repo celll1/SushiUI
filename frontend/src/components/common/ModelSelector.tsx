@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import Card from "./Card";
 import Button from "./Button";
 import Select from "./Select";
-import { Folder } from "lucide-react";
+import { ChevronDown, ChevronUp, Folder } from "lucide-react";
 import { useStartup } from "@/contexts/StartupContext";
 
 interface Model {
@@ -14,6 +14,10 @@ interface Model {
   source_type: string;
   size_gb?: number;
   source_dir?: string;
+  // Detected model architecture (sd15/sdxl/zimage/flux2/...). Falls back to
+  // `type` (diffusers/safetensors, a file-format label, not an arch) when
+  // the registry couldn't classify the arch for some reason.
+  architecture?: string;
 }
 
 interface ModelSelectorProps {
@@ -26,7 +30,9 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
   const [currentModel, setCurrentModel] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [selectedModelPath, setSelectedModelPath] = useState<string>("");
+  const [selectedArchitecture, setSelectedArchitecture] = useState<string>("all");
   const [selectedSourceDir, setSelectedSourceDir] = useState<string>("all");
+  const [showDirectoryFilter, setShowDirectoryFilter] = useState(false);
 
   useEffect(() => {
     loadModels();
@@ -95,8 +101,16 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
     }
   };
 
-  const uniqueDirs = Array.from(new Set(models.map(m => m.source_dir || "Unknown")));
-  const filteredModels = models.filter(
+  // Architecture is the PRIMARY filter (which model family). Directory is
+  // SECONDARY (where it's stored) and only narrows within the arch-filtered
+  // set, so its options stay relevant to the current architecture selection.
+  const archOf = (m: Model) => m.architecture || m.type || "Unknown";
+  const uniqueArchitectures = Array.from(new Set(models.map(archOf))).sort();
+  const archFilteredModels = models.filter(
+    m => selectedArchitecture === "all" || archOf(m) === selectedArchitecture
+  );
+  const uniqueDirs = Array.from(new Set(archFilteredModels.map(m => m.source_dir || "Unknown")));
+  const filteredModels = archFilteredModels.filter(
     m => selectedSourceDir === "all" || m.source_dir === selectedSourceDir
   );
 
@@ -137,17 +151,51 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
             <p className="text-gray-500 text-sm">No local models found. Place models in the models/ directory.</p>
           ) : (
             <>
-              {/* Directory Filter (only shown when multiple source dirs) */}
-              {uniqueDirs.length > 1 && (
+              {/* Architecture Filter — PRIMARY (only shown when >1 architecture present) */}
+              {uniqueArchitectures.length > 1 && (
                 <Select
-                  label="Filter by Directory"
-                  value={selectedSourceDir}
-                  onChange={(e) => setSelectedSourceDir(e.target.value)}
+                  label="Filter by Architecture"
+                  value={selectedArchitecture}
+                  onChange={(e) => {
+                    setSelectedArchitecture(e.target.value);
+                    // Reset the secondary filter: its options are scoped to
+                    // the arch selection, so a stale dir choice may no longer
+                    // exist in the new set.
+                    setSelectedSourceDir("all");
+                  }}
                   options={[
-                    { value: "all", label: "All Directories" },
-                    ...uniqueDirs.map(dir => ({ value: dir, label: dir }))
+                    { value: "all", label: "All architectures" },
+                    ...uniqueArchitectures.map(arch => ({ value: arch, label: arch }))
                   ]}
                 />
+              )}
+
+              {/* Directory Filter — SECONDARY, collapsed behind a small disclosure
+                  since architecture is the filter users reach for first. */}
+              {uniqueDirs.length > 1 && (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setShowDirectoryFilter(!showDirectoryFilter)}
+                    className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-300"
+                  >
+                    <Folder className="w-3 h-3" />
+                    More filters (directory)
+                    {showDirectoryFilter ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                  </button>
+                  {showDirectoryFilter && (
+                    <Select
+                      className="mt-2"
+                      label="Filter by Directory"
+                      value={selectedSourceDir}
+                      onChange={(e) => setSelectedSourceDir(e.target.value)}
+                      options={[
+                        { value: "all", label: "All Directories" },
+                        ...uniqueDirs.map(dir => ({ value: dir, label: dir }))
+                      ]}
+                    />
+                  )}
+                </div>
               )}
 
               {/* Model Dropdown */}
@@ -159,7 +207,7 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
                   { value: "", label: "-- Select a model --" },
                   ...filteredModels.map(model => ({
                     value: model.path,
-                    label: `${model.name} (${model.type}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
+                    label: `${model.name} (${archOf(model)}${model.size_gb ? ` • ${model.size_gb} GB` : ''})`
                   }))
                 ]}
               />
@@ -172,8 +220,8 @@ export default function ModelSelector({ onModelLoad }: ModelSelectorProps) {
                   <div className="bg-gray-800 p-3 rounded-lg text-sm">
                     <div className="grid grid-cols-2 gap-2">
                       <div>
-                        <span className="text-gray-400">Type:</span>
-                        <span className="ml-2 text-white">{selectedModel.type}</span>
+                        <span className="text-gray-400">Architecture:</span>
+                        <span className="ml-2 text-white">{archOf(selectedModel)}</span>
                       </div>
                       {selectedModel.size_gb && (
                         <div>

@@ -399,6 +399,13 @@ class PidNet(PixDiT_T2I):
             else:
                 lq_outputs = self._compute_lq_features(lq_video_or_image, lq_latent, lq_mask, Hs, Ws)
             lq_features, pit_lq_feature = self._split_lq_outputs(lq_outputs)
+            # Drop the parent list's references so the per-head pop-after-use in
+            # `_run_patch_blocks` (`lq_features[out_idx] = None`) can actually free
+            # each ~200MB head tensor before the pixel-block phase (the peak).
+            # Without this, `lq_outputs` keeps every head alive for the whole
+            # forward, making the pop a no-op. `pit_lq_feature` holds its own
+            # reference to the PiT head and survives this del.
+            del lq_outputs
 
         collected_features = None  # populated by _run_patch_blocks when feature_indices is set
 

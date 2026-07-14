@@ -1093,6 +1093,29 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 active.set_prompt(prompt)
                 return
 
+    @staticmethod
+    def _upcast_vae_if_needed(new_vae, vae_path: str):
+        """Replicate diffusers' native VAE fp16-overflow guard for override VAEs.
+
+        The stock SDXL pipelines (e.g. ``StableDiffusionXLPipeline.decode_latents``)
+        upcast the VAE to float32 before decode whenever
+        ``vae.dtype == torch.float16 and vae.config.force_upcast`` — the original
+        (non "fp16-fix") SDXL VAE overflows to NaN inside its decoder attention
+        blocks at fp16. ``AutoencoderKL.decode()`` itself does NOT perform this
+        upcast; it is pipeline-level logic. This VAE-override path bypasses that
+        pipeline entirely (the VRAM funnel in ``vram_optimization.py`` only moves
+        device, never dtype), so a bare original-format SDXL VAE loaded here
+        (``force_upcast`` defaults to ``True`` when there is no accompanying
+        ``config.json`` to override it) would silently decode to an all-gray/NaN
+        image. Force float32 in that case; leave fp16-fix-style VAEs
+        (``force_upcast=False``) and bf16-loaded VAEs alone.
+        """
+        if new_vae.dtype == torch.float16 and getattr(new_vae.config, "force_upcast", False):
+            print(f"[VAEOverride] {vae_path}: force_upcast=True + fp16 would overflow to NaN on "
+                  f"decode (matches diffusers' native VAE fp16 guard) - loading in float32 instead.")
+            new_vae = new_vae.to(dtype=torch.float32)
+        return new_vae
+
     def load_override_vae(
         self,
         vae_path: Optional[str],
@@ -1192,6 +1215,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     )
                 except Exception as e:
                     print(f"[VAEOverride] scaling_factor copy from original VAE failed (non-fatal): {e}")
+                new_vae = self._upcast_vae_if_needed(new_vae, vae_path)
                 new_vae = new_vae.to("cpu")
             else:
                 if cfg_dir is None:
@@ -1205,6 +1229,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
                 print(f"[VAEOverride] Loading {class_name} from {cfg_dir} (dtype={dtype})")
                 new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
+                new_vae = self._upcast_vae_if_needed(new_vae, vae_path)
                 new_vae = new_vae.to("cpu")
 
         # If an outgoing PiD wrapper occupies the slot (switching override A->B

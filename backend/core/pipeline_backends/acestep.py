@@ -53,6 +53,7 @@ actually declares.
 """
 
 from typing import Dict, Any, Optional, Tuple, Callable
+import os
 import random
 import re
 
@@ -409,6 +410,49 @@ class AceStepMixin:
             return None, None
         return obj, parts[-1]
 
+    @staticmethod
+    def _acestep_lora_emit_compat_warning(
+        lora_path: str, applied_count: int, total_count: int, mismatch_note: str = "shape mismatch",
+    ) -> None:
+        """Surface a user-facing warning when a LoRA matched fewer target
+        modules than were present in the file -- i.e. it had no effect (0
+        applied) or only a partial effect (some modules skipped) on the
+        currently loaded ACE-Step model.
+
+        Mirrors the `add_warning` pattern used by every other pipeline
+        backend (e.g. `Flux2Mixin`'s attention-fallback warnings): a plain
+        module-level call into `api.generation_status`, backed by an
+        in-process, per-request store. `routes.py`'s `generate_txt2aud`/
+        `generate_aud2aud` call `start_generation()` before invoking
+        `pipeline_manager.generate_txt2aud`/`generate_aud2aud` (which is what
+        eventually calls `_load_lora_acestep` via
+        `_apply_or_clear_lora_acestep`), so this warning is already recorded
+        by the time the endpoint calls `get_warnings()` for the response --
+        no change to this method's/its callers' return values is needed.
+
+        No-op (does not call `add_warning`) when `applied_count ==
+        total_count` -- a fully-compatible LoRA must not produce a warning.
+        """
+        if applied_count >= total_count:
+            return
+        lora_name = os.path.basename(lora_path)
+        if applied_count == 0:
+            message = (
+                f"LoRA '{lora_name}': 0 of {total_count} modules applied -- incompatible with the "
+                f"loaded ACE-Step model (likely a different ACE-Step generation, e.g. v1 3.5B vs "
+                f"this v1.5 2B, or an unrecognized key format). It had no effect."
+            )
+        else:
+            message = (
+                f"LoRA '{lora_name}': applied {applied_count} of {total_count} modules; "
+                f"{total_count - applied_count} skipped on {mismatch_note}."
+            )
+        try:
+            from api.generation_status import add_warning
+            add_warning(message, code="lora_incompatible")
+        except Exception:
+            pass
+
     def _load_lora_acestep(self, lora_configs: list):
         """Load LoRAs onto the ACE-Step DiT's decoder attention Linears.
 
@@ -482,6 +526,15 @@ class AceStepMixin:
                         f"('transformer_blocks....lora_A/lora_B.weight') naming was detected; skipping this "
                         f"file entirely (not an error). Sample keys found in file: {sample_keys}"
                     )
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            f"LoRA '{os.path.basename(lora_path)}': unrecognized key format (neither "
+                            f"sd-scripts native nor diffusers/PEFT ACE-Step naming) -- it had no effect.",
+                            code="lora_incompatible",
+                        )
+                    except Exception:
+                        pass
                     continue
 
                 total_pairs = sum(1 for k in lora_state_dict if k.endswith(".lora_down.weight"))
@@ -542,6 +595,12 @@ class AceStepMixin:
                         f"LoRA entirely). Expected key prefix: "
                         f"'lora_unet_decoder_layers_<i>_<self_attn|cross_attn>_<q,k,v,o>_proj'. "
                         f"Sample keys found in file: {sample_keys}"
+                    )
+
+                if total_pairs > 0:
+                    self._acestep_lora_emit_compat_warning(
+                        lora_path, applied_count, total_pairs,
+                        mismatch_note="shape mismatch or unmatched target module",
                     )
 
             except Exception as e:
@@ -786,6 +845,17 @@ class AceStepMixin:
             print(
                 f"[AceStep LoRA] WARNING: 0 modules matched in {lora_path!r} after diffusers/PEFT key "
                 f"remap (skipped entirely, not an error). Sample keys found in file: {sample_keys}"
+            )
+
+        if total_groups > 0:
+            if skipped_shape and skipped_missing:
+                mismatch_note = "shape mismatch or unmatched target module"
+            elif skipped_shape:
+                mismatch_note = "shape mismatch"
+            else:
+                mismatch_note = "unmatched target module"
+            self._acestep_lora_emit_compat_warning(
+                lora_path, applied_count, total_groups, mismatch_note=mismatch_note,
             )
 
     def _unload_lora_acestep(self):

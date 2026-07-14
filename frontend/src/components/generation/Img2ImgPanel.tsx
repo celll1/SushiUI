@@ -106,6 +106,9 @@ interface Img2ImgParams {
   shift?: number;
   cover_strength?: number;
   vocal_language?: string;
+  mode?: "cover" | "repaint";
+  repaint_start?: number;
+  repaint_end?: number;
 }
 
 const DEFAULT_PARAMS: Img2ImgParams = {
@@ -201,6 +204,9 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   shift: 3.0,
   cover_strength: 1.0,
   vocal_language: "en",
+  mode: "cover",
+  repaint_start: 0,
+  repaint_end: 0,
 };
 
 // num_frames must be 8k+1 (LTX-2.3). Offer common lengths.
@@ -1468,6 +1474,9 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         cover_strength: params.cover_strength,
         vocal_language: params.vocal_language,
         loras: params.loras,
+        mode: params.mode,
+        repaint_start: params.repaint_start,
+        repaint_end: params.repaint_end,
       };
       addToQueue({
         type: "aud2aud",
@@ -2633,7 +2642,17 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         )}
 
         {isAudio && (
-          <Card title="Audio (Cover)">
+          <Card title="Audio">
+            <Select
+              label="Mode"
+              value={params.mode ?? "cover"}
+              onChange={(e) => setParams({ ...params, mode: e.target.value as "cover" | "repaint" })}
+              options={[
+                { value: "cover", label: "Cover" },
+                { value: "repaint", label: "Repaint" },
+              ]}
+            />
+
             <Textarea
               label="Caption"
               placeholder="Describe the music (genre, mood, instruments)..."
@@ -2649,14 +2668,43 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
             />
 
-            <Slider
-              label="Cover Strength"
-              min={0}
-              max={1}
-              step={0.05}
-              value={params.cover_strength ?? 1.0}
-              onChange={(e) => setParams({ ...params, cover_strength: parseFloat(e.target.value) })}
-            />
+            {(params.mode ?? "cover") === "cover" ? (
+              <Slider
+                label="Cover Strength"
+                min={0}
+                max={1}
+                step={0.05}
+                value={params.cover_strength ?? 1.0}
+                onChange={(e) => setParams({ ...params, cover_strength: parseFloat(e.target.value) })}
+              />
+            ) : (
+              <div className="mt-2">
+                <p className="text-xs text-gray-400 mb-2">
+                  Only the [start, end) range of the reference audio is regenerated; the rest is kept unchanged.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <NumberInput
+                    label="Repaint start (s)"
+                    value={params.repaint_start ?? 0}
+                    onCommit={(v) => setParams({ ...params, repaint_start: v })}
+                    min={0}
+                    step={0.1}
+                    parse="float"
+                  />
+                  <NumberInput
+                    label="Repaint end (s)"
+                    value={params.repaint_end ?? 0}
+                    onCommit={(v) => {
+                      const start = params.repaint_start ?? 0;
+                      setParams({ ...params, repaint_end: v < start ? start : v });
+                    }}
+                    min={0}
+                    step={0.1}
+                    parse="float"
+                  />
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
               <NumberInput

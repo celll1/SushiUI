@@ -467,6 +467,9 @@ export interface Aud2AudParams {
   cover_strength?: number;      // 0-1 step-count blend toward the reference; default 1.0
   vocal_language?: string;      // default "en"
   loras?: LoRAConfig[];
+  mode?: "cover" | "repaint";    // default "cover"; "repaint" regenerates only [repaint_start, repaint_end)
+  repaint_start?: number;        // seconds, repaint mode only; default 0.0
+  repaint_end?: number;          // seconds, repaint mode only; default 0.0
 }
 
 // ---------------------------------------------------------------------------
@@ -1162,6 +1165,9 @@ export const generateAud2Aud = async (params: Aud2AudParams, referenceAudio: Fil
   formData.append("cover_strength", String(params.cover_strength ?? 1.0));
   formData.append("vocal_language", params.vocal_language ?? "en");
   formData.append("loras", JSON.stringify(params.loras || []));
+  formData.append("mode", params.mode ?? "cover");
+  formData.append("repaint_start", String(params.repaint_start ?? 0.0));
+  formData.append("repaint_end", String(params.repaint_end ?? 0.0));
 
   const response = await api.post("/generate/aud2aud", formData, {
     headers: { "Content-Type": "multipart/form-data" },

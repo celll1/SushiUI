@@ -408,7 +408,12 @@ class FinalLayer(nn.Module):
         # per-block ~8GB peak described in scratchpad/pid_vram_proposal.md).
         BL = x.shape[0]
         chunk_rows = getattr(self, "_vram_chunk_rows", None)
-        if not chunk_rows or chunk_rows <= 0 or BL <= chunk_rows:
+        # `or torch.is_grad_enabled()`: the chunked path writes results back
+        # in-place per row-slice, which would bump a version-counter and break
+        # autograd. Chunking is an inference-only VRAM optimization (only ever
+        # enabled via PidVaeWrapper under no_grad), so fall back to the exact
+        # original unchunked forward whenever grad is tracked — fail-safe.
+        if not chunk_rows or chunk_rows <= 0 or BL <= chunk_rows or torch.is_grad_enabled():
             x = self.norm(x)
             x = self.linear(x)
             return x
@@ -629,7 +634,12 @@ class PiTBlock(nn.Module):
         # alive at any one instant.
         # ---------------------------------------------------------------
         chunk_rows = getattr(self, "_vram_chunk_rows", None)
-        if not chunk_rows or chunk_rows <= 0 or BL <= chunk_rows:
+        # `or torch.is_grad_enabled()`: the chunked path writes results back
+        # in-place per row-slice, which would bump a version-counter and break
+        # autograd. Chunking is an inference-only VRAM optimization (only ever
+        # enabled via PidVaeWrapper under no_grad), so fall back to the exact
+        # original unchunked forward whenever grad is tracked — fail-safe.
+        if not chunk_rows or chunk_rows <= 0 or BL <= chunk_rows or torch.is_grad_enabled():
             # Small BL (e.g. <=8192-row decodes by default): identical to
             # the original single-shot code, no extra compute/perf cost.
             cond_params = self.adaLN_modulation(s_cond)  # [BL, 6*pixel_dim*P2]

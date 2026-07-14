@@ -7,6 +7,12 @@ import { fetchVaes, VaeEntry } from "@/utils/api";
 interface VaeOverrideSelectorProps {
   value: string | null;
   onChange: (path: string | null) => void;
+  // Reports the "kind" of the currently-selected candidate ("autoencoder" |
+  // "pid_decoder" | null for no override / unknown). Fires on mount (once the
+  // candidate list has loaded) and whenever the selection changes, so callers
+  // can react to a PiD-decoder override without duplicating the /models/vaes
+  // fetch.
+  onKindChange?: (kind: string | null) => void;
   label?: string;
   className?: string;
 }
@@ -14,6 +20,7 @@ interface VaeOverrideSelectorProps {
 export default function VaeOverrideSelector({
   value,
   onChange,
+  onKindChange,
   label = "VAE override",
   className = "",
 }: VaeOverrideSelectorProps) {
@@ -31,6 +38,16 @@ export default function VaeOverrideSelector({
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!onKindChange) return;
+    if (!value) {
+      onKindChange(null);
+      return;
+    }
+    const selected = vaes.find((v) => v.path === value);
+    onKindChange(selected?.kind ?? null);
+  }, [value, vaes, onKindChange]);
 
   const options = [
     { value: "", label: "Default (model's VAE)" },

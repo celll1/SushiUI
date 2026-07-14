@@ -104,6 +104,8 @@ const DEFAULT_PARAMS: GenerationParams = {
   vision_encoder_path: null,
   vae_path: null,
   text_encoder_path: null,
+  pid_sr_output: "4x",
+  pid_use_gemma: false,
   // Video generation fields (used when a video model is loaded; the panel maps
   // these into Txt2VidParams for txt2vid requests). Carried alongside the image
   // params so a single params object drives both modes.
@@ -1307,6 +1309,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         block_swap_ring_size: mainParams.block_swap_ring_size,
         vae_path: mainParams.vae_path, // Inherit VAE override (model-global)
         text_encoder_path: mainParams.text_encoder_path, // Inherit TE override (model-global)
+        pid_sr_output: mainParams.pid_sr_output, // Inherit PiD decoder options (model-global)
+        pid_use_gemma: mainParams.pid_use_gemma,
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1493,6 +1497,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       stepParams.vision_encoder_path = mainParams.vision_encoder_path;
       stepParams.vae_path = mainParams.vae_path;
       stepParams.text_encoder_path = mainParams.text_encoder_path;
+      stepParams.pid_sr_output = mainParams.pid_sr_output;
+      stepParams.pid_use_gemma = mainParams.pid_use_gemma;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
       const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
@@ -2008,6 +2014,10 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           onVaePathChange={(path) => setParams({ ...params, vae_path: path })}
           textEncoderPath={params.text_encoder_path ?? null}
           onTextEncoderChange={(path) => setParams({ ...params, text_encoder_path: path })}
+          pidSrOutput={params.pid_sr_output ?? "4x"}
+          onPidSrOutputChange={(value) => setParams({ ...params, pid_sr_output: value })}
+          pidUseGemma={params.pid_use_gemma ?? false}
+          onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
           storageKeyPrefix="txt2img"
         />
 

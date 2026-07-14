@@ -89,6 +89,10 @@ interface InpaintParams {
   // Component overrides (model-global)
   vae_path?: string | null;
   text_encoder_path?: string | null;
+  // PiD (Pixel Diffusion Decoder) options — only relevant when vae_path
+  // selects a PiD checkpoint; ignored otherwise.
+  pid_sr_output?: string | null;
+  pid_use_gemma?: boolean;
   // Block swap (model-global)
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
@@ -173,6 +177,8 @@ const DEFAULT_PARAMS: InpaintParams = {
   vision_encoder_path: null,
   vae_path: null,
   text_encoder_path: null,
+  pid_sr_output: "4x",
+  pid_use_gemma: false,
   // Block swap (model-global; inherited by loop generation). Panel UI pending the Model/Environment section (phase 2).
   enable_block_swap: false,
   blocks_to_swap: 20,
@@ -1610,6 +1616,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         block_swap_ring_size: mainParams.block_swap_ring_size,
         vae_path: mainParams.vae_path, // Inherit VAE override (model-global)
         text_encoder_path: mainParams.text_encoder_path, // Inherit TE override (model-global)
+        pid_sr_output: mainParams.pid_sr_output, // Inherit PiD decoder options (model-global)
+        pid_use_gemma: mainParams.pid_use_gemma,
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1802,6 +1810,8 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         vision_encoder_path: nextItem.params.vision_encoder_path,
         vae_path: nextItem.params.vae_path,
         text_encoder_path: nextItem.params.text_encoder_path,
+        pid_sr_output: nextItem.params.pid_sr_output,
+        pid_use_gemma: nextItem.params.pid_use_gemma,
         // Spectrum acceleration
         spectrum_enable: nextItem.params.spectrum_enable,
         // First Block Cache
@@ -2196,6 +2206,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           onVaePathChange={(path) => setParams({ ...params, vae_path: path })}
           textEncoderPath={params.text_encoder_path ?? null}
           onTextEncoderChange={(path) => setParams({ ...params, text_encoder_path: path })}
+          pidSrOutput={params.pid_sr_output ?? "4x"}
+          onPidSrOutputChange={(value) => setParams({ ...params, pid_sr_output: value })}
+          pidUseGemma={params.pid_use_gemma ?? false}
+          onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
           storageKeyPrefix="inpaint"
         />
 

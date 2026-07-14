@@ -14,6 +14,14 @@ interface LoRASelectorProps {
   onChange: (loras: LoRAConfig[]) => void;
   disabled?: boolean;
   storageKey?: string;
+  /**
+   * When true, renders a reduced UI (LoRA name + single Strength slider +
+   * enable/remove only) without the Text Encoder/U-Net split toggle or the
+   * per-block LoRALayerWeights graph. Intended for modalities (e.g. audio
+   * LoRAs) where the underlying pipeline applies a single uniform strength
+   * and has no per-block/TE-vs-UNet concept.
+   */
+  simpleMode?: boolean;
 }
 
 interface LoRALayerWeightsProps {
@@ -72,7 +80,7 @@ function LoRALayerWeights({ loraPath, weights, onChange, disabled, loadLoraInfo 
   );
 }
 
-export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed" }: LoRASelectorProps) {
+export default function LoRASelector({ value, onChange, disabled = false, storageKey = "lora_panel_collapsed", simpleMode = false }: LoRASelectorProps) {
   const { modelLoaded } = useStartup();
   const [availableLoras, setAvailableLoras] = useState<Array<{ path: string; name: string }>>([]);
   const [loraInfoCache, setLoraInfoCache] = useState<Map<string, LoRAInfo>>(new Map());
@@ -175,11 +183,9 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
               </Button>
             </div>
 
-            {/* 2-Column Layout: Settings on left, Graph on right */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {/* Left Column: Settings */}
+            {simpleMode ? (
+              /* Simple Mode: Single uniform strength only (no TE/U-Net split, no block graph) */
               <div className="space-y-3">
-                {/* Strength Slider */}
                 <Slider
                   label="Strength"
                   min={-2}
@@ -189,60 +195,77 @@ export default function LoRASelector({ value, onChange, disabled = false, storag
                   onChange={(e) => updateLora(index, { strength: parseFloat(e.target.value) })}
                   disabled={disabled}
                 />
+              </div>
+            ) : (
+              /* 2-Column Layout: Settings on left, Graph on right */
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Left Column: Settings */}
+                <div className="space-y-3">
+                  {/* Strength Slider */}
+                  <Slider
+                    label="Strength"
+                    min={-2}
+                    max={2}
+                    step={0.05}
+                    value={lora.strength}
+                    onChange={(e) => updateLora(index, { strength: parseFloat(e.target.value) })}
+                    disabled={disabled}
+                  />
 
-                {/* Text Encoder / U-Net Toggles */}
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={lora.apply_to_text_encoder}
-                      onChange={(e) =>
-                        updateLora(index, { apply_to_text_encoder: e.target.checked })
-                      }
-                      disabled={disabled}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-gray-300">Text Encoder</span>
-                  </label>
-                  <label className="flex items-center gap-2 text-sm cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={lora.apply_to_unet}
-                      onChange={(e) =>
-                        updateLora(index, { apply_to_unet: e.target.checked })
-                      }
-                      disabled={disabled}
-                      className="w-4 h-4"
-                    />
-                    <span className="text-gray-300">U-Net</span>
-                  </label>
+                  {/* Text Encoder / U-Net Toggles */}
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lora.apply_to_text_encoder}
+                        onChange={(e) =>
+                          updateLora(index, { apply_to_text_encoder: e.target.checked })
+                        }
+                        disabled={disabled}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-gray-300">Text Encoder</span>
+                    </label>
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={lora.apply_to_unet}
+                        onChange={(e) =>
+                          updateLora(index, { apply_to_unet: e.target.checked })
+                        }
+                        disabled={disabled}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-gray-300">U-Net</span>
+                    </label>
+                  </div>
+
+                  {/* Step Range */}
+                  <RangeSlider
+                    label="Step Range"
+                    min={0}
+                    max={1000}
+                    step={10}
+                    value={lora.step_range}
+                    onChange={(step_range) => updateLora(index, { step_range })}
+                    disabled={disabled}
+                  />
                 </div>
 
-                {/* Step Range */}
-                <RangeSlider
-                  label="Step Range"
-                  min={0}
-                  max={1000}
-                  step={10}
-                  value={lora.step_range}
-                  onChange={(step_range) => updateLora(index, { step_range })}
-                  disabled={disabled}
-                />
+                {/* Right Column: Block Weights Graph */}
+                <div>
+                  {lora.apply_to_unet && (
+                    <LoRALayerWeights
+                      loraPath={lora.path}
+                      weights={lora.unet_layer_weights}
+                      onChange={(unet_layer_weights) => updateLora(index, { unet_layer_weights })}
+                      disabled={disabled}
+                      loadLoraInfo={loadLoraInfo}
+                    />
+                  )}
+                </div>
               </div>
-
-              {/* Right Column: Block Weights Graph */}
-              <div>
-                {lora.apply_to_unet && (
-                  <LoRALayerWeights
-                    loraPath={lora.path}
-                    weights={lora.unet_layer_weights}
-                    onChange={(unet_layer_weights) => updateLora(index, { unet_layer_weights })}
-                    disabled={disabled}
-                    loadLoraInfo={loadLoraInfo}
-                  />
-                )}
-              </div>
-            </div>
+            )}
           </div>
         ))}
 

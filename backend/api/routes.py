@@ -493,6 +493,8 @@ async def generate_txt2img(
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
+    loop_decode: str = Form(GENERATION_DEFAULTS["loop_decode"]),  # Loop-generation decode mode: "full" | "cheap" | "none"
+    skip_gallery: bool = Form(GENERATION_DEFAULTS["skip_gallery"]),  # Save to disk but skip the gallery DB record/thumbnail
     db: Session = Depends(get_gallery_db)
 ):
     """Generate image from text"""
@@ -502,6 +504,12 @@ async def generate_txt2img(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
+    from api.error_handlers import ValidationError
+    if loop_decode not in ("full", "cheap", "none"):
+        raise ValidationError(
+            "Invalid loop_decode value",
+            detail=f"loop_decode must be 'full', 'cheap', or 'none', got {loop_decode!r}",
+        )
     # Compatibility gate for VAE/TE overrides runs BEFORE start_generation so a
     # HARD mismatch raises ValidationError (HTTP 400) without opening a run.
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
@@ -674,6 +682,8 @@ async def generate_txt2img(
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
             "pid_low_vram": pid_low_vram,
+            "loop_decode": loop_decode,
+            "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
 
@@ -813,6 +823,20 @@ async def generate_txt2img(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
+        # loop_decode="none": no VAE/PiD decode happened -- `image` is the raw
+        # pre-unscale final latent tensor instead of a PIL.Image. Cache it and
+        # return a latent_id for the next loop step's input_latent_id, skipping
+        # save/thumbnail/gallery entirely (there is no image to save).
+        if not isinstance(image, Image.Image):
+            from core.inference.latent_cache import store_latent
+            latent_id = store_latent(image, meta={
+                "width": params.get("width"),
+                "height": params.get("height"),
+                "seed": actual_seed,
+            })
+            complete_generation({"latent_id": latent_id, "seed": actual_seed})
+            return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings()}
+
         # Add Vision Encoder info to params for PNG metadata and DB storage.
         # Only record VE info when THIS generation actually used reference images.
         # The VE stays loaded ("sticky") across generations, so extract_vision_encoder_info
@@ -839,6 +863,18 @@ async def generate_txt2img(
             "txt2img",
             model_info=pipeline_manager.current_model_info
         )
+
+        # skip_gallery: the file is saved (so a generation loop can still chain
+        # to the next step via its path) but no thumbnail/DB record is created.
+        if skip_gallery:
+            complete_generation({"filename": filename, "seed": actual_seed})
+            return {
+                "success": True,
+                "filename": filename,
+                "image_path": f"/outputs/{filename}",
+                "actual_seed": actual_seed,
+                "warnings": get_warnings(),
+            }
 
         # Create thumbnail
         image_path = os.path.join(settings.outputs_dir, filename)
@@ -1391,7 +1427,10 @@ async def generate_img2img(
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
-    image: UploadFile = File(...),
+    loop_decode: str = Form(GENERATION_DEFAULTS["loop_decode"]),  # Loop-generation decode mode: "full" | "cheap" | "none"
+    input_latent_id: Optional[str] = Form(GENERATION_DEFAULTS["input_latent_id"]),  # Loop latent passthrough: start from a cached latent instead of `image`
+    skip_gallery: bool = Form(GENERATION_DEFAULTS["skip_gallery"]),  # Save to disk but skip the gallery DB record/thumbnail
+    image: Optional[UploadFile] = File(None),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
     db: Session = Depends(get_gallery_db)
 ):
@@ -1402,15 +1441,28 @@ async def generate_img2img(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
+    from api.error_handlers import ValidationError
+    if loop_decode not in ("full", "cheap", "none"):
+        raise ValidationError(
+            "Invalid loop_decode value",
+            detail=f"loop_decode must be 'full', 'cheap', or 'none', got {loop_decode!r}",
+        )
+    if image is None and not input_latent_id:
+        raise ValidationError("img2img requires either an 'image' upload or 'input_latent_id'")
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
     start_generation("img2img")
     try:
         # Reset cancellation flag before starting new generation
         pipeline_manager.reset_cancel_flag()
 
-        # Load input image
-        image_data = await image.read()
-        init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        # Load input image (skipped entirely when input_latent_id is set --
+        # pipeline.generate_img2img resolves the cached latent itself and uses
+        # a size-only placeholder in place of a real init_image).
+        if image is not None:
+            image_data = await image.read()
+            init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        else:
+            init_image = None
 
         # Parse LoRA configs
         import json
@@ -1583,6 +1635,9 @@ async def generate_img2img(
             "block_swap_ring_size": block_swap_ring_size,
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
+            "loop_decode": loop_decode,
+            "input_latent_id": input_latent_id,
+            "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
         print(f"img2img generation params: {sanitize_params_for_logging(params)}")
@@ -1692,6 +1747,20 @@ async def generate_img2img(
         params["seed"] = actual_seed
         params["ancestral_seed"] = actual_ancestral_seed
 
+        # loop_decode="none": no VAE/PiD decode happened -- `result_image` is
+        # the raw pre-unscale final latent tensor instead of a PIL.Image. Cache
+        # it and return a latent_id for the next loop step's input_latent_id,
+        # skipping save/thumbnail/gallery entirely.
+        if not isinstance(result_image, Image.Image):
+            from core.inference.latent_cache import store_latent
+            latent_id = store_latent(result_image, meta={
+                "width": params.get("width"),
+                "height": params.get("height"),
+                "seed": actual_seed,
+            })
+            complete_generation({"latent_id": latent_id, "seed": actual_seed})
+            return {"success": True, "latent_id": latent_id, "actual_seed": actual_seed, "warnings": get_warnings()}
+
         # Add Vision Encoder info to params for PNG metadata and DB storage.
         # Only record VE info when THIS generation actually used reference images
         # (the VE stays loaded "sticky" across generations).
@@ -1717,16 +1786,31 @@ async def generate_img2img(
             "img2img",
             model_info=pipeline_manager.current_model_info
         )
+
+        # skip_gallery: the file is saved (so a generation loop can still chain
+        # to the next step via its path) but no thumbnail/DB record is created.
+        if skip_gallery:
+            complete_generation({"filename": filename, "seed": actual_seed})
+            return {
+                "success": True,
+                "filename": filename,
+                "image_path": f"/outputs/{filename}",
+                "actual_seed": actual_seed,
+                "warnings": get_warnings(),
+            }
+
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 
-        # Calculate metadata
+        # Calculate metadata (source_image is None for latent-passthrough starts
+        # -- init_image is a size-only placeholder there, never the real input --
+        # calculate_generation_metadata already skips source_image_hash when falsy)
         metadata = calculate_generation_metadata(
             result_image,
             lora_configs,
             extract_lora_names,
             calculate_image_hash,
-            source_image=init_image
+            source_image=init_image if not input_latent_id else None
         )
 
         # Remove image objects from params before saving to DB and calculate ControlNet hashes
@@ -2785,6 +2869,9 @@ async def generate_inpaint(
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
+    loop_decode: str = Form(GENERATION_DEFAULTS["loop_decode"]),  # Loop-generation decode mode: "full" | "cheap" ("none" unsupported for inpaint)
+    input_latent_id: Optional[str] = Form(GENERATION_DEFAULTS["input_latent_id"]),  # Reserved for schema parity -- unsupported for inpaint (see validation below)
+    skip_gallery: bool = Form(GENERATION_DEFAULTS["skip_gallery"]),  # Save to disk but skip the gallery DB record/thumbnail
     image: UploadFile = File(...),
     mask: UploadFile = File(...),
     ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
@@ -2797,6 +2884,24 @@ async def generate_inpaint(
     from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
     from api.arch_capabilities import check_arch_capabilities
     from api.generation_overrides import plan_overrides, apply_overrides
+    from api.error_handlers import ValidationError
+    if loop_decode not in ("full", "cheap", "none"):
+        raise ValidationError(
+            "Invalid loop_decode value",
+            detail=f"loop_decode must be 'full', 'cheap', or 'none', got {loop_decode!r}",
+        )
+    if loop_decode == "none":
+        raise ValidationError(
+            "loop_decode='none' is not supported for inpaint",
+            detail="Inpaint's mask compositing requires a decoded image. "
+                   "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
+        )
+    if input_latent_id:
+        raise ValidationError(
+            "input_latent_id (loop latent passthrough) is not supported for inpaint",
+            detail="Inpaint's mask compositing requires a real source image. "
+                   "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
+        )
     _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
     start_generation("inpaint")
     try:
@@ -2996,6 +3101,8 @@ async def generate_inpaint(
             "block_swap_ring_size": block_swap_ring_size,
             "preview_decoder": preview_decoder,
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
+            "loop_decode": loop_decode,
+            "skip_gallery": skip_gallery,
         }
         params.update(_override_meta)
         print(f"inpaint generation params: {sanitize_params_for_logging(params)}")
@@ -3138,6 +3245,19 @@ async def generate_inpaint(
             "inpaint",
             model_info=pipeline_manager.current_model_info
         )
+
+        # skip_gallery: the file is saved (so a generation loop can still chain
+        # to the next step via its path) but no thumbnail/DB record is created.
+        if skip_gallery:
+            complete_generation({"filename": filename, "seed": actual_seed})
+            return {
+                "success": True,
+                "filename": filename,
+                "image_path": f"/outputs/{filename}",
+                "actual_seed": actual_seed,
+                "warnings": get_warnings(),
+            }
+
         image_path = os.path.join(settings.outputs_dir, filename)
         create_thumbnail(image_path)
 

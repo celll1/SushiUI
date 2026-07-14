@@ -3563,7 +3563,15 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
                 # one level of nesting (e.g. models_dir/vae/<subdir>)
                 try:
                     for sub in os.listdir(item_path):
-                        _consider(os.path.join(item_path, sub))
+                        _sub_path = os.path.join(item_path, sub)
+                        # Only descend into nested dirs or model/VAE files — never
+                        # pass stray non-model files (e.g. sample .png images in a
+                        # training run's folder) to the classifier, which would try
+                        # a safetensors header read on each and fail noisily.
+                        if os.path.isdir(_sub_path) or sub.endswith(".safetensors") or (
+                            sub.startswith("PiD_") and sub.endswith(".pth")
+                        ):
+                            _consider(_sub_path)
                 except OSError:
                     pass
             elif name.endswith(".safetensors") or (name.startswith("PiD_") and name.endswith(".pth")):
@@ -3611,7 +3619,15 @@ async def list_text_encoders(db: Session = Depends(get_gallery_db)):
                 _consider(item_path)
                 try:
                     for sub in os.listdir(item_path):
-                        _consider(os.path.join(item_path, sub))
+                        _sub_path = os.path.join(item_path, sub)
+                        # Only descend into nested dirs or model/VAE files — never
+                        # pass stray non-model files (e.g. sample .png images in a
+                        # training run's folder) to the classifier, which would try
+                        # a safetensors header read on each and fail noisily.
+                        if os.path.isdir(_sub_path) or sub.endswith(".safetensors") or (
+                            sub.startswith("PiD_") and sub.endswith(".pth")
+                        ):
+                            _consider(_sub_path)
                 except OSError:
                     pass
             elif name.endswith(".safetensors"):

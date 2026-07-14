@@ -605,6 +605,31 @@ def scan_model(path: str, source_type: Optional[str] = None) -> Dict[str, Any]:
 
     st = _normalize_source_type(source_type, path)
 
+    # A scanned model_dir often contains non-model files (e.g. sample .png images in
+    # a training run's folder). A safetensors header read / content hash on those
+    # fails noisily per-file (and slows a full scan); skip any file that isn't a
+    # recognizable model file with a minimal record, so no header read is attempted
+    # and nothing is logged. Directories still fall through to the diffusers scan.
+    if (
+        isinstance(path, str)
+        and os.path.isfile(path)
+        and not path.endswith(".safetensors.index.json")
+        and not path.lower().endswith((".safetensors", ".ckpt", ".pt", ".pth", ".bin"))
+    ):
+        return {
+            "content_hash": _hash_parts([f"nonmodel={path}"]),
+            "path": path,
+            "source_type": st,
+            "size_bytes": 0,
+            "mtime": 0,
+            "arch": "unknown",
+            "is_video": False,
+            "latent_ndim": 4,
+            "components": _empty_components(),
+            "mismatches": [],
+            "scanned_at": time.time(),
+        }
+
     # arch detection (its own cheap reads; defensive)
     try:
         from core.model_loader import ModelLoader

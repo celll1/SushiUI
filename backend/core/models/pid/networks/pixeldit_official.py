@@ -23,9 +23,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributed import ProcessGroup
+from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.nn.functional import scaled_dot_product_attention
 
 from core.models.pid.utils.context_parallel import cat_outputs_cp_with_grad, split_inputs_cp
+
+# =============================================================================
+# SushiUI VRAM deviation (not upstream): both SDPA call sites in this file
+# (RotaryAttention.forward, MMDiTJointAttention.forward) are wrapped in an
+# explicit `sdpa_kernel([FLASH_ATTENTION, EFFICIENT_ATTENTION])` guard. This is
+# a 0GB-today guard rail, not a memory optimization: PyTorch's SDPA silently
+# falls back to the unfused "math" backend (materializing a full [..., N, N]
+# score matrix) if flash/mem-efficient kernels refuse the input shape/dtype,
+# which for the pixel pathway's N=65536 (4096px decode, patch grid 256x256)
+# would try to allocate ~208GB and OOM. Listing both FLASH and EFFICIENT (not
+# a single backend) is required because MMDiTJointAttention passes a real
+# `attn_mask` on masked-text paths; EFFICIENT_ATTENTION supports attn_mask,
+# FLASH_ATTENTION does not (PiD's own decode path always passes mask=None, so
+# this does not change today's SDPA backend choice — see the individual call
+# sites below for that PiD-specific note).
+# =============================================================================
 
 # =============================================================================
 # From pixdit_core/modules.py
@@ -314,7 +331,14 @@ class RotaryAttention(nn.Module):
         k = k.view(B, -1, self.num_heads, C // self.num_heads).transpose(1, 2).contiguous()
         v = v.view(B, -1, self.num_heads, C // self.num_heads).transpose(1, 2).contiguous()
 
-        x = scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
+        # SushiUI VRAM deviation (not upstream): explicit sdpa_kernel guard (see
+        # the module-level comment near the top of this file). PiD's own
+        # decode path always calls this with mask=None, so FLASH_ATTENTION is
+        # engaged exactly as before; EFFICIENT_ATTENTION is only kept in the
+        # allow-list for other (non-PiD) callers of this shared class that may
+        # pass a real mask.
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+            x = scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
 
         x = x.transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
@@ -650,7 +674,15 @@ class MMDiTJointAttention(nn.Module):
         k_joint = torch.cat([ky, kx], dim=2)  # [B, H, Ny + Nx_full,  Hc]
         v_joint = torch.cat([vy, vx], dim=2)
 
-        out_joint = F.scaled_dot_product_attention(q_joint, k_joint, v_joint, dropout_p=0.0, attn_mask=attn_mask)
+        # SushiUI VRAM deviation (not upstream): explicit sdpa_kernel guard (see
+        # the module-level comment near the top of this file). This site CAN
+        # receive a real `attn_mask` (text padding), so EFFICIENT_ATTENTION must
+        # stay in the allow-list alongside FLASH_ATTENTION (FLASH does not
+        # support attn_mask); listing both keeps whichever backend PyTorch was
+        # already selecting, just raising instead of silently falling back to
+        # the O(N^2)-materializing math backend on an unsupported shape.
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+            out_joint = F.scaled_dot_product_attention(q_joint, k_joint, v_joint, dropout_p=0.0, attn_mask=attn_mask)
         # Split back to [text, image]; image output is local under CP.
         out_y = out_joint[:, :, :Ny, :]
         out_x = out_joint[:, :, Ny:, :]

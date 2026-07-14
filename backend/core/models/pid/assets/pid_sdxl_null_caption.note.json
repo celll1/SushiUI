@@ -1,0 +1,13 @@
+{
+  "file": "pid_sdxl_null_caption.npy",
+  "format": "float32 numpy (.npy chosen because *.pt/*.safetensors/*.bin are gitignored); load with np.load then torch.from_numpy(...).to(torch.bfloat16) — the bf16<->fp32 round-trip is exact",
+  "shape": [1, 300, 2304],
+  "runtime_dtype": "torch.bfloat16",
+  "std": 2.8051037788391113,
+  "mean": 0.00016107056580949575,
+  "source": "Efficient-Large-Model/gemma-2-2b-it (ungated PiD-training mirror of google/gemma-2-2b-it)",
+  "caption": "",
+  "chi_prompt_applied": true,
+  "purpose": "Default null-caption embedding for the PiD SDXL decoder so no runtime Gemma is needed. Reproduces PidInferenceModel._encode_text_raw([\"\"]) exactly (chi_prompt prepend + tokenizer max_length=300 + BOS+last-299 select_index).",
+  "generated_by": "scratchpad/pid_phase1b.py"
+}

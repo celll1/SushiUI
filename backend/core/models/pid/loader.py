@@ -86,7 +86,7 @@ PID_SR4X_SDXL_KWARGS = dict(
 )
 
 
-def build_pid_sdxl_config(load_text_encoder: bool = False) -> PidInferenceConfig:
+def build_pid_sdxl_config(load_text_encoder: bool = False, init_device: str = "cuda") -> PidInferenceConfig:
     """Build the hard-coded `PidInferenceConfig` for the SDXL 4-step distilled decoder.
 
     Args:
@@ -94,6 +94,9 @@ def build_pid_sdxl_config(load_text_encoder: bool = False) -> PidInferenceConfig
             for real prompt conditioning. Default False — SushiUI's default decode
             path injects a precomputed/null caption embedding instead (see
             `core.models.pid.models.pixeldit_model.PixelDiTModel.set_injected_caption_embs`).
+        init_device: device `self.net` is constructed on (see `PixelDiTModelConfig
+            .init_device`'s docstring). "cpu" avoids any GPU allocation until the
+            caller explicitly stages the net (e.g. `PidVaeWrapper`'s lazy load).
     """
     net = PidNet(**PID_SR4X_SDXL_KWARGS)
     return PidInferenceConfig(
@@ -115,6 +118,7 @@ def build_pid_sdxl_config(load_text_encoder: bool = False) -> PidInferenceConfig
         student_sample_steps=4,
         student_sample_type="sde",
         student_t_list=[0.999, 0.866, 0.634, 0.342, 0.0],
+        init_device=init_device,
     )
 
 
@@ -128,11 +132,13 @@ def load_pid_sdxl_decoder(
     The checkpoint is a flat `{"net.<name>": tensor}` dict (EMA-merged, native
     bf16); `PidInferenceModel.load_state_dict` strips the `net.` prefix and drops
     any `net_ema.*` / `fake_score.*` / `discriminator.*` keys (none present in the
-    SDXL distilled release). Net parameters are constructed in the checkpoint's
-    native bf16 (see `PixelDiTModel.__init__`), so this is a `strict=False` same-dtype
-    memcpy — no fp32 upcast, no missing/unexpected keys expected for this checkpoint.
+    SDXL distilled release). Net parameters are constructed DIRECTLY on `device`
+    in the checkpoint's native bf16 (see `PixelDiTModel.__init__`'s `init_device`),
+    so this is a `strict=False` same-dtype memcpy with no wasted transient GPU
+    allocation when `device="cpu"` — no fp32 upcast, no missing/unexpected keys
+    expected for this checkpoint.
     """
-    config = build_pid_sdxl_config(load_text_encoder=load_text_encoder)
+    config = build_pid_sdxl_config(load_text_encoder=load_text_encoder, init_device=device)
     model = PidInferenceModel(config)
 
     state_dict = torch.load(pth_path, map_location="cpu", weights_only=True)

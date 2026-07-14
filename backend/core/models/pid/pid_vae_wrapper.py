@@ -135,6 +135,17 @@ class PidVaeWrapper:
         # both paths.
         return self.real_vae.dtype
 
+    @property
+    def device(self):
+        # FAIL-SAFE (F2): several call sites read pipeline.vae.device (e.g.
+        # move_vae_to_gpu, inloop_hard_flatten). Delegate to the real held VAE so
+        # those keep working; without this they hit AttributeError (silently
+        # swallowed at some sites, disabling the feature).
+        try:
+            return next(self.real_vae.parameters()).device
+        except StopIteration:
+            return getattr(self.real_vae, "device", torch.device("cpu"))
+
     def to(self, *args, **kwargs):
         """Delegates to the real VAE only — the existing move_vae_to_gpu/cpu
         funnel keeps staging it transparently. The PiD net is staged separately
@@ -237,38 +248,44 @@ class PidVaeWrapper:
             from transformers import AutoModelForCausalLM, AutoTokenizer
 
             print(f"[PidVaeWrapper] Loading Gemma-2-2b-it from {te_dir} for prompt encode...")
-            tokenizer = AutoTokenizer.from_pretrained(te_dir)
-            tokenizer.padding_side = "right"
-            text_encoder = (
-                AutoModelForCausalLM.from_pretrained(te_dir, dtype=torch.bfloat16).get_decoder().to("cuda")
-            )
-            text_encoder.eval()
-
+            tokenizer = None
+            text_encoder = None
             model = self._ensure_pid_model()
-            # Temporarily install the real encoder so `_encode_text_raw` runs the
-            # exact vendored path (chi_prompt prepend + tokenizer + select_index),
-            # bypassing PixelDiTModel's `load_text_encoder=False` construction.
-            object.__setattr__(model, "tokenizer", tokenizer)
-            object.__setattr__(model, "text_encoder", text_encoder)
-            # `_num_chi_tokens` was 0 at construction (no tokenizer was loaded);
-            # recompute now that a real tokenizer exists, or chi_prompt truncation
-            # math (`max_length_all = num_chi_tokens + model_max_length - 2`) is wrong.
-            model._num_chi_tokens = (
-                len(tokenizer.encode(model._chi_prompt_str)) if model._chi_prompt_str else 0
-            )
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(te_dir)
+                tokenizer.padding_side = "right"
+                text_encoder = (
+                    AutoModelForCausalLM.from_pretrained(te_dir, dtype=torch.bfloat16).get_decoder().to("cuda")
+                )
+                text_encoder.eval()
 
-            with torch.no_grad():
-                embs, _ = model._encode_text_raw([prompt])
-            embs = embs.detach().to(torch.bfloat16).cpu()
+                # Temporarily install the real encoder so `_encode_text_raw` runs the
+                # exact vendored path (chi_prompt prepend + tokenizer + select_index),
+                # bypassing PixelDiTModel's `load_text_encoder=False` construction.
+                object.__setattr__(model, "tokenizer", tokenizer)
+                object.__setattr__(model, "text_encoder", text_encoder)
+                # `_num_chi_tokens` was 0 at construction (no tokenizer was loaded);
+                # recompute now that a real tokenizer exists, or chi_prompt truncation
+                # math (`max_length_all = num_chi_tokens + model_max_length - 2`) is wrong.
+                model._num_chi_tokens = (
+                    len(tokenizer.encode(model._chi_prompt_str)) if model._chi_prompt_str else 0
+                )
 
-            object.__setattr__(model, "tokenizer", None)
-            object.__setattr__(model, "text_encoder", None)
-            del tokenizer, text_encoder
-            import gc
-            gc.collect()
-            torch.cuda.empty_cache()
-
-            return embs.to(device="cuda", dtype=torch.bfloat16)
+                with torch.no_grad():
+                    embs, _ = model._encode_text_raw([prompt])
+                embs = embs.detach().to(torch.bfloat16).cpu()
+                return embs.to(device="cuda", dtype=torch.bfloat16)
+            finally:
+                # ALWAYS detach + free Gemma, even if from_pretrained / tokenization /
+                # encoding raised or OOM'd — otherwise the ~5GB decoder stays attached
+                # to the cached PiD model (resident on GPU) and OOMs the PiD stage next.
+                object.__setattr__(model, "tokenizer", None)
+                object.__setattr__(model, "text_encoder", None)
+                del tokenizer, text_encoder
+                import gc
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         except Exception as e:
             print(f"[PidVaeWrapper] Gemma encode failed: {e}")
             _warn_pid(f"pid_use_gemma failed ({e}); used null caption instead")

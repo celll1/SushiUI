@@ -518,9 +518,13 @@ def apply_overrides(
             src = plan["vae"]
         meta["vae_override_source"] = src
         meta["vae_override_path"] = plan["vae"]
-        if plan.get("vae_kind") == "pid_decoder" and pid_use_gemma and prompt:
+        if plan.get("vae_kind") == "pid_decoder":
+            # Always refresh the wrapper's prompt state for a PiD generation so a
+            # prior generation's prompt can't leak: set it when runtime Gemma is on,
+            # else clear it (None). Gated only on truthiness before, which left a
+            # stale prompt when the next gen had an empty prompt.
             try:
-                pipeline_manager.set_pid_prompt(prompt)
+                pipeline_manager.set_pid_prompt(prompt if pid_use_gemma else None)
             except Exception:
                 pass
     if plan.get("te"):

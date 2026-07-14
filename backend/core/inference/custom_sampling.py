@@ -1869,17 +1869,25 @@ def custom_sampling_loop(
     # Offload U-Net to CPU to free VRAM for VAE
     move_unet_to_cpu(pipeline)
 
-    move_vae_to_gpu(pipeline)
+    from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+    _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
+
+    # PiD stages its own ~2.7GB net for the final decode and does NOT use the held
+    # real VAE, so don't stage that VAE to GPU when PiD is active (saves VRAM and
+    # avoids leaving it resident if the PiD decode raises).
+    if not _pid_active:
+        move_vae_to_gpu(pipeline)
     log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
     _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
     latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
-    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
-    latents = latents.to(dtype=pipeline.vae.dtype)
+    if not _pid_active:
+        # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents).
+        # PiD re-normalizes in fp32 internally, so keep full precision for it.
+        latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
-        if isinstance(pipeline.vae, PidVaeWrapper):
+        if _pid_active:
             # PiD (Pixel Diffusion Decoder) override: run the SDXL 4-step
             # distilled decoder instead of a plain VAE decode. `latents` here is
             # the SAME already-unscaled tensor a plain decode would receive —
@@ -1893,8 +1901,10 @@ def custom_sampling_loop(
     # Free GPU latents before VAE offload
     del latents
 
-    # Offload VAE to CPU after decoding
-    move_vae_to_cpu(pipeline)
+    # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never
+    # staged; the PiD net offloads itself in pid_final_decode's finally).
+    if not _pid_active:
+        move_vae_to_cpu(pipeline)
 
     # Convert to PIL with robust nan/inf handling (moves image tensor to CPU internally)
     image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength)
@@ -2997,17 +3007,22 @@ def custom_img2img_sampling_loop(
     # Offload U-Net to CPU to free VRAM for VAE
     move_unet_to_cpu(pipeline)
 
-    move_vae_to_gpu(pipeline)
+    from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+    _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
+    # PiD stages its own net and does not use the held real VAE for the final
+    # decode — don't stage that VAE to GPU when PiD is active.
+    if not _pid_active:
+        move_vae_to_gpu(pipeline)
     log_device_status("Ready for VAE decode", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
     _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
     latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
-    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
-    latents = latents.to(dtype=pipeline.vae.dtype)
+    if not _pid_active:
+        # Convert latents to VAE dtype (fp16 VAE + fp32 latents); PiD re-normalizes
+        # in fp32 internally so keep full precision for it.
+        latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
-        _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
         if _pid_active:
             # PiD override: see custom_sampling_loop's Stage-3 site for the
             # F1/F2 rationale (`latents` is already the pre-unscaled tensor
@@ -3028,8 +3043,9 @@ def custom_img2img_sampling_loop(
     if vae_drift_correction and not _pid_active:
         _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
 
-    # Offload VAE to CPU after decoding
-    move_vae_to_cpu(pipeline)
+    # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
+    if not _pid_active:
+        move_vae_to_cpu(pipeline)
 
     # Convert to PIL with robust nan/inf handling
     image = vae_output_to_pil(image, color_flatten_strength=color_flatten_strength, dc_bias=_dc_bias)
@@ -4194,17 +4210,22 @@ def custom_inpaint_sampling_loop(
     # Offload U-Net to CPU to free VRAM for VAE
     move_unet_to_cpu(pipeline)
 
-    move_vae_to_gpu(pipeline)
+    from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+    _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
+    # PiD stages its own net and does not use the held real VAE for the final
+    # decode — don't stage that VAE to GPU when PiD is active.
+    if not _pid_active:
+        move_vae_to_gpu(pipeline)
     log_device_status("Ready for VAE decode (inpaint)", pipeline, vision_encoder=vision_encoder)
 
     # Decode latents to image
     _vae_shift = getattr(pipeline.vae.config, "shift_factor", None) or 0.0
     latents = latents / pipeline.vae.config.scaling_factor + _vae_shift
-    # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
-    latents = latents.to(dtype=pipeline.vae.dtype)
+    if not _pid_active:
+        # Convert latents to VAE dtype (fp16 VAE + fp32 latents); PiD re-normalizes
+        # in fp32 internally so keep full precision for it.
+        latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
-        _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
         if _pid_active:
             # PiD override: see custom_sampling_loop's Stage-3 site for the
             # F1/F2 rationale (`latents` is already the pre-unscaled tensor
@@ -4223,8 +4244,9 @@ def custom_inpaint_sampling_loop(
     if vae_drift_correction and not _pid_active:
         _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
 
-    # Offload VAE to CPU after decoding
-    move_vae_to_cpu(pipeline)
+    # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
+    if not _pid_active:
+        move_vae_to_cpu(pipeline)
 
     # Scale from [-1, 1] to [0, 1] with robust nan/inf handling
     image = (image / 2 + 0.5)

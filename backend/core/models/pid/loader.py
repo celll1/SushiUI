@@ -143,10 +143,17 @@ def load_pid_sdxl_decoder(
 
     state_dict = torch.load(pth_path, map_location="cpu", weights_only=True)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    if missing:
-        logger.warning(f"[PiD] load_state_dict: {len(missing)} missing keys: {missing[:10]}")
-    if unexpected:
-        logger.warning(f"[PiD] load_state_dict: {len(unexpected)} unexpected keys: {unexpected[:10]}")
+    if missing or unexpected:
+        # The official SDXL distilled checkpoint loads with 0 missing / 0 unexpected
+        # keys. Any mismatch means a truncated or wrong .pth — refuse to run PiD with
+        # partially-initialized (untrained) weights, which would silently produce
+        # garbage instead of failing over. The caller (pipeline.load_override_vae /
+        # apply_overrides) catches this and keeps the real VAE.
+        raise RuntimeError(
+            f"[PiD] checkpoint {pth_path} does not match the SDXL decoder architecture "
+            f"({len(missing)} missing, {len(unexpected)} unexpected keys) - refusing to "
+            f"run with partial weights. missing={missing[:5]} unexpected={unexpected[:5]}"
+        )
 
     model = model.to(device=device)
     model.eval()
@@ -163,11 +170,15 @@ def decode_latent(
     degrade_sigma: float = 0.0,
     num_steps: Optional[int] = None,
 ) -> torch.Tensor:
-    """Decode a raw SDXL latent through the PiD student sampler.
+    """Decode an SDXL latent (in PiD's normalized frame) through the student sampler.
 
     Args:
-        lq_latent: [B, 4, H, W] raw (unscaled-by-vae.config.scaling_factor per PiD's
-            own convention — see the design doc's `from_ldm` note) SDXL latent.
+        lq_latent: [B, 4, H, W] SDXL latent ALREADY in PiD's normalized training
+            frame (z' = 0.13025 * (z - shift), std ~0.6-1.0). This helper forwards
+            it UNCHANGED to the model -- unlike PidVaeWrapper.pid_final_decode it does
+            NOT re-normalize, so a caller must pass the normalized latent (the
+            production path re-normalizes the raw diffusion latent first; see the F1
+            note in pid_vae_wrapper.py).
         caption_embs: optional precomputed `[1 or B, model_max_length,
             caption_channels]` embedding. When given, installed via
             `model.set_injected_caption_embs()` for the duration of this call (then

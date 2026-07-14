@@ -76,6 +76,15 @@ class PidInferenceModel(PixelDiTModel):
 
     # ---------------------------------------------------------------------
     # Net output ↔ (x0, velocity) conversion
+    #
+    # TODO(opt-in, A/B): the `t_shaped * net_output` / `(x_t - net_output)`
+    # conversions below run in float64 (`.double()`) on a [B,3,H,W] tensor
+    # (~1-2GB transient at 4096px, freed between the 4 sampler steps — see
+    # scratchpad/pid_vram_proposal.md Tier-3 #6). Downgrading to float32
+    # would save that transient but is NOT bit-identical (fp64->fp32 changes
+    # rounding), so per the proposal review this is deliberately DEFERRED
+    # out of this VRAM pass — only implement behind an opt-in flag with a
+    # real A/B quality comparison, never as the silent default.
     # ---------------------------------------------------------------------
 
     def _net_output_to_x0(

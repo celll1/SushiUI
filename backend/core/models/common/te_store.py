@@ -165,7 +165,7 @@ def _download_into_store(te_type: str) -> Optional[str]:
         return None
     store_root = os.path.join(models_dir, "text_encoders", entry["store_subdir"])
 
-    if _has_te_config(store_root):
+    if _has_te_dir(store_root):
         return store_root
 
     try:
@@ -182,7 +182,7 @@ def _download_into_store(te_type: str) -> Optional[str]:
     except Exception as e:
         print(f"[TEStore] Download failed for {te_type} text encoder: {e}. Falling back to null-caption.")
         return None
-    return store_root if _has_te_config(store_root) else None
+    return store_root if _has_te_dir(store_root) else None
 
 
 def resolve_te_dir(
@@ -205,17 +205,17 @@ def resolve_te_dir(
         raise ValueError(f"Unknown te_type '{te_type}' (known: {list(TE_REGISTRY)})")
 
     # 1. explicit
-    if _has_te_config(explicit):
+    if _has_te_dir(explicit):
         return explicit
 
     # 2. environment alias
     if env_var:
         env_val = os.environ.get(env_var)
-        if _has_te_config(env_val):
+        if _has_te_dir(env_val):
             return env_val
 
     # 3. model's own te/ subfolder
-    if _has_te_config(model_own_te):
+    if _has_te_dir(model_own_te):
         return model_own_te
 
     # 4. existing HF hub cache (offline probe)
@@ -223,9 +223,10 @@ def resolve_te_dir(
     if cached:
         return cached
 
-    # 5. shared store (already populated)
+    # 5. shared store (already populated) — require config + weights so a partial
+    #    download (config.json only) doesn't permanently short-circuit the retry.
     store_inner = store_dir_for(te_type)
-    if _has_te_config(store_inner):
+    if _has_te_dir(store_inner):
         return store_inner
 
     # 6. download into the shared store

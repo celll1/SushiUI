@@ -39,11 +39,23 @@ delegates to the real VAE only, so the existing ``move_vae_to_gpu``/
 decode traffic. When ``pid_use_gemma`` is set, Gemma is loaded, used once, and
 freed BEFORE the PiD net is staged to GPU (sequential, never resident together).
 
-F7 — input-resolution cap: native SDXL resolution (``latent_h/w * 8``) above
-``native_cap`` (default ~1280px) triggers a warning (not a hard refuse — this
-override is opt-in and generation should still complete); quadratic attention
-cost and PiD's 2k-4k training range make very large native inputs both slow and
-out-of-distribution.
+F7 — input-resolution cap (HIGH correctness, A/B-confirmed 2026-07): PiD's SDXL
+checkpoint is trained for the canonical "1024 LDM -> 4K" range. Decoding at
+NATIVE resolution (``latent_h/w * 8``) above ``SAFE_NATIVE`` is
+out-of-distribution and produces real artifacts, not just a quality-vs-speed
+tradeoff — A/B-tested via the real held VAE on the identical latent: native
+1024px is clean; native 1216px produces full-frame rainbow streaking; native
+1344px produces a green-yellow gradient band across the bottom ~15-20% of the
+frame (per-band G-R flips from -19 to +20). The same latent decoded through the
+plain SDXL ``AutoencoderKL`` at native 1344px is clean, so this is PiD-specific
+and resolution-driven, not a base-model or scaling-code defect. ``native_cap``
+(default ``SAFE_NATIVE``, 1024px) is therefore a REAL cap, not a warn-and-
+proceed threshold: when native exceeds it, the LQ latent is downscaled
+(``F.interpolate``, bicubic + antialias, aspect-preserving) so PiD runs
+in-distribution, and PiD's (clean) output image is then upscaled back to the
+originally-requested output size (bicubic + antialias top-up) so the caller
+still gets the size it asked for. Passing a larger ``native_cap`` (e.g. a very
+high value) is a trivial opt-out for callers who want uncapped OOD native.
 
 F8: the caller's generation seed is threaded into ``generate_samples_from_batch``
 so PiD's noise draw is reproducible per-seed like the rest of the pipeline.
@@ -56,12 +68,19 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 # PiD's `sr_scale` is baked into the SDXL distilled checkpoint this wrapper
 # targets (`PiD_res2kto4k_sr4x_official_sdxl_distill_4step.pth`, PID_SR4X net
 # config `sr_scale=4`) — not read dynamically because the "4x" output size is
 # needed before the (lazily-constructed) net object exists.
 SR_SCALE = 4
+
+# A/B-confirmed (2026-07) safe native-resolution ceiling for this checkpoint's
+# canonical "1024 LDM -> 4K" training range (see the F7 note in the module
+# docstring for the artifact evidence). Named module constant so it is easy to
+# retune if a future PiD checkpoint ships with a different trained range.
+SAFE_NATIVE = 1024
 
 _NULL_ASSET_PATH = Path(__file__).resolve().parent / "assets" / "pid_sdxl_null_caption.npy"
 
@@ -89,7 +108,7 @@ class PidVaeWrapper:
         pid_pth_path: str,
         pid_sr_output: str = "4x",
         pid_use_gemma: bool = False,
-        native_cap: int = 1280,
+        native_cap: int = SAFE_NATIVE,
         low_vram_decode: bool = False,
     ):
         if pid_sr_output not in ("4x", "original"):
@@ -109,6 +128,9 @@ class PidVaeWrapper:
         self.pid_pth_path = pid_pth_path
         self.pid_sr_output = pid_sr_output
         self.pid_use_gemma = pid_use_gemma
+        # F7 — real cap (not a warn-only soft ceiling): native above this triggers
+        # downscale-then-decode-then-upscale in `pid_final_decode` (see module
+        # docstring). Default is `SAFE_NATIVE`; pass a larger value to opt out.
         self.native_cap = native_cap
         # SushiUI VRAM deviation (not upstream): opt-in low-VRAM decode.
         # False (default) = PiTBlock/FinalLayer run their exact original,
@@ -348,12 +370,27 @@ class PidVaeWrapper:
                 "VAE's scaling_factor/shift_factor may not be the standard SDXL values (0.13025/0.0)"
             )
 
+        # F7 — native-resolution cap (A/B-confirmed real fix, not a soft warning):
+        # decoding above `native_cap` is out-of-distribution for this checkpoint
+        # and produces artifacts (see module docstring). Downscale the LQ latent
+        # so PiD runs in-distribution, then upscale its (clean) output back to
+        # the originally-requested size below, after the decode.
         native_px = max(lat_h, lat_w) * 8
-        if native_px > self.native_cap:
+        target_out_h, target_out_w = lat_h * 8 * SR_SCALE, lat_w * 8 * SR_SCALE
+        capped = native_px > self.native_cap
+        if capped:
+            scale = self.native_cap / native_px
+            cap_lat_h = max(1, round(lat_h * scale))
+            cap_lat_w = max(1, round(lat_w * scale))
+            capped_native_px = max(cap_lat_h, cap_lat_w) * 8
             _warn_pid(
-                f"PiD decode requested at native {native_px}px (> {self.native_cap}px cap); proceeding, "
-                "but attention cost grows quadratically and this exceeds PiD's ~2k-4k training range"
+                f"PiD native capped to {capped_native_px}px for quality (was {native_px}px, out of the "
+                f"checkpoint's trained ~{SAFE_NATIVE}px range); output resized to the requested "
+                f"{target_out_w}x{target_out_h}.",
+                code="pid_native_capped",
             )
+            lq = F.interpolate(lq, size=(cap_lat_h, cap_lat_w), mode="bicubic", align_corners=False, antialias=True)
+            lat_h, lat_w = cap_lat_h, cap_lat_w
 
         # Caption embedding: real Gemma prompt (opt-in) or the shipped null asset.
         caption_embs = None
@@ -406,13 +443,26 @@ class PidVaeWrapper:
 
             out = out.squeeze(2)  # [B, 3, 1, H, W] -> [B, 3, H, W]
 
+            if capped:
+                # F7 top-up: PiD ran on the capped (in-distribution) latent above;
+                # upscale its clean output back to the originally-requested 4x
+                # output size. Bicubic + antialias (torch has no native "lanczos"
+                # interpolate mode); this is a minor top-up on top of PiD's own
+                # 4x super-resolution detail, not a substitute for it.
+                out = F.interpolate(
+                    out, size=(target_out_h, target_out_w), mode="bicubic", align_corners=False, antialias=True
+                )
+
             if self.pid_sr_output == "original":
                 # F7: this is output-size control, NOT a cheaper mode — the full
                 # 4x super-resolution decode always runs; sr_scale=4 is baked
-                # into this checkpoint. Downscale AFTER the full decode.
-                import torch.nn.functional as F
+                # into this checkpoint. Downscale AFTER the full decode (and after
+                # the capped top-up above, so this always targets the ORIGINALLY
+                # requested native size, `target_out / SR_SCALE`, regardless of
+                # whether F7 capped PiD's own input resolution).
                 out = F.interpolate(
-                    out, size=(lat_h * 8, lat_w * 8), mode="bilinear", align_corners=False, antialias=True
+                    out, size=(target_out_h // SR_SCALE, target_out_w // SR_SCALE),
+                    mode="bilinear", align_corners=False, antialias=True,
                 )
         finally:
             self._stage_pid_cpu()

@@ -3619,11 +3619,18 @@ async def load_model(
         if revision:
             kwargs["revision"] = revision
 
-        pipeline_manager.load_model(
-            source_type=source_type,
-            source=source,
-            pipeline_type="txt2img",
-            **kwargs
+        # Run the (blocking, ~20s) load in the executor so it never blocks the event
+        # loop -- important now that load_model serializes on a lock: if the boot
+        # auto-load thread holds it, waiting here happens off the event loop.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            executor,
+            lambda: pipeline_manager.load_model(
+                source_type=source_type,
+                source=source,
+                pipeline_type="txt2img",
+                **kwargs
+            )
         )
 
         return {

@@ -1182,6 +1182,20 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       // Z-Image/FLUX.2: VE not supported — clear selection
       updateParam("vision_encoder_path", "");
       updateParam("train_vision_encoder", false);
+    } else if (
+      arch === "anima" || arch === "lens" || arch === "ideogram4" ||
+      arch === "minit2i" || arch === "krea2" || arch === "ltx2" || arch === "acestep"
+    ) {
+      // Other bf16-native DiT archs: same bf16 dtype preset as Z-Image/FLUX.2.
+      // These models' weights are bfloat16, so bf16 training is the correct default
+      // AND is REQUIRED for Full fine-tune -- fp16 Full-FT trains the fp16 base and
+      // torch's GradScaler.unscale_ then rejects it (needs fp32 master params);
+      // bf16 needs no GradScaler. (Only the dtype preset is set here; each arch keeps
+      // its own text-encoder / vision-encoder trainability defaults untouched.)
+      updateParam("weight_dtype", "bf16");
+      updateParam("training_dtype", "bf16");
+      updateParam("output_dtype", "bf16");
+      updateParam("vae_dtype", "fp32");
     } else {
       // SD1.5/SDXL/DEUS: fp32 for weights, fp16 for training/output/VAE
       updateParam("weight_dtype", "fp32");

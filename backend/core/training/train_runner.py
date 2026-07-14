@@ -65,6 +65,22 @@ def _is_krea2_base_model(base_model_path: str) -> bool:
         return False
 
 
+def _is_bf16_native_base_model(base_model_path: str) -> bool:
+    """Lens / LTX-2.3 / ACE-Step: bf16-native DiT / audio archs NOT caught by the
+    per-name checks above. bf16 is their correct training dtype and is REQUIRED for
+    Full fine-tune (fp16 Full-FT is rejected by the trainer -- GradScaler.unscale_
+    needs fp32 master params; bf16 needs no scaler). Path-name match first, then
+    key/config detection for renamed checkpoints."""
+    lowered = (base_model_path or "").lower()
+    if any(s in lowered for s in ("lens", "ltx", "ace-step", "acestep")):
+        return True
+    try:
+        from core.model_loader import ModelLoader
+        return ModelLoader.detect_model_type(base_model_path) in ("lens", "ltx2", "acestep")
+    except Exception:
+        return False
+
+
 def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str = None):
     """
     Update training run phase progress in database.
@@ -1106,12 +1122,19 @@ def main():
             del pipeline_manager.anima_components
             pipeline_manager.anima_components = None
 
-        # Reset current model tracking
+        # Reset current model tracking. Clear EVERY arch flag, not just a couple:
+        # leaving a stale is_<arch>_model True (e.g. is_acestep_model) made generation
+        # endpoints mis-detect the arch, and combined with load_model's model-id
+        # early-return a later same-source load could fail to restore the right flag.
         pipeline_manager.current_model = None
         pipeline_manager.current_model_info = None
-        pipeline_manager.is_zimage_model = False
-        if hasattr(pipeline_manager, "is_anima_model"):
-            pipeline_manager.is_anima_model = False
+        for _flag in (
+            "is_zimage_model", "is_flux2_model", "is_anima_model", "is_lens_model",
+            "is_ideogram4_model", "is_minit2i_model", "is_krea2_model", "is_ltx2_model",
+            "is_acestep_model",
+        ):
+            if hasattr(pipeline_manager, _flag):
+                setattr(pipeline_manager, _flag, False)
 
         # Force garbage collection
         gc.collect()
@@ -1401,6 +1424,13 @@ def main():
             # Krea 2 (single-stream flow-matching MMDiT) is trained in bf16.
             if _is_krea2_base_model(run.base_model_path):
                 print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+            # Lens / LTX-2.3 / ACE-Step (bf16-native DiT / audio) are trained in bf16 too
+            # -- backend enforcement so API-created runs (not just the frontend preset)
+            # get bf16, avoiding the fp16 Full-FT rejection.
+            if _is_bf16_native_base_model(run.base_model_path):
+                print("[TrainRunner] Lens/LTX-2.3/ACE-Step model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 
@@ -1832,6 +1862,13 @@ def main():
                 print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
+            # Lens / LTX-2.3 / ACE-Step (bf16-native DiT / audio) are trained in bf16 too
+            # -- backend enforcement so API-created runs (not just the frontend preset)
+            # get bf16, avoiding the fp16 Full-FT rejection.
+            if _is_bf16_native_base_model(run.base_model_path):
+                print("[TrainRunner] Lens/LTX-2.3/ACE-Step model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
 
             mixed_precision = train_config.get('mixed_precision', True)
             debug_vram = train_config.get('debug_vram', False)
@@ -2227,6 +2264,13 @@ def main():
             # Krea 2 (single-stream flow-matching MMDiT) is trained in bf16.
             if _is_krea2_base_model(run.base_model_path):
                 print("[TrainRunner] Krea 2 model detected: forcing training_dtype=bf16")
+                training_dtype = 'bf16'
+                weight_dtype = 'bf16'
+            # Lens / LTX-2.3 / ACE-Step (bf16-native DiT / audio) are trained in bf16 too
+            # -- backend enforcement so API-created runs (not just the frontend preset)
+            # get bf16, avoiding the fp16 Full-FT rejection.
+            if _is_bf16_native_base_model(run.base_model_path):
+                print("[TrainRunner] Lens/LTX-2.3/ACE-Step model detected: forcing training_dtype=bf16")
                 training_dtype = 'bf16'
                 weight_dtype = 'bf16'
 

@@ -52,6 +52,8 @@ interface ModelLoadSectionProps {
   onPidSrOutputChange?: (value: string) => void;
   pidUseGemma?: boolean;
   onPidUseGemmaChange?: (value: boolean) => void;
+  pidLowVram?: boolean;
+  onPidLowVramChange?: (value: boolean) => void;
 
   // Storage key suffix so per-panel collapse state stays independent.
   storageKeyPrefix?: string;
@@ -73,6 +75,8 @@ export default function ModelLoadSection({
   onPidSrOutputChange,
   pidUseGemma = false,
   onPidUseGemmaChange,
+  pidLowVram = false,
+  onPidLowVramChange,
   storageKeyPrefix = "model_load",
 }: ModelLoadSectionProps) {
   const { modelInfo, refreshModelInfo } = useStartup();
@@ -178,6 +182,18 @@ export default function ModelLoadSection({
               </label>
               <p className="text-xs text-gray-500">
                 Loads a text encoder (Gemma) on first use to condition the PiD decode on your prompt. Opt-in.
+              </p>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pidLowVram}
+                  onChange={(e) => onPidLowVramChange?.(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-300">PiD: low VRAM decode</span>
+              </label>
+              <p className="text-xs text-gray-500">
+                Row-chunks the PiD decode to cut peak VRAM at high resolution (~42% less at 4096px, measured). Not bit-identical to the unchunked decode, but visually indistinguishable.
               </p>
             </div>
           )}

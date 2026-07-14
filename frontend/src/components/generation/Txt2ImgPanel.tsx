@@ -106,6 +106,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   text_encoder_path: null,
   pid_sr_output: "4x",
   pid_use_gemma: false,
+  pid_low_vram: false,
   // Video generation fields (used when a video model is loaded; the panel maps
   // these into Txt2VidParams for txt2vid requests). Carried alongside the image
   // params so a single params object drives both modes.
@@ -1311,6 +1312,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         text_encoder_path: mainParams.text_encoder_path, // Inherit TE override (model-global)
         pid_sr_output: mainParams.pid_sr_output, // Inherit PiD decoder options (model-global)
         pid_use_gemma: mainParams.pid_use_gemma,
+        pid_low_vram: mainParams.pid_low_vram,
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1499,6 +1501,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       stepParams.text_encoder_path = mainParams.text_encoder_path;
       stepParams.pid_sr_output = mainParams.pid_sr_output;
       stepParams.pid_use_gemma = mainParams.pid_use_gemma;
+      stepParams.pid_low_vram = mainParams.pid_low_vram;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
       const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
@@ -2018,6 +2021,8 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           onPidSrOutputChange={(value) => setParams({ ...params, pid_sr_output: value })}
           pidUseGemma={params.pid_use_gemma ?? false}
           onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
+          pidLowVram={params.pid_low_vram ?? false}
+          onPidLowVramChange={(value) => setParams({ ...params, pid_low_vram: value })}
           storageKeyPrefix="txt2img"
         />
 

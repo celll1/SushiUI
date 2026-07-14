@@ -1156,14 +1156,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # Resolve the candidate VAE directory + class.
             from api.generation_overrides import _vae_config_dir, _read_json
             cfg_dir = _vae_config_dir(vae_path)
-            if cfg_dir is None:
-                raise ValueError(f"No loadable VAE config.json found under: {vae_path}")
-            cfg = _read_json(os.path.join(cfg_dir, "config.json")) or {}
-            class_name = cfg.get("_class_name") or "AutoencoderKL"
-            import diffusers
-            vae_cls = getattr(diffusers, class_name, None)
-            if vae_cls is None:
-                from diffusers import AutoencoderKL as vae_cls  # fallback
 
             # Match the original VAE's dtype so downstream device/dtype staging is a no-op.
             dtype = None
@@ -1172,9 +1164,43 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             except Exception:
                 dtype = torch.float16
 
-            print(f"[VAEOverride] Loading {class_name} from {cfg_dir} (dtype={dtype})")
-            new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
-            new_vae = new_vae.to("cpu")
+            if cfg_dir is None and isinstance(vae_path, str) and vae_path.endswith(".safetensors") and os.path.isfile(vae_path):
+                # Bare original/LDM-format AutoencoderKL VAE (no config.json next
+                # to it — e.g. a plain `sdxl_vae.safetensors`). There is no
+                # diffusers directory to `from_pretrained()`; load the state dict
+                # directly, which infers the AutoencoderKL architecture from the
+                # header shapes alone.
+                from diffusers import AutoencoderKL
+                print(f"[VAEOverride] Loading bare AutoencoderKL from single file {vae_path} (dtype={dtype})")
+                new_vae = AutoencoderKL.from_single_file(vae_path, torch_dtype=dtype)
+                # `from_single_file` cannot tell SDXL from SD1.5 apart for a bare
+                # AutoencoderKL — both share the identical architecture — and
+                # silently defaults to the SD1.5 scaling_factor (0.18215). The
+                # override VAE decodes the SAME latent space as the model's OWN
+                # (original) VAE, so copy scaling_factor/shift_factor from it
+                # rather than trusting from_single_file's guess.
+                try:
+                    orig_cfg = self._original_vae.config
+                    new_vae.register_to_config(
+                        scaling_factor=getattr(orig_cfg, "scaling_factor", new_vae.config.scaling_factor),
+                        shift_factor=getattr(orig_cfg, "shift_factor", None) or 0.0,
+                    )
+                except Exception as e:
+                    print(f"[VAEOverride] scaling_factor copy from original VAE failed (non-fatal): {e}")
+                new_vae = new_vae.to("cpu")
+            else:
+                if cfg_dir is None:
+                    raise ValueError(f"No loadable VAE config.json found under: {vae_path}")
+                cfg = _read_json(os.path.join(cfg_dir, "config.json")) or {}
+                class_name = cfg.get("_class_name") or "AutoencoderKL"
+                import diffusers
+                vae_cls = getattr(diffusers, class_name, None)
+                if vae_cls is None:
+                    from diffusers import AutoencoderKL as vae_cls  # fallback
+
+                print(f"[VAEOverride] Loading {class_name} from {cfg_dir} (dtype={dtype})")
+                new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
+                new_vae = new_vae.to("cpu")
 
         # If an outgoing PiD wrapper occupies the slot (switching override A->B
         # WITHOUT an intervening restore), release its cached PiD net before

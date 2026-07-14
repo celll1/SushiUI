@@ -487,6 +487,8 @@ async def generate_txt2img(
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     vae_path: Optional[str] = Form(GENERATION_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
     text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
+    pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
+    pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -594,7 +596,10 @@ async def generate_txt2img(
             pass
 
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
-        _override_meta = apply_overrides(pipeline_manager, _override_plan)
+        _override_meta = apply_overrides(
+            pipeline_manager, _override_plan,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, prompt=prompt,
+        )
 
         # Generate image
         params = {
@@ -665,6 +670,8 @@ async def generate_txt2img(
             "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
             "vae_path": vae_path,
             "text_encoder_path": text_encoder_path,
+            "pid_sr_output": pid_sr_output,
+            "pid_use_gemma": pid_use_gemma,
         }
         params.update(_override_meta)
 
@@ -1376,6 +1383,8 @@ async def generate_img2img(
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     vae_path: Optional[str] = Form(GENERATION_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
     text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
+    pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
+    pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -1485,13 +1494,18 @@ async def generate_img2img(
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
-        _override_meta = apply_overrides(pipeline_manager, _override_plan)
+        _override_meta = apply_overrides(
+            pipeline_manager, _override_plan,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, prompt=prompt,
+        )
 
         # Generate image
         params = {
             "prompt": prompt,
             "vae_path": vae_path,
             "text_encoder_path": text_encoder_path,
+            "pid_sr_output": pid_sr_output,
+            "pid_use_gemma": pid_use_gemma,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
@@ -2761,6 +2775,8 @@ async def generate_inpaint(
     vision_encoder_path: Optional[str] = Form(None),  # Path to SigLIP2 vision encoder safetensors
     vae_path: Optional[str] = Form(GENERATION_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
     text_encoder_path: Optional[str] = Form(GENERATION_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
+    pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
+    pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -2885,13 +2901,18 @@ async def generate_inpaint(
             pipeline_manager.load_vision_encoder(vision_encoder_path)
 
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
-        _override_meta = apply_overrides(pipeline_manager, _override_plan)
+        _override_meta = apply_overrides(
+            pipeline_manager, _override_plan,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, prompt=prompt,
+        )
 
         # Generate image
         params = {
             "prompt": prompt,
             "vae_path": vae_path,
             "text_encoder_path": text_encoder_path,
+            "pid_sr_output": pid_sr_output,
+            "pid_use_gemma": pid_use_gemma,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
@@ -3537,7 +3558,10 @@ async def list_vaes(db: Session = Depends(get_gallery_db)):
                         _consider(os.path.join(item_path, sub))
                 except OSError:
                     pass
-            elif name.endswith(".safetensors"):
+            elif name.endswith(".safetensors") or (name.startswith("PiD_") and name.endswith(".pth")):
+                # A bare .safetensors VAE, or a PiD (Pixel Diffusion Decoder)
+                # checkpoint — classify_vae_candidate recognizes the latter via
+                # its "PiD_*.pth" naming and returns kind="pid_decoder".
                 _consider(item_path)
 
     return {"vaes": results}

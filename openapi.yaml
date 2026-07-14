@@ -5248,6 +5248,31 @@ components:
             accepted-but-ignored with a warning. None uses the loaded model's own
             text encoder.
           example: "models/text_encoders/clip-vit-large"
+        pid_sr_output:
+          type: string
+          enum: ["4x", "original"]
+          default: "4x"
+          description: |
+            Only consulted when vae_path points at a PiD (Pixel Diffusion
+            Decoder) checkpoint (SDXL only); ignored otherwise. "4x" returns
+            PiD's native super-resolution output (latent_h/w * 8 * 4). PiD's
+            4x super-resolution factor is fixed by the checkpoint, so
+            "original" still runs the full 4x decode and downscales the result
+            back to the model's native resolution (latent_h/w * 8) afterward —
+            NOT a cheaper decode path.
+          example: "4x"
+        pid_use_gemma:
+          type: boolean
+          default: false
+          description: |
+            Only consulted when vae_path points at a PiD decoder checkpoint;
+            ignored otherwise. False (default) uses a precomputed null-caption
+            embedding (no runtime text encoder needed). True loads
+            Efficient-Large-Model/gemma-2-2b-it (the ungated mirror PiD was
+            trained against) once for this generation and encodes the actual
+            prompt for sharper output; on any resolution/load/encode failure
+            it falls back to the null-caption embedding with a warning.
+          example: false
         ref_images:
           type: array
           items:

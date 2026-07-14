@@ -80,6 +80,29 @@ def _vae_config_dir(path: str) -> Optional[str]:
     return None
 
 
+def _is_pid_checkpoint(path: str) -> Optional[str]:
+    """Return the concrete PiD (Pixel Diffusion Decoder) ``.pth`` path when
+    ``path`` is (or directly contains) one, else None.
+
+    Recognizes a ``.pth`` file whose basename matches ``PiD_*`` (the NVIDIA PiD
+    release naming, e.g. ``PiD_res2kto4k_sr4x_official_sdxl_distill_4step.pth``),
+    or a directory containing exactly such a file at its top level.
+    """
+    if not isinstance(path, str) or not path:
+        return None
+    if os.path.isfile(path):
+        base = os.path.basename(path)
+        return path if (base.startswith("PiD_") and base.endswith(".pth")) else None
+    if os.path.isdir(path):
+        try:
+            for name in os.listdir(path):
+                if name.startswith("PiD_") and name.endswith(".pth"):
+                    return os.path.join(path, name)
+        except OSError:
+            pass
+    return None
+
+
 def _te_config_dir(path: str) -> Optional[str]:
     if isinstance(path, str) and os.path.isdir(path):
         if os.path.isfile(os.path.join(path, "config.json")):
@@ -102,8 +125,29 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
 
     Returns a dict with keys: ``latent_channels``, ``vae_class``,
     ``scale_spatial``, ``scale_temporal``, ``latent_ndim``, ``is_video``,
-    ``present``, ``has_backbone``, ``arch``. Any unknown value is ``None``.
+    ``present``, ``has_backbone``, ``arch``, ``kind``. Any unknown value is
+    ``None``. ``kind`` is ``"pid_decoder"`` for a recognized PiD checkpoint
+    (see ``_is_pid_checkpoint``), else ``"autoencoder"``.
     """
+    pid_path = _is_pid_checkpoint(path)
+    if pid_path is not None:
+        # A .pth checkpoint has no config.json for `_vae_config_dir` to find, and
+        # no component-registry entry — handle it as its own kind rather than
+        # falling through to the (empty) registry-scan path below. PiD's SDXL
+        # distilled variant is hardcoded 4-ch/sdxl-only for v1 (see design doc §6).
+        return {
+            "arch": "sdxl",
+            "latent_channels": 4,
+            "vae_class": None,
+            "scale_spatial": None,
+            "scale_temporal": None,
+            "latent_ndim": 4,
+            "is_video": False,
+            "present": True,
+            "has_backbone": False,
+            "kind": "pid_decoder",
+        }
+
     rec = _get_or_scan(path, source_type)
     comps = rec.get("components") or {}
     vcomp = comps.get("vae") or {}
@@ -146,6 +190,7 @@ def describe_vae(path: str, source_type: Optional[str] = None) -> Dict[str, Any]
         "is_video": is_video,
         "present": present,
         "has_backbone": bool(bb.get("kind")),
+        "kind": "autoencoder",
     }
 
 
@@ -218,7 +263,25 @@ def _friendly_component_name(path: str) -> str:
 def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Return a VAE candidate descriptor, or None when ``path`` is not a
     standalone VAE (a diffusers vae/ dir OR a model whose registry record has a
-    VAE present and no backbone)."""
+    VAE present and no backbone) and not a recognized PiD checkpoint.
+
+    The descriptor includes a ``"kind"`` field: ``"pid_decoder"`` for a PiD
+    (Pixel Diffusion Decoder) ``.pth`` checkpoint (see ``_is_pid_checkpoint``),
+    else ``"autoencoder"`` for a normal VAE.
+    """
+    pid_pth = _is_pid_checkpoint(path)
+    if pid_pth is not None:
+        return {
+            "name": _friendly_component_name(pid_pth),
+            "path": path,
+            "arch": "sdxl",
+            "latent_channels": 4,
+            "vae_class": None,
+            "scale_spatial": None,
+            "scale_temporal": None,
+            "kind": "pid_decoder",
+        }
+
     d = describe_vae(path, source_type)
     is_standalone = _vae_config_dir(path) is not None
     if not (is_standalone or (d["present"] and not d["has_backbone"])):
@@ -232,6 +295,7 @@ def classify_vae_candidate(path: str, source_type: Optional[str] = None) -> Opti
         "vae_class": d["vae_class"],
         "scale_spatial": d["scale_spatial"],
         "scale_temporal": d["scale_temporal"],
+        "kind": "autoencoder",
     }
 
 
@@ -266,6 +330,31 @@ def _warn(message: str, code: str) -> None:
 
 def _check_vae_compat(loaded: Dict[str, Any], cand: Dict[str, Any]) -> None:
     """HARD -> ValidationError with both concrete dims; softer -> add_warning."""
+    if cand.get("kind") == "pid_decoder":
+        # PiD decoder override (F6/§6): SDXL-only for v1. Check ONLY the LOADED
+        # model's arch/latent_channels against what this checkpoint variant
+        # requires — vae_class/scale_spatial/scale_temporal comparisons are
+        # skipped entirely (PiD is not an AutoencoderKL-family swap, so those
+        # fields are meaningless for it; `cand`'s own arch/latent_channels are
+        # hardcoded "sdxl"/4 by `classify_vae_candidate` and always compatible
+        # with themselves).
+        hard = []
+        loaded_arch = loaded.get("arch")
+        if loaded_arch and loaded_arch != "sdxl":
+            hard.append(f"arch: PiD decoder is SDXL-only, loaded model arch={loaded_arch}")
+        lc_l = loaded.get("latent_channels")
+        if lc_l is not None and lc_l != 4:
+            hard.append(f"latent_channels: loaded model VAE={lc_l}, PiD decoder requires 4 (SDXL)")
+        if hard:
+            raise ValidationError(
+                "PiD decoder override is incompatible with the loaded model",
+                detail="; ".join(hard),
+            )
+        if loaded_arch is None:
+            _warn("PiD decoder override applied with an unverified property: loaded model arch is unknown",
+                  code="vae_override_warning")
+        return
+
     hard = []
     warns = []
 
@@ -359,13 +448,15 @@ def check_override_compat(pipeline_manager, apply_vae_path: Optional[str],
 # ---------------------------------------------------------------------------
 
 def plan_overrides(pipeline_manager, vae_path: Optional[str],
-                   text_encoder_path: Optional[str]) -> Dict[str, Optional[str]]:
+                   text_encoder_path: Optional[str]) -> Dict[str, Any]:
     """Decide which overrides to apply (arch gating) and run the compat gate.
 
-    Returns a plan ``{"vae": path|None, "te": path|None}``. A requested override
-    on an arch that does not support it is dropped from the plan (the caller's
+    Returns a plan ``{"vae": path|None, "te": path|None, "vae_kind":
+    "pid_decoder"|"autoencoder"|None}``. A requested override on an arch that
+    does not support it is dropped from the plan (the caller's
     ``check_arch_capabilities`` emits the accepted-but-ignored warning). Raises
-    ValidationError on a HARD incompatibility. Call BEFORE ``start_generation``.
+    ValidationError on a HARD incompatibility (including a PiD decoder override
+    requested against a non-SDXL model). Call BEFORE ``start_generation``.
     """
     from api.arch_capabilities import arch_supports_feature
     arch = (getattr(pipeline_manager, "current_model_info", None) or {}).get("type")
@@ -373,13 +464,28 @@ def plan_overrides(pipeline_manager, vae_path: Optional[str],
     av = vae_path if (vae_path and arch_supports_feature(arch, "vae_override")) else None
     at = text_encoder_path if (text_encoder_path and arch_supports_feature(arch, "te_override")) else None
 
+    vae_kind = describe_vae(av).get("kind") if av else None
+
     if av or at:
         check_override_compat(pipeline_manager, av, at)
-    return {"vae": av, "te": at}
+    return {"vae": av, "te": at, "vae_kind": vae_kind}
 
 
-def apply_overrides(pipeline_manager, plan: Dict[str, Optional[str]]) -> Dict[str, Any]:
+def apply_overrides(
+    pipeline_manager,
+    plan: Dict[str, Any],
+    pid_sr_output: str = "4x",
+    pid_use_gemma: bool = False,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
     """Apply (or restore, when a slot is None) the planned overrides.
+
+    ``pid_sr_output``/``pid_use_gemma`` only matter when ``plan["vae_kind"] ==
+    "pid_decoder"`` (ignored otherwise). ``prompt`` is forwarded to the active
+    ``PidVaeWrapper`` (via ``pipeline_manager.set_pid_prompt``) only when
+    ``pid_use_gemma`` is set — the wrapper's opt-in runtime Gemma captioner
+    needs the raw text prompt, which is not otherwise available at PiD's
+    Stage-3 decode call site (those sites only see pre-computed embeddings).
 
     Returns a metadata dict to fold into the generation params for the DB.
     Never raises: an apply failure degrades to a warning so generation can
@@ -388,7 +494,12 @@ def apply_overrides(pipeline_manager, plan: Dict[str, Optional[str]]) -> Dict[st
     meta: Dict[str, Any] = {}
 
     try:
-        pipeline_manager.load_override_vae(plan.get("vae"))
+        pipeline_manager.load_override_vae(
+            plan.get("vae"),
+            override_kind=plan.get("vae_kind"),
+            pid_sr_output=pid_sr_output,
+            pid_use_gemma=pid_use_gemma,
+        )
     except Exception as e:
         _warn(f"VAE override could not be applied: {e}", code="vae_override_error")
 
@@ -404,6 +515,11 @@ def apply_overrides(pipeline_manager, plan: Dict[str, Optional[str]]) -> Dict[st
             src = plan["vae"]
         meta["vae_override_source"] = src
         meta["vae_override_path"] = plan["vae"]
+        if plan.get("vae_kind") == "pid_decoder" and pid_use_gemma and prompt:
+            try:
+                pipeline_manager.set_pid_prompt(prompt)
+            except Exception:
+                pass
     if plan.get("te"):
         meta["text_encoder_override_path"] = plan["te"]
     return meta

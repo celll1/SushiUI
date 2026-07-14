@@ -1066,44 +1066,75 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             return ("none", None)
         try:
             from core.models.common.vae_store import vae_identity
+            from core.models.pid.pid_vae_wrapper import PidVaeWrapper
             active = None
             for kind, container, key in self._vae_override_targets():
                 active = getattr(container, key) if kind == "attr" else container.get(key)
                 break
+            if isinstance(active, PidVaeWrapper):
+                return ("PiD SDXL decoder (pixel-diffusion super-resolution)", self._override_vae_path)
             src, path = vae_identity(active)
             return (src, path or self._override_vae_path)
         except Exception:
             return (self._override_vae_path, self._override_vae_path)
 
-    def load_override_vae(self, vae_path: Optional[str]):
+    def set_pid_prompt(self, prompt: Optional[str]) -> None:
+        """Forward the current generation's raw text prompt to an active
+        ``PidVaeWrapper`` (consulted only when ``pid_use_gemma=True``); a no-op
+        when no PiD override is active. Call once per generation, before the
+        sampling loop, so the wrapper has it ready for ``pid_final_decode``."""
+        try:
+            from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+        except Exception:
+            return
+        for kind, container, key in self._vae_override_targets():
+            active = getattr(container, key) if kind == "attr" else container.get(key)
+            if isinstance(active, PidVaeWrapper):
+                active.set_prompt(prompt)
+                return
+
+    def load_override_vae(
+        self,
+        vae_path: Optional[str],
+        override_kind: Optional[str] = None,
+        pid_sr_output: str = "4x",
+        pid_use_gemma: bool = False,
+    ):
         """Swap the model's VAE for the one at ``vae_path`` (idempotent).
 
         ``vae_path`` None/empty RESTORES the original VAE (kept in
         ``self._original_vae``) without a reload. The new VAE is loaded to CPU;
         the existing move_vae_to_gpu/cpu funnel stages it per generation.
+
+        ``override_kind`` (from ``generation_overrides.classify_vae_candidate``'s
+        ``"kind"`` field) selects the construction path: ``"pid_decoder"`` builds
+        a ``PidVaeWrapper`` around the currently-loaded model's OWN SDXL VAE
+        (reused by reference — no extra download/VRAM) plus the PiD ``.pth`` at
+        ``vae_path``; anything else (including ``None``, for backward
+        compatibility) is a normal ``AutoencoderKL``-family swap.
         """
+        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+
         if not vae_path:
             self._restore_override_vae()
             return
         if self._override_vae_path == vae_path:
+            # Idempotent on the path, but pid_sr_output/pid_use_gemma may have
+            # changed between generations on the SAME PiD checkpoint — update
+            # the live wrapper's flags in place rather than silently ignoring them.
+            if override_kind == "pid_decoder":
+                for _slot_kind, container, key in self._vae_override_targets():
+                    active = getattr(container, key) if _slot_kind == "attr" else container.get(key)
+                    if isinstance(active, PidVaeWrapper):
+                        active.pid_sr_output = pid_sr_output
+                        active.pid_use_gemma = pid_use_gemma
+                    break
             return  # idempotent — already applied
 
         targets = self._vae_override_targets()
         if not targets:
             print("[VAEOverride] No VAE slot on the loaded model; override skipped.")
             return
-
-        # Resolve the candidate VAE directory + class.
-        from api.generation_overrides import _vae_config_dir, _read_json
-        cfg_dir = _vae_config_dir(vae_path)
-        if cfg_dir is None:
-            raise ValueError(f"No loadable VAE config.json found under: {vae_path}")
-        cfg = _read_json(os.path.join(cfg_dir, "config.json")) or {}
-        class_name = cfg.get("_class_name") or "AutoencoderKL"
-        import diffusers
-        vae_cls = getattr(diffusers, class_name, None)
-        if vae_cls is None:
-            from diffusers import AutoencoderKL as vae_cls  # fallback
 
         # Snapshot the originals on the FIRST override so a later clear restores.
         if self._override_vae_path is None:
@@ -1112,16 +1143,38 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                                   else first_c.get(first_k))
             self._override_vae_targets = targets
 
-        # Match the original VAE's dtype so downstream device/dtype staging is a no-op.
-        dtype = None
-        try:
-            dtype = next(self._original_vae.parameters()).dtype
-        except Exception:
-            dtype = torch.float16
+        if override_kind == "pid_decoder":
+            print(f"[VAEOverride] Building PidVaeWrapper around the loaded model's own SDXL VAE "
+                  f"+ PiD checkpoint {vae_path} (pid_sr_output={pid_sr_output}, pid_use_gemma={pid_use_gemma})")
+            new_vae = PidVaeWrapper(
+                self._original_vae,
+                pid_pth_path=vae_path,
+                pid_sr_output=pid_sr_output,
+                pid_use_gemma=pid_use_gemma,
+            )
+        else:
+            # Resolve the candidate VAE directory + class.
+            from api.generation_overrides import _vae_config_dir, _read_json
+            cfg_dir = _vae_config_dir(vae_path)
+            if cfg_dir is None:
+                raise ValueError(f"No loadable VAE config.json found under: {vae_path}")
+            cfg = _read_json(os.path.join(cfg_dir, "config.json")) or {}
+            class_name = cfg.get("_class_name") or "AutoencoderKL"
+            import diffusers
+            vae_cls = getattr(diffusers, class_name, None)
+            if vae_cls is None:
+                from diffusers import AutoencoderKL as vae_cls  # fallback
 
-        print(f"[VAEOverride] Loading {class_name} from {cfg_dir} (dtype={dtype})")
-        new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
-        new_vae = new_vae.to("cpu")
+            # Match the original VAE's dtype so downstream device/dtype staging is a no-op.
+            dtype = None
+            try:
+                dtype = next(self._original_vae.parameters()).dtype
+            except Exception:
+                dtype = torch.float16
+
+            print(f"[VAEOverride] Loading {class_name} from {cfg_dir} (dtype={dtype})")
+            new_vae = vae_cls.from_pretrained(cfg_dir, torch_dtype=dtype)
+            new_vae = new_vae.to("cpu")
 
         for kind, container, key in targets:
             self._set_slot(kind, container, key, new_vae)
@@ -1133,6 +1186,13 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         print("[VAEOverride] Restoring original VAE.")
         for kind, container, key in self._override_vae_targets:
             try:
+                active = getattr(container, key) if kind == "attr" else container.get(key)
+                try:
+                    from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+                    if isinstance(active, PidVaeWrapper):
+                        active.unload()  # drop the cached PiD net (CPU+GPU) immediately
+                except Exception:
+                    pass
                 self._set_slot(kind, container, key, self._original_vae)
             except Exception as e:
                 print(f"[VAEOverride] restore slot failed: {e}")

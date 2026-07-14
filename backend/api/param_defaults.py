@@ -132,6 +132,18 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # except ltx2/minit2i; TE override supported on sd15/sdxl only.
     "vae_path": None,
     "text_encoder_path": None,
+    # PiD (Pixel Diffusion Decoder) VAE-override options — only consulted when
+    # vae_path points at a PiD checkpoint (kind="pid_decoder"; see
+    # api.generation_overrides.classify_vae_candidate); no effect otherwise.
+    # "4x" = PiD's native super-resolution output (latent_h/w * 8 * 4); PiD's
+    # sr_scale=4 is baked into the checkpoint so "original" still runs the full
+    # 4x decode and downscales afterward (NOT a cheaper mode).
+    "pid_sr_output": "4x",
+    # False (default) = use the shipped null-caption embedding (no runtime
+    # Gemma). True = load Efficient-Large-Model/gemma-2-2b-it (the ungated
+    # mirror PiD was trained against) once per generation and encode the real
+    # prompt for sharper, hallucination-reduced output (see phase 1b findings).
+    "pid_use_gemma": False,
     # SDXL micro-conditioning override (inference). original_size for time_ids:
     # explicit w/h (0 = auto), else output size * scale. crop stays (0,0).
     "original_size_w": 0,

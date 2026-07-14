@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, List, Callable, Union
 from PIL import Image
 import torch
 import json
@@ -1009,6 +1009,64 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             t_start = total_steps - actual_steps
 
         return total_steps, t_start, actual_steps
+
+    def _resize_latent(self, latent: torch.Tensor, latent_height: int, latent_width: int,
+                        resampling_method: str = "lanczos") -> torch.Tensor:
+        """Resize a latent tensor [B,C,H,W] to a target LATENT-space size.
+
+        Shared by img2img's "latent resize mode" (quality-preserving upscale via
+        a VAE round-trip: encode -> resize latent -> decode) and the
+        input_latent_id latent-passthrough path (loop-generation latent
+        upscale between steps, with NO VAE round-trip at all -- the cached
+        latent is resized directly and fed straight into the denoise loop).
+
+        Args:
+            latent: [B,C,H,W] latent tensor (any device/dtype).
+            latent_height, latent_width: Target size in LATENT space (i.e.
+                already pixel_size // 8, the VAE's downsample factor) -- NOT
+                pixel dimensions.
+            resampling_method: "lanczos" (scipy, CPU round-trip) | "nearest" |
+                "bilinear" | "bicubic" (torch.nn.functional.interpolate).
+
+        Returns:
+            Resized latent tensor, same device/dtype as the input.
+        """
+        if resampling_method == "lanczos":
+            # scipy for Lanczos (not available in PyTorch); scipy doesn't
+            # support float16, so round-trip through float32.
+            from scipy.ndimage import zoom
+            import numpy as np
+
+            original_dtype = latent.dtype
+            latent_np = latent.cpu().float().numpy()
+            batch, channels, h, w = latent_np.shape
+            zoom_h = latent_height / h
+            zoom_w = latent_width / w
+
+            resized_list = []
+            for b in range(batch):
+                resized_channels = []
+                for c in range(channels):
+                    resized_channel = zoom(latent_np[b, c], (zoom_h, zoom_w), order=3, mode='reflect')
+                    resized_channels.append(resized_channel)
+                resized_list.append(np.stack(resized_channels))
+
+            resized_np = np.stack(resized_list)
+            return torch.from_numpy(resized_np).to(device=latent.device, dtype=original_dtype)
+
+        import torch.nn.functional as F
+        torch_mode_map = {
+            "nearest": "nearest",
+            "bilinear": "bilinear",
+            "bicubic": "bicubic",
+        }
+        torch_mode = torch_mode_map.get(resampling_method, "bicubic")
+        return F.interpolate(
+            latent,
+            size=(latent_height, latent_width),
+            mode=torch_mode,
+            align_corners=False if torch_mode != "nearest" else None,
+        )
 
     def load_vision_encoder(self, safetensors_path: str):
         """Load (or reload) the SigLIP2 vision encoder from a safetensors file."""
@@ -2391,7 +2449,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/aud2aud.",
         )
 
-    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Image.Image, int, int]:
+    def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
         """Generate image from text
 
         Args:
@@ -2400,7 +2458,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             step_callback: New style callback for step-based control (pipe, step, timestep, callback_kwargs)
 
         Returns:
-            tuple: (image, actual_seed, actual_ancestral_seed)
+            tuple: (image, actual_seed, actual_ancestral_seed). `image` is a raw
+            torch.Tensor (the pre-unscale final latent) instead of a PIL.Image
+            when params["loop_decode"] == "none" (SD1.5/SDXL legacy path only,
+            see custom_sampling_loop's Stage-3 site) -- callers must check
+            isinstance(image, Image.Image) before treating it as a decoded image.
         """
         # VAE tiling flag for this request (read by all decode paths, incl. the
         # per-architecture handlers dispatched just below).
@@ -3007,6 +3069,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 fbcache_threshold=params.get("fbcache_threshold", 0.12),
                 fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
                 fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
+                loop_decode=params.get("loop_decode", "full"),
                 **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -3087,18 +3150,24 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             gc.collect()
             torch.cuda.empty_cache()
 
-        # Apply extensions after generation
-        for ext in self.extensions:
-            if ext.enabled:
-                image = ext.process_after_generation(image, params)
+        # Apply extensions after generation -- skipped when loop_decode="none"
+        # returned a raw latent tensor instead of a decoded image (nothing to
+        # post-process; the next loop step's img2img denoise runs on it instead).
+        if isinstance(image, Image.Image):
+            for ext in self.extensions:
+                if ext.enabled:
+                    image = ext.process_after_generation(image, params)
 
         return image, actual_seed, actual_ancestral_seed
 
-    def generate_img2img(self, params: Dict[str, Any], init_image: Image.Image, progress_callback=None, step_callback=None) -> tuple[Image.Image, int]:
+    def generate_img2img(self, params: Dict[str, Any], init_image: Optional[Image.Image] = None, progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
         """Generate image from image
 
         Returns:
-            tuple: (image, actual_seed)
+            tuple: (image, actual_seed, actual_ancestral_seed). `image` is a raw
+            torch.Tensor (pre-unscale final latent) instead of a PIL.Image when
+            params["loop_decode"] == "none" (SD1.5/SDXL legacy path only) --
+            see generate_txt2img's docstring for the same contract.
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
@@ -3108,6 +3177,24 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._flatten_in_loop_last_steps = int(params.get("flatten_in_loop_last_steps", 3) or 3)
         self._flatten_in_loop_min_region = float(params.get("flatten_in_loop_min_region", 0.02) or 0.02)
         self._vae_drift_correction = bool(params.get("vae_drift_correction", False))
+
+        # Loop-generation latent passthrough (input_latent_id) is only wired
+        # into the legacy SD1.5/SDXL path below (custom_img2img_sampling_loop's
+        # init_latents_override). Refuse it up front for every other
+        # architecture rather than dispatching into a handler that expects a
+        # real PIL image and would fail deep inside with a confusing error.
+        if params.get("input_latent_id") and (
+            self.is_zimage_model or self.is_flux2_model or self.is_anima_model
+            or self.is_lens_model or self.is_ideogram4_model or self.is_minit2i_model
+            or self.is_krea2_model or self.is_ltx2_model
+        ):
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "input_latent_id (loop latent passthrough) is only supported for SD1.5/SDXL models",
+                detail="The currently loaded model architecture does not support latent-passthrough "
+                       "img2img; upload an image instead, or use loop_decode='cheap' for lower-cost "
+                       "intermediate loop steps.",
+            )
 
         # Z-Image handling
         if self.is_zimage_model:
@@ -3242,8 +3329,46 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             target_height = round(target_height / 8) * 8
             params["height"] = target_height
 
+        # Loop-generation latent passthrough: resolve input_latent_id (if any)
+        # to a cached latent BEFORE the normal image-resize logic below, since
+        # it replaces the input image entirely -- see custom_img2img_sampling_loop's
+        # init_latents_override and this module's _resize_latent helper.
+        from api.error_handlers import ValidationError
+        _input_latent_id = params.get("input_latent_id")
+        init_latents_override = None
+        if _input_latent_id:
+            from core.inference.latent_cache import get_latent
+            _cached = get_latent(_input_latent_id)
+            if _cached is None:
+                raise ValidationError(
+                    "Input latent expired or not found; restart the loop",
+                    detail=f"latent_id={_input_latent_id}",
+                )
+            _cached_latent, _cached_meta = _cached
+            _target_lat_h = (target_height or settings.default_height) // 8
+            _target_lat_w = (target_width or settings.default_width) // 8
+            if _cached_latent.shape[-2:] != (_target_lat_h, _target_lat_w):
+                print(f"[img2img] Latent passthrough: resizing cached latent "
+                      f"{_cached_latent.shape[-1]}x{_cached_latent.shape[-2]} -> "
+                      f"{_target_lat_w}x{_target_lat_h} ({resampling_method})")
+                _cached_latent = self._resize_latent(_cached_latent, _target_lat_h, _target_lat_w, resampling_method)
+            init_latents_override = _cached_latent
+
+        if init_image is None:
+            if init_latents_override is None:
+                raise ValidationError("img2img requires either an input image or input_latent_id")
+            # Size-only placeholder: its pixels are never read (init_latents_override
+            # feeds custom_img2img_sampling_loop directly) -- matching its size to
+            # the target makes every init_image.size-driven block below (resize
+            # blocks, style-transfer width/height, ...) a correct no-op/no-encode.
+            init_image = Image.new("RGB", (
+                target_width or settings.default_width,
+                target_height or settings.default_height,
+            ))
+
         # Resize input image if width/height are specified and mode is "image"
-        if target_width and target_height and resize_mode == "image":
+        # (never applies to latent passthrough -- see the latent resize above).
+        if target_width and target_height and resize_mode == "image" and init_latents_override is None:
             if init_image.size != (target_width, target_height):
                 print(f"Resizing input image from {init_image.size} to {target_width}x{target_height} using {resampling_method}")
 
@@ -3417,13 +3542,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # ===== STAGE 2: U-NET INFERENCE (after VAE operations) =====
         # Note: For img2img, we need VAE first for initial latent encoding
 
-        # Handle latent resize mode by encoding, resizing latent, then decoding
-        if resize_mode == "latent" and target_width and target_height:
+        # Handle latent resize mode by encoding, resizing latent, then decoding.
+        # Never applies to latent passthrough (init_latents_override is resized
+        # directly, with no VAE round-trip at all -- see above).
+        if resize_mode == "latent" and target_width and target_height and init_latents_override is None:
             if init_image.size != (target_width, target_height):
                 print(f"Using latent resize mode: {init_image.size} -> {target_width}x{target_height} with {resampling_method}")
-
-                # Encode image to latent space
-                import torch.nn.functional as F
 
                 # Move VAE to GPU for latent resize encoding/decoding
                 move_vae_to_gpu(pipeline_to_use)
@@ -3441,50 +3565,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 latent_height = target_height // 8
                 latent_width = target_width // 8
 
-                # Resize latent with selected resampling method
-                if resampling_method == "lanczos":
-                    # Use scipy for Lanczos (not available in PyTorch)
-                    from scipy.ndimage import zoom
-                    import numpy as np
-
-                    # Convert to numpy for scipy processing
-                    # scipy doesn't support float16, so convert to float32
-                    original_dtype = latent.dtype
-                    latent_np = latent.cpu().float().numpy()  # Convert to float32
-                    batch, channels, h, w = latent_np.shape
-
-                    # Calculate zoom factors
-                    zoom_h = latent_height / h
-                    zoom_w = latent_width / w
-
-                    # Apply Lanczos resampling (order=3 for Lanczos-3)
-                    resized_list = []
-                    for b in range(batch):
-                        resized_channels = []
-                        for c in range(channels):
-                            # zoom with Lanczos kernel (order=3)
-                            resized_channel = zoom(latent_np[b, c], (zoom_h, zoom_w), order=3, mode='reflect')
-                            resized_channels.append(resized_channel)
-                        resized_list.append(np.stack(resized_channels))
-
-                    resized_np = np.stack(resized_list)
-                    # Convert back to original dtype
-                    resized_latent = torch.from_numpy(resized_np).to(device=latent.device, dtype=original_dtype)
-                else:
-                    # Use PyTorch's built-in interpolation
-                    torch_mode_map = {
-                        "nearest": "nearest",
-                        "bilinear": "bilinear",
-                        "bicubic": "bicubic",
-                    }
-                    torch_mode = torch_mode_map.get(resampling_method, "bicubic")
-
-                    resized_latent = F.interpolate(
-                        latent,
-                        size=(latent_height, latent_width),
-                        mode=torch_mode,
-                        align_corners=False if torch_mode != "nearest" else None
-                    )
+                resized_latent = self._resize_latent(latent, latent_height, latent_width, resampling_method)
 
                 # Decode latent back to image
                 with torch.no_grad():
@@ -3728,6 +3809,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 fbcache_threshold=params.get("fbcache_threshold", 0.12),
                 fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
                 fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
+                loop_decode=params.get("loop_decode", "full"),
+                init_latents_override=init_latents_override,
                 **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -3803,10 +3886,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             gc.collect()
             torch.cuda.empty_cache()
 
-        # Apply extensions after generation
-        for ext in self.extensions:
-            if ext.enabled:
-                image = ext.process_after_generation(image, params)
+        # Apply extensions after generation -- skipped when loop_decode="none"
+        # returned a raw latent tensor instead of a decoded image.
+        if isinstance(image, Image.Image):
+            for ext in self.extensions:
+                if ext.enabled:
+                    image = ext.process_after_generation(image, params)
 
         return image, actual_seed, actual_ancestral_seed
 
@@ -3817,11 +3902,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         mask_image: Image.Image,
         progress_callback=None,
         step_callback=None
-    ) -> tuple[Image.Image, int]:
+    ) -> tuple[Image.Image, int, int]:
         """Generate inpainted image
 
         Returns:
-            tuple: (image, actual_seed)
+            tuple: (image, actual_seed, actual_ancestral_seed). Unlike
+            generate_txt2img/generate_img2img, `image` here is ALWAYS a decoded
+            PIL.Image -- loop_decode="none" (latent passthrough) is not
+            supported for inpaint (see the guard below) because its
+            pixel-space mask compositing needs a decoded image.
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
@@ -3831,6 +3920,26 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._flatten_in_loop_last_steps = int(params.get("flatten_in_loop_last_steps", 3) or 3)
         self._flatten_in_loop_min_region = float(params.get("flatten_in_loop_min_region", 0.02) or 0.02)
         self._vae_drift_correction = bool(params.get("vae_drift_correction", False))
+
+        # Loop-generation latent passthrough is NOT supported for inpaint:
+        # pixel-space mask compositing (blending the generated region back
+        # into the original image) needs a decoded image, so there is no
+        # correct latent to hand back. routes.py already rejects both of
+        # these up front; this is defense-in-depth for any other caller.
+        if params.get("input_latent_id"):
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "input_latent_id (loop latent passthrough) is not supported for inpaint",
+                detail="Inpaint's mask compositing requires a real source image. "
+                       "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
+            )
+        if params.get("loop_decode", "full") == "none":
+            from api.error_handlers import ValidationError
+            raise ValidationError(
+                "loop_decode='none' is not supported for inpaint",
+                detail="Inpaint's mask compositing requires a decoded image. "
+                       "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
+            )
 
         # Z-Image inpaint support
         if self.is_zimage_model:
@@ -4309,6 +4418,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             fbcache_threshold=params.get("fbcache_threshold", 0.12),
             fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
             fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
+            loop_decode=params.get("loop_decode", "full"),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)

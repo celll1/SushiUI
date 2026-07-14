@@ -2061,14 +2061,38 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
           // Latent passthrough chaining (decodeMode "final-only", resize_mode
           // "latent"): no decoded image exists for this step — chain the next
           // loop step via the cached latent_id instead of an image URL. Skip
-          // TIPO-prompt/ControlNet/scale-recompute below, all of which need a
-          // decoded image (ControlNet-conditioned steps always force
-          // resize_mode="image" at enqueue time, so they never land here).
+          // TIPO-prompt/ControlNet-recompute below (both need a decoded image;
+          // ControlNet-conditioned steps always force resize_mode="image" at
+          // enqueue time, so they never land here).
           console.log(`[Img2Img] Updating loop step ${nextLoopStepIndex} with cached latent:`, result.latent_id);
           updateQueueItemByLoop(nextItem.loopGroupId, nextLoopStepIndex, {
             inputLatentId: result.latent_id,
             inputImage: undefined,
           });
+
+          // Scale-mode compounding: there's no decoded image to measure, but
+          // this step's OWN target width/height (nextItem.params) is already
+          // known — the next step's scale must compound off THAT, not off the
+          // constant mainParams size baked in at enqueue time (addLoopStepsToQueueImmediate
+          // computes every step's initial width/height from mainParams, so
+          // without this recompute a chain of scale steps would never compound).
+          const enabledStepsForScale = loopGenerationConfig.steps.filter(step => step.enabled);
+          const nextStepConfig = enabledStepsForScale[nextLoopStepIndex];
+          const currentWidth = nextItem.params.width;
+          const currentHeight = nextItem.params.height;
+          if (nextStepConfig && nextStepConfig.sizeMode === "scale" && currentWidth && currentHeight) {
+            const scale = nextStepConfig.scale || 1.0;
+            const scaledWidth = Math.round(currentWidth * scale);
+            const scaledHeight = Math.round(currentHeight * scale);
+            console.log(`[Img2Img] Scale mode (latent passthrough): ${currentWidth}x${currentHeight} * ${scale} = ${scaledWidth}x${scaledHeight}`);
+            updateQueueItemByLoop(nextItem.loopGroupId!, nextLoopStepIndex, (item) => ({
+              params: {
+                ...item.params,
+                width: scaledWidth,
+                height: scaledHeight,
+              } as any,
+            }));
+          }
         } else {
         // Update input image first
         console.log(`[Img2Img] Updating loop step ${nextLoopStepIndex} with input image:`, imageUrl);

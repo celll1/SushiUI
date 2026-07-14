@@ -2234,16 +2234,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
     def generate_aud2aud(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):
-        """Generate a cover (audio-to-audio) from a reference clip + text conditioning
-        (ACE-Step 1.5 only). Repaint (inpaint analog) is not supported -- see
-        `AceStepMixin._generate_aud2aud_acestep` docstring.
+        """Generate a cover OR repaint (audio-to-audio) from a reference clip
+        + text conditioning (ACE-Step 1.5 only). See
+        `AceStepMixin._generate_aud2aud_acestep` docstring for the full
+        mode contract.
 
         Args:
-            params: Generation parameters -- caption/prompt, lyrics,
-                cover_strength, seed, inference_steps, guidance_scale, shift,
+            params: Generation parameters -- caption/prompt, lyrics, mode
+                ("cover"|"repaint", default "cover"), cover_strength (cover
+                only), repaint_start/repaint_end (seconds, repaint only),
+                seed, inference_steps, guidance_scale, shift,
                 vocal_language/bpm/key_scale/time_signature.
             reference_audio: a file path (str) or raw audio bytes for the
-                cover reference clip.
+                cover/repaint reference clip.
             progress_callback: Called as (step, total_steps).
             step_callback: Reserved (unused for ACE-Step aud2aud).
 

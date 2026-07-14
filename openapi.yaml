@@ -399,30 +399,43 @@ paths:
   /generate/aud2aud:
     post:
       tags: [generation]
-      summary: Generate a cover (audio-to-audio) from a reference clip (ACE-Step 1.5)
+      summary: Generate a cover or repaint (audio-to-audio) from a reference clip (ACE-Step 1.5)
       description: |
-        Audio-to-audio COVER generation using a loaded ACE-Step 1.5 (turbo)
-        model -- the img2img analog for audio. The uploaded reference clip is
-        VAE-encoded and fed back to the model as the cover context
-        (`is_covers=true`); the reference is re-rendered under the new
-        `prompt`/`lyrics`. Produces a lossless FLAC file and a gallery row.
+        Audio-to-audio generation using a loaded ACE-Step 1.5 (turbo) model,
+        with two sub-modes selected by `mode`:
+
+        - `mode=cover` (default, the img2img analog): the uploaded reference
+          clip is VAE-encoded and fed back to the model as the cover context
+          (`is_covers=true`); the WHOLE reference is re-rendered under the
+          new `prompt`/`lyrics`.
+        - `mode=repaint` (the inpaint analog): only the `[repaint_start,
+          repaint_end)` seconds window of the reference is regenerated under
+          the new `prompt`/`lyrics`; everything outside that window is held
+          to the (correctly re-noised) reference during sampling and the
+          original reference waveform is spliced back in after decoding
+          (with a short crossfade at the boundaries), so only the
+          repainted region actually changes.
+
+        Produces a lossless FLAC file and a gallery row in both modes.
 
         **Requirements:**
         - An ACE-Step model must be loaded (otherwise 400).
         - Sent as multipart/form-data with the `reference_audio` file plus
-          the cover parameters as form fields.
+          the cover/repaint parameters as form fields.
 
         **Key parameters:**
-        - `prompt`: caption text the reference is re-rendered under.
-        - `cover_strength`: fraction of steps that keep the reference's
-          semantic context (step-count blend, NOT an img2img
+        - `prompt`: caption text the reference (or repainted region) is
+          rendered under.
+        - `mode`: `cover` or `repaint`.
+        - `cover_strength` (cover only): fraction of steps that keep the
+          reference's semantic context (step-count blend, NOT an img2img
           start-timestep/partial-denoise knob). Higher = closer to the
           reference.
-        - Output duration is derived from the reference clip's length, not
-          user-supplied.
-
-        **Not supported:** repaint (inpaint analog) -- the vendored model
-        has no repaint kwargs; only cover is available.
+        - `repaint_start` / `repaint_end` (repaint only, required, seconds):
+          the time range to regenerate. Must satisfy `repaint_end >
+          repaint_start` (otherwise 400).
+        - Output duration is always derived from the reference clip's
+          length, not user-supplied.
 
         **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
         is CFG-distilled; a non-default value is overridden back to 1.0),
@@ -5553,8 +5566,26 @@ components:
           default: 1.0
           minimum: 0.0
           maximum: 1.0
-          description: "Fraction of denoising steps that keep the reference audio's semantic context before switching to a text2music-style (silence) context built from the same caption/lyrics. This is a step-count blend, NOT an img2img start-timestep/partial-denoise knob; xt always starts from full noise and runs every step. Higher = closer to the reference."
+          description: "Cover mode only. Fraction of denoising steps that keep the reference audio's semantic context before switching to a text2music-style (silence) context built from the same caption/lyrics. This is a step-count blend, NOT an img2img start-timestep/partial-denoise knob; xt always starts from full noise and runs every step. Higher = closer to the reference."
           example: 1.0
+        mode:
+          type: string
+          enum: [cover, repaint]
+          default: cover
+          description: "Sub-mode. `cover` (img2img analog) re-renders the whole reference under the new caption/lyrics. `repaint` (inpaint analog) regenerates only [repaint_start, repaint_end) seconds of the reference, keeping the rest (approximately) unchanged."
+          example: cover
+        repaint_start:
+          type: number
+          default: 0.0
+          minimum: 0.0
+          description: "Repaint mode only. Start of the region to regenerate, in seconds. Required (with repaint_end) when mode=repaint."
+          example: 4.0
+        repaint_end:
+          type: number
+          default: 0.0
+          minimum: 0.0
+          description: "Repaint mode only. End of the region to regenerate, in seconds. Must be greater than repaint_start (otherwise 400)."
+          example: 7.0
         vocal_language:
           type: string
           default: "en"
@@ -5571,7 +5602,7 @@ components:
         reference_audio:
           type: string
           format: binary
-          description: "Reference audio clip (multipart file upload) used as the cover source. VAE-encoded and fed back to the model as the cover context (is_covers=true). Output duration is derived from this clip's length, not user-supplied."
+          description: "Reference audio clip (multipart file upload) used as the cover/repaint source. VAE-encoded and fed back to the model as conditioning (is_covers=true for cover mode, false for repaint mode). Output duration is derived from this clip's length, not user-supplied."
 
     Img2ImgRequest:
       allOf:

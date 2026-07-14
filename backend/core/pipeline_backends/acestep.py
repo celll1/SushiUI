@@ -919,6 +919,14 @@ class AceStepMixin:
                     infer_method=infer_method,
                     shift=shift,
                     timesteps=custom_timesteps,
+                    # DCW (Differential Correction in Wavelet domain) defaults to
+                    # ON (dcw_enabled=True, scaler=0.05) in the newer vendored
+                    # generate_audio. pytorch_wavelets is not an installed
+                    # dependency, so DCW would otherwise silently no-op after a
+                    # per-process warning log; disable it explicitly to keep
+                    # txt2aud behavior identical to the pre-re-vendor model
+                    # (which had no DCW code path at all) with no warning noise.
+                    dcw_enabled=False,
                 )
             pred_latents = outputs["target_latents"]  # [1, T, 64]
         finally:
@@ -1177,6 +1185,12 @@ class AceStepMixin:
                     # Harmless to always pass (unused at strength==1.0).
                     non_cover_text_hidden_states=text_hidden_states,
                     non_cover_text_attention_mask=text_attention_mask,
+                    # See the txt2aud call site for why this is explicit: DCW
+                    # defaults to ON in the newer vendored generate_audio, but
+                    # pytorch_wavelets isn't an installed dependency -- disable
+                    # explicitly to keep cover behavior identical to pre-re-vendor
+                    # (no DCW code path existed before) with no warning noise.
+                    dcw_enabled=False,
                 )
             pred_latents = outputs["target_latents"]  # [1, T, 64]
         finally:

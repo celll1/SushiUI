@@ -23,6 +23,7 @@ einx>=0.4.3  # tensor-op dependency of vector_quantize_pytorch
 frozendict>=2.4.7  # dependency of vector_quantize_pytorch
 soundfile>=0.12.1  # primary FLAC writer + aud2aud reference-audio loader (ACE-Step); libsndfile, no torchcodec needed
 torchaudio>=2.1.0  # aud2aud reference-audio load/resample fallback (ACE-Step); note: 2.x .save(flac) needs torchcodec, so ffmpeg is the reliable FLAC fallback
+loguru>=0.7.0  # logging dep of the vendored ACE-Step turbo DiT (DCW correction module, imported unconditionally)
 
 # Image Processing
 Pillow>=10.2.0

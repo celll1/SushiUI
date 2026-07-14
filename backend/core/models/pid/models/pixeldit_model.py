@@ -120,6 +120,17 @@ class PixelDiTModelConfig:
     # Format: {"base_shift": float, "base_image_size_for_shift_calc": int}
     dynamic_shift: dict | None = None
 
+    # Initial device for `self.net` at construction time (SushiUI addition, not
+    # present upstream — upstream's __init__ hardcodes "cuda" unconditionally,
+    # which is exactly the "F3" VRAM-staging gap the Phase-2 wrapper closes:
+    # `core.models.pid.pid_vae_wrapper.PidVaeWrapper` builds the PiD net lazily
+    # on "cpu" and only stages it to "cuda" for the duration of a decode. `net`
+    # is a plain nn.Module (PidNet/PixDiT_T2I) — it allocates on CPU by default
+    # regardless of this value; only the `.to(device=init_device, ...)` call
+    # below actually touches the GPU, so init_device="cpu" means construction
+    # never allocates any CUDA memory.
+    init_device: str = "cuda"
+
 
 # =============================================================================
 # Text encoder helper
@@ -207,7 +218,7 @@ class PixelDiTModel(torch.nn.Module):
         # — e.g. the initial noise — that flow into autocast-eligible ops).
         with misc.timer("PixelDiTModel: build_net"):
             self.net = config.net
-            self.net = self.net.to(device="cuda", dtype=torch.bfloat16)
+            self.net = self.net.to(device=config.init_device, dtype=torch.bfloat16)
             self.net.requires_grad_(True)
             if hasattr(self.net, "init_weights"):
                 self.net.init_weights()

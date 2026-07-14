@@ -1878,7 +1878,17 @@ def custom_sampling_loop(
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = pipeline.vae.decode(latents, return_dict=True).sample
+        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+        if isinstance(pipeline.vae, PidVaeWrapper):
+            # PiD (Pixel Diffusion Decoder) override: run the SDXL 4-step
+            # distilled decoder instead of a plain VAE decode. `latents` here is
+            # the SAME already-unscaled tensor a plain decode would receive —
+            # the wrapper re-normalizes it back into PiD's training frame
+            # internally (F1, see pid_vae_wrapper.py's module docstring).
+            _pid_seed = generator.initial_seed() if generator is not None else 0
+            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed).sample
+        else:
+            image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Free GPU latents before VAE offload
     del latents
@@ -2996,14 +3006,26 @@ def custom_img2img_sampling_loop(
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = pipeline.vae.decode(latents, return_dict=True).sample
+        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+        _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
+        if _pid_active:
+            # PiD override: see custom_sampling_loop's Stage-3 site for the
+            # F1/F2 rationale (`latents` is already the pre-unscaled tensor
+            # the wrapper re-normalizes internally).
+            _pid_seed = generator.initial_seed() if generator is not None else 0
+            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed).sample
+        else:
+            image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Free GPU latents before VAE offload
     del latents
 
     # VAE DC-drift correction (one extra reference decode, VAE still on GPU).
+    # PiD has no encoder-based drift-correction path (accepted but not applied,
+    # same "accepted but not applied" pattern as the DiT archs — see
+    # arch_capabilities.py's vae_drift_correction entries).
     _dc_bias = None
-    if vae_drift_correction:
+    if vae_drift_correction and not _pid_active:
         _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
 
     # Offload VAE to CPU after decoding
@@ -4181,14 +4203,24 @@ def custom_inpaint_sampling_loop(
     # Convert latents to VAE dtype (important for fp16 VAE with fp32 latents)
     latents = latents.to(dtype=pipeline.vae.dtype)
     with torch.no_grad():
-        image = pipeline.vae.decode(latents, return_dict=True).sample
+        from core.models.pid.pid_vae_wrapper import PidVaeWrapper
+        _pid_active = isinstance(pipeline.vae, PidVaeWrapper)
+        if _pid_active:
+            # PiD override: see custom_sampling_loop's Stage-3 site for the
+            # F1/F2 rationale (`latents` is already the pre-unscaled tensor
+            # the wrapper re-normalizes internally).
+            _pid_seed = generator.initial_seed() if generator is not None else 0
+            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed).sample
+        else:
+            image = pipeline.vae.decode(latents, return_dict=True).sample
 
     # Free GPU latents before VAE offload
     del latents
 
     # VAE DC-drift correction (one extra reference decode, VAE still on GPU).
+    # PiD has no encoder-based drift-correction path (accepted but not applied).
     _dc_bias = None
-    if vae_drift_correction:
+    if vae_drift_correction and not _pid_active:
         _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
 
     # Offload VAE to CPU after decoding

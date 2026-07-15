@@ -4567,6 +4567,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             region_prompt_strength=region_prompt_strength,
             region_prompt_method=region_prompt_method,
             region_mask_feather=region_mask_feather,
+            seam_structure_strength=params.get("seam_structure_strength", 0.0),
+            seam_structure_depth=params.get("seam_structure_depth", 6.0),
+            seam_structure_end=params.get("seam_structure_end", 0.70),
+            seam_structure_saliency=params.get("seam_structure_saliency", 2.0),
+            seam_structure_max_area=params.get("seam_structure_max_area", 0.25),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)

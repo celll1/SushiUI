@@ -8,6 +8,7 @@ This module provides a custom sampling loop that allows:
 Based on diffusers' pipeline implementation but with added flexibility.
 """
 
+import os
 import torch
 
 
@@ -971,6 +972,234 @@ def _outpaint_apply_boundary_color(
     """
     current_lowfreq = _outpaint_gaussian_lowpass(x0, kappa=kappa)
     return x0 + strength * collar_weight * (target_lowfreq - current_lowfreq)
+
+
+# ============================================================================
+# SEAM STRUCTURE CONTINUITY (SSC) -- scratchpad/structure_continuity_synthesis.md
+# (fable + codex CONVERGED design). Make thin structures that cross the region
+# boundary (rod/staff, limb, torso, architectural lines) CONTINUE into the
+# generated region, fixing the confirmed cause of the localized break: the
+# posterior p(x_gen | K) is MULTI-MODAL at the ~10% of boundary positions
+# carrying band-pass structure ("continue the rod" vs "omit it") and nothing in
+# B1/B2/B3 breaks the tie. Mechanism: detect the oriented structures crossing
+# the boundary in the known latent K (structure tensor), affine-extrapolate
+# their BAND-PASS cross-section into a shallow generate-side collar, and pull
+# the model's per-step x0 toward that target -- SALIENCY-GATED so it only fires
+# where a real crossing structure touches the boundary. x0-space closed-form
+# proximal (no extra U-Net forward), known region bit-exact (the gate contains
+# the mask so the residual is identically 0 on keep cells). NOT a commit-timing
+# mechanism (that hypothesis was empirically refuted -- see
+# scratchpad/commit_timing_results.md).
+# ============================================================================
+def _ssc_precompute(
+    mask_latent: torch.Tensor,
+    image_latents: torch.Tensor,
+    depth: float = 6.0,
+    saliency: float = 2.0,
+    max_area: float = 0.25,
+) -> Optional[dict]:
+    """Precompute the STATIC Seam Structure Continuity state (once, before the
+    loop -- mask/K never change). Returns a dict of device tensors:
+      G      [1,1,h,w] gate (0 outside the salient generate-side collar; contains
+              the generate mask so it is 0 on every keep cell -> bit-exact)
+      E_bp   [1,C,h,w] band-pass of the affine structure-continuation target
+      DnuE_bp[1,C,h,w] transverse (across-structure) derivative of E_bp
+      grid_plus/grid_minus [1,h,w,2] sampling grids for the per-step transverse
+              derivative of the model's band-passed x0
+      warn   bool (the max_area safety cap tripped)
+    Returns None when there is no generate region, no keep region, or no salient
+    crossing structure at all (feature no-ops -> byte-identical).
+    """
+    from scipy import ndimage
+    import torch.nn.functional as F
+
+    M = mask_latent.detach().to(dtype=torch.float32, device="cpu").numpy()[0, 0]  # [h,w]
+    K = image_latents.detach().to(dtype=torch.float32, device="cpu").numpy()[0]    # [C,h,w]
+    C, h, w = K.shape
+    gen = M > 0.5
+    keep = ~gen
+    if gen.sum() == 0 or keep.sum() == 0:
+        return None
+
+    # --- geometry: distance into gen + nearest keep foot point + inward normal
+    d_gen, (fy, fx) = ndimage.distance_transform_edt(gen, return_indices=True)
+    d_keep = ndimage.distance_transform_edt(keep)
+    phi = d_gen - d_keep                      # <0 keep, >0 gen (signed distance)
+    ny, nx = np.gradient(phi)                 # inward normal (rows=y, cols=x)
+    nnorm = np.sqrt(nx * nx + ny * ny) + 1e-6
+    nx, ny = nx / nnorm, ny / nnorm
+
+    # --- structure tensor on K (channel-summed gradient outer product), smoothed
+    rho = 1.5
+    Jxx = np.zeros((h, w)); Jyy = np.zeros((h, w)); Jxy = np.zeros((h, w))
+    for c in range(C):
+        gy, gx = np.gradient(K[c])
+        Jxx += gx * gx; Jyy += gy * gy; Jxy += gx * gy
+    Jxx = ndimage.gaussian_filter(Jxx, rho)
+    Jyy = ndimage.gaussian_filter(Jyy, rho)
+    Jxy = ndimage.gaussian_filter(Jxy, rho)
+    tr = Jxx + Jyy
+    disc = np.sqrt(np.maximum(((Jxx - Jyy) * 0.5) ** 2 + Jxy * Jxy, 0.0))
+    lam1 = tr * 0.5 + disc                    # larger eigenvalue
+    lam2 = tr * 0.5 - disc
+    # dominant gradient eigenvector e1 (across the structure)
+    e1x = Jxy
+    e1y = lam1 - Jxx
+    en = np.sqrt(e1x * e1x + e1y * e1y) + 1e-12
+    e1x, e1y = e1x / en, e1y / en
+    tx, ty = -e1y, e1x                        # tangent = along the structure (perp to gradient)
+    coh = (lam1 - lam2) / (lam1 + lam2 + 1e-6)
+    contrast = np.sqrt(np.maximum(lam1, 0.0))
+
+    # --- evaluate tangent/coherence/contrast at each cell's boundary foot point
+    tx_q = tx[fy, fx]; ty_q = ty[fy, fx]
+    coh_q = coh[fy, fx]; con_q = contrast[fy, fx]
+    # orient the tangent inward (tau . n > 0)
+    sgn = np.where(tx_q * nx + ty_q * ny < 0, -1.0, 1.0)
+    tx_q = tx_q * sgn; ty_q = ty_q * sgn
+    Xcross = np.abs(tx_q * nx + ty_q * ny)    # |tau . n|: rejects seam-parallel edges
+
+    # --- saliency gate: robust z of the foot-point contrast over the keep-side
+    #     boundary ribbon, ANDed with coherence + crossing gates (smoothsteps).
+    boundary_keep = keep & ndimage.binary_dilation(gen)
+    ribbon = contrast[boundary_keep]
+    if ribbon.size == 0:
+        return None
+    med = float(np.median(ribbon))
+    mad = float(np.median(np.abs(ribbon - med))) + 1e-6
+    z = (con_q - med) / (1.4826 * mad)
+
+    def _smoothstep(a):
+        a = np.clip(a, 0.0, 1.0)
+        return a * a * (3.0 - 2.0 * a)
+
+    Sz = _smoothstep((z - (saliency - 1.0)) / 2.0)   # midpoint near z = saliency
+    Scoh = _smoothstep((coh_q - 0.35) / 0.25)
+    Scross = _smoothstep((Xcross - 0.25) / 0.5)
+    Sgate = Sz * Scoh * Scross                        # [h,w], meaningful on gen cells
+
+    # --- collar + depth falloff
+    D = max(float(depth), 1.0)
+    collar = gen & (d_gen <= D)
+    depth_fall = np.clip(1.0 - d_gen / D, 0.0, 1.0) ** 2
+    Gfull = Sgate * depth_fall * collar.astype(np.float64)   # [h,w]
+
+    # --- affine structure-continuation target E (vectorised over collar cells)
+    ys, xs = np.where(collar & (Gfull > 1e-4))
+    if ys.size == 0:
+        return None
+    qy = fy[ys, xs].astype(np.float64); qx = fx[ys, xs].astype(np.float64)
+    tqx = tx_q[ys, xs]; tqy = ty_q[ys, xs]
+    # extrapolation arclength of p along the (inward) tangent from its foot q
+    ell = np.maximum((xs - qx) * tqx + (ys - qy) * tqy, 0.5)
+
+    def _bilin(arr, py, px):
+        py = np.clip(py, 0, h - 1); px = np.clip(px, 0, w - 1)
+        y0 = np.floor(py).astype(int); x0 = np.floor(px).astype(int)
+        y1 = np.clip(y0 + 1, 0, h - 1); x1 = np.clip(x0 + 1, 0, w - 1)
+        wy = py - y0; wx = px - x0
+        return (arr[y0, x0] * (1 - wy) * (1 - wx) + arr[y0, x1] * (1 - wy) * wx
+                + arr[y1, x0] * wy * (1 - wx) + arr[y1, x1] * wy * wx)
+
+    R = 6
+    ks = np.arange(1, R + 1)
+    omega_r = 2.0 ** (-(ks - 1) / (R - 1))            # recency weights (nearest = 1)
+    sw = omega_r.sum()
+    s_r = -ks.astype(np.float64)
+    sbar = (omega_r * s_r).sum() / sw
+    tau_d = 4.0
+    phi_d = tau_d * (1.0 - np.exp(-ell / tau_d))      # slope damping (bounded extrapolation)
+    N = ys.size
+    valid = np.ones(N, dtype=bool)
+    # sample validity: every known-side sample must stay in the keep region
+    vks_all = np.empty((C, R, N), dtype=np.float64)
+    for j, k in enumerate(ks):
+        ay = qy - k * tqy; ax = qx - k * tqx
+        iy = np.clip(np.round(ay).astype(int), 0, h - 1)
+        ix = np.clip(np.round(ax).astype(int), 0, w - 1)
+        valid &= keep[iy, ix]
+        for c in range(C):
+            vks_all[c, j] = _bilin(K[c], ay, ax)
+    E_full = K.copy()                                 # E = K outside the collar (smooth band-pass)
+    for c in range(C):
+        vks = vks_all[c]                              # [R,N]
+        vbar = (omega_r[:, None] * vks).sum(0) / sw
+        Sxy = (omega_r[:, None] * (s_r[:, None] - sbar) * (vks - vbar[None, :])).sum(0)
+        Sxx = (omega_r * (s_r - sbar) ** 2).sum() + 1e-4
+        beta = Sxy / Sxx
+        alpha = vbar - beta * sbar
+        Ec = alpha + beta * phi_d
+        q01 = float(np.quantile(K[c][keep], 0.01))
+        q99 = float(np.quantile(K[c][keep], 0.99))
+        E_full[c, ys, xs] = np.clip(Ec, q01, q99)     # runaway bound
+
+    # drop cells whose extrapolation support left the keep region
+    Gcollar = Gfull[ys, xs] * valid.astype(np.float64)
+    Gmap = np.zeros((h, w), dtype=np.float64)
+    Gmap[ys, xs] = Gcollar
+
+    # --- max_area safety cap (keep the highest-confidence cells)
+    warn = False
+    gen_count = int(gen.sum())
+    active = int((Gmap[gen] > 0.05).sum())
+    if gen_count > 0 and active / gen_count > max_area:
+        warn = True
+        thr = float(np.quantile(Gmap[gen], max(0.0, 1.0 - max_area)))
+        Gmap = np.where(Gmap >= thr, Gmap, 0.0)
+    if Gmap.max() <= 0.0:
+        return None
+
+    # --- transverse (across-structure) unit direction nu at each cell = gradient dir e1
+    nux = e1x[fy, fx]; nuy = e1y[fy, fx]
+
+    # --- move to device/dtype; band-pass E and precompute the transverse grids
+    device = mask_latent.device
+    dt = mask_latent.dtype
+    G_t = torch.from_numpy(Gmap).to(device=device, dtype=dt).view(1, 1, h, w)
+    E_t = torch.from_numpy(E_full).to(device=device, dtype=dt).view(1, C, h, w)
+    sigma_b = 1.25
+    E_bp = E_t - _outpaint_gaussian_lowpass(E_t, kappa=sigma_b)
+
+    # base + transverse-offset sampling grids (align_corners=True convention)
+    yy, xx = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+    def _grid(off):
+        px = xx + off * nux; py = yy + off * nuy
+        gx = 2.0 * px / max(w - 1, 1) - 1.0
+        gy = 2.0 * py / max(h - 1, 1) - 1.0
+        g = np.stack([gx, gy], axis=-1)               # [h,w,2]
+        return torch.from_numpy(g).to(device=device, dtype=dt).view(1, h, w, 2)
+    grid_plus = _grid(0.5); grid_minus = _grid(-0.5)
+    DnuE_bp = (
+        F.grid_sample(E_bp, grid_plus, align_corners=True, padding_mode="border")
+        - F.grid_sample(E_bp, grid_minus, align_corners=True, padding_mode="border")
+    )
+
+    return {
+        "G": G_t, "E_bp": E_bp, "DnuE_bp": DnuE_bp,
+        "grid_plus": grid_plus, "grid_minus": grid_minus,
+        "warn": warn,
+    }
+
+
+def _ssc_apply(x0_hat: torch.Tensor, state: dict, lam: float, omega: float) -> torch.Tensor:
+    """Per-step SSC closed-form x0 proximal (keyed on the LOGICAL step index via
+    the caller's ``omega`` schedule). Pulls the band-pass component of the
+    model's x0 toward the precomputed affine structure-continuation target, plus
+    a transverse-edge-matching term (the two edges that make a rod perceptually
+    continuous), inside the salient generate-side collar only. ``state['G']``
+    contains the generate mask, so the residual is identically 0 on keep cells
+    (bit-exact). No extra U-Net forward.
+    """
+    import torch.nn.functional as F
+    G = state["G"]
+    sigma_b = 1.25
+    x0_bp = x0_hat - _outpaint_gaussian_lowpass(x0_hat, kappa=sigma_b)
+    Dnu_x0 = (
+        F.grid_sample(x0_bp, state["grid_plus"], align_corners=True, padding_mode="border")
+        - F.grid_sample(x0_bp, state["grid_minus"], align_corners=True, padding_mode="border")
+    )
+    res = (state["E_bp"] - x0_bp) + 0.5 * (state["DnuE_bp"] - Dnu_x0)
+    return x0_hat + (lam * omega) * G * res
 
 
 # ============================================================================
@@ -3852,6 +4081,16 @@ def custom_inpaint_sampling_loop(
                                         # this build -- falls back to "cfg" with a warning).
     region_mask_feather: float = 0.0,  # Gaussian sigma (latent cells) for the region mask feather Mf = M*G_sigma(M).
                                         # 0 = hard mask (Mf = M, mask_latent as-is).
+    seam_structure_strength: float = 0.0,  # SEAM STRUCTURE CONTINUITY (scratchpad/structure_continuity_synthesis.md):
+                                        # closed-form x0-space proximal that continues thin structures crossing the
+                                        # region boundary (rod/limb/lines) into the generate region via a saliency-
+                                        # gated, oriented, band-pass affine extrapolation of the known latent K.
+                                        # 0 = off (byte-identical). SD/SDXL only; serves inpaint + outpaint. Known
+                                        # region bit-exact (the gate contains mask_latent). See _ssc_precompute/_ssc_apply.
+    seam_structure_depth: float = 6.0,  # SSC generate-side collar depth (latent cells).
+    seam_structure_end: float = 0.70,   # SSC schedule progress at which the effect decays to 0 (full <= 0.45).
+    seam_structure_saliency: float = 2.0,  # SSC saliency-gate midpoint (x boundary-ribbon median; 0 = whole seam).
+    seam_structure_max_area: float = 0.25,  # SSC safety cap: max fraction of the generate region the gate may cover.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -4278,6 +4517,32 @@ def custom_inpaint_sampling_loop(
             _commit_f_t = torch.from_numpy(_commit_f_np).to(device=mask_latent.device, dtype=mask_latent.dtype)
             _outpaint_commit_f_map = _commit_f_t.view(1, 1, *_commit_f_t.shape)
 
+    # SEAM STRUCTURE CONTINUITY (scratchpad/structure_continuity_synthesis.md):
+    # precompute the STATIC gate/target once (mask + K never change). Gated on
+    # outpaint_noise_init for now (S1 = OUTPAINT path only; the S2 inpaint path
+    # will broaden this). None/no-op when strength is off or there is no salient
+    # crossing structure -> seam_structure_strength == 0 is byte-identical.
+    _ssc_state = None
+    if outpaint_noise_init and seam_structure_strength > 0.0 and not is_inpaint_unet:
+        _ssc_state = _ssc_precompute(
+            mask_latent, image_latents,
+            depth=seam_structure_depth,
+            saliency=seam_structure_saliency,
+            max_area=seam_structure_max_area,
+        )
+        if _ssc_state is not None:
+            _add_generation_warning(
+                "Seam structure continuity active (experimental): x0-space structure-continuation "
+                "proximal near the region boundary; no extra U-Net forwards.",
+                code="seam_structure_active",
+            )
+            if _ssc_state.get("warn"):
+                _add_generation_warning(
+                    "Seam structure continuity: the saliency gate exceeded seam_structure_max_area "
+                    "and was capped to the highest-confidence boundary structures.",
+                    code="seam_structure_area_capped",
+                )
+
     # Prepare Reference Guide latents while VAE is still on GPU
     ref_guides = []
     if ref_guide_configs:
@@ -4560,6 +4825,94 @@ def custom_inpaint_sampling_loop(
     _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
+
+    # ============================================================
+    # DEBUG-ONLY (env-gated): per-step intermediate latent dump for
+    # empirically testing WHEN the generate region's content commits vs when
+    # the bit-exact known region (fed via the B1 per-step keep-region
+    # projection) becomes influential. Fully OFF -- zero new code runs --
+    # unless OUTPAINT_DEBUG_LATENT_DUMP is set in the environment AND this is
+    # genuinely the OUTPAINT path (outpaint_noise_init, non-9ch-inpaint-UNet).
+    # Never active for normal inpaint/img2img/txt2img, and byte-identical to
+    # before this instrumentation was added whenever the env var is unset.
+    # ============================================================
+    # Gate can be tripped either by the env var (set at backend launch) OR by the
+    # presence of a sentinel file, so an experiment can be enabled at runtime via the
+    # API-driven restart flow (which cannot inject new env vars into the process) —
+    # create <repo>/outputs/debug_latents/.enable to arm, delete it to disarm.
+    # Byte-identical whenever neither the env var nor the sentinel is present.
+    # Paths are anchored to the repo root derived from this file's location
+    # (backend/core/inference/custom_sampling.py -> up 4 == repo root, where
+    # outputs/ lives), NOT the process CWD -- the backend does not run from the
+    # repo root, so a relative "outputs/..." would miss the sentinel entirely.
+    _outpaint_debug_base = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+        "outputs", "debug_latents",
+    )
+    _outpaint_debug_gate = bool(os.environ.get("OUTPAINT_DEBUG_LATENT_DUMP")) or os.path.exists(
+        os.path.join(_outpaint_debug_base, ".enable")
+    )
+    _outpaint_debug_dump = _outpaint_debug_gate and outpaint_noise_init and not is_inpaint_unet
+    _outpaint_debug_dir = None
+    _outpaint_debug_steps_path = None
+    if _outpaint_debug_dump:
+        import json as _dbg_json
+        import time as _dbg_time
+
+        _dbg_seed = generator.initial_seed() if generator is not None else 0
+        _dbg_run_id = f"{_dbg_seed}_{_dbg_time.time_ns()}"
+        _outpaint_debug_dir = os.path.join(_outpaint_debug_base, _dbg_run_id)
+        os.makedirs(_outpaint_debug_dir, exist_ok=True)
+
+        # Pixel-space mask (mask_tensor, BEFORE latent downsampling) -- also
+        # used below to recover the pixel rect, since this function receives
+        # the already-composed mask/init images rather than the caller's raw
+        # place_x/y/canvas_w/h (those are resolved upstream in
+        # outpaint_utils.resolve_outpaint_placement / core.pipeline.generate_outpaint).
+        _dbg_mask_np = mask_tensor.detach().to(dtype=torch.float32, device="cpu").numpy()
+        np.save(os.path.join(_outpaint_debug_dir, "meta_mask.npy"), _dbg_mask_np)
+
+        _dbg_canvas_h, _dbg_canvas_w = _dbg_mask_np.shape[-2], _dbg_mask_np.shape[-1]
+        # Bounding box of the KEEP/known region (mask == 0, "black", per the
+        # "1.0 = inpaint area (white), 0.0 = keep original (black)" convention
+        # used throughout this loop) -- the pixel-space equivalent of place_x/y/
+        # place_width/place_height.
+        _dbg_keep_rows, _dbg_keep_cols = np.where(_dbg_mask_np[0, 0] < 0.5)
+        if _dbg_keep_rows.size > 0:
+            _dbg_place_y0, _dbg_place_y1 = int(_dbg_keep_rows.min()), int(_dbg_keep_rows.max()) + 1
+            _dbg_place_x0, _dbg_place_x1 = int(_dbg_keep_cols.min()), int(_dbg_keep_cols.max()) + 1
+        else:
+            _dbg_place_y0 = _dbg_place_x0 = 0
+            _dbg_place_y1, _dbg_place_x1 = _dbg_canvas_h, _dbg_canvas_w
+
+        _dbg_meta = {
+            "seed": _dbg_seed,
+            "ancestral_seed": ancestral_generator.initial_seed() if ancestral_generator is not None else -1,
+            "sampler": type(scheduler).__name__,
+            "num_inference_steps": num_inference_steps,
+            "t_start": t_start,
+            "timesteps": [float(_t.item()) for _t in timesteps],
+            "outpaint_strength": strength,
+            "outpaint_resample_count": outpaint_resample_count,
+            "outpaint_jump_length": outpaint_jump_length,
+            "outpaint_reference_strength": outpaint_reference_strength,
+            "outpaint_commit_strength": outpaint_commit_strength,
+            "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
+            "resample_active": _outpaint_resample_active,
+            "visit_schedule_len": len(_outpaint_visit_schedule),
+            "canvas_width": _dbg_canvas_w,
+            "canvas_height": _dbg_canvas_h,
+            "place_x": _dbg_place_x0,
+            "place_y": _dbg_place_y0,
+            "place_width": _dbg_place_x1 - _dbg_place_x0,
+            "place_height": _dbg_place_y1 - _dbg_place_y0,
+            "latent_mask_shape": list(mask_latent.shape),
+            "note": "per-step timestep/sigma/visit_idx records are appended, one JSON object per line, to meta_steps.jsonl in this same directory.",
+        }
+        with open(os.path.join(_outpaint_debug_dir, "meta.json"), "w", encoding="utf-8") as _dbg_f:
+            _dbg_json.dump(_dbg_meta, _dbg_f, indent=2)
+        _outpaint_debug_steps_path = os.path.join(_outpaint_debug_dir, "meta_steps.jsonl")
+        print(f"[CustomSampling] [outpaint][debug] OUTPAINT_DEBUG_LATENT_DUMP active -> {_outpaint_debug_dir}")
 
     # OUTPAINT B2: iterate the precomputed VISIT schedule (see
     # _build_outpaint_resample_schedule) instead of a plain enumerate(timesteps).
@@ -5539,6 +5892,18 @@ def custom_inpaint_sampling_loop(
             predict_x0, to_model_output = _outpaint_x0_transform(scheduler, latents, t, i)
             x0_hat = predict_x0(noise_pred)
 
+            # DEBUG-ONLY (OUTPAINT_DEBUG_LATENT_DUMP): the model's OWN x0
+            # estimate, BEFORE any commit-front proximal / keep-region
+            # projection / boundary-color proximal below -- lets an offline
+            # analysis see the generate region's evolving content (and the
+            # model's own read of the known region) independent of every
+            # injected constraint. No-op unless the env flag is set.
+            if _outpaint_debug_dump:
+                np.save(
+                    os.path.join(_outpaint_debug_dir, f"step_{i:03d}_v{visit_idx:03d}_x0.npy"),
+                    x0_hat.detach().to(dtype=torch.float32, device="cpu").numpy(),
+                )
+
             # BOUNDARY-OUTWARD COMMITMENT FRONT (scratchpad/commitment_front_
             # synthesis.md): AUGMENTS the x0-projection below with a distance-
             # graded, low-frequency, EMA-anchored commit proximal -- makes
@@ -5586,6 +5951,33 @@ def custom_inpaint_sampling_loop(
                         - _outpaint_gaussian_lowpass(x0_hat, kappa=_commit_kappa)
                     )
 
+            # SEAM STRUCTURE CONTINUITY (scratchpad/structure_continuity_
+            # synthesis.md): AFTER the commit-front, BEFORE the keep projection,
+            # pull the band-pass component of the model's x0 toward the oriented
+            # affine continuation of the crossing structures in K, inside the
+            # salient generate-side collar only. Keyed on the LOGICAL step index
+            # `i` (like B1/B2/commit): on from step 0 (the coarse rod layout is
+            # decided at high noise), smoothstep-decayed to 0 by
+            # seam_structure_end so the model regains full high-frequency control
+            # late (anti-ghost/blur). The gate contains mask_latent, so keep
+            # cells are untouched. No-op (byte-identical) when _ssc_state is None.
+            if _ssc_state is not None:
+                _ssc_rho = (t_start + i) / num_inference_steps
+                # Full strength on a plateau, then smoothstep-decay to 0 by
+                # seam_structure_end. Plateau ends at min(0.45, end) so an
+                # end < 0.45 still decays correctly (immediate cutoff at end)
+                # rather than being silently held at full strength to 0.45.
+                _ssc_plateau = min(0.45, seam_structure_end)
+                if _ssc_rho <= _ssc_plateau:
+                    _ssc_omega = 1.0
+                elif _ssc_rho >= seam_structure_end:
+                    _ssc_omega = 0.0
+                else:
+                    _ssc_z = 1.0 - (_ssc_rho - _ssc_plateau) / max(seam_structure_end - _ssc_plateau, 1e-6)
+                    _ssc_omega = _ssc_z * _ssc_z * (3.0 - 2.0 * _ssc_z)  # smoothstep down
+                if _ssc_omega > 0.0:
+                    x0_hat = _ssc_apply(x0_hat, _ssc_state, seam_structure_strength, _ssc_omega)
+
             # Project the known constraint: keep region = clean image latents,
             # generate region = the model's own x0 estimate.
             x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
@@ -5602,6 +5994,17 @@ def custom_inpaint_sampling_loop(
                         outpaint_boundary_color_strength,
                     )
 
+            # DEBUG-ONLY (OUTPAINT_DEBUG_LATENT_DUMP): x0 AFTER the
+            # keep-region projection / boundary-color proximal -- compare
+            # against step_{i:03d}_v{visit_idx:03d}_x0.npy (the model's raw
+            # prediction) to see exactly what the injected known-region
+            # constraint changed. No-op unless the env flag is set.
+            if _outpaint_debug_dump:
+                np.save(
+                    os.path.join(_outpaint_debug_dir, f"step_{i:03d}_v{visit_idx:03d}_x0_proj.npy"),
+                    x0_proj.detach().to(dtype=torch.float32, device="cpu").numpy(),
+                )
+
             # Convert back to the model-output space scheduler.step expects
             # (exact inverse of predict_x0 for this scheduler/prediction_type).
             noise_pred = to_model_output(x0_proj)
@@ -5609,6 +6012,28 @@ def custom_inpaint_sampling_loop(
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
         latents = step_output.prev_sample
+
+        # DEBUG-ONLY (OUTPAINT_DEBUG_LATENT_DUMP): the current x_t immediately
+        # after scheduler.step (BEFORE any later ref-guide blend / in-loop
+        # flatten / post-step keep-region overwrite below), plus a per-step
+        # timestep/sigma/visit_idx record appended to meta_steps.jsonl. No-op
+        # unless the env flag is set.
+        if _outpaint_debug_dump:
+            np.save(
+                os.path.join(_outpaint_debug_dir, f"step_{i:03d}_v{visit_idx:03d}_lat.npy"),
+                latents.detach().to(dtype=torch.float32, device="cpu").numpy(),
+            )
+            _dbg_sigma = None
+            if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
+                _dbg_sigma = float(scheduler.sigmas[i].item())
+            with open(_outpaint_debug_steps_path, "a", encoding="utf-8") as _dbg_sf:
+                _dbg_sf.write(_dbg_json.dumps({
+                    "i": i,
+                    "visit_idx": visit_idx,
+                    "is_forward_jump": bool(is_forward_jump),
+                    "timestep": float(t.item()),
+                    "sigma": _dbg_sigma,
+                }) + "\n")
 
         # Get predicted x0 (original sample) if available from scheduler
         # Use .detach().clone() to disconnect from computation graph and ensure contiguous memory

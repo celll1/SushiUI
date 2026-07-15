@@ -6439,6 +6439,51 @@ components:
                 the region mask's edge before the spatial blend (method
                 "cfg"). 0 (default) uses a hard mask (no feathering).
               example: 0.0
+            seam_structure_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 2.0
+              description: |
+                SD/SDXL only. Seam Structure Continuity: make thin structures
+                that cross the repaint mask boundary (a limb, torso, held object,
+                architectural lines) continue coherently into the repainted
+                region. Detects oriented structures crossing the boundary in the
+                known latent (structure tensor), affine-extrapolates their
+                band-pass cross-section into a shallow repaint-side collar, and
+                pulls the model's per-step x0 prediction toward that target --
+                gated per boundary position by a structure-saliency map so it
+                fires only where a real crossing structure touches the boundary.
+                x0-space, no extra U-Net forwards, known region bit-exact.
+                0 (default) disables the feature (byte-identical). Active
+                range ~0.25-0.6.
+              example: 0.0
+            seam_structure_depth:
+              type: number
+              default: 6.0
+              minimum: 1.0
+              description: "SSC repaint-side collar depth, in latent cells."
+              example: 6.0
+            seam_structure_end:
+              type: number
+              default: 0.70
+              minimum: 0.0
+              maximum: 1.0
+              description: "SSC schedule progress at which the effect decays to 0 (full strength up to 0.45)."
+              example: 0.70
+            seam_structure_saliency:
+              type: number
+              default: 2.0
+              minimum: 0.0
+              description: "SSC saliency-gate midpoint as a multiple of the boundary-ribbon median contrast (0 = apply to the whole seam)."
+              example: 2.0
+            seam_structure_max_area:
+              type: number
+              default: 0.25
+              minimum: 0.0
+              maximum: 1.0
+              description: "SSC safety cap: the maximum fraction of the repaint region the saliency gate may cover."
+              example: 0.25
 
     OutpaintRequest:
       allOf:
@@ -6629,6 +6674,51 @@ components:
                 the region mask's edge before the spatial blend (method
                 "cfg"). 0 (default) uses a hard mask (no feathering).
               example: 0.0
+            seam_structure_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 2.0
+              description: |
+                SD/SDXL only. Seam Structure Continuity: make thin structures
+                that cross the region boundary (a held rod/staff, a limb, torso,
+                architectural lines) continue coherently into the generated
+                region. Detects oriented structures crossing the boundary in the
+                known latent (structure tensor), affine-extrapolates their
+                band-pass cross-section into a shallow generate-side collar, and
+                pulls the model's per-step x0 prediction toward that target --
+                gated per boundary position by a structure-saliency map so it
+                fires only where a real crossing structure touches the boundary.
+                x0-space, no extra U-Net forwards, known region bit-exact.
+                0 (default) disables the feature (byte-identical). Active
+                range ~0.25-0.6.
+              example: 0.0
+            seam_structure_depth:
+              type: number
+              default: 6.0
+              minimum: 1.0
+              description: "SSC generate-side collar depth, in latent cells."
+              example: 6.0
+            seam_structure_end:
+              type: number
+              default: 0.70
+              minimum: 0.0
+              maximum: 1.0
+              description: "SSC schedule progress at which the effect decays to 0 (full strength up to 0.45)."
+              example: 0.70
+            seam_structure_saliency:
+              type: number
+              default: 2.0
+              minimum: 0.0
+              description: "SSC saliency-gate midpoint as a multiple of the boundary-ribbon median contrast (0 = apply to the whole seam)."
+              example: 2.0
+            seam_structure_max_area:
+              type: number
+              default: 0.25
+              minimum: 0.0
+              maximum: 1.0
+              description: "SSC safety cap: the maximum fraction of the generate region the saliency gate may cover (capped to the highest-confidence structures)."
+              example: 0.25
             outpaint_seam_fix:
               type: boolean
               default: true

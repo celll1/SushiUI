@@ -412,13 +412,31 @@ def match_generated_exposure(
             return False
         return True
 
+    # Inward ramp-in width: the exposure gain must be ~0 AT the boundary row
+    # itself (so it does NOT re-introduce a step against the already-continuous
+    # B1/sampling-level boundary -- that boundary-edge full-gain application was
+    # measured to be the source of the visible seam band), ramping up to full
+    # only a few px out, then the existing outward taper back to 0.
+    ramp_in = max(1.0, min(taper_w * 0.5, 24.0))
+
     def _apply(region_slice: Tuple[slice, slice], dist: np.ndarray, gain: np.ndarray, axis: int) -> None:
-        """Blend `region` toward `region * gain` via an outward cosine taper.
+        """Blend `region` toward `region * gain` via an inward-anchored window:
+        0 at the boundary (no step), a raised-cosine ramp UP to full over the
+        first ``ramp_in`` px, then the outward cosine taper back to 0 at
+        ``taper_w``.
 
         ``dist`` is the per-row (axis=0) or per-column (axis=1) distance (in
         px) from the rect edge; ``axis`` selects which side broadcasts.
         """
-        w = np.where(dist < taper_w, 0.5 * (1.0 + np.cos(np.pi * dist / taper_w)), 0.0)
+        w = np.where(
+            dist < ramp_in,
+            0.5 * (1.0 - np.cos(np.pi * np.clip(dist, 0.0, ramp_in) / ramp_in)),
+            np.where(
+                dist < taper_w,
+                0.5 * (1.0 + np.cos(np.pi * (dist - ramp_in) / (taper_w - ramp_in))),
+                0.0,
+            ),
+        )
         w = w[:, None, None] if axis == 0 else w[None, :, None]
         region = corrected[region_slice]
         corrected[region_slice] = region * (1.0 + w * (gain[None, None, :] - 1.0))

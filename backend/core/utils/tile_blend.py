@@ -35,6 +35,13 @@ def compute_tile_boxes(
     tile_h = min(tile_size, (height // 8) * 8 or height)
     tile_w = max(8, tile_w)
     tile_h = max(8, tile_h)
+    # Never let a tile exceed the canvas itself — a lopsided aspect ratio
+    # (one latent dim << tile_size, the other >> tile_size) can otherwise
+    # leave tile_w/tile_h at the `max(8, ...)` floor even though the actual
+    # width/height is smaller than 8, producing a box larger than the
+    # canvas and a NumPy broadcast crash in feather_blend_tiles.
+    tile_w = min(tile_w, width)
+    tile_h = min(tile_h, height)
 
     step_x = max(1, tile_w - tile_overlap)
     step_y = max(1, tile_h - tile_overlap)
@@ -80,16 +87,26 @@ def feather_blend_tiles(
         feather_px = max(0, int(tile_overlap))
         ramp_y = np.ones(th, dtype="float32")
         ramp_x = np.ones(tw, dtype="float32")
+        # Only taper a side that actually overlaps a neighboring tile. A side
+        # that coincides with the canvas boundary (x1==0 / y1==0 / x2==width /
+        # y2==height) has no neighbor to blend with, so it must keep weight
+        # 1.0 all the way to the edge — otherwise the only tile covering that
+        # row/col gets weight 0 there and, after normalization, the full
+        # canvas's outer 1px border comes out black.
         n = min(feather_px, th // 2)
         if n > 0:
             ramp = np.linspace(0.0, 1.0, n, dtype="float32")
-            ramp_y[:n] = ramp
-            ramp_y[-n:] = ramp[::-1]
+            if y1 != 0:
+                ramp_y[:n] = ramp
+            if y2 != height:
+                ramp_y[-n:] = ramp[::-1]
         n = min(feather_px, tw // 2)
         if n > 0:
             ramp = np.linspace(0.0, 1.0, n, dtype="float32")
-            ramp_x[:n] = ramp
-            ramp_x[-n:] = ramp[::-1]
+            if x1 != 0:
+                ramp_x[:n] = ramp
+            if x2 != width:
+                ramp_x[-n:] = ramp[::-1]
         w_mask = (ramp_y[:, None] * ramp_x[None, :])[:, :, None]
 
         canvas[y1:y2, x1:x2, :] += arr * w_mask

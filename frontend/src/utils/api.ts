@@ -326,6 +326,15 @@ export interface InpaintParams extends GenerationParams {
   resampling_method?: string;
   // VAE encode/decode round-trip color-bias correction (img2img/inpaint only)
   vae_drift_correction?: boolean;
+  // Regional additional prompt (SD/SDXL only): conditions ONLY the
+  // generated/repaint region, leaving the main prompt + preserved region
+  // untouched. Active iff region_prompt_strength > 0 AND (region_prompt or
+  // region_negative_prompt) is non-empty.
+  region_prompt?: string;
+  region_negative_prompt?: string;
+  region_prompt_strength?: number;
+  region_prompt_method?: string;
+  region_mask_feather?: number;
 }
 
 // Outpaint: place a (optionally trimmed/resized) input image inside a LARGER
@@ -348,6 +357,15 @@ export interface OutpaintParams extends GenerationParams {
   resize_mode?: string;
   resampling_method?: string;
   vae_drift_correction?: boolean;
+  // Regional additional prompt (SD/SDXL only): conditions ONLY the generated
+  // region, leaving the main prompt + preserved (placed) region untouched.
+  // Active iff region_prompt_strength > 0 AND (region_prompt or
+  // region_negative_prompt) is non-empty.
+  region_prompt?: string;
+  region_negative_prompt?: string;
+  region_prompt_strength?: number;
+  region_prompt_method?: string;
+  region_mask_feather?: number;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -610,7 +628,7 @@ export interface OutpaintAudioParams {
 export interface GenerationDefaultsResponse {
   txt2img: Partial<GenerationParams> & Record<string, unknown>;
   img2img: Partial<GenerationParams> & Record<string, unknown>;
-  inpaint:  Partial<GenerationParams> & Record<string, unknown>;
+  inpaint:  Partial<InpaintParams> & Record<string, unknown>;
   outpaint: Partial<OutpaintParams> & Record<string, unknown>;
   outpaint_vid: Partial<OutpaintVideoParams> & Record<string, unknown>;
   outpaint_aud: Partial<OutpaintAudioParams> & Record<string, unknown>;
@@ -1422,6 +1440,12 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
   formData.append("mask_blur", String(paramsWithImages.mask_blur || 4));
+  // Regional additional prompt (SD/SDXL only): conditions ONLY the repaint mask region
+  formData.append("region_prompt", paramsWithImages.region_prompt || "");
+  formData.append("region_negative_prompt", paramsWithImages.region_negative_prompt || "");
+  formData.append("region_prompt_strength", String(paramsWithImages.region_prompt_strength ?? 1.0));
+  formData.append("region_prompt_method", paramsWithImages.region_prompt_method || "cfg");
+  formData.append("region_mask_feather", String(paramsWithImages.region_mask_feather ?? 0.0));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -1618,6 +1642,12 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("inpaint_fill_mode", paramsWithImages.inpaint_fill_mode || "original");
   formData.append("inpaint_fill_strength", String(paramsWithImages.inpaint_fill_strength ?? 1.0));
   formData.append("inpaint_blur_strength", String(paramsWithImages.inpaint_blur_strength ?? 1.0));
+  // Regional additional prompt (SD/SDXL only): conditions ONLY the generated region
+  formData.append("region_prompt", paramsWithImages.region_prompt || "");
+  formData.append("region_negative_prompt", paramsWithImages.region_negative_prompt || "");
+  formData.append("region_prompt_strength", String(paramsWithImages.region_prompt_strength ?? 1.0));
+  formData.append("region_prompt_method", paramsWithImages.region_prompt_method || "cfg");
+  formData.append("region_mask_feather", String(paramsWithImages.region_mask_feather ?? 0.0));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

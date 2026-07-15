@@ -362,6 +362,53 @@ export interface OutpaintParams extends GenerationParams {
   outpaint_fill_mode?: string;
 }
 
+// Video temporal outpaint (LTX-2.3): place a (optionally trimmed) input clip
+// at a frame offset inside a LONGER output timeline and generate the frames
+// before/after, preserving the placed input frames byte-exact. Mirrors the
+// backend OUTPAINT_VIDEO_DEFAULTS (param_defaults.py) + the Form parameters
+// of POST /generate/outpaint/video (routes.py). Standalone shape (does not
+// extend GenerationParams, matching Txt2VidParams/Img2VidParams -- video has
+// no width/height/steps/sampler concept beyond the fields below).
+export interface OutpaintVideoParams {
+  prompt: string;
+  negative_prompt?: string;
+  width?: number;                  // multiple of 32 (default 768)
+  height?: number;                 // multiple of 32 (default 512)
+  frame_rate?: number;             // default 24.0
+  num_inference_steps?: number;    // default 8 (distilled)
+  guidance_scale?: number;         // default 1.0
+  seed?: number;                   // default -1
+  num_videos_per_prompt?: number;  // default 1
+  max_sequence_length?: number;    // default 1024
+  audio_enable?: boolean;          // default true
+  // --- Placement (outpaint-only) ---
+  total_frames?: number;           // output timeline length; (n-1)%8==0, default 121
+  input_offset_frames?: number;    // where the (trimmed) clip lands, in pixel frames of the OUTPUT timeline
+  input_trim_start_frames?: number; // trim applied to the UPLOADED clip before placement
+  input_trim_end_frames?: number;
+  outpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  video_lossless?: boolean;        // FFV1 bit-exact encode (not browser-playable)
+  // --- Acceleration (same knobs as the image/video GenerationParams schema) ---
+  blocks_to_swap?: number;
+  fbcache_enable?: boolean;
+  fbcache_threshold?: number;
+  fbcache_warmup_steps?: number;
+  spectrum_enable?: boolean;
+  spectrum_w?: number;
+  spectrum_w_decay?: number;
+  spectrum_delta_cap?: number;
+  spectrum_m?: number;
+  spectrum_lam?: number;
+  spectrum_warmup_steps?: number;
+  spectrum_window_size?: number;
+  spectrum_flex_window?: number;
+  spectrum_tail?: number;
+  spectrum_max_cache?: number;
+  // Component overrides (same plumbing as image/video gen; empty/null = model default)
+  vae_path?: string | null;
+  text_encoder_path?: string | null;
+}
+
 export interface UpscaleParams {
   upscaler_backend?: string;
   upscaler_model?: string | null;
@@ -539,6 +586,7 @@ export interface GenerationDefaultsResponse {
   img2img: Partial<GenerationParams> & Record<string, unknown>;
   inpaint:  Partial<GenerationParams> & Record<string, unknown>;
   outpaint: Partial<OutpaintParams> & Record<string, unknown>;
+  outpaint_vid: Partial<OutpaintVideoParams> & Record<string, unknown>;
   upscale: Partial<UpscaleParams> & Record<string, unknown>;
   txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
   img2vid: Partial<Img2VidParams> & Record<string, unknown>;
@@ -1651,6 +1699,74 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
   const response = await api.post("/generate/outpaint", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+// Video temporal outpaint (LTX-2.3): multipart POST /generate/outpaint/video
+// with an uploaded `video` clip. Clone of generateImg2Vid's FormData sender
+// (CLAUDE.md param-threading) plus the placement fields; every
+// OutpaintVideoParams field is appended explicitly, matching the Form
+// parameter names of routes.py's generate_outpaint_video 1:1.
+export const generateOutpaintVideo = async (params: OutpaintVideoParams, video: File | string) => {
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs (mirrors generateImg2Vid's `image` handling).
+  if (typeof video === "string") {
+    const response = await fetch(video);
+    const blob = await response.blob();
+    formData.append("video", blob, "input.mp4");
+  } else {
+    formData.append("video", video);
+  }
+
+  formData.append("prompt", params.prompt);
+  formData.append("negative_prompt", params.negative_prompt || "");
+  formData.append("width", String(params.width ?? 768));
+  formData.append("height", String(params.height ?? 512));
+  formData.append("total_frames", String(params.total_frames ?? 121));
+  formData.append("frame_rate", String(params.frame_rate ?? 24.0));
+  formData.append("num_inference_steps", String(params.num_inference_steps ?? 8));
+  formData.append("guidance_scale", String(params.guidance_scale ?? 1.0));
+  formData.append("seed", String(params.seed ?? -1));
+  formData.append("num_videos_per_prompt", String(params.num_videos_per_prompt ?? 1));
+  formData.append("max_sequence_length", String(params.max_sequence_length ?? 1024));
+  formData.append("audio_enable", String(params.audio_enable ?? true));
+
+  // Placement (outpaint-only)
+  formData.append("input_offset_frames", String(params.input_offset_frames ?? 0));
+  formData.append("input_trim_start_frames", String(params.input_trim_start_frames ?? 0));
+  formData.append("input_trim_end_frames", String(params.input_trim_end_frames ?? 0));
+  formData.append("outpaint_video_audio_mode", params.outpaint_video_audio_mode || "regenerate");
+
+  // Acceleration (block swap / FBCache / Spectrum)
+  formData.append("blocks_to_swap", String(params.blocks_to_swap ?? 0));
+  formData.append("fbcache_enable", String(params.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(params.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(params.fbcache_warmup_steps ?? 1));
+  formData.append("spectrum_enable", String(params.spectrum_enable ?? false));
+  formData.append("spectrum_w", String(params.spectrum_w ?? 0.5));
+  formData.append("spectrum_w_decay", String(params.spectrum_w_decay ?? 0.0));
+  formData.append("spectrum_delta_cap", String(params.spectrum_delta_cap ?? 0.0));
+  formData.append("spectrum_m", String(params.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(params.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(params.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(params.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(params.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(params.spectrum_tail ?? 0.12));
+  formData.append("spectrum_max_cache", String(params.spectrum_max_cache ?? 0));
+
+  if (params.vae_path) {
+    formData.append("vae_path", params.vae_path);
+  }
+  if (params.text_encoder_path) {
+    formData.append("text_encoder_path", params.text_encoder_path);
+  }
+
+  formData.append("video_lossless", String(params.video_lossless ?? false));
+
+  const response = await api.post("/generate/outpaint/video", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

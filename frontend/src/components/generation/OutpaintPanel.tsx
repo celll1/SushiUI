@@ -13,16 +13,19 @@ import LoRASelector from "../common/LoRASelector";
 import ControlNetSelector from "../common/ControlNetSelector";
 import GenerationQueue from "../common/GenerationQueue";
 import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlacementCanvas";
+import OutpaintTimeline from "./OutpaintTimeline";
 import {
   getSamplers,
   getScheduleTypes,
   generateOutpaint,
+  generateOutpaintVideo,
   getCurrentModel,
   cancelGeneration,
   getResultFilename,
   getResultSeed,
   getResultAncestralSeed,
   OutpaintParams as ApiOutpaintParams,
+  OutpaintVideoParams,
   LoRAConfig,
   ControlNetConfig,
 } from "@/utils/api";
@@ -33,12 +36,47 @@ import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
+// Extends the image OutpaintParams with the video (outpaint_vid, LTX-2.3)
+// fields. A single unified `params` object is used for both modalities --
+// same convention as Txt2ImgPanel/Img2ImgPanel's isVideo/isAudio branches --
+// so most fields (prompt/negative_prompt/width/height/seed/vae_path/
+// text_encoder_path/fbcache_*/spectrum_*) are reused as-is: their numeric
+// defaults are IDENTICAL between OUTPAINT_DEFAULTS (derived from
+// INPAINT_DEFAULTS) and OUTPAINT_VIDEO_DEFAULTS (derived from
+// VIDEO_GEN_DEFAULTS), and mean the same thing in both routes.
+//
+// `blocks_to_swap` is the one exception: the IMAGE route gates it behind a
+// separate `enable_block_swap` boolean (default magnitude 20, ignored unless
+// the flag is set), while the VIDEO route has no such flag -- `blocks_to_swap`
+// alone is the enable signal (0 = off) with a different default (0). Sharing
+// the same field across modes would silently carry the image mode's value
+// into a video request (or vice versa) on a tab switch, so video keeps its
+// own `video_blocks_to_swap` field instead.
+interface OutpaintPanelParams extends ApiOutpaintParams {
+  // --- Video temporal outpaint (outpaint_vid, LTX-2.3) ---
+  frame_rate?: number;
+  num_inference_steps?: number;
+  guidance_scale?: number;
+  num_videos_per_prompt?: number;
+  max_sequence_length?: number;
+  audio_enable?: boolean;
+  total_frames?: number;
+  input_offset_frames?: number;
+  input_trim_start_frames?: number;
+  input_trim_end_frames?: number;
+  outpaint_video_audio_mode?: "regenerate" | "preserve_input";
+  video_lossless?: boolean;
+  video_blocks_to_swap?: number;
+}
+
 // Mirrors backend OUTPAINT_DEFAULTS (backend/api/param_defaults.py) --
-// derived from the full inpaint parameter set + the placement fields.
-// This object is a fallback only; on mount it is overridden by
-// generationDefaults.outpaint fetched from GET /schema/generation-defaults
-// (single source of truth), unless the user already has localStorage state.
-const DEFAULT_PARAMS: ApiOutpaintParams = {
+// derived from the full inpaint parameter set + the placement fields --
+// plus OUTPAINT_VIDEO_DEFAULTS (derived from VIDEO_GEN_DEFAULTS) for the
+// video branch. This object is a fallback only; on mount it is overridden by
+// generationDefaults.outpaint / generationDefaults.outpaint_vid fetched from
+// GET /schema/generation-defaults (single source of truth), unless the user
+// already has localStorage state.
+const DEFAULT_PARAMS: OutpaintPanelParams = {
   prompt: "",
   negative_prompt: "",
   steps: 20,
@@ -139,6 +177,22 @@ const DEFAULT_PARAMS: ApiOutpaintParams = {
   input_crop_w: 0,
   input_crop_h: 0,
   outpaint_fill_mode: "replicate",
+  // --- Video temporal outpaint (outpaint_vid, LTX-2.3) ---
+  width: 768,
+  height: 512,
+  frame_rate: 24.0,
+  num_inference_steps: 8,
+  guidance_scale: 1.0,
+  num_videos_per_prompt: 1,
+  max_sequence_length: 1024,
+  audio_enable: true,
+  total_frames: 121,
+  input_offset_frames: 0,
+  input_trim_start_frames: 0,
+  input_trim_end_frames: 0,
+  outpaint_video_audio_mode: "regenerate",
+  video_lossless: false,
+  video_blocks_to_swap: 0,
 };
 
 const STORAGE_KEY = "outpaint_params";
@@ -152,8 +206,8 @@ interface OutpaintPanelProps {
 
 export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
   const { isBackendReady, generationDefaults, isVideo, isAudio } = useStartup();
-  const [params, setParams] = useState<ApiOutpaintParams>(DEFAULT_PARAMS);
-  const [generatedImageParams, setGeneratedImageParams] = useState<ApiOutpaintParams | null>(null);
+  const [params, setParams] = useState<OutpaintPanelParams>(DEFAULT_PARAMS);
+  const [generatedImageParams, setGeneratedImageParams] = useState<OutpaintPanelParams | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
@@ -163,6 +217,17 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
   const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+
+  // Video temporal outpaint (outpaint_vid) input clip + result. Not persisted
+  // across reloads (unlike the image input, which round-trips through
+  // IndexedDB via tempImageStorage.ts) -- an uploaded video File cannot be
+  // cheaply stored the same way, and no existing modality (aud2aud's
+  // reference clip either) persists its upload across a refresh.
+  const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoPreviewUrl, setVideoPreviewUrl] = useState<string | null>(null);
+  const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
+  const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
+  const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
 
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
@@ -190,6 +255,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   useEffect(() => {
     isGeneratingRef.current = isGenerating;
   }, [isGenerating]);
+
+  // Revoke the uploaded clip's object URL on unmount / replacement to avoid
+  // leaking blob URLs (createObjectURL persists until explicitly revoked).
+  useEffect(() => {
+    return () => {
+      if (videoPreviewUrl) URL.revokeObjectURL(videoPreviewUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoPreviewUrl]);
 
   const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, _metrics?: CFGMetrics) => {
     if (isGeneratingRef.current) {
@@ -423,12 +497,41 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     }
   }, [generatedImage, isMounted]);
 
-  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
+  // Merges BOTH the image (outpaint) and video (outpaint_vid) default dicts --
+  // they share the unified `params` object (see OutpaintPanelParams). Fields
+  // whose numeric defaults are IDENTICAL in OUTPAINT_DEFAULTS and
+  // OUTPAINT_VIDEO_DEFAULTS (prompt/negative_prompt/seed/vae_path/
+  // text_encoder_path/fbcache_*/spectrum_*) are already covered by the
+  // `outpaint` spread, so only the video-SPECIFIC fields are pulled from
+  // `outpaint_vid` here -- notably `blocks_to_swap`, which is remapped to
+  // `video_blocks_to_swap` (see OutpaintPanelParams' doc comment for why a
+  // blind spread of the raw backend dict would silently clobber the image
+  // mode's `blocks_to_swap` default with the video route's different one).
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.outpaint as Partial<ApiOutpaintParams>) }));
+      const vidDefaults = (generationDefaults.outpaint_vid || {}) as Record<string, unknown>;
+      setParams(prev => ({
+        ...DEFAULT_PARAMS,
+        ...(generationDefaults.outpaint as Partial<ApiOutpaintParams>),
+        width: vidDefaults.width as number ?? DEFAULT_PARAMS.width,
+        height: vidDefaults.height as number ?? DEFAULT_PARAMS.height,
+        frame_rate: vidDefaults.frame_rate as number ?? DEFAULT_PARAMS.frame_rate,
+        num_inference_steps: vidDefaults.num_inference_steps as number ?? DEFAULT_PARAMS.num_inference_steps,
+        guidance_scale: vidDefaults.guidance_scale as number ?? DEFAULT_PARAMS.guidance_scale,
+        num_videos_per_prompt: vidDefaults.num_videos_per_prompt as number ?? DEFAULT_PARAMS.num_videos_per_prompt,
+        max_sequence_length: vidDefaults.max_sequence_length as number ?? DEFAULT_PARAMS.max_sequence_length,
+        audio_enable: (vidDefaults.audio_enable as boolean) ?? DEFAULT_PARAMS.audio_enable,
+        total_frames: vidDefaults.total_frames as number ?? DEFAULT_PARAMS.total_frames,
+        input_offset_frames: vidDefaults.input_offset_frames as number ?? DEFAULT_PARAMS.input_offset_frames,
+        input_trim_start_frames: vidDefaults.input_trim_start_frames as number ?? DEFAULT_PARAMS.input_trim_start_frames,
+        input_trim_end_frames: vidDefaults.input_trim_end_frames as number ?? DEFAULT_PARAMS.input_trim_end_frames,
+        outpaint_video_audio_mode: (vidDefaults.outpaint_video_audio_mode as "regenerate" | "preserve_input") ?? DEFAULT_PARAMS.outpaint_video_audio_mode,
+        video_lossless: (vidDefaults.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
+        video_blocks_to_swap: vidDefaults.blocks_to_swap as number ?? DEFAULT_PARAMS.video_blocks_to_swap,
+      }));
     }
   }, [generationDefaults]);
 
@@ -534,6 +637,67 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     setParams(prev => ({ ...prev, ...patch }));
   };
 
+  // --- Video temporal outpaint (outpaint_vid) input clip handling ---
+
+  const processVideoFile = (file: File) => {
+    if (!file.type.startsWith('video/')) {
+      alert('Please upload a valid video file');
+      return;
+    }
+    if (videoPreviewUrl) {
+      URL.revokeObjectURL(videoPreviewUrl);
+    }
+    setVideoFile(file);
+    setVideoDurationSec(null);
+    // A brand-new clip resets the placement so it doesn't inherit the
+    // previous clip's stale offset/trim (mirrors processImageFile's
+    // place_width=0 reset).
+    setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
+    setVideoPreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleVideoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processVideoFile(file);
+  };
+
+  const handleVideoLoadedMetadata = (e: React.SyntheticEvent<HTMLVideoElement>) => {
+    const duration = e.currentTarget.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      setVideoDurationSec(duration);
+    }
+  };
+
+  const handleClearVideo = () => {
+    if (videoPreviewUrl) {
+      URL.revokeObjectURL(videoPreviewUrl);
+    }
+    setVideoFile(null);
+    setVideoPreviewUrl(null);
+    setVideoDurationSec(null);
+    setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
+  };
+
+  // Backend rule: total_frames must satisfy (n-1) % 8 == 0, minimum 9.
+  const snapTotalFrames = (n: number): number => Math.max(9, n - (n % 8) + 1);
+
+  // Nearest valid LTX-2.3 latent-frame pixel start: {0, 1, 9, 17, ..., 8k+1}.
+  // A UX nicety only -- the backend re-snaps (and warns) server-side
+  // regardless (see OUTPAINT_VIDEO_DEFAULTS.input_offset_frames).
+  const snapLtxOffset = (raw: number): number => {
+    const r = Math.round(raw);
+    if (r <= 0) return 0;
+    const k = Math.max(1, Math.round((r - 1) / 8));
+    const candidates = [0, 1, 8 * k + 1];
+    return candidates.reduce((best, c) => (Math.abs(r - c) < Math.abs(r - best) ? c : best), candidates[0]);
+  };
+
+  // Full length (frames) of the uploaded clip at the current frame_rate,
+  // before trim -- the timeline's rawSegmentLength.
+  const videoRawFrames = videoDurationSec != null
+    ? Math.max(1, Math.round(videoDurationSec * (params.frame_rate ?? 24.0)))
+    : 0;
+
   const sendToTxt2Img = () => {
     if (!generatedImage) {
       alert("No image to send");
@@ -615,27 +779,80 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   const [visibility] = useState({ lora: true, controlnet: true });
 
-  // Add generation request to queue. Image-only in Phase 1 -- video/audio
-  // outpaint (LTX-2.3 temporal / ACE-Step extend) are later phases; the
-  // Generate button is disabled while a video/audio model is loaded (see the
-  // modality notice in the JSX below).
+  // Add generation request to queue. Audio outpaint (ACE-Step extend) is a
+  // later phase (Phase 3) -- disabled with a notice below. Video (outpaint_vid,
+  // LTX-2.3) is implemented here (Phase 2).
   const handleAddToQueue = async () => {
-    if (isVideo || isAudio) {
-      alert("Outpaint currently supports image models only. Video/audio outpaint are planned for a later phase.");
+    if (isAudio) {
+      alert("Audio outpaint is planned for a later phase.");
       return;
     }
     if (!params.prompt) {
       alert("Please enter a prompt");
       return;
     }
-    if (!inputImagePreview) {
-      alert("Please upload an input image");
-      return;
-    }
 
     const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
     const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
     const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt || "");
+
+    // Video mode: a video model (LTX-2.3) is loaded -> enqueue an
+    // outpaint_vid item using the uploaded clip. No loop-generation (matches
+    // Upscale + the video/audio branches of the merged txt2img/img2img panels).
+    if (isVideo) {
+      if (!videoFile) {
+        alert("Please upload an input video clip");
+        return;
+      }
+      const videoParams: OutpaintVideoParams = {
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+        width: params.width,
+        height: params.height,
+        total_frames: params.total_frames,
+        frame_rate: params.frame_rate,
+        num_inference_steps: params.num_inference_steps,
+        guidance_scale: params.guidance_scale,
+        seed: params.seed,
+        num_videos_per_prompt: params.num_videos_per_prompt,
+        max_sequence_length: params.max_sequence_length,
+        audio_enable: params.audio_enable,
+        input_offset_frames: params.input_offset_frames,
+        input_trim_start_frames: params.input_trim_start_frames,
+        input_trim_end_frames: params.input_trim_end_frames,
+        outpaint_video_audio_mode: params.outpaint_video_audio_mode,
+        video_lossless: params.video_lossless,
+        blocks_to_swap: params.video_blocks_to_swap,
+        fbcache_enable: params.fbcache_enable,
+        fbcache_threshold: params.fbcache_threshold,
+        fbcache_warmup_steps: params.fbcache_warmup_steps,
+        spectrum_enable: params.spectrum_enable,
+        spectrum_w: params.spectrum_w,
+        spectrum_w_decay: params.spectrum_w_decay,
+        spectrum_delta_cap: params.spectrum_delta_cap,
+        spectrum_m: params.spectrum_m,
+        spectrum_lam: params.spectrum_lam,
+        spectrum_warmup_steps: params.spectrum_warmup_steps,
+        spectrum_window_size: params.spectrum_window_size,
+        spectrum_flex_window: params.spectrum_flex_window,
+        spectrum_tail: params.spectrum_tail,
+        spectrum_max_cache: params.spectrum_max_cache,
+        vae_path: params.vae_path,
+        text_encoder_path: params.text_encoder_path,
+      };
+      addToQueue({
+        type: "outpaint_vid",
+        params: videoParams as any,
+        inputVideo: videoFile,
+        prompt: processedPrompt,
+      });
+      return;
+    }
+
+    if (!inputImagePreview) {
+      alert("Please upload an input image");
+      return;
+    }
 
     // NOTE: Loop Generation is intentionally out of scope for the Outpaint
     // tab (all phases) -- matches Upscale + the video/audio branches of the
@@ -658,7 +875,53 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (isGenerating) return;
 
     const nextItem = startNextInQueue();
-    if (!nextItem || nextItem.type !== "outpaint") return;
+    if (!nextItem || (nextItem.type !== "outpaint" && nextItem.type !== "outpaint_vid")) return;
+
+    // Video branch: outpaint_vid item (LTX-2.3). The queued input clip is a
+    // File (see inputVideo on QueueItem). Produces an .mp4 and renders a
+    // <video> instead of an <img>. No loop-generation handling.
+    if (nextItem.type === "outpaint_vid") {
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage("");
+      setTotalSteps((nextItem.params as OutpaintVideoParams).num_inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedVideo(null);
+      try {
+        const clip = nextItem.inputVideo;
+        if (!clip) {
+          throw new Error("No input video available for video outpaint generation");
+        }
+        const result = await generateOutpaintVideo(nextItem.params as OutpaintVideoParams, clip);
+        const videoUrl = `/outputs/${getResultFilename(result)}`;
+        setGeneratedVideo(videoUrl);
+        setGeneratedVideoInfo({
+          num_frames: result.image?.num_frames,
+          fps: result.image?.fps,
+          duration: result.image?.duration,
+        });
+        if (onImageGenerated) onImageGenerated(videoUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Outpaint] Video generation failed:", error);
+        alert(`Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
+      return;
+    }
 
     setIsGenerating(true);
     setProgress(0);
@@ -731,7 +994,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   processQueueRef.current = processQueue;
 
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && item.type === "outpaint");
+    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid"));
     const isCurrentItemNull = currentItem === null;
     if (hasPendingItems && isCurrentItemNull && !isGenerating) {
       processQueue();
@@ -753,11 +1016,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     mask_blur: params.mask_blur ?? 4,
   };
 
-  // Phase 1 is image-only. Video/audio outpaint (LTX-2.3 temporal / ACE-Step
-  // extend) are later phases -- ModelLoadSection stays available (so the
-  // user can switch to an image model from this tab), but Generate is
-  // disabled and a notice is shown instead of a broken generation attempt.
-  const modalityBlocked = isVideo || isAudio;
+  // Phase 2 adds video (LTX-2.3 temporal outpaint). Audio (ACE-Step extend)
+  // remains a later phase (Phase 3) -- ModelLoadSection stays available (so
+  // the user can switch to an image/video model from this tab), but Generate
+  // is disabled and a notice is shown instead of a broken generation attempt
+  // while an audio model is loaded.
+  const modalityBlocked = isAudio;
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -766,7 +1030,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         {modalityBlocked && (
           <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
             <p className="text-sm text-yellow-200">
-              {isVideo ? "Video" : "Audio"} outpaint — coming in a later phase. Outpaint currently supports image models only; Generate is disabled while a {isVideo ? "video" : "audio"} model is loaded.
+              Audio outpaint — coming in a later phase. Outpaint does not support audio models yet; Generate is disabled while an audio model is loaded.
             </p>
           </div>
         )}
@@ -801,6 +1065,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           storageKeyPrefix="outpaint"
         />
 
+        {!isVideo && (
         <Card
           title="Input Image"
           collapsible={true}
@@ -854,6 +1119,67 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </div>
           </div>
         </Card>
+        )}
+
+        {isVideo && (
+        <Card
+          title="Input Video"
+          collapsible={true}
+          defaultCollapsed={false}
+          storageKey="outpaint_video_input_collapsed"
+          collapsedPreview={
+            videoPreviewUrl ? (
+              <span className="text-green-400 text-sm">✓ Clip loaded</span>
+            ) : (
+              <span className="text-gray-500 text-sm">No clip</span>
+            )
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="video/mp4,video/webm"
+                onChange={handleVideoUpload}
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-medium
+                  file:bg-blue-600 file:text-white
+                  hover:file:bg-blue-700
+                  file:cursor-pointer cursor-pointer"
+              />
+              {videoPreviewUrl && (
+                <Button onClick={handleClearVideo} variant="secondary" size="sm" title="Clear input video">
+                  Clear
+                </Button>
+              )}
+            </div>
+            <div className="aspect-video bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed border-gray-600">
+              {videoPreviewUrl ? (
+                <video
+                  src={videoPreviewUrl}
+                  onLoadedMetadata={handleVideoLoadedMetadata}
+                  className="w-full h-full object-contain"
+                  controls
+                  muted
+                  playsInline
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <p className="text-gray-500 text-center px-4">Use the file picker above to select an mp4/webm clip</p>
+                </div>
+              )}
+            </div>
+            {videoDurationSec != null && (
+              <p className="text-xs text-gray-500">
+                Clip length: {videoDurationSec.toFixed(2)}s (~{videoRawFrames} frames at {params.frame_rate ?? 24.0} fps).
+                Non-÷32 resolutions are center-cropped/resized once to width×height; the resized frames become the exact-preserved content.
+              </p>
+            )}
+          </div>
+        </Card>
+        )}
 
         <Card title="Prompt">
           <TextareaWithTagSuggestions
@@ -877,6 +1203,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           />
         </Card>
 
+        {!isVideo && (
         <Card title="Placement">
           <OutpaintPlacementCanvas
             inputImagePreview={inputImagePreview}
@@ -885,7 +1212,37 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             onChange={handlePlacementChange}
           />
         </Card>
+        )}
 
+        {isVideo && (
+        <Card title="Temporal Placement">
+          <OutpaintTimeline
+            totalUnits={params.total_frames ?? 121}
+            onTotalUnitsChange={(v) => setParams(prev => ({ ...prev, total_frames: v }))}
+            totalUnitsSnapFn={snapTotalFrames}
+            totalUnitsMin={9}
+            totalUnitsStep={8}
+            rawSegmentLength={videoRawFrames}
+            trimStart={params.input_trim_start_frames ?? 0}
+            onTrimStartChange={(v) => setParams(prev => ({ ...prev, input_trim_start_frames: v }))}
+            trimEnd={params.input_trim_end_frames ?? 0}
+            onTrimEndChange={(v) => setParams(prev => ({ ...prev, input_trim_end_frames: v }))}
+            offset={params.input_offset_frames ?? 0}
+            onOffsetChange={(v) => setParams(prev => ({ ...prev, input_offset_frames: v }))}
+            offsetSnapFn={snapLtxOffset}
+            gridSize={8}
+            minSegmentLength={1}
+            unitRate={params.frame_rate ?? 24.0}
+            unitLabel="frames"
+            disabled={!videoPreviewUrl}
+          />
+          <p className="text-xs text-gray-500 mt-2">
+            Offset is snapped to the nearest valid LTX-2.3 latent frame index (0, 1, 9, 17, ...); the backend re-snaps and warns if it differs.
+          </p>
+        </Card>
+        )}
+
+        {!isVideo && (
         <Card title="Parameters">
           <div className="space-y-4">
             <Slider
@@ -1327,8 +1684,203 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </details>
           </div>
         </Card>
+        )}
 
-        {visibility.lora && (
+        {isVideo && (
+        <Card title="Video">
+          <div className="grid grid-cols-2 gap-2">
+            <NumberInput
+              label="Width (÷32)"
+              value={params.width ?? 768}
+              onCommit={(v) => setParams({ ...params, width: v })}
+              min={32}
+              max={2048}
+              step={32}
+              parse="int"
+            />
+            <NumberInput
+              label="Height (÷32)"
+              value={params.height ?? 512}
+              onCommit={(v) => setParams({ ...params, height: v })}
+              min={32}
+              max={2048}
+              step={32}
+              parse="int"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
+            <NumberInput
+              label="Steps"
+              value={params.num_inference_steps ?? 8}
+              onCommit={(v) => setParams({ ...params, num_inference_steps: v })}
+              min={1}
+              max={100}
+              step={1}
+              parse="int"
+            />
+            <NumberInput
+              label="Guidance Scale"
+              value={params.guidance_scale ?? 1.0}
+              onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+              min={0}
+              max={20}
+              step={0.1}
+              parse="float"
+            />
+            <NumberInput
+              label="Seed"
+              value={params.seed ?? -1}
+              onCommit={(v) => setParams({ ...params, seed: v })}
+              parse="int"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <NumberInput
+              label="Frame Rate (fps)"
+              value={params.frame_rate ?? 24.0}
+              onCommit={(v) => setParams({ ...params, frame_rate: v })}
+              min={1}
+              max={60}
+              step={1}
+              parse="float"
+            />
+          </div>
+
+          <label className="flex items-center gap-2 cursor-pointer mt-2">
+            <input
+              type="checkbox"
+              checked={params.audio_enable ?? true}
+              onChange={(e) => setParams({ ...params, audio_enable: e.target.checked })}
+              className="rounded"
+            />
+            <span className="text-gray-300 text-sm">Audio</span>
+          </label>
+
+          {params.audio_enable && (
+            <div className="ml-6 mt-1">
+              <Select
+                label="Audio mode"
+                value={params.outpaint_video_audio_mode || "regenerate"}
+                onChange={(e) => setParams({ ...params, outpaint_video_audio_mode: e.target.value as "regenerate" | "preserve_input" })}
+                options={[
+                  { value: "regenerate", label: "Regenerate whole track" },
+                  { value: "preserve_input", label: "Preserve input clip audio" },
+                ]}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                "Preserve input clip audio" mutes the generated track over the placed span and mixes the uploaded clip's own audio in instead; falls back to "regenerate" (with a warning) if the clip has no audio stream.
+              </p>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 mt-3">
+            <input
+              type="checkbox"
+              id="outpaint_video_lossless"
+              checked={params.video_lossless ?? false}
+              onChange={(e) => setParams({ ...params, video_lossless: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="outpaint_video_lossless" className="text-sm text-gray-300">Lossless (FFV1)</label>
+          </div>
+          {params.video_lossless && (
+            <p className="text-xs text-gray-500 ml-6">
+              Bit-exact frames, much larger file size, and generally not playable in a browser's native video element (FFV1 has no mainstream browser decoder).
+            </p>
+          )}
+
+          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration</div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="outpaint_vid_block_swap_enable"
+              checked={(params.video_blocks_to_swap ?? 0) > 0}
+              onChange={(e) => setParams({ ...params, video_blocks_to_swap: e.target.checked ? 10 : 0 })}
+              className="rounded"
+            />
+            <label htmlFor="outpaint_vid_block_swap_enable" className="text-sm text-gray-300">
+              Block Swap (Transformer offloading)
+            </label>
+          </div>
+          {(params.video_blocks_to_swap ?? 0) > 0 && (
+            <div className="ml-6 mt-1">
+              <NumberInput
+                label="Blocks to swap"
+                value={params.video_blocks_to_swap ?? 10}
+                onCommit={(v) => setParams({ ...params, video_blocks_to_swap: Math.max(1, v) })}
+                min={1}
+                max={48}
+                step={1}
+                parse="int"
+                className="w-24"
+              />
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="outpaint_vid_spectrum_enable"
+              checked={params.spectrum_enable || false}
+              onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="outpaint_vid_spectrum_enable" className="text-sm text-gray-300">
+              Spectrum (Spectral Feature Forecasting)
+            </label>
+            <span className="text-xs text-gray-500">(mutually exclusive with FBCache; disabled if Block Swap is on)</span>
+          </div>
+          {params.spectrum_enable && (
+            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
+                <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
+                  onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
+                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+              <label className="text-xs text-gray-400 flex items-center gap-1">Warmup
+                <input type="number" min={1} step={1} value={params.spectrum_warmup_steps ?? 3}
+                  onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
+                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="outpaint_vid_fbcache_enable"
+              checked={params.fbcache_enable || false}
+              onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
+              className="rounded"
+            />
+            <label htmlFor="outpaint_vid_fbcache_enable" className="text-sm text-gray-300">
+              First Block Cache (dynamic caching)
+            </label>
+            <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
+          </div>
+          {params.fbcache_enable && (
+            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+              <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold
+                <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
+                  defaultValue={0.12}
+                  onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
+                  className="w-20" />
+              </label>
+              <label className="text-xs text-gray-400 flex items-center gap-1">Warmup steps
+                <NumberInput min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
+                  defaultValue={1}
+                  onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
+                  className="w-20" />
+              </label>
+            </div>
+          )}
+        </Card>
+        )}
+
+        {!isVideo && visibility.lora && (
           <LoRASelector
             value={params.loras || []}
             onChange={(loras: LoRAConfig[]) => setParams({ ...params, loras })}
@@ -1337,7 +1889,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           />
         )}
 
-        {visibility.controlnet && (
+        {!isVideo && visibility.controlnet && (
           <ControlNetSelector
             value={params.controlnets || []}
             onChange={(controlnets: ControlNetConfig[]) => setParams({ ...params, controlnets })}
@@ -1355,8 +1907,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           variant="primary"
           size="lg"
           className="w-full"
-          disabled={!inputImagePreview || modalityBlocked}
-          title={modalityBlocked ? "Outpaint currently supports image models only" : undefined}
+          disabled={modalityBlocked || (isVideo ? !videoFile : !inputImagePreview)}
+          title={modalityBlocked ? "Outpaint does not support audio models yet" : undefined}
         >
           {isGenerating ? "Add to Queue" : "Generate"}
         </Button>
@@ -1405,7 +1957,26 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               )}
 
               <div className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center">
-                {generatedImage ? (
+                {isVideo && generatedVideo ? (
+                  <div className="w-full space-y-2">
+                    <video
+                      src={generatedVideo}
+                      className="w-full rounded-lg"
+                      controls
+                      loop
+                      muted
+                      autoPlay
+                      playsInline
+                    />
+                    {generatedVideoInfo && (
+                      <div className="text-xs text-gray-400">
+                        {generatedVideoInfo.num_frames != null && <span>{generatedVideoInfo.num_frames} frames</span>}
+                        {generatedVideoInfo.fps != null && <span> · {generatedVideoInfo.fps} fps</span>}
+                        {generatedVideoInfo.duration != null && Number.isFinite(Number(generatedVideoInfo.duration)) && <span> · {Number(generatedVideoInfo.duration).toFixed(2)}s</span>}
+                      </div>
+                    )}
+                  </div>
+                ) : generatedImage ? (
                   <img src={generatedImage} alt="Generated" className="max-w-full max-h-full rounded-lg" />
                 ) : previewImage ? (
                   <img
@@ -1414,11 +1985,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     className="max-w-full max-h-full rounded-lg opacity-80"
                   />
                 ) : (
-                  <p className="text-gray-500">No image generated yet</p>
+                  <p className="text-gray-500">No image/video generated yet</p>
                 )}
               </div>
 
-              {generatedImage && (
+              {!isVideo && generatedImage && (
                 <div className="space-y-3 mt-4">
                   <div className="flex flex-wrap gap-2 text-sm">
                     <label className="flex items-center gap-2 cursor-pointer">

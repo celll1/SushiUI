@@ -2,18 +2,19 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { GenerationParams, Img2ImgParams, InpaintParams, OutpaintParams, UpscaleParams, Txt2VidParams, Img2VidParams, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+import { GenerationParams, Img2ImgParams, InpaintParams, OutpaintParams, OutpaintVideoParams, UpscaleParams, Txt2VidParams, Img2VidParams, Txt2AudParams, Aud2AudParams } from "@/utils/api";
 
 export interface QueueItem {
   id: string;
-  type: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale" | "txt2vid" | "img2vid" | "txt2aud" | "aud2aud";
-  params: GenerationParams | Img2ImgParams | InpaintParams | OutpaintParams | UpscaleParams | Txt2VidParams | Img2VidParams | Txt2AudParams | Aud2AudParams;
+  type: "txt2img" | "img2img" | "inpaint" | "outpaint" | "outpaint_vid" | "upscale" | "txt2vid" | "img2vid" | "txt2aud" | "aud2aud";
+  params: GenerationParams | Img2ImgParams | InpaintParams | OutpaintParams | OutpaintVideoParams | UpscaleParams | Txt2VidParams | Img2VidParams | Txt2AudParams | Aud2AudParams;
   inputImage?: string; // For img2img, inpaint, and outpaint
   // Server-cached latent to chain from instead of an image (loop-generation
   // decodeMode "final-only" latent passthrough; img2img only — set by the
   // previous step's response.latent_id when its loop_decode was "none").
   inputLatentId?: string;
   inputAudio?: File; // For aud2aud (reference clip; a File, unlike inputImage's base64 string)
+  inputVideo?: File; // For outpaint_vid (uploaded clip; a File, mirrors inputAudio -- avoids a giant base64 string)
   maskImage?: string; // For inpaint only
   status: "pending" | "generating" | "completed" | "failed";
   addedAt: number;

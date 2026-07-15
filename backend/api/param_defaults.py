@@ -195,6 +195,23 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "region_prompt_strength": 1.0,   # 0-2; 0 = feature inactive
     "region_prompt_method": "cfg",   # "cfg" (spatial/masked CFG) | "attention" (not yet implemented -- falls back to "cfg" with a warning)
     "region_mask_feather": 0.0,      # Gaussian sigma (latent cells) for the region mask edge; 0 = hard mask
+    # Seam Structure Continuity (SD/SDXL only, inpaint/outpaint): make thin
+    # structures that cross the region boundary (a held rod/staff, a limb,
+    # torso, architectural lines) CONTINUE coherently into the generated region.
+    # Detects oriented structures crossing the boundary in the known latent
+    # (structure tensor), affine-extrapolates their band-pass cross-section into
+    # a shallow generate-side collar, and pulls the model's per-step x0
+    # prediction toward that target -- gated per boundary position by a
+    # structure-saliency map so it fires ONLY where a real crossing structure
+    # touches the boundary (leaving the rest of the seam untouched). x0-space,
+    # no extra U-Net forwards, known region bit-exact. See
+    # core.inference.custom_sampling._ssc_precompute / _ssc_apply. 0 = off
+    # (byte-identical). Active range ~0.25-0.6.
+    "seam_structure_strength": 0.0,  # lambda; 0 = feature inactive
+    "seam_structure_depth": 6.0,     # generate-side collar depth (latent cells)
+    "seam_structure_end": 0.70,      # schedule progress at which the effect decays to 0 (full <= 0.45)
+    "seam_structure_saliency": 2.0,  # saliency-gate midpoint as a multiple of the boundary-ribbon median (0 = whole seam)
+    "seam_structure_max_area": 0.25, # safety cap: max fraction of the generate region the gate may cover
     # Loop-generation decode mode (txt2img/img2img/inpaint, all steps of a
     # client-driven loop). "full" = decode with the active VAE (PiD if
     # overridden) + save + gallery (current/default behavior). "cheap" = if a
@@ -243,6 +260,11 @@ _INPAINT_ONLY = frozenset({
     # below via the same path as mask_blur.
     "region_prompt", "region_negative_prompt", "region_prompt_strength",
     "region_prompt_method", "region_mask_feather",
+    # Seam Structure Continuity: mask-scoped (structures crossing the generate/
+    # repaint boundary), so inpaint + outpaint only -- inherited by
+    # OUTPAINT_DEFAULTS via the same path as region_* / mask_blur.
+    "seam_structure_strength", "seam_structure_depth", "seam_structure_end",
+    "seam_structure_saliency", "seam_structure_max_area",
 })
 
 TXT2IMG_DEFAULTS: Dict[str, Any] = {

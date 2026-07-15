@@ -6413,6 +6413,13 @@ components:
                 because outpaint has no existing content in the generated
                 region -- the placed input region is preserved regardless,
                 via the final pixel paste (not via this parameter).
+
+                At 1.0 (default), the generated region is initialized from
+                pure architecture-native noise rather than a noised encode of
+                the canvas fill. Below 1.0, the legacy guided-from-fill mode
+                runs instead (the generated region is denoised starting from
+                the canvas fill, so it remains influenced by the extended
+                edge content) and a warning is returned in the response.
             img2img_fix_steps:
               type: boolean
               default: true
@@ -6513,6 +6520,18 @@ components:
               type: number
               default: 1.0
               description: "Strength of the mask-edge blend when compositing the generated region back onto the canvas (internal to generate_inpaint; the final preserved-rect paste happens afterward regardless)."
+            outpaint_seam_fix:
+              type: boolean
+              default: true
+              description: |
+                Corrects a tonal (exposure) mismatch between the generated
+                surroundings and the preserved input rectangle by comparing
+                narrow strips just inside/outside each generated-adjacent rect
+                edge and applying a smooth, outward-tapered per-channel gain
+                to the generated pixels only. Applied after generation and
+                before the final unconditional paste, so the preserved rect is
+                never altered. Disable to see the model's raw output.
+              example: true
 
     UpscaleRequest:
       type: object

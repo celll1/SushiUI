@@ -318,6 +318,183 @@ def build_outpaint_mask(
     return Image.fromarray(mask_arr, mode="L")
 
 
+def compose_outpaint_start(keep_start: Any, native_noise_start: Any, mask: Any) -> Any:
+    """Shared pure init-compose helper for outpaint's noise-init mode.
+
+    ``z_t0 = (1 - mask) * keep_start + mask * native_noise_start``.
+
+    Mask convention is 1 = GENERATE, matching ``build_outpaint_mask``'s
+    white=generate convention and every backend's ``mask_latent``/packed-mask
+    convention already in use in their inpaint sampling loops. The KEEP
+    region (``mask == 0``) gets the architecture's normal noised/blended init
+    (``keep_start``, e.g. ``scheduler.add_noise(z0, eps, t0)`` for SD/SDXL);
+    the GENERATE region (``mask == 1``) gets the architecture's own NATIVE
+    txt2img start (``native_noise_start``, e.g. ``eps * init_noise_sigma`` for
+    SD/SDXL, or plain ``eps`` at sigma=1 for flow-matching archs) --
+    independent of the canvas fill. This is what removes the
+    encode(canvas-fill) artifact from the generated region (see
+    ``scratchpad/outpaint_noise_init_design.md``).
+
+    Deliberately generic: ``keep_start``/``native_noise_start``/``mask`` may be
+    numpy arrays or torch tensors (whatever the calling backend's sampling
+    loop already has in scope for its latent/patchified representation) --
+    only ``-``/``*``/``+`` operators are used, so no tensor-library import is
+    needed here, keeping this module's numpy/PIL/stdlib-only import policy
+    intact. Each backend calls this locally (mask/latent layout -- BCHW /
+    packed / patchified -- differs per architecture).
+    """
+    return (1 - mask) * keep_start + mask * native_noise_start
+
+
+def match_generated_exposure(
+    result_img: Image.Image,
+    placed_img: Image.Image,
+    rect: Tuple[int, int, int, int],
+    mask_blur: int,
+    strip_px: int = 16,
+    gain_min: float = 0.67,
+    gain_max: float = 1.5,
+) -> Image.Image:
+    """Arch-independent multiplicative exposure/tone harmonizer.
+
+    Noise-init (``compose_outpaint_start``) removes the encode(fill) artifact
+    but does NOT by itself remove tone/exposure mismatch between the model's
+    generated pixels and the exact preserved rectangle -- large denoise spans
+    commonly drift exposure, producing a visible tonal step right at the rect
+    boundary. This measures, independently for each rect edge that borders a
+    GENERATED region (i.e. there is canvas beyond that edge), the ratio
+    between:
+      - an INNER strip (``strip_px`` wide/tall), sampled from ``placed_img``
+        (the ground-truth preserved content) just inside the rect at that
+        edge, and
+      - an OUTER strip (``strip_px``), sampled from ``result_img`` (the
+        generated result), starting ``mask_blur`` pixels past the rect edge
+        (skipping the blended transition band baked into the outpaint mask).
+
+    A per-channel gain ``clip(median(inner)/median(outer), gain_min, gain_max)``
+    is applied multiplicatively to the GENERATED pixels bordering that edge
+    (never inside the rect), weighted by an outward cosine taper from 1.0 at
+    the rect edge to 0.0 at distance ``W`` (no correction beyond that). A
+    reliability gate skips any edge whose inner/outer strip is empty or
+    near-clipped (median near 0 or 255) -- these are inherently unreliable to
+    measure, so no correction (gain=1) is safer than a bad one.
+
+    ``rect`` pixels are never read from ``result_img`` for gain measurement
+    (only ``placed_img`` is used as the inner-strip source) and are never
+    written by this function -- the crop under ``rect`` is copied back
+    unchanged as a final defensive guard, even though the row/column slicing
+    below already excludes it, keeping the invariant enforced by code rather
+    than by care alone. The caller still performs the real, unconditional
+    ``paste_preserved_region`` afterward regardless.
+    """
+    x0, y0, x1, y1 = rect
+    canvas_w, canvas_h = result_img.size
+
+    result_arr = np.array(result_img.convert("RGB")).astype(np.float64)
+    placed_arr = np.array(placed_img.convert("RGB")).astype(np.float64)
+    corrected = result_arr.copy()
+
+    strip = max(1, int(strip_px))
+    skip = max(0, int(mask_blur))
+    extent = max(canvas_w, canvas_h)
+    taper_w = float(min(max(extent // 2, 64), 256))
+
+    def _reliable(inner: np.ndarray, outer: np.ndarray) -> bool:
+        if inner.size == 0 or outer.size == 0:
+            return False
+        inner_med = np.median(inner.reshape(-1, 3), axis=0)
+        outer_med = np.median(outer.reshape(-1, 3), axis=0)
+        # Near-clipped strips (crushed blacks / blown highlights) make the
+        # ratio unstable/meaningless -- skip rather than guess.
+        if np.any(inner_med < 2) or np.any(inner_med > 253):
+            return False
+        if np.any(outer_med < 2) or np.any(outer_med > 253):
+            return False
+        return True
+
+    def _apply(region_slice: Tuple[slice, slice], dist: np.ndarray, gain: np.ndarray, axis: int) -> None:
+        """Blend `region` toward `region * gain` via an outward cosine taper.
+
+        ``dist`` is the per-row (axis=0) or per-column (axis=1) distance (in
+        px) from the rect edge; ``axis`` selects which side broadcasts.
+        """
+        w = np.where(dist < taper_w, 0.5 * (1.0 + np.cos(np.pi * dist / taper_w)), 0.0)
+        w = w[:, None, None] if axis == 0 else w[None, :, None]
+        region = corrected[region_slice]
+        corrected[region_slice] = region * (1.0 + w * (gain[None, None, :] - 1.0))
+
+    # top: canvas above the rect is generated content.
+    if y0 > 0:
+        inner = placed_arr[0:min(strip, y1 - y0), 0:(x1 - x0), :]
+        outer_end = max(0, y0 - skip)
+        outer_start = max(0, outer_end - strip)
+        outer = result_arr[outer_start:outer_end, x0:x1, :]
+        if _reliable(inner, outer):
+            gain = np.clip(
+                np.median(inner.reshape(-1, 3), axis=0) / (np.median(outer.reshape(-1, 3), axis=0) + 1e-6),
+                gain_min, gain_max,
+            )
+            ys = np.arange(0, y0)
+            dist = (y0 - ys).astype(np.float64) - 1.0  # 0 at the row touching the rect
+            _apply((slice(0, y0), slice(x0, x1)), dist, gain, axis=0)
+
+    # bottom: canvas below the rect is generated content.
+    if y1 < canvas_h:
+        inner = placed_arr[max(0, (y1 - y0) - strip):(y1 - y0), 0:(x1 - x0), :]
+        outer_start = min(canvas_h, y1 + skip)
+        outer_end = min(canvas_h, outer_start + strip)
+        outer = result_arr[outer_start:outer_end, x0:x1, :]
+        if _reliable(inner, outer):
+            gain = np.clip(
+                np.median(inner.reshape(-1, 3), axis=0) / (np.median(outer.reshape(-1, 3), axis=0) + 1e-6),
+                gain_min, gain_max,
+            )
+            ys = np.arange(y1, canvas_h)
+            dist = (ys - y1).astype(np.float64)
+            _apply((slice(y1, canvas_h), slice(x0, x1)), dist, gain, axis=0)
+
+    # left: canvas left of the rect is generated content.
+    if x0 > 0:
+        inner = placed_arr[0:(y1 - y0), 0:min(strip, x1 - x0), :]
+        outer_end = max(0, x0 - skip)
+        outer_start = max(0, outer_end - strip)
+        outer = result_arr[y0:y1, outer_start:outer_end, :]
+        if _reliable(inner, outer):
+            gain = np.clip(
+                np.median(inner.reshape(-1, 3), axis=0) / (np.median(outer.reshape(-1, 3), axis=0) + 1e-6),
+                gain_min, gain_max,
+            )
+            xs = np.arange(0, x0)
+            dist = (x0 - xs).astype(np.float64) - 1.0
+            _apply((slice(y0, y1), slice(0, x0)), dist, gain, axis=1)
+
+    # right: canvas right of the rect is generated content.
+    if x1 < canvas_w:
+        inner = placed_arr[0:(y1 - y0), max(0, (x1 - x0) - strip):(x1 - x0), :]
+        outer_start = min(canvas_w, x1 + skip)
+        outer_end = min(canvas_w, outer_start + strip)
+        outer = result_arr[y0:y1, outer_start:outer_end, :]
+        if _reliable(inner, outer):
+            gain = np.clip(
+                np.median(inner.reshape(-1, 3), axis=0) / (np.median(outer.reshape(-1, 3), axis=0) + 1e-6),
+                gain_min, gain_max,
+            )
+            xs = np.arange(x1, canvas_w)
+            dist = (xs - x1).astype(np.float64)
+            _apply((slice(y0, y1), slice(x1, canvas_w)), dist, gain, axis=1)
+
+    # Round (not truncate) before quantizing back to uint8 -- floating-point
+    # imprecision in the gain math (e.g. an exact-1.0 ratio computed as
+    # 0.999999...) would otherwise silently shave 1 off an unmodified pixel.
+    corrected = np.clip(np.round(corrected), 0, 255).astype(np.uint8)
+    out = Image.fromarray(corrected, mode="RGB")
+    # Defensive guard (belt-and-suspenders): restore the rect crop from the
+    # pre-harmonizer result unconditionally, even though none of the region
+    # slices above ever include it.
+    out.paste(result_img.crop(rect), (x0, y0))
+    return out
+
+
 def paste_preserved_region(
     result_img: Image.Image,
     placed_img: Image.Image,
@@ -340,6 +517,8 @@ def reconcile_and_paste(
     placed_img: Image.Image,
     rect: Tuple[int, int, int, int],
     canvas_size: Tuple[int, int],
+    mask_blur: int = 4,
+    outpaint_seam_fix: bool = True,
 ) -> Image.Image:
     """Defensive belt-and-suspenders wrapper around ``paste_preserved_region``.
 
@@ -353,10 +532,16 @@ def reconcile_and_paste(
 
     If ``result_img.size != canvas_size``, the (generated) result is resized
     back to ``canvas_size`` FIRST -- this only touches the generated
-    surroundings -- then ``placed_img`` is pasted at ``rect`` exactly as
-    ``paste_preserved_region`` does, re-establishing byte-exactness of the
-    preserved rect regardless of any architecture-side re-rounding.
+    surroundings. Then, when ``outpaint_seam_fix`` is True, the arch-independent
+    exposure harmonizer (``match_generated_exposure``) corrects the generated
+    surroundings' tone against the preserved rect (using ``mask_blur`` to skip
+    the mask's blended transition band). Finally ``placed_img`` is pasted at
+    ``rect`` exactly as ``paste_preserved_region`` does -- this paste is always
+    the LAST mutation, re-establishing byte-exactness of the preserved rect
+    regardless of any architecture-side re-rounding or the harmonizer above.
     """
     if result_img.size != canvas_size:
         result_img = result_img.resize(canvas_size, Image.Resampling.LANCZOS)
+    if outpaint_seam_fix:
+        result_img = match_generated_exposure(result_img, placed_img, rect, mask_blur)
     return paste_preserved_region(result_img, placed_img, rect)

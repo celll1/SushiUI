@@ -4510,6 +4510,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             fbcache_warmup_steps=params.get("fbcache_warmup_steps", 1),
             fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
             loop_decode=params.get("loop_decode", "full"),
+            outpaint_noise_init=bool(params.get("_outpaint_noise_init", False)),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -4634,23 +4635,78 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         )
 
         canvas_img, placed_img, rect = build_outpaint_canvas(input_image, params, align=16)
-        mask_img = build_outpaint_mask(
-            canvas_img.size, rect, params.get("mask_blur", 4)
-        )
+        mask_blur = params.get("mask_blur", 4)
+        mask_img = build_outpaint_mask(canvas_img.size, rect, mask_blur)
 
         # The canvas IS the actual output size for this generation -- must
         # match canvas_img.size exactly, otherwise generate_inpaint's own
         # width/height resize (see custom_sampling target_width/target_height)
         # would resize our carefully-built canvas and destroy `rect`'s
-        # correspondence to the preserved content.
+        # correspondence to the preserved content. This mutates the caller's
+        # `params` (not a copy) -- routes.py relies on params["width"]/["height"]
+        # reflecting the resolved canvas size after this call returns.
         params["width"], params["height"] = canvas_img.size
 
+        # From here on, work on a COPY of params for the internal-only
+        # noise-init / mask-blur adjustments below -- these must NOT leak
+        # into the caller's `params` (which is persisted to the DB and PNG
+        # metadata as the user's requested parameters).
+        work = dict(params)
+
+        # Noise-init gate: at the default (and any >=1.0) denoising_strength,
+        # the GENERATE region is initialized from pure architecture-native
+        # noise -- independent of the canvas fill -- instead of a noised
+        # encode(fill), which otherwise leaves a visible extended-edge
+        # artifact in the generated region and drives the ~25% exposure
+        # mismatch at the rect boundary (see
+        # core.inference.outpaint_utils.compose_outpaint_start and
+        # custom_inpaint_sampling_loop's outpaint_noise_init kwarg). Below
+        # 1.0 the user is deliberately requesting the legacy SDEdit-from-fill
+        # behavior ("guided outpaint"), so noise-init stays off and a warning
+        # is recorded.
+        requested_strength = float(work.get("denoising_strength", 1.0))
+        # Internal-only bookkeeping (underscore-prefixed -- not a user param,
+        # not in param_defaults.py/openapi.yaml): preserves the user's
+        # ORIGINAL requested strength for any downstream diagnostics, since
+        # `work["denoising_strength"]` itself is overwritten to 1.0 below
+        # when noise-init is active.
+        work["_outpaint_requested_strength"] = requested_strength
+        work["_outpaint_noise_init"] = requested_strength >= 1.0
+        if work["_outpaint_noise_init"]:
+            work["denoising_strength"] = 1.0
+        else:
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    "Outpaint denoising_strength < 1.0 uses the legacy "
+                    "guided-from-fill mode: the generated region is denoised "
+                    "starting from the canvas fill instead of pure noise, so "
+                    "it stays influenced by the extended-edge fill content",
+                    code="outpaint_guided_lowstrength",
+                )
+            except Exception:
+                pass
+
+        # The outpaint mask (build_outpaint_mask, above) already has its blur
+        # baked in AND is hard-clamped to 0 over the preserved rect. Several
+        # backends re-Gaussian-blur the incoming mask using `mask_blur` --
+        # doing that again here would reintroduce nonzero mask weight INSIDE
+        # the rect, breaking the outward-only-blur contract. Force it off for
+        # the delegated generate_inpaint call only; the real blur radius
+        # (`mask_blur`, above) is still used for `build_outpaint_mask` and for
+        # the exposure harmonizer's transition-band skip below.
+        work["mask_blur"] = 0
+
         result_image, actual_seed, actual_ancestral_seed = self.generate_inpaint(
-            params, canvas_img, mask_img,
+            work, canvas_img, mask_img,
             progress_callback=progress_callback, step_callback=step_callback,
         )
 
-        result_image = reconcile_and_paste(result_image, placed_img, rect, canvas_img.size)
+        result_image = reconcile_and_paste(
+            result_image, placed_img, rect, canvas_img.size,
+            mask_blur=mask_blur,
+            outpaint_seam_fix=bool(params.get("outpaint_seam_fix", True)),
+        )
 
         return result_image, actual_seed, actual_ancestral_seed
 

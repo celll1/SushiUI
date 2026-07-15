@@ -293,6 +293,14 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # band lies entirely outside the preserved rect; see
     # outpaint_utils.build_outpaint_mask), unlike inpaint's symmetric blur.
     # The numeric default is unchanged.
+    #
+    # Exposure-seam harmonizer (core.inference.outpaint_utils.match_generated_
+    # exposure): corrects a tonal mismatch between the generated surroundings
+    # and the preserved rect by comparing strips just inside/outside the rect
+    # edges. Applied after generation, before the final unconditional paste,
+    # so it never touches the preserved rect. On by default; disable to see
+    # the model's raw, uncorrected output.
+    "outpaint_seam_fix": True,
 }
 
 # ---------------------------------------------------------------------------

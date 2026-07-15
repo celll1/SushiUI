@@ -3220,6 +3220,11 @@ def custom_inpaint_sampling_loop(
     style_eps_ref: Optional[torch.Tensor] = None,  # fixed reference noise (build_style_transfer)
     style_refs: Optional[List[Tuple[Any, torch.Tensor, torch.Tensor]]] = None,  # multi-reference (N>1): list of (StyleTransferConfig, ref_x0, eps_ref) triples, one per reference image; only consulted when len>1 (build_style_transfer_multi)
     style_combine_mode: str = "stack",  # "stack" | "common_concept" -- multi-reference combine mode (core.inference.reference_style.inject_kv_multi)
+    outpaint_noise_init: bool = False,  # Outpaint noise-init (core.pipeline.generate_outpaint's `_outpaint_noise_init`):
+                                        # the GENERATE region (mask_latent==1) starts from pure
+                                        # architecture-native noise instead of noised encode(canvas
+                                        # fill), independent of the fill content -- see
+                                        # core.inference.outpaint_utils.compose_outpaint_start.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -3470,7 +3475,23 @@ def custom_inpaint_sampling_loop(
         current_seed = generator.initial_seed()
         generator = torch.Generator(device=device).manual_seed(current_seed)
     noise = torch.randn(init_latents.shape, generator=generator, device=device, dtype=dtype)
-    latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
+    if outpaint_noise_init:
+        # Outpaint noise-init: the GENERATE region (mask_latent==1) starts from
+        # pure architecture-native noise (`noise * init_noise_sigma` -- the
+        # SAME native start custom_sampling_loop's txt2img path uses), NOT
+        # from a noised encode of the canvas fill -- independent of the fill
+        # content. The KEEP region (mask_latent==0) is unaffected: it still
+        # gets the normal noised init below. SAME `noise` tensor is reused for
+        # both terms (continuity with the per-step keep re-injection further
+        # down, which also reuses `noise`).
+        from core.inference.outpaint_utils import compose_outpaint_start
+        latents = compose_outpaint_start(
+            scheduler.add_noise(init_latents, noise, timesteps[0:1]),
+            noise * scheduler.init_noise_sigma,
+            mask_latent,
+        )
+    else:
+        latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
 
     # Prepare Reference Guide latents while VAE is still on GPU
     ref_guides = []

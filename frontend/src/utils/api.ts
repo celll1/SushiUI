@@ -335,6 +335,15 @@ export interface InpaintParams extends GenerationParams {
   region_prompt_strength?: number;
   region_prompt_method?: string;
   region_mask_feather?: number;
+  // Seam Structure Continuity (SSC, SD/SDXL only): continues thin structures
+  // that cross the region boundary (a held rod/staff, limb, torso, lines)
+  // into the generated/repainted region. x0-space, no extra U-Net forwards.
+  // 0 = off.
+  seam_structure_strength?: number;
+  seam_structure_depth?: number;
+  seam_structure_end?: number;
+  seam_structure_saliency?: number;
+  seam_structure_max_area?: number;
 }
 
 // Outpaint: place a (optionally trimmed/resized) input image inside a LARGER
@@ -366,6 +375,14 @@ export interface OutpaintParams extends GenerationParams {
   region_prompt_strength?: number;
   region_prompt_method?: string;
   region_mask_feather?: number;
+  // Seam Structure Continuity (SSC, SD/SDXL only): continues thin structures
+  // that cross the region boundary (a held rod/staff, limb, torso, lines)
+  // into the generated region. x0-space, no extra U-Net forwards. 0 = off.
+  seam_structure_strength?: number;
+  seam_structure_depth?: number;
+  seam_structure_end?: number;
+  seam_structure_saliency?: number;
+  seam_structure_max_area?: number;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -1446,6 +1463,12 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("region_prompt_strength", String(paramsWithImages.region_prompt_strength ?? 1.0));
   formData.append("region_prompt_method", paramsWithImages.region_prompt_method || "cfg");
   formData.append("region_mask_feather", String(paramsWithImages.region_mask_feather ?? 0.0));
+  // Seam Structure Continuity (SSC, SD/SDXL only); 0 = off
+  formData.append("seam_structure_strength", String(paramsWithImages.seam_structure_strength ?? 0.0));
+  formData.append("seam_structure_depth", String(paramsWithImages.seam_structure_depth ?? 6.0));
+  formData.append("seam_structure_end", String(paramsWithImages.seam_structure_end ?? 0.70));
+  formData.append("seam_structure_saliency", String(paramsWithImages.seam_structure_saliency ?? 2.0));
+  formData.append("seam_structure_max_area", String(paramsWithImages.seam_structure_max_area ?? 0.25));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -1648,6 +1671,12 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("region_prompt_strength", String(paramsWithImages.region_prompt_strength ?? 1.0));
   formData.append("region_prompt_method", paramsWithImages.region_prompt_method || "cfg");
   formData.append("region_mask_feather", String(paramsWithImages.region_mask_feather ?? 0.0));
+  // Seam Structure Continuity (SSC, SD/SDXL only); 0 = off
+  formData.append("seam_structure_strength", String(paramsWithImages.seam_structure_strength ?? 0.0));
+  formData.append("seam_structure_depth", String(paramsWithImages.seam_structure_depth ?? 6.0));
+  formData.append("seam_structure_end", String(paramsWithImages.seam_structure_end ?? 0.70));
+  formData.append("seam_structure_saliency", String(paramsWithImages.seam_structure_saliency ?? 2.0));
+  formData.append("seam_structure_max_area", String(paramsWithImages.seam_structure_max_area ?? 0.25));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

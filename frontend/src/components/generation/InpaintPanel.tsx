@@ -62,6 +62,15 @@ interface InpaintParams {
   region_prompt_strength?: number;
   region_prompt_method?: string;
   region_mask_feather?: number;
+  // Seam Structure Continuity (SSC, SD/SDXL only): continues thin structures
+  // that cross the region boundary (a held rod/staff, limb, torso, lines)
+  // into the generated/repainted region. x0-space, no extra U-Net forwards.
+  // 0 = off.
+  seam_structure_strength?: number;
+  seam_structure_depth?: number;
+  seam_structure_end?: number;
+  seam_structure_saliency?: number;
+  seam_structure_max_area?: number;
   prompt_chunking_mode?: string;
   max_prompt_chunks?: number;
   loras?: LoRAConfig[];
@@ -144,6 +153,11 @@ const DEFAULT_PARAMS: InpaintParams = {
   region_prompt_strength: 1.0,
   region_prompt_method: "cfg",
   region_mask_feather: 0.0,
+  seam_structure_strength: 0.0,
+  seam_structure_depth: 6.0,
+  seam_structure_end: 0.70,
+  seam_structure_saliency: 2.0,
+  seam_structure_max_area: 0.25,
   prompt_chunking_mode: "a1111",
   max_prompt_chunks: 0,
   loras: [],
@@ -1655,6 +1669,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         region_prompt_strength: mainParams.region_prompt_strength,
         region_prompt_method: mainParams.region_prompt_method,
         region_mask_feather: mainParams.region_mask_feather,
+        seam_structure_strength: mainParams.seam_structure_strength,
+        seam_structure_depth: mainParams.seam_structure_depth,
+        seam_structure_end: mainParams.seam_structure_end,
+        seam_structure_saliency: mainParams.seam_structure_saliency,
+        seam_structure_max_area: mainParams.seam_structure_max_area,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
@@ -1891,6 +1910,11 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         region_prompt_strength: nextItem.params.region_prompt_strength,
         region_prompt_method: nextItem.params.region_prompt_method,
         region_mask_feather: nextItem.params.region_mask_feather,
+        seam_structure_strength: nextItem.params.seam_structure_strength,
+        seam_structure_depth: nextItem.params.seam_structure_depth,
+        seam_structure_end: nextItem.params.seam_structure_end,
+        seam_structure_saliency: nextItem.params.seam_structure_saliency,
+        seam_structure_max_area: nextItem.params.seam_structure_max_area,
         resize_mode: nextItem.params.resize_mode,
         resampling_method: nextItem.params.resampling_method,
         loras: nextItem.params.loras,
@@ -2701,6 +2725,66 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                 value={params.region_mask_feather ?? 0.0}
                 onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
               />
+            </div>
+          </details>
+
+          {/* Seam Structure Continuity (SSC): continues thin structures that
+              cross the region boundary (a held rod/staff, limb, torso, lines)
+              into the generated/repainted region. See backend/api/routes.py
+              generate_inpaint seam_structure_* Form params. */}
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Seam Structure Continuity
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                SD/SDXL only. Continues thin structures that cross the region boundary (a held rod/staff, limb, torso, lines) into the generated/repainted region.
+                x0-space, no extra U-Net forwards. 0 = off.
+              </p>
+              <Slider
+                label="Seam Structure Strength"
+                min={0}
+                max={1.5}
+                step={0.05}
+                value={params.seam_structure_strength ?? 0.0}
+                onChange={(e) => setParams({ ...params, seam_structure_strength: parseFloat(e.target.value) })}
+              />
+              {developerMode && (
+                <>
+                  <Slider
+                    label="Seam Structure Depth (latent cells)"
+                    min={1}
+                    max={24}
+                    step={1}
+                    value={params.seam_structure_depth ?? 6.0}
+                    onChange={(e) => setParams({ ...params, seam_structure_depth: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Seam Structure End (schedule progress)"
+                    min={0.45}
+                    max={1.0}
+                    step={0.05}
+                    value={params.seam_structure_end ?? 0.70}
+                    onChange={(e) => setParams({ ...params, seam_structure_end: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Seam Structure Saliency"
+                    min={0}
+                    max={6}
+                    step={0.5}
+                    value={params.seam_structure_saliency ?? 2.0}
+                    onChange={(e) => setParams({ ...params, seam_structure_saliency: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Seam Structure Max Area"
+                    min={0.05}
+                    max={1.0}
+                    step={0.05}
+                    value={params.seam_structure_max_area ?? 0.25}
+                    onChange={(e) => setParams({ ...params, seam_structure_max_area: parseFloat(e.target.value) })}
+                  />
+                </>
+              )}
             </div>
           </details>
         </Card>

@@ -915,6 +915,24 @@ def _outpaint_x0_transform(scheduler, sample: torch.Tensor, t, sigma_index: int)
     return predict_x0, to_model_output
 
 
+def _outpaint_step_sigma(scheduler, t, sigma_index: int) -> float:
+    """The EDM-equivalent data-space noise ratio sigma-bar at this step, using
+    the SAME scheduler-family split as ``_outpaint_x0_transform``. For the
+    sigma-scale + DPM-VP-sigma families it is ``scheduler.sigmas[sigma_index]``;
+    for DDIM/DDPM-style integer-timestep VP schedulers it is
+    ``sqrt((1-alpha_bar_t)/alpha_bar_t)``. Used by BDR's anneal schedule and its
+    x0-posterior-width noise coordinate. Returns a python float.
+    """
+    cls_name = type(scheduler).__name__
+    if (cls_name in _OUTPAINT_SIGMA_SCALE_SCHEDULERS or cls_name in _OUTPAINT_VP_SIGMA_SCHEDULERS) \
+            and hasattr(scheduler, "sigmas") and sigma_index < len(scheduler.sigmas):
+        return float(scheduler.sigmas[sigma_index].item())
+    t_index = int(t.item()) if torch.is_tensor(t) else int(t)
+    alpha_prod_t = float(scheduler.alphas_cumprod[t_index].item())
+    alpha_prod_t = min(max(alpha_prod_t, 1e-8), 1.0 - 1e-8)
+    return float(((1.0 - alpha_prod_t) / alpha_prod_t) ** 0.5)
+
+
 def _outpaint_collar_weight(mask_latent: torch.Tensor, collar_cells: float = 6.0) -> Optional[torch.Tensor]:
     """Static per-cell weight W_b(d) in [0,1] for the B1 low-frequency
     boundary color proximal: 1 at generate-side cells touching the rect
@@ -1208,6 +1226,155 @@ def _ssc_apply(x0_hat: torch.Tensor, state: dict, lam: float, omega: float) -> t
     )
     res = (state["E_bp"] - x0_bp) + 0.5 * (state["DnuE_bp"] - Dnu_x0)
     return x0_hat + (lam * omega) * G * res
+
+
+# ============================================================================
+# BOUNDARY DETERMINISM RELAXATION (BDR) -- scratchpad/boundary_relaxation_
+# synthesis.md (fable + codex CONVERGED). The "junction render" complement to
+# SSC: SSC supplies the direction (where a crossing structure continues, GENERATE
+# side); BDR grants permission (let the immediately-adjacent KNOWN-side latent
+# bend to meet it) by SOFT-projecting a narrow keep-side seam band instead of
+# hard-pinning it -- annealed from soft (early, while coarse layout commits) to
+# a full hard pin (late), gated by the SAME structure saliency SSC uses so
+# "relax" means "render the indicated structure", not "invent along the seam".
+# Converts "absorb a ~1-cell seam offset in 0 cells (kink)" into "absorb it over
+# W cells (~6deg bend)". Deep keep stays hard-pinned every step. Off
+# (boundary_relax_strength == 0) => byte-identical (precompute skipped, no RNG
+# drawn, today's hard projection runs). NOT a commit-timing fix (refuted).
+# ============================================================================
+def _bdr_precompute(
+    mask_latent: torch.Tensor,
+    image_latents: torch.Tensor,
+    scheduler,
+    num_inference_steps: int,
+    width: float = 3.0,
+    full_until: float = 0.37,
+    end: float = 0.55,
+) -> Optional[dict]:
+    """Static BDR state (once, before the loop). Returns a dict:
+      b      [1,1,h,w] the keep-side seam-band gate = structure-saliency x depth
+              taper (0 in the deep keep and wherever no crossing structure exists)
+      s_c    [1,4,1,1] per-channel robust content scale (1.4826*MAD(K|keep))
+      sigma_F, sigma_E  the sigma-bar anneal endpoints (floats)
+    None when there is no generate region, no keep region, or no salient crossing
+    structure on the keep-side boundary ribbon (feature no-ops -> byte-identical).
+    """
+    from scipy import ndimage
+
+    M = mask_latent.detach().to(dtype=torch.float32, device="cpu").numpy()[0, 0]  # [h,w]
+    K = image_latents.detach().to(dtype=torch.float32, device="cpu").numpy()[0]    # [C,h,w]
+    C, h, w = K.shape
+    gen = M > 0.5
+    keep = ~gen
+    if gen.sum() == 0 or keep.sum() == 0:
+        return None
+
+    # keep-side inward distance from the seam (d_keep=1 at the seam-adjacent keep cell)
+    d_keep = ndimage.distance_transform_edt(keep)
+    W = max(float(width), 1.0)
+    band = keep & (d_keep <= W)
+    if band.sum() == 0:
+        return None
+
+    # inward-to-generate normal (from keep into gen), used for the crossing gate
+    phi = ndimage.distance_transform_edt(gen) - d_keep   # <0 keep, >0 gen
+    ny, nx = np.gradient(phi)
+    nnorm = np.sqrt(nx * nx + ny * ny) + 1e-6
+    nx, ny = nx / nnorm, ny / nnorm
+
+    # structure tensor on K (same formulas as SSC), evaluated at the band cells
+    rho = 1.5
+    Jxx = np.zeros((h, w)); Jyy = np.zeros((h, w)); Jxy = np.zeros((h, w))
+    for c in range(C):
+        gy, gx = np.gradient(K[c])
+        Jxx += gx * gx; Jyy += gy * gy; Jxy += gx * gy
+    Jxx = ndimage.gaussian_filter(Jxx, rho)
+    Jyy = ndimage.gaussian_filter(Jyy, rho)
+    Jxy = ndimage.gaussian_filter(Jxy, rho)
+    tr = Jxx + Jyy
+    disc = np.sqrt(np.maximum(((Jxx - Jyy) * 0.5) ** 2 + Jxy * Jxy, 0.0))
+    lam1 = tr * 0.5 + disc
+    lam2 = tr * 0.5 - disc
+    e1x = Jxy; e1y = lam1 - Jxx
+    en = np.sqrt(e1x * e1x + e1y * e1y) + 1e-12
+    e1x, e1y = e1x / en, e1y / en
+    tx, ty = -e1y, e1x                       # structure tangent
+    coh = (lam1 - lam2) / (lam1 + lam2 + 1e-6)
+    contrast = np.sqrt(np.maximum(lam1, 0.0))
+    Xcross = np.abs(tx * nx + ty * ny)       # |tangent . normal|: rejects seam-parallel edges
+
+    # robust-z of contrast over the keep-side boundary ribbon (seam-adjacent keep cells)
+    ribbon = keep & (d_keep <= 2)
+    rv = contrast[ribbon]
+    if rv.size == 0:
+        return None
+    med = float(np.median(rv)); mad = float(np.median(np.abs(rv - med))) + 1e-6
+    z = (contrast - med) / (1.4826 * mad)
+
+    def _ss(a):
+        a = np.clip(a, 0.0, 1.0)
+        return a * a * (3.0 - 2.0 * a)
+
+    Sgate = _ss((z - 1.0) / 2.0) * _ss((coh - 0.35) / 0.25) * _ss((Xcross - 0.25) / 0.5)
+    taper = _ss(np.clip(1.0 - (d_keep - 1.0) / W, 0.0, 1.0))
+    b = (Sgate * taper * band.astype(np.float64))
+    if b.max() <= 0.0:
+        return None
+
+    device = mask_latent.device
+    dt = mask_latent.dtype
+    b_t = torch.from_numpy(b).to(device=device, dtype=dt).view(1, 1, h, w)
+    s_c = np.array([1.4826 * (np.median(np.abs(K[c][keep] - np.median(K[c][keep]))) + 1e-6)
+                    for c in range(C)], dtype=np.float32)
+    s_c_t = torch.from_numpy(s_c).to(device=device, dtype=dt).view(1, C, 1, 1)
+
+    # sigma-bar anneal endpoints (static; scheduler.sigmas is fixed after set_timesteps)
+    idx_F = int(round(min(max(full_until, 0.0), 1.0) * num_inference_steps))
+    idx_E = int(round(min(max(end, 0.0), 1.0) * num_inference_steps))
+    idx_F = min(max(idx_F, 0), num_inference_steps - 1)
+    idx_E = min(max(idx_E, 0), num_inference_steps - 1)
+    sigma_F = _outpaint_step_sigma(scheduler, scheduler.timesteps[idx_F], idx_F)
+    sigma_E = _outpaint_step_sigma(scheduler, scheduler.timesteps[idx_E], idx_E)
+    return {"b": b_t, "s_c": s_c_t, "sigma_F": float(sigma_F), "sigma_E": float(sigma_E)}
+
+
+def _bdr_omega(sigma_i: float, sigma_F: float, sigma_E: float) -> float:
+    """BDR anneal weight in [0,1], sigma-based (equal-perceptual across schedulers):
+    full (1) while sigma_i >= sigma_F (early/coarse-layout), smoothstep down, 0 by
+    sigma_i <= sigma_E (late). log-interpolated between the two endpoints.
+    """
+    import math
+    lo = math.log(sigma_E + 1e-8); hi = math.log(sigma_F + 1e-8)
+    if hi <= lo:
+        return 0.0
+    z = (math.log(sigma_i + 1e-8) - lo) / (hi - lo)
+    z = min(max(z, 0.0), 1.0)
+    return z * z * (3.0 - 2.0 * z)
+
+
+def _bdr_apply(x0_hat, mask_latent, image_latents, state, noise, strength, noise_frac,
+               sigma_i, omega, visit_count):
+    """Per-step BDR soft/noised keep-band projection, REPLACING the hard B1
+    projection ``x0_proj = (1-M)*K + M*x0_hat``. Keyed on the LOGICAL step via
+    the caller's ``omega`` (0 => this reduces to the hard projection). ``noise``
+    is the loop's existing init-noise tensor xi (reused: zero new RNG, identical
+    on every B2 revisit). ``visit_count`` = B2 visits to this logical i (>=1);
+    the dose is divided by it so revisits don't multiply relaxation.
+    Deep keep (b=0) stays exactly K; generate cells (M=1) stay exactly x0_hat.
+    """
+    b = state["b"]; s_c = state["s_c"]
+    vc = max(int(visit_count), 1)
+    # soft-pin fraction a and band-noise std, both gated by b and annealed by omega
+    a = (strength / vc) * omega * b                                  # [1,1,h,w]
+    u_i = sigma_i / (1.0 + sigma_i * sigma_i) ** 0.5                 # VP noise std coord in [0,1]
+    c_noise = (strength * noise_frac / (3.0 * vc)) * u_i * omega     # scalar
+    xi = torch.clamp(noise, -3.0, 3.0).to(dtype=x0_hat.dtype)
+    known = image_latents + a * (x0_hat - image_latents) + (c_noise * b * s_c) * xi
+    # runaway guard on the keep side only (pathology clamp, not a tuning knob)
+    dev = known - image_latents
+    dev = torch.clamp(dev, -4.0 * s_c, 4.0 * s_c)
+    known = image_latents + dev
+    return (1 - mask_latent) * known + mask_latent * x0_hat
 
 
 # ============================================================================
@@ -4099,6 +4266,15 @@ def custom_inpaint_sampling_loop(
     seam_structure_end: float = 0.70,   # SSC schedule progress at which the effect decays to 0 (full <= 0.45).
     seam_structure_saliency: float = 2.0,  # SSC saliency-gate midpoint (x boundary-ribbon median; 0 = whole seam).
     seam_structure_max_area: float = 0.25,  # SSC safety cap: max fraction of the generate region the gate may cover.
+    boundary_relax_strength: float = 0.0,  # BOUNDARY DETERMINISM RELAXATION (scratchpad/boundary_relaxation_synthesis.md):
+                                        # soft-pin (instead of hard-pin) a narrow SSC-saliency-gated keep-side seam band,
+                                        # annealed soft->hard, so the known-side latent can bend to meet SSC's continuation.
+                                        # 0 = off (byte-identical). SD/SDXL. Active ~0.2-0.35. Deep keep stays hard-pinned.
+    boundary_relax_width: float = 3.0,  # BDR keep-side band width (latent cells).
+    boundary_relax_noise: float = 0.35,  # BDR band-noise fraction of the x0-posterior std (0-1).
+    boundary_relax_full_until: float = 0.37,  # BDR: progress up to which the band is fully soft (sigma threshold).
+    boundary_relax_end: float = 0.55,  # BDR: progress by which the hard pin is fully restored (sigma threshold).
+    boundary_relax_paste: str = "feather",  # BDR Q3 paste variant: "feather" (B) | "exact" (A). Consumed in outpaint_utils (BDR2).
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -4551,6 +4727,39 @@ def custom_inpaint_sampling_loop(
                     "Seam structure continuity: the saliency gate exceeded seam_structure_max_area "
                     "and was capped to the highest-confidence boundary structures.",
                     code="seam_structure_area_capped",
+                )
+
+    # BOUNDARY DETERMINISM RELAXATION (scratchpad/boundary_relaxation_synthesis.md):
+    # precompute the STATIC keep-side seam-band gate + sigma anneal endpoints once.
+    # OUTPAINT path (S-BDR1); gated on outpaint_noise_init (the B1 x0-projection
+    # this replaces only runs there). None/no-op when strength is off or there is
+    # no salient crossing structure -> boundary_relax_strength == 0 is byte-identical.
+    # Also precompute the B2 visit multiplicity per LOGICAL i so revisits don't
+    # multiply the relaxation dose.
+    _bdr_state = None
+    _bdr_visit_counts = {}
+    if outpaint_noise_init and boundary_relax_strength > 0.0 and not is_inpaint_unet:
+        _bdr_state = _bdr_precompute(
+            mask_latent, image_latents, scheduler, num_inference_steps,
+            width=boundary_relax_width,
+            full_until=boundary_relax_full_until,
+            end=boundary_relax_end,
+        )
+        if _bdr_state is not None:
+            for _bi, _bfj in _outpaint_visit_schedule:
+                _bdr_visit_counts[_bi] = _bdr_visit_counts.get(_bi, 0) + 1
+            _add_generation_warning(
+                "Boundary determinism relaxation active (experimental): the keep-side seam band "
+                f"({boundary_relax_width:g} latent cells) is soft-pinned with scheduled noise until "
+                f"~{boundary_relax_end:.0%} progress; no extra U-Net forwards.",
+                code="boundary_relax_active",
+            )
+            if seam_structure_strength <= 0.0:
+                _add_generation_warning(
+                    "Boundary relaxation is active without seam structure continuity "
+                    "(seam_structure_strength=0): the relaxed band has no structure guidance, so it "
+                    "grants permission without direction -- expect little effect versus a hard pin.",
+                    code="boundary_relax_no_ssc",
                 )
 
     # Prepare Reference Guide latents while VAE is still on GPU
@@ -5990,7 +6199,26 @@ def custom_inpaint_sampling_loop(
 
             # Project the known constraint: keep region = clean image latents,
             # generate region = the model's own x0 estimate.
-            x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
+            # BOUNDARY DETERMINISM RELAXATION (scratchpad/boundary_relaxation_
+            # synthesis.md): when active, SOFT-pin the SSC-salient keep-side seam
+            # band (annealed soft->hard, keyed on the LOGICAL step) instead of the
+            # hard pin -- letting the known-side latent bend to meet SSC's
+            # continuation. Deep keep (b=0) and generate cells (M=1) are
+            # unchanged, so this reduces to the hard projection when omega=0 or
+            # off (_bdr_state is None) -> byte-identical.
+            if _bdr_state is not None:
+                _bdr_sigma_i = _outpaint_step_sigma(scheduler, t, t_start + i)
+                _bdr_om = _bdr_omega(_bdr_sigma_i, _bdr_state["sigma_F"], _bdr_state["sigma_E"])
+                if _bdr_om > 0.0:
+                    x0_proj = _bdr_apply(
+                        x0_hat, mask_latent, image_latents, _bdr_state, noise,
+                        boundary_relax_strength, boundary_relax_noise,
+                        _bdr_sigma_i, _bdr_om, _bdr_visit_counts.get(i, 1),
+                    )
+                else:
+                    x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
+            else:
+                x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
 
             if _outpaint_collar_weight_map is not None:
                 # Low-frequency boundary color proximal (design doc section

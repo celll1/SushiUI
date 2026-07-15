@@ -4572,6 +4572,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             seam_structure_end=params.get("seam_structure_end", 0.70),
             seam_structure_saliency=params.get("seam_structure_saliency", 2.0),
             seam_structure_max_area=params.get("seam_structure_max_area", 0.25),
+            boundary_relax_strength=params.get("boundary_relax_strength", 0.0),
+            boundary_relax_width=params.get("boundary_relax_width", 3.0),
+            boundary_relax_noise=params.get("boundary_relax_noise", 0.35),
+            boundary_relax_full_until=params.get("boundary_relax_full_until", 0.37),
+            boundary_relax_end=params.get("boundary_relax_end", 0.55),
+            boundary_relax_paste=params.get("boundary_relax_paste", "feather"),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -4701,6 +4707,23 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         canvas_img, placed_img, rect = build_outpaint_canvas(input_image, params, align=16)
         mask_blur = params.get("mask_blur", 4)
+        # Boundary Determinism Relaxation owns the seam transition (a keep-side,
+        # latent-space, scheduled soft-pin) -- so when it is active, bypass the
+        # legacy OUTWARD FILL-BLEND (which blends generated content toward the
+        # synthetic replicate/reflect fill outside the rect and is the source of
+        # the "bleed band"). Use a HARD outpaint mask instead. The default
+        # mask_blur (4) and the legacy fill-blend path are UNCHANGED when
+        # boundary relaxation is off (byte-identical). See
+        # scratchpad/boundary_relaxation_synthesis.md Q2.
+        if params.get("boundary_relax_strength", 0.0) and float(params.get("boundary_relax_strength", 0.0)) > 0.0:
+            if mask_blur and mask_blur > 0:
+                from api.generation_status import add_warning as _bdr_add_warning
+                _bdr_add_warning(
+                    "Boundary relaxation active: using a hard outpaint mask; the legacy outward "
+                    "fill-blend (mask_blur) is bypassed for the seam transition.",
+                    code="boundary_relax_hard_mask",
+                )
+            mask_blur = 0
         mask_img = build_outpaint_mask(canvas_img.size, rect, mask_blur)
 
         # The canvas IS the actual output size for this generation -- must

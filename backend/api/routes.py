@@ -3344,6 +3344,12 @@ async def generate_inpaint(
     seam_structure_end: float = Form(GENERATION_DEFAULTS["seam_structure_end"]),  # SSC schedule progress at which the effect decays to 0
     seam_structure_saliency: float = Form(GENERATION_DEFAULTS["seam_structure_saliency"]),  # SSC saliency-gate midpoint (x boundary-ribbon median)
     seam_structure_max_area: float = Form(GENERATION_DEFAULTS["seam_structure_max_area"]),  # SSC safety cap: max fraction of the repaint region the gate may cover
+    boundary_relax_strength: float = Form(GENERATION_DEFAULTS["boundary_relax_strength"]),  # BDR: soft-pin the SSC-salient keep-side seam band (SD/SDXL); 0 = off
+    boundary_relax_width: float = Form(GENERATION_DEFAULTS["boundary_relax_width"]),  # BDR keep-side band width (latent cells)
+    boundary_relax_noise: float = Form(GENERATION_DEFAULTS["boundary_relax_noise"]),  # BDR band-noise fraction of the x0-posterior std
+    boundary_relax_full_until: float = Form(GENERATION_DEFAULTS["boundary_relax_full_until"]),  # BDR: progress fully-soft until
+    boundary_relax_end: float = Form(GENERATION_DEFAULTS["boundary_relax_end"]),  # BDR: progress by which the hard pin is restored
+    boundary_relax_paste: str = Form(GENERATION_DEFAULTS["boundary_relax_paste"]),  # BDR Q3 paste variant: "feather" | "exact"
     prompt_chunking_mode: str = Form("a1111"),
     max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -3601,6 +3607,12 @@ async def generate_inpaint(
             "seam_structure_end": seam_structure_end,
             "seam_structure_saliency": seam_structure_saliency,
             "seam_structure_max_area": seam_structure_max_area,
+            "boundary_relax_strength": boundary_relax_strength,
+            "boundary_relax_width": boundary_relax_width,
+            "boundary_relax_noise": boundary_relax_noise,
+            "boundary_relax_full_until": boundary_relax_full_until,
+            "boundary_relax_end": boundary_relax_end,
+            "boundary_relax_paste": boundary_relax_paste,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,
@@ -3925,6 +3937,12 @@ async def generate_outpaint(
     seam_structure_end: float = Form(OUTPAINT_DEFAULTS["seam_structure_end"]),  # SSC schedule progress at which the effect decays to 0
     seam_structure_saliency: float = Form(OUTPAINT_DEFAULTS["seam_structure_saliency"]),  # SSC saliency-gate midpoint (x boundary-ribbon median)
     seam_structure_max_area: float = Form(OUTPAINT_DEFAULTS["seam_structure_max_area"]),  # SSC safety cap: max fraction of the generate region the gate may cover
+    boundary_relax_strength: float = Form(OUTPAINT_DEFAULTS["boundary_relax_strength"]),  # BDR: soft-pin the SSC-salient keep-side seam band (SD/SDXL); 0 = off
+    boundary_relax_width: float = Form(OUTPAINT_DEFAULTS["boundary_relax_width"]),  # BDR keep-side band width (latent cells)
+    boundary_relax_noise: float = Form(OUTPAINT_DEFAULTS["boundary_relax_noise"]),  # BDR band-noise fraction of the x0-posterior std
+    boundary_relax_full_until: float = Form(OUTPAINT_DEFAULTS["boundary_relax_full_until"]),  # BDR: progress fully-soft until
+    boundary_relax_end: float = Form(OUTPAINT_DEFAULTS["boundary_relax_end"]),  # BDR: progress by which the hard pin is restored
+    boundary_relax_paste: str = Form(OUTPAINT_DEFAULTS["boundary_relax_paste"]),  # BDR Q3 paste variant: "feather" | "exact"
     outpaint_seam_fix: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_fix"]),  # Post-generation exposure/tone harmonizer between the generated surroundings and the preserved rect
     outpaint_boundary_color_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_boundary_color_strength"]),  # B1 continuity fix: in-loop low-freq boundary color proximal strength (SD/SDXL only, 0=off)
     outpaint_resample_count: int = Form(OUTPAINT_DEFAULTS["outpaint_resample_count"]),  # B2 continuity fix: RePaint-style time-travel resample count (SD/SDXL only, 1=off)
@@ -4222,6 +4240,12 @@ async def generate_outpaint(
             "seam_structure_end": seam_structure_end,
             "seam_structure_saliency": seam_structure_saliency,
             "seam_structure_max_area": seam_structure_max_area,
+            "boundary_relax_strength": boundary_relax_strength,
+            "boundary_relax_width": boundary_relax_width,
+            "boundary_relax_noise": boundary_relax_noise,
+            "boundary_relax_full_until": boundary_relax_full_until,
+            "boundary_relax_end": boundary_relax_end,
+            "boundary_relax_paste": boundary_relax_paste,
             "outpaint_seam_fix": outpaint_seam_fix,
             "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
             "outpaint_resample_count": outpaint_resample_count,

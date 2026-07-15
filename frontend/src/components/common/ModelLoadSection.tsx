@@ -7,6 +7,7 @@ import VisionEncoderSelector from "./VisionEncoderSelector";
 import VaeOverrideSelector from "./VaeOverrideSelector";
 import TextEncoderOverrideSelector from "./TextEncoderOverrideSelector";
 import Select from "./Select";
+import NumberInput from "./NumberInput";
 import { useStartup } from "@/contexts/StartupContext";
 
 // Fallback arch -> latent_channels map, used only when the loaded model's
@@ -54,6 +55,15 @@ interface ModelLoadSectionProps {
   onPidUseGemmaChange?: (value: boolean) => void;
   pidLowVram?: boolean;
   onPidLowVramChange?: (value: boolean) => void;
+  // PiD large-output (>4096px) decode controls: default = tiled true
+  // super-resolution; pidFastLargeDecode = true switches to a faster
+  // cap+bicubic path (lower quality).
+  pidTileNative?: number;
+  onPidTileNativeChange?: (value: number) => void;
+  pidTileOverlapRatio?: number;
+  onPidTileOverlapRatioChange?: (value: number) => void;
+  pidFastLargeDecode?: boolean;
+  onPidFastLargeDecodeChange?: (value: boolean) => void;
 
   // Storage key suffix so per-panel collapse state stays independent.
   storageKeyPrefix?: string;
@@ -77,6 +87,12 @@ export default function ModelLoadSection({
   onPidUseGemmaChange,
   pidLowVram = false,
   onPidLowVramChange,
+  pidTileNative = 512,
+  onPidTileNativeChange,
+  pidTileOverlapRatio = 0.25,
+  onPidTileOverlapRatioChange,
+  pidFastLargeDecode = false,
+  onPidFastLargeDecodeChange,
   storageKeyPrefix = "model_load",
 }: ModelLoadSectionProps) {
   const { modelInfo, refreshModelInfo } = useStartup();
@@ -141,6 +157,7 @@ export default function ModelLoadSection({
       if (pidSrOutput && pidSrOutput !== "4x") flags.push(pidSrOutput);
       if (pidUseGemma) flags.push("Gemma");
       if (pidLowVram) flags.push("low-VRAM");
+      if (pidFastLargeDecode) flags.push("fast large-decode");
       if (flags.length) v += ` (${flags.join(", ")})`;
     }
     overrideSummary.push(v);
@@ -226,6 +243,47 @@ export default function ModelLoadSection({
               <p className="text-xs text-gray-500">
                 Row-chunks the PiD decode to cut peak VRAM at high resolution (~42% less at 4096px, measured). Not bit-identical to the unchunked decode, but visually indistinguishable.
               </p>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={pidFastLargeDecode}
+                  onChange={(e) => onPidFastLargeDecodeChange?.(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-2 focus:ring-blue-500"
+                />
+                <span className="text-sm text-gray-300">PiD: fast large-decode (lower quality, cap+bicubic)</span>
+              </label>
+              <p className="text-xs text-gray-500">
+                Default off = tiled true super-resolution for &gt;4096px outputs; on = faster but softer.
+              </p>
+              <details className="text-xs text-gray-500">
+                <summary className="cursor-pointer select-none">PiD large-decode tiling (advanced)</summary>
+                <div className="flex items-center gap-3 mt-2">
+                  <label className="flex items-center gap-2">
+                    <span>Tile size</span>
+                    <NumberInput
+                      value={pidTileNative}
+                      onCommit={(v) => onPidTileNativeChange?.(v)}
+                      min={64}
+                      max={2048}
+                      step={64}
+                      parse="int"
+                      className="w-20"
+                    />
+                  </label>
+                  <label className="flex items-center gap-2">
+                    <span>Overlap ratio</span>
+                    <NumberInput
+                      value={pidTileOverlapRatio}
+                      onCommit={(v) => onPidTileOverlapRatioChange?.(v)}
+                      min={0}
+                      max={0.9}
+                      step={0.05}
+                      parse="float"
+                      className="w-20"
+                    />
+                  </label>
+                </div>
+              </details>
             </div>
           )}
           <TextEncoderOverrideSelector

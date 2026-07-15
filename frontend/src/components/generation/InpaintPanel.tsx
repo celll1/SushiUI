@@ -94,6 +94,9 @@ interface InpaintParams {
   pid_sr_output?: string | null;
   pid_use_gemma?: boolean;
   pid_low_vram?: boolean;
+  pid_tile_native?: number;
+  pid_tile_overlap_ratio?: number;
+  pid_fast_large_decode?: boolean;
   // Block swap (model-global)
   enable_block_swap?: boolean;
   blocks_to_swap?: number;
@@ -186,6 +189,9 @@ const DEFAULT_PARAMS: InpaintParams = {
   pid_sr_output: "4x",
   pid_use_gemma: false,
   pid_low_vram: false,
+  pid_tile_native: 512,
+  pid_tile_overlap_ratio: 0.25,
+  pid_fast_large_decode: false,
   // Block swap (model-global; inherited by loop generation). Panel UI pending the Model/Environment section (phase 2).
   enable_block_swap: false,
   blocks_to_swap: 20,
@@ -1639,6 +1645,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         pid_sr_output: mainParams.pid_sr_output, // Inherit PiD decoder options (model-global)
         pid_use_gemma: mainParams.pid_use_gemma,
         pid_low_vram: mainParams.pid_low_vram,
+        pid_tile_native: mainParams.pid_tile_native,
+        pid_tile_overlap_ratio: mainParams.pid_tile_overlap_ratio,
+        pid_fast_large_decode: mainParams.pid_fast_large_decode,
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1847,6 +1856,9 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         pid_sr_output: nextItem.params.pid_sr_output,
         pid_use_gemma: nextItem.params.pid_use_gemma,
         pid_low_vram: nextItem.params.pid_low_vram,
+        pid_tile_native: nextItem.params.pid_tile_native,
+        pid_tile_overlap_ratio: nextItem.params.pid_tile_overlap_ratio,
+        pid_fast_large_decode: nextItem.params.pid_fast_large_decode,
         // Spectrum acceleration
         spectrum_enable: nextItem.params.spectrum_enable,
         // First Block Cache
@@ -2265,6 +2277,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
           onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
           pidLowVram={params.pid_low_vram ?? false}
           onPidLowVramChange={(value) => setParams({ ...params, pid_low_vram: value })}
+          pidTileNative={params.pid_tile_native ?? 512}
+          onPidTileNativeChange={(value) => setParams({ ...params, pid_tile_native: value })}
+          pidTileOverlapRatio={params.pid_tile_overlap_ratio ?? 0.25}
+          onPidTileOverlapRatioChange={(value) => setParams({ ...params, pid_tile_overlap_ratio: value })}
+          pidFastLargeDecode={params.pid_fast_large_decode ?? false}
+          onPidFastLargeDecodeChange={(value) => setParams({ ...params, pid_fast_large_decode: value })}
           storageKeyPrefix="inpaint"
         />
 

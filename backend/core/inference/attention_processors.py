@@ -55,6 +55,18 @@ class UnifiedAttnProcessor:
         # processor that is never stamped takes the byte-identical original path.
         self.block_idx: Optional[int] = None
         self._style_ctx = None
+        # --- Regional additional prompt (STAGE R2, method "attention"; see
+        # RegionalPromptContext below) --- `_region_ctx` is a sibling of
+        # `_style_ctx` for CROSS-attention ("attn2") only: `set_region_context`
+        # stamps it exclusively onto attn2-named processors (disjoint from
+        # `set_style_context`'s attn1-only targeting), and the `__call__` hook
+        # below only ever reads it when `is_self_attn` is False -- so a self-attn
+        # style/B3 context and a cross-attn region context can coexist on the
+        # same processor SET without collision (never the same attribute on the
+        # same processor instance, since attn1/attn2 are always separate
+        # instances). Defaults to `None` so an unstamped processor (region
+        # inactive) takes the byte-identical original path.
+        self._region_ctx = None
 
     def __call__(
         self,
@@ -105,6 +117,96 @@ class UnifiedAttnProcessor:
         query = query.view(batch_size, -1, attn.heads, head_dim)
         key = key.view(batch_size, -1, attn.heads, head_dim)
         value = value.view(batch_size, -1, attn.heads, head_dim)
+
+        # --- Regional additional prompt (training-free, cross-attention ONLY;
+        # STAGE R2 method "attention" -- scratchpad/regional_prompt_synthesis.md) ---
+        # Attention-Couple-style token-append + per-query spatial log-bias: the
+        # image queries Q attend jointly over [main K/V (unchanged) (+) region
+        # K/V (appended)], with an additive bias that is 0 on the main columns
+        # and log(strength * m_l(query_position)) on the region columns (-inf
+        # where the downsampled region mask is exactly 0 there) -- so a query
+        # OUTSIDE the region attends to the region tokens with EXACTLY zero
+        # softmax weight, numerically IDENTICAL to the un-regioned baseline for
+        # that query. Cross-attention only: the self-attention sequence has no
+        # text axis to append region tokens onto (region conditioning needs the
+        # TEXT axis), so this is gated on `not is_self_attn`. `region_ctx.side`
+        # is `None` for any forward that must not see region tokens at all
+        # (feature inactive, or an internal capture-only forward such as
+        # OUTPAINT B3's reference composite) -- in that case this whole block
+        # is a no-op and `attention_mask` stays exactly as passed in (byte-
+        # identical to the pre-region code path).
+        region_ctx = self._region_ctx
+        if not is_self_attn and region_ctx is not None and region_ctx.side is not None:
+            region_embeds = region_ctx.pos_embeds if region_ctx.side == "pos" else region_ctx.neg_embeds
+            if region_embeds is not None:
+                from core.inference.custom_sampling import _outpaint_reference_block_hw
+
+                cache_key = (id(self), region_ctx.side)
+                cached_kv = region_ctx.kv_cache.get(cache_key)
+                if cached_kv is None:
+                    # K_r/V_r are STATIC across denoise steps (the region text
+                    # never changes) -- computed once per (processor, side) and
+                    # cached on the (persistent, loop-lifetime) context.
+                    region_embeds_t = region_embeds.to(device=key.device, dtype=key.dtype)
+                    r_k = attn.to_k(region_embeds_t).view(1, -1, attn.heads, head_dim)
+                    r_v = attn.to_v(region_embeds_t).view(1, -1, attn.heads, head_dim)
+                    cached_kv = (r_k, r_v)
+                    region_ctx.kv_cache[cache_key] = cached_kv
+                r_k, r_v = cached_kv
+
+                # Recover this layer's own image-token grid (Hb, Wb) from its
+                # query sequence length by mirroring the U-Net's actual stride-2
+                # down-block chain -- reused VERBATIM from the OUTPAINT B3
+                # reference-KV masking (`_outpaint_reference_filter_store`);
+                # returns None (drop-don't-guess) for a block whose seq_len
+                # can't be mapped back to a grid, exactly like B3.
+                seq_len_img = query.shape[1]
+                hw = _outpaint_reference_block_hw(region_ctx.mask_h, region_ctx.mask_w, seq_len_img)
+                if hw is not None:
+                    bias = region_ctx.bias_cache.get(hw)
+                    if bias is None:
+                        # Per-attention-resolution spatial bias, shared between
+                        # the pos/neg sides (same mask + strength for both) --
+                        # cached once per (Hb, Wb) since it never changes across
+                        # steps or sides.
+                        hb, wb = hw
+                        m = torch.nn.functional.interpolate(
+                            region_ctx.mask_latent, size=(hb, wb), mode="nearest"
+                        ).reshape(1, 1, seq_len_img, 1).to(dtype=torch.float32)
+                        wm = (region_ctx.strength * m).clamp(min=0.0)
+                        bias = torch.where(
+                            wm > 0.0, torch.log(wm.clamp(min=1e-38)), torch.full_like(wm, float("-inf"))
+                        )
+                        region_ctx.bias_cache[hw] = bias
+
+                    s_main = key.shape[1]
+                    s_region = r_k.shape[1]
+                    if r_k.shape[0] != key.shape[0]:
+                        r_k = r_k.expand(key.shape[0], -1, -1, -1)
+                        r_v = r_v.expand(key.shape[0], -1, -1, -1)
+                    key = torch.cat([key, r_k], dim=1)
+                    value = torch.cat([value, r_v], dim=1)
+
+                    region_bias = bias.expand(1, 1, seq_len_img, s_region)
+                    main_bias = torch.zeros((1, 1, seq_len_img, s_main), dtype=torch.float32, device=bias.device)
+                    full_bias = torch.cat([main_bias, region_bias], dim=-1)
+                    if attention_mask is not None:
+                        # Existing mask only covers the ORIGINAL (main) columns
+                        # -- extend it with zeros for the newly appended region
+                        # columns before adding our bias on top, so main-column
+                        # contributions are preserved and the region-column bias
+                        # is purely additive.
+                        pad = torch.zeros(
+                            attention_mask.shape[:-1] + (s_region,),
+                            dtype=torch.float32, device=attention_mask.device,
+                        )
+                        attention_mask = torch.cat([attention_mask.to(dtype=torch.float32), pad], dim=-1) + full_bias
+                    else:
+                        attention_mask = full_bias
+                    attention_mask = attention_mask.to(device=query.device, dtype=query.dtype)
+                # else: this block's token grid couldn't be recovered -- drop
+                # region conditioning for this block only (attention_mask stays
+                # unchanged), exactly like B3's per-block store filtering.
 
         # --- Reference-style KV injection (training-free, self-attention only) ---
         # The whole self-attention sequence IS the image-token sequence (no text
@@ -269,3 +371,72 @@ def set_style_context(unet, ctx) -> None:
     for name, proc in unet.attn_processors.items():
         if hasattr(proc, "block_idx") and proc.block_idx is not None:
             proc._style_ctx = ctx
+
+
+# ---------------------------------------------------------------------------
+# Regional additional prompt (STAGE R2, method "attention") -- cross-attention
+# ONLY context, sibling of StyleContext (see reference_style.py). Lives here
+# (not reference_style.py) since it is intrinsically tied to this processor's
+# cross-attention hook (token-append + spatial log-bias) rather than the
+# arch-agnostic self-attention KV-injection math reference_style.py provides.
+# ---------------------------------------------------------------------------
+
+class RegionalPromptContext:
+    """Per-generation (loop-lifetime) runtime state for the regional additional
+    prompt's "attention" method (scratchpad/regional_prompt_synthesis.md).
+    Unlike ``StyleContext`` (recreated fresh for every capture/inject pass),
+    this context is created ONCE before the denoise loop starts and persists
+    across every step/pass -- only ``side`` is mutated per U-Net call (by the
+    SAME call sites in ``custom_inpaint_sampling_loop`` that toggle
+    ``set_style_context`` for B3/style), so every OUTPAINT B2 time-travel
+    resample visit automatically re-applies it with no extra wiring.
+
+    ``side``:
+      - ``"pos"``: the conditional (positive) U-Net pass -- appends
+        ``pos_embeds`` (no-ops if the region-positive prompt field was left
+        empty, i.e. ``pos_embeds is None``).
+      - ``"neg"``: the unconditional (negative) U-Net pass -- appends
+        ``neg_embeds`` (no-op if the region-negative prompt field was left
+        empty). The region-negative rides the UNCOND context so the existing
+        CFG combine does both steer (region-positive on the cond side) AND
+        suppress (region-negative on the uncond side) with no extra forward.
+      - ``None``: region conditioning is off for this forward entirely (e.g.
+        an internal capture-only forward such as OUTPAINT B3's reference
+        composite pass, which must never see region tokens).
+
+    ``kv_cache``/``bias_cache`` memoize the STATIC region K/V (per
+    (processor identity, side) -- the region text never changes across
+    steps) and the per-attention-resolution spatial bias (per (Hb, Wb) --
+    shared between the pos/neg sides, since both use the same mask/strength),
+    so steady-state cost after the first use is negligible (no re-projection,
+    no re-interpolation).
+    """
+
+    __slots__ = (
+        "side", "pos_embeds", "neg_embeds", "mask_latent", "mask_h", "mask_w",
+        "strength", "kv_cache", "bias_cache",
+    )
+
+    def __init__(self, pos_embeds, neg_embeds, mask_latent, strength: float, side=None):
+        self.side = side
+        self.pos_embeds = pos_embeds  # [1, S_pos, D] region-positive text embeds, or None
+        self.neg_embeds = neg_embeds  # [1, S_neg, D] region-negative text embeds, or None
+        self.mask_latent = mask_latent  # [1, 1, H, W] float (feathered region mask; 1 = generate region)
+        self.mask_h = int(mask_latent.shape[-2])
+        self.mask_w = int(mask_latent.shape[-1])
+        self.strength = float(strength)  # region_prompt_strength ("w" in b = log(w * m))
+        self.kv_cache: dict = {}
+        self.bias_cache: dict = {}
+
+
+def set_region_context(unet, ctx) -> None:
+    """Stamp a ``RegionalPromptContext`` (or ``None`` to clear) onto every
+    CROSS-attention ("attn2") processor. Deliberately disjoint from
+    ``set_style_context``'s self-attention ("attn1") targeting -- a self-attn
+    style/B3 context and a cross-attn region context are never the same
+    attribute on the same processor instance (attn1/attn2 are always separate
+    diffusers-registered instances), so the two coexist on the same processor
+    set without collision."""
+    for name, proc in unet.attn_processors.items():
+        if name.endswith("attn2.processor") and hasattr(proc, "_region_ctx"):
+            proc._region_ctx = ctx

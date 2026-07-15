@@ -4393,25 +4393,31 @@ def custom_inpaint_sampling_loop(
                 label="inpaint",
             )
 
-    # REGIONAL ADDITIONAL PROMPT (STAGE R1, method "cfg"): final compatibility
-    # gate, resolved now that NAG/NegPip/DEUS/style/Spectrum/FBCache have all
-    # settled to their FINAL values above. `region_cfg_active` is a
-    # LOOP-INVARIANT flag (evaluated once, not re-checked per step -- if NAG
-    # later self-deactivates mid-loop via nag_sigma_end, regional prompting
-    # stays off for the rest of the run; v1 scope). outpaint_reference_active
-    # (B3) is explicitly COMPATIBLE (see the per-step block below, which
-    # reuses its self-attention capture for the region-positive call too).
+    # REGIONAL ADDITIONAL PROMPT (STAGE R1 method "cfg" / STAGE R2 method
+    # "attention"): final compatibility gate, resolved now that NAG/NegPip/
+    # DEUS/style/Spectrum/FBCache have all settled to their FINAL values above.
+    # `region_cfg_active`/`region_attention_active` are LOOP-INVARIANT flags
+    # (evaluated once, not re-checked per step -- if NAG later self-deactivates
+    # mid-loop via nag_sigma_end, regional prompting stays off for the rest of
+    # the run; v1 scope). outpaint_reference_active (B3) is explicitly
+    # COMPATIBLE with BOTH methods: the cfg method reuses its self-attention
+    # capture for its own region-positive branch call (see the per-step block
+    # below); the attention method's region context lives on the CROSS-
+    # attention ("attn2") processors while B3/style live on SELF-attention
+    # ("attn1") ones -- a genuinely disjoint hook site (see
+    # attention_processors.set_region_context / set_style_context), so they
+    # coexist without collision.
     region_cfg_active = False
+    region_attention_active = False
+    region_ctx = None
     if region_prompt_requested:
         if region_prompt_method not in ("cfg", "attention"):
             region_prompt_method = "cfg"
-        if region_prompt_method == "attention":
-            print("[RegionalPrompt] region_prompt_method='attention' is not yet available in this "
-                  "build; falling back to 'cfg'")
-            _add_generation_warning(
-                "region_prompt_method 'attention' not yet available; using 'cfg'.",
-                code="region_prompt_attention_unavailable",
-            )
+        # NAG/NegPip REPLACE the cross-attention ("attn2") processors entirely
+        # with their own dedicated processor classes (nag_processor.py /
+        # negpip_processor.py) -- the attention method's cross-attention hook
+        # (attention_processors.UnifiedAttnProcessor._region_ctx) would never
+        # be consulted in that case, so both methods share this gate.
         _region_incompatible = nag_active or negpip_active or is_deus or style_active or style_refs_active or \
             spectrum is not None or fbcache_ctrl is not None
         if _region_incompatible:
@@ -4423,17 +4429,46 @@ def custom_inpaint_sampling_loop(
                 code="region_prompt_incompatible",
             )
         elif not ((abs(guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active):
-            # The spatial-CFG method operates on the cond/uncond pair; with CFG
-            # off (base guidance_scale <= 1) there is no regional axis to apply,
-            # so it silently no-ops -- say so instead of emitting a misleading
-            # "~2x cost" warning for a feature that does nothing this run.
-            # (Uses the BASE guidance_scale param -- the per-step
-            # do_classifier_free_guidance is not defined until inside the loop;
-            # the per-step blend gate handles any CFG-schedule dips to 1.0.)
+            # Both methods operate on the cond/uncond pair (the cfg method
+            # blends the two branches' CFG results spatially; the attention
+            # method rides the region-negative on the uncond context so the
+            # CFG combine steers AND suppresses) -- with CFG off (base
+            # guidance_scale <= 1) there is no regional axis to apply, so it
+            # silently no-ops -- say so instead of emitting a misleading cost
+            # warning for a feature that does nothing this run. (Uses the BASE
+            # guidance_scale param -- the per-step do_classifier_free_guidance
+            # is not defined until inside the loop; the per-step gate below
+            # handles any CFG-schedule dips to 1.0.)
             print("[RegionalPrompt] requested but inactive: needs CFG (guidance_scale > 1)")
             _add_generation_warning(
                 "Regional additional prompt requires CFG (guidance_scale > 1); ignored this run.",
                 code="region_prompt_needs_cfg",
+            )
+        elif region_prompt_method == "attention":
+            # STAGE R2: regional cross-attention token-append + per-query
+            # spatial log-bias (see attention_processors.RegionalPromptContext).
+            # ~free: no extra U-Net forward -- only the cross-attention K/V get
+            # longer. The context is created ONCE here (loop-lifetime) and
+            # persists across every step/B2 visit; only its `side` is toggled
+            # per U-Net call (see the per-step model-call block below).
+            from core.inference.attention_processors import RegionalPromptContext, set_region_context
+            region_attention_active = True
+            region_ctx = RegionalPromptContext(
+                pos_embeds=region_prompt_embeds if (region_has_positive and region_prompt_embeds is not None) else None,
+                neg_embeds=region_negative_prompt_embeds if (region_has_negative and region_negative_prompt_embeds is not None) else None,
+                mask_latent=region_mask_feathered,
+                strength=region_prompt_strength,
+            )
+            set_region_context(unet, region_ctx)
+            _region_fields = "+".join(
+                f for f, on in (("region-positive", region_has_positive), ("region-negative", region_has_negative)) if on
+            )
+            print(f"[RegionalPrompt] active (method=attention): ~free (no extra U-Net forward; "
+                  f"cross-attention K/V grows by the {_region_fields} token length, cached statically per layer)")
+            _add_generation_warning(
+                "Regional additional prompt active (attention method): no extra U-Net forward; "
+                "cross-attention K/V grows by the region prompt token length.",
+                code="region_prompt_cost",
             )
         else:
             region_cfg_active = True
@@ -4603,14 +4638,17 @@ def custom_inpaint_sampling_loop(
             prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
 
         elif do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active or outpaint_reference_active:
+            if is_deus or style_active or style_refs_active or outpaint_reference_active or region_attention_active:
                 # DEUS (variable seq-len embeds), active multi-reference style
-                # transfer, or OUTPAINT B3 reference KV injection: prepare a single
-                # (batch=1) latent (see the txt2img loop's style branch for the
-                # rationale; style_refs_active requires 2+ references, so this never
-                # affects the single-ref style_active path; outpaint_reference_active
-                # uses the exact same 2-Pass CFG structure -- see the model-call
-                # branch below).
+                # transfer, OUTPAINT B3 reference KV injection, or the regional
+                # additional prompt's "attention" method (STAGE R2 -- needs a
+                # separate uncond/cond U-Net call so `region_ctx.side` can be
+                # toggled per pass): prepare a single (batch=1) latent (see the
+                # txt2img loop's style branch for the rationale; style_refs_active
+                # requires 2+ references, so this never affects the single-ref
+                # style_active path; outpaint_reference_active and
+                # region_attention_active both use the exact same 2-Pass CFG
+                # structure -- see the model-call branch below).
                 latent_model_input = scheduler.scale_model_input(latents, t)
 
                 # Only concatenate mask and masked image for inpaint-specific UNets
@@ -5033,6 +5071,13 @@ def custom_inpaint_sampling_loop(
 
                 # Pass 1: Unconditional (negative) prediction -- no reference context.
                 set_style_context(unet, None)
+                # REGIONAL ADDITIONAL PROMPT (STAGE R2, method "attention"): the
+                # region-negative context (if any) rides this uncond pass -- the
+                # SAME call site pattern as set_style_context above, toggling the
+                # DISJOINT cross-attn `region_ctx.side` instead of the self-attn
+                # `_style_ctx`.
+                if region_attention_active:
+                    region_ctx.side = "neg"
                 unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
                 if down_block_res_samples is not None:
                     unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
@@ -5070,6 +5115,13 @@ def custom_inpaint_sampling_loop(
 
                     capture_ctx = StyleContext(mode="capture", config=_outpaint_reference_cfg, progress=progress)
                     set_style_context(unet, capture_ctx)
+                    # REGIONAL ADDITIONAL PROMPT: this capture-only forward runs
+                    # over the B3 reference composite (not the real query image)
+                    # and must NEVER see region tokens -- side=None disables the
+                    # cross-attn region hook entirely for this one call (restored
+                    # to "pos" below, before the REAL conditional forward).
+                    if region_attention_active:
+                        region_ctx.side = None
                     if use_autocast:
                         with torch.autocast(device_type='cuda', dtype=torch.float16):
                             unet(ref_latent_scaled.to(dtype), t, **ref_unet_kwargs)
@@ -5100,6 +5152,11 @@ def custom_inpaint_sampling_loop(
                 if cond_added_cond_kwargs is not None:
                     unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
 
+                # REGIONAL ADDITIONAL PROMPT: the region-positive context (if
+                # any) rides this REAL conditional pass -- restores "pos" after
+                # the capture-only forward above forced it to None.
+                if region_attention_active:
+                    region_ctx.side = "pos"
                 if use_autocast:
                     with torch.autocast(device_type='cuda', dtype=torch.float16):
                         noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
@@ -5107,6 +5164,66 @@ def custom_inpaint_sampling_loop(
                     noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
 
                 set_style_context(unet, None)
+                if region_attention_active:
+                    region_ctx.side = None
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif region_attention_active and do_classifier_free_guidance:
+                # REGIONAL ADDITIONAL PROMPT (STAGE R2, method "attention"):
+                # forces the SAME 2-Pass CFG structure as style_active /
+                # outpaint_reference_active above (batch=1 latent, prepared by
+                # the "or region_attention_active" branch further up) purely so
+                # `region_ctx.side` can be toggled per pass -- no self-attention
+                # KV injection at all here (this is the "region attention is
+                # active but B3/style are NOT" case; B3's own 2-Pass branch
+                # above already toggles region_ctx.side alongside its own
+                # style-context toggling when both are active simultaneously).
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- region-negative
+                # context (no-op if the region-negative field was left empty).
+                region_ctx.side = "neg"
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- region-positive
+                # context (no-op if the region-positive field was left empty).
+                region_ctx.side = "pos"
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                region_ctx.side = None
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
@@ -5172,14 +5289,16 @@ def custom_inpaint_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active or outpaint_reference_active:
+            if is_deus or style_active or style_refs_active or outpaint_reference_active or region_attention_active:
                 # DEUS / active multi-reference style transfer / OUTPAINT B3 reference KV
-                # injection: noise_pred_uncond and noise_pred_text are already separate
-                # (from the 2-Pass CFG block above), for single-ref (style_active),
-                # multi-ref (style_refs_active), and outpaint_reference_active alike.
-                # style_active was previously MISSING from this img2img/inpaint gate (a
-                # pre-existing single-ref crash: the else branch chunks a batch-2
-                # noise_pred that the 2-pass block never set).
+                # injection / the regional additional prompt's "attention" method (STAGE
+                # R2): noise_pred_uncond and noise_pred_text are already separate (from
+                # the 2-Pass CFG block above), for single-ref (style_active), multi-ref
+                # (style_refs_active), outpaint_reference_active, and
+                # region_attention_active alike. style_active was previously MISSING
+                # from this img2img/inpaint gate (a pre-existing single-ref crash: the
+                # else branch chunks a batch-2 noise_pred that the 2-pass block never
+                # set).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches
@@ -5495,6 +5614,14 @@ def custom_inpaint_sampling_loop(
         for rg in ref_guides:
             del rg["clean_latent"], rg["noise"]
         ref_guides.clear()
+
+    # REGIONAL ADDITIONAL PROMPT (STAGE R2, method "attention"): clear the
+    # cross-attention region context from every attn2 processor so it never
+    # leaks into a subsequent generation that reuses this same U-Net instance
+    # (e.g. loop generation) without regional prompting requested.
+    if region_attention_active:
+        from core.inference.attention_processors import set_region_context
+        set_region_context(unet, None)
 
     # Restore original processors if NAG or NegPip was active
     if original_processors is not None and (nag_active or negpip_active):

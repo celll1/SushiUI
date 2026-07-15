@@ -238,6 +238,64 @@ IMG2IMG_DEFAULTS: Dict[str, Any] = {
 INPAINT_DEFAULTS: Dict[str, Any] = dict(GENERATION_DEFAULTS)
 
 # ---------------------------------------------------------------------------
+# Outpaint (POST /generate/outpaint)
+# ---------------------------------------------------------------------------
+# Image spatial outpaint: place a (optionally cropped/resized) input image
+# inside a LARGER canvas and generate everything outside it, preserving the
+# placed region byte-exact (see core/inference/outpaint_utils.py +
+# PipelineManager.generate_outpaint). Pure orchestration over the existing
+# all-architecture generate_inpaint -- shares its ENTIRE parameter set
+# (feature parity: LoRA/ControlNet/NAG/quant/block-swap/advanced-CFG/etc),
+# built here by deriving from INPAINT_DEFAULTS rather than duplicating
+# literal values (single source of truth).
+OUTPAINT_DEFAULTS: Dict[str, Any] = {
+    **INPAINT_DEFAULTS,
+    # Outpaint's default is full-strength generation of the surrounding
+    # canvas (the placed region is preserved regardless via the final pixel
+    # paste, not via denoising_strength). Inpaint defaults to 0.75 (partial
+    # repaint of existing content); outpaint has no existing content in the
+    # generated region, so full strength is the natural default. strength<1.0
+    # remains available for a more input-guided outpaint.
+    "denoising_strength": 1.0,
+    # NOTE: "width"/"height" are inherited from INPAINT_DEFAULTS above for
+    # schema key-parity, but are NOT accepted as request parameters for
+    # outpaint -- canvas_width/canvas_height fully determine the output size
+    # (PipelineManager.generate_outpaint overwrites params["width"]/["height"]
+    # with the resolved canvas size before delegating to generate_inpaint).
+    #
+    # --- Placement (new for outpaint) ---
+    # Output canvas size. Rounded to the loaded architecture's latent-grid
+    # alignment (see outpaint_utils.validate_and_snap_placement, align=8).
+    "canvas_width": 1536,
+    "canvas_height": 1536,
+    # Top-left of the placed input rectangle on the canvas. 0/0 is clamped
+    # into bounds server-side; the frontend is expected to compute a sensible
+    # (e.g. centered) position rather than relying on this literal default.
+    "place_x": 0,
+    "place_y": 0,
+    # Placed size on the canvas (the resize target -- the resized result IS
+    # the preserved content). 0 = use the (cropped) input's native size.
+    "place_width": 0,
+    "place_height": 0,
+    # Trim (crop) applied to the input image BEFORE placement. 0 width/height
+    # = crop to the input's edge (i.e. "no trim" when x/y are also 0).
+    "input_crop_x": 0,
+    "input_crop_y": 0,
+    "input_crop_w": 0,
+    "input_crop_h": 0,
+    # How the canvas outside the placed rect is pre-filled before denoising:
+    # "replicate" (edge-extend the placed content outward), "reflect"
+    # (mirror it outward), "mean" (solid average color of the placed
+    # content), "noise" (uniform random RGB).
+    "outpaint_fill_mode": "replicate",
+    # mask_blur is already inherited from INPAINT_DEFAULTS (4) -- called out
+    # here because outpaint's blur is OUTWARD-ONLY (the softened transition
+    # band lies entirely outside the preserved rect; see
+    # outpaint_utils.build_outpaint_mask), unlike inpaint's symmetric blur.
+    # The numeric default is unchanged.
+}
+
+# ---------------------------------------------------------------------------
 # Upscale (POST /generate/upscale)
 # ---------------------------------------------------------------------------
 # Authoritative source: Form() defaults in generate_upscale route handler.

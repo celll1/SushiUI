@@ -41,6 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
+    OUTPAINT_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
@@ -342,6 +343,7 @@ async def get_generation_defaults():
         "txt2img": TXT2IMG_DEFAULTS,
         "img2img": IMG2IMG_DEFAULTS,
         "inpaint":  INPAINT_DEFAULTS,
+        "outpaint": OUTPAINT_DEFAULTS,
         "upscale": UPSCALE_DEFAULTS,
         "txt2vid": TXT2VID_DEFAULTS,
         "img2vid": IMG2VID_DEFAULTS,
@@ -3352,6 +3354,601 @@ async def generate_inpaint(
         # Unload LoRAs after generation
         if lora_configs and pipeline_manager.inpaint_pipeline:
             pipeline_manager.inpaint_pipeline = lora_manager.unload_loras(pipeline_manager.inpaint_pipeline)
+
+
+@router.post("/generate/outpaint")
+async def generate_outpaint(
+    prompt: str = Form(...),
+    negative_prompt: str = Form(OUTPAINT_DEFAULTS["negative_prompt"]),
+    steps: int = Form(OUTPAINT_DEFAULTS["steps"]),
+    cfg_scale: float = Form(OUTPAINT_DEFAULTS["cfg_scale"]),
+    denoising_strength: float = Form(OUTPAINT_DEFAULTS["denoising_strength"]),
+    img2img_fix_steps: bool = Form(OUTPAINT_DEFAULTS["img2img_fix_steps"]),
+    sampler: str = Form(OUTPAINT_DEFAULTS["sampler"]),
+    schedule_type: str = Form(OUTPAINT_DEFAULTS["schedule_type"]),
+    seed: int = Form(OUTPAINT_DEFAULTS["seed"]),
+    ancestral_seed: int = Form(OUTPAINT_DEFAULTS["ancestral_seed"]),
+    # Placement (new for outpaint). canvas_width/canvas_height supersede the
+    # shared width/height GenerationParams fields -- this route does not
+    # accept width/height directly (PipelineManager.generate_outpaint derives
+    # them from the resolved canvas size).
+    canvas_width: int = Form(OUTPAINT_DEFAULTS["canvas_width"]),
+    canvas_height: int = Form(OUTPAINT_DEFAULTS["canvas_height"]),
+    place_x: int = Form(OUTPAINT_DEFAULTS["place_x"]),
+    place_y: int = Form(OUTPAINT_DEFAULTS["place_y"]),
+    place_width: int = Form(OUTPAINT_DEFAULTS["place_width"]),
+    place_height: int = Form(OUTPAINT_DEFAULTS["place_height"]),
+    input_crop_x: int = Form(OUTPAINT_DEFAULTS["input_crop_x"]),
+    input_crop_y: int = Form(OUTPAINT_DEFAULTS["input_crop_y"]),
+    input_crop_w: int = Form(OUTPAINT_DEFAULTS["input_crop_w"]),
+    input_crop_h: int = Form(OUTPAINT_DEFAULTS["input_crop_h"]),
+    outpaint_fill_mode: str = Form(OUTPAINT_DEFAULTS["outpaint_fill_mode"]),
+    mask_blur: int = Form(OUTPAINT_DEFAULTS["mask_blur"]),
+    inpaint_full_res: bool = Form(OUTPAINT_DEFAULTS["inpaint_full_res"]),
+    inpaint_full_res_padding: int = Form(OUTPAINT_DEFAULTS["inpaint_full_res_padding"]),
+    inpaint_fill_mode: str = Form(OUTPAINT_DEFAULTS["inpaint_fill_mode"]),
+    inpaint_fill_strength: float = Form(OUTPAINT_DEFAULTS["inpaint_fill_strength"]),
+    inpaint_blur_strength: float = Form(OUTPAINT_DEFAULTS["inpaint_blur_strength"]),
+    prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
+    max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
+    loras: str = Form("[]"),  # JSON string of LoRA configs
+    controlnets: str = Form("[]"),  # JSON string of ControlNet configs
+    developer_mode: bool = Form(OUTPAINT_DEFAULTS["developer_mode"]),
+    cfg_schedule_type: str = Form(OUTPAINT_DEFAULTS["cfg_schedule_type"]),
+    cfg_schedule_min: float = Form(OUTPAINT_DEFAULTS["cfg_schedule_min"]),
+    cfg_schedule_max: Optional[float] = Form(OUTPAINT_DEFAULTS["cfg_schedule_max"]),
+    cfg_schedule_power: float = Form(OUTPAINT_DEFAULTS["cfg_schedule_power"]),
+    cfg_rescale_snr_alpha: float = Form(OUTPAINT_DEFAULTS["cfg_rescale_snr_alpha"]),
+    dynamic_threshold_percentile: float = Form(OUTPAINT_DEFAULTS["dynamic_threshold_percentile"]),
+    dynamic_threshold_mimic_scale: float = Form(OUTPAINT_DEFAULTS["dynamic_threshold_mimic_scale"]),
+    nag_enable: bool = Form(OUTPAINT_DEFAULTS["nag_enable"]),
+    nag_scale: float = Form(OUTPAINT_DEFAULTS["nag_scale"]),
+    nag_tau: float = Form(OUTPAINT_DEFAULTS["nag_tau"]),
+    nag_alpha: float = Form(OUTPAINT_DEFAULTS["nag_alpha"]),
+    nag_sigma_end: float = Form(OUTPAINT_DEFAULTS["nag_sigma_end"]),
+    nag_negative_prompt: str = Form(OUTPAINT_DEFAULTS["nag_negative_prompt"]),
+    attention_type: str = Form(OUTPAINT_DEFAULTS["attention_type"]),
+    attention_impl: str = Form(OUTPAINT_DEFAULTS["attention_impl"]),
+    unet_quantization: Optional[str] = Form(OUTPAINT_DEFAULTS["unet_quantization"]),
+    text_encoder_quantization: Optional[str] = Form(OUTPAINT_DEFAULTS["text_encoder_quantization"]),
+    cpu_text_encoding: bool = Form(OUTPAINT_DEFAULTS["cpu_text_encoding"]),
+    use_torch_compile: bool = Form(OUTPAINT_DEFAULTS["use_torch_compile"]),
+    keep_models_hot: bool = Form(OUTPAINT_DEFAULTS["keep_models_hot"]),
+    vae_tiling: bool = Form(OUTPAINT_DEFAULTS["vae_tiling"]),
+    vae_tile_threshold: int = Form(OUTPAINT_DEFAULTS["vae_tile_threshold"]),
+    color_flatten_strength: int = Form(OUTPAINT_DEFAULTS["color_flatten_strength"]),
+    flatten_in_loop: bool = Form(OUTPAINT_DEFAULTS["flatten_in_loop"]),
+    flatten_in_loop_last_steps: int = Form(OUTPAINT_DEFAULTS["flatten_in_loop_last_steps"]),
+    flatten_in_loop_min_region: float = Form(OUTPAINT_DEFAULTS["flatten_in_loop_min_region"]),
+    vae_drift_correction: bool = Form(OUTPAINT_DEFAULTS["vae_drift_correction"]),
+    spectrum_enable: bool = Form(OUTPAINT_DEFAULTS["spectrum_enable"]),
+    fbcache_enable: bool = Form(OUTPAINT_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(OUTPAINT_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(OUTPAINT_DEFAULTS["fbcache_warmup_steps"]),
+    fbcache_cache_branch: int = Form(OUTPAINT_DEFAULTS["fbcache_cache_branch"]),
+    spectrum_w: float = Form(OUTPAINT_DEFAULTS["spectrum_w"]),
+    spectrum_w_decay: float = Form(OUTPAINT_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(OUTPAINT_DEFAULTS["spectrum_delta_cap"]),
+    spectrum_m: int = Form(OUTPAINT_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(OUTPAINT_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(OUTPAINT_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(OUTPAINT_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(OUTPAINT_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(OUTPAINT_DEFAULTS["spectrum_tail"]),
+    spectrum_feature_mode: str = Form(OUTPAINT_DEFAULTS["spectrum_feature_mode"]),
+    spectrum_cache_branch: int = Form(OUTPAINT_DEFAULTS["spectrum_cache_branch"]),
+    spectrum_max_cache: int = Form(OUTPAINT_DEFAULTS["spectrum_max_cache"]),
+    enable_block_swap: bool = Form(OUTPAINT_DEFAULTS["enable_block_swap"]),
+    blocks_to_swap: int = Form(OUTPAINT_DEFAULTS["blocks_to_swap"]),
+    use_pinned_memory: bool = Form(OUTPAINT_DEFAULTS["use_pinned_memory"]),
+    block_swap_h2d_only: bool = Form(OUTPAINT_DEFAULTS["block_swap_h2d_only"]),
+    block_swap_ring_size: int = Form(OUTPAINT_DEFAULTS["block_swap_ring_size"]),
+    use_tipo: bool = Form(OUTPAINT_DEFAULTS["use_tipo"]),
+    tipo_config: str = Form("{}"),  # JSON string of TIPO config
+    preview_predicted_x0: bool = Form(OUTPAINT_DEFAULTS["preview_predicted_x0"]),  # Show predicted x0 in preview instead of current latent
+    preview_decoder: str = Form("matrix"),  # Live-preview decoder for FLUX.2-VAE models: "matrix" | "taef2"
+    vision_encoder_path: Optional[str] = Form(OUTPAINT_DEFAULTS["vision_encoder_path"]),  # Path to SigLIP2 vision encoder safetensors
+    vae_path: Optional[str] = Form(OUTPAINT_DEFAULTS["vae_path"]),  # Per-generation VAE override (dir or standalone VAE)
+    text_encoder_path: Optional[str] = Form(OUTPAINT_DEFAULTS["text_encoder_path"]),  # Per-generation TE override (SD1.5/SDXL only)
+    pid_sr_output: str = Form(OUTPAINT_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
+    pid_use_gemma: bool = Form(OUTPAINT_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
+    pid_low_vram: bool = Form(OUTPAINT_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
+    pid_tile_native: int = Form(OUTPAINT_DEFAULTS["pid_tile_native"]),  # PiD decoder only: per-tile native-res ceiling for the F9 tiled large-output decode
+    pid_tile_overlap_ratio: float = Form(OUTPAINT_DEFAULTS["pid_tile_overlap_ratio"]),  # PiD decoder only: F9 tile feather overlap ratio
+    pid_fast_large_decode: bool = Form(OUTPAINT_DEFAULTS["pid_fast_large_decode"]),  # PiD decoder only: opt out of F9 tiling back to the F7 whole-latent cap+bicubic path
+    original_size_w: int = Form(OUTPAINT_DEFAULTS["original_size_w"]),  # SDXL micro-cond override: original width (0 = auto)
+    original_size_h: int = Form(OUTPAINT_DEFAULTS["original_size_h"]),  # SDXL micro-cond override: original height (0 = auto)
+    original_size_scale: float = Form(OUTPAINT_DEFAULTS["original_size_scale"]),  # SDXL micro-cond: original_size = output * scale
+    loop_decode: str = Form(OUTPAINT_DEFAULTS["loop_decode"]),  # Loop-generation decode mode: "full" | "cheap" ("none" unsupported for outpaint)
+    input_latent_id: Optional[str] = Form(OUTPAINT_DEFAULTS["input_latent_id"]),  # Reserved for schema parity -- unsupported for outpaint (see validation below)
+    skip_gallery: bool = Form(OUTPAINT_DEFAULTS["skip_gallery"]),  # Save to disk but skip the gallery DB record/thumbnail
+    image: UploadFile = File(...),
+    ref_images: List[UploadFile] = File(default=[]),  # FLUX.2 Image Edit / Vision Encoder reference images
+    db: Session = Depends(get_gallery_db)
+):
+    """Generate an outpainted image: place `image` inside a larger canvas and
+    generate everything outside it. The placed input region is preserved
+    exactly (byte-identical), regardless of the loaded architecture or
+    denoising_strength -- see core/inference/outpaint_utils.py and
+    PipelineManager.generate_outpaint."""
+    _reject_if_video_model()
+    _reject_if_audio_model()
+    lora_configs = []
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from api.arch_capabilities import check_arch_capabilities
+    from api.generation_overrides import plan_overrides, apply_overrides
+    from api.error_handlers import ValidationError
+    if loop_decode not in ("full", "cheap", "none"):
+        raise ValidationError(
+            "Invalid loop_decode value",
+            detail=f"loop_decode must be 'full', 'cheap', or 'none', got {loop_decode!r}",
+        )
+    if loop_decode == "none":
+        raise ValidationError(
+            "loop_decode='none' is not supported for outpaint",
+            detail="Outpaint's final pixel-space preservation paste requires a decoded image. "
+                   "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
+        )
+    if input_latent_id:
+        raise ValidationError(
+            "input_latent_id (loop latent passthrough) is not supported for outpaint",
+            detail="Outpaint requires a real source image to build the canvas + preserved rect. "
+                   "Use loop_decode='cheap' for lower-cost intermediate loop steps instead.",
+        )
+    _override_plan = plan_overrides(pipeline_manager, vae_path, text_encoder_path)
+    start_generation("outpaint")
+    try:
+        # Reset cancellation flag before starting new generation
+        pipeline_manager.reset_cancel_flag()
+
+        # Load input image (outpaint builds its own canvas + mask -- no
+        # separate mask upload, unlike /generate/inpaint).
+        image_data = await image.read()
+        init_image = Image.open(io.BytesIO(image_data)).convert("RGB")
+
+        # Validate placement geometry UP FRONT (before the GPU slot is
+        # acquired below) so degenerate placements (empty crop, rect <8px,
+        # rect fully covering the canvas) surface as a 400 ValidationError
+        # instead of falling through to the broad except -> 500
+        # GenerationError after GPU resources are already reserved.
+        # align=16 matches PipelineManager.generate_outpaint (see its
+        # docstring); this call is idempotent, so generate_outpaint's own
+        # (identical) call re-runs it harmlessly.
+        from core.inference.outpaint_utils import validate_and_snap_placement
+        try:
+            validate_and_snap_placement(
+                {
+                    "canvas_width": canvas_width,
+                    "canvas_height": canvas_height,
+                    "place_x": place_x,
+                    "place_y": place_y,
+                    "place_width": place_width,
+                    "place_height": place_height,
+                    "input_crop_x": input_crop_x,
+                    "input_crop_y": input_crop_y,
+                    "input_crop_w": input_crop_w,
+                    "input_crop_h": input_crop_h,
+                },
+                init_image.size,
+                align=16,
+            )
+        except ValueError as e:
+            raise ValidationError("Invalid outpaint placement geometry", detail=str(e))
+
+        # Parse LoRA configs
+        import json
+        lora_configs = json.loads(loras) if loras else []
+
+        # Parse ControlNet configs
+        controlnet_configs = json.loads(controlnets) if controlnets else []
+        controlnet_images, style_transfer, style_transfers, style_combine_mode = process_controlnet_configs(
+            controlnet_configs,
+            generation_type="outpaint"
+        )
+
+        # Parse TIPO config
+        tipo_config_dict = json.loads(tipo_config) if tipo_config else {}
+
+        # TIPO prompt upsampling (if enabled)
+        original_prompt = prompt
+        if use_tipo:
+            print(f"[TIPO] Upsampling prompt with TIPO...")
+            try:
+                # Load TIPO model if needed
+                model_name = tipo_config_dict.get("model_name", "KBlueLeaf/TIPO-500M")
+                if not tipo_manager.loaded or tipo_manager.model_name != model_name:
+                    tipo_manager.load_model(model_name)
+
+                # Generate upsampled prompt
+                upsampled_prompt = tipo_manager.generate_prompt(
+                    input_prompt=prompt,
+                    tag_length=tipo_config_dict.get("tag_length", "long"),
+                    nl_length=tipo_config_dict.get("nl_length", "long"),
+                    temperature=tipo_config_dict.get("temperature", 1.0),
+                    top_p=tipo_config_dict.get("top_p", 0.95),
+                    top_k=tipo_config_dict.get("top_k", 50),
+                    max_new_tokens=tipo_config_dict.get("max_new_tokens", 256),
+                    category_order=tipo_config_dict.get("category_order", []),
+                    enabled_categories=tipo_config_dict.get("enabled_categories", {}),
+                    treat_as_nl=tipo_config_dict.get("treat_as_nl", False)
+                )
+
+                # If result is dict (tipo-kgen mode), format it to string
+                if isinstance(upsampled_prompt, dict):
+                    category_order = tipo_config_dict.get("category_order", [])
+                    enabled_categories = tipo_config_dict.get("enabled_categories", {})
+
+                    # If no category order specified, use default
+                    if not category_order:
+                        category_order = ["special", "quality", "rating", "artist", "copyright", "characters", "meta", "general"]
+
+                    # If no enabled categories specified, enable all by default
+                    if not enabled_categories:
+                        enabled_categories = {cat: True for cat in category_order}
+                        enabled_categories["meta"] = False  # Meta disabled by default
+
+                    prompt = tipo_manager.format_kgen_result(
+                        upsampled_prompt,
+                        category_order,
+                        enabled_categories
+                    )
+                else:
+                    prompt = upsampled_prompt
+
+                print(f"[TIPO] Original prompt: {original_prompt[:100]}...")
+                print(f"[TIPO] Upsampled prompt: {prompt[:100]}...")
+
+                # Unload TIPO model to free VRAM
+                tipo_manager.unload_model()
+
+            except Exception as e:
+                print(f"[TIPO] Error during upsampling: {e}")
+                print(f"[TIPO] Using original prompt")
+                # Continue with original prompt on error
+
+        # Process reference images (FLUX.2 Image Edit / Vision Encoder)
+        ref_image_list = []
+        if ref_images:
+            for ref_img_file in ref_images:
+                img_bytes = await ref_img_file.read()
+                ref_image_list.append(Image.open(io.BytesIO(img_bytes)))
+            print(f"[FLUX.2 Image Edit] Loaded {len(ref_image_list)} reference image(s)")
+
+        # Load Vision Encoder if requested (non-FLUX.2 only)
+        is_flux2 = pipeline_manager.current_model_info and pipeline_manager.current_model_info.get("type") == "flux2"
+        if vision_encoder_path and not is_flux2:
+            pipeline_manager.load_vision_encoder(vision_encoder_path)
+
+        # Apply (or restore) the planned VAE/TE overrides on the loaded model.
+        _override_meta = apply_overrides(
+            pipeline_manager, _override_plan,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
+            pid_tile_native=pid_tile_native, pid_tile_overlap_ratio=pid_tile_overlap_ratio,
+            pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
+        )
+
+        # Generate image
+        params = {
+            "prompt": prompt,
+            "vae_path": vae_path,
+            "text_encoder_path": text_encoder_path,
+            "pid_sr_output": pid_sr_output,
+            "pid_use_gemma": pid_use_gemma,
+            "pid_low_vram": pid_low_vram,
+            "pid_tile_native": pid_tile_native,
+            "pid_tile_overlap_ratio": pid_tile_overlap_ratio,
+            "pid_fast_large_decode": pid_fast_large_decode,
+            "negative_prompt": negative_prompt,
+            "steps": steps,
+            "cfg_scale": cfg_scale,
+            "denoising_strength": denoising_strength,
+            "img2img_fix_steps": img2img_fix_steps,
+            "sampler": sampler,
+            "schedule_type": schedule_type,
+            "seed": seed,
+            "ancestral_seed": ancestral_seed,
+            # Placement (consumed by core.inference.outpaint_utils via
+            # PipelineManager.generate_outpaint; "width"/"height" are set
+            # internally from the resolved canvas size, not from these).
+            "canvas_width": canvas_width,
+            "canvas_height": canvas_height,
+            "place_x": place_x,
+            "place_y": place_y,
+            "place_width": place_width,
+            "place_height": place_height,
+            "input_crop_x": input_crop_x,
+            "input_crop_y": input_crop_y,
+            "input_crop_w": input_crop_w,
+            "input_crop_h": input_crop_h,
+            "outpaint_fill_mode": outpaint_fill_mode,
+            "mask_blur": mask_blur,
+            "inpaint_full_res": inpaint_full_res,
+            "inpaint_full_res_padding": inpaint_full_res_padding,
+            "inpaint_fill_mode": inpaint_fill_mode,
+            "inpaint_fill_strength": inpaint_fill_strength,
+            "inpaint_blur_strength": inpaint_blur_strength,
+            "loras": lora_configs,  # FLUX.2 needs this in params
+            "controlnet_images": controlnet_images,
+            "style_transfer": style_transfer,
+            "style_transfers": style_transfers,
+            "style_combine_mode": style_combine_mode,
+            "developer_mode": developer_mode,
+            "cfg_schedule_type": cfg_schedule_type,
+            "cfg_schedule_min": cfg_schedule_min,
+            "cfg_schedule_max": cfg_schedule_max,
+            "cfg_schedule_power": cfg_schedule_power,
+            "cfg_rescale_snr_alpha": cfg_rescale_snr_alpha,
+            "dynamic_threshold_percentile": dynamic_threshold_percentile,
+            "dynamic_threshold_mimic_scale": dynamic_threshold_mimic_scale,
+            "nag_enable": nag_enable,
+            "nag_scale": nag_scale,
+            "nag_tau": nag_tau,
+            "nag_alpha": nag_alpha,
+            "nag_sigma_end": nag_sigma_end,
+            "nag_negative_prompt": nag_negative_prompt,
+            "attention_type": attention_type,
+            "attention_impl": attention_impl,
+            "unet_quantization": unet_quantization,
+            "original_size_w": original_size_w,
+            "original_size_h": original_size_h,
+            "original_size_scale": original_size_scale,
+            "text_encoder_quantization": text_encoder_quantization,
+            "cpu_text_encoding": cpu_text_encoding,
+            "use_torch_compile": use_torch_compile,
+            "keep_models_hot": keep_models_hot,
+            "vae_tiling": vae_tiling,
+            "vae_tile_threshold": vae_tile_threshold,
+            "color_flatten_strength": color_flatten_strength,
+            "flatten_in_loop": flatten_in_loop,
+            "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
+            "flatten_in_loop_min_region": flatten_in_loop_min_region,
+            "vae_drift_correction": vae_drift_correction,
+            "spectrum_enable": spectrum_enable,
+            "fbcache_enable": fbcache_enable,
+            "fbcache_threshold": fbcache_threshold,
+            "fbcache_warmup_steps": fbcache_warmup_steps,
+            "fbcache_cache_branch": fbcache_cache_branch,
+            "spectrum_w": spectrum_w,
+            "spectrum_w_decay": spectrum_w_decay,
+            "spectrum_delta_cap": spectrum_delta_cap,
+            "spectrum_m": spectrum_m,
+            "spectrum_lam": spectrum_lam,
+            "spectrum_warmup_steps": spectrum_warmup_steps,
+            "spectrum_window_size": spectrum_window_size,
+            "spectrum_flex_window": spectrum_flex_window,
+            "spectrum_tail": spectrum_tail,
+            "spectrum_feature_mode": spectrum_feature_mode,
+            "spectrum_cache_branch": spectrum_cache_branch,
+            "spectrum_max_cache": spectrum_max_cache,
+            "enable_block_swap": enable_block_swap,
+            "blocks_to_swap": blocks_to_swap,
+            "use_pinned_memory": use_pinned_memory,
+            "block_swap_h2d_only": block_swap_h2d_only,
+            "block_swap_ring_size": block_swap_ring_size,
+            "preview_decoder": preview_decoder,
+            "ref_images": ref_image_list,  # FLUX.2 Image Edit reference images
+            "loop_decode": loop_decode,
+            "skip_gallery": skip_gallery,
+        }
+        params.update(_override_meta)
+        print(f"outpaint generation params: {sanitize_params_for_logging(params)}")
+
+        # inpaint_full_res is accepted for API compatibility but not implemented
+        # (shared with /generate/inpaint's underlying generate_inpaint call).
+        if inpaint_full_res or inpaint_full_res_padding != 32:
+            from api.generation_status import add_warning as _add_warning
+            _add_warning(
+                "inpaint_full_res is accepted but not implemented; it has no effect",
+                code="not_implemented",
+            )
+
+        # Set prompt chunking settings
+        set_prompt_chunking_settings(
+            pipeline_manager,
+            prompt_chunking_mode,
+            max_prompt_chunks
+        )
+
+        # Load LoRAs if specified (outpaint delegates to the shared inpaint
+        # pipeline underneath).
+        pipeline_manager.inpaint_pipeline, has_step_range_loras = load_loras_for_generation(
+            lora_manager,
+            pipeline_manager.inpaint_pipeline,
+            lora_configs,
+            "outpaint"
+        )
+
+        # Detect if SDXL
+        is_sdxl = pipeline_manager.inpaint_pipeline is not None and \
+                  "XL" in pipeline_manager.inpaint_pipeline.__class__.__name__
+        is_zimage = pipeline_manager.current_model_info and \
+                    pipeline_manager.current_model_info.get("type") == "zimage"
+        is_deus = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "deus"
+        is_flux2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "flux2"
+        # Z-Image with SDXL VAE (4ch) needs TAESD-XL instead of TAEF1
+        is_zimage_sdxl_vae = is_zimage and \
+                             pipeline_manager.current_model_info.get("vae_type") == "sdxl"
+        is_anima = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "anima"
+        is_lens = pipeline_manager.current_model_info and \
+                  pipeline_manager.current_model_info.get("type") == "lens"
+        # Ideogram 4 shares AutoencoderKLFlux2's 128-ch packed latent with Lens.
+        is_ideogram4 = pipeline_manager.current_model_info and \
+                       pipeline_manager.current_model_info.get("type") == "ideogram4"
+        is_minit2i = pipeline_manager.current_model_info and \
+                     pipeline_manager.current_model_info.get("type") == "minit2i"
+        minit2i_vae_type = (pipeline_manager.minit2i_components or {}).get("vae_type", "none") if is_minit2i else "none"
+        is_krea2 = pipeline_manager.current_model_info and \
+                   pipeline_manager.current_model_info.get("type") == "krea2"
+
+        # Warn about parameters the loaded architecture silently ignores
+        _current_arch = pipeline_manager.current_model_info.get("type") if pipeline_manager.current_model_info else None
+        check_arch_capabilities(params, _current_arch)
+
+        # Progress callback to send updates via WebSocket. Uses the CANVAS
+        # size (the actual output dimensions), not the raw input image size.
+        progress_callback = create_progress_callback_factory(
+            taesd_manager,
+            manager,
+            is_sdxl,
+            is_zimage,
+            is_deus,
+            is_zimage_sdxl_vae,
+            is_flux2,
+            is_anima,
+            is_lens=is_lens,
+            is_ideogram4=is_ideogram4,
+            is_minit2i=is_minit2i,
+            is_krea2=is_krea2,
+            img2img_fix_steps=img2img_fix_steps,
+            steps=steps,
+            image_width=canvas_width,
+            image_height=canvas_height,
+            # For flow-matching DiTs (Anima / Z-Image / FLUX.2 / Lens), default to
+            # the pred_x0 preview: x_t is mostly noise mid-denoising, while
+            # pred_x0 = x_t - σ·v shows the model's current clean-image
+            # estimate from the very first steps. Any explicit user override
+            # via the API still wins.
+            preview_predicted_x0=(preview_predicted_x0 or is_anima or is_zimage or is_flux2 or is_lens or is_ideogram4 or is_minit2i or is_krea2),
+            preview_enabled=params.get("preview_enabled", True),
+            preview_interval=params.get("preview_interval", 4),
+            preview_decoder=params.get("preview_decoder", "matrix")
+        )
+
+        # Create step callback for LoRA step range if needed
+        step_callback = None
+        if has_step_range_loras:
+            # Calculate actual steps based on denoising strength
+            actual_steps = int(steps * denoising_strength)
+            step_callback = create_lora_step_callback(
+                lora_manager,
+                pipeline_manager.inpaint_pipeline,
+                actual_steps
+            )
+
+        # Run generation in thread pool to avoid blocking event loop.
+        # gpu_coordinator slot pauses any active tagger training first.
+        from core.gpu_coordinator import gpu_coordinator
+        from core.inference.generation_timing import generation_timer
+        loop = asyncio.get_event_loop()
+        _peak_gb = _estimate_gen_peak_gb(canvas_width, canvas_height, 1,
+                                         pipeline_manager.current_pipeline_kind)
+        generation_timer.reset()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_peak_gb, timeout=60.0):
+            result_image, actual_seed, actual_ancestral_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_outpaint(params, init_image, progress_callback=progress_callback, step_callback=step_callback)
+            )
+        # Record total wall time + any phase breakdown the pipeline populated.
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        # Update params with actual seeds
+        params["seed"] = actual_seed
+        params["ancestral_seed"] = actual_ancestral_seed
+
+        # Add Vision Encoder info to params for PNG metadata and DB storage.
+        # Only record VE info when THIS generation actually used reference images
+        # (the VE stays loaded "sticky" across generations).
+        if ref_image_list:
+            ve_name, ve_hash = extract_vision_encoder_info(pipeline_manager)
+            if ve_name:
+                params["vision_encoder_name"] = ve_name
+            if ve_hash:
+                params["vision_encoder_hash"] = ve_hash
+
+        # Add VAE identity to params. The VAE always participates in decode, so this
+        # is recorded for every generation where it can be determined.
+        vae_name, vae_hash = extract_vae_info(pipeline_manager)
+        if vae_name:
+            params["vae_name"] = vae_name
+        if vae_hash:
+            params["vae_hash"] = vae_hash
+
+        # Save image with metadata (include model info). params["width"]/["height"]
+        # were overwritten by generate_outpaint to the resolved canvas size.
+        filename = save_image_with_metadata(
+            result_image,
+            params,
+            "outpaint",
+            model_info=pipeline_manager.current_model_info
+        )
+
+        # skip_gallery: the file is saved (so a generation loop can still chain
+        # to the next step via its path) but no thumbnail/DB record is created.
+        if skip_gallery:
+            complete_generation({"filename": filename, "seed": actual_seed})
+            return {
+                "success": True,
+                "filename": filename,
+                "image_path": f"/outputs/{filename}",
+                "actual_seed": actual_seed,
+                "warnings": get_warnings(),
+            }
+
+        image_path = os.path.join(settings.outputs_dir, filename)
+        create_thumbnail(image_path)
+
+        # Calculate metadata. No mask_image here (outpaint builds its own
+        # mask server-side; there is no user-uploaded mask to record).
+        metadata = calculate_generation_metadata(
+            result_image,
+            lora_configs,
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=init_image,
+        )
+
+        # Remove image objects from params before saving to DB and calculate ControlNet hashes
+        params_for_db = prepare_params_for_db(params, calculate_image_hash)
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        # Extract model name and hash from current_model_info
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        # Save to database
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="outpaint",
+            image_hash=metadata["image_hash"],
+            lora_names=metadata["lora_names"],
+            model_name=model_name,
+            model_hash=model_hash,
+            result_image=result_image,
+            source_image_hash=metadata.get("source_image_hash"),
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except GenerationError as e:
+        # Re-raise custom errors as-is
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        # Wrap unexpected errors in GenerationError
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Outpaint generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+    finally:
+        # Unload LoRAs after generation
+        if lora_configs and pipeline_manager.inpaint_pipeline:
+            pipeline_manager.inpaint_pipeline = lora_manager.unload_loras(pipeline_manager.inpaint_pipeline)
+
 
 @router.get("/images")
 async def get_images(

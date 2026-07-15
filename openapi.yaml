@@ -152,6 +152,9 @@ paths:
                   inpaint:
                     type: object
                     additionalProperties: true
+                  outpaint:
+                    type: object
+                    additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -547,6 +550,76 @@ paths:
                 seed: 5555555555
         '400':
           description: Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate/outpaint:
+    post:
+      tags: [generation]
+      summary: Outpaint (spatially extend) an image onto a larger canvas
+      description: |
+        Places `image` (optionally trimmed via `input_crop_*` and resized to
+        `place_width`x`place_height`) inside a larger `canvas_width`x`canvas_height`
+        canvas at (`place_x`, `place_y`), fills the rest of the canvas per
+        `outpaint_fill_mode`, and generates everything outside the placed
+        rectangle according to the prompt. Internally delegates to the same
+        all-architecture inpaint machinery as `/generate/inpaint` (no mask
+        upload -- the mask is built server-side from the placement rect).
+
+        **Strict preservation guarantee:** the placed input rectangle in the
+        returned image is BYTE-IDENTICAL to the (cropped + resized) input,
+        regardless of the loaded architecture or `denoising_strength`. This
+        is enforced by an unconditional final pixel paste performed AFTER
+        generation (see `core/inference/outpaint_utils.py`), independent of
+        any per-architecture inpaint compositing.
+
+        **Key parameters:**
+        - `image`: Input image to place on the canvas (PNG/JPEG, binary file upload)
+        - `canvas_width` / `canvas_height`: Output canvas size (rounded to a
+          16px grid -- a fixed point for every supported architecture's own
+          internal resolution rounding)
+        - `place_x` / `place_y` / `place_width` / `place_height`: Placed
+          rectangle on the canvas. `place_width`/`place_height` = 0 means
+          "use the (cropped) input's native size"
+        - `input_crop_x` / `input_crop_y` / `input_crop_w` / `input_crop_h`:
+          Optional trim of the input BEFORE placement (0 width/height = to
+          the input's edge)
+        - `outpaint_fill_mode`: How the canvas outside the placed rect is
+          pre-filled before denoising: `replicate` | `reflect` | `mean` | `noise`
+        - `mask_blur`: Gaussian blur radius for the generation-boundary
+          transition. Unlike `/generate/inpaint`, this blur is OUTWARD-ONLY
+          (the softened band lies entirely outside the preserved rect)
+        - `denoising_strength`: Defaults to 1.0 (full-strength generation of
+          the surrounding canvas; the placed region is preserved regardless
+          via the final pixel paste, not via this parameter)
+      operationId: generateOutpaint
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OutpaintRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                image_path: "/outputs/2026-07-15/outpaint_20260715_123456_001.png"
+                image_id: 87
+                seed: 5555555555
+        '400':
+          description: Invalid parameters (including degenerate placement geometry)
           content:
             application/json:
               schema:
@@ -5840,6 +5913,135 @@ components:
               type: number
               default: 1.0
               description: "Strength of the mask-edge blend when compositing the inpainted region back into the original image."
+
+    OutpaintRequest:
+      allOf:
+        - $ref: '#/components/schemas/GenerationParams'
+        - type: object
+          required:
+            - image
+          description: |
+            `width`/`height` (inherited from GenerationParams) are NOT used by
+            this endpoint -- `canvas_width`/`canvas_height` define the output
+            size instead; the resolved canvas size is what actually gets
+            generated (and is what is recorded as width/height in the
+            response image's metadata).
+          properties:
+            image:
+              type: string
+              format: binary
+              description: "Input image to place on the outpaint canvas."
+            denoising_strength:
+              type: number
+              minimum: 0
+              maximum: 1
+              default: 1.0
+              description: |
+                Denoising strength for the surrounding canvas. Defaults to
+                1.0 (full generation) unlike /generate/inpaint's 0.75,
+                because outpaint has no existing content in the generated
+                region -- the placed input region is preserved regardless,
+                via the final pixel paste (not via this parameter).
+            img2img_fix_steps:
+              type: boolean
+              default: true
+              description: "When true, run the full step count scaled by denoising_strength (fixed number of steps) rather than skipping initial steps."
+            cpu_text_encoding:
+              type: boolean
+              default: false
+              description: "Run text encoding on CPU instead of GPU."
+            vae_drift_correction:
+              type: boolean
+              default: false
+              description: |
+                VAE DC-drift correction. Subtracts the per-channel DC bias the
+                VAE round-trip introduces from the final decode. Implemented
+                for SD1.5/SDXL; accepted-but-ignored (with a warning) on the
+                DiT architectures. Only affects the generated region -- the
+                preserved rect is pasted back afterward regardless.
+            canvas_width:
+              type: integer
+              multipleOf: 16
+              default: 1536
+              description: "Output canvas width. Rounded to a 16px grid -- a fixed point for every supported architecture's own internal resolution rounding (SD's /8 grid divides evenly into it too), so the canvas dimensions generate_inpaint is invoked with and the size it returns always match."
+              example: 1536
+            canvas_height:
+              type: integer
+              multipleOf: 16
+              default: 1536
+              description: "Output canvas height. Rounded to a 16px grid -- a fixed point for every supported architecture's own internal resolution rounding (SD's /8 grid divides evenly into it too), so the canvas dimensions generate_inpaint is invoked with and the size it returns always match."
+              example: 1536
+            place_x:
+              type: integer
+              default: 0
+              description: "Left edge of the placed input rectangle on the canvas (clamped server-side so the whole rect stays in bounds)."
+              example: 256
+            place_y:
+              type: integer
+              default: 0
+              description: "Top edge of the placed input rectangle on the canvas (clamped server-side so the whole rect stays in bounds)."
+              example: 256
+            place_width:
+              type: integer
+              default: 0
+              description: "Width the (cropped) input is resized to before placement. 0 = use the input's native width."
+              example: 1024
+            place_height:
+              type: integer
+              default: 0
+              description: "Height the (cropped) input is resized to before placement. 0 = use the input's native height."
+              example: 1024
+            input_crop_x:
+              type: integer
+              default: 0
+              description: "Left edge of an optional trim applied to the input image BEFORE placement."
+            input_crop_y:
+              type: integer
+              default: 0
+              description: "Top edge of an optional trim applied to the input image BEFORE placement."
+            input_crop_w:
+              type: integer
+              default: 0
+              description: "Width of the input trim. 0 = to the input's right edge."
+            input_crop_h:
+              type: integer
+              default: 0
+              description: "Height of the input trim. 0 = to the input's bottom edge."
+            outpaint_fill_mode:
+              type: string
+              enum: [replicate, reflect, mean, noise]
+              default: replicate
+              description: "How the canvas outside the placed rect is pre-filled before denoising: replicate (edge-extend the placed content outward), reflect (mirror it outward), mean (solid average color of the placed content), noise (uniform random RGB)."
+              example: replicate
+            mask_blur:
+              type: integer
+              default: 4
+              description: |
+                Gaussian blur radius for the generation-boundary transition.
+                Unlike /generate/inpaint, this blur is OUTWARD-ONLY: the
+                softened band lies entirely outside the preserved rect, so
+                the placed input region is never blended with generated
+                content.
+            inpaint_full_res:
+              type: boolean
+              default: false
+              description: "Accepted for API compatibility with /generate/inpaint; not implemented (no effect)."
+            inpaint_full_res_padding:
+              type: integer
+              default: 32
+              description: "Accepted for API compatibility with /generate/inpaint; not implemented (no effect)."
+            inpaint_fill_mode:
+              type: string
+              default: original
+              description: "How the masked (to-be-generated) area is initialized before denoising, on top of the canvas outpaint_fill_mode already built. Left at its default (original) is recommended -- the canvas is already pre-filled."
+            inpaint_fill_strength:
+              type: number
+              default: 1.0
+              description: "Strength of the fill applied to the masked area before denoising."
+            inpaint_blur_strength:
+              type: number
+              default: 1.0
+              description: "Strength of the mask-edge blend when compositing the generated region back onto the canvas (internal to generate_inpaint; the final preserved-rect paste happens afterward regardless)."
 
     UpscaleRequest:
       type: object

@@ -6546,6 +6546,35 @@ components:
                 composition or content further from the boundary. 0 disables
                 the correction.
               example: 0.25
+            outpaint_resample_count:
+              type: integer
+              default: 2
+              minimum: 1
+              description: |
+                SD/SDXL only. RePaint-style time-travel resampling: the
+                number of denoise traversals through each resampled band
+                segment (mid-schedule). After completing a denoise step
+                inside the band, the whole latent (preserved region and
+                generate region together) is re-noised back up
+                `outpaint_jump_length` steps and re-denoised, repeating this
+                count of times, before continuing forward. Re-exposes the
+                generate region to the preserved-region constraint while it
+                is still malleable, addressing content divergence (invented
+                or unrelated composition) that persists with
+                `outpaint_boundary_color_strength` alone. 1 disables
+                resampling. Costs roughly 1.5-2x the requested step count in
+                actual denoise passes. Only takes effect with a
+                resample-compatible sampler (Euler, Euler Ancestral, DDIM,
+                DDPM); other samplers run without resampling.
+              example: 2
+            outpaint_jump_length:
+              type: integer
+              default: 4
+              minimum: 1
+              description: |
+                SD/SDXL only. Number of step indices each time-travel jump
+                (see `outpaint_resample_count`) re-noises back across.
+              example: 4
 
     UpscaleRequest:
       type: object

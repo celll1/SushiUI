@@ -973,6 +973,157 @@ def _outpaint_apply_boundary_color(
     return x0 + strength * collar_weight * (target_lowfreq - current_lowfreq)
 
 
+# ============================================================================
+# OUTPAINT B2 -- RePaint-style band-limited time-travel resampling
+# (scratchpad/outpaint_continuity_design.md section "B2"). Builds on B1 above:
+# every re-denoise pass triggered by a jump still runs through the B1
+# x0-projection block in the main loop. Gated on `outpaint_noise_init` (same
+# flag as B1) AND `outpaint_resample_count > 1`; normal inpaint and
+# outpaint_resample_count<=1 are byte-identical (the schedule below degenerates
+# to the plain 0..T-1 walk -- see `_build_outpaint_resample_schedule`'s r<=1
+# early return).
+# ============================================================================
+
+# Compatible schedulers hold no cross-step solver history/state that a
+# backward jump would invalidate (unlike DPM++/UniPC's multistep buffers or
+# KDPM2/Heun's 2nd-order interpolated-sigma bookkeeping) -- see the design
+# doc's "SCHEDULER GATING". Two families, exactly like `_outpaint_x0_transform`
+# above, but narrower: only the schedulers with NO history are eligible at all
+# for B2 (DPM++/UniPC/PNDM/LMS/KDPM2/Heun are excluded outright, not merely
+# re-derived differently).
+_OUTPAINT_RESAMPLE_SIGMA_SCHEDULERS = (
+    "EulerDiscreteScheduler",
+    "EulerAncestralDiscreteScheduler",
+)
+_OUTPAINT_RESAMPLE_VP_SCHEDULERS = (
+    "DDIMScheduler",
+    "DDPMScheduler",
+)
+
+# Band-limited: skip jumps in the first `_OUTPAINT_RESAMPLE_BAND_LO` and last
+# `1 - _OUTPAINT_RESAMPLE_BAND_HI` fraction of the schedule (design doc
+# defaults). Not user-exposed params yet (B2 checklist item 5).
+_OUTPAINT_RESAMPLE_BAND_LO = 0.15
+_OUTPAINT_RESAMPLE_BAND_HI = 0.70
+
+
+def _build_outpaint_resample_schedule(
+    num_timesteps: int, r: int, u: int, band_lo: float, band_hi: float
+) -> List[Tuple[int, bool]]:
+    """Build the ordered VISIT schedule for OUTPAINT B2 time-travel resampling.
+
+    Returns a list of ``(step_index, is_forward_jump)`` tuples. ``step_index``
+    is the LOGICAL diffusion index (0..num_timesteps-1) the denoise-step body
+    must run at for this visit -- callers index ``timesteps[step_index]`` /
+    ``scheduler.sigmas[step_index]`` / any other per-step schedule (cfg
+    schedule, prompt-edit callback, spectrum, controlnet fraction, ...) with
+    THIS value, NEVER a running visit counter, so a revisit reproduces exactly
+    the same conditioning as the original forward visit to that index.
+
+    ``is_forward_jump`` is True exactly on the first visit of a re-denoise
+    cycle (the visit immediately following a backward jump): before running
+    the denoise-step body for that visit, the caller must re-noise the WHOLE
+    latent from the level it is actually at (the level reached after
+    finishing the immediately PRECEDING visit in this list, which is always
+    ``step_index + u`` -- see below) up to the level at ``step_index``. It is
+    False on every other visit (including ``step_index == 0``), where the
+    latent is already at the correct level from the immediately preceding
+    visit and no re-noise is needed.
+
+    Degenerate case: ``r <= 1`` or ``u <= 0`` or ``num_timesteps <= 0``
+    disables resampling entirely -- the returned schedule is the plain
+    ``[(0, False), (1, False), ..., (num_timesteps - 1, False)]`` walk,
+    ITERATION-ORDER-IDENTICAL to ``enumerate(timesteps)``.
+
+    Anchors (landing positions, i.e. the index reached right after a normal
+    forward step): ``j = band_start, band_start + u, band_start + 2u, ...``
+    where ``band_start = ceil(band_lo * num_timesteps)``, while ``j <=
+    band_end`` (``band_end = floor(band_hi * num_timesteps)``) and ``j - u >=
+    0`` (a full u-step segment must exist behind the anchor to jump into).
+    At each anchor, once the plain forward walk reaches ``step_index == j -
+    1`` (the last step of the ``[j-u, j-1]`` segment, landing the latent at
+    level ``j``), ``r - 1`` EXTRA full passes through that segment are
+    inserted, each starting with an ``is_forward_jump=True`` visit at
+    ``step_index = j - u``. The walk then continues forward from ``j``
+    unmodified -- exactly ``r`` total traversals of the segment (1 original +
+    r-1 resampled), matching the design doc's "r cycles".
+
+    NFE (total visit count) == ``num_timesteps + (r - 1) * u * len(anchors)``.
+    """
+    if r <= 1 or u <= 0 or num_timesteps <= 0:
+        return [(i, False) for i in range(num_timesteps)]
+
+    band_start = int(math.ceil(band_lo * num_timesteps))
+    band_end = int(math.floor(band_hi * num_timesteps))
+
+    anchors = []
+    j = band_start
+    while j <= band_end and (j - u) >= 0 and j <= num_timesteps:
+        anchors.append(j)
+        j += u
+    anchors_set = set(anchors)
+
+    schedule: List[Tuple[int, bool]] = []
+    for i in range(num_timesteps):
+        schedule.append((i, False))
+        landing = i + 1
+        if landing in anchors_set:
+            for _cycle in range(r - 1):
+                for k in range(u):
+                    schedule.append((landing - u + k, k == 0))
+    return schedule
+
+
+def _outpaint_resample_jump(
+    scheduler,
+    latents: torch.Tensor,
+    timesteps: torch.Tensor,
+    hi_index: int,
+    lo_index: int,
+    generator: Optional[torch.Generator],
+) -> torch.Tensor:
+    """OUTPAINT B2 time-travel jump: re-noise the WHOLE latent (keep AND
+    generate regions TOGETHER -- no mask special-casing here, unlike B1) from
+    its CURRENT level (index ``lo_index``, the level the running ``latents``
+    are actually at, having just landed there after the previous visit) UP to
+    the higher-noise level at index ``hi_index`` (``hi_index < lo_index``: a
+    SMALLER diffusion index is noisier). Because the whole composite is
+    re-noised together, the keep region becomes a CORRELATED
+    ``q(z_hi | z0)`` sample whose noise realization matches the generate
+    region's -- RePaint's key property (design doc "B2"). Fresh noise every
+    call, drawn from ``generator`` (the sampler's ``step_generator``, for
+    run-to-run determinism given a fixed seed).
+
+    ``timesteps`` is the CALLER's local (t_start-sliced) timesteps array --
+    used instead of ``scheduler.timesteps`` directly so this helper never has
+    to assume ``t_start == 0`` itself (the caller's B1 guard already enforces
+    that for the outpaint path, but keeping the dependency explicit avoids a
+    second, easy-to-miss implicit assumption inside this helper).
+
+    Only called when the scheduler class is one of
+    ``_OUTPAINT_RESAMPLE_SIGMA_SCHEDULERS`` / ``_OUTPAINT_RESAMPLE_VP_SCHEDULERS``
+    (see the gating in ``custom_inpaint_sampling_loop``) -- the two branches
+    below mirror ``_outpaint_x0_transform``'s per-family sigma/alpha
+    derivation, restricted to the two families with no cross-step solver
+    state.
+    """
+    cls_name = type(scheduler).__name__
+    noise = torch.randn(latents.shape, generator=generator, device=latents.device, dtype=latents.dtype)
+
+    if cls_name in _OUTPAINT_RESAMPLE_SIGMA_SCHEDULERS:
+        sigma_hi = scheduler.sigmas[hi_index].to(device=latents.device, dtype=latents.dtype)
+        sigma_lo = scheduler.sigmas[lo_index].to(device=latents.device, dtype=latents.dtype)
+        delta_sq = (sigma_hi ** 2 - sigma_lo ** 2).clamp_min(0.0)
+        return latents + delta_sq.sqrt() * noise
+    else:  # DDIM / DDPM: VP / alphas_cumprod convention
+        t_hi = int(timesteps[hi_index].item())
+        t_lo = int(timesteps[lo_index].item())
+        abar_hi = scheduler.alphas_cumprod[t_hi].to(device=latents.device, dtype=latents.dtype)
+        abar_lo = scheduler.alphas_cumprod[t_lo].to(device=latents.device, dtype=latents.dtype)
+        ratio = (abar_hi / abar_lo).clamp(max=1.0)
+        return ratio.sqrt() * latents + (1.0 - ratio).clamp_min(0.0).sqrt() * noise
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -3444,6 +3595,13 @@ def custom_inpaint_sampling_loop(
     outpaint_boundary_color_strength: float = 0.25,  # B1 low-frequency boundary color proximal strength
                                                       # (0 = off). Only active when outpaint_noise_init is
                                                       # True; see _outpaint_apply_boundary_color.
+    outpaint_resample_count: int = 2,  # B2 RePaint-style time-travel resampling: number of denoise
+                                        # traversals ("r") through each resampled band segment (1 = off).
+                                        # Only active when outpaint_noise_init is True, not a dedicated
+                                        # 9ch inpaint UNet, and the scheduler is resample-compatible
+                                        # (Euler/EulerAncestral/DDIM/DDPM) -- see
+                                        # _build_outpaint_resample_schedule / _outpaint_resample_jump.
+    outpaint_jump_length: int = 4,  # B2 jump-back length ("u", in step indices) for each resample cycle.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -3600,6 +3758,53 @@ def custom_inpaint_sampling_loop(
         t_start = 0
 
     timesteps = timesteps[t_start:]
+
+    # ============================================================
+    # OUTPAINT B2: RePaint-style time-travel resample schedule (design doc
+    # section "B2"). Gated on outpaint_noise_init + a resample-compatible
+    # scheduler + not a dedicated 9ch inpaint UNet (mirrors the B1 gate --
+    # 9ch inpaint models never go through the x0-projection this resampling
+    # relies on). `_outpaint_resample_active=False` (the off-path, including
+    # ALL normal non-outpaint inpaint calls) makes
+    # `_build_outpaint_resample_schedule` return the plain
+    # `[(0, False), (1, False), ..., (T-1, False)]` walk -- iteration-order-
+    # identical to `enumerate(timesteps)`, so the main loop below can
+    # unconditionally iterate the schedule without any behavior change here.
+    # ============================================================
+    _outpaint_resample_active = False
+    if outpaint_noise_init and not is_inpaint_unet and outpaint_resample_count > 1 and outpaint_jump_length > 0:
+        _outpaint_scheduler_cls = type(scheduler).__name__
+        if (_outpaint_scheduler_cls in _OUTPAINT_RESAMPLE_SIGMA_SCHEDULERS
+                or _outpaint_scheduler_cls in _OUTPAINT_RESAMPLE_VP_SCHEDULERS):
+            _outpaint_resample_active = True
+        else:
+            print(f"[Outpaint][B2] resample requested (outpaint_resample_count={outpaint_resample_count}) but "
+                  f"scheduler {_outpaint_scheduler_cls} is unsupported (Euler/Euler-a/DDIM/DDPM only, no "
+                  f"cross-step solver state) -- disabling resampling, running B1 only")
+            _add_generation_warning(
+                f"Outpaint time-travel resampling is not supported with the {_outpaint_scheduler_cls} sampler "
+                "(only Euler/Euler-a/DDIM/DDPM hold no cross-step solver state) -- running without resampling.",
+                code="outpaint_resample_unsupported_sampler",
+            )
+
+    _outpaint_visit_schedule = _build_outpaint_resample_schedule(
+        len(timesteps),
+        outpaint_resample_count if _outpaint_resample_active else 1,
+        outpaint_jump_length,
+        _OUTPAINT_RESAMPLE_BAND_LO,
+        _OUTPAINT_RESAMPLE_BAND_HI,
+    )
+    if _outpaint_resample_active:
+        _outpaint_extra_visits = len(_outpaint_visit_schedule) - len(timesteps)
+        print(f"[Outpaint][B2] time-travel resampling active: {len(timesteps)} nominal steps -> "
+              f"{len(_outpaint_visit_schedule)} actual NFE ({_outpaint_extra_visits} extra denoise passes, "
+              f"~{len(_outpaint_visit_schedule) / max(1, len(timesteps)):.2f}x)")
+        _add_generation_warning(
+            f"Outpaint time-travel resampling active: ~{len(_outpaint_visit_schedule) / max(1, len(timesteps)):.2f}x "
+            f"the requested step count ({len(_outpaint_visit_schedule)} actual denoise passes instead of "
+            f"{len(timesteps)}).",
+            code="outpaint_resample_nfe",
+        )
 
     # Ensure VAE is on GPU for initial encoding
     from core.vram_optimization import move_vae_to_gpu, move_vae_to_cpu
@@ -3790,7 +3995,20 @@ def custom_inpaint_sampling_loop(
     spectrum_block_ctrl = None
     if spectrum_enable:
         _n_steps = len(timesteps)
-        if is_deus or has_controlnet or (prompt_embeds_callback is not None):
+        if _outpaint_resample_active:
+            # OUTPAINT B2: revisited timesteps under time-travel resampling break
+            # Spectrum's monotonic anchor/forecast assumptions (it assumes each
+            # step index is visited at most once, in increasing order). Prefer
+            # keeping resampling (the requested quality fix) and disabling
+            # Spectrum instead, per the design doc's B2 SCHEDULER GATING.
+            print("[Spectrum] requested but disabled (outpaint time-travel resampling is active; "
+                  "revisited timesteps break Spectrum's monotonic anchor/forecast assumptions)")
+            _add_generation_warning(
+                "Spectrum acceleration disabled: incompatible with outpaint time-travel resampling "
+                "(revisited timesteps break its monotonic anchor/forecast assumptions).",
+                code="outpaint_resample_spectrum_disabled",
+            )
+        elif is_deus or has_controlnet or (prompt_embeds_callback is not None):
             print("[Spectrum] requested but disabled (prompt-editing / ControlNet / DEUS; "
                   "needs stable conditioning)")
         elif _n_steps < spectrum_warmup_steps + 3:
@@ -3845,7 +4063,18 @@ def custom_inpaint_sampling_loop(
     # the txt2img loop for details).
     fbcache_ctrl = None
     if fbcache_enable:
-        if spectrum_block_ctrl is not None or spectrum is not None:
+        if _outpaint_resample_active:
+            # OUTPAINT B2: same rationale as the Spectrum gate above -- revisited
+            # timesteps break FBCache's dynamic cache-hit/reuse assumptions
+            # (it also assumes each step index is visited at most once).
+            print("[FBCache] requested but disabled (outpaint time-travel resampling is active; "
+                  "revisited timesteps break FBCache's cache-hit/reuse assumptions)")
+            _add_generation_warning(
+                "FBCache disabled: incompatible with outpaint time-travel resampling "
+                "(revisited timesteps break its cache-hit/reuse assumptions).",
+                code="outpaint_resample_fbcache_disabled",
+            )
+        elif spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
         elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
             print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
@@ -3876,17 +4105,67 @@ def custom_inpaint_sampling_loop(
     # Debug flag for first iteration logging (used throughout the loop)
     first_iteration_debug = True
 
-    # Send initial noise preview (step 0) before denoising loop starts
+    # Send initial noise preview (step 0) before denoising loop starts.
+    # Total is len(_outpaint_visit_schedule), not len(timesteps): identical to
+    # len(timesteps) off the OUTPAINT B2 resample path (see
+    # _build_outpaint_resample_schedule's r<=1 early return), but reflects the
+    # true (higher) NFE when resampling is active -- so the progress bar's
+    # total always matches the number of denoise-step visits actually run.
     if progress_callback is not None:
         print(f"[CustomSampling] Sending initial noise preview (step 0)")
-        progress_callback(-1, len(timesteps), latents, cfg_metrics=None)
+        progress_callback(-1, len(_outpaint_visit_schedule), latents, cfg_metrics=None)
 
     # ---- In-loop hard-flatten setup (SD1.5/SDXL, opt-in) -----------------------
     _flatten_inject_steps, _flatten_vae_shift = _setup_inloop_flatten(
         pipeline, timesteps, spectrum, fbcache_ctrl,
         flatten_in_loop, flatten_in_loop_last_steps, flatten_in_loop_min_region)
 
-    for i, t in enumerate(timesteps):
+    # OUTPAINT B2: iterate the precomputed VISIT schedule (see
+    # _build_outpaint_resample_schedule) instead of a plain enumerate(timesteps).
+    # `visit_idx` is a MONOTONIC running counter (used only for progress-total
+    # reporting below); `i` is the LOGICAL diffusion index (used for every
+    # per-step schedule lookup -- sigma, cfg schedule, prompt-edit callback,
+    # controlnet fraction, spectrum/fbcache, style progress, etc. -- exactly as
+    # the plain `for i, t in enumerate(timesteps)` loop it replaces). Off the
+    # resample path (outpaint_resample_count<=1, non-outpaint calls, or an
+    # incompatible scheduler) `_outpaint_visit_schedule == [(0, False), (1,
+    # False), ..., (T-1, False)]`, so `visit_idx == i` always and this loop is
+    # ITERATION-ORDER-IDENTICAL to the original `enumerate(timesteps)`.
+    for visit_idx, (i, is_forward_jump) in enumerate(_outpaint_visit_schedule):
+        t = timesteps[i]
+
+        # OUTPAINT B2: time-travel jump. `is_forward_jump` marks the first
+        # visit of a re-denoise cycle -- re-noise the WHOLE latent (keep +
+        # generate together, no mask special-casing -- see
+        # _outpaint_resample_jump) from its current level (index i +
+        # outpaint_jump_length, where the previous visit just landed) back UP
+        # to the level at index i. Never true off the resample path.
+        if is_forward_jump:
+            latents = _outpaint_resample_jump(
+                scheduler, latents, timesteps, hi_index=i, lo_index=i + outpaint_jump_length,
+                generator=step_generator if step_generator is not None else generator,
+            )
+
+        # OUTPAINT B2: EulerDiscreteScheduler/EulerAncestralDiscreteScheduler
+        # cache an internal `_step_index` that `scale_model_input`/`step` read
+        # `self.sigmas[self.step_index]` from -- it is set from the passed
+        # `timestep` ONLY on the very first ever call (`_init_step_index`,
+        # gated on `self.step_index is None`); every call after that just
+        # blindly increments it by 1, IGNORING the `timestep`/`t` argument.
+        # A backward jump therefore leaves it silently stale (still counting
+        # up past the jump) unless forced back in sync with the LOGICAL index
+        # `i` here -- a true no-op on every visit that isn't preceded by a
+        # jump (matches whatever the auto-increment already holds). DDIM/DDPM
+        # (the other _outpaint_resample_active-eligible family) derive
+        # everything from `t` directly every call and have no such counter,
+        # so this is intentionally scoped to only the sigma-scale family, and
+        # only while resampling is genuinely active (never touches a B1-only
+        # run with e.g. DPM++/UniPC, which are excluded from resampling
+        # entirely by the scheduler gate above but still use their OWN
+        # `_step_index` semantics for B1 alone -- untouched here).
+        if _outpaint_resample_active and type(scheduler).__name__ in _OUTPAINT_RESAMPLE_SIGMA_SCHEDULERS:
+            scheduler._step_index = i
+
         # Check for cancellation (only in inference context, not training)
         try:
             from core.pipeline import pipeline_manager
@@ -4542,11 +4821,16 @@ def custom_inpaint_sampling_loop(
                 # PRE-step above (x0-space projection injection), so the old
                 # post-step add_noise-and-overwrite is gated OFF here -- it is
                 # exactly the off-trajectory replacement B1 removes. Only a
-                # single hard overwrite remains, on the FINAL step, as a
-                # latent anchor (belt-and-suspenders; the pixel-exact
-                # guarantee is the unconditional final paste in
-                # outpaint_utils regardless of this).
-                if i == len(timesteps) - 1:
+                # single hard overwrite remains, on the FINAL VISIT (the
+                # OUTPAINT B2 schedule's last entry, not necessarily
+                # `i == len(timesteps) - 1` under resampling -- though in
+                # practice it always is, since the band is capped below
+                # `len(timesteps)`; using the visit-schedule position is the
+                # robust check regardless of band placement), as a latent
+                # anchor (belt-and-suspenders; the pixel-exact guarantee is
+                # the unconditional final paste in outpaint_utils regardless
+                # of this).
+                if visit_idx == len(_outpaint_visit_schedule) - 1:
                     latents = (1 - mask_latent) * image_latents + mask_latent * latents
                 if pred_original_sample is not None:
                     pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
@@ -4594,7 +4878,10 @@ def custom_inpaint_sampling_loop(
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
-            progress_callback(i, len(timesteps), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
+            # visit_idx/len(_outpaint_visit_schedule): a MONOTONIC progress
+            # total (see the initial-preview call above) -- identical to
+            # i/len(timesteps) off the OUTPAINT B2 resample path.
+            progress_callback(visit_idx, len(_outpaint_visit_schedule), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
 
         if step_callback is not None:
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})

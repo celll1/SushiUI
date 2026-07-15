@@ -309,6 +309,22 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # continuity across the seam without constraining composition/content
     # far from it. 0 disables the correction entirely.
     "outpaint_boundary_color_strength": 0.25,
+    # B2 continuity fix (SD/SDXL only; core.inference.custom_sampling's
+    # outpaint_noise_init-gated RePaint-style band-limited time-travel
+    # resampling): after completing a denoise step inside a mid-schedule band,
+    # jump back outpaint_jump_length steps by re-noising the WHOLE latent
+    # (keep + generate together, so the keep region becomes a correlated
+    # sample instead of an independently-pinned one) and re-denoise, repeating
+    # outpaint_resample_count times total per band segment. Re-exposes the
+    # generate region to the keep constraint while it is still malleable,
+    # fixing content divergence (invented/unrelated composition) that B1
+    # alone does not address. 1 disables resampling entirely (B1 only).
+    # Costs roughly 1.5-2x the requested step count in actual denoise passes.
+    # Only takes effect with a resample-compatible sampler (Euler, Euler
+    # Ancestral, DDIM, DDPM); other samplers fall back to B1 only.
+    "outpaint_resample_count": 2,
+    # B2 jump-back length ("u", in step indices) for each resample cycle.
+    "outpaint_jump_length": 4,
 }
 
 # ---------------------------------------------------------------------------

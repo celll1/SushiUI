@@ -2,13 +2,13 @@
 
 import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
-import { GenerationParams, Img2ImgParams, InpaintParams, UpscaleParams, Txt2VidParams, Img2VidParams, Txt2AudParams, Aud2AudParams } from "@/utils/api";
+import { GenerationParams, Img2ImgParams, InpaintParams, OutpaintParams, UpscaleParams, Txt2VidParams, Img2VidParams, Txt2AudParams, Aud2AudParams } from "@/utils/api";
 
 export interface QueueItem {
   id: string;
-  type: "txt2img" | "img2img" | "inpaint" | "upscale" | "txt2vid" | "img2vid" | "txt2aud" | "aud2aud";
-  params: GenerationParams | Img2ImgParams | InpaintParams | UpscaleParams | Txt2VidParams | Img2VidParams | Txt2AudParams | Aud2AudParams;
-  inputImage?: string; // For img2img and inpaint
+  type: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale" | "txt2vid" | "img2vid" | "txt2aud" | "aud2aud";
+  params: GenerationParams | Img2ImgParams | InpaintParams | OutpaintParams | UpscaleParams | Txt2VidParams | Img2VidParams | Txt2AudParams | Aud2AudParams;
+  inputImage?: string; // For img2img, inpaint, and outpaint
   // Server-cached latent to chain from instead of an image (loop-generation
   // decodeMode "final-only" latent passthrough; img2img only — set by the
   // previous step's response.latent_id when its loop_decode was "none").

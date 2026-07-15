@@ -142,7 +142,7 @@ const LOOP_GENERATION_STORAGE_KEY = "txt2img_loop_generation";
 const REF_IMAGES_STORAGE_KEY = "txt2img_ref_images";
 
 interface Txt2ImgPanelProps {
-  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "upscale") => void;
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
   onImageGenerated?: (imageUrl: string) => void;
 }
 

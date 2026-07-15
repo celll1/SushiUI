@@ -243,7 +243,7 @@ const REF_IMAGES_STORAGE_KEY = "img2img_ref_images";
 
 interface Img2ImgPanelProps {
   onImageGenerated?: (imageUrl: string) => void;
-  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "upscale") => void;
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
 export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgPanelProps = {}) {

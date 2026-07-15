@@ -53,7 +53,7 @@ const INPUT_IMAGE_STORAGE_KEY = "upscale_input_image";
 const PREVIEW_STORAGE_KEY = "upscale_preview";
 
 interface UpscalePanelProps {
-  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "upscale") => void;
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
 export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {

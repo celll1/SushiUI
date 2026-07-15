@@ -315,6 +315,137 @@ class AceStepMixin:
         return result
 
     # ------------------------------------------------------------------
+    # Outpaint (extend) helper -- the structural INVERSE of the repaint
+    # waveform splice above. Repaint holds the region OUTSIDE its window and
+    # its 10ms crossfade deliberately encroaches INTO that kept region
+    # (`fade_start = start_sample - crossfade_samples` above, i.e. the ramp
+    # eats into the region that is otherwise pure `ref`). Outpaint instead
+    # holds the ENTIRE placed-input span with NO encroachment: mask=0 (=
+    # original input) covers every sample in `[start_sample, end_sample)`
+    # unconditionally, and the short declick ramp is placed ENTIRELY on the
+    # GENERATED side of each boundary (outside the span). Unlike repaint
+    # (whose `ref_wav` covers the FULL clip, so the crossfade can blend
+    # against real reference samples on both sides of its window), outpaint's
+    # `input_wave` covers ONLY the placed span itself -- there is no
+    # reference audio beyond its edges to blend against. The ramp therefore
+    # fades the generated waveform's amplitude toward the exact boundary
+    # sample value (a DC/level-match fade, not a content cross-mix), which
+    # removes the audible click at the hard seam without touching a single
+    # preserved sample.
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _acestep_apply_outpaint_waveform_splice(
+        generated_wave: torch.Tensor,
+        input_wave: torch.Tensor,
+        offset_sec: float,
+        dur_sec: float,
+        sample_rate: int = 48000,
+        crossfade_ms: float = 10.0,
+    ) -> torch.Tensor:
+        """Re-insert the ORIGINAL (pre-VAE, trimmed) input waveform into the
+        HELD span starting at `offset_sec` of the generated (outpainted)
+        track, sample-exact to the decoded 48kHz/16-bit representation, with
+        a short declick ramp confined entirely to the GENERATED side of each
+        boundary.
+
+        Args:
+            generated_wave: VAE-decoded full-timeline waveform,
+                [channels, samples].
+            input_wave: the original (pre-VAE), already-trimmed input
+                waveform that was placed, [channels, samples]. Its OWN
+                sample count is authoritative for how many samples get
+                overwritten -- `dur_sec` (the LATENT-domain hold length,
+                `t_ref / 25.0`) is used only to derive `offset_sec`'s
+                counterpart in the caller and is NOT used here to cap the
+                spliced length. This matters because the ACE-Step VAE
+                encoder may FLOOR when computing `t_ref` from the input's
+                true sample count: `t_ref * (sample_rate / 25)` can then be
+                *shorter* than `input_wave.shape[-1]` by up to ~1 latent
+                frame (~40ms @ 48kHz). Capping the splice at that
+                latent-derived length would silently drop the input's TAIL
+                (replacing it with generated audio) -- a violation of the
+                exact-preservation contract. Splicing the FULL
+                `input_wave` instead preserves it entirely whether the VAE
+                floors or ceils (in the ceil case the extra length simply
+                doesn't exist and this is a no-op). If the VAE floored, the
+                ~1-latent-frame region just past the latent hold window was
+                free-running (generated) content in `pred_latents`/
+                `generated_wave`; this splice overwrites it with the exact
+                input tail, and the right-side crossfade below smooths the
+                resulting seam -- a sub-40ms generated-side seam shift is
+                accepted so the ENTIRE input is preserved sample-exact.
+            offset_sec/dur_sec: the LATENT-frame-derived placement boundary
+                (`off / 25.0`, `t_ref / 25.0`), not raw user input -- mirrors
+                `_acestep_apply_repaint_waveform_splice`'s convention of
+                using the mask-aligned boundary, not the raw seconds param.
+                Only `offset_sec` (the start) is actually load-bearing here;
+                `dur_sec` is accepted for call-site symmetry with the
+                repaint splice but is intentionally NOT used to bound the
+                spliced length (see above).
+            sample_rate: audio sample rate (48000 for ACE-Step).
+            crossfade_ms: declick ramp length in milliseconds on EACH side
+                that has generated content (10ms default, matching repaint).
+
+        Returns:
+            Spliced waveform, same shape as `generated_wave`.
+        """
+        total_samples = generated_wave.shape[-1]
+        start_sample = max(0, min(int(round(offset_sec * sample_rate)), total_samples))
+        # `input_wave`'s FULL length is authoritative (see docstring) -- the
+        # ONLY cap is running off the end of `generated_wave` itself. No
+        # `dur_sec`/latent-frame-count cap: that would risk dropping the
+        # input's tail whenever the VAE encoder floored `t_ref`.
+        in_len = max(0, min(input_wave.shape[-1], total_samples - start_sample))
+        end_sample = start_sample + in_len
+
+        result = generated_wave.clone()
+        if in_len <= 0:
+            # Degenerate placement (nothing to preserve) -- return the
+            # untouched generated track rather than raise; the caller
+            # (`_generate_audoutpaint_acestep`) already validates that the
+            # placed input has >=1 latent frame before reaching decode.
+            return result
+
+        ref = input_wave[..., :in_len].to(device=result.device, dtype=result.dtype)
+        # Unconditional overwrite of the ENTIRE held span -- mask=0 (original)
+        # everywhere in [start_sample, end_sample), no exceptions, no
+        # crossfade encroachment (contrast the repaint splice above, whose
+        # ramp starts BEFORE its window boundary).
+        result[..., start_sample:end_sample] = ref
+
+        crossfade_samples = int(round((crossfade_ms / 1000.0) * sample_rate))
+        if crossfade_samples <= 0:
+            return result
+
+        # Left boundary: only meaningful if there is generated content BEFORE
+        # the span (start_sample > 0). The ramp occupies
+        # [start_sample - n, start_sample) -- strictly GENERATED-side samples,
+        # entirely outside the held span -- fading the raw generated
+        # amplitude UP TOWARD the exact first preserved sample as it
+        # approaches the seam (a level-match declick, not a content blend,
+        # since no reference audio exists before the span to blend against).
+        if start_sample > 0:
+            n = min(crossfade_samples, start_sample)
+            boundary_value = ref[..., :1]  # exact first preserved sample, per channel
+            frac = torch.linspace(0.0, 1.0, n + 2, device=result.device, dtype=result.dtype)[1:-1]
+            seg = result[..., start_sample - n:start_sample]
+            result[..., start_sample - n:start_sample] = seg * (1.0 - frac) + boundary_value * frac
+
+        # Right boundary: only meaningful if there is generated content AFTER
+        # the span (end_sample < total_samples). Mirrors the left boundary,
+        # fading DOWN FROM the exact last preserved sample as we move away
+        # from the seam.
+        if end_sample < total_samples:
+            n = min(crossfade_samples, total_samples - end_sample)
+            boundary_value = ref[..., -1:]  # exact last preserved sample, per channel
+            frac = torch.linspace(1.0, 0.0, n + 2, device=result.device, dtype=result.dtype)[1:-1]
+            seg = result[..., end_sample:end_sample + n]
+            result[..., end_sample:end_sample + n] = seg * (1.0 - frac) + boundary_value * frac
+
+        return result
+
+    # ------------------------------------------------------------------
     # LoRA (generation-time apply/restore for a trained ACE-Step LoRA).
     #
     # ACE-Step uses the same component-based (not diffusers-pipeline-based)
@@ -1483,6 +1614,361 @@ class AceStepMixin:
                 sample_rate=48000,
                 crossfade_duration=0.01,
             )
+
+        sample_rate = int(comps.get("sample_rate", 48000))
+        return waveform_out.detach().cpu(), sample_rate, seed
+
+    # ------------------------------------------------------------------
+    # Audio temporal outpaint (extend): place a (trimmed) input clip at a
+    # time offset inside a LONGER output timeline and generate the audio
+    # before and/or after it, preserving the placed input sample-exact.
+    #
+    # This is the structural INVERSE of the REPAINT branch above:
+    #   - repaint:  window [s, e) is FREE (generate); everything OUTSIDE is
+    #     HELD to the reference. `repaint_mask` True INSIDE the window.
+    #   - outpaint: window [off, off+T_ref) is HELD to the placed input;
+    #     everything OUTSIDE (before AND after) is FREE (generate).
+    #     `repaint_mask` True OUTSIDE the window, False INSIDE.
+    #
+    # Confirmed against the vendored sampler itself (NOT assumed) --
+    # `vendor/modeling_acestep_v15_turbo.py`:
+    #   `_repaint_step_injection(xt, clean_src, mask, t_next, noise)`:
+    #       zt = t_next * noise + (1 - t_next) * clean_src
+    #       m = mask.unsqueeze(-1).expand_as(xt)
+    #       return torch.where(m, xt, zt)
+    #   i.e. mask=True -> keep the free-running `xt` (generate); mask=False
+    #   -> replace with the correctly-noised `clean_src` (hold to
+    #   reference). `repaint_mask` therefore ALWAYS means "True = generate
+    #   freely, False = hold to clean_src_latents" -- outpaint only flips
+    #   WHICH latent frames get which value relative to repaint, it does not
+    #   change the mask's semantics.
+    #   `_repaint_boundary_blend(x_gen, clean_src, mask, cf_frames)` performs
+    #   the analogous post-loop boundary soft-blend using the same mask
+    #   polarity (`m * x_gen + (1 - m) * clean_src`), with the crossfade
+    #   ramp straddling the True/False boundary -- this can let a small
+    #   amount of `x_gen` leak into the edge of the HELD (False) region at
+    #   the LATENT level (exactly like repaint's own boundary blend does to
+    #   its held region), which is why the post-decode WAVEFORM splice below
+    #   is still required for a sample-exact guarantee: it unconditionally
+    #   overwrites the ENTIRE held span with the original waveform,
+    #   regardless of what the latent-level blend did near its edges.
+    # ------------------------------------------------------------------
+
+    def _generate_audoutpaint_acestep(
+        self,
+        params: Dict[str, Any],
+        reference_audio,
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ) -> Tuple[torch.Tensor, int, int]:
+        """Audio temporal outpaint (extend) for ACE-Step 1.5 turbo. See the
+        class-level comment block immediately above for the full mask-
+        polarity/inversion argument (verified against the vendored sampler).
+
+        Args:
+            params: see `OUTPAINT_AUDIO_DEFAULTS` -- prompt/caption (str),
+                lyrics (str), seed (int, -1 = random), inference_steps (int,
+                default 8), guidance_scale (forced 1.0 -- turbo is
+                CFG-distilled), shift (float, default 3.0), vocal_language /
+                bpm / key_scale / time_signature (folded into the "# Metas"
+                text block, see `_acestep_build_text_prompt`; NOT exposed via
+                the `/generate/outpaint/audio` route Form params today,
+                mirroring aud2aud), loras, total_duration (float seconds,
+                the OUTPUT timeline length), input_offset_sec (float
+                seconds, where the trimmed input clip is placed within that
+                timeline), input_trim_start_sec/input_trim_end_sec (float
+                seconds, trim the UPLOADED clip itself before placement).
+            reference_audio: a file path (str) or raw audio bytes for the
+                input clip to place.
+            progress_callback: called as (step, total_steps); coarse
+                (start/end) only, see `_generate_txt2aud_acestep`.
+            step_callback: reserved, unused.
+
+        Returns:
+            (waveform, sample_rate, actual_seed) -- identical contract to
+            `_generate_txt2aud_acestep` / `_generate_aud2aud_acestep`.
+        """
+        from api.error_handlers import ValidationError
+
+        if not self.is_acestep_model or self.acestep_components is None:
+            raise ValidationError(
+                "Audio outpaint requires an ACE-Step model",
+                detail="The currently loaded model is not an ACE-Step audio model.",
+            )
+
+        comps = self.acestep_components
+        dit = comps.get("dit")
+        vae = comps.get("vae")
+        text_encoder = comps.get("text_encoder")
+        tokenizer = comps.get("tokenizer")
+        if dit is None or vae is None or text_encoder is None or tokenizer is None:
+            raise ValidationError(
+                "ACE-Step model is missing a required component",
+                detail=f"dit={dit is not None}, vae={vae is not None}, "
+                       f"text_encoder={text_encoder is not None}, tokenizer={tokenizer is not None}",
+            )
+        if reference_audio is None:
+            raise ValidationError(
+                "Audio outpaint requires an input audio file to place",
+                detail="No reference_audio was provided.",
+            )
+
+        # ---- optional LoRA (see the "LoRA" section below for the apply/restore contract) ----
+        self._apply_or_clear_lora_acestep(params.get("loras") or [])
+
+        device = self.device
+        model_dtype = next(dit.parameters()).dtype
+
+        caption = params.get("prompt") or params.get("caption") or ""
+        lyrics = params.get("lyrics", "") or ""
+        seed = params.get("seed", -1)
+        if seed is None or int(seed) < 0:
+            seed = random.randint(0, 2**32 - 1)
+        seed = int(seed)
+        inference_steps = int(params.get("inference_steps", 8) or 8)
+        guidance_scale = float(params.get("guidance_scale", 1.0) or 1.0)
+        shift = float(params.get("shift", 3.0) or 3.0)
+        infer_method = params.get("infer_method", "ode")
+        bpm = params.get("bpm")
+        key_scale = params.get("key_scale", "") or ""
+        time_signature = params.get("time_signature", "") or ""
+        vocal_language = params.get("vocal_language", "en") or "en"
+
+        total_duration = float(params.get("total_duration", 60.0) or 60.0)
+        if total_duration <= 0:
+            raise ValidationError(
+                "Invalid total_duration",
+                detail=f"total_duration must be > 0, got {total_duration}.",
+            )
+        input_offset_sec = max(0.0, float(params.get("input_offset_sec", 0.0) or 0.0))
+        trim_start_sec = max(0.0, float(params.get("input_trim_start_sec", 0.0) or 0.0))
+        trim_end_sec = max(0.0, float(params.get("input_trim_end_sec", 0.0) or 0.0))
+
+        if guidance_scale != 1.0:
+            print(
+                f"[AceStep] Turbo is CFG-distilled (no twin forward pass); "
+                f"overriding guidance_scale {guidance_scale} -> 1.0."
+            )
+
+        if progress_callback:
+            try:
+                progress_callback(0, inference_steps)
+            except Exception:
+                pass
+
+        # ---- one-time silence-latent asset (shared with txt2aud/aud2aud) ----
+        silence_latent = self._acestep_ensure_silence_latent(device)  # [1, 750, 64] on device
+
+        # ---- load + normalize + trim the input clip, then VAE-encode it ----
+        ref_wav, ref_sr = self._acestep_load_reference_audio(reference_audio)
+        ref_wav = self._acestep_normalize_stereo_48k(ref_wav, ref_sr)  # [2, samples], CPU float32
+
+        total_src_samples = ref_wav.shape[-1]
+        start_trim_samples = int(round(trim_start_sec * 48000))
+        end_trim_samples = int(round(trim_end_sec * 48000))
+        trim_end_idx = (total_src_samples - end_trim_samples) if end_trim_samples > 0 else total_src_samples
+        trim_end_idx = max(0, min(trim_end_idx, total_src_samples))
+        start_trim_samples = max(0, min(start_trim_samples, trim_end_idx))
+        trimmed_wav = ref_wav[:, start_trim_samples:trim_end_idx]  # [2, samples], the EXACT content to preserve
+        if trimmed_wav.shape[-1] < 1:
+            raise ValidationError(
+                "Audio outpaint input trim leaves no samples",
+                detail=f"input has {total_src_samples} samples @ 48kHz; "
+                       f"input_trim_start_sec={trim_start_sec}, input_trim_end_sec={trim_end_sec}.",
+            )
+
+        self._acestep_move("vae", device)
+        try:
+            vae_dtype = next(vae.parameters()).dtype
+            ref_wav_dev = trimmed_wav.unsqueeze(0).to(device=device, dtype=vae_dtype)  # [1, 2, samples]
+            with torch.inference_mode():
+                # .mode() (deterministic mean), matching the silence-latent asset / aud2aud.
+                ref_latent = vae.encode(ref_wav_dev).latent_dist.mode()  # [1, 64, T_ref]
+            ref_latent = ref_latent.transpose(1, 2).contiguous().to(model_dtype)  # [1, T_ref, 64]
+        finally:
+            self._acestep_move("vae", "cpu")
+            self._acestep_empty_cache()
+
+        t_ref = int(ref_latent.shape[1])
+        if t_ref < 1:
+            raise ValidationError(
+                "Input audio is too short to encode",
+                detail=f"VAE-encoded (trimmed) input latent has {t_ref} frames (need >= 1).",
+            )
+
+        # ---- output timeline placement math (25 Hz latent rate) ----
+        t_total = max(1, int(round(total_duration * 25.0)))
+        if t_ref > t_total:
+            raise ValidationError(
+                "Input audio (after trim) does not fit inside total_duration",
+                detail=f"Trimmed input is {t_ref / 25.0:.3f}s ({t_ref} latent frames); "
+                       f"total_duration is {total_duration:.3f}s ({t_total} latent frames). "
+                       f"Trim the input further or increase total_duration.",
+            )
+        desired_off = int(round(input_offset_sec * 25.0))
+        off = max(0, min(desired_off, t_total - t_ref))
+        if off != desired_off:
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    f"input_offset_sec clamped from {desired_off / 25.0:.3f}s to {off / 25.0:.3f}s "
+                    f"so the placed input ({t_ref / 25.0:.3f}s) fits inside total_duration "
+                    f"({t_total / 25.0:.3f}s).",
+                    code="outpaint_audio_offset_clamped",
+                )
+            except Exception:
+                pass
+
+        # Surface the EFFECTIVE preserved span into params -- routes.py's
+        # params.copy() -> gallery metadata/DB path picks this up
+        # automatically, mirroring the video-outpaint `outpaint_effective_*`
+        # convention (`core.pipeline_backends.ltx2._generate_vidoutpaint_ltx2`).
+        params["outpaint_effective_offset_sec"] = off / 25.0
+        params["outpaint_effective_duration_sec"] = t_ref / 25.0
+        params["outpaint_effective_total_duration_sec"] = t_total / 25.0
+
+        audio_duration = t_total / 25.0
+
+        text_prompt = self._acestep_build_text_prompt(
+            caption, audio_duration, bpm, key_scale, time_signature, vocal_language
+        )
+        lyrics_text = self._acestep_format_lyrics(lyrics, vocal_language)
+
+        # ---- text encoder stage ----
+        self._acestep_move("text_encoder", device)
+        try:
+            tt = tokenizer(
+                text_prompt, padding="longest", truncation=True, max_length=256, return_tensors="pt"
+            )
+            text_ids = tt.input_ids.to(device)
+            text_attention_mask = tt.attention_mask.to(device).bool()
+
+            lt = tokenizer(
+                lyrics_text, padding="longest", truncation=True, max_length=2048, return_tensors="pt"
+            )
+            lyric_ids = lt.input_ids.to(device)
+            lyric_attention_mask = lt.attention_mask.to(device).bool()
+
+            with torch.inference_mode():
+                text_hidden_states = text_encoder(input_ids=text_ids).last_hidden_state.to(model_dtype)
+                lyric_hidden_states = text_encoder.embed_tokens(lyric_ids).to(model_dtype)
+        finally:
+            self._acestep_move("text_encoder", "cpu")
+            self._acestep_empty_cache()
+
+        # ---- outpaint conditioning (INVERTED repaint -- see the class-level
+        # comment block above for the mask-polarity proof) ----
+        silence_full = self._acestep_silence_slice(silence_latent, t_total).to(model_dtype)  # [1, T_total, 64]
+
+        src_latents = silence_full.clone()  # [1, T_total, 64]
+        src_latents[:, off:off + t_ref, :] = ref_latent
+
+        chunk_masks = torch.ones(1, t_total, 64, dtype=model_dtype, device=device)
+        chunk_masks[:, off:off + t_ref, :] = 0.0  # 0 INSIDE the held/placed span (opposite fill from repaint)
+
+        is_covers = torch.zeros(1, dtype=torch.bool, device=device)
+
+        repaint_mask = torch.ones(1, t_total, dtype=torch.bool, device=device)
+        repaint_mask[:, off:off + t_ref] = False  # True = generate (free) OUTSIDE, False = hold to input INSIDE
+        # The FULL [silence-elsewhere + placed-input] tensor is the "hold"
+        # target `clean_src_latents` -- but the silence-filled frames are
+        # NEVER actually read as a hold value: `repaint_mask` is True
+        # everywhere outside [off, off+t_ref), so `_repaint_step_injection`'s
+        # `torch.where(mask, xt, zt)` always takes the free-running `xt`
+        # branch there (see the class-level comment block above). Only the
+        # placed-input sub-range of `clean_src_latents` is ever selected by
+        # the False (hold) branch of the mask.
+        clean_src_latents = src_latents
+
+        # Silence timbre (semantic-only, same as txt2aud/aud2aud).
+        timbre_packed = silence_latent[:, :silence_latent.shape[1], :].to(model_dtype)  # [1, 750, 64]
+        refer_audio_order_mask = torch.zeros(1, dtype=torch.long, device=device)
+
+        # ---- optional custom timestep schedule for inference_steps != 8 ----
+        custom_timesteps = None
+        if inference_steps and inference_steps != 8:
+            n = min(max(int(inference_steps), 1), 20)
+            raw = [1.0 - i / n for i in range(n)]
+            if shift != 1.0:
+                raw = [shift * t / (1.0 + (shift - 1.0) * t) for t in raw]
+            custom_timesteps = torch.tensor(raw, device=device, dtype=model_dtype)
+
+        # ---- DiT stage: call the vendored generate_audio (internal sampling loop) ----
+        self._acestep_move("dit", device)
+        try:
+            with torch.inference_mode():
+                outputs = dit.generate_audio(
+                    text_hidden_states=text_hidden_states,
+                    text_attention_mask=text_attention_mask,
+                    lyric_hidden_states=lyric_hidden_states,
+                    lyric_attention_mask=lyric_attention_mask,
+                    refer_audio_acoustic_hidden_states_packed=timbre_packed,
+                    refer_audio_order_mask=refer_audio_order_mask,
+                    src_latents=src_latents,
+                    chunk_masks=chunk_masks,
+                    is_covers=is_covers,
+                    silence_latent=silence_latent,
+                    seed=seed,
+                    infer_method=infer_method,
+                    shift=shift,
+                    timesteps=custom_timesteps,
+                    repaint_mask=repaint_mask,
+                    clean_src_latents=clean_src_latents,
+                    # repaint_crossfade_frames (10 latent frames) /
+                    # repaint_injection_ratio (0.5) intentionally left at the
+                    # vendored generate_audio's own defaults, same as
+                    # aud2aud's repaint mode -- not yet exposed as user
+                    # params.
+                    dcw_enabled=False,
+                )
+            pred_latents = outputs["target_latents"]  # [1, T_total, 64]
+        finally:
+            self._acestep_move("dit", "cpu")
+            self._acestep_empty_cache()
+
+        if progress_callback:
+            try:
+                progress_callback(inference_steps, inference_steps)
+            except Exception:
+                pass
+
+        # ---- validate latents (mirrors generate_music_decode.py's guards) ----
+        if torch.isnan(pred_latents).any() or torch.isinf(pred_latents).any():
+            raise RuntimeError(
+                f"ACE-Step outpaint generation produced NaN/Inf latents "
+                f"(shape={list(pred_latents.shape)}, dtype={pred_latents.dtype})."
+            )
+        if pred_latents.numel() > 0 and pred_latents.abs().sum() == 0:
+            raise RuntimeError("ACE-Step outpaint generation produced all-zero latents.")
+
+        # ---- VAE decode stage ----
+        self._acestep_move("vae", device)
+        try:
+            vae_dtype = next(vae.parameters()).dtype
+            pred_for_decode = pred_latents.transpose(1, 2).contiguous().to(vae_dtype)  # [1, 64, T_total]
+            with torch.inference_mode():
+                waveform = vae.decode(pred_for_decode).sample  # [1, 2, samples]
+            waveform = waveform.float()
+            peak = waveform.abs().amax(dim=[1, 2], keepdim=True)
+            if torch.any(peak > 1.0):
+                waveform = waveform / peak.clamp(min=1.0)
+        finally:
+            self._acestep_move("vae", "cpu")
+            self._acestep_empty_cache()
+
+        waveform_out = waveform[0]  # [2, samples]
+
+        # ---- strict preservation: splice the ORIGINAL (pre-VAE, trimmed)
+        # input waveform back into [off_sec, off_sec + ref_dur_sec), with
+        # crossfade ramps confined to the GENERATED side of each boundary ----
+        waveform_out = self._acestep_apply_outpaint_waveform_splice(
+            waveform_out,
+            trimmed_wav.to(device=waveform_out.device, dtype=waveform_out.dtype),
+            offset_sec=off / 25.0,   # latent-frame-derived boundary, NOT the
+            dur_sec=t_ref / 25.0,    # raw user input -- exactly matches the mask.
+            sample_rate=48000,
+            crossfade_ms=10.0,
+        )
 
         sample_rate = int(comps.get("sample_rate", 48000))
         return waveform_out.detach().cpu(), sample_rate, seed

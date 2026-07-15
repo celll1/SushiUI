@@ -158,6 +158,9 @@ paths:
                   outpaint_vid:
                     type: object
                     additionalProperties: true
+                  outpaint_aud:
+                    type: object
+                    additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -469,6 +472,95 @@ paths:
                   generation_type: "aud2aud"
         '400':
           description: Invalid parameters or no ACE-Step model loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate/outpaint/audio:
+    post:
+      tags: [generation]
+      summary: Audio temporal outpaint (extend) from a placed input clip (ACE-Step 1.5)
+      description: |
+        Places a (optionally trimmed) input `reference_audio` clip at a time
+        offset inside a LONGER `total_duration` output timeline and
+        generates the audio before and/or after it. Structurally the
+        INVERSE of `/generate/aud2aud`'s `mode=repaint`: repaint holds
+        everything OUTSIDE a window and generates INSIDE it; outpaint holds
+        the placed input window itself and generates OUTSIDE it (before
+        and/or after) -- see
+        `core.pipeline_backends.acestep.AceStepMixin._generate_audoutpaint_acestep`
+        for the full mechanism (inverted latent-domain repaint hold +
+        boundary blend, plus a post-decode waveform splice).
+
+        **Strict preservation guarantee:** the placed input span in the
+        returned audio is sample-exact to the decoded 48kHz/16-bit
+        representation of the (trimmed, stereo/48kHz-normalized) input
+        clip, regardless of `total_duration`/`input_offset_sec`. This is
+        enforced by an unconditional post-decode waveform splice performed
+        AFTER generation (splicing the FULL trimmed input regardless of the
+        latent hold-window length, so no tail is ever dropped), with a short
+        (10ms) declick ramp confined entirely to the GENERATED side of each
+        boundary so every preserved sample stays untouched. Because the
+        app's standard audio output (FLAC) is already lossless, this makes
+        the output sample-exact to that decoded representation end to end
+        -- unlike video outpaint, no separate lossless toggle is needed
+        here. An upload that is not already 48kHz/16-bit stereo is
+        faithfully resampled/requantized once during normalization, not
+        byte-identical to the original file.
+
+        Produces a lossless FLAC file and a gallery row.
+
+        **Requirements:**
+        - An ACE-Step model must be loaded (otherwise 400).
+        - Sent as multipart/form-data with the `reference_audio` file plus
+          the placement/generation parameters as form fields.
+        - `total_duration` must be in (0, 240] seconds.
+        - The (trimmed) input clip must fit inside `total_duration`; if
+          `input_offset_sec` would push it out of bounds it is CLAMPED (with
+          a warning) rather than rejected, but a trimmed input longer than
+          `total_duration` itself is rejected (400).
+
+        **Key parameters:**
+        - `reference_audio`: the input clip to place (multipart file upload).
+        - `total_duration`: length of the OUTPUT timeline, in seconds.
+        - `input_offset_sec`: where the (trimmed) input clip is placed
+          within that timeline, in seconds.
+        - `input_trim_start_sec` / `input_trim_end_sec`: trim applied to the
+          UPLOADED clip itself before placement, in seconds.
+
+        **Distilled defaults:** inference_steps=8, guidance_scale=1.0 (turbo
+        is CFG-distilled; a non-default value is overridden back to 1.0),
+        shift=3.0.
+      operationId: generateOutpaintAudio
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OutpaintAudioRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 1234567890
+                image:
+                  id: 89
+                  filename: "outpaint_aud_20260715_120000_1234567890.flac"
+                  generation_type: "outpaint_aud"
+        '400':
+          description: Invalid parameters (including a placement that cannot fit) or no ACE-Step model loaded
           content:
             application/json:
               schema:
@@ -6067,6 +6159,98 @@ components:
           type: string
           format: binary
           description: "Reference audio clip (multipart file upload) used as the cover/repaint source. VAE-encoded and fed back to the model as conditioning (is_covers=true for cover mode, false for repaint mode). Output duration is derived from this clip's length, not user-supplied."
+
+    OutpaintAudioRequest:
+      type: object
+      required:
+        - reference_audio
+      description: |
+        Audio temporal outpaint (extend). Structurally the INVERSE of
+        `Aud2AudRequest`'s `mode=repaint`: repaint holds everything OUTSIDE
+        a window and generates INSIDE it; outpaint holds the placed input
+        window itself and generates OUTSIDE it (before and/or after).
+        Shares prompt/lyrics/seed/inference_steps/guidance_scale/shift/
+        vocal_language/loras with `Aud2AudRequest` -- see there for details
+        on each.
+      properties:
+        prompt:
+          type: string
+          default: ""
+          description: "Caption text describing the generated (non-preserved) portion of the timeline (also accepted server-side as `caption`)."
+          example: "lo-fi hip hop, chill, jazzy piano"
+        lyrics:
+          type: string
+          default: ""
+          description: "Lyrics text. Empty for instrumental generation."
+          example: ""
+        seed:
+          type: integer
+          default: -1
+          description: "Random seed. -1 draws a random seed (returned in actual_seed)."
+          example: -1
+        inference_steps:
+          type: integer
+          default: 8
+          description: "Number of denoising steps (turbo distilled default: 8)."
+          example: 8
+        guidance_scale:
+          type: number
+          default: 1.0
+          description: "Classifier-free guidance scale. Turbo is CFG-distilled (no twin forward pass); a non-1.0 value is overridden back to 1.0."
+          example: 1.0
+        shift:
+          type: number
+          default: 3.0
+          description: "Flow-matching timestep shift used to select the distilled step schedule."
+          example: 3.0
+        vocal_language:
+          type: string
+          default: "en"
+          description: "Language folded into the lyrics/metas conditioning text."
+          example: "en"
+        total_duration:
+          type: number
+          default: 60.0
+          minimum: 0.0
+          maximum: 240.0
+          description: "Length of the OUTPUT timeline, in seconds. Must be in (0, 240]."
+          example: 60.0
+        input_offset_sec:
+          type: number
+          default: 0.0
+          minimum: 0.0
+          description: |
+            Where the (trimmed) input clip is placed within the output
+            timeline, in seconds. Snapped server-side to the nearest 1/25s
+            (the ACE-Step VAE's latent frame rate) and CLAMPED so the placed
+            input fits inside total_duration (a warning is added to the
+            response if clamped). A trimmed input longer than
+            total_duration itself is rejected (400), not clamped.
+          example: 15.0
+        input_trim_start_sec:
+          type: number
+          default: 0.0
+          minimum: 0.0
+          description: "Trim this many seconds off the START of the uploaded clip before placement."
+          example: 0.0
+        input_trim_end_sec:
+          type: number
+          default: 0.0
+          minimum: 0.0
+          description: "Trim this many seconds off the END of the uploaded clip before placement."
+          example: 0.0
+        loras:
+          type: string
+          default: "[]"
+          description: |
+            JSON-encoded string (sent via multipart Form) containing an array
+            of LoRA config objects (e.g. path/strength). Same apply/restore
+            contract as `Txt2AudRequest.loras` -- see there for details.
+          example: '[{"path": "acestep_lora.safetensors", "strength": 1.0}]'
+        reference_audio:
+          type: string
+          format: binary
+          description: "The input audio clip to place inside the longer output timeline (multipart file upload). Its (trimmed) waveform samples, normalized to stereo/48kHz, are re-spliced verbatim into the output over its placed span -- sample-exact preservation to that decoded 48kHz/16-bit representation, independent of the surrounding generated audio."
 
     Img2ImgRequest:
       allOf:

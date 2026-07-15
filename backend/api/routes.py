@@ -43,6 +43,7 @@ from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
     OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
+    OUTPAINT_AUDIO_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
     BUNDLE_VAE_DEFAULTS_BY_ARCH,
@@ -350,6 +351,7 @@ async def get_generation_defaults():
         "outpaint_vid": OUTPAINT_VIDEO_DEFAULTS,
         "txt2aud": TXT2AUD_DEFAULTS,
         "aud2aud": AUD2AUD_DEFAULTS,
+        "outpaint_aud": OUTPAINT_AUDIO_DEFAULTS,
     }
 
 @router.get("/schema/training-defaults")
@@ -2547,6 +2549,242 @@ async def generate_aud2aud(
         fail_generation(str(e))
         raise GenerationError(
             "Audio-to-audio generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
+@router.post("/generate/outpaint/audio")
+async def generate_outpaint_audio(
+    prompt: str = Form(OUTPAINT_AUDIO_DEFAULTS["prompt"]),
+    lyrics: Optional[str] = Form(OUTPAINT_AUDIO_DEFAULTS["lyrics"]),
+    seed: int = Form(OUTPAINT_AUDIO_DEFAULTS["seed"]),
+    inference_steps: int = Form(OUTPAINT_AUDIO_DEFAULTS["inference_steps"]),
+    guidance_scale: float = Form(OUTPAINT_AUDIO_DEFAULTS["guidance_scale"]),
+    shift: float = Form(OUTPAINT_AUDIO_DEFAULTS["shift"]),
+    vocal_language: str = Form(OUTPAINT_AUDIO_DEFAULTS["vocal_language"]),
+    # Placement (new for audio outpaint). All in SECONDS.
+    total_duration: float = Form(OUTPAINT_AUDIO_DEFAULTS["total_duration"]),
+    input_offset_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_offset_sec"]),
+    input_trim_start_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_trim_start_sec"]),
+    input_trim_end_sec: float = Form(OUTPAINT_AUDIO_DEFAULTS["input_trim_end_sec"]),
+    loras: str = Form("[]"),  # JSON string of LoRA configs
+    reference_audio: UploadFile = File(...),
+    db: Session = Depends(get_gallery_db)
+):
+    """Audio temporal outpaint (extend, ACE-Step 1.5): place a (optionally
+    trimmed) input clip at a time offset inside a LONGER `total_duration`
+    output timeline and generate the audio before and/or after it.
+
+    Multipart form: an uploaded `reference_audio` clip (the input to place)
+    plus the placement/generation parameters below. Structurally the INVERSE
+    of `/generate/aud2aud`'s `mode=repaint`: repaint holds everything
+    OUTSIDE a window and generates INSIDE it; outpaint holds the placed
+    input window itself and generates OUTSIDE it (before and/or after) --
+    see `core.pipeline_backends.acestep.AceStepMixin._generate_audoutpaint_acestep`
+    for the full mechanism (inverted latent-domain repaint hold + boundary
+    blend, plus a post-decode waveform splice).
+
+    **Strict preservation guarantee:** the placed input span in the returned
+    audio is sample-exact to the decoded 48kHz/16-bit representation of the
+    (trimmed, stereo/48kHz-normalized) input clip, regardless of
+    `total_duration`/`input_offset_sec`. This is enforced by an
+    unconditional post-decode waveform splice performed AFTER generation
+    (`_acestep_apply_outpaint_waveform_splice`, which splices the FULL
+    trimmed input regardless of the latent hold-window length, so no tail
+    is ever dropped), with a short (10ms) declick crossfade confined
+    entirely to the GENERATED side of each boundary so every preserved
+    sample stays untouched. Because the app's standard audio output (FLAC)
+    is already lossless, this makes the output sample-exact to that decoded
+    representation end to end -- unlike video outpaint, no separate
+    lossless toggle is needed. An upload that is not already 48kHz/16-bit
+    stereo is faithfully resampled/requantized once during normalization,
+    not byte-identical to the original file.
+
+    **Requirements:**
+    - An ACE-Step model must be loaded (otherwise 400).
+    - `total_duration` in (0, 240] seconds.
+    - The (trimmed) input clip must fit inside `total_duration`; if
+      `input_offset_sec` would push it out of bounds it is CLAMPED (with a
+      warning) rather than rejected, but a trimmed input longer than
+      `total_duration` itself is rejected (400).
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.audio_utils import save_audio_with_metadata
+
+    # Parse LoRA configs (same JSON-string-of-configs convention as txt2aud/aud2aud)
+    lora_configs = json.loads(loras) if loras else []
+
+    if total_duration <= 0 or total_duration > 240.0:
+        raise CustomValidationError(
+            "Invalid total_duration",
+            detail=f"total_duration must be in (0, 240] seconds, got {total_duration}.",
+        )
+    if input_offset_sec < 0:
+        raise CustomValidationError(
+            "Invalid input_offset_sec",
+            detail=f"input_offset_sec must be >= 0, got {input_offset_sec}.",
+        )
+    if input_trim_start_sec < 0 or input_trim_end_sec < 0:
+        raise CustomValidationError(
+            "Invalid input trim",
+            detail=f"input_trim_start_sec/input_trim_end_sec must be >= 0, got "
+                   f"{input_trim_start_sec}/{input_trim_end_sec}.",
+        )
+
+    if not getattr(pipeline_manager, "is_acestep_model", False):
+        raise CustomValidationError(
+            "No ACE-Step model loaded",
+            detail="Load an ACE-Step 1.5 audio model before calling /generate/outpaint/audio.",
+        )
+
+    # Read the uploaded input clip.
+    try:
+        reference_audio_bytes = await reference_audio.read()
+        if not reference_audio_bytes:
+            raise ValueError("uploaded file is empty")
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to read the uploaded input audio",
+            detail=str(e),
+        )
+
+    # Cheap, header-only duration probe (soundfile -- no full decode) so an
+    # impossible trim/placement surfaces as a 400 BEFORE a GPU slot is
+    # reserved, mirroring /generate/outpaint/video's up-front trimmed_len
+    # check. The backend re-validates against the ACTUAL trimmed + VAE-
+    # encoded length (authoritative -- see
+    # AceStepMixin._generate_audoutpaint_acestep); this is a best-effort
+    # early-reject only and is skipped (falls through to the backend) if the
+    # header can't be read this way.
+    try:
+        import soundfile as sf
+        import io as _io
+        _info = sf.info(_io.BytesIO(reference_audio_bytes))
+        _src_duration = (float(_info.frames) / float(_info.samplerate)) if _info.samplerate else None
+    except Exception:
+        _src_duration = None
+
+    if _src_duration is not None:
+        _trimmed_duration = _src_duration - input_trim_start_sec - input_trim_end_sec
+        if _trimmed_duration <= 0:
+            raise CustomValidationError(
+                "Audio outpaint input trim leaves no audio",
+                detail=f"Uploaded clip is ~{_src_duration:.3f}s; "
+                       f"input_trim_start_sec={input_trim_start_sec}, input_trim_end_sec={input_trim_end_sec}.",
+            )
+        if _trimmed_duration > total_duration:
+            raise CustomValidationError(
+                "Input audio (after trim) does not fit inside total_duration",
+                detail=f"Trimmed input is ~{_trimmed_duration:.3f}s; total_duration is {total_duration:.3f}s. "
+                       f"Either trim the input further or increase total_duration.",
+            )
+
+    params = {
+        "prompt": prompt,
+        "lyrics": lyrics,
+        "seed": seed,
+        "inference_steps": inference_steps,
+        "guidance_scale": guidance_scale,
+        "shift": shift,
+        "vocal_language": vocal_language,
+        "total_duration": total_duration,
+        "input_offset_sec": input_offset_sec,
+        "input_trim_start_sec": input_trim_start_sec,
+        "input_trim_end_sec": input_trim_end_sec,
+        "loras": lora_configs,
+    }
+
+    start_generation("outpaint_aud")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        from api.arch_capabilities import check_arch_capabilities
+        _acestep_arch = (pipeline_manager.current_model_info or {}).get("type")
+        check_arch_capabilities(params, _acestep_arch)
+
+        print(f"outpaint_aud generation params: {sanitize_params_for_logging(params)}")
+
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating outpaint: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=_PEAK_VRAM_GB_BY_KIND["acestep"], timeout=120.0):
+            waveform, sample_rate, actual_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_aud_outpaint(params, reference_audio_bytes, progress_callback=progress_callback)
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        params["seed"] = actual_seed
+
+        # Hash the input clip (mirrors aud2aud's source_audio_hash).
+        params["source_audio_hash"] = hashlib.sha256(reference_audio_bytes).hexdigest()
+
+        # Encode FLAC, waveform PNG (thumbnail seed), and sidecar JSON.
+        filename = save_audio_with_metadata(
+            waveform,
+            sample_rate,
+            params,
+            "outpaint_aud",
+            model_info=pipeline_manager.current_model_info,
+        )
+
+        # Thumbnail from the waveform PNG (same base name as the FLAC).
+        base_name = os.path.splitext(filename)[0]
+        waveform_png_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(waveform_png_path):
+            create_thumbnail(waveform_png_path)
+
+        # Record audio-specific fields into parameters JSON for the gallery.
+        num_samples = int(waveform.shape[-1])
+        duration_s = (num_samples / sample_rate) if sample_rate else 0.0
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        # Audio has no visual dimensions; do not let create_db_image_record's
+        # width/height fallback (512) fabricate a fake resolution.
+        params_for_db["width"] = 0
+        params_for_db["height"] = 0
+        params_for_db["duration"] = duration_s
+        params_for_db["sample_rate"] = sample_rate
+        params_for_db["is_audio"] = True
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="outpaint_aud",
+            image_hash="",
+            lora_names=extract_lora_names(params.get("loras") or []),
+            model_name=model_name,
+            model_hash=model_hash,
+            source_image_hash=params["source_audio_hash"],
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Audio outpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
         )
 

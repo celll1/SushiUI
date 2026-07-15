@@ -212,6 +212,23 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "seam_structure_end": 0.70,      # schedule progress at which the effect decays to 0 (full <= 0.45)
     "seam_structure_saliency": 2.0,  # saliency-gate midpoint as a multiple of the boundary-ribbon median (0 = whole seam)
     "seam_structure_max_area": 0.25, # safety cap: max fraction of the generate region the gate may cover
+    # Boundary Determinism Relaxation (SD/SDXL only, inpaint/outpaint): the
+    # "junction render" complement to Seam Structure Continuity. Instead of
+    # HARD-pinning the known boundary each step, SOFT-pin a narrow SSC-saliency-
+    # gated keep-side seam band (annealed from soft early to a full hard pin
+    # late, with a small scheduled noise term), so the immediately-adjacent
+    # known-side latent can bend to meet the continuation SSC indicates -- turning
+    # a ~1-cell seam offset from a kink into a gentle bend. Deep known content
+    # stays hard-pinned throughout. x0-space, no extra U-Net forwards. Most
+    # effective WITH seam_structure_strength > 0 (SSC supplies the direction;
+    # relaxation grants the permission). See core.inference.custom_sampling.
+    # _bdr_precompute / _bdr_apply. 0 = off (byte-identical).
+    "boundary_relax_strength": 0.0,   # 0 = feature inactive; active range ~0.2-0.35
+    "boundary_relax_width": 3.0,      # keep-side band width (latent cells)
+    "boundary_relax_noise": 0.35,     # band-noise fraction of the x0-posterior std (0-1)
+    "boundary_relax_full_until": 0.37, # progress up to which the band is fully soft
+    "boundary_relax_end": 0.55,       # progress by which the hard pin is fully restored
+    "boundary_relax_paste": "feather", # Q3 paste variant: "feather" (thin model-rendered seam strip) | "exact" (full byte-exact rect)
     # Loop-generation decode mode (txt2img/img2img/inpaint, all steps of a
     # client-driven loop). "full" = decode with the active VAE (PiD if
     # overridden) + save + gallery (current/default behavior). "cheap" = if a
@@ -265,6 +282,9 @@ _INPAINT_ONLY = frozenset({
     # OUTPAINT_DEFAULTS via the same path as region_* / mask_blur.
     "seam_structure_strength", "seam_structure_depth", "seam_structure_end",
     "seam_structure_saliency", "seam_structure_max_area",
+    # Boundary Determinism Relaxation: keep-side seam band, inpaint + outpaint only.
+    "boundary_relax_strength", "boundary_relax_width", "boundary_relax_noise",
+    "boundary_relax_full_until", "boundary_relax_end", "boundary_relax_paste",
 })
 
 TXT2IMG_DEFAULTS: Dict[str, Any] = {

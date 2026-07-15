@@ -6484,6 +6484,53 @@ components:
               maximum: 1.0
               description: "SSC safety cap: the maximum fraction of the repaint region the saliency gate may cover."
               example: 0.25
+            boundary_relax_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 0.5
+              description: |
+                SD/SDXL only. Boundary Determinism Relaxation: instead of hard-pinning
+                the known side of the repaint mask boundary each step, soft-pin a narrow
+                SSC-saliency-gated known-side seam band (annealed soft->hard, with a
+                small scheduled noise term), so the adjacent known-side latent can bend
+                to meet the continuation Seam Structure Continuity indicates. Deep known
+                content stays hard-pinned. Most effective with seam_structure_strength
+                > 0. 0 (default) = off (byte-identical). Active range ~0.2-0.35.
+              example: 0.0
+            boundary_relax_width:
+              type: number
+              default: 3.0
+              minimum: 1.0
+              description: "BDR known-side seam-band width, in latent cells."
+              example: 3.0
+            boundary_relax_noise:
+              type: number
+              default: 0.35
+              minimum: 0.0
+              maximum: 1.0
+              description: "BDR band-noise amount as a fraction of the x0-posterior standard deviation at each step."
+              example: 0.35
+            boundary_relax_full_until:
+              type: number
+              default: 0.37
+              minimum: 0.0
+              maximum: 1.0
+              description: "BDR: schedule progress up to which the seam band is fully soft (sigma-based threshold)."
+              example: 0.37
+            boundary_relax_end:
+              type: number
+              default: 0.55
+              minimum: 0.0
+              maximum: 1.0
+              description: "BDR: schedule progress by which the hard pin is fully restored (sigma-based threshold)."
+              example: 0.55
+            boundary_relax_paste:
+              type: string
+              default: "feather"
+              enum: ["feather", "exact"]
+              description: "BDR seam-strip paste variant (outpaint-relevant; inpaint keeps its own compositing): 'feather' | 'exact'."
+              example: "feather"
 
     OutpaintRequest:
       allOf:
@@ -6719,6 +6766,54 @@ components:
               maximum: 1.0
               description: "SSC safety cap: the maximum fraction of the generate region the saliency gate may cover (capped to the highest-confidence structures)."
               example: 0.25
+            boundary_relax_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 0.5
+              description: |
+                SD/SDXL only. Boundary Determinism Relaxation: instead of hard-pinning
+                the known boundary each step, soft-pin a narrow SSC-saliency-gated
+                keep-side seam band (annealed from soft early to a full hard pin late,
+                with a small scheduled noise term), so the immediately-adjacent
+                known-side latent can bend to meet the continuation Seam Structure
+                Continuity indicates. Deep known content stays hard-pinned. Most
+                effective with seam_structure_strength > 0. 0 (default) = off
+                (byte-identical). Active range ~0.2-0.35.
+              example: 0.0
+            boundary_relax_width:
+              type: number
+              default: 3.0
+              minimum: 1.0
+              description: "BDR keep-side seam-band width, in latent cells."
+              example: 3.0
+            boundary_relax_noise:
+              type: number
+              default: 0.35
+              minimum: 0.0
+              maximum: 1.0
+              description: "BDR band-noise amount as a fraction of the x0-posterior standard deviation at each step."
+              example: 0.35
+            boundary_relax_full_until:
+              type: number
+              default: 0.37
+              minimum: 0.0
+              maximum: 1.0
+              description: "BDR: schedule progress up to which the seam band is fully soft (sigma-based threshold)."
+              example: 0.37
+            boundary_relax_end:
+              type: number
+              default: 0.55
+              minimum: 0.0
+              maximum: 1.0
+              description: "BDR: schedule progress by which the hard pin is fully restored (sigma-based threshold)."
+              example: 0.55
+            boundary_relax_paste:
+              type: string
+              default: "feather"
+              enum: ["feather", "exact"]
+              description: "BDR seam-strip paste variant: 'feather' keeps a thin model-rendered strip inside the rect at generated-adjacent edges; 'exact' restores the full placed rect byte-exact. Deep interior is byte-exact in both."
+              example: "feather"
             outpaint_seam_fix:
               type: boolean
               default: true

@@ -25,10 +25,15 @@
 # Everything else — the strict 3-key inference batch contract
 # (`_validate_inference_data_batch`), the (x0 <-> velocity) conversions, the 4-step
 # SDE/ODE student sampler (`_student_sample_loop`), and `generate_samples_from_batch`
-# — is kept verbatim. In particular `generate_samples_from_batch` still calls
-# `self._encode_text_raw(captions)` exactly as upstream; SushiUI's caption-embedding
-# override (`PixelDiTModel.set_injected_caption_embs`) is transparent to this method
-# — it intercepts inside `_encode_text_raw` itself, so the strict
+# — is kept verbatim EXCEPT for one SushiUI addition: `_student_sample_loop` (and the
+# `effective_steps == 1` branch of `generate_samples_from_batch`) now also take an
+# optional `step_callback` (decode-phase progress) and call `raise_if_cancelled()`
+# once per student step, for SushiUI's PiD progress/cancellation integration — so
+# `_student_sample_loop` is no longer verbatim upstream. In particular
+# `generate_samples_from_batch` still calls `self._encode_text_raw(captions)` exactly
+# as upstream; SushiUI's caption-embedding override
+# (`PixelDiTModel.set_injected_caption_embs`) is transparent to this method — it
+# intercepts inside `_encode_text_raw` itself, so the strict
 # `{caption, LQ_latent, degrade_sigma}` data_batch contract below is unchanged from
 # upstream (no 4th key).
 
@@ -158,15 +163,20 @@ class PidInferenceModel(PixelDiTModel):
         degrade_sigma_tensor: torch.Tensor,
         generator: Optional[torch.Generator] = None,
         net=None,
+        step_callback=None,
     ) -> torch.Tensor:
+        from core.inference.cancellation import raise_if_cancelled
+
         B = noise.shape[0]
         timescale = self.fm_trainer.timescale
         autocast_ctx = torch.autocast("cuda", dtype=self.autocast_dtype) if self.autocast_dtype else nullcontext()
         x = noise
         net = net if net is not None else self.net
+        total = len(t_list) - 1
 
         with autocast_ctx:
-            for t_cur, t_next in zip(t_list[:-1], t_list[1:]):
+            for i, (t_cur, t_next) in enumerate(zip(t_list[:-1], t_list[1:])):
+                raise_if_cancelled()
                 t_cur_batch = t_cur.expand(B)
                 t_cur_scaled = t_cur_batch * timescale
 
@@ -197,6 +207,9 @@ class PidInferenceModel(PixelDiTModel):
                         x = (1.0 - t_next_bcast) * x0_pred + t_next_bcast * eps_infer
                 else:
                     x = self._velocity_to_x0(x, v_pred, t_cur_batch)
+
+                if step_callback is not None:
+                    step_callback(i, total)
 
         return x
 
@@ -250,6 +263,7 @@ class PidInferenceModel(PixelDiTModel):
         seed: int = 0,
         image_size=None,
         shift: float = None,
+        step_callback=None,
         **kwargs,
     ):
         """Generate SR images from a strict caption/latent/sigma batch.
@@ -334,6 +348,8 @@ class PidInferenceModel(PixelDiTModel):
                     degrade_sigma=degrade_sigma_tensor,
                 )
                 x0_student = self._velocity_to_x0(noise, v_student, t_student)
+                if step_callback is not None:
+                    step_callback(0, 1)
         else:
             t_list = self._get_t_list(device=torch.device("cuda"), num_steps=num_steps)
             x0_student = self._student_sample_loop(
@@ -344,6 +360,7 @@ class PidInferenceModel(PixelDiTModel):
                 degrade_sigma_tensor,
                 generator=gen,
                 net=net,
+                step_callback=step_callback,
             )
 
         return x0_student.clamp(-1, 1).unsqueeze(2)

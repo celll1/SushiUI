@@ -380,12 +380,19 @@ class PidVaeWrapper:
 
     @staticmethod
     def _run_pid_pass(
-        model, lq: torch.Tensor, B: int, caption_embs: torch.Tensor, image_size: tuple, seed: int
+        model, lq: torch.Tensor, B: int, caption_embs: torch.Tensor, image_size: tuple, seed: int,
+        step_callback=None,
     ) -> torch.Tensor:
         """Run one PiD 4-step decode pass on an already in-distribution LQ
         latent (the whole image, the F7 whole-latent cap, or a single F9
         tile — same call shape either way). Returns a `[B, 3, H, W]` float
-        tensor in [-1, 1] (still on the model's device)."""
+        tensor in [-1, 1] (still on the model's device).
+
+        step_callback: optional (i:int, total:int) callable forwarded into
+            `generate_samples_from_batch` for per-step decode progress."""
+        from core.inference.cancellation import raise_if_cancelled
+
+        raise_if_cancelled()
         lq_bf16 = lq.to(dtype=torch.bfloat16, device="cuda")
         data_batch = {
             model.config.input_caption_key: [""] * B,
@@ -401,6 +408,7 @@ class PidVaeWrapper:
                     num_steps=model.config.student_sample_steps,
                     seed=int(seed),
                     image_size=image_size,
+                    step_callback=step_callback,
                 )
         finally:
             model.set_injected_caption_embs(prior_override)
@@ -433,6 +441,7 @@ class PidVaeWrapper:
         target_out_h: int,
         target_out_w: int,
         native_px: int,
+        progress_callback=None,
     ) -> torch.Tensor:
         """F9 — DEFAULT path for native > native_cap. Split `lq` into
         overlapping latent-space tiles (each individually in-distribution),
@@ -441,8 +450,13 @@ class PidVaeWrapper:
         item independently (tile-blend is a single-image operation) and
         concatenates the results. Returns a `[B, 3, H, W]` float tensor in
         [-1, 1] on CPU.
+
+        progress_callback: optional (cur:int,total:int,label:str) callable;
+            reported in GLOBAL units across all tiles (see `total_tiles` below)
+            so the bar advances smoothly tile-by-tile instead of resetting.
         """
         from core.utils.tile_blend import compute_tile_boxes, feather_blend_tiles
+        from core.inference.cancellation import raise_if_cancelled
 
         effective_tile_native = min(self.tile_native, self.native_cap)
         if effective_tile_native != self.tile_native:
@@ -464,20 +478,34 @@ class PidVaeWrapper:
         boxes_px = [(x1 * px_scale, y1 * px_scale, x2 * px_scale, y2 * px_scale) for (x1, y1, x2, y2) in boxes_lat]
         overlap_px = overlap_lat * px_scale
 
+        total_tiles = B * len(boxes_lat)
+        tile_idx = 0  # 0-based, monotonic across the whole b_idx/tile nesting
+
         batch_out = []
         for b_idx in range(B):
             tile_images = []
             for (x1, y1, x2, y2) in boxes_lat:
+                raise_if_cancelled()
                 lq_tile = lq[b_idx : b_idx + 1, :, y1:y2, x1:x2]
                 th, tw = y2 - y1, x2 - x1
                 image_size = (th * 8 * SR_SCALE, tw * 8 * SR_SCALE)
                 cap = caption_embs[b_idx : b_idx + 1]
-                out_tile = self._run_pid_pass(model, lq_tile, 1, cap, image_size, seed)
+
+                def _tile_step_cb(i, total, _base=tile_idx):
+                    if progress_callback is not None:
+                        progress_callback(
+                            _base * total + (i + 1),
+                            total_tiles * total,
+                            f"PiD decode (tile {_base + 1}/{total_tiles})",
+                        )
+
+                out_tile = self._run_pid_pass(model, lq_tile, 1, cap, image_size, seed, step_callback=_tile_step_cb)
                 tile_images.append(self._tensor_to_pil_uint8(out_tile))
                 # Free per-tile transients before the next tile decode (F9 keeps
                 # per-tile VRAM bounded — this is the whole point of tiling).
                 del out_tile
                 torch.cuda.empty_cache()
+                tile_idx += 1
 
             blended = feather_blend_tiles(target_out_w, target_out_h, boxes_px, tile_images, overlap_px)
             batch_out.append(self._pil_uint8_to_tensor(blended))
@@ -491,7 +519,7 @@ class PidVaeWrapper:
 
         return torch.cat(batch_out, dim=0)
 
-    def pid_final_decode(self, latents: torch.Tensor, seed: int = 0) -> Any:
+    def pid_final_decode(self, latents: torch.Tensor, seed: int = 0, progress_callback=None) -> Any:
         """Run the PiD SDXL 4-step distilled decoder on `latents`.
 
         Args:
@@ -502,6 +530,9 @@ class PidVaeWrapper:
                 normalization internally to recover PiD's expected frame.
             seed: the generation's seed (F8), forwarded to
                 `generate_samples_from_batch` for a reproducible noise draw.
+            progress_callback: optional (cur:int,total:int,label:str) callable
+                for decode-phase progress. None (default) disables decode
+                progress reporting entirely (fully backward compatible).
 
         Native resolution above `native_cap` (F7) is handled one of two ways:
         the DEFAULT (F9) tiles the latent into overlapping in-distribution
@@ -517,8 +548,16 @@ class PidVaeWrapper:
             every Stage-3 call site.
         """
         from diffusers.models.autoencoders.vae import DecoderOutput
+        from core.inference.cancellation import raise_if_cancelled
 
         B, _C, lat_h, lat_w = latents.shape
+
+        # Cancel check + "preparing" progress emit as early as possible, so both
+        # cover the Gemma-encode (~5GB load, opt-in) and GPU-staging window below
+        # — not just the per-step decode passes further down.
+        raise_if_cancelled()
+        if progress_callback is not None:
+            progress_callback(0, 1, "PiD decode: preparing")
 
         # F1 — re-normalize: the caller pre-unscaled (raw AutoencoderKL frame);
         # recover PiD's normalized training frame (z' = scaling_factor * (z - shift)).
@@ -588,7 +627,12 @@ class PidVaeWrapper:
                     lq, size=(cap_lat_h, cap_lat_w), mode="bicubic", align_corners=False, antialias=True
                 )
                 image_size = (cap_lat_h * 8 * SR_SCALE, cap_lat_w * 8 * SR_SCALE)
-                out = self._run_pid_pass(model, lq_capped, B, caption_embs, image_size, seed)
+
+                def _step_cb(i, total):
+                    if progress_callback is not None:
+                        progress_callback(i + 1, total, f"PiD decode (step {i + 1}/{total})")
+
+                out = self._run_pid_pass(model, lq_capped, B, caption_embs, image_size, seed, step_callback=_step_cb)
                 # F7 top-up: PiD ran on the capped (in-distribution) latent above;
                 # upscale its clean output back to the originally-requested 4x
                 # output size. Bicubic + antialias (torch has no native "lanczos"
@@ -602,12 +646,18 @@ class PidVaeWrapper:
                 # the full requested output size (see module docstring / class
                 # docstring above `_tiled_decode`).
                 out = self._tiled_decode(
-                    model, lq, lat_h, lat_w, B, caption_embs, seed, target_out_h, target_out_w, native_px
+                    model, lq, lat_h, lat_w, B, caption_embs, seed, target_out_h, target_out_w, native_px,
+                    progress_callback=progress_callback,
                 )
             else:
                 # Direct in-distribution single-pass decode (native <= native_cap).
                 image_size = (lat_h * 8 * SR_SCALE, lat_w * 8 * SR_SCALE)
-                out = self._run_pid_pass(model, lq, B, caption_embs, image_size, seed)
+
+                def _step_cb(i, total):
+                    if progress_callback is not None:
+                        progress_callback(i + 1, total, f"PiD decode (step {i + 1}/{total})")
+
+                out = self._run_pid_pass(model, lq, B, caption_embs, image_size, seed, step_callback=_step_cb)
 
             if self.pid_sr_output == "original":
                 # F7: this is output-size control, NOT a cheaper mode — the full

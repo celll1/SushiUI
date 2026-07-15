@@ -24,6 +24,25 @@ def _add_generation_warning(message: str, code: str = None) -> None:
         pass
 
 
+def _make_pid_decode_progress(progress_callback):
+    """Build the decoupled `(cur, total, label)` decode-progress adapter PiD's
+    `pid_final_decode` expects, from the denoise-phase `progress_callback`
+    (see `create_progress_callback_factory` in api/generation_utils.py).
+
+    Returns None when `progress_callback` is None, or when it doesn't declare
+    support for the `phase_label` kwarg (via the `_supports_phase_label`
+    marker) — no exception-based probing, so a genuine TypeError raised
+    inside the callback is never silently swallowed.
+    """
+    if progress_callback is None or not getattr(progress_callback, "_supports_phase_label", False):
+        return None
+
+    def _decode_cb(cur, total, label):
+        progress_callback(cur, total, None, phase_label=label)
+
+    return _decode_cb
+
+
 def get_inpaint_use_dedicated_model_setting() -> bool:
     """Get the inpaint_use_dedicated_model setting from database.
 
@@ -1915,7 +1934,8 @@ def custom_sampling_loop(
             # the wrapper re-normalizes it back into PiD's training frame
             # internally (F1, see pid_vae_wrapper.py's module docstring).
             _pid_seed = generator.initial_seed() if generator is not None else 0
-            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed).sample
+            _decode_cb = _make_pid_decode_progress(progress_callback)
+            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed, progress_callback=_decode_cb).sample
         else:
             image = pipeline.vae.decode(latents, return_dict=True).sample
 
@@ -3090,7 +3110,8 @@ def custom_img2img_sampling_loop(
             # F1/F2 rationale (`latents` is already the pre-unscaled tensor
             # the wrapper re-normalizes internally).
             _pid_seed = generator.initial_seed() if generator is not None else 0
-            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed).sample
+            _decode_cb = _make_pid_decode_progress(progress_callback)
+            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed, progress_callback=_decode_cb).sample
         else:
             image = pipeline.vae.decode(latents, return_dict=True).sample
 
@@ -4314,7 +4335,8 @@ def custom_inpaint_sampling_loop(
             # F1/F2 rationale (`latents` is already the pre-unscaled tensor
             # the wrapper re-normalizes internally).
             _pid_seed = generator.initial_seed() if generator is not None else 0
-            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed).sample
+            _decode_cb = _make_pid_decode_progress(progress_callback)
+            image = pipeline.vae.pid_final_decode(latents, seed=_pid_seed, progress_callback=_decode_cb).sample
         else:
             image = pipeline.vae.decode(latents, return_dict=True).sample
 

@@ -285,6 +285,10 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
   const [scale, setScale] = useState<number>(1.0);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
+  // Streamed progress-phase label (e.g. "Step 12/28" or "PiD decode (tile 3/9)").
+  // Rendered in place of the hardcoded "Generating..." text so decode-phase
+  // status is visible; reset alongside every setProgress(0) site.
+  const [progressMessage, setProgressMessage] = useState("");
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
@@ -377,6 +381,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(totalSteps);
+      setProgressMessage(message || "");
       if (preview) {
         setPreviewImage(preview);
       }
@@ -1858,6 +1863,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     if (nextItem.type === "aud2aud") {
       setIsGenerating(true);
       setProgress(0);
+      setProgressMessage("");
       setTotalSteps((nextItem.params as any).inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
@@ -1877,6 +1883,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         if (onImageGenerated) onImageGenerated(audioUrl);
         setIsGenerating(false);
         setProgress(0);
+        setProgressMessage("");
         completeCurrentItem();
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
@@ -1886,6 +1893,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         alert("aud2aud generation failed. Please check console for details.");
         setIsGenerating(false);
         setProgress(0);
+        setProgressMessage("");
         failCurrentItem();
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
@@ -1899,6 +1907,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     if (nextItem.type === "img2vid") {
       setIsGenerating(true);
       setProgress(0);
+      setProgressMessage("");
       setTotalSteps((nextItem.params as any).num_inference_steps || 8);
       setPreviewImage(null);
       setGeneratedImage(null);
@@ -1919,6 +1928,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         if (onImageGenerated) onImageGenerated(videoUrl);
         setIsGenerating(false);
         setProgress(0);
+        setProgressMessage("");
         completeCurrentItem();
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
@@ -1928,6 +1938,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         alert("img2vid generation failed. Please check console for details.");
         setIsGenerating(false);
         setProgress(0);
+        setProgressMessage("");
         failCurrentItem();
         setTimeout(() => {
           if (processQueueRef.current) processQueueRef.current();
@@ -1941,6 +1952,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
 
     setIsGenerating(true);
     setProgress(0);
+    setProgressMessage("");
     const denoisingStrength = nextItem.params.denoising_strength || 0.75;
     const actualSteps = Math.ceil((nextItem.params.steps || 20) * denoisingStrength);
     setTotalSteps(actualSteps);
@@ -2229,6 +2241,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       console.log("[Img2Img] Generation complete, resetting state and completing item");
       setIsGenerating(false);
       setProgress(0);
+      setProgressMessage("");
       completeCurrentItem();
 
       // Wait briefly for state to propagate, then trigger next
@@ -2269,6 +2282,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
       console.log("[Img2Img] Generation failed, resetting state and failing item");
       setIsGenerating(false);
       setProgress(0);
+      setProgressMessage("");
       failCurrentItem();
 
       // Wait briefly for state to propagate, then trigger next
@@ -4121,7 +4135,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
               {isGenerating && (
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs text-gray-400">
-                    <span>Generating...</span>
+                    <span>{progressMessage || "Generating..."}</span>
                     <span>{progress}/{totalSteps} steps</span>
                   </div>
                   <div className="w-full bg-gray-700 rounded-full h-2">

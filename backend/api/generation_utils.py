@@ -206,7 +206,24 @@ def create_progress_callback_factory(
     Returns:
         プログレスコールバック関数
     """
-    def progress_callback(step, total_steps, latents, cfg_metrics=None, pred_original_sample=None):
+    def progress_callback(step, total_steps, latents, cfg_metrics=None, pred_original_sample=None, phase_label: Optional[str] = None):
+        # Decoupled decode-phase progress (e.g. PiD decode): no denoise latent to
+        # preview, just forward (step, total_steps, phase_label) as-is.
+        if phase_label is not None:
+            websocket_manager.send_progress_sync(
+                step,
+                total_steps,
+                phase_label,
+                preview_image=None,
+                cfg_metrics=None
+            )
+            try:
+                from api.generation_status import update_progress
+                update_progress(step, total_steps, phase=phase_label)
+            except Exception as e:
+                print(f"Generation status update error: {e}")
+            return
+
         # Calculate display_total for img2img/inpaint "Do full steps"
         if img2img_fix_steps is not None and steps is not None:
             display_total = steps if img2img_fix_steps else total_steps
@@ -298,6 +315,11 @@ def create_progress_callback_factory(
             update_progress(display_step, display_total, phase=status_text)
         except Exception as e:
             print(f"Generation status update error: {e}")
+
+    # Explicit capability marker (avoids a fragile try/except TypeError probe at
+    # call sites, e.g. the PiD decode-progress adapter in custom_sampling.py):
+    # this closure supports the decoupled `phase_label` kwarg.
+    progress_callback._supports_phase_label = True
 
     return progress_callback
 

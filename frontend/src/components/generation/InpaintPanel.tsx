@@ -236,6 +236,10 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
   const [maskImage, setMaskImage] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
+  // Streamed progress-phase label (e.g. "Step 12/28" or "PiD decode (tile 3/9)").
+  // Rendered in place of the hardcoded "Generating..." text so decode-phase
+  // status is visible; reset alongside every setProgress(0) site.
+  const [progressMessage, setProgressMessage] = useState("");
   const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
   const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
   const [isMounted, setIsMounted] = useState(false);
@@ -331,6 +335,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
     if (isGeneratingRef.current) {
       setProgress(step);
       setTotalSteps(totalSteps);
+      setProgressMessage(message || "");
       if (preview) {
         setPreviewImage(preview);
       }
@@ -1803,6 +1808,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     setIsGenerating(true);
     setProgress(0);
+    setProgressMessage("");
     const denoisingStrength = nextItem.params.denoising_strength || 0.75;
     const actualSteps = Math.ceil((nextItem.params.steps || 20) * denoisingStrength);
     setTotalSteps(actualSteps);
@@ -2131,6 +2137,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         console.log("[Inpaint] Generation complete, resetting state and completing item");
         setIsGenerating(false);
         setProgress(0);
+        setProgressMessage("");
         completeCurrentItem();
 
         // Wait briefly for state to propagate, then trigger next
@@ -2145,6 +2152,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         // Reset state first, then fail item
         setIsGenerating(false);
         setProgress(0);
+        setProgressMessage("");
         failCurrentItem();
 
         setTimeout(() => {
@@ -2184,6 +2192,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
       console.log("[Inpaint] Generation failed, resetting state and failing item");
       setIsGenerating(false);
       setProgress(0);
+      setProgressMessage("");
       failCurrentItem();
 
       // Wait briefly for state to propagate, then trigger next
@@ -3856,7 +3865,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
               {isGenerating && (
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs text-gray-400">
-                    <span>Generating...</span>
+                    <span>{progressMessage || "Generating..."}</span>
                     <span>{progress}/{totalSteps} steps</span>
                   </div>
                   <div className="w-full bg-gray-700 rounded-full h-2">

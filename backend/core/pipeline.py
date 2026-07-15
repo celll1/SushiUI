@@ -4514,6 +4514,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             outpaint_boundary_color_strength=params.get("outpaint_boundary_color_strength", 0.25),
             outpaint_resample_count=params.get("outpaint_resample_count", 2),
             outpaint_jump_length=params.get("outpaint_jump_length", 4),
+            outpaint_reference_strength=params.get("outpaint_reference_strength", 0.0),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)

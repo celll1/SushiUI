@@ -49,16 +49,40 @@ tradeoff — A/B-tested via the real held VAE on the identical latent: native
 frame (per-band G-R flips from -19 to +20). The same latent decoded through the
 plain SDXL ``AutoencoderKL`` at native 1344px is clean, so this is PiD-specific
 and resolution-driven, not a base-model or scaling-code defect. ``native_cap``
-(default ``SAFE_NATIVE``, 1024px) is therefore a REAL cap, not a warn-and-
-proceed threshold: when native exceeds it, the LQ latent is downscaled
-(``F.interpolate``, bicubic + antialias, aspect-preserving) so PiD runs
-in-distribution, and PiD's (clean) output image is then upscaled back to the
-originally-requested output size (bicubic + antialias top-up) so the caller
-still gets the size it asked for. Passing a larger ``native_cap`` (e.g. a very
-high value) is a trivial opt-out for callers who want uncapped OOD native.
+(default ``SAFE_NATIVE``, 1024px) is therefore a REAL cap on the native
+resolution PiD is ever asked to decode at, not a warn-and-proceed threshold.
+When the FULL latent's native exceeds it, the DEFAULT response is the F9
+TILED decode below (every individual tile's native stays <= ``native_cap``,
+so PiD itself never runs OOD, while the full requested output size is still
+produced at true super-resolution detail). The original whole-latent
+downscale-then-decode-then-upscale (bicubic + antialias, aspect-preserving)
+is kept as the ``fast_large_decode=True`` opt-out for callers who want the
+cheaper, blurrier single-pass path. Passing a larger ``native_cap`` (e.g. a
+very high value) is a trivial opt-out for callers who want uncapped OOD
+native on either path.
 
 F8: the caller's generation seed is threaded into ``generate_samples_from_batch``
 so PiD's noise draw is reproducible per-seed like the rest of the pipeline.
+
+F9 — TILED decode for native > native_cap (R&D-proven, replaces cap+bicubic as
+the DEFAULT large-output path): downscaling the whole LQ latent (F7's
+cap+bicubic path) keeps PiD in-distribution but throws away detail — it is
+now the FAST OPT-OUT (``fast_large_decode=True``), not the default. The
+default for native > ``native_cap`` is instead to split the (renormalized) LQ
+latent into OVERLAPPING tiles, each tile's own native resolution
+(``tile_lat * 8``) capped at ``tile_native`` (<= ``native_cap``, so every tile
+individually stays in-distribution), run the SAME 4-step PiD decode on each
+tile (same seed across tiles, per the prototype — identical shape means an
+identical initial-noise draw, which is what gives adjacent tiles their
+boundary continuity), and feather-blend the 4x tile outputs back into the
+single full-resolution canvas at pixel scale (overlap ratio
+``tile_overlap_ratio``, 25% confirmed seam-free on both busy and smooth
+backgrounds in the R&D probe). This gives true super-resolution detail at
+the full requested output size, at the cost of ~6x more decode passes
+(bounded per-tile VRAM, ~6.5GB) instead of one. Tile geometry + blend math
+are shared with ``core.upscaler``'s diffusion tile upscale via
+``core.utils.tile_blend`` (see that module's docstring for why it is kept
+free of ``api.*`` imports).
 """
 
 from __future__ import annotations
@@ -81,6 +105,13 @@ SR_SCALE = 4
 # docstring for the artifact evidence). Named module constant so it is easy to
 # retune if a future PiD checkpoint ships with a different trained range.
 SAFE_NATIVE = 1024
+
+# R&D-confirmed (2026-07, F9) defaults for the tiled large-output decode path:
+# each tile's own native resolution (well inside SAFE_NATIVE) and the feather
+# overlap ratio (in latent space, as a fraction of the tile size) that was
+# seam-free on both busy and smooth backgrounds in the tiling probe.
+DEFAULT_TILE_NATIVE = 512
+DEFAULT_TILE_OVERLAP_RATIO = 0.25
 
 _NULL_ASSET_PATH = Path(__file__).resolve().parent / "assets" / "pid_sdxl_null_caption.npy"
 
@@ -110,6 +141,9 @@ class PidVaeWrapper:
         pid_use_gemma: bool = False,
         native_cap: int = SAFE_NATIVE,
         low_vram_decode: bool = False,
+        tile_native: int = DEFAULT_TILE_NATIVE,
+        tile_overlap_ratio: float = DEFAULT_TILE_OVERLAP_RATIO,
+        fast_large_decode: bool = False,
     ):
         if pid_sr_output not in ("4x", "original"):
             raise ValueError(f"pid_sr_output must be '4x' or 'original', got {pid_sr_output!r}")
@@ -146,6 +180,18 @@ class PidVaeWrapper:
         # idempotent update (see `pipeline.load_override_vae`) takes effect
         # on the very next decode.
         self.low_vram_decode = low_vram_decode
+
+        # F9 — tiled large-output decode (default path when native > native_cap):
+        # tile_native is each tile's own native-resolution ceiling (must stay
+        # <= native_cap so every tile is individually in-distribution; clamped
+        # defensively in `_tiled_decode` with a warning if misconfigured above
+        # it). tile_overlap_ratio is the feather overlap as a fraction of the
+        # tile size, applied in latent space before scaling to pixel space for
+        # the blend. fast_large_decode=True opts OUT of tiling back to the
+        # original whole-latent cap+bicubic path (F7) for large outputs.
+        self.tile_native = tile_native
+        self.tile_overlap_ratio = tile_overlap_ratio
+        self.fast_large_decode = fast_large_decode
 
         self.current_prompt: Optional[str] = None  # set via set_prompt() before a pid_use_gemma decode
 
@@ -332,6 +378,119 @@ class PidVaeWrapper:
     # PiD final decode (the only place PiD actually runs)
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _run_pid_pass(
+        model, lq: torch.Tensor, B: int, caption_embs: torch.Tensor, image_size: tuple, seed: int
+    ) -> torch.Tensor:
+        """Run one PiD 4-step decode pass on an already in-distribution LQ
+        latent (the whole image, the F7 whole-latent cap, or a single F9
+        tile — same call shape either way). Returns a `[B, 3, H, W]` float
+        tensor in [-1, 1] (still on the model's device)."""
+        lq_bf16 = lq.to(dtype=torch.bfloat16, device="cuda")
+        data_batch = {
+            model.config.input_caption_key: [""] * B,
+            "LQ_latent": lq_bf16,
+            "degrade_sigma": torch.zeros(B),
+        }
+        prior_override = model._injected_caption_embs
+        try:
+            model.set_injected_caption_embs(caption_embs)
+            with torch.no_grad():
+                out = model.generate_samples_from_batch(
+                    data_batch,
+                    num_steps=model.config.student_sample_steps,
+                    seed=int(seed),
+                    image_size=image_size,
+                )
+        finally:
+            model.set_injected_caption_embs(prior_override)
+        return out.squeeze(2)  # [B, 3, 1, H, W] -> [B, 3, H, W]
+
+    @staticmethod
+    def _tensor_to_pil_uint8(t: torch.Tensor):
+        """`[1, 3, H, W]` float tensor in [-1, 1] -> PIL RGB image (uint8)."""
+        from PIL import Image
+        arr = t.detach().float().clamp(-1, 1)[0].permute(1, 2, 0).cpu().numpy()
+        arr = ((arr + 1.0) * 127.5).clip(0, 255).astype("uint8")
+        return Image.fromarray(arr, mode="RGB")
+
+    @staticmethod
+    def _pil_uint8_to_tensor(img) -> torch.Tensor:
+        """PIL RGB image (uint8) -> `[1, 3, H, W]` float tensor in [-1, 1] (CPU)."""
+        arr = np.asarray(img.convert("RGB"), dtype="float32")
+        arr = (arr / 127.5) - 1.0
+        return torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0).contiguous()
+
+    def _tiled_decode(
+        self,
+        model,
+        lq: torch.Tensor,
+        lat_h: int,
+        lat_w: int,
+        B: int,
+        caption_embs: torch.Tensor,
+        seed: int,
+        target_out_h: int,
+        target_out_w: int,
+        native_px: int,
+    ) -> torch.Tensor:
+        """F9 — DEFAULT path for native > native_cap. Split `lq` into
+        overlapping latent-space tiles (each individually in-distribution),
+        run `_run_pid_pass` on each, feather-blend the 4x tile outputs into
+        the full `(target_out_h, target_out_w)` canvas. Processes each batch
+        item independently (tile-blend is a single-image operation) and
+        concatenates the results. Returns a `[B, 3, H, W]` float tensor in
+        [-1, 1] on CPU.
+        """
+        from core.utils.tile_blend import compute_tile_boxes, feather_blend_tiles
+
+        effective_tile_native = min(self.tile_native, self.native_cap)
+        if effective_tile_native != self.tile_native:
+            _warn_pid(
+                f"pid_tile_native={self.tile_native} exceeds native_cap={self.native_cap}; "
+                f"clamped to {effective_tile_native} so every tile stays in-distribution.",
+                code="pid_tile_native_clamped",
+            )
+        # Latent-space tile size + overlap (tile_native/8 latent cells; overlap
+        # is tile_overlap_ratio of that, R&D-confirmed 0.25 = seam-free).
+        tile_lat = max(1, effective_tile_native // 8)
+        overlap_lat = max(0, int(round(tile_lat * self.tile_overlap_ratio)))
+
+        boxes_lat = compute_tile_boxes(lat_w, lat_h, tile_lat, overlap_lat)
+
+        # Latent-space boxes -> pixel-space boxes on the 4x output canvas
+        # (px_scale = VAE's 8x spatial compression * PiD's baked-in 4x SR).
+        px_scale = 8 * SR_SCALE
+        boxes_px = [(x1 * px_scale, y1 * px_scale, x2 * px_scale, y2 * px_scale) for (x1, y1, x2, y2) in boxes_lat]
+        overlap_px = overlap_lat * px_scale
+
+        batch_out = []
+        for b_idx in range(B):
+            tile_images = []
+            for (x1, y1, x2, y2) in boxes_lat:
+                lq_tile = lq[b_idx : b_idx + 1, :, y1:y2, x1:x2]
+                th, tw = y2 - y1, x2 - x1
+                image_size = (th * 8 * SR_SCALE, tw * 8 * SR_SCALE)
+                cap = caption_embs[b_idx : b_idx + 1]
+                out_tile = self._run_pid_pass(model, lq_tile, 1, cap, image_size, seed)
+                tile_images.append(self._tensor_to_pil_uint8(out_tile))
+                # Free per-tile transients before the next tile decode (F9 keeps
+                # per-tile VRAM bounded — this is the whole point of tiling).
+                del out_tile
+                torch.cuda.empty_cache()
+
+            blended = feather_blend_tiles(target_out_w, target_out_h, boxes_px, tile_images, overlap_px)
+            batch_out.append(self._pil_uint8_to_tensor(blended))
+
+        _warn_pid(
+            f"Large output {target_out_w}x{target_out_h}px decoded via tiled PiD "
+            f"({len(boxes_lat)} tiles, native {native_px}px > cap {self.native_cap}px) for true "
+            "super-resolution detail.",
+            code="pid_tiled_decode",
+        )
+
+        return torch.cat(batch_out, dim=0)
+
     def pid_final_decode(self, latents: torch.Tensor, seed: int = 0) -> Any:
         """Run the PiD SDXL 4-step distilled decoder on `latents`.
 
@@ -343,6 +502,13 @@ class PidVaeWrapper:
                 normalization internally to recover PiD's expected frame.
             seed: the generation's seed (F8), forwarded to
                 `generate_samples_from_batch` for a reproducible noise draw.
+
+        Native resolution above `native_cap` (F7) is handled one of two ways:
+        the DEFAULT (F9) tiles the latent into overlapping in-distribution
+        chunks and feather-blends the 4x decode of each back into the full
+        requested output size (true super-resolution detail); setting
+        `fast_large_decode=True` opts back into the original single-pass
+        whole-latent downscale-then-decode-then-upscale (cheaper, blurrier).
 
         Returns:
             A `diffusers.models.autoencoders.vae.DecoderOutput`-shaped object
@@ -370,27 +536,12 @@ class PidVaeWrapper:
                 "VAE's scaling_factor/shift_factor may not be the standard SDXL values (0.13025/0.0)"
             )
 
-        # F7 — native-resolution cap (A/B-confirmed real fix, not a soft warning):
-        # decoding above `native_cap` is out-of-distribution for this checkpoint
-        # and produces artifacts (see module docstring). Downscale the LQ latent
-        # so PiD runs in-distribution, then upscale its (clean) output back to
-        # the originally-requested size below, after the decode.
+        # F7/F9 — native-resolution cap (A/B-confirmed real fix, not a soft
+        # warning): native above `native_cap` is out-of-distribution for this
+        # checkpoint (see module docstring). Branch below decides the response.
         native_px = max(lat_h, lat_w) * 8
         target_out_h, target_out_w = lat_h * 8 * SR_SCALE, lat_w * 8 * SR_SCALE
-        capped = native_px > self.native_cap
-        if capped:
-            scale = self.native_cap / native_px
-            cap_lat_h = max(1, round(lat_h * scale))
-            cap_lat_w = max(1, round(lat_w * scale))
-            capped_native_px = max(cap_lat_h, cap_lat_w) * 8
-            _warn_pid(
-                f"PiD native capped to {capped_native_px}px for quality (was {native_px}px, out of the "
-                f"checkpoint's trained ~{SAFE_NATIVE}px range); output resized to the requested "
-                f"{target_out_w}x{target_out_h}.",
-                code="pid_native_capped",
-            )
-            lq = F.interpolate(lq, size=(cap_lat_h, cap_lat_w), mode="bicubic", align_corners=False, antialias=True)
-            lat_h, lat_w = cap_lat_h, cap_lat_w
+        over_cap = native_px > self.native_cap
 
         # Caption embedding: real Gemma prompt (opt-in) or the shipped null asset.
         caption_embs = None
@@ -420,30 +571,24 @@ class PidVaeWrapper:
         else:
             model.net.set_vram_chunk_rows(None)
         try:
-            lq_bf16 = lq.to(dtype=torch.bfloat16, device="cuda")
-            data_batch = {
-                model.config.input_caption_key: [""] * B,
-                "LQ_latent": lq_bf16,
-                "degrade_sigma": torch.zeros(B),
-            }
-            image_size = (lat_h * 8 * SR_SCALE, lat_w * 8 * SR_SCALE)
-
-            prior_override = model._injected_caption_embs
-            try:
-                model.set_injected_caption_embs(caption_embs)
-                with torch.no_grad():
-                    out = model.generate_samples_from_batch(
-                        data_batch,
-                        num_steps=model.config.student_sample_steps,
-                        seed=int(seed),
-                        image_size=image_size,
-                    )
-            finally:
-                model.set_injected_caption_embs(prior_override)
-
-            out = out.squeeze(2)  # [B, 3, 1, H, W] -> [B, 3, H, W]
-
-            if capped:
+            if over_cap and self.fast_large_decode:
+                # F7 FAST OPT-OUT: whole-latent downscale-then-decode-then-upscale
+                # (opt-in via fast_large_decode=True; default is F9 tiling below).
+                scale = self.native_cap / native_px
+                cap_lat_h = max(1, round(lat_h * scale))
+                cap_lat_w = max(1, round(lat_w * scale))
+                capped_native_px = max(cap_lat_h, cap_lat_w) * 8
+                _warn_pid(
+                    f"PiD native capped to {capped_native_px}px for quality (was {native_px}px, out of the "
+                    f"checkpoint's trained ~{SAFE_NATIVE}px range); output resized to the requested "
+                    f"{target_out_w}x{target_out_h}.",
+                    code="pid_native_capped",
+                )
+                lq_capped = F.interpolate(
+                    lq, size=(cap_lat_h, cap_lat_w), mode="bicubic", align_corners=False, antialias=True
+                )
+                image_size = (cap_lat_h * 8 * SR_SCALE, cap_lat_w * 8 * SR_SCALE)
+                out = self._run_pid_pass(model, lq_capped, B, caption_embs, image_size, seed)
                 # F7 top-up: PiD ran on the capped (in-distribution) latent above;
                 # upscale its clean output back to the originally-requested 4x
                 # output size. Bicubic + antialias (torch has no native "lanczos"
@@ -452,14 +597,25 @@ class PidVaeWrapper:
                 out = F.interpolate(
                     out, size=(target_out_h, target_out_w), mode="bicubic", align_corners=False, antialias=True
                 )
+            elif over_cap:
+                # F9 DEFAULT: tiled decode for true super-resolution detail at
+                # the full requested output size (see module docstring / class
+                # docstring above `_tiled_decode`).
+                out = self._tiled_decode(
+                    model, lq, lat_h, lat_w, B, caption_embs, seed, target_out_h, target_out_w, native_px
+                )
+            else:
+                # Direct in-distribution single-pass decode (native <= native_cap).
+                image_size = (lat_h * 8 * SR_SCALE, lat_w * 8 * SR_SCALE)
+                out = self._run_pid_pass(model, lq, B, caption_embs, image_size, seed)
 
             if self.pid_sr_output == "original":
                 # F7: this is output-size control, NOT a cheaper mode — the full
                 # 4x super-resolution decode always runs; sr_scale=4 is baked
-                # into this checkpoint. Downscale AFTER the full decode (and after
-                # the capped top-up above, so this always targets the ORIGINALLY
-                # requested native size, `target_out / SR_SCALE`, regardless of
-                # whether F7 capped PiD's own input resolution).
+                # into this checkpoint. Downscale AFTER the full decode (and
+                # after the F7/F9 branch above, so this always targets the
+                # ORIGINALLY requested native size, `target_out / SR_SCALE`,
+                # regardless of which branch produced `out`).
                 out = F.interpolate(
                     out, size=(target_out_h // SR_SCALE, target_out_w // SR_SCALE),
                     mode="bilinear", align_corners=False, antialias=True,

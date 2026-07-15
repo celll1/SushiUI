@@ -1181,6 +1181,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         pid_sr_output: str = "4x",
         pid_use_gemma: bool = False,
         pid_low_vram: bool = False,
+        pid_tile_native: int = 512,
+        pid_tile_overlap_ratio: float = 0.25,
+        pid_fast_large_decode: bool = False,
     ):
         """Swap the model's VAE for the one at ``vae_path`` (idempotent).
 
@@ -1194,6 +1197,11 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         (reused by reference — no extra download/VRAM) plus the PiD ``.pth`` at
         ``vae_path``; anything else (including ``None``, for backward
         compatibility) is a normal ``AutoencoderKL``-family swap.
+
+        ``pid_tile_native``/``pid_tile_overlap_ratio``/``pid_fast_large_decode``
+        only matter for a PiD override — see ``PidVaeWrapper``'s F9 docstring
+        (tiled decode is the default large-output path; ``pid_fast_large_decode``
+        opts back into the original whole-latent cap+bicubic path).
         """
         from core.models.pid.pid_vae_wrapper import PidVaeWrapper
 
@@ -1201,10 +1209,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             self._restore_override_vae()
             return
         if self._override_vae_path == vae_path:
-            # Idempotent on the path, but pid_sr_output/pid_use_gemma/pid_low_vram
-            # may have changed between generations on the SAME PiD checkpoint —
-            # update the live wrapper's flags in place rather than silently
-            # ignoring them.
+            # Idempotent on the path, but pid_sr_output/pid_use_gemma/pid_low_vram/
+            # pid_tile_native/pid_tile_overlap_ratio/pid_fast_large_decode may have
+            # changed between generations on the SAME PiD checkpoint — update the
+            # live wrapper's flags in place rather than silently ignoring them.
             if override_kind == "pid_decoder":
                 for _slot_kind, container, key in self._vae_override_targets():
                     active = getattr(container, key) if _slot_kind == "attr" else container.get(key)
@@ -1212,6 +1220,9 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         active.pid_sr_output = pid_sr_output
                         active.pid_use_gemma = pid_use_gemma
                         active.low_vram_decode = pid_low_vram
+                        active.tile_native = pid_tile_native
+                        active.tile_overlap_ratio = pid_tile_overlap_ratio
+                        active.fast_large_decode = pid_fast_large_decode
                     break
             return  # idempotent — already applied
 
@@ -1230,13 +1241,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if override_kind == "pid_decoder":
             print(f"[VAEOverride] Building PidVaeWrapper around the loaded model's own SDXL VAE "
                   f"+ PiD checkpoint {vae_path} (pid_sr_output={pid_sr_output}, pid_use_gemma={pid_use_gemma}, "
-                  f"pid_low_vram={pid_low_vram})")
+                  f"pid_low_vram={pid_low_vram}, pid_tile_native={pid_tile_native}, "
+                  f"pid_tile_overlap_ratio={pid_tile_overlap_ratio}, pid_fast_large_decode={pid_fast_large_decode})")
             new_vae = PidVaeWrapper(
                 self._original_vae,
                 pid_pth_path=vae_path,
                 pid_sr_output=pid_sr_output,
                 pid_use_gemma=pid_use_gemma,
                 low_vram_decode=pid_low_vram,
+                tile_native=pid_tile_native,
+                tile_overlap_ratio=pid_tile_overlap_ratio,
+                fast_large_decode=pid_fast_large_decode,
             )
         else:
             # Resolve the candidate VAE directory + class.

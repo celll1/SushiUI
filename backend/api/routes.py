@@ -490,6 +490,9 @@ async def generate_txt2img(
     pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
     pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
     pid_low_vram: bool = Form(GENERATION_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
+    pid_tile_native: int = Form(GENERATION_DEFAULTS["pid_tile_native"]),  # PiD decoder only: per-tile native-res ceiling for the F9 tiled large-output decode
+    pid_tile_overlap_ratio: float = Form(GENERATION_DEFAULTS["pid_tile_overlap_ratio"]),  # PiD decoder only: F9 tile feather overlap ratio
+    pid_fast_large_decode: bool = Form(GENERATION_DEFAULTS["pid_fast_large_decode"]),  # PiD decoder only: opt out of F9 tiling back to the F7 whole-latent cap+bicubic path
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -611,7 +614,9 @@ async def generate_txt2img(
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
-            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram, prompt=prompt,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
+            pid_tile_native=pid_tile_native, pid_tile_overlap_ratio=pid_tile_overlap_ratio,
+            pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
         # Generate image
@@ -686,6 +691,9 @@ async def generate_txt2img(
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
             "pid_low_vram": pid_low_vram,
+            "pid_tile_native": pid_tile_native,
+            "pid_tile_overlap_ratio": pid_tile_overlap_ratio,
+            "pid_fast_large_decode": pid_fast_large_decode,
             "loop_decode": loop_decode,
             "skip_gallery": skip_gallery,
         }
@@ -1427,6 +1435,9 @@ async def generate_img2img(
     pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
     pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
     pid_low_vram: bool = Form(GENERATION_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
+    pid_tile_native: int = Form(GENERATION_DEFAULTS["pid_tile_native"]),  # PiD decoder only: per-tile native-res ceiling for the F9 tiled large-output decode
+    pid_tile_overlap_ratio: float = Form(GENERATION_DEFAULTS["pid_tile_overlap_ratio"]),  # PiD decoder only: F9 tile feather overlap ratio
+    pid_fast_large_decode: bool = Form(GENERATION_DEFAULTS["pid_fast_large_decode"]),  # PiD decoder only: opt out of F9 tiling back to the F7 whole-latent cap+bicubic path
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -1559,7 +1570,9 @@ async def generate_img2img(
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
-            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram, prompt=prompt,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
+            pid_tile_native=pid_tile_native, pid_tile_overlap_ratio=pid_tile_overlap_ratio,
+            pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
         # Generate image
@@ -1570,6 +1583,9 @@ async def generate_img2img(
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
             "pid_low_vram": pid_low_vram,
+            "pid_tile_native": pid_tile_native,
+            "pid_tile_overlap_ratio": pid_tile_overlap_ratio,
+            "pid_fast_large_decode": pid_fast_large_decode,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,
@@ -2874,6 +2890,9 @@ async def generate_inpaint(
     pid_sr_output: str = Form(GENERATION_DEFAULTS["pid_sr_output"]),  # PiD decoder only: "4x" | "original"
     pid_use_gemma: bool = Form(GENERATION_DEFAULTS["pid_use_gemma"]),  # PiD decoder only: opt-in runtime Gemma captioner
     pid_low_vram: bool = Form(GENERATION_DEFAULTS["pid_low_vram"]),  # PiD decoder only: opt-in row-chunked low-VRAM decode (default off, bit-identical when off)
+    pid_tile_native: int = Form(GENERATION_DEFAULTS["pid_tile_native"]),  # PiD decoder only: per-tile native-res ceiling for the F9 tiled large-output decode
+    pid_tile_overlap_ratio: float = Form(GENERATION_DEFAULTS["pid_tile_overlap_ratio"]),  # PiD decoder only: F9 tile feather overlap ratio
+    pid_fast_large_decode: bool = Form(GENERATION_DEFAULTS["pid_fast_large_decode"]),  # PiD decoder only: opt out of F9 tiling back to the F7 whole-latent cap+bicubic path
     original_size_w: int = Form(0),  # SDXL micro-cond override: original width (0 = auto)
     original_size_h: int = Form(0),  # SDXL micro-cond override: original height (0 = auto)
     original_size_scale: float = Form(1.0),  # SDXL micro-cond: original_size = output * scale
@@ -3021,7 +3040,9 @@ async def generate_inpaint(
         # Apply (or restore) the planned VAE/TE overrides on the loaded model.
         _override_meta = apply_overrides(
             pipeline_manager, _override_plan,
-            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram, prompt=prompt,
+            pid_sr_output=pid_sr_output, pid_use_gemma=pid_use_gemma, pid_low_vram=pid_low_vram,
+            pid_tile_native=pid_tile_native, pid_tile_overlap_ratio=pid_tile_overlap_ratio,
+            pid_fast_large_decode=pid_fast_large_decode, prompt=prompt,
         )
 
         # Generate image
@@ -3032,6 +3053,9 @@ async def generate_inpaint(
             "pid_sr_output": pid_sr_output,
             "pid_use_gemma": pid_use_gemma,
             "pid_low_vram": pid_low_vram,
+            "pid_tile_native": pid_tile_native,
+            "pid_tile_overlap_ratio": pid_tile_overlap_ratio,
+            "pid_fast_large_decode": pid_fast_large_decode,
             "negative_prompt": negative_prompt,
             "steps": steps,
             "cfg_scale": cfg_scale,

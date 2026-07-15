@@ -152,6 +152,19 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # fp32; the drift is bf16-precision amplification through the 4-step SDE
     # sampler, not an implementation bug — see scratchpad/pid_vram_proposal.md).
     "pid_low_vram": False,
+    # F9 — tiled large-output decode (default when native > native_cap; see
+    # PidVaeWrapper's module docstring). Each tile's OWN native resolution is
+    # capped at pid_tile_native (must stay <= the (currently hardcoded)
+    # native_cap, else it is clamped with a warning); pid_tile_overlap_ratio
+    # is the feather overlap as a fraction of the tile size (0.25 = R&D-
+    # confirmed seam-free on both busy and smooth backgrounds).
+    "pid_tile_native": 512,
+    "pid_tile_overlap_ratio": 0.25,
+    # False (default) = tiled decode (F9, true super-resolution detail at the
+    # full requested output size). True opts back into the original
+    # whole-latent downscale-then-decode-then-upscale (F7) — cheaper
+    # (~6x fewer decode passes) but blurrier at large output sizes.
+    "pid_fast_large_decode": False,
     # SDXL micro-conditioning override (inference). original_size for time_ids:
     # explicit w/h (0 = auto), else output size * scale. crop stays (0,0).
     "original_size_w": 0,

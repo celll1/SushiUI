@@ -5289,6 +5289,44 @@ components:
             GEMM-tiling rounding noise through the decoder's iterative
             sampler).
           example: false
+        pid_tile_native:
+          type: integer
+          default: 512
+          description: |
+            Only consulted when vae_path points at a PiD decoder checkpoint
+            and the requested output's native resolution (latent_h/w * 8)
+            exceeds the checkpoint's in-distribution ceiling; ignored
+            otherwise. Every tile's OWN native resolution (tile_lat * 8) is
+            capped at this value so each tile individually stays
+            in-distribution for PiD (clamped down with a warning if set above
+            the checkpoint's native ceiling). Used only by the default tiled
+            large-output decode; has no effect when pid_fast_large_decode is
+            true.
+          example: 512
+        pid_tile_overlap_ratio:
+          type: number
+          default: 0.25
+          description: |
+            Only consulted together with pid_tile_native (same gating).
+            Feather-blend overlap between adjacent tiles, as a fraction of
+            the tile size (in latent space, before scaling to pixel space
+            for the blend). 0.25 was confirmed seam-free on both busy and
+            smooth backgrounds.
+          example: 0.25
+        pid_fast_large_decode:
+          type: boolean
+          default: false
+          description: |
+            Only consulted when vae_path points at a PiD decoder checkpoint
+            and the requested output's native resolution exceeds the
+            checkpoint's in-distribution ceiling; ignored otherwise. False
+            (default) decodes the large output in overlapping in-distribution
+            tiles and feather-blends them back into the full requested output
+            size (true super-resolution detail, ~6x more decode passes). True
+            opts out to the original single-pass whole-latent downscale
+            -then-decode-then-upscale path (fewer decode passes, less detail
+            at large output sizes).
+          example: false
         ref_images:
           type: array
           items:

@@ -3896,6 +3896,7 @@ async def generate_outpaint(
     inpaint_fill_strength: float = Form(OUTPAINT_DEFAULTS["inpaint_fill_strength"]),
     inpaint_blur_strength: float = Form(OUTPAINT_DEFAULTS["inpaint_blur_strength"]),
     outpaint_seam_fix: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_fix"]),  # Post-generation exposure/tone harmonizer between the generated surroundings and the preserved rect
+    outpaint_boundary_color_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_boundary_color_strength"]),  # B1 continuity fix: in-loop low-freq boundary color proximal strength (SD/SDXL only, 0=off)
     prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
     max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -4175,6 +4176,7 @@ async def generate_outpaint(
             "inpaint_fill_strength": inpaint_fill_strength,
             "inpaint_blur_strength": inpaint_blur_strength,
             "outpaint_seam_fix": outpaint_seam_fix,
+            "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,

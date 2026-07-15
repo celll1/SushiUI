@@ -6532,6 +6532,20 @@ components:
                 before the final unconditional paste, so the preserved rect is
                 never altered. Disable to see the model's raw output.
               example: true
+            outpaint_boundary_color_strength:
+              type: number
+              default: 0.25
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                SD/SDXL only. A low-frequency color/illumination correction
+                applied during denoising to the generate region, restricted to
+                a narrow collar near the preserved rectangle's boundary and
+                active mid/late in the schedule. Nudges coarse chroma and
+                illumination continuity across the seam without constraining
+                composition or content further from the boundary. 0 disables
+                the correction.
+              example: 0.25
 
     UpscaleRequest:
       type: object

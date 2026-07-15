@@ -1,0 +1,1463 @@
+"use client";
+
+import { useState, useEffect, useCallback, useRef } from "react";
+import { usePathname, useSearchParams } from "next/navigation";
+import Card from "../common/Card";
+import NumberInput from "../common/NumberInput";
+import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
+import Button from "../common/Button";
+import Slider from "../common/Slider";
+import Select from "../common/Select";
+import ModelLoadSection from "../common/ModelLoadSection";
+import LoRASelector from "../common/LoRASelector";
+import ControlNetSelector from "../common/ControlNetSelector";
+import GenerationQueue from "../common/GenerationQueue";
+import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlacementCanvas";
+import {
+  getSamplers,
+  getScheduleTypes,
+  generateOutpaint,
+  getCurrentModel,
+  cancelGeneration,
+  getResultFilename,
+  getResultSeed,
+  getResultAncestralSeed,
+  OutpaintParams as ApiOutpaintParams,
+  LoRAConfig,
+  ControlNetConfig,
+} from "@/utils/api";
+import { wsClient, CFGMetrics } from "@/utils/websocket";
+import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
+import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale } from "@/utils/sendHelpers";
+import { fixFloatingPointParams } from "@/utils/numberUtils";
+import { useStartup } from "@/contexts/StartupContext";
+import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
+
+// Mirrors backend OUTPAINT_DEFAULTS (backend/api/param_defaults.py) --
+// derived from the full inpaint parameter set + the placement fields.
+// This object is a fallback only; on mount it is overridden by
+// generationDefaults.outpaint fetched from GET /schema/generation-defaults
+// (single source of truth), unless the user already has localStorage state.
+const DEFAULT_PARAMS: ApiOutpaintParams = {
+  prompt: "",
+  negative_prompt: "",
+  steps: 20,
+  cfg_scale: 7.0,
+  sampler: "euler",
+  schedule_type: "uniform",
+  seed: -1,
+  ancestral_seed: -1,
+  // Outpaint's default is full-strength generation of the surrounding canvas
+  // (the placed region is preserved via the final pixel paste regardless).
+  denoising_strength: 1.0,
+  img2img_fix_steps: true,
+  vae_drift_correction: false,
+  mask_blur: 4,
+  inpaint_full_res: false,
+  inpaint_full_res_padding: 32,
+  inpaint_fill_mode: "original",
+  inpaint_fill_strength: 1.0,
+  inpaint_blur_strength: 1.0,
+  resize_mode: "image",
+  resampling_method: "lanczos",
+  prompt_chunking_mode: "a1111",
+  max_prompt_chunks: 0,
+  loras: [],
+  controlnets: [],
+  cfg_schedule_type: "constant",
+  cfg_schedule_min: 1.0,
+  cfg_schedule_max: undefined,
+  cfg_schedule_power: 2.0,
+  cfg_rescale_snr_alpha: 0.0,
+  dynamic_threshold_percentile: 0.0,
+  dynamic_threshold_mimic_scale: 7.0,
+  nag_enable: false,
+  nag_scale: 5.0,
+  nag_tau: 3.5,
+  nag_alpha: 0.25,
+  nag_sigma_end: 3.0,
+  nag_negative_prompt: "",
+  attention_type: "normal",
+  unet_quantization: null,
+  original_size_w: 0,
+  original_size_h: 0,
+  original_size_scale: 1.0,
+  text_encoder_quantization: null,
+  cpu_text_encoding: false,
+  use_torch_compile: false,
+  keep_models_hot: false,
+  vae_tiling: false,
+  vae_tile_threshold: 0,
+  color_flatten_strength: 0,
+  flatten_in_loop: false,
+  flatten_in_loop_last_steps: 3,
+  flatten_in_loop_min_region: 0.02,
+  spectrum_enable: false,
+  fbcache_enable: false,
+  fbcache_threshold: 0.12,
+  fbcache_warmup_steps: 1,
+  fbcache_cache_branch: 1,
+  spectrum_w: 0.5,
+  spectrum_w_decay: 0.0,
+  spectrum_delta_cap: 0.0,
+  spectrum_m: 4,
+  spectrum_lam: 0.1,
+  spectrum_warmup_steps: 3,
+  spectrum_window_size: 4,
+  spectrum_flex_window: 0.75,
+  spectrum_tail: 0.12,
+  spectrum_feature_mode: "output",
+  spectrum_cache_branch: 1,
+  spectrum_max_cache: 0,
+  preview_predicted_x0: false,
+  preview_decoder: "matrix",
+  vision_encoder_path: null,
+  vae_path: null,
+  text_encoder_path: null,
+  pid_sr_output: "4x",
+  pid_use_gemma: false,
+  pid_low_vram: false,
+  pid_tile_native: 512,
+  pid_tile_overlap_ratio: 0.25,
+  pid_fast_large_decode: false,
+  enable_block_swap: false,
+  blocks_to_swap: 20,
+  use_pinned_memory: false,
+  block_swap_h2d_only: false,
+  block_swap_ring_size: 2,
+  loop_decode: "full",
+  skip_gallery: false,
+  // --- Placement (outpaint-only) ---
+  canvas_width: 1536,
+  canvas_height: 1536,
+  place_x: 0,
+  place_y: 0,
+  place_width: 0,
+  place_height: 0,
+  input_crop_x: 0,
+  input_crop_y: 0,
+  input_crop_w: 0,
+  input_crop_h: 0,
+  outpaint_fill_mode: "replicate",
+};
+
+const STORAGE_KEY = "outpaint_params";
+const PREVIEW_STORAGE_KEY = "outpaint_preview";
+const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
+
+interface OutpaintPanelProps {
+  onImageGenerated?: (imageUrl: string) => void;
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
+}
+
+export default function OutpaintPanel({ onTabChange, onImageGenerated }: OutpaintPanelProps = {}) {
+  const { isBackendReady, generationDefaults, isVideo, isAudio } = useStartup();
+  const [params, setParams] = useState<ApiOutpaintParams>(DEFAULT_PARAMS);
+  const [generatedImageParams, setGeneratedImageParams] = useState<ApiOutpaintParams | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generatedImage, setGeneratedImage] = useState<string | null>(null);
+  const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
+  const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
+
+  const [inputImage, setInputImage] = useState<File | null>(null);
+  const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
+  const [inputImageSize, setInputImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+
+  const [progress, setProgress] = useState(0);
+  const [totalSteps, setTotalSteps] = useState(0);
+  const [progressMessage, setProgressMessage] = useState("");
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
+  const [samplers, setSamplers] = useState<Array<{ id: string; name: string }>>([]);
+  const [scheduleTypes, setScheduleTypes] = useState<Array<{ id: string; name: string }>>([]);
+  const [isMounted, setIsMounted] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [currentModelInfo, setCurrentModelInfo] = useState<any>(null);
+
+  const [sendImage, setSendImage] = useState(true);
+  const [sendPrompt, setSendPrompt] = useState(true);
+  const [sendParameters, setSendParameters] = useState(true);
+
+  const [developerMode, setDeveloperMode] = useState(false);
+  const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
+
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const isGeneratingRef = useRef(isGenerating);
+  useEffect(() => {
+    isGeneratingRef.current = isGenerating;
+  }, [isGenerating]);
+
+  const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, _metrics?: CFGMetrics) => {
+    if (isGeneratingRef.current) {
+      setProgress(step);
+      setTotalSteps(total);
+      setProgressMessage(message || "");
+      if (preview) {
+        setPreviewImage(preview);
+      }
+    }
+  }, []);
+
+  useEffect(() => {
+    wsClient.connect();
+    wsClient.subscribe(handleProgress);
+    return () => {
+      wsClient.unsubscribe(handleProgress);
+    };
+  }, [handleProgress]);
+
+  // Initial load from localStorage
+  useEffect(() => {
+    setIsMounted(true);
+
+    const loadInitialData = async () => {
+      try {
+        const modelInfo = await getCurrentModel();
+        setCurrentModelInfo(modelInfo);
+      } catch (error) {
+        console.error("[Outpaint] Failed to load model info:", error);
+      }
+
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          setParams(fixFloatingPointParams(merged));
+        } catch (error) {
+          console.error("[Outpaint] Failed to load saved params:", error);
+        }
+      }
+
+      const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+      if (savedPreview) {
+        setGeneratedImage(savedPreview);
+      }
+
+      const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (savedInputRef) {
+        try {
+          const imageData = await loadTempImage(savedInputRef);
+          if (imageData) {
+            setInputImagePreview(imageData);
+            const img = new Image();
+            img.onload = () => {
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
+          }
+        } catch (error) {
+          console.error("[Outpaint] Failed to load input image:", error);
+        }
+      }
+
+      const savedDeveloperMode = localStorage.getItem('developer_mode');
+      if (savedDeveloperMode === 'true') {
+        setDeveloperMode(true);
+      }
+
+      const savedShowAdvancedCFG = localStorage.getItem('show_advanced_cfg');
+      if (savedShowAdvancedCFG === 'true') {
+        setShowAdvancedCFG(true);
+      }
+
+      const savedAttentionType = localStorage.getItem('attention_type');
+      if (savedAttentionType && (savedAttentionType === 'normal' || savedAttentionType === 'sage' || savedAttentionType === 'flash')) {
+        setParams(prev => ({ ...prev, attention_type: savedAttentionType }));
+      }
+
+      setIsInitialLoad(false);
+    };
+
+    loadInitialData();
+  }, []);
+
+  // Reset torch.compile when developer mode is disabled
+  useEffect(() => {
+    if (!developerMode) {
+      setParams(prev => (prev.use_torch_compile ? { ...prev, use_torch_compile: false } : prev));
+    }
+  }, [developerMode]);
+
+  useEffect(() => {
+    loadSamplers();
+    loadScheduleTypes();
+  }, []);
+
+  const loadSamplers = async () => {
+    try {
+      const data = await getSamplers();
+      setSamplers(data.samplers);
+    } catch (error) {
+      console.error("[Outpaint] Failed to load samplers:", error);
+      setSamplers([
+        { id: "euler", name: "Euler" },
+        { id: "euler_ancestral", name: "Euler Ancestral" },
+        { id: "dpm_pp_2m", name: "DPM++ 2M" },
+        { id: "dpm_pp_2m_sde", name: "DPM++ 2M SDE" },
+      ]);
+    }
+  };
+
+  const loadScheduleTypes = async () => {
+    try {
+      const data = await getScheduleTypes();
+      setScheduleTypes(data.schedule_types);
+    } catch (error) {
+      console.error("[Outpaint] Failed to load schedule types:", error);
+      setScheduleTypes([
+        { id: "uniform", name: "Uniform" },
+        { id: "karras", name: "Karras" },
+      ]);
+    }
+  };
+
+  // Reload temp images once the backend is ready
+  useEffect(() => {
+    if (!isBackendReady) return;
+    const savedPreview = localStorage.getItem(PREVIEW_STORAGE_KEY);
+    if (savedPreview && savedPreview.startsWith('/outputs/')) {
+      setGeneratedImage(`${savedPreview}?t=${Date.now()}`);
+    }
+    if (!inputImagePreview) {
+      const savedInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (savedInputRef) {
+        loadTempImage(savedInputRef).then((imageData) => {
+          if (imageData) {
+            setInputImagePreview(imageData);
+            const img = new Image();
+            img.onload = () => setInputImageSize({ width: img.width, height: img.height });
+            img.src = imageData;
+          }
+        }).catch((error) => console.error("[Outpaint] Failed to reload input image:", error));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBackendReady]);
+
+  // Listen for input image updates from the Gallery's "Send to Outpaint"
+  // (fires while this panel is already mounted). Mirrors processImageFile's
+  // reset so a brand-new image re-centers/re-sizes the placement rect
+  // instead of keeping the previous image's stale place_*/canvas_* geometry
+  // (initializePlacementForImage bails once place_width>0).
+  useEffect(() => {
+    const handleInputUpdate = () => {
+      const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (newInput) {
+        loadTempImage(newInput).then((imageData) => {
+          if (imageData) {
+            setInputImagePreview(imageData);
+            setParams(prev => ({ ...prev, place_width: 0, place_height: 0 }));
+            const img = new Image();
+            img.onload = () => {
+              setInputImageSize({ width: img.width, height: img.height });
+            };
+            img.src = imageData;
+          }
+        }).catch((error) => console.error("[Outpaint] Failed to load updated input image:", error));
+      }
+    };
+    window.addEventListener("outpaint_input_updated", handleInputUpdate);
+    return () => window.removeEventListener("outpaint_input_updated", handleInputUpdate);
+  }, []);
+
+  // Listen for param updates dispatched from the Gallery / other panels
+  useEffect(() => {
+    const handleParamsUpdate = () => {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          setParams(fixFloatingPointParams(merged));
+        } catch (error) {
+          console.error("[Outpaint] Failed to parse params update:", error);
+        }
+      }
+    };
+    window.addEventListener('outpaint_params_updated', handleParamsUpdate);
+    return () => window.removeEventListener('outpaint_params_updated', handleParamsUpdate);
+  }, []);
+
+  // Initialize placement (canvas + centered rect) whenever a NEW input image
+  // is loaded and the placement hasn't been customized yet (place_width===0,
+  // the backend's "use native size" sentinel).
+  const initializePlacementForImage = useCallback((width: number, height: number) => {
+    setParams(prev => {
+      if ((prev.place_width ?? 0) > 0) return prev; // already customized -- don't clobber
+      const roundTo16 = (v: number) => Math.max(64, Math.round(v / 16) * 16);
+      const canvasW = roundTo16(width * 1.5);
+      const canvasH = roundTo16(height * 1.5);
+      return {
+        ...prev,
+        canvas_width: canvasW,
+        canvas_height: canvasH,
+        place_width: width,
+        place_height: height,
+        place_x: Math.max(0, Math.round((canvasW - width) / 2)),
+        place_y: Math.max(0, Math.round((canvasH - height) / 2)),
+      };
+    });
+  }, []);
+
+  useEffect(() => {
+    if (inputImageSize) {
+      initializePlacementForImage(inputImageSize.width, inputImageSize.height);
+    }
+  }, [inputImageSize, initializePlacementForImage]);
+
+  // Save params to localStorage whenever they change
+  useEffect(() => {
+    if (isMounted && !isInitialLoad) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(params));
+    }
+  }, [params, isMounted, isInitialLoad]);
+
+  useEffect(() => {
+    if (isMounted && generatedImage) {
+      localStorage.setItem(PREVIEW_STORAGE_KEY, generatedImage);
+    }
+  }, [generatedImage, isMounted]);
+
+  // Apply backend-fetched defaults when they arrive (only if no localStorage value exists)
+  useEffect(() => {
+    if (!generationDefaults) return;
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (!stored) {
+      setParams(prev => ({ ...DEFAULT_PARAMS, ...(generationDefaults.outpaint as Partial<ApiOutpaintParams>) }));
+    }
+  }, [generationDefaults]);
+
+  // Reload params/preview when navigating to /generate?tab=outpaint
+  useEffect(() => {
+    if (pathname === "/generate" && searchParams.get('tab') === 'outpaint' && isMounted) {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          const merged = { ...DEFAULT_PARAMS, ...parsed };
+          setParams(fixFloatingPointParams(merged));
+        } catch (error) {
+          console.error("[Outpaint] Failed to reload params on navigation:", error);
+        }
+      }
+    }
+  }, [pathname, searchParams, isMounted]);
+
+  const resetToDefault = () => {
+    setParams(DEFAULT_PARAMS);
+    localStorage.removeItem(STORAGE_KEY);
+  };
+
+  const processImageFile = (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload a valid image file');
+      return;
+    }
+
+    setInputImage(file);
+    // A brand-new image resets the placement so it re-centers at native size.
+    setParams(prev => ({ ...prev, place_width: 0, place_height: 0 }));
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      const preview = event.target?.result as string;
+      setInputImagePreview(preview);
+
+      if (isMounted) {
+        const oldInputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+        if (oldInputRef) {
+          await deleteTempImageRef(oldInputRef).catch(console.error);
+        }
+        try {
+          const imageRef = await saveTempImage(preview);
+          localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, imageRef);
+        } catch (error) {
+          console.error("[Outpaint] Failed to save input image:", error);
+          localStorage.setItem(INPUT_IMAGE_STORAGE_KEY, preview);
+        }
+      }
+
+      const img = new Image();
+      img.onload = () => {
+        setInputImageSize({ width: img.width, height: img.height });
+      };
+      img.src = preview;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processImageFile(file);
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) processImageFile(file);
+  };
+
+  const handleClearInputImage = async () => {
+    setInputImage(null);
+    setInputImagePreview(null);
+    setInputImageSize(null);
+    setParams(prev => ({ ...prev, place_width: 0, place_height: 0 }));
+    if (isMounted) {
+      const inputRef = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
+      if (inputRef) {
+        await deleteTempImageRef(inputRef).catch(console.error);
+      }
+      localStorage.removeItem(INPUT_IMAGE_STORAGE_KEY);
+    }
+  };
+
+  const handlePlacementChange = (patch: Partial<OutpaintPlacementParams>) => {
+    setParams(prev => ({ ...prev, ...patch }));
+  };
+
+  const sendToTxt2Img = () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+    if (sendPrompt) {
+      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+      txt2imgParams.prompt = params.prompt;
+      txt2imgParams.negative_prompt = params.negative_prompt;
+      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+    }
+    if (sendParameters) {
+      const txt2imgParams = JSON.parse(localStorage.getItem("txt2img_params") || "{}");
+      txt2imgParams.steps = params.steps;
+      txt2imgParams.cfg_scale = params.cfg_scale;
+      txt2imgParams.sampler = params.sampler;
+      txt2imgParams.schedule_type = params.schedule_type;
+      txt2imgParams.seed = params.seed;
+      txt2imgParams.width = params.canvas_width;
+      txt2imgParams.height = params.canvas_height;
+      localStorage.setItem("txt2img_params", JSON.stringify(txt2imgParams));
+    }
+    if (onTabChange) onTabChange("txt2img");
+  };
+
+  const sendToImg2Img = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+    const sourceParams = generatedImageParams || params;
+    if (sendImage) {
+      try {
+        await sendImageToImg2Img(generatedImage);
+      } catch (error) {
+        console.error("[Outpaint] Failed to send image to img2img:", error);
+      }
+    }
+    sendToPanel(sourceParams as any, "img2img_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "img2img_params_updated",
+    });
+    if (onTabChange) onTabChange("img2img");
+  };
+
+  const sendToInpaintPanel = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+    if (sendImage) {
+      try {
+        await sendImageToInpaint(generatedImage);
+      } catch (error) {
+        console.error("[Outpaint] Failed to send image to inpaint:", error);
+      }
+    }
+    if (onTabChange) onTabChange("inpaint");
+  };
+
+  const sendToUpscale = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+    if (sendImage) {
+      try {
+        await sendImageToUpscale(generatedImage);
+      } catch (error) {
+        console.error("[Outpaint] Failed to send image to upscale:", error);
+      }
+    }
+    if (onTabChange) onTabChange("upscale");
+  };
+
+  const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
+
+  const [visibility] = useState({ lora: true, controlnet: true });
+
+  // Add generation request to queue. Image-only in Phase 1 -- video/audio
+  // outpaint (LTX-2.3 temporal / ACE-Step extend) are later phases; the
+  // Generate button is disabled while a video/audio model is loaded (see the
+  // modality notice in the JSX below).
+  const handleAddToQueue = async () => {
+    if (isVideo || isAudio) {
+      alert("Outpaint currently supports image models only. Video/audio outpaint are planned for a later phase.");
+      return;
+    }
+    if (!params.prompt) {
+      alert("Please enter a prompt");
+      return;
+    }
+    if (!inputImagePreview) {
+      alert("Please upload an input image");
+      return;
+    }
+
+    const { replaceWildcardsInPrompt } = await import("@/utils/wildcardStorage");
+    const processedPrompt = await replaceWildcardsInPrompt(params.prompt);
+    const processedNegativePrompt = await replaceWildcardsInPrompt(params.negative_prompt || "");
+
+    // NOTE: Loop Generation is intentionally out of scope for the Outpaint
+    // tab (all phases) -- matches Upscale + the video/audio branches of the
+    // merged txt2img/img2img panels. No stepParams / loop group wiring here.
+    addToQueue({
+      type: "outpaint",
+      params: {
+        ...params,
+        prompt: processedPrompt,
+        negative_prompt: processedNegativePrompt,
+      },
+      inputImage: inputImagePreview,
+      prompt: processedPrompt,
+    });
+  };
+
+  const processQueueRef = useRef<() => Promise<void>>();
+
+  const processQueue = useCallback(async () => {
+    if (isGenerating) return;
+
+    const nextItem = startNextInQueue();
+    if (!nextItem || nextItem.type !== "outpaint") return;
+
+    setIsGenerating(true);
+    setProgress(0);
+    setProgressMessage("");
+    const denoisingStrength = (nextItem.params as ApiOutpaintParams).denoising_strength ?? 1.0;
+    const actualSteps = Math.ceil(((nextItem.params as ApiOutpaintParams).steps || 20) * denoisingStrength);
+    setTotalSteps(actualSteps);
+    setPreviewImage(null);
+    setGeneratedImage(null);
+
+    try {
+      const itemParams = nextItem.params as ApiOutpaintParams;
+      const apiParams: ApiOutpaintParams = {
+        ...itemParams,
+        developer_mode: developerMode,
+        // Reset advanced CFG params if the section is collapsed (mirrors
+        // InpaintPanel/Img2ImgPanel behavior).
+        cfg_schedule_type: !showAdvancedCFG ? "constant" : itemParams.cfg_schedule_type,
+        cfg_rescale_snr_alpha: !showAdvancedCFG ? 0.0 : itemParams.cfg_rescale_snr_alpha,
+        dynamic_threshold_percentile: !showAdvancedCFG ? 0.0 : itemParams.dynamic_threshold_percentile,
+      };
+
+      const result = await generateOutpaint(apiParams, nextItem.inputImage!);
+      const imageUrl = result.success ? `/outputs/${getResultFilename(result)}` : "";
+
+      if (result.success) {
+        const resultSeed = getResultSeed(result);
+        const resultAncestralSeed = getResultAncestralSeed(result);
+        setGeneratedImage(imageUrl);
+        setGeneratedImageSeed(resultSeed);
+        setGeneratedImageAncestralSeed(resultAncestralSeed);
+        setPreviewImage(null);
+        setGeneratedImageParams({
+          ...itemParams,
+          seed: resultSeed,
+          ancestral_seed: resultAncestralSeed ?? -1,
+        });
+
+        if (onImageGenerated) {
+          onImageGenerated(imageUrl);
+        }
+        if (isMounted) {
+          localStorage.setItem(PREVIEW_STORAGE_KEY, imageUrl);
+        }
+
+        setIsGenerating(false);
+        setProgress(0);
+        completeCurrentItem();
+      } else {
+        throw new Error("Outpaint generation did not succeed");
+      }
+
+      setTimeout(() => {
+        if (processQueueRef.current) processQueueRef.current();
+      }, 100);
+    } catch (error: any) {
+      console.error("[Outpaint] Generation failed:", error);
+      alert(`Outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+
+      setIsGenerating(false);
+      setProgress(0);
+      failCurrentItem();
+
+      setTimeout(() => {
+        if (processQueueRef.current) processQueueRef.current();
+      }, 100);
+    }
+  }, [isGenerating, startNextInQueue, completeCurrentItem, failCurrentItem, developerMode, showAdvancedCFG, isMounted, onImageGenerated]);
+
+  processQueueRef.current = processQueue;
+
+  useEffect(() => {
+    const hasPendingItems = queue.some(item => item.status === "pending" && item.type === "outpaint");
+    const isCurrentItemNull = currentItem === null;
+    if (hasPendingItems && isCurrentItemNull && !isGenerating) {
+      processQueue();
+    }
+  }, [queue, currentItem, isGenerating, processQueue]);
+
+  const placementParams: OutpaintPlacementParams = {
+    canvas_width: params.canvas_width ?? 1536,
+    canvas_height: params.canvas_height ?? 1536,
+    place_x: params.place_x ?? 0,
+    place_y: params.place_y ?? 0,
+    place_width: params.place_width || inputImageSize?.width || 1024,
+    place_height: params.place_height || inputImageSize?.height || 1024,
+    input_crop_x: params.input_crop_x ?? 0,
+    input_crop_y: params.input_crop_y ?? 0,
+    input_crop_w: params.input_crop_w ?? 0,
+    input_crop_h: params.input_crop_h ?? 0,
+    outpaint_fill_mode: params.outpaint_fill_mode || "replicate",
+    mask_blur: params.mask_blur ?? 4,
+  };
+
+  // Phase 1 is image-only. Video/audio outpaint (LTX-2.3 temporal / ACE-Step
+  // extend) are later phases -- ModelLoadSection stays available (so the
+  // user can switch to an image model from this tab), but Generate is
+  // disabled and a notice is shown instead of a broken generation attempt.
+  const modalityBlocked = isVideo || isAudio;
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      {/* Parameters Panel */}
+      <div className="space-y-4">
+        {modalityBlocked && (
+          <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
+            <p className="text-sm text-yellow-200">
+              {isVideo ? "Video" : "Audio"} outpaint — coming in a later phase. Outpaint currently supports image models only; Generate is disabled while a {isVideo ? "video" : "audio"} model is loaded.
+            </p>
+          </div>
+        )}
+
+        <ModelLoadSection
+          onModelLoad={async () => {
+            const modelInfo = await getCurrentModel();
+            setCurrentModelInfo(modelInfo);
+            const modelType = modelInfo?.model_info?.type;
+            if (modelType === "zimage" || modelType === "flux2" || modelType === "anima") {
+              setParams(prev => ({ ...prev, sampler: "euler", schedule_type: "flow" }));
+            }
+          }}
+          visionEncoderPath={params.vision_encoder_path ?? null}
+          onVisionEncoderChange={(path) => setParams({ ...params, vision_encoder_path: path })}
+          vaePath={params.vae_path ?? null}
+          onVaePathChange={(path) => setParams({ ...params, vae_path: path })}
+          textEncoderPath={params.text_encoder_path ?? null}
+          onTextEncoderChange={(path) => setParams({ ...params, text_encoder_path: path })}
+          pidSrOutput={params.pid_sr_output ?? "4x"}
+          onPidSrOutputChange={(value) => setParams({ ...params, pid_sr_output: value })}
+          pidUseGemma={params.pid_use_gemma ?? false}
+          onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
+          pidLowVram={params.pid_low_vram ?? false}
+          onPidLowVramChange={(value) => setParams({ ...params, pid_low_vram: value })}
+          pidTileNative={params.pid_tile_native ?? 512}
+          onPidTileNativeChange={(value) => setParams({ ...params, pid_tile_native: value })}
+          pidTileOverlapRatio={params.pid_tile_overlap_ratio ?? 0.25}
+          onPidTileOverlapRatioChange={(value) => setParams({ ...params, pid_tile_overlap_ratio: value })}
+          pidFastLargeDecode={params.pid_fast_large_decode ?? false}
+          onPidFastLargeDecodeChange={(value) => setParams({ ...params, pid_fast_large_decode: value })}
+          storageKeyPrefix="outpaint"
+        />
+
+        <Card
+          title="Input Image"
+          collapsible={true}
+          defaultCollapsed={false}
+          storageKey="outpaint_input_collapsed"
+          collapsedPreview={
+            inputImagePreview ? (
+              <span className="text-green-400 text-sm">✓ Image loaded</span>
+            ) : (
+              <span className="text-gray-500 text-sm">No image</span>
+            )
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp"
+                onChange={handleImageUpload}
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-medium
+                  file:bg-blue-600 file:text-white
+                  hover:file:bg-blue-700
+                  file:cursor-pointer cursor-pointer"
+              />
+              {inputImagePreview && (
+                <Button onClick={handleClearInputImage} variant="secondary" size="sm" title="Clear input image">
+                  Clear
+                </Button>
+              )}
+            </div>
+            <div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`aspect-video bg-gray-800 rounded-lg overflow-hidden border-2 border-dashed transition-colors relative ${
+                isDragging ? 'border-blue-500 bg-gray-700' : 'border-gray-600'
+              }`}
+            >
+              {inputImagePreview ? (
+                <img src={inputImagePreview} alt="Input" className="w-full h-full object-contain" />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <p className="text-gray-500 text-center px-4">
+                    {isDragging ? 'Drop image here' : 'Drag and drop an image here or use the file picker above'}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
+
+        <Card title="Prompt">
+          <TextareaWithTagSuggestions
+            label="Positive Prompt"
+            placeholder="Enter your prompt here..."
+            rows={4}
+            value={params.prompt}
+            onChange={(e) => {
+              setParams({ ...params, prompt: e.target.value });
+              if (e.target) promptTextareaRef.current = e.target as HTMLTextAreaElement;
+            }}
+            enableWeightControl={true}
+          />
+          <TextareaWithTagSuggestions
+            label="Negative Prompt"
+            placeholder="Enter negative prompt..."
+            rows={3}
+            value={params.negative_prompt || ""}
+            onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
+            enableWeightControl={true}
+          />
+        </Card>
+
+        <Card title="Placement">
+          <OutpaintPlacementCanvas
+            inputImagePreview={inputImagePreview}
+            inputImageSize={inputImageSize}
+            params={placementParams}
+            onChange={handlePlacementChange}
+          />
+        </Card>
+
+        <Card title="Parameters">
+          <div className="space-y-4">
+            <Slider
+              label="Denoising Strength"
+              min={0}
+              max={1}
+              step={0.05}
+              value={params.denoising_strength ?? 1.0}
+              onChange={(e) => setParams({ ...params, denoising_strength: parseFloat(e.target.value) })}
+            />
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="outpaint_fix_steps"
+                checked={params.img2img_fix_steps ?? true}
+                onChange={(e) => setParams({ ...params, img2img_fix_steps: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="outpaint_fix_steps" className="text-sm text-gray-300">
+                Do full steps (ensures complete denoising regardless of strength)
+              </label>
+            </div>
+
+            <Select
+              label="Masked Content Fill (generated region)"
+              options={[
+                { value: "original", label: "Original" },
+                { value: "blur", label: "Blur" },
+                { value: "noise", label: "Latent Noise" },
+                { value: "erase", label: "Latent Nothing" },
+              ]}
+              value={params.inpaint_fill_mode || "original"}
+              onChange={(e) => setParams({ ...params, inpaint_fill_mode: e.target.value })}
+            />
+            {params.inpaint_fill_mode && params.inpaint_fill_mode !== "original" && (
+              <>
+                <Slider
+                  label="Fill Strength"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={params.inpaint_fill_strength ?? 1.0}
+                  onChange={(e) => setParams({ ...params, inpaint_fill_strength: parseFloat(e.target.value) })}
+                />
+                {params.inpaint_fill_mode === "blur" && (
+                  <Slider
+                    label="Blur Strength"
+                    min={0.1}
+                    max={5.0}
+                    step={0.1}
+                    value={params.inpaint_blur_strength ?? 1.0}
+                    onChange={(e) => setParams({ ...params, inpaint_blur_strength: parseFloat(e.target.value) })}
+                  />
+                )}
+              </>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Slider
+                label="Steps"
+                min={1}
+                max={150}
+                step={1}
+                value={params.steps ?? 20}
+                onChange={(e) => setParams({ ...params, steps: parseInt(e.target.value) })}
+              />
+              <Slider
+                label="CFG Scale"
+                min={0}
+                max={30}
+                step={0.5}
+                value={params.cfg_scale ?? 7.0}
+                onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label="Sampler"
+                options={samplers.map(s => ({ value: s.id, label: s.name }))}
+                value={params.sampler || "euler"}
+                onChange={(e) => setParams({ ...params, sampler: e.target.value })}
+              />
+              <Select
+                label="Schedule Type"
+                options={scheduleTypes.map(s => ({ value: s.id, label: s.name }))}
+                value={params.schedule_type || "uniform"}
+                onChange={(e) => setParams({ ...params, schedule_type: e.target.value })}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <NumberInput
+                label="Seed (-1 = random)"
+                value={params.seed ?? -1}
+                onCommit={(v) => setParams({ ...params, seed: v })}
+                parse="int"
+                className="w-full"
+              />
+              <NumberInput
+                label="Ancestral Seed (-1 = random)"
+                value={params.ancestral_seed ?? -1}
+                onCommit={(v) => setParams({ ...params, ancestral_seed: v })}
+                parse="int"
+                className="w-full"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="outpaint_show_advanced_cfg"
+                checked={showAdvancedCFG}
+                onChange={(e) => {
+                  setShowAdvancedCFG(e.target.checked);
+                  localStorage.setItem('show_advanced_cfg', String(e.target.checked));
+                }}
+                className="rounded"
+              />
+              <label htmlFor="outpaint_show_advanced_cfg" className="text-sm text-gray-300">
+                Show Advanced CFG / NAG
+              </label>
+            </div>
+
+            {showAdvancedCFG && (
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-gray-300">Dynamic CFG Schedule</label>
+                <select
+                  value={params.cfg_schedule_type || "constant"}
+                  onChange={(e) => setParams({ ...params, cfg_schedule_type: e.target.value })}
+                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="constant">Constant (no scheduling)</option>
+                  <option value="linear">Linear (sigma-based)</option>
+                  <option value="quadratic">Quadratic (sigma-based)</option>
+                  <option value="cosine">Cosine (sigma-based)</option>
+                  <option value="snr_based">SNR-Based Adaptive</option>
+                </select>
+                {params.cfg_schedule_type && params.cfg_schedule_type !== "constant" && params.cfg_schedule_type !== "snr_based" && (
+                  <>
+                    <Slider
+                      label="CFG Min (end of generation)"
+                      min={1}
+                      max={15}
+                      step={0.5}
+                      value={params.cfg_schedule_min ?? 1.0}
+                      onChange={(e) => setParams({ ...params, cfg_schedule_min: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="CFG Max (start of generation)"
+                      min={1}
+                      max={30}
+                      step={0.5}
+                      value={params.cfg_schedule_max || params.cfg_scale || 7.0}
+                      onChange={(e) => setParams({ ...params, cfg_schedule_max: parseFloat(e.target.value) })}
+                    />
+                    {params.cfg_schedule_type === "quadratic" && (
+                      <Slider
+                        label="Power (curve steepness)"
+                        min={0.5}
+                        max={4.0}
+                        step={0.1}
+                        value={params.cfg_schedule_power ?? 2.0}
+                        onChange={(e) => setParams({ ...params, cfg_schedule_power: parseFloat(e.target.value) })}
+                      />
+                    )}
+                  </>
+                )}
+                {params.cfg_schedule_type === "snr_based" && (
+                  <Slider
+                    label="SNR Alpha (0=off, 0.1-0.5 typical)"
+                    min={0}
+                    max={1.0}
+                    step={0.05}
+                    value={params.cfg_rescale_snr_alpha ?? 0.0}
+                    onChange={(e) => setParams({ ...params, cfg_rescale_snr_alpha: parseFloat(e.target.value) })}
+                  />
+                )}
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={(params.dynamic_threshold_percentile ?? 0) > 0}
+                    onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: e.target.checked ? 99.5 : 0.0 })}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                  />
+                  <label className="text-sm font-medium text-gray-300">Dynamic Thresholding</label>
+                </div>
+                {(params.dynamic_threshold_percentile ?? 0) > 0 && (
+                  <>
+                    <Slider
+                      label="Threshold Percentile"
+                      min={90}
+                      max={100}
+                      step={0.5}
+                      value={params.dynamic_threshold_percentile ?? 99.5}
+                      onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="Mimic Scale (static clamp)"
+                      min={1}
+                      max={30}
+                      step={0.5}
+                      value={params.dynamic_threshold_mimic_scale ?? 7.0}
+                      onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
+                    />
+                  </>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={params.nag_enable || false}
+                    onChange={(e) => setParams({ ...params, nag_enable: e.target.checked })}
+                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                  />
+                  <label className="text-sm font-medium text-gray-300">NAG (Normalized Attention Guidance)</label>
+                </div>
+                {params.nag_enable && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Slider
+                      label="NAG Scale"
+                      min={1}
+                      max={10}
+                      step={0.5}
+                      value={params.nag_scale ?? 5.0}
+                      onChange={(e) => setParams({ ...params, nag_scale: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="NAG Tau"
+                      min={1.0}
+                      max={5.0}
+                      step={0.1}
+                      value={params.nag_tau ?? 3.5}
+                      onChange={(e) => setParams({ ...params, nag_tau: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="NAG Alpha"
+                      min={0.05}
+                      max={1.0}
+                      step={0.05}
+                      value={params.nag_alpha ?? 0.25}
+                      onChange={(e) => setParams({ ...params, nag_alpha: parseFloat(e.target.value) })}
+                    />
+                    <Slider
+                      label="NAG Sigma End"
+                      min={0.0}
+                      max={5.0}
+                      step={0.1}
+                      value={params.nag_sigma_end ?? 3.0}
+                      onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label="Prompt Chunking Mode"
+                options={[
+                  { value: "a1111", label: "A1111 (Separate chunks)" },
+                  { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
+                  { value: "nobos", label: "No BOS/EOS" },
+                ]}
+                value={params.prompt_chunking_mode || "a1111"}
+                onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+              />
+              <Select
+                label="Max Chunks"
+                options={[
+                  { value: "0", label: "Unlimited" },
+                  { value: "1", label: "1 chunk (75 tokens)" },
+                  { value: "2", label: "2 chunks (150 tokens)" },
+                  { value: "3", label: "3 chunks (225 tokens)" },
+                  { value: "4", label: "4 chunks (300 tokens)" },
+                ]}
+                value={String(params.max_prompt_chunks || 0)}
+                onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
+              />
+            </div>
+
+            {/* Model / Environment — pipeline-global settings, applied last */}
+            <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-4">
+              <summary className="text-sm font-semibold text-gray-300 cursor-pointer select-none">
+                Model / Environment
+              </summary>
+              <div className="mt-3 space-y-3">
+                {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Select
+                      label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                      value={params.unet_quantization || "none"}
+                      onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
+                      options={[
+                        { value: "none", label: "None" },
+                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                        { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      ]}
+                    />
+                    <Select
+                      label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                      value={params.text_encoder_quantization || "none"}
+                      onChange={(e) => setParams({ ...params, text_encoder_quantization: e.target.value === "none" ? null : e.target.value })}
+                      options={[
+                        { value: "none", label: "None" },
+                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                        { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      ]}
+                    />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Select
+                      label="U-Net Quantization"
+                      value={params.unet_quantization || "none"}
+                      onChange={(e) => setParams({ ...params, unet_quantization: e.target.value === "none" ? null : e.target.value })}
+                      options={[
+                        { value: "none", label: "None" },
+                        { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                        { value: "fp8_e5m2", label: "FP8 E5M2" },
+                      ]}
+                    />
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={params.cpu_text_encoding ?? false}
+                    onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
+                    className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-300">CPU Text Encoding</span>
+                </label>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="outpaint_vae_tiling"
+                    checked={params.vae_tiling || false}
+                    onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
+                    className="rounded"
+                  />
+                  <label htmlFor="outpaint_vae_tiling" className="text-sm text-gray-300">VAE Tiling</label>
+                  <span className="text-xs text-gray-500">(tiled decode for large canvases, saves VRAM)</span>
+                </div>
+                {params.vae_tiling && (
+                  <div className="flex items-center gap-2 ml-6">
+                    <label htmlFor="outpaint_vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
+                    <NumberInput
+                      id="outpaint_vae_tile_threshold"
+                      min={0}
+                      step={128}
+                      value={params.vae_tile_threshold ?? 0}
+                      defaultValue={0}
+                      onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
+                      className="w-24"
+                    />
+                  </div>
+                )}
+
+                {developerMode && (
+                  <>
+                    <div className="flex items-center gap-2 mt-2">
+                      <input
+                        type="checkbox"
+                        id="outpaint_use_torch_compile"
+                        checked={params.use_torch_compile || false}
+                        onChange={(e) => setParams({ ...params, use_torch_compile: e.target.checked })}
+                        className="rounded"
+                      />
+                      <label htmlFor="outpaint_use_torch_compile" className="text-sm text-gray-300">
+                        torch.compile (Experimental, slow first run)
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-4">
+                      <input
+                        type="checkbox"
+                        id="outpaint_enable_block_swap"
+                        checked={params.enable_block_swap || false}
+                        onChange={(e) => setParams({ ...params, enable_block_swap: e.target.checked })}
+                        className="rounded"
+                      />
+                      <label htmlFor="outpaint_enable_block_swap" className="text-sm text-gray-300">
+                        Block Swap (Transformer offloading)
+                      </label>
+                    </div>
+                    {params.enable_block_swap && (
+                      <div className="space-y-3 mt-2 p-3 bg-blue-900/20 border border-blue-600/30 rounded-lg">
+                        <Slider
+                          label="Blocks to Swap"
+                          min={1}
+                          max={29}
+                          step={1}
+                          value={params.blocks_to_swap || 20}
+                          onChange={(e) => setParams({ ...params, blocks_to_swap: parseInt(e.target.value) })}
+                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id="outpaint_use_pinned_memory"
+                            checked={params.use_pinned_memory || false}
+                            onChange={(e) => setParams({ ...params, use_pinned_memory: e.target.checked })}
+                            className="rounded"
+                          />
+                          <label htmlFor="outpaint_use_pinned_memory" className="text-xs text-gray-300">
+                            Use Pinned Memory (faster transfer, more RAM)
+                          </label>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            id="outpaint_block_swap_h2d_only"
+                            checked={params.block_swap_h2d_only || false}
+                            onChange={(e) => setParams({ ...params, block_swap_h2d_only: e.target.checked })}
+                            className="rounded"
+                          />
+                          <label htmlFor="outpaint_block_swap_h2d_only" className="text-xs text-gray-300">
+                            H2D-only (no device-to-host eviction of read-only weights)
+                          </label>
+                        </div>
+                        {params.block_swap_h2d_only && (
+                          <Slider
+                            label="Ring Size (GPU weight buffer slots)"
+                            min={1}
+                            max={4}
+                            step={1}
+                            value={params.block_swap_ring_size || 2}
+                            onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </details>
+          </div>
+        </Card>
+
+        {visibility.lora && (
+          <LoRASelector
+            value={params.loras || []}
+            onChange={(loras: LoRAConfig[]) => setParams({ ...params, loras })}
+            disabled={isGenerating}
+            storageKey="outpaint_lora_collapsed"
+          />
+        )}
+
+        {visibility.controlnet && (
+          <ControlNetSelector
+            value={params.controlnets || []}
+            onChange={(controlnets: ControlNetConfig[]) => setParams({ ...params, controlnets })}
+            disabled={isGenerating}
+            storageKey="outpaint_controlnet_collapsed"
+            inputImagePreview={inputImagePreview}
+          />
+        )}
+
+        {/* Loop Generation is intentionally NOT implemented for Outpaint
+            (all phases) -- see the design doc §3.3 / §7 decision 9. */}
+
+        <Button
+          onClick={handleAddToQueue}
+          variant="primary"
+          size="lg"
+          className="w-full"
+          disabled={!inputImagePreview || modalityBlocked}
+          title={modalityBlocked ? "Outpaint currently supports image models only" : undefined}
+        >
+          {isGenerating ? "Add to Queue" : "Generate"}
+        </Button>
+      </div>
+
+      {/* Preview Panel */}
+      <div className="space-y-4 pb-16 lg:pb-0">
+        <Card title="Preview">
+          <div className="flex flex-col lg:flex-row gap-2">
+            <div className="flex-1 flex flex-col space-y-2 min-w-0">
+              <div className="hidden lg:flex gap-2">
+                {isGenerating && (
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await cancelGeneration();
+                      } catch (error) {
+                        console.error("[Outpaint] Failed to cancel generation:", error);
+                      }
+                    }}
+                    variant="secondary"
+                    size="lg"
+                    title="Cancel generation and move to next"
+                  >
+                    Cancel
+                  </Button>
+                )}
+                <Button onClick={resetToDefault} disabled={isGenerating} variant="secondary" size="lg">
+                  Reset
+                </Button>
+              </div>
+
+              {isGenerating && (
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs text-gray-400">
+                    <span>{progressMessage || "Generating..."}</span>
+                    <span>{progress}/{totalSteps} steps</span>
+                  </div>
+                  <div className="w-full bg-gray-700 rounded-full h-2">
+                    <div
+                      className="bg-blue-600 h-2 rounded-full transition-all duration-200"
+                      style={{ width: totalSteps > 0 ? `${(progress / totalSteps) * 100}%` : "0%" }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center">
+                {generatedImage ? (
+                  <img src={generatedImage} alt="Generated" className="max-w-full max-h-full rounded-lg" />
+                ) : previewImage ? (
+                  <img
+                    src={`data:image/jpeg;base64,${previewImage}`}
+                    alt="Preview"
+                    className="max-w-full max-h-full rounded-lg opacity-80"
+                  />
+                ) : (
+                  <p className="text-gray-500">No image generated yet</p>
+                )}
+              </div>
+
+              {generatedImage && (
+                <div className="space-y-3 mt-4">
+                  <div className="flex flex-wrap gap-2 text-sm">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={sendImage} onChange={(e) => setSendImage(e.target.checked)} className="rounded" />
+                      <span className="text-gray-300">Send image</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={sendPrompt} onChange={(e) => setSendPrompt(e.target.checked)} className="rounded" />
+                      <span className="text-gray-300">Send prompt</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input type="checkbox" checked={sendParameters} onChange={(e) => setSendParameters(e.target.checked)} className="rounded" />
+                      <span className="text-gray-300">Send parameters</span>
+                    </label>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <Button onClick={sendToTxt2Img} variant="secondary" size="sm" disabled={!sendPrompt && !sendParameters}>
+                      Send to txt2img
+                    </Button>
+                    <Button onClick={sendToImg2Img} variant="secondary" size="sm" disabled={!sendImage && !sendPrompt && !sendParameters}>
+                      Send to img2img
+                    </Button>
+                    <Button onClick={sendToInpaintPanel} variant="secondary" size="sm" disabled={!sendImage && !sendPrompt && !sendParameters}>
+                      Send to inpaint
+                    </Button>
+                    <Button onClick={sendToUpscale} variant="secondary" size="sm" disabled={!generatedImage}>
+                      Send to Upscale
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="w-full lg:w-60 lg:flex-shrink-0">
+              <GenerationQueue currentStep={progress} />
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}

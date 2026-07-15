@@ -254,6 +254,39 @@ export async function sendImageToInpaint(
 }
 
 /**
+ * Sends image to outpaint panel (no mask -- outpaint builds its own canvas +
+ * mask server-side from the placement fields).
+ */
+export async function sendImageToOutpaint(
+  imageUrl: string,
+  storageKey: string = "outpaint_input_image"
+): Promise<void> {
+  const response = await fetch(imageUrl);
+  const blob = await response.blob();
+
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      try {
+        const base64data = reader.result as string;
+        const oldRef = localStorage.getItem(storageKey);
+        if (oldRef) {
+          await deleteTempImageRef(oldRef);
+        }
+        const ref = await saveTempImage(base64data);
+        localStorage.setItem(storageKey, ref);
+        window.dispatchEvent(new Event("outpaint_input_updated"));
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
  * Sends base64 image to img2img panel (no fetching needed)
  */
 export async function sendBase64ImageToImg2Img(

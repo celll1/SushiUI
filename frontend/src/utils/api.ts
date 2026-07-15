@@ -328,6 +328,40 @@ export interface InpaintParams extends GenerationParams {
   vae_drift_correction?: boolean;
 }
 
+// Outpaint: place a (optionally trimmed/resized) input image inside a LARGER
+// canvas and generate everything outside it; the placed region is preserved
+// byte-exact regardless of architecture/denoising_strength (see
+// core/inference/outpaint_utils.py + PipelineManager.generate_outpaint).
+// Shares the ENTIRE inpaint parameter set (feature parity) plus the
+// placement fields below. NOTE: "width"/"height" (inherited from
+// GenerationParams) are NOT sent by generateOutpaint() -- canvas_width/
+// canvas_height fully determine the output size server-side.
+export interface OutpaintParams extends GenerationParams {
+  denoising_strength?: number;
+  img2img_fix_steps?: boolean;
+  mask_blur?: number;
+  inpaint_full_res?: boolean;
+  inpaint_full_res_padding?: number;
+  inpaint_fill_mode?: string;
+  inpaint_fill_strength?: number;
+  inpaint_blur_strength?: number;
+  resize_mode?: string;
+  resampling_method?: string;
+  vae_drift_correction?: boolean;
+  // --- Placement (outpaint-only) ---
+  canvas_width?: number;
+  canvas_height?: number;
+  place_x?: number;
+  place_y?: number;
+  place_width?: number;
+  place_height?: number;
+  input_crop_x?: number;
+  input_crop_y?: number;
+  input_crop_w?: number;
+  input_crop_h?: number;
+  outpaint_fill_mode?: string;
+}
+
 export interface UpscaleParams {
   upscaler_backend?: string;
   upscaler_model?: string | null;
@@ -504,6 +538,7 @@ export interface GenerationDefaultsResponse {
   txt2img: Partial<GenerationParams> & Record<string, unknown>;
   img2img: Partial<GenerationParams> & Record<string, unknown>;
   inpaint:  Partial<GenerationParams> & Record<string, unknown>;
+  outpaint: Partial<OutpaintParams> & Record<string, unknown>;
   upscale: Partial<UpscaleParams> & Record<string, unknown>;
   txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
   img2vid: Partial<Img2VidParams> & Record<string, unknown>;
@@ -1439,6 +1474,183 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
 
   const response = await api.post("/generate/inpaint", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+// Outpaint: clone of generateInpaint's FormData sender, minus the mask
+// upload (the backend builds its own canvas + mask from `image` + the
+// placement fields), plus the placement fields themselves. See
+// core/inference/outpaint_utils.py + PipelineManager.generate_outpaint.
+export const generateOutpaint = async (params: OutpaintParams, image: File | string) => {
+  // Get attention_type from localStorage
+  const attentionType = typeof window !== 'undefined' ? localStorage.getItem('attention_type') : null;
+  const attentionImpl = typeof window !== 'undefined' ? localStorage.getItem('attention_impl') : null;
+
+  // Only load ControlNet images if they exist (avoid unnecessary localStorage access)
+  const controlnets = (params.controlnets && params.controlnets.length > 0)
+    ? await loadControlNetImages(params.controlnets, "outpaint_controlnet_collapsed")
+    : params.controlnets;
+
+  const paramsWithImages = {
+    ...params,
+    attention_type: attentionType || 'normal',
+    attention_impl: attentionImpl || 'conduit',
+    controlnets: controlnets,
+  };
+
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs for image (no mask -- outpaint
+  // builds its own canvas + mask from the placement fields below).
+  if (typeof image === 'string') {
+    const response = await fetch(image);
+    const blob = await response.blob();
+    formData.append("image", blob, "input.png");
+  } else {
+    formData.append("image", image);
+  }
+
+  formData.append("prompt", paramsWithImages.prompt);
+  formData.append("negative_prompt", paramsWithImages.negative_prompt || "");
+  formData.append("steps", String(paramsWithImages.steps || 20));
+  formData.append("cfg_scale", String(paramsWithImages.cfg_scale !== undefined ? paramsWithImages.cfg_scale : 7.0));
+  formData.append("denoising_strength", String(paramsWithImages.denoising_strength ?? 1.0));
+  formData.append("img2img_fix_steps", String(paramsWithImages.img2img_fix_steps ?? true));
+  formData.append("sampler", paramsWithImages.sampler || "euler");
+  formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
+  formData.append("seed", String(paramsWithImages.seed || -1));
+  formData.append("ancestral_seed", String(paramsWithImages.ancestral_seed ?? -1));
+
+  // Placement (outpaint-only). canvas_width/canvas_height supersede
+  // width/height -- those are NOT sent for outpaint.
+  formData.append("canvas_width", String(paramsWithImages.canvas_width ?? 1536));
+  formData.append("canvas_height", String(paramsWithImages.canvas_height ?? 1536));
+  formData.append("place_x", String(paramsWithImages.place_x ?? 0));
+  formData.append("place_y", String(paramsWithImages.place_y ?? 0));
+  formData.append("place_width", String(paramsWithImages.place_width ?? 0));
+  formData.append("place_height", String(paramsWithImages.place_height ?? 0));
+  formData.append("input_crop_x", String(paramsWithImages.input_crop_x ?? 0));
+  formData.append("input_crop_y", String(paramsWithImages.input_crop_y ?? 0));
+  formData.append("input_crop_w", String(paramsWithImages.input_crop_w ?? 0));
+  formData.append("input_crop_h", String(paramsWithImages.input_crop_h ?? 0));
+  formData.append("outpaint_fill_mode", paramsWithImages.outpaint_fill_mode || "replicate");
+
+  formData.append("mask_blur", String(paramsWithImages.mask_blur ?? 4));
+  formData.append("inpaint_full_res", String(paramsWithImages.inpaint_full_res || false));
+  formData.append("inpaint_full_res_padding", String(paramsWithImages.inpaint_full_res_padding || 32));
+  formData.append("inpaint_fill_mode", paramsWithImages.inpaint_fill_mode || "original");
+  formData.append("inpaint_fill_strength", String(paramsWithImages.inpaint_fill_strength ?? 1.0));
+  formData.append("inpaint_blur_strength", String(paramsWithImages.inpaint_blur_strength ?? 1.0));
+  formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
+  formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
+  formData.append("loras", JSON.stringify(paramsWithImages.loras || []));
+  formData.append("controlnets", JSON.stringify(paramsWithImages.controlnets || []));
+  formData.append("developer_mode", String(paramsWithImages.developer_mode ?? false));
+  formData.append("cfg_schedule_type", paramsWithImages.cfg_schedule_type || "constant");
+  formData.append("cfg_schedule_min", String(paramsWithImages.cfg_schedule_min ?? 1.0));
+  formData.append("cfg_schedule_max", String(paramsWithImages.cfg_schedule_max ?? ""));
+  formData.append("cfg_schedule_power", String(paramsWithImages.cfg_schedule_power ?? 2.0));
+  formData.append("cfg_rescale_snr_alpha", String(paramsWithImages.cfg_rescale_snr_alpha ?? 0.0));
+  formData.append("dynamic_threshold_percentile", String(paramsWithImages.dynamic_threshold_percentile ?? 0.0));
+  formData.append("dynamic_threshold_mimic_scale", String(paramsWithImages.dynamic_threshold_mimic_scale ?? 7.0));
+  formData.append("nag_enable", String(paramsWithImages.nag_enable ?? false));
+  formData.append("nag_scale", String(paramsWithImages.nag_scale ?? 5.0));
+  formData.append("nag_tau", String(paramsWithImages.nag_tau ?? 3.5));
+  formData.append("nag_alpha", String(paramsWithImages.nag_alpha ?? 0.25));
+  formData.append("nag_sigma_end", String(paramsWithImages.nag_sigma_end ?? 3.0));
+  formData.append("nag_negative_prompt", paramsWithImages.nag_negative_prompt || "");
+  formData.append("attention_type", paramsWithImages.attention_type || "normal");
+  formData.append("attention_impl", paramsWithImages.attention_impl || "conduit");
+
+  // Block swap (CPU offloading)
+  formData.append("enable_block_swap", String(paramsWithImages.enable_block_swap ?? false));
+  formData.append("blocks_to_swap", String(paramsWithImages.blocks_to_swap ?? 20));
+  formData.append("use_pinned_memory", String(paramsWithImages.use_pinned_memory ?? false));
+  formData.append("block_swap_h2d_only", String(paramsWithImages.block_swap_h2d_only ?? false));
+  formData.append("block_swap_ring_size", String(paramsWithImages.block_swap_ring_size ?? 2));
+
+  if (paramsWithImages.unet_quantization && paramsWithImages.unet_quantization !== "none") {
+    formData.append("unet_quantization", paramsWithImages.unet_quantization);
+  }
+  if (paramsWithImages.text_encoder_quantization && paramsWithImages.text_encoder_quantization !== "none") {
+    formData.append("text_encoder_quantization", paramsWithImages.text_encoder_quantization);
+  }
+
+  formData.append("cpu_text_encoding", String(paramsWithImages.cpu_text_encoding ?? false));
+  formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
+  formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
+  formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
+  formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
+  formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));
+  formData.append("flatten_in_loop", String(paramsWithImages.flatten_in_loop ?? false));
+  formData.append("flatten_in_loop_last_steps", String(paramsWithImages.flatten_in_loop_last_steps ?? 3));
+  formData.append("flatten_in_loop_min_region", String(paramsWithImages.flatten_in_loop_min_region ?? 0.02));
+  formData.append("spectrum_enable", String(paramsWithImages.spectrum_enable ?? false));
+  formData.append("fbcache_enable", String(paramsWithImages.fbcache_enable ?? false));
+  formData.append("fbcache_threshold", String(paramsWithImages.fbcache_threshold ?? 0.12));
+  formData.append("fbcache_warmup_steps", String(paramsWithImages.fbcache_warmup_steps ?? 1));
+  formData.append("fbcache_cache_branch", String(paramsWithImages.fbcache_cache_branch ?? 1));
+  formData.append("spectrum_w", String(paramsWithImages.spectrum_w ?? 0.5));
+  formData.append("spectrum_w_decay", String(paramsWithImages.spectrum_w_decay ?? 0.0));
+  formData.append("spectrum_delta_cap", String(paramsWithImages.spectrum_delta_cap ?? 0.0));
+  formData.append("spectrum_m", String(paramsWithImages.spectrum_m ?? 4));
+  formData.append("spectrum_lam", String(paramsWithImages.spectrum_lam ?? 0.1));
+  formData.append("spectrum_warmup_steps", String(paramsWithImages.spectrum_warmup_steps ?? 3));
+  formData.append("spectrum_window_size", String(paramsWithImages.spectrum_window_size ?? 4));
+  formData.append("spectrum_flex_window", String(paramsWithImages.spectrum_flex_window ?? 0.75));
+  formData.append("spectrum_tail", String(paramsWithImages.spectrum_tail ?? 0.12));
+  formData.append("spectrum_feature_mode", String(paramsWithImages.spectrum_feature_mode ?? "output"));
+  formData.append("spectrum_cache_branch", String(paramsWithImages.spectrum_cache_branch ?? 1));
+  formData.append("spectrum_max_cache", String(paramsWithImages.spectrum_max_cache ?? 0));
+
+  // TIPO prompt upsampling (not exposed in the Outpaint UI in Phase 1; always
+  // sent as the disabled default so the Form parameter is satisfied).
+  formData.append("use_tipo", String(paramsWithImages.use_tipo ?? false));
+  formData.append("tipo_config", JSON.stringify(paramsWithImages.tipo_config || {}));
+
+  formData.append("preview_predicted_x0", String(paramsWithImages.preview_predicted_x0 ?? false));
+  formData.append("preview_decoder", String(paramsWithImages.preview_decoder ?? "matrix"));
+
+  // FLUX.2 Image Edit / Vision Encoder (reference images)
+  if (paramsWithImages.ref_images && paramsWithImages.ref_images.length > 0) {
+    for (let i = 0; i < paramsWithImages.ref_images.length; i++) {
+      formData.append("ref_images", paramsWithImages.ref_images[i]);
+    }
+  }
+
+  if (paramsWithImages.vision_encoder_path) {
+    formData.append("vision_encoder_path", paramsWithImages.vision_encoder_path);
+  }
+  if (paramsWithImages.vae_path) {
+    formData.append("vae_path", paramsWithImages.vae_path);
+  }
+  if (paramsWithImages.text_encoder_path) {
+    formData.append("text_encoder_path", paramsWithImages.text_encoder_path);
+  }
+  formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
+  formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
+  formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+  formData.append("pid_tile_native", String(paramsWithImages.pid_tile_native ?? 512));
+  formData.append("pid_tile_overlap_ratio", String(paramsWithImages.pid_tile_overlap_ratio ?? 0.25));
+  formData.append("pid_fast_large_decode", String(paramsWithImages.pid_fast_large_decode ?? false));
+
+  // SDXL micro-conditioning original_size override
+  if (paramsWithImages.original_size_w) formData.append("original_size_w", String(paramsWithImages.original_size_w));
+  if (paramsWithImages.original_size_h) formData.append("original_size_h", String(paramsWithImages.original_size_h));
+  if (paramsWithImages.original_size_scale !== undefined && paramsWithImages.original_size_scale !== null) {
+    formData.append("original_size_scale", String(paramsWithImages.original_size_scale));
+  }
+
+  // Loop-generation decode mode is out of scope for Outpaint (Phase 1) --
+  // always send the "full" default. input_latent_id is never sent (the
+  // backend rejects any non-null value for outpaint).
+  formData.append("loop_decode", paramsWithImages.loop_decode || "full");
+  formData.append("skip_gallery", String(paramsWithImages.skip_gallery ?? false));
+
+  const response = await api.post("/generate/outpaint", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

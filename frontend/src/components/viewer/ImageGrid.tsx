@@ -668,6 +668,99 @@ export default function ImageGrid() {
     router.push("/generate?tab=inpaint");
   };
 
+  const sendToOutpaint = async (image: GeneratedImage) => {
+    // Send image if checked (no mask -- outpaint builds its own canvas +
+    // mask server-side from the placement fields).
+    if (sendImage) {
+      try {
+        const imageUrl = `/outputs/${image.filename}`;
+        const response = await fetch(imageUrl);
+        const blob = await response.blob();
+        const reader = new FileReader();
+
+        await new Promise((resolve, reject) => {
+          reader.onloadend = async () => {
+            try {
+              const base64data = reader.result as string;
+              const tempRef = await saveTempImage(base64data);
+              localStorage.setItem("outpaint_input_image", tempRef);
+              window.dispatchEvent(new Event("outpaint_input_updated"));
+              resolve(null);
+            } catch (error) {
+              reject(error);
+            }
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      } catch (error) {
+        console.error("[ImageGrid] Failed to send image to outpaint:", error);
+      }
+    }
+
+    // Build params object by merging prompt and parameters
+    const outpaintParams = JSON.parse(localStorage.getItem("outpaint_params") || "{}");
+
+    // Send prompt if checked
+    if (sendPrompt) {
+      outpaintParams.prompt = image.prompt;
+      outpaintParams.negative_prompt = image.negative_prompt;
+    }
+
+    // Send parameters if checked
+    if (sendParameters) {
+      outpaintParams.steps = image.steps;
+      outpaintParams.cfg_scale = image.cfg_scale;
+      outpaintParams.sampler = image.parameters?.sampler || "euler";
+      outpaintParams.schedule_type = image.parameters?.schedule_type || "uniform";
+      outpaintParams.seed = image.seed;
+
+      // Add Advanced CFG parameters (always load, even if constant)
+      if (image.cfg_schedule_type) {
+        outpaintParams.cfg_schedule_type = image.cfg_schedule_type;
+      }
+      if (image.cfg_schedule_min) {
+        outpaintParams.cfg_schedule_min = parseFloat(image.cfg_schedule_min);
+      }
+      if (image.cfg_schedule_max) {
+        outpaintParams.cfg_schedule_max = parseFloat(image.cfg_schedule_max);
+      }
+      if (image.cfg_schedule_power) {
+        outpaintParams.cfg_schedule_power = parseFloat(image.cfg_schedule_power);
+      }
+      if (image.cfg_rescale_snr_alpha) {
+        outpaintParams.cfg_rescale_snr_alpha = parseFloat(image.cfg_rescale_snr_alpha);
+      }
+      if (image.dynamic_threshold_percentile) {
+        outpaintParams.dynamic_threshold_percentile = parseFloat(image.dynamic_threshold_percentile);
+        outpaintParams.dynamic_threshold_mimic_scale = parseFloat(image.dynamic_threshold_mimic_scale || "7.0");
+      }
+
+      // Add NAG parameters
+      if (image.nag_enable === 'True') {
+        outpaintParams.nag_enable = true;
+        outpaintParams.nag_scale = parseFloat(image.nag_scale || "5.0");
+        outpaintParams.nag_tau = parseFloat(image.nag_tau || "3.5");
+        outpaintParams.nag_alpha = parseFloat(image.nag_alpha || "0.25");
+        outpaintParams.nag_sigma_end = parseFloat(image.nag_sigma_end || "3.0");
+      } else {
+        outpaintParams.nag_enable = false;
+      }
+
+      // Restore acceleration / determinism-affecting settings
+      applyAccelParams(outpaintParams, image);
+    }
+
+    // Save merged params once (only if sendPrompt or sendParameters is checked)
+    if (sendPrompt || sendParameters) {
+      localStorage.setItem("outpaint_params", JSON.stringify(outpaintParams));
+      // Dispatch custom event for same-tab localStorage change detection
+      window.dispatchEvent(new Event("outpaint_params_updated"));
+    }
+
+    router.push("/generate?tab=outpaint");
+  };
+
   const sendToUpscale = async (image: GeneratedImage) => {
     try {
       // Load image from /outputs/ and save to tempStorage
@@ -1497,6 +1590,14 @@ export default function ImageGrid() {
                           inpaint
                         </Button>
                         <Button
+                          onClick={() => sendToOutpaint(selectedImage)}
+                          variant="secondary"
+                          size="sm"
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                        >
+                          outpaint
+                        </Button>
+                        <Button
                           onClick={() => sendToUpscale(selectedImage)}
                           variant="secondary"
                           size="sm"
@@ -1777,6 +1878,14 @@ export default function ImageGrid() {
                 title="Send to inpaint"
               >
                 inpaint
+              </button>
+              <button
+                onClick={() => sendToOutpaint(selectedImage)}
+                disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Send to outpaint"
+              >
+                outpaint
               </button>
               <button
                 onClick={() => sendToUpscale(selectedImage)}

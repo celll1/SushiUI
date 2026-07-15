@@ -209,7 +209,7 @@ const REF_IMAGES_STORAGE_KEY = "inpaint_ref_images";
 
 interface InpaintPanelProps {
   onImageGenerated?: (imageUrl: string) => void;
-  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "upscale") => void;
+  onTabChange?: (tab: "txt2img" | "img2img" | "inpaint" | "outpaint" | "upscale") => void;
 }
 
 export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintPanelProps = {}) {

@@ -1,7 +1,6 @@
 "use client";
 
 import { useRef, useState } from "react";
-import NumberInput from "../common/NumberInput";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
 import Button from "../common/Button";
@@ -230,32 +229,22 @@ export default function OutpaintPlacementCanvas({
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">Canvas Width</label>
-          <NumberInput
-            value={canvasWidth}
-            onCommit={(v) => onChange({ canvas_width: Math.max(64, v) })}
-            min={64}
-            max={8192}
-            step={16}
-            snap={16}
-            parse="int"
-            className="w-full"
-          />
-        </div>
-        <div>
-          <label className="block text-sm font-medium text-gray-300 mb-1">Canvas Height</label>
-          <NumberInput
-            value={canvasHeight}
-            onCommit={(v) => onChange({ canvas_height: Math.max(64, v) })}
-            min={64}
-            max={8192}
-            step={16}
-            snap={16}
-            parse="int"
-            className="w-full"
-          />
-        </div>
+        <Slider
+          label="Canvas Width"
+          value={canvasWidth}
+          min={64}
+          max={8192}
+          step={16}
+          onChange={(e) => onChange({ canvas_width: Math.max(64, roundToN(parseInt(e.target.value || "0", 10), 16)) })}
+        />
+        <Slider
+          label="Canvas Height"
+          value={canvasHeight}
+          min={64}
+          max={8192}
+          step={16}
+          onChange={(e) => onChange({ canvas_height: Math.max(64, roundToN(parseInt(e.target.value || "0", 10), 16)) })}
+        />
       </div>
       <p className="text-xs text-gray-500">
         Canvas dimensions are snapped to multiples of 16 (the loaded architecture's latent grid); the backend re-validates regardless.
@@ -330,54 +319,38 @@ export default function OutpaintPlacementCanvas({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">Place X</label>
-          <NumberInput
-            value={placeX}
-            onCommit={(v) => onChange({ place_x: clamp(v, 0, Math.max(0, canvasWidth - placeWidth)) })}
-            min={0}
-            max={canvasWidth}
-            step={1}
-            parse="int"
-            className="w-full"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">Place Y</label>
-          <NumberInput
-            value={placeY}
-            onCommit={(v) => onChange({ place_y: clamp(v, 0, Math.max(0, canvasHeight - placeHeight)) })}
-            min={0}
-            max={canvasHeight}
-            step={1}
-            parse="int"
-            className="w-full"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">Place Width</label>
-          <NumberInput
-            value={placeWidth}
-            onCommit={(v) => onChange({ place_width: Math.max(MIN_PLACE_SIZE, v) })}
-            min={MIN_PLACE_SIZE}
-            max={canvasWidth}
-            step={1}
-            parse="int"
-            className="w-full"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-gray-400 mb-1">Place Height</label>
-          <NumberInput
-            value={placeHeight}
-            onCommit={(v) => onChange({ place_height: Math.max(MIN_PLACE_SIZE, v) })}
-            min={MIN_PLACE_SIZE}
-            max={canvasHeight}
-            step={1}
-            parse="int"
-            className="w-full"
-          />
-        </div>
+        <Slider
+          label="Place X"
+          value={placeX}
+          min={0}
+          max={Math.max(0, canvasWidth - placeWidth)}
+          step={1}
+          onChange={(e) => onChange({ place_x: clamp(parseInt(e.target.value || "0", 10), 0, Math.max(0, canvasWidth - placeWidth)) })}
+        />
+        <Slider
+          label="Place Y"
+          value={placeY}
+          min={0}
+          max={Math.max(0, canvasHeight - placeHeight)}
+          step={1}
+          onChange={(e) => onChange({ place_y: clamp(parseInt(e.target.value || "0", 10), 0, Math.max(0, canvasHeight - placeHeight)) })}
+        />
+        <Slider
+          label="Place Width"
+          value={placeWidth}
+          min={MIN_PLACE_SIZE}
+          max={Math.max(MIN_PLACE_SIZE, canvasWidth - placeX)}
+          step={1}
+          onChange={(e) => onChange({ place_width: clamp(parseInt(e.target.value || "0", 10), MIN_PLACE_SIZE, Math.max(MIN_PLACE_SIZE, canvasWidth - placeX)) })}
+        />
+        <Slider
+          label="Place Height"
+          value={placeHeight}
+          min={MIN_PLACE_SIZE}
+          max={Math.max(MIN_PLACE_SIZE, canvasHeight - placeY)}
+          step={1}
+          onChange={(e) => onChange({ place_height: clamp(parseInt(e.target.value || "0", 10), MIN_PLACE_SIZE, Math.max(MIN_PLACE_SIZE, canvasHeight - placeY)) })}
+        />
       </div>
 
       <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3">
@@ -386,50 +359,38 @@ export default function OutpaintPlacementCanvas({
         </summary>
         <p className="text-xs text-gray-500 mt-2 mb-2">0 width/height = no trim (use the full input).</p>
         <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Crop X</label>
-            <NumberInput
-              value={inputCropX}
-              onCommit={(v) => onChange({ input_crop_x: Math.max(0, v) })}
-              min={0}
-              step={1}
-              parse="int"
-              className="w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Crop Y</label>
-            <NumberInput
-              value={inputCropY}
-              onCommit={(v) => onChange({ input_crop_y: Math.max(0, v) })}
-              min={0}
-              step={1}
-              parse="int"
-              className="w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Crop Width (0 = full)</label>
-            <NumberInput
-              value={inputCropW}
-              onCommit={(v) => onChange({ input_crop_w: Math.max(0, v) })}
-              min={0}
-              step={1}
-              parse="int"
-              className="w-full"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-400 mb-1">Crop Height (0 = full)</label>
-            <NumberInput
-              value={inputCropH}
-              onCommit={(v) => onChange({ input_crop_h: Math.max(0, v) })}
-              min={0}
-              step={1}
-              parse="int"
-              className="w-full"
-            />
-          </div>
+          <Slider
+            label="Crop X"
+            value={inputCropX}
+            min={0}
+            max={inputImageSize?.width ?? 8192}
+            step={1}
+            onChange={(e) => onChange({ input_crop_x: Math.max(0, parseInt(e.target.value || "0", 10)) })}
+          />
+          <Slider
+            label="Crop Y"
+            value={inputCropY}
+            min={0}
+            max={inputImageSize?.height ?? 8192}
+            step={1}
+            onChange={(e) => onChange({ input_crop_y: Math.max(0, parseInt(e.target.value || "0", 10)) })}
+          />
+          <Slider
+            label="Crop Width (0 = full)"
+            value={inputCropW}
+            min={0}
+            max={inputImageSize?.width ?? 8192}
+            step={1}
+            onChange={(e) => onChange({ input_crop_w: Math.max(0, parseInt(e.target.value || "0", 10)) })}
+          />
+          <Slider
+            label="Crop Height (0 = full)"
+            value={inputCropH}
+            min={0}
+            max={inputImageSize?.height ?? 8192}
+            step={1}
+            onChange={(e) => onChange({ input_crop_h: Math.max(0, parseInt(e.target.value || "0", 10)) })}
+          />
         </div>
       </details>
 

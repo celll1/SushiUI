@@ -1124,6 +1124,160 @@ def _outpaint_resample_jump(
         return ratio.sqrt() * latents + (1.0 - ratio).clamp_min(0.0).sqrt() * noise
 
 
+# ============================================================================
+# OUTPAINT B3 -- masked self-attention KV injection (custom_inpaint_sampling_
+# loop, SD/SDXL only). See scratchpad/outpaint_continuity_design.md section
+# "B3". Reuses core.inference.reference_style's StyleAligned/VSP-style KV-
+# injection machinery (StyleContext / inject_kv / make_ref_value) and
+# core.inference.attention_processors's existing capture/inject hook
+# UNCHANGED -- the only new pieces are (1) an outpaint-specific noise-matched
+# reference composite (below) instead of a user-supplied style image, and (2)
+# spatial token masking so only KNOWN-region tokens are ever injected
+# (_outpaint_reference_filter_store). Gated on `outpaint_noise_init` (same
+# flag as B1/B2) AND `outpaint_reference_strength > 0`; 0 (the default) is a
+# byte-identical no-op (this whole section is simply never reached).
+# ============================================================================
+
+# ControlNet 0-1000 progress convention (StyleTransferConfig.start_step/
+# end_step) matching the design doc's "~20%-85% progress" window -- internal
+# constants, not user-exposed (only `outpaint_reference_strength` is a public
+# param; block_range and the progress window reuse the SAME resolution logic
+# style transfer already uses, per the design doc's "reuse the existing
+# StyleAligned block/step gating, parameterized for outpaint").
+_OUTPAINT_REFERENCE_START_STEP = 200
+_OUTPAINT_REFERENCE_END_STEP = 850
+
+
+def _build_outpaint_reference_config(num_style_blocks: int, ref_k_strength: float):
+    """Build the B3 ``StyleTransferConfig`` -- reused UNCHANGED from
+    ``core.inference.reference_style``: a clean K/V concat with NO AdaIN drift
+    of the target's own Q/K (``adain_strength=0.0`` -- the design doc's B3
+    formula is a plain masked-KV softmax term, not a statistics-alignment
+    transfer) and a RAW (not target-blended) reference Value
+    (``ref_value_mix=1.0`` forces ``make_ref_value`` to return ``ref_v_raw``
+    regardless of ``value_mode`` -- see its docstring). The frequency-scale
+    vector is irrelevant here: ``attention_processors.UnifiedAttnProcessor``'s
+    single-ref inject path hardcodes an all-ones vector for this U-Net (no
+    RoPE), so ``axes_dims`` is deliberately left unset. Block range resolves
+    via the SAME ``block_range_frac=(0.5, 1.0)`` "mid/up decoder blocks"
+    default style transfer already uses (``resolve_default_block_range``);
+    the progress window is the fixed 20%-85% band above.
+    """
+    from core.inference.reference_style import StyleTransferConfig
+
+    cfg = StyleTransferConfig(
+        ref_k_strength=ref_k_strength,
+        adain_strength=0.0,
+        value_mode="ref_raw",
+        value_adain_strength=0.0,
+        ref_value_mix=1.0,
+        start_step=_OUTPAINT_REFERENCE_START_STEP,
+        end_step=_OUTPAINT_REFERENCE_END_STEP,
+    )
+    cfg.resolve_default_block_range(num_style_blocks)
+    return cfg
+
+
+def _outpaint_build_reference_latent(
+    image_latents: torch.Tensor,
+    noise: torch.Tensor,
+    mask_latent: torch.Tensor,
+    latents: torch.Tensor,
+    scheduler,
+    t,
+) -> torch.Tensor:
+    """B3 noise-matched reference composite (design doc section "B3"):
+    ``r_t = (1-M)*add_noise(z0, eps, t) + M*stopgrad(z_t)``. The KNOWN (keep)
+    region is the clean input latents (``image_latents``) noised to the
+    CURRENT step's level via the scheduler's own ``add_noise`` (exactly the
+    same call convention the existing style-transfer reference forward and
+    B1/B2 already use for this scheduler -- sigma-scale or VP-scale, whichever
+    applies), so its exposed noise level always matches what the generate
+    region sees this same step. The GENERATE region is simply the running
+    iterate (``latents``) -- already effectively detached, since the whole
+    denoise loop runs under ``torch.no_grad()``, so ``stopgrad`` needs no
+    explicit ``.detach()``. ``noise`` MUST be the loop's own per-step noise
+    tensor (continuity with the rest of the outpaint noise re-injection, per
+    the design doc) -- NOT a fresh draw.
+    """
+    t_arg = t.unsqueeze(0) if torch.is_tensor(t) and t.dim() == 0 else t
+    keep_noised = scheduler.add_noise(image_latents, noise, t_arg)
+    return (1 - mask_latent) * keep_noised + mask_latent * latents
+
+
+def _outpaint_reference_block_hw(mask_h: int, mask_w: int, seq_len: int) -> Optional[Tuple[int, int]]:
+    """Recover a captured self-attention block's token grid ``(Hb, Wb)`` from
+    its sequence length by mirroring SD1.5/SDXL's ACTUAL down-block stride-2
+    conv chain: each level is ``down(n) = (n - 1) // 2 + 1`` per axis (CEIL for
+    odd dims -- NOT a floor power-of-2, which silently mismatches and drops the
+    deeper mid/up blocks whenever an intermediate dim is odd, e.g. latent 170 ->
+    85 -> 43, not 170//4=42). Starts at the full grid (``mask_h`` x ``mask_w``)
+    and walks down levels until the token count matches ``seq_len`` exactly;
+    returns ``None`` if none does (rather than guessing) so the caller can
+    safely DROP that block from the reference instead of mis-masking it.
+    """
+    if seq_len <= 0 or mask_h <= 0 or mask_w <= 0:
+        return None
+    h, w = mask_h, mask_w
+    for _ in range(8):
+        count = h * w
+        if count == seq_len:
+            return h, w
+        if count < seq_len:
+            return None
+        h, w = (h - 1) // 2 + 1, (w - 1) // 2 + 1
+    return None
+
+
+def _outpaint_reference_filter_store(
+    store: Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    mask_latent: torch.Tensor,
+) -> Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """B3 spatial token masking (design doc section "B3", the "missing piece"
+    both designers called out): for every captured ``(query, key, value)``
+    triple in ``store`` (one entry per self-attention block, produced by a
+    ``StyleContext`` capture forward over the B3 reference composite), keep
+    ONLY the KNOWN-region (``mask_latent == 0``) tokens along the token axis
+    -- so the generate-region queries only ever attend to a GROUND-TRUTH
+    reference token, never one that is itself inside the generate region
+    (which would just reinforce the model's own current guess). Because both
+    the reference forward and the target forward run over the exact same
+    full-canvas latent shape (batch=1, no permutation), token index ``i`` in
+    the captured K/V corresponds 1:1 to spatial position ``i`` in the
+    target's own K/V at that same block -- so no positional bookkeeping is
+    needed beyond a boolean token-keep mask.
+
+    Blocks whose sequence length cannot be mapped back to a ``(Hb, Wb)`` grid
+    (``_outpaint_reference_block_hw`` returns ``None``) or that have ZERO
+    known-region tokens visible at that resolution are DROPPED entirely (not
+    included in the returned dict) rather than falling back to an unmasked or
+    best-effort filter. This is a pure no-op extension of
+    ``attention_processors.py``'s EXISTING ``ctx.store.get(self.block_idx) is
+    None`` -> "no injection for this block" path -- neither
+    ``core.inference.reference_style.inject_kv`` nor the attention-processor
+    hook needed any change: a reference token count SMALLER than the target's
+    own image-token count was already a supported case (``inject_kv``
+    concatenates whatever length ``ref_k``/``ref_v`` it is given).
+    """
+    mask_h, mask_w = mask_latent.shape[-2], mask_latent.shape[-1]
+    out: Dict[int, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = {}
+    for block_idx, (q, k, v) in store.items():
+        seq_len = k.shape[1]
+        hw = _outpaint_reference_block_hw(mask_h, mask_w, seq_len)
+        if hw is None:
+            continue
+        hb, wb = hw
+        down = torch.nn.functional.interpolate(
+            mask_latent[:, :1].to(dtype=torch.float32), size=(hb, wb), mode="nearest"
+        )
+        keep = (down.reshape(-1) < 0.5)  # True == KNOWN region (mask_latent == 0)
+        if not bool(keep.any()):
+            continue
+        idx = keep.nonzero(as_tuple=True)[0].to(device=k.device)
+        out[block_idx] = (q.index_select(1, idx), k.index_select(1, idx), v.index_select(1, idx))
+    return out
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -3602,6 +3756,11 @@ def custom_inpaint_sampling_loop(
                                         # (Euler/EulerAncestral/DDIM/DDPM) -- see
                                         # _build_outpaint_resample_schedule / _outpaint_resample_jump.
     outpaint_jump_length: int = 4,  # B2 jump-back length ("u", in step indices) for each resample cycle.
+    outpaint_reference_strength: float = 0.0,  # B3 masked self-attention KV injection strength ("gamma";
+                                        # see _build_outpaint_reference_config / _outpaint_build_reference_latent /
+                                        # _outpaint_reference_filter_store above). 0 = off (default; byte-identical
+                                        # to B2). Only active when outpaint_noise_init is True and not a dedicated
+                                        # 9ch inpaint UNet -- same gate family as B1/B2.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -3691,6 +3850,40 @@ def custom_inpaint_sampling_loop(
     print(f"[CustomSampling] UNet in_channels: {unet.config.in_channels}, "
           f"use_dedicated_model_setting: {use_dedicated_model_setting}, "
           f"is_inpaint_unet: {is_inpaint_unet}")
+
+    # ============================================================
+    # OUTPAINT B3: masked self-attention KV injection setup (design doc
+    # section "B3"). Same gate family as B1/B2 (outpaint_noise_init + not a
+    # dedicated 9ch inpaint UNet) plus its own strength knob
+    # (outpaint_reference_strength > 0). Mutually exclusive with an attached
+    # user style-transfer reference (style_active/style_refs_active) -- both
+    # features drive the SAME single StyleContext slot on the U-Net's self-
+    # attention processors via set_style_context, so they cannot both be
+    # active within one conditional forward pass; the explicitly-requested
+    # style reference wins and B3 is disabled with a warning in that case.
+    # ============================================================
+    outpaint_reference_active = (
+        outpaint_noise_init and not is_inpaint_unet and outpaint_reference_strength > 0.0
+    )
+    _outpaint_reference_cfg = None
+    if outpaint_reference_active and (style_active or style_refs_active):
+        print("[Outpaint][B3] reference KV injection disabled: incompatible with an attached "
+              "style-transfer reference in this version (both use the same self-attention "
+              "KV-injection context)")
+        _add_generation_warning(
+            "Outpaint reference KV injection (B3) disabled: incompatible with an attached "
+            "style-transfer reference.",
+            code="outpaint_reference_style_conflict",
+        )
+        outpaint_reference_active = False
+    if outpaint_reference_active:
+        from core.inference.attention_processors import ensure_style_block_indices
+        _outpaint_ref_num_blocks = ensure_style_block_indices(unet)
+        _outpaint_reference_cfg = _build_outpaint_reference_config(_outpaint_ref_num_blocks, outpaint_reference_strength)
+        print(f"[Outpaint][B3] masked reference KV injection active: strength={outpaint_reference_strength}, "
+              f"{_outpaint_ref_num_blocks} self-attention layers eligible, "
+              f"block_range={_outpaint_reference_cfg.block_range}, "
+              f"progress_window=[{_OUTPAINT_REFERENCE_START_STEP/10:.0f}%, {_OUTPAINT_REFERENCE_END_STEP/10:.0f}%]")
 
     # Get image dimensions (save before converting to tensor)
     original_width, original_height = init_image.size
@@ -4057,10 +4250,24 @@ def custom_inpaint_sampling_loop(
         )
         style_refs_active = False
 
+    # OUTPAINT B3 reference KV injection yields to NAG / ControlNet / Spectrum for the
+    # exact same reason style transfer does above (separate 2-Pass CFG batch layout +
+    # a per-step capture forward that would pollute Spectrum's stable-conditioning
+    # assumption).
+    if outpaint_reference_active and (nag_active or has_controlnet or spectrum is not None):
+        print("[CustomSampling] [outpaint][B3] reference KV injection disabled: not compatible "
+              "with NAG / ControlNet / Spectrum in this version")
+        _add_generation_warning(
+            "Outpaint reference KV injection (B3) disabled: not compatible with NAG / "
+            "ControlNet / Spectrum in this version.",
+            code="outpaint_reference_incompatible",
+        )
+        outpaint_reference_active = False
+
     # FBCache: dynamic per-step deep-block caching, mutually exclusive with Spectrum
     # and auto-disabled for unstable conditioning (prompt editing / ControlNet / DEUS),
-    # and also for style transfer (its capture forward would pollute the cache; see
-    # the txt2img loop for details).
+    # and also for style transfer / OUTPAINT B3 reference KV injection (their capture
+    # forward would pollute the cache; see the txt2img loop for details).
     fbcache_ctrl = None
     if fbcache_enable:
         if _outpaint_resample_active:
@@ -4076,9 +4283,10 @@ def custom_inpaint_sampling_loop(
             )
         elif spectrum_block_ctrl is not None or spectrum is not None:
             print("[FBCache] requested but disabled (Spectrum is active; mutually exclusive)")
-        elif is_deus or has_controlnet or (prompt_embeds_callback is not None) or style_active or style_refs_active:
+        elif (is_deus or has_controlnet or (prompt_embeds_callback is not None)
+                or style_active or style_refs_active or outpaint_reference_active):
             print("[FBCache] requested but disabled (prompt-editing / ControlNet / DEUS / "
-                  "style transfer; needs stable conditioning)")
+                  "style transfer / outpaint reference KV injection; needs stable conditioning)")
         else:
             from core.inference.fbcache_unet import build_unet_fbcache_controller
             fbcache_ctrl = build_unet_fbcache_controller(
@@ -4238,11 +4446,14 @@ def custom_inpaint_sampling_loop(
             prompt_embeds_input = torch.cat([nag_negative_prompt_embeds, current_prompt_embeds])
 
         elif do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active:
-                # DEUS (variable seq-len embeds) or active multi-reference style
-                # transfer: prepare a single (batch=1) latent (see the txt2img loop's
-                # style branch for the rationale; style_refs_active requires 2+
-                # references, so this never affects the single-ref style_active path).
+            if is_deus or style_active or style_refs_active or outpaint_reference_active:
+                # DEUS (variable seq-len embeds), active multi-reference style
+                # transfer, or OUTPAINT B3 reference KV injection: prepare a single
+                # (batch=1) latent (see the txt2img loop's style branch for the
+                # rationale; style_refs_active requires 2+ references, so this never
+                # affects the single-ref style_active path; outpaint_reference_active
+                # uses the exact same 2-Pass CFG structure -- see the model-call
+                # branch below).
                 latent_model_input = scheduler.scale_model_input(latents, t)
 
                 # Only concatenate mask and masked image for inpaint-specific UNets
@@ -4636,6 +4847,101 @@ def custom_inpaint_sampling_loop(
                 set_style_context(unet, None)
 
                 # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
+            elif outpaint_reference_active and do_classifier_free_guidance:
+                # OUTPAINT B3: masked self-attention KV injection (design doc section
+                # "B3"). Structurally IDENTICAL 2-Pass CFG to the style_active branch
+                # above (isolates the reference capture+inject to ONLY the conditional
+                # pass) -- reuses core.inference.reference_style.StyleContext / inject_kv
+                # and attention_processors.py's hook UNCHANGED. The only differences
+                # from single-ref style transfer: (1) the reference composite is built
+                # fresh every active step from image_latents/mask_latent/this loop's own
+                # per-step noise instead of a user-supplied style image
+                # (_outpaint_build_reference_latent), and (2) the captured K/V/Q are
+                # spatially filtered down to KNOWN-region-only tokens before injection
+                # (_outpaint_reference_filter_store) -- a strictly smaller reference
+                # token count than the target's own image-token count was already a
+                # supported case for inject_kv, so neither it nor the attention-processor
+                # hook needed any change.
+                from core.inference.reference_style import StyleContext
+                from core.inference.attention_processors import set_style_context
+
+                def _slice_added_cond_kwargs(row: int):
+                    if not (is_sdxl and added_cond_kwargs):
+                        return None
+                    text_embeds = added_cond_kwargs.get("text_embeds")
+                    return {
+                        "text_embeds": text_embeds[row:row + 1] if text_embeds is not None else None,
+                        "time_ids": added_cond_kwargs["time_ids"][row:row + 1],
+                    }
+
+                # Pass 1: Unconditional (negative) prediction -- no reference context.
+                set_style_context(unet, None)
+                unet_kwargs_uncond = {"encoder_hidden_states": current_negative_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_uncond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_uncond["mid_block_additional_residual"] = mid_block_res_sample
+                uncond_added_cond_kwargs = _slice_added_cond_kwargs(0)
+                if uncond_added_cond_kwargs is not None:
+                    unet_kwargs_uncond["added_cond_kwargs"] = uncond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+                else:
+                    noise_pred_uncond = unet(latent_model_input, t, **unet_kwargs_uncond).sample
+
+                # Pass 2: Conditional (positive) prediction -- reference capture + inject,
+                # only when this step falls within the config's active progress window
+                # (~20%-85%, design doc section "B3"). Off that window, the conditional
+                # pass runs with no reference context, same as style transfer's "not
+                # is_step_active -> no injection" case. This branch is keyed on the
+                # LOGICAL index `i` (not the OUTPAINT B2 visit counter), exactly like
+                # every other per-step schedule lookup in this loop, so it composes
+                # transparently with B2 time-travel resampling.
+                cond_added_cond_kwargs = _slice_added_cond_kwargs(1)
+                if _outpaint_reference_cfg.is_step_active(i, num_inference_steps):
+                    ref_latent = _outpaint_build_reference_latent(
+                        image_latents, noise, mask_latent, latents, scheduler, t,
+                    )
+                    ref_latent_scaled = scheduler.scale_model_input(ref_latent, t)
+                    progress = _outpaint_reference_cfg.step_progress(i, num_inference_steps)
+
+                    ref_unet_kwargs = {"encoder_hidden_states": current_prompt_embeds}
+                    if cond_added_cond_kwargs is not None:
+                        ref_unet_kwargs["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                    capture_ctx = StyleContext(mode="capture", config=_outpaint_reference_cfg, progress=progress)
+                    set_style_context(unet, capture_ctx)
+                    if use_autocast:
+                        with torch.autocast(device_type='cuda', dtype=torch.float16):
+                            unet(ref_latent_scaled.to(dtype), t, **ref_unet_kwargs)
+                    else:
+                        unet(ref_latent_scaled.to(dtype), t, **ref_unet_kwargs)
+
+                    filtered_store = _outpaint_reference_filter_store(capture_ctx.store, mask_latent)
+                    inject_ctx = StyleContext(
+                        mode="inject", config=_outpaint_reference_cfg, store=filtered_store, progress=progress,
+                    )
+                    set_style_context(unet, inject_ctx)
+
+                unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
+                if down_block_res_samples is not None:
+                    unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
+                if mid_block_res_sample is not None:
+                    unet_kwargs_cond["mid_block_additional_residual"] = mid_block_res_sample
+                if cond_added_cond_kwargs is not None:
+                    unet_kwargs_cond["added_cond_kwargs"] = cond_added_cond_kwargs
+
+                if use_autocast:
+                    with torch.autocast(device_type='cuda', dtype=torch.float16):
+                        noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+                else:
+                    noise_pred_text = unet(latent_model_input, t, **unet_kwargs_cond).sample
+
+                set_style_context(unet, None)
+
+                # noise_pred_uncond and noise_pred_text are already separate (no chunk needed)
             elif spectrum is not None and spectrum_block_ctrl is None and not spectrum.is_anchor(i):
                 # Spectrum output (black-box) skip step: forecast the raw U-Net output
                 # (Eq.14) instead of running the forward. NAG/NegPip effects are baked
@@ -4699,13 +5005,14 @@ def custom_inpaint_sampling_loop(
 
         # Perform guidance with CFG
         if do_classifier_free_guidance:
-            if is_deus or style_active or style_refs_active:
-                # DEUS / active multi-reference style transfer: noise_pred_uncond and
-                # noise_pred_text are already separate (from the 2-Pass CFG block
-                # above), for both single-ref (style_active) and multi-ref
-                # (style_refs_active). style_active was previously MISSING from this
-                # img2img/inpaint gate (a pre-existing single-ref crash: the else
-                # branch chunks a batch-2 noise_pred that the 2-pass block never set).
+            if is_deus or style_active or style_refs_active or outpaint_reference_active:
+                # DEUS / active multi-reference style transfer / OUTPAINT B3 reference KV
+                # injection: noise_pred_uncond and noise_pred_text are already separate
+                # (from the 2-Pass CFG block above), for single-ref (style_active),
+                # multi-ref (style_refs_active), and outpaint_reference_active alike.
+                # style_active was previously MISSING from this img2img/inpaint gate (a
+                # pre-existing single-ref crash: the else branch chunks a batch-2
+                # noise_pred that the 2-pass block never set).
                 pass  # Variables already set in the 2-Pass CFG block
             else:
                 # NAG mode or Standard CFG: noise_pred has [negative, positive] batches

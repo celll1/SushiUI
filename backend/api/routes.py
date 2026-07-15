@@ -3899,6 +3899,7 @@ async def generate_outpaint(
     outpaint_boundary_color_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_boundary_color_strength"]),  # B1 continuity fix: in-loop low-freq boundary color proximal strength (SD/SDXL only, 0=off)
     outpaint_resample_count: int = Form(OUTPAINT_DEFAULTS["outpaint_resample_count"]),  # B2 continuity fix: RePaint-style time-travel resample count (SD/SDXL only, 1=off)
     outpaint_jump_length: int = Form(OUTPAINT_DEFAULTS["outpaint_jump_length"]),  # B2 continuity fix: time-travel jump-back length in step indices
+    outpaint_reference_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_reference_strength"]),  # B3 continuity fix: masked self-attention KV injection strength (SD/SDXL only, 0=off)
     prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
     max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -4181,6 +4182,7 @@ async def generate_outpaint(
             "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
             "outpaint_resample_count": outpaint_resample_count,
             "outpaint_jump_length": outpaint_jump_length,
+            "outpaint_reference_strength": outpaint_reference_strength,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,

@@ -325,6 +325,18 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     "outpaint_resample_count": 2,
     # B2 jump-back length ("u", in step indices) for each resample cycle.
     "outpaint_jump_length": 4,
+    # B3 continuity fix (SD/SDXL only; core.inference.custom_sampling's
+    # outpaint_noise_init-gated masked self-attention KV injection): reuses the
+    # existing StyleAligned/VSP-style reference-KV-injection machinery
+    # (core.inference.reference_style) with a noise-matched reference composite
+    # built from the preserved rect's own clean latents (not a user-supplied
+    # style image), restricted to KNOWN-region tokens via spatial masking, so
+    # the generate region's self-attention queries directly attend to the
+    # input's own clean features instead of only following the prompt --
+    # addressing content/style/palette divergence that persists even with B1+B2.
+    # Strength ("gamma") scales the injected reference Key/Value; 0 disables
+    # the mechanism entirely (default, until tuned).
+    "outpaint_reference_strength": 0.0,
 }
 
 # ---------------------------------------------------------------------------

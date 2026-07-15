@@ -6575,6 +6575,25 @@ components:
                 SD/SDXL only. Number of step indices each time-travel jump
                 (see `outpaint_resample_count`) re-noises back across.
               example: 4
+            outpaint_reference_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                SD/SDXL only. Masked self-attention Key/Value injection: a
+                noise-matched reference built from the preserved rectangle's
+                own clean latents (restricted to the preserved region only,
+                via spatial token masking) is captured and its Key/Value are
+                injected into the generate region's self-attention, scaled by
+                this strength. Lets the generate region directly attend to
+                the input's own features instead of only following the
+                prompt, addressing content, style, and palette divergence
+                that persists with `outpaint_boundary_color_strength` and
+                `outpaint_resample_count` alone. Active only mid-schedule and
+                on a subset of self-attention layers. 0 disables the
+                mechanism entirely.
+              example: 0.35
 
     UpscaleRequest:
       type: object

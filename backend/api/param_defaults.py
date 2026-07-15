@@ -512,6 +512,54 @@ AUD2AUD_DEFAULTS: Dict[str, Any] = {
 }
 
 # ---------------------------------------------------------------------------
+# Audio temporal outpaint (POST /generate/outpaint/audio — ACE-Step 1.5)
+# ---------------------------------------------------------------------------
+# Places a (optionally trimmed) input clip at a time offset inside a LONGER
+# total_duration timeline and generates the audio before/and-or after it,
+# preserving the placed input sample-exact to the decoded 48kHz/16-bit
+# representation (see core.pipeline_backends.acestep
+# ._generate_audoutpaint_acestep + core.pipeline.generate_aud_outpaint).
+# This is the structural INVERSE of aud2aud's `mode="repaint"`: repaint holds
+# everything OUTSIDE a window and generates INSIDE it; outpaint holds the
+# window itself (the placed input) and generates OUTSIDE it (before AND/OR
+# after). Derived from AUD2AUD_DEFAULTS (single source of truth) rather than
+# duplicating literal values -- shares prompt/lyrics/seed/inference_steps/
+# guidance_scale/shift/vocal_language/loras verbatim. `mode`/`cover_strength`/
+# `repaint_start`/`repaint_end` are inherited for schema key-parity but are
+# NOT accepted request parameters on /generate/outpaint/audio (outpaint has
+# no cover/repaint sub-mode -- it always holds the placed span and generates
+# outside it), mirroring OUTPAINT_DEFAULTS' inherited-but-unused width/height
+# note above.
+#
+# "Exact" for audio (unlike video, which needed a lossless-encode toggle
+# because H.264 is not bit-exact): the app's standard FLAC output is already
+# lossless, and the placed input's waveform samples (after normalization to
+# stereo/48kHz -- see AceStepMixin._acestep_normalize_stereo_48k) are
+# re-spliced verbatim over its span after decoding (see
+# AceStepMixin._acestep_apply_outpaint_waveform_splice), so no separate
+# "lossless" flag is needed here -- the default output path is sample-exact
+# to that decoded 48kHz/16-bit representation end to end. An upload that is
+# not already 48kHz/16-bit stereo (e.g. 24-bit or 44.1kHz) is faithfully
+# resampled/requantized once during normalization, not byte-identical to
+# the original file.
+OUTPAINT_AUDIO_DEFAULTS: Dict[str, Any] = {
+    **AUD2AUD_DEFAULTS,
+    # Total output timeline length, in seconds. Capped at 240s server-side
+    # (silence-latent tiling supports arbitrary length, but very long extends
+    # drift stylistically without lyrics/captions that cover the full span).
+    "total_duration": 60.0,
+    # Where the (trimmed) input clip is placed within the output timeline, in
+    # seconds. Snapped server-side to the nearest 1/25s (the ACE-Step VAE's
+    # latent frame rate) and clamped so the placed input fits inside
+    # total_duration -- a warning is added if either adjustment occurs.
+    "input_offset_sec": 0.0,
+    # Trim applied to the input clip BEFORE placement, in seconds. 0/0 = no
+    # trim (use the whole clip, subject to fitting inside total_duration).
+    "input_trim_start_sec": 0.0,
+    "input_trim_end_sec": 0.0,
+}
+
+# ---------------------------------------------------------------------------
 # LoRA / Full-FT Training (TrainingRunCreateRequest)
 # ---------------------------------------------------------------------------
 # Authoritative source: backend Pydantic model.

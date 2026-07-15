@@ -2507,6 +2507,39 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/aud2aud.",
         )
 
+    def generate_aud_outpaint(self, params: Dict[str, Any], reference_audio, progress_callback=None, step_callback=None):
+        """Audio temporal outpaint (extend): place a (trimmed) input clip at
+        a time offset inside a LONGER output timeline and generate the audio
+        before/and-or after it (ACE-Step 1.5 only). See
+        `AceStepMixin._generate_audoutpaint_acestep` docstring for the full
+        mechanism -- the structural inverse of `generate_aud2aud`'s
+        `mode="repaint"`.
+
+        Args:
+            params: see `OUTPAINT_AUDIO_DEFAULTS` -- prompt/lyrics, seed,
+                inference_steps, guidance_scale, shift, vocal_language,
+                loras, total_duration (seconds, output timeline length),
+                input_offset_sec (seconds, where the trimmed input is
+                placed), input_trim_start_sec/input_trim_end_sec (seconds,
+                trims the UPLOADED clip itself before placement).
+            reference_audio: a file path (str) or raw audio bytes for the
+                input clip to place.
+            progress_callback: Called as (step, total_steps).
+            step_callback: Reserved (unused for ACE-Step audio outpaint).
+
+        Returns:
+            tuple: (waveform, sample_rate, actual_seed) -- identical contract
+            to generate_txt2aud/generate_aud2aud.
+        """
+        if self.is_acestep_model:
+            return self._generate_audoutpaint_acestep(params, reference_audio, progress_callback, step_callback)
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Audio outpaint requires an ACE-Step model",
+            detail="The currently loaded model is not an audio model. Load an ACE-Step model to use /generate/outpaint/audio.",
+        )
+
     def generate_txt2img(self, params: Dict[str, Any], progress_callback=None, step_callback=None) -> tuple[Union[Image.Image, torch.Tensor], int, int]:
         """Generate image from text
 

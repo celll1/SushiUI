@@ -809,9 +809,17 @@ _OUTPAINT_VP_SIGMA_SCHEDULERS = (
 )
 
 
-def _outpaint_x0_transform(scheduler, sample: torch.Tensor, t, i: int):
+def _outpaint_x0_transform(scheduler, sample: torch.Tensor, t, sigma_index: int):
     """Return (predict_x0, to_model_output) closures for the OUTPAINT B1
     x0-space projection.
+
+    ``sigma_index`` is the FULL-schedule index into ``scheduler.sigmas`` for
+    this step -- i.e. ``t_start + i`` (the loop index ``i`` runs over the
+    strength-sliced ``timesteps[t_start:]``). For outpaint ``t_start`` is forced
+    to 0, so ``sigma_index == i`` and this is byte-identical to the original;
+    for partial-strength inpaint (``t_start > 0``) it is the correction that
+    makes the sigma read the ACTUAL step's noise level instead of the
+    schedule's high-noise head.
 
     ``predict_x0(model_output) -> x0_hat`` and ``to_model_output(x0_new) ->
     model_output'`` are exact inverses of each other and match the SAME
@@ -843,11 +851,11 @@ def _outpaint_x0_transform(scheduler, sample: torch.Tensor, t, i: int):
         # (`sigma_next`) reduces to plain `self.sigmas[step_index]` at this
         # point, so it needs no special case (verified empirically).
         if cls_name == "KDPM2DiscreteScheduler" and not scheduler.state_in_first_order:
-            sigma = scheduler.sigmas_interpol[i]
+            sigma = scheduler.sigmas_interpol[sigma_index]
         elif cls_name == "KDPM2AncestralDiscreteScheduler" and not scheduler.state_in_first_order:
-            sigma = scheduler.sigmas_interpol[i - 1]
+            sigma = scheduler.sigmas_interpol[sigma_index - 1]
         else:
-            sigma = scheduler.sigmas[i]
+            sigma = scheduler.sigmas[sigma_index]
         sigma = sigma.to(device=sample.device, dtype=sample.dtype)
 
         if prediction_type == "v_prediction":
@@ -868,13 +876,13 @@ def _outpaint_x0_transform(scheduler, sample: torch.Tensor, t, i: int):
 
             def to_model_output(x0_new):
                 return (sample - x0_new) / sigma
-    elif cls_name in _OUTPAINT_VP_SIGMA_SCHEDULERS and hasattr(scheduler, "sigmas") and i < len(scheduler.sigmas):
+    elif cls_name in _OUTPAINT_VP_SIGMA_SCHEDULERS and hasattr(scheduler, "sigmas") and sigma_index < len(scheduler.sigmas):
         # DPM++/UniPC: derive (alpha_t, sigma_t) from the ACTUAL sigma the
-        # scheduler uses at step i (Karras-safe), matching diffusers'
+        # scheduler uses at this step (Karras-safe), matching diffusers'
         # _sigma_to_alpha_sigma_t. alphas_cumprod[t] would diverge ~6% under
         # Karras sigmas. These plug into the SAME VP predict_x0/to_model_output
         # formulas below (sqrt_alpha == alpha_t, sqrt_beta == sigma_t).
-        sigma = scheduler.sigmas[i].to(device=sample.device, dtype=sample.dtype)
+        sigma = scheduler.sigmas[sigma_index].to(device=sample.device, dtype=sample.dtype)
         sqrt_alpha = 1.0 / (sigma ** 2 + 1) ** 0.5   # alpha_t
         sqrt_beta = sigma * sqrt_alpha                # sigma_t = sigma * alpha_t
     else:
@@ -4518,12 +4526,14 @@ def custom_inpaint_sampling_loop(
             _outpaint_commit_f_map = _commit_f_t.view(1, 1, *_commit_f_t.shape)
 
     # SEAM STRUCTURE CONTINUITY (scratchpad/structure_continuity_synthesis.md):
-    # precompute the STATIC gate/target once (mask + K never change). Gated on
-    # outpaint_noise_init for now (S1 = OUTPAINT path only; the S2 inpaint path
-    # will broaden this). None/no-op when strength is off or there is no salient
-    # crossing structure -> seam_structure_strength == 0 is byte-identical.
+    # precompute the STATIC gate/target once (mask + K never change). NOT gated
+    # on outpaint_noise_init -- serves BOTH the outpaint B1 path (structures
+    # crossing the placed-rect boundary) and normal inpaint (structures crossing
+    # the repaint mask boundary); the per-step apply picks the right branch.
+    # None/no-op when strength is off or there is no salient crossing structure
+    # -> seam_structure_strength == 0 is byte-identical.
     _ssc_state = None
-    if outpaint_noise_init and seam_structure_strength > 0.0 and not is_inpaint_unet:
+    if seam_structure_strength > 0.0 and not is_inpaint_unet:
         _ssc_state = _ssc_precompute(
             mask_latent, image_latents,
             depth=seam_structure_depth,
@@ -5889,7 +5899,7 @@ def custom_inpaint_sampling_loop(
         # False, so normal inpaint is byte-identical.
         # ============================================================
         if outpaint_noise_init and not is_inpaint_unet:
-            predict_x0, to_model_output = _outpaint_x0_transform(scheduler, latents, t, i)
+            predict_x0, to_model_output = _outpaint_x0_transform(scheduler, latents, t, t_start + i)
             x0_hat = predict_x0(noise_pred)
 
             # DEBUG-ONLY (OUTPAINT_DEBUG_LATENT_DUMP): the model's OWN x0
@@ -6008,6 +6018,30 @@ def custom_inpaint_sampling_loop(
             # Convert back to the model-output space scheduler.step expects
             # (exact inverse of predict_x0 for this scheduler/prediction_type).
             noise_pred = to_model_output(x0_proj)
+
+        elif _ssc_state is not None:
+            # SEAM STRUCTURE CONTINUITY for normal INPAINT (structures crossing
+            # the repaint mask boundary). Same closed-form x0-space proximal as
+            # the outpaint path above, but WITHOUT B1's keep projection -- normal
+            # inpaint keeps its own post-step re-noise/mask blend, which re-pins
+            # the keep region regardless. The gate contains mask_latent, so
+            # keep (mask==0) cells are untouched here too (bit-exact). Uses the
+            # FULL-schedule sigma index (t_start + i) so partial-strength inpaint
+            # reads the correct noise level (the _outpaint_x0_transform fix).
+            # Keyed on the LOGICAL step index; byte-identical when omega hits 0.
+            _ssc_predict_x0, _ssc_to_output = _outpaint_x0_transform(scheduler, latents, t, t_start + i)
+            _ssc_rho = (t_start + i) / num_inference_steps
+            _ssc_plateau = min(0.45, seam_structure_end)
+            if _ssc_rho <= _ssc_plateau:
+                _ssc_omega = 1.0
+            elif _ssc_rho >= seam_structure_end:
+                _ssc_omega = 0.0
+            else:
+                _ssc_z = 1.0 - (_ssc_rho - _ssc_plateau) / max(seam_structure_end - _ssc_plateau, 1e-6)
+                _ssc_omega = _ssc_z * _ssc_z * (3.0 - 2.0 * _ssc_z)
+            if _ssc_omega > 0.0:
+                _ssc_x0 = _ssc_apply(_ssc_predict_x0(noise_pred), _ssc_state, seam_structure_strength, _ssc_omega)
+                noise_pred = _ssc_to_output(_ssc_x0)
 
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)

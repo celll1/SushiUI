@@ -301,6 +301,14 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # so it never touches the preserved rect. On by default; disable to see
     # the model's raw, uncorrected output.
     "outpaint_seam_fix": True,
+    # B1 continuity fix (SD/SDXL only; core.inference.custom_sampling's
+    # outpaint_noise_init-gated x0-space projection injection): a weak
+    # low-frequency color/illumination correction applied to the generate
+    # region ONLY within a narrow collar near the preserved rect's boundary,
+    # active mid/late in the schedule. Nudges coarse chroma/illumination
+    # continuity across the seam without constraining composition/content
+    # far from it. 0 disables the correction entirely.
+    "outpaint_boundary_color_strength": 0.25,
 }
 
 # ---------------------------------------------------------------------------

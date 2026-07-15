@@ -4511,6 +4511,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             fbcache_cache_branch=params.get("fbcache_cache_branch", 1),
             loop_decode=params.get("loop_decode", "full"),
             outpaint_noise_init=bool(params.get("_outpaint_noise_init", False)),
+            outpaint_boundary_color_strength=params.get("outpaint_boundary_color_strength", 0.25),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)

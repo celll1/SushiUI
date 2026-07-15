@@ -760,6 +760,219 @@ def _prepare_negpip_weights(negpip_weights, nag_active):
     return True, None, _pad_stack([neg_w, pos_w])
 
 
+# =============================================================================
+# OUTPAINT B1: trajectory-consistent x0-space projection injection + boundary
+# color proximal (custom_inpaint_sampling_loop, SD/SDXL only). See
+# scratchpad/outpaint_continuity_design.md section "B1". Gated entirely on
+# the outpaint_noise_init kwarg -- normal inpaint is untouched.
+# =============================================================================
+
+# Scheduler classes whose running `sample` (this loop's `latents`) is the
+# plain k-diffusion/EDM sigma-scale representation x_sigma = x0 + sigma*eps
+# (their OWN `add_noise()` has no alpha term at all, e.g.
+# EulerDiscreteScheduler.add_noise: `noisy_samples = original_samples +
+# noise * sigma`). Verified by reading each class's `add_noise`/`step` in
+# diffusers 0.38.0 (scheduling_euler_discrete.py, scheduling_euler_ancestral_
+# discrete.py, scheduling_k_dpm_2_discrete.py, scheduling_k_dpm_2_ancestral_
+# discrete.py, scheduling_heun_discrete.py, scheduling_lms_discrete.py) --
+# every one of them computes `pred_original_sample` (with s_churn=0, the
+# default this loop uses, so sigma_hat == sigma) as:
+#   epsilon:      pred_original_sample = sample - sigma * model_output
+#   v_prediction: pred_original_sample = model_output * (-sigma / (sigma**2 + 1) ** 0.5)
+#                                         + (sample / (sigma**2 + 1))
+# All OTHER schedulers in SAMPLER_MAP keep `sample` in the VP scale
+# x_t = alpha_t*x0 + sigma_t*eps. DDIM/DDPM/PNDM read
+# `self.alphas_cumprod[timestep]` directly (integer timesteps) -- exact.
+# The DPM-solver family + UniPC instead derive (alpha_t, sigma_t) from
+# `self.sigmas[i]` via `_sigma_to_alpha_sigma_t` (alpha_t=1/sqrt(sigma**2+1)).
+# With the DEFAULT sigma schedule that equals alphas_cumprod[timestep], but
+# under KARRAS sigmas (schedule_type="karras", user-selectable) it does NOT --
+# so for those classes we MUST read the actual `self.sigmas[i]`, not
+# alphas_cumprod[timestep] (~6% divergence otherwise).
+_OUTPAINT_SIGMA_SCALE_SCHEDULERS = (
+    "EulerDiscreteScheduler",
+    "EulerAncestralDiscreteScheduler",
+    "KDPM2DiscreteScheduler",
+    "KDPM2AncestralDiscreteScheduler",
+    "HeunDiscreteScheduler",
+    "LMSDiscreteScheduler",
+)
+
+# VP-scale schedulers whose (alpha_t, sigma_t) come from `self.sigmas[i]` (via
+# _sigma_to_alpha_sigma_t) -- must use the actual sigma (Karras-safe), NOT
+# alphas_cumprod[timestep]. DDIM/DDPM/PNDM are NOT here (they read alphas_cumprod).
+_OUTPAINT_VP_SIGMA_SCHEDULERS = (
+    "DPMSolverMultistepScheduler",
+    "DPMSolverSinglestepScheduler",
+    "UniPCMultistepScheduler",
+)
+
+
+def _outpaint_x0_transform(scheduler, sample: torch.Tensor, t, i: int):
+    """Return (predict_x0, to_model_output) closures for the OUTPAINT B1
+    x0-space projection.
+
+    ``predict_x0(model_output) -> x0_hat`` and ``to_model_output(x0_new) ->
+    model_output'`` are exact inverses of each other and match the SAME
+    convention diffusers' own ``scheduler.step()``/``convert_model_output()``
+    use for ``scheduler``'s class at this exact step index ``i`` / timestep
+    ``t`` -- see ``_OUTPAINT_SIGMA_SCALE_SCHEDULERS`` above for the two
+    families and their formulas. This lets the projection run BEFORE
+    ``scheduler.step()`` (instead of only previewing pred_original_sample
+    after it, which is too late to influence the step).
+    """
+    prediction_type = getattr(scheduler.config, "prediction_type", "epsilon")
+    cls_name = type(scheduler).__name__
+
+    if cls_name in _OUTPAINT_SIGMA_SCALE_SCHEDULERS and hasattr(scheduler, "sigmas"):
+        # KDPM2(-Ancestral) are 2nd-order methods that visit each nominal step
+        # TWICE (a "first order" pass, then an interpolated 2nd-order
+        # correction pass, toggled via the scheduler's own
+        # `state_in_first_order` property/`self.sample` cache -- see
+        # scheduling_k_dpm_2_discrete.py / scheduling_k_dpm_2_ancestral_
+        # discrete.py `step()`). On the 2nd-order pass they compute
+        # pred_original_sample from `sigmas_interpol` (a log-interpolated
+        # intermediate sigma), NOT plain `self.sigmas[step_index]` -- the two
+        # classes even index `sigmas_interpol` slightly differently
+        # (`[step_index]` vs `[step_index - 1]`). Reading
+        # `scheduler.state_in_first_order` here (BEFORE `scheduler.step()`
+        # runs for this same iteration) is safe: it/​`self.sample` are only
+        # mutated INSIDE `step()`, so it still reflects the state `step()` is
+        # about to use. Heun is also 2nd-order but its own 2nd-order sigma
+        # (`sigma_next`) reduces to plain `self.sigmas[step_index]` at this
+        # point, so it needs no special case (verified empirically).
+        if cls_name == "KDPM2DiscreteScheduler" and not scheduler.state_in_first_order:
+            sigma = scheduler.sigmas_interpol[i]
+        elif cls_name == "KDPM2AncestralDiscreteScheduler" and not scheduler.state_in_first_order:
+            sigma = scheduler.sigmas_interpol[i - 1]
+        else:
+            sigma = scheduler.sigmas[i]
+        sigma = sigma.to(device=sample.device, dtype=sample.dtype)
+
+        if prediction_type == "v_prediction":
+            def predict_x0(model_output):
+                return model_output * (-sigma / (sigma ** 2 + 1) ** 0.5) + (sample / (sigma ** 2 + 1))
+
+            def to_model_output(x0_new):
+                return (sample / (sigma ** 2 + 1) - x0_new) * ((sigma ** 2 + 1) ** 0.5) / sigma
+        elif prediction_type in ("sample", "original_sample"):
+            def predict_x0(model_output):
+                return model_output
+
+            def to_model_output(x0_new):
+                return x0_new
+        else:  # epsilon (default)
+            def predict_x0(model_output):
+                return sample - sigma * model_output
+
+            def to_model_output(x0_new):
+                return (sample - x0_new) / sigma
+    elif cls_name in _OUTPAINT_VP_SIGMA_SCHEDULERS and hasattr(scheduler, "sigmas") and i < len(scheduler.sigmas):
+        # DPM++/UniPC: derive (alpha_t, sigma_t) from the ACTUAL sigma the
+        # scheduler uses at step i (Karras-safe), matching diffusers'
+        # _sigma_to_alpha_sigma_t. alphas_cumprod[t] would diverge ~6% under
+        # Karras sigmas. These plug into the SAME VP predict_x0/to_model_output
+        # formulas below (sqrt_alpha == alpha_t, sqrt_beta == sigma_t).
+        sigma = scheduler.sigmas[i].to(device=sample.device, dtype=sample.dtype)
+        sqrt_alpha = 1.0 / (sigma ** 2 + 1) ** 0.5   # alpha_t
+        sqrt_beta = sigma * sqrt_alpha                # sigma_t = sigma * alpha_t
+    else:
+        # DDIM/DDPM/PNDM: integer timesteps, exact via alphas_cumprod[t].
+        t_index = int(t.item()) if torch.is_tensor(t) else int(t)
+        alpha_prod_t = scheduler.alphas_cumprod[t_index].to(device=sample.device, dtype=sample.dtype)
+        beta_prod_t = 1 - alpha_prod_t
+        sqrt_alpha = alpha_prod_t ** 0.5
+        sqrt_beta = beta_prod_t ** 0.5
+
+        if prediction_type == "v_prediction":
+            def predict_x0(model_output):
+                return sqrt_alpha * sample - sqrt_beta * model_output
+
+            def to_model_output(x0_new):
+                return (sqrt_alpha * sample - x0_new) / sqrt_beta
+        elif prediction_type in ("sample", "original_sample"):
+            def predict_x0(model_output):
+                return model_output
+
+            def to_model_output(x0_new):
+                return x0_new
+        else:  # epsilon (default)
+            def predict_x0(model_output):
+                return (sample - sqrt_beta * model_output) / sqrt_alpha
+
+            def to_model_output(x0_new):
+                return (sample - sqrt_alpha * x0_new) / sqrt_beta
+
+    return predict_x0, to_model_output
+
+
+def _outpaint_collar_weight(mask_latent: torch.Tensor, collar_cells: float = 6.0) -> Optional[torch.Tensor]:
+    """Static per-cell weight W_b(d) in [0,1] for the B1 low-frequency
+    boundary color proximal: 1 at generate-side cells touching the rect
+    boundary, decaying LINEARLY to 0 by ``collar_cells`` latent cells into
+    the generate region, and exactly 0 in the keep region (mask_latent==0)
+    and far from the boundary. ``d`` = per-cell Euclidean distance (in latent
+    cells) from each generate cell to the nearest keep cell, via scipy's
+    distance transform (scipy is already a hard dependency of this inference
+    stack -- see core/inference/inloop_flatten.py). Computed ONCE before the
+    denoise loop since mask_latent never changes across steps.
+
+    Returns None when there is no generate region at all (degenerate; no-op).
+    """
+    from scipy import ndimage
+    mask_np = mask_latent.detach().to(dtype=torch.float32, device="cpu").numpy()
+    gen_np = (mask_np[0, 0] > 0.5).astype(np.float64)
+    if gen_np.max() == 0:
+        return None
+    dist = ndimage.distance_transform_edt(gen_np)
+    w = np.clip(1.0 - dist / max(1e-6, collar_cells), 0.0, 1.0) * gen_np
+    w_t = torch.from_numpy(w).to(device=mask_latent.device, dtype=mask_latent.dtype)
+    return w_t.view(1, 1, *w_t.shape).expand(mask_latent.shape[0], mask_latent.shape[1], -1, -1).contiguous()
+
+
+def _outpaint_gaussian_lowpass(x: torch.Tensor, kappa: float = 3.0) -> torch.Tensor:
+    """Depthwise Gaussian low-pass (G_kappa) in latent space, replicate-padded
+    to avoid edge artifacts at the canvas boundary. ``kappa`` = blur sigma in
+    latent cells ("a few latent px" per the design doc). Used by the B1
+    low-frequency boundary color proximal.
+    """
+    import torch.nn.functional as F
+    radius = max(1, int(round(kappa * 3)))
+    size = 2 * radius + 1
+    coords = torch.arange(size, dtype=torch.float32, device=x.device) - radius
+    kernel_1d = torch.exp(-(coords ** 2) / (2 * kappa ** 2))
+    kernel_1d = (kernel_1d / kernel_1d.sum()).to(dtype=x.dtype)
+    channels = x.shape[1]
+    kernel_h = kernel_1d.view(1, 1, 1, size).expand(channels, 1, 1, size).contiguous()
+    kernel_v = kernel_1d.view(1, 1, size, 1).expand(channels, 1, size, 1).contiguous()
+    padded = F.pad(x, (radius, radius, 0, 0), mode="replicate")
+    blurred = F.conv2d(padded, kernel_h, groups=channels)
+    padded = F.pad(blurred, (0, 0, radius, radius), mode="replicate")
+    blurred = F.conv2d(padded, kernel_v, groups=channels)
+    return blurred
+
+
+def _outpaint_apply_boundary_color(
+    x0: torch.Tensor,
+    target_lowfreq: torch.Tensor,
+    collar_weight: torch.Tensor,
+    strength: float,
+    kappa: float = 3.0,
+) -> torch.Tensor:
+    """B1 low-frequency boundary color proximal (design doc section 2):
+    ``x0 += strength * W_b(d) * (E(G_kappa(z0_keep)) - G_kappa(x0))``,
+    restricted to the generate-side collar near the rect boundary via
+    ``collar_weight`` (zero elsewhere, so this is an exact no-op outside the
+    collar). ``target_lowfreq`` is the precomputed ``G_kappa(image_latents)``
+    (the simple/robust "low-pass the whole canvas latents, read the collar
+    value" approximation the design doc endorses -- with the default
+    outpaint_fill_mode="replicate" the fill IS an edge-extension, so this
+    already approximates "extend the keep-side low-freq value outward").
+    """
+    current_lowfreq = _outpaint_gaussian_lowpass(x0, kappa=kappa)
+    return x0 + strength * collar_weight * (target_lowfreq - current_lowfreq)
+
+
 def custom_sampling_loop(
     pipeline: Union[StableDiffusionPipeline, StableDiffusionXLPipeline],
     prompt_embeds: torch.Tensor,
@@ -3225,6 +3438,12 @@ def custom_inpaint_sampling_loop(
                                         # architecture-native noise instead of noised encode(canvas
                                         # fill), independent of the fill content -- see
                                         # core.inference.outpaint_utils.compose_outpaint_start.
+                                        # ALSO gates the B1 x0-space projection injection + boundary
+                                        # color proximal below (this same flag; normal inpaint is
+                                        # byte-identical when it is False).
+    outpaint_boundary_color_strength: float = 0.25,  # B1 low-frequency boundary color proximal strength
+                                                      # (0 = off). Only active when outpaint_noise_init is
+                                                      # True; see _outpaint_apply_boundary_color.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -3365,6 +3584,21 @@ def custom_inpaint_sampling_loop(
         init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
         t_start = max(num_inference_steps - init_timestep, 0)
 
+    # OUTPAINT B1 guard: the noise-init GENERATE-region start
+    # (`noise * scheduler.init_noise_sigma`, below) assumes `timesteps[0]` IS
+    # the schedule's max-noise timestep. generate_outpaint forces
+    # denoising_strength=1.0 whenever outpaint_noise_init is active, which
+    # normally yields t_start=0 via either branch above -- EXCEPT
+    # `_setup_img2img_steps` with `img2img_fix_steps=False` computes
+    # `actual_steps = int(min(strength, 0.999) * requested_steps)`, capping
+    # strength at 0.999 and off-by-one'ing t_start to 1 even when the caller
+    # requested strength=1.0. Force t_start=0 defensively so the two stay
+    # consistent regardless of that setting.
+    if outpaint_noise_init and t_start != 0:
+        print(f"[CustomSampling] [outpaint] t_start={t_start} != 0 while outpaint_noise_init is active "
+              f"(likely img2img_fix_steps=False rounding denoising_strength=1.0 down to 0.999) -- forcing t_start=0")
+        t_start = 0
+
     timesteps = timesteps[t_start:]
 
     # Ensure VAE is on GPU for initial encoding
@@ -3492,6 +3726,18 @@ def custom_inpaint_sampling_loop(
         )
     else:
         latents = scheduler.add_noise(init_latents, noise, timesteps[0:1])
+
+    # OUTPAINT B1: precompute the low-frequency boundary color proximal's
+    # STATIC inputs once (mask_latent/image_latents never change across
+    # steps) -- collar_weight (W_b(d)) and the extended keep-side low-freq
+    # target G_kappa(image_latents). None/no-op when the flag or strength is
+    # off, or there is no generate region at all.
+    _outpaint_collar_weight_map = None
+    _outpaint_target_lowfreq = None
+    if outpaint_noise_init and outpaint_boundary_color_strength > 0.0 and not is_inpaint_unet:
+        _outpaint_collar_weight_map = _outpaint_collar_weight(mask_latent)
+        if _outpaint_collar_weight_map is not None:
+            _outpaint_target_lowfreq = _outpaint_gaussian_lowpass(image_latents)
 
     # Prepare Reference Guide latents while VAE is still on GPU
     ref_guides = []
@@ -4227,6 +4473,42 @@ def custom_inpaint_sampling_loop(
             noise_pred_text = noise_pred
             noise_pred_uncond = None
 
+        # ============================================================
+        # OUTPAINT B1: trajectory-consistent x0-space projection injection
+        # (scratchpad/outpaint_continuity_design.md section "B1"). REPLACES
+        # the post-step keep re-injection further below with a PRE-step
+        # projection of the CFG-adjusted model output, so the keep-region
+        # constraint rides the SAME sampler transition (ancestral noise draw,
+        # multistep solver history, etc.) as the generate region instead of
+        # being pinned to an independent forward marginal
+        # (scheduler.add_noise(image_latents, noise, t_{i+1})) that is
+        # off-trajectory relative to the gen region -- the seam-line source.
+        # A no-op (nothing in this block runs) when outpaint_noise_init is
+        # False, so normal inpaint is byte-identical.
+        # ============================================================
+        if outpaint_noise_init and not is_inpaint_unet:
+            predict_x0, to_model_output = _outpaint_x0_transform(scheduler, latents, t, i)
+            x0_hat = predict_x0(noise_pred)
+            # Project the known constraint: keep region = clean image latents,
+            # generate region = the model's own x0 estimate.
+            x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
+
+            if _outpaint_collar_weight_map is not None:
+                # Low-frequency boundary color proximal (design doc section
+                # 2): active mid/late schedule only (progress >= 20%) -- at
+                # high noise the x0 estimate is too unreliable for a
+                # meaningful low-freq correction.
+                _outpaint_progress = (t_start + i) / num_inference_steps
+                if _outpaint_progress >= 0.2:
+                    x0_proj = _outpaint_apply_boundary_color(
+                        x0_proj, _outpaint_target_lowfreq, _outpaint_collar_weight_map,
+                        outpaint_boundary_color_strength,
+                    )
+
+            # Convert back to the model-output space scheduler.step expects
+            # (exact inverse of predict_x0 for this scheduler/prediction_type).
+            noise_pred = to_model_output(x0_proj)
+
         # Pass step_generator to ensure reproducibility with stochastic samplers (e.g., Euler a)
         step_output = scheduler.step(noise_pred, t, latents, generator=step_generator)
         latents = step_output.prev_sample
@@ -4255,26 +4537,40 @@ def custom_inpaint_sampling_loop(
         # Apply mask blending ONLY for 4-channel UNets (regular models)
         # 9-channel inpaint UNets handle masking internally via concatenation
         if not is_inpaint_unet:
-            init_latents_proper = image_latents  # Use clean original image latents
+            if outpaint_noise_init:
+                # OUTPAINT B1: the keep-region constraint was already applied
+                # PRE-step above (x0-space projection injection), so the old
+                # post-step add_noise-and-overwrite is gated OFF here -- it is
+                # exactly the off-trajectory replacement B1 removes. Only a
+                # single hard overwrite remains, on the FINAL step, as a
+                # latent anchor (belt-and-suspenders; the pixel-exact
+                # guarantee is the unconditional final paste in
+                # outpaint_utils regardless of this).
+                if i == len(timesteps) - 1:
+                    latents = (1 - mask_latent) * image_latents + mask_latent * latents
+                if pred_original_sample is not None:
+                    pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
+            else:
+                init_latents_proper = image_latents  # Use clean original image latents
 
-            # Re-noise original to match the noise level of denoised latents
-            # Use NEXT timestep (where denoised latents are), not current timestep
-            # Skip re-noising on the last step
-            if i < len(timesteps) - 1:
-                noise_timestep = timesteps[i + 1]
-                init_latents_proper = scheduler.add_noise(
-                    init_latents_proper,
-                    noise,
-                    noise_timestep.unsqueeze(0) if noise_timestep.dim() == 0 else noise_timestep
-                )
+                # Re-noise original to match the noise level of denoised latents
+                # Use NEXT timestep (where denoised latents are), not current timestep
+                # Skip re-noising on the last step
+                if i < len(timesteps) - 1:
+                    noise_timestep = timesteps[i + 1]
+                    init_latents_proper = scheduler.add_noise(
+                        init_latents_proper,
+                        noise,
+                        noise_timestep.unsqueeze(0) if noise_timestep.dim() == 0 else noise_timestep
+                    )
 
-            # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
-            latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
+                # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
+                latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
 
-            # Apply same mask blending to pred_original_sample for consistent x0 preview
-            # Without this, the preview shows unblended generation (incorrect outside mask area)
-            if pred_original_sample is not None:
-                pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
+                # Apply same mask blending to pred_original_sample for consistent x0 preview
+                # Without this, the preview shows unblended generation (incorrect outside mask area)
+                if pred_original_sample is not None:
+                    pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
 
         # Reset debug flag after first iteration
         if first_iteration_debug:

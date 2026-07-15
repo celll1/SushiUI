@@ -19,7 +19,7 @@ import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
 import ImageList from "./ImageList";
 import { saveTempImage } from "@/utils/tempImageStorage";
-import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid } from "@/utils/sendHelpers";
+import { sendBase64ImageToImg2Img, sendBase64ImageToImg2Vid, sendImageToImg2Vid, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import PostEditControls from "../common/PostEditControls";
 import { PostEditState, NEUTRAL_POST_EDIT, isNeutral, applyPostEdit, buildFilterString, editedFilename } from "@/utils/postEdit";
 import { usePostEditPreview } from "@/hooks/usePostEditPreview";
@@ -471,32 +471,40 @@ export default function ImageGrid() {
   };
 
   const sendToImg2Img = async (image: GeneratedImage) => {
-    // Send image if checked
+    // Send image/audio if checked. Audio routes to the aud2aud reference clip
+    // input (too large for base64/localStorage -- the URL itself is sent,
+    // Img2ImgPanel's receive listener fetches it into a File). Video keeps
+    // its pre-existing (image-path) behavior unchanged -- video->img2img
+    // frame-grab is handled by the Capture-frame buttons, not this one.
     if (sendImage) {
-      try {
-        // Load image from /outputs/ and save to tempStorage
-        const imageUrl = `/outputs/${image.filename}`;
-        const response = await fetch(imageUrl);
-        const blob = await response.blob();
-        const reader = new FileReader();
+      if (isSelectedAudio) {
+        sendAudioToImg2Img(`/outputs/${image.filename}`);
+      } else {
+        try {
+          // Load image from /outputs/ and save to tempStorage
+          const imageUrl = `/outputs/${image.filename}`;
+          const response = await fetch(imageUrl);
+          const blob = await response.blob();
+          const reader = new FileReader();
 
-        await new Promise((resolve, reject) => {
-          reader.onloadend = async () => {
-            try {
-              const base64data = reader.result as string;
-              const tempRef = await saveTempImage(base64data);
-              localStorage.setItem("img2img_input_image", tempRef);
-              window.dispatchEvent(new Event("img2img_input_updated"));
-              resolve(null);
-            } catch (error) {
-              reject(error);
-            }
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      } catch (error) {
-        console.error("[ImageGrid] Failed to send image to img2img:", error);
+          await new Promise((resolve, reject) => {
+            reader.onloadend = async () => {
+              try {
+                const base64data = reader.result as string;
+                const tempRef = await saveTempImage(base64data);
+                localStorage.setItem("img2img_input_image", tempRef);
+                window.dispatchEvent(new Event("img2img_input_updated"));
+                resolve(null);
+              } catch (error) {
+                reject(error);
+              }
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch (error) {
+          console.error("[ImageGrid] Failed to send image to img2img:", error);
+        }
       }
     }
 
@@ -669,32 +677,42 @@ export default function ImageGrid() {
   };
 
   const sendToOutpaint = async (image: GeneratedImage) => {
-    // Send image if checked (no mask -- outpaint builds its own canvas +
-    // mask server-side from the placement fields).
+    const imageUrl = `/outputs/${image.filename}`;
+    // Send image/video/audio if checked. Video/audio clips are too large for
+    // the base64/localStorage transport used by images -- the URL itself is
+    // sent, and OutpaintPanel's receive listener fetches it into a File (no
+    // mask either way -- outpaint builds its own canvas/mask server-side from
+    // the placement fields for images, and the video/audio routes have no
+    // mask concept at all).
     if (sendImage) {
-      try {
-        const imageUrl = `/outputs/${image.filename}`;
-        const response = await fetch(imageUrl);
-        const blob = await response.blob();
-        const reader = new FileReader();
+      if (isSelectedVideo) {
+        sendVideoToOutpaint(imageUrl);
+      } else if (isSelectedAudio) {
+        sendAudioToOutpaint(imageUrl);
+      } else {
+        try {
+          const response = await fetch(imageUrl);
+          const blob = await response.blob();
+          const reader = new FileReader();
 
-        await new Promise((resolve, reject) => {
-          reader.onloadend = async () => {
-            try {
-              const base64data = reader.result as string;
-              const tempRef = await saveTempImage(base64data);
-              localStorage.setItem("outpaint_input_image", tempRef);
-              window.dispatchEvent(new Event("outpaint_input_updated"));
-              resolve(null);
-            } catch (error) {
-              reject(error);
-            }
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(blob);
-        });
-      } catch (error) {
-        console.error("[ImageGrid] Failed to send image to outpaint:", error);
+          await new Promise((resolve, reject) => {
+            reader.onloadend = async () => {
+              try {
+                const base64data = reader.result as string;
+                const tempRef = await saveTempImage(base64data);
+                localStorage.setItem("outpaint_input_image", tempRef);
+                window.dispatchEvent(new Event("outpaint_input_updated"));
+                resolve(null);
+              } catch (error) {
+                reject(error);
+              }
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(blob);
+          });
+        } catch (error) {
+          console.error("[ImageGrid] Failed to send image to outpaint:", error);
+        }
       }
     }
 
@@ -1577,7 +1595,7 @@ export default function ImageGrid() {
                           onClick={() => sendToImg2Img(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                          disabled={!sendImage && !sendPrompt && !sendParameters}
                         >
                           img2img
                         </Button>
@@ -1593,7 +1611,7 @@ export default function ImageGrid() {
                           onClick={() => sendToOutpaint(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                          disabled={!sendImage && !sendPrompt && !sendParameters}
                         >
                           outpaint
                         </Button>
@@ -1865,7 +1883,7 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToImg2Img(selectedImage)}
-                disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                disabled={!sendImage && !sendPrompt && !sendParameters}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Send to img2img"
               >
@@ -1881,7 +1899,7 @@ export default function ImageGrid() {
               </button>
               <button
                 onClick={() => sendToOutpaint(selectedImage)}
-                disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                disabled={!sendImage && !sendPrompt && !sendParameters}
                 className="px-3 py-2 text-sm bg-gray-800 hover:bg-gray-700 text-white rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 title="Send to outpaint"
               >

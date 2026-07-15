@@ -29,7 +29,7 @@ import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToUpscale } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToUpscale, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -1115,6 +1115,38 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
 
     if (onTabChange) {
       onTabChange("upscale");
+    }
+  };
+
+  const sendToOutpaint = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    // Use generated image params if available, otherwise fall back to current UI params
+    const sourceParams = generatedImageParams || params;
+
+    // Send image if checked
+    if (sendImage) {
+      try {
+        await sendImageToOutpaint(generatedImage);
+      } catch (error) {
+        console.error("[Inpaint] Failed to send image to outpaint:", error);
+      }
+    }
+
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "outpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "outpaint_params_updated"
+    });
+
+    // Navigate to outpaint tab
+    if (onTabChange) {
+      onTabChange("outpaint");
     }
   };
 
@@ -3948,7 +3980,7 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -3973,6 +4005,14 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     disabled={!sendImage && !sendPrompt && !sendParameters}
                   >
                     Send to inpaint
+                  </Button>
+                  <Button
+                    onClick={sendToOutpaint}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to outpaint
                   </Button>
                   <Button
                     onClick={sendToUpscale}

@@ -3656,6 +3656,68 @@ def custom_img2img_sampling_loop(
     return image
 
 
+# ============================================================================
+# REGIONAL ADDITIONAL PROMPT -- STAGE R1, method "cfg" (spatial/masked CFG)
+# (scratchpad/regional_prompt_synthesis.md). An additional positive/negative
+# prompt that conditions ONLY the generated region (outpaint = mask_latent==1;
+# inpaint = the repaint mask), leaving the main whole-image prompt and the
+# preserved region untouched. Runs an extra denoise branch conditioned on
+# (main text (+) region text) and spatially blends its CFG result into the
+# main branch's (unchanged) CFG result via the (feathered) region mask -- see
+# custom_inpaint_sampling_loop's "REGIONAL PROMPT" block further below.
+# ============================================================================
+
+def _build_region_mask_feather(mask_latent: torch.Tensor, sigma: float) -> torch.Tensor:
+    """Feathered region mask ``Mf = M (x) Gaussian_sigma(M)`` for the spatial
+    CFG blend. ``sigma<=0`` -> hard mask (``Mf = M``, i.e. mask_latent as-is).
+    Multiplying by ``M`` guarantees ``Mf`` is EXACTLY 0 wherever ``M`` is 0,
+    regardless of the blur kernel's boundary behavior. Reuses the same
+    depthwise Gaussian low-pass as OUTPAINT B1's boundary-color proximal
+    (``_outpaint_gaussian_lowpass``).
+    """
+    if sigma <= 0.0:
+        return mask_latent
+    blurred = _outpaint_gaussian_lowpass(mask_latent, kappa=sigma)
+    return mask_latent * blurred
+
+
+def _run_region_unet_call(
+    unet,
+    sample: torch.Tensor,
+    timestep,
+    encoder_hidden_states: torch.Tensor,
+    added_cond_kwargs: Optional[Dict[str, Any]] = None,
+    down_block_res_samples=None,
+    mid_block_res_sample: Optional[torch.Tensor] = None,
+    use_autocast: bool = False,
+) -> torch.Tensor:
+    """Small per-branch U-Net model-call runner used by the regional-CFG
+    branch's extra forward(s). Given the SAME scaled-latent ``sample``
+    (already including the 9ch mask+image concat for a dedicated inpaint
+    U-Net), ``timestep``, ControlNet residuals, and autocast setting the
+    step's MAIN branch already resolved, this runs a single forward with a
+    DIFFERENT ``encoder_hidden_states`` (and, for SDXL, ``added_cond_kwargs``)
+    and returns its ``.sample``. Not used by the main branch itself (left
+    100% untouched for exactness); mirrors its exact kwargs construction so
+    the regional branch's forward is structurally identical to the main
+    branch's apart from the text conditioning -- the same identical scaled-
+    latent / timestep / 9ch-mask+image / SDXL time_ids / ControlNet residual /
+    autocast handling, only encoder_hidden_states (and pooled text_embeds)
+    differ.
+    """
+    kwargs: Dict[str, Any] = {"encoder_hidden_states": encoder_hidden_states}
+    if down_block_res_samples is not None:
+        kwargs["down_block_additional_residuals"] = down_block_res_samples
+    if mid_block_res_sample is not None:
+        kwargs["mid_block_additional_residual"] = mid_block_res_sample
+    if added_cond_kwargs:
+        kwargs["added_cond_kwargs"] = added_cond_kwargs
+    if use_autocast:
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
+            return unet(sample, timestep, **kwargs).sample
+    return unet(sample, timestep, **kwargs).sample
+
+
 def custom_inpaint_sampling_loop(
     pipeline: Union[StableDiffusionInpaintPipeline, StableDiffusionXLInpaintPipeline],
     init_image: Image.Image,
@@ -3761,6 +3823,23 @@ def custom_inpaint_sampling_loop(
                                         # _outpaint_reference_filter_store above). 0 = off (default; byte-identical
                                         # to B2). Only active when outpaint_noise_init is True and not a dedicated
                                         # 9ch inpaint UNet -- same gate family as B1/B2.
+    region_prompt_embeds: Optional[torch.Tensor] = None,  # Regional additional prompt (STAGE R1): region-positive
+                                        # text embeds, encoded the SAME way as prompt_embeds. None/unused unless
+                                        # region_has_positive is True.
+    region_negative_prompt_embeds: Optional[torch.Tensor] = None,  # Regional additional prompt: region-negative
+                                        # text embeds. None/unused unless region_has_negative is True.
+    region_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # SDXL only: pooled embeds for region_prompt_embeds.
+    region_negative_pooled_prompt_embeds: Optional[torch.Tensor] = None,  # SDXL only: pooled embeds for
+                                        # region_negative_prompt_embeds.
+    region_has_positive: bool = False,  # True iff region_prompt (stripped) is non-empty (encoded upstream).
+    region_has_negative: bool = False,  # True iff region_negative_prompt (stripped) is non-empty (encoded upstream).
+    region_prompt_strength: float = 1.0,  # Regional additional prompt: blend strength (0-2). 0 = feature inactive.
+                                        # noise_pred += strength * Mf * (noise_pred_region - noise_pred); 1.0 =
+                                        # the canonical (1-Mf)*g + Mf*gR spatial blend.
+    region_prompt_method: str = "cfg",  # "cfg" (spatial/masked CFG, STAGE R1) | "attention" (not yet implemented in
+                                        # this build -- falls back to "cfg" with a warning).
+    region_mask_feather: float = 0.0,  # Gaussian sigma (latent cells) for the region mask feather Mf = M*G_sigma(M).
+                                        # 0 = hard mask (Mf = M, mask_latent as-is).
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -4046,6 +4125,20 @@ def custom_inpaint_sampling_loop(
         mode="nearest"
     )
 
+    # REGIONAL ADDITIONAL PROMPT (STAGE R1): `region_prompt_requested` is the
+    # activation condition (region_prompt_strength > 0 AND at least one region
+    # string non-empty) -- resolved here (region_has_positive/region_has_negative
+    # are pre-computed upstream in pipeline.py from the stripped strings, so
+    # this needs no string handling). The FINAL compatibility gate
+    # (`region_cfg_active`, NAG/NegPip/DEUS/style/Spectrum/FBCache) is resolved
+    # further below once those flags have all settled. Build the feathered
+    # mask ONCE here -- only when requested, so an inactive feature never
+    # builds it (no extra cost, byte-identical to before this feature).
+    region_prompt_requested = region_prompt_strength > 0 and (region_has_positive or region_has_negative)
+    region_mask_feathered = None
+    if region_prompt_requested:
+        region_mask_feathered = _build_region_mask_feather(mask_latent, region_mask_feather)
+
     # Store original image latents for mask blending (before adding noise)
     image_latents = init_latents.clone()
 
@@ -4299,6 +4392,63 @@ def custom_inpaint_sampling_loop(
                 },
                 label="inpaint",
             )
+
+    # REGIONAL ADDITIONAL PROMPT (STAGE R1, method "cfg"): final compatibility
+    # gate, resolved now that NAG/NegPip/DEUS/style/Spectrum/FBCache have all
+    # settled to their FINAL values above. `region_cfg_active` is a
+    # LOOP-INVARIANT flag (evaluated once, not re-checked per step -- if NAG
+    # later self-deactivates mid-loop via nag_sigma_end, regional prompting
+    # stays off for the rest of the run; v1 scope). outpaint_reference_active
+    # (B3) is explicitly COMPATIBLE (see the per-step block below, which
+    # reuses its self-attention capture for the region-positive call too).
+    region_cfg_active = False
+    if region_prompt_requested:
+        if region_prompt_method not in ("cfg", "attention"):
+            region_prompt_method = "cfg"
+        if region_prompt_method == "attention":
+            print("[RegionalPrompt] region_prompt_method='attention' is not yet available in this "
+                  "build; falling back to 'cfg'")
+            _add_generation_warning(
+                "region_prompt_method 'attention' not yet available; using 'cfg'.",
+                code="region_prompt_attention_unavailable",
+            )
+        _region_incompatible = nag_active or negpip_active or is_deus or style_active or style_refs_active or \
+            spectrum is not None or fbcache_ctrl is not None
+        if _region_incompatible:
+            print("[RegionalPrompt] requested but disabled (NAG / NegPip / DEUS / style transfer / "
+                  "Spectrum / FBCache is active; needs a stable standard-CFG or OUTPAINT-B3 model call)")
+            _add_generation_warning(
+                "Regional additional prompt disabled: not compatible with NAG / NegPip / DEUS / "
+                "style transfer / Spectrum / FBCache in this version.",
+                code="region_prompt_incompatible",
+            )
+        elif not ((abs(guidance_scale - 1.0) > 1e-5) or nag_active or negpip_active):
+            # The spatial-CFG method operates on the cond/uncond pair; with CFG
+            # off (base guidance_scale <= 1) there is no regional axis to apply,
+            # so it silently no-ops -- say so instead of emitting a misleading
+            # "~2x cost" warning for a feature that does nothing this run.
+            # (Uses the BASE guidance_scale param -- the per-step
+            # do_classifier_free_guidance is not defined until inside the loop;
+            # the per-step blend gate handles any CFG-schedule dips to 1.0.)
+            print("[RegionalPrompt] requested but inactive: needs CFG (guidance_scale > 1)")
+            _add_generation_warning(
+                "Regional additional prompt requires CFG (guidance_scale > 1); ignored this run.",
+                code="region_prompt_needs_cfg",
+            )
+        else:
+            region_cfg_active = True
+            _region_cost_base = 2.0 if (region_has_positive and region_has_negative) else 1.5
+            _region_visit_factor = len(_outpaint_visit_schedule) / max(1, len(timesteps))
+            _region_cost_total = _region_cost_base * _region_visit_factor
+            print(f"[RegionalPrompt] active (method=cfg): ~{_region_cost_total:.2f}x the base U-Net "
+                  f"forward count ({_region_cost_base:.1f}x per denoise step"
+                  + (f", x{_region_visit_factor:.2f} from outpaint time-travel resampling" if _region_visit_factor > 1.0 else "")
+                  + ")")
+            _add_generation_warning(
+                f"Regional additional prompt active: ~{_region_cost_total:.2f}x the base U-Net forward "
+                f"count for this generation.",
+                code="region_prompt_cost",
+            )
     print(f"[CustomSampling] Starting inpaint loop with {len(timesteps)} steps")
 
     # Get sigma_max for dynamic CFG scheduling
@@ -4341,6 +4491,13 @@ def custom_inpaint_sampling_loop(
     # ITERATION-ORDER-IDENTICAL to the original `enumerate(timesteps)`.
     for visit_idx, (i, is_forward_jump) in enumerate(_outpaint_visit_schedule):
         t = timesteps[i]
+
+        # REGIONAL ADDITIONAL PROMPT: reset the per-step OUTPAINT B3 capture
+        # hand-off (see the outpaint_reference_active model-call branch below,
+        # which sets these when B3 is active THIS step) before every visit, so
+        # a stale store from a previous step is never reused.
+        _region_b3_store = None
+        _region_b3_progress = None
 
         # OUTPAINT B2: time-travel jump. `is_forward_jump` marks the first
         # visit of a re-denoise cycle -- re-noise the WHOLE latent (keep +
@@ -4925,6 +5082,16 @@ def custom_inpaint_sampling_loop(
                     )
                     set_style_context(unet, inject_ctx)
 
+                    # REGIONAL ADDITIONAL PROMPT: hand off this step's filtered
+                    # capture so the region-positive branch call (below, after
+                    # the CFG combine) can reuse the SAME B3 self-attention
+                    # injection for its own forward -- "reuse the B3 capture
+                    # for BOTH the main-positive and region-positive branch
+                    # calls" (negative calls stay uninjected, matching B3's
+                    # own positive-only path).
+                    _region_b3_store = filtered_store
+                    _region_b3_progress = progress
+
                 unet_kwargs_cond = {"encoder_hidden_states": current_prompt_embeds}
                 if down_block_res_samples is not None:
                     unet_kwargs_cond["down_block_additional_residuals"] = down_block_res_samples
@@ -5058,6 +5225,135 @@ def custom_inpaint_sampling_loop(
             # CFG = 1.0: use the prediction directly (no guidance needed)
             noise_pred_text = noise_pred
             noise_pred_uncond = None
+
+        # ============================================================
+        # REGIONAL ADDITIONAL PROMPT (STAGE R1, method "cfg"): spatial/masked
+        # CFG (scratchpad/regional_prompt_synthesis.md). A no-op (this whole
+        # block is skipped) unless region_cfg_active (resolved ONCE before the
+        # loop) AND do_classifier_free_guidance was True this step -- so
+        # normal inpaint/outpaint stays BYTE-IDENTICAL when the feature is
+        # unused. `noise_pred` here is `g` (the main CFG result, fully
+        # unchanged by anything above this block); noise_pred_uncond/
+        # noise_pred_text are the MAIN branch's own uncond/cond outputs
+        # (standard batch=2 CFG, or -- for outpaint_reference_active/B3 --
+        # the 2-Pass CFG branch's two separate calls) and are REUSED directly
+        # for whichever region field is empty (region-only-one-field cost
+        # reduction: ~1.5x instead of ~2x extra U-Net forwards).
+        # ============================================================
+        if region_cfg_active and do_classifier_free_guidance:
+            # Row-0 slice of the SAME latent_model_input the main branch built
+            # this step: already batch=1 for the outpaint_reference_active
+            # (B3) 2-Pass structure (the only 2-Pass branch compatible with
+            # region_cfg_active); batch=2 for the standard CFG structure --
+            # in the batch=2 case both rows are numerically IDENTICAL (both
+            # come from `torch.cat([latents]*2)` plus repeated mask/image
+            # channels), so slicing row 0 is exact, not an approximation.
+            _region_sample = latent_model_input if latent_model_input.shape[0] == 1 else latent_model_input[0:1]
+            # ControlNet residuals are conditioned PER ROW in the batch=2 CFG
+            # structure (row 0 = uncond-conditioned, row -1 = cond-conditioned),
+            # so the region-POSITIVE forward must take the COND row and the
+            # region-NEGATIVE forward the UNCOND row -- a shared row-0 slice
+            # would bias the region-positive eps with the uncond residual.
+            def _region_res_rows(cond: bool):
+                _pick = lambda r: (r[-1:] if (cond and r.shape[0] > 1) else r[0:1])
+                _down = [_pick(r) for r in down_block_res_samples] if down_block_res_samples is not None else None
+                _mid = _pick(mid_block_res_sample) if mid_block_res_sample is not None else None
+                return _down, _mid
+            _region_down_res_pos, _region_mid_res_pos = _region_res_rows(cond=True)
+            _region_down_res_neg, _region_mid_res_neg = _region_res_rows(cond=False)
+            _region_time_ids = None
+            if is_sdxl and added_cond_kwargs and added_cond_kwargs.get("time_ids") is not None:
+                _region_time_ids = added_cond_kwargs["time_ids"][0:1]
+
+            def _region_added_cond(pooled_row):
+                if not is_sdxl:
+                    return None
+                return {"text_embeds": pooled_row, "time_ids": _region_time_ids}
+
+            # Positive/negative CONTEXT tensors: main text (+) region text,
+            # concatenated on the token axis -- or exactly the main branch's
+            # own context when that side's region field is empty (region-
+            # only-one-field reuse: no concat, no new encode).
+            region_positive_context = current_prompt_embeds
+            region_positive_pooled = current_pooled_prompt_embeds
+            if region_has_positive and region_prompt_embeds is not None:
+                region_positive_context = torch.cat([current_prompt_embeds, region_prompt_embeds], dim=1)
+                if region_pooled_prompt_embeds is not None:
+                    region_positive_pooled = region_pooled_prompt_embeds
+
+            region_negative_context = current_negative_prompt_embeds
+            region_negative_pooled = current_negative_pooled_prompt_embeds
+            if region_has_negative and region_negative_prompt_embeds is not None:
+                region_negative_context = torch.cat([current_negative_prompt_embeds, region_negative_prompt_embeds], dim=1)
+                if region_negative_pooled_prompt_embeds is not None:
+                    region_negative_pooled = region_negative_pooled_prompt_embeds
+
+            # Default to the MAIN branch's own uncond/cond outputs; overwritten
+            # below ONLY for the side(s) that actually need a NEW forward.
+            noise_pred_region_uncond = noise_pred_uncond
+            noise_pred_region_text = noise_pred_text
+
+            with torch.no_grad():
+                if region_has_positive:
+                    # NEW forward: region-positive context. Reuses the SAME
+                    # B3 self-attention capture as the main-positive call
+                    # (when B3 was active this step) -- "reuse the B3 capture
+                    # for BOTH the main-positive and region-positive branch
+                    # calls"; the region-negative call below stays uninjected
+                    # (matches B3's own positive-only injection path).
+                    _region_b3_injected = False
+                    if outpaint_reference_active and _region_b3_store is not None:
+                        from core.inference.reference_style import StyleContext
+                        from core.inference.attention_processors import set_style_context
+                        set_style_context(unet, StyleContext(
+                            mode="inject", config=_outpaint_reference_cfg,
+                            store=_region_b3_store, progress=_region_b3_progress,
+                        ))
+                        _region_b3_injected = True
+                    noise_pred_region_text = _run_region_unet_call(
+                        unet, _region_sample, t, region_positive_context,
+                        added_cond_kwargs=_region_added_cond(region_positive_pooled),
+                        down_block_res_samples=_region_down_res_pos,
+                        mid_block_res_sample=_region_mid_res_pos,
+                        use_autocast=use_autocast,
+                    )
+                    if _region_b3_injected:
+                        from core.inference.attention_processors import set_style_context
+                        set_style_context(unet, None)
+
+                if region_has_negative:
+                    # NEW forward: region-negative context. Never injected.
+                    noise_pred_region_uncond = _run_region_unet_call(
+                        unet, _region_sample, t, region_negative_context,
+                        added_cond_kwargs=_region_added_cond(region_negative_pooled),
+                        down_block_res_samples=_region_down_res_neg,
+                        mid_block_res_sample=_region_mid_res_neg,
+                        use_autocast=use_autocast,
+                    )
+
+            noise_pred_region = noise_pred_region_uncond + current_guidance_scale * (
+                noise_pred_region_text - noise_pred_region_uncond
+            )
+
+            # Dynamic thresholding + guidance rescale evaluated INDEPENDENTLY
+            # for the regional result (NOT after the spatial blend below) --
+            # a post-blend global norm would let region-only values distort
+            # the known-position g's own normalization.
+            if dynamic_threshold_percentile > 0.0:
+                noise_pred_region = dynamic_thresholding(
+                    noise_pred_region,
+                    percentile=dynamic_threshold_percentile,
+                    clamp_value=dynamic_threshold_mimic_scale,
+                )
+            if guidance_rescale > 0.0:
+                noise_pred_region = rescale_noise_cfg(
+                    noise_pred_region, noise_pred_region_text, guidance_rescale=guidance_rescale
+                )
+
+            # Spatial blend: noise_pred = (1-Mf)*g + Mf*gR, scaled by
+            # region_prompt_strength (1.0 = the canonical formula exactly;
+            # <1 = weaker region influence; >1 = extrapolated/stronger).
+            noise_pred = noise_pred + region_prompt_strength * region_mask_feathered * (noise_pred_region - noise_pred)
 
         # ============================================================
         # OUTPAINT B1: trajectory-consistent x0-space projection injection

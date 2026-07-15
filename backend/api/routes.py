@@ -41,7 +41,7 @@ from api.websocket import manager
 from auth import create_access_token, verify_credentials, require_auth
 from api.param_defaults import (
     GENERATION_DEFAULTS, TXT2IMG_DEFAULTS, IMG2IMG_DEFAULTS, INPAINT_DEFAULTS,
-    OUTPAINT_DEFAULTS,
+    OUTPAINT_DEFAULTS, OUTPAINT_VIDEO_DEFAULTS,
     UPSCALE_DEFAULTS, TXT2VID_DEFAULTS, IMG2VID_DEFAULTS, TXT2AUD_DEFAULTS, AUD2AUD_DEFAULTS,
     TRAINING_DEFAULTS, TAGGER_TRAINING_DEFAULTS,
     TIMESTEP_SAMPLING_DEFAULTS_BY_ARCH,
@@ -347,6 +347,7 @@ async def get_generation_defaults():
         "upscale": UPSCALE_DEFAULTS,
         "txt2vid": TXT2VID_DEFAULTS,
         "img2vid": IMG2VID_DEFAULTS,
+        "outpaint_vid": OUTPAINT_VIDEO_DEFAULTS,
         "txt2aud": TXT2AUD_DEFAULTS,
         "aud2aud": AUD2AUD_DEFAULTS,
     }
@@ -2770,6 +2771,273 @@ async def generate_img2vid(
         fail_generation(str(e))
         raise GenerationError(
             "Image-to-video generation failed",
+            detail=f"{str(e)}\n\n{error_detail}"
+        )
+
+
+@router.post("/generate/outpaint/video")
+async def generate_outpaint_video(
+    prompt: str = Form(...),
+    negative_prompt: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["negative_prompt"]),
+    width: int = Form(OUTPAINT_VIDEO_DEFAULTS["width"]),
+    height: int = Form(OUTPAINT_VIDEO_DEFAULTS["height"]),
+    total_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["total_frames"]),
+    frame_rate: float = Form(OUTPAINT_VIDEO_DEFAULTS["frame_rate"]),
+    num_inference_steps: int = Form(OUTPAINT_VIDEO_DEFAULTS["num_inference_steps"]),
+    guidance_scale: float = Form(OUTPAINT_VIDEO_DEFAULTS["guidance_scale"]),
+    seed: int = Form(OUTPAINT_VIDEO_DEFAULTS["seed"]),
+    num_videos_per_prompt: int = Form(OUTPAINT_VIDEO_DEFAULTS["num_videos_per_prompt"]),
+    max_sequence_length: int = Form(OUTPAINT_VIDEO_DEFAULTS["max_sequence_length"]),
+    audio_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["audio_enable"]),
+    # Placement (new for video outpaint). All in PIXEL frames of the OUTPUT
+    # timeline except input_trim_*, which trim the UPLOADED clip itself.
+    input_offset_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_offset_frames"]),
+    input_trim_start_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_trim_start_frames"]),
+    input_trim_end_frames: int = Form(OUTPAINT_VIDEO_DEFAULTS["input_trim_end_frames"]),
+    outpaint_video_audio_mode: str = Form(OUTPAINT_VIDEO_DEFAULTS["outpaint_video_audio_mode"]),
+    blocks_to_swap: int = Form(OUTPAINT_VIDEO_DEFAULTS["blocks_to_swap"]),
+    fbcache_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_enable"]),
+    fbcache_threshold: float = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_threshold"]),
+    fbcache_warmup_steps: int = Form(OUTPAINT_VIDEO_DEFAULTS["fbcache_warmup_steps"]),
+    spectrum_enable: bool = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_enable"]),
+    spectrum_w: float = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_w"]),
+    spectrum_w_decay: float = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_w_decay"]),
+    spectrum_delta_cap: float = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_delta_cap"]),
+    spectrum_m: int = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_m"]),
+    spectrum_lam: float = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_lam"]),
+    spectrum_warmup_steps: int = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_warmup_steps"]),
+    spectrum_window_size: int = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_window_size"]),
+    spectrum_flex_window: float = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_flex_window"]),
+    spectrum_tail: float = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_tail"]),
+    spectrum_max_cache: int = Form(OUTPAINT_VIDEO_DEFAULTS["spectrum_max_cache"]),
+    vae_path: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["vae_path"]),
+    text_encoder_path: Optional[str] = Form(OUTPAINT_VIDEO_DEFAULTS["text_encoder_path"]),
+    video_lossless: bool = Form(OUTPAINT_VIDEO_DEFAULTS["video_lossless"]),
+    video: UploadFile = File(...),
+    db: Session = Depends(get_gallery_db)
+):
+    """Video temporal outpaint (LTX-2.3): place a (trimmed) input clip at a
+    frame offset inside a LONGER output timeline and generate the frames
+    before/after. Multipart form: an uploaded `video` clip plus the
+    parameters below.
+
+    Non-÷32 clips are preprocessed ONCE (center-crop + resize to
+    `width`x`height`, the same resolution the whole output timeline shares)
+    and the PREPROCESSED frames become the exact-preserved content (mirrors
+    `/generate/outpaint`'s RESIZE convention). `input_offset_frames` is
+    snapped server-side to the nearest valid LTX-2.3 latent frame index (a
+    warning is added if snapped). Produces an mp4 (H.264, or FFV1 when
+    `video_lossless` is true) and a gallery row. Requires an LTX-2.3 model
+    to be loaded.
+    """
+    from api.generation_status import start_generation, complete_generation, fail_generation, get_warnings
+    from utils.video_utils import save_video_with_metadata, load_video_frames, extract_audio_stream
+
+    if width < 32 or height < 32 or width % 32 != 0 or height % 32 != 0:
+        raise CustomValidationError(
+            "width and height must both be >= 32 and divisible by 32",
+            detail=f"Got width={width}, height={height}. Round each to a multiple of 32, minimum 32.",
+        )
+    if total_frames < 9 or total_frames % 8 != 1:
+        raise CustomValidationError(
+            "total_frames must be >= 9 and satisfy (total_frames - 1) % 8 == 0",
+            detail=f"Got total_frames={total_frames}. Use values like 9, 17, ..., 121 (8k + 1, k >= 1).",
+        )
+    if frame_rate <= 0:
+        raise CustomValidationError(
+            "frame_rate must be > 0",
+            detail=f"Got frame_rate={frame_rate}.",
+        )
+    if outpaint_video_audio_mode not in ("regenerate", "preserve_input"):
+        raise CustomValidationError(
+            "Invalid outpaint_video_audio_mode",
+            detail=f"Must be 'regenerate' or 'preserve_input', got {outpaint_video_audio_mode!r}.",
+        )
+
+    if not getattr(pipeline_manager, "is_ltx2_model", False):
+        raise CustomValidationError(
+            "No LTX-2.3 model loaded",
+            detail="Load an LTX-2.3 video model before calling /generate/outpaint/video.",
+        )
+
+    # Decode the uploaded clip + (best-effort) extract its original audio
+    # track BEFORE acquiring the GPU slot, so a malformed upload surfaces as
+    # a 400/500 without reserving GPU resources. `max_frames` bounds the
+    # RAM cost of decoding an arbitrarily long upload: at most
+    # input_trim_start_frames + total_frames frames can ever be used when
+    # there is no tail trim (load_video_frames widens this bound itself,
+    # using a cheap ffprobe-only estimate, when input_trim_end_frames > 0).
+    _decode_max_frames = max(0, input_trim_start_frames) + total_frames
+    try:
+        video_data = await video.read()
+        video_frames, source_fps = load_video_frames(
+            video_data, max_frames=_decode_max_frames, trim_end_frames=input_trim_end_frames
+        )
+    except CustomValidationError:
+        raise
+    except Exception as e:
+        raise CustomValidationError(
+            "Failed to decode the uploaded video clip",
+            detail=str(e),
+        )
+
+    input_audio = None
+    if audio_enable and outpaint_video_audio_mode == "preserve_input":
+        input_audio = extract_audio_stream(video_data)
+
+    params = {
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "width": width,
+        "height": height,
+        "total_frames": total_frames,
+        "num_frames": total_frames,  # metadata parity with txt2vid/img2vid's "num_frames" key
+        "frame_rate": frame_rate,
+        "num_inference_steps": num_inference_steps,
+        "guidance_scale": guidance_scale,
+        "seed": seed,
+        "num_videos_per_prompt": num_videos_per_prompt,
+        "max_sequence_length": max_sequence_length,
+        "audio_enable": audio_enable,
+        "input_offset_frames": input_offset_frames,
+        "input_trim_start_frames": input_trim_start_frames,
+        "input_trim_end_frames": input_trim_end_frames,
+        "outpaint_video_audio_mode": outpaint_video_audio_mode,
+        "blocks_to_swap": blocks_to_swap,
+        "fbcache_enable": fbcache_enable,
+        "fbcache_threshold": fbcache_threshold,
+        "fbcache_warmup_steps": fbcache_warmup_steps,
+        "spectrum_enable": spectrum_enable,
+        "spectrum_w": spectrum_w,
+        "spectrum_w_decay": spectrum_w_decay,
+        "spectrum_delta_cap": spectrum_delta_cap,
+        "spectrum_m": spectrum_m,
+        "spectrum_lam": spectrum_lam,
+        "spectrum_warmup_steps": spectrum_warmup_steps,
+        "spectrum_window_size": spectrum_window_size,
+        "spectrum_flex_window": spectrum_flex_window,
+        "spectrum_tail": spectrum_tail,
+        "spectrum_max_cache": spectrum_max_cache,
+        "vae_path": vae_path,
+        "text_encoder_path": text_encoder_path,
+        "video_lossless": video_lossless,
+    }
+
+    # Reject a clip that cannot fit at all (trim leaves nothing) -- cheap
+    # up-front check; the backend re-validates against the SNAPPED offset
+    # (which may differ) and the resolution-adjusted frame count.
+    trimmed_len = video_frames.shape[0] - max(0, input_trim_start_frames) - max(0, input_trim_end_frames)
+    if trimmed_len < 1:
+        raise CustomValidationError(
+            "Video outpaint input trim leaves no frames",
+            detail=f"Uploaded clip has {video_frames.shape[0]} frames; "
+                   f"input_trim_start_frames={input_trim_start_frames}, "
+                   f"input_trim_end_frames={input_trim_end_frames}.",
+        )
+
+    start_generation("outpaint_vid")
+    try:
+        pipeline_manager.reset_cancel_flag()
+
+        from api.arch_capabilities import check_arch_capabilities
+        from api.generation_overrides import plan_overrides, apply_overrides
+        _override_plan = plan_overrides(pipeline_manager, params.get("vae_path"), params.get("text_encoder_path"))
+        apply_overrides(pipeline_manager, _override_plan)
+        _ltx2_arch = (pipeline_manager.current_model_info or {}).get("type")
+        check_arch_capabilities(params, _ltx2_arch)
+
+        print(f"outpaint_vid generation params: {sanitize_params_for_logging(params)}")
+
+        def progress_callback(step, total_steps):
+            from api.generation_status import update_progress
+            total = max(total_steps, 1)
+            manager.send_progress_sync(step, total, f"Generating video: step {step}/{total}")
+            update_progress(step, total)
+
+        from core.gpu_coordinator import gpu_coordinator
+        loop = asyncio.get_event_loop()
+        _gen_start = time.perf_counter()
+        async with gpu_coordinator.generation_slot(estimated_peak_gb=40, timeout=120.0):
+            frames, audio, audio_sample_rate, actual_seed = await loop.run_in_executor(
+                executor,
+                lambda: pipeline_manager.generate_vid_outpaint(
+                    params, video_frames, source_fps, input_audio, progress_callback=progress_callback
+                )
+            )
+        apply_generation_timings(params, time.perf_counter() - _gen_start)
+
+        params["seed"] = actual_seed
+
+        # Hash the (first frame of the) uploaded clip (reuses the img2img/img2vid metadata helper).
+        metadata = calculate_generation_metadata(
+            Image.fromarray(frames[0]),
+            [],
+            extract_lora_names,
+            calculate_image_hash,
+            source_image=Image.fromarray(video_frames[0]),
+        )
+        params["source_image_hash"] = metadata.get("source_image_hash")
+
+        # Encode mp4 (+ mux audio), poster PNG, and sidecar JSON.
+        filename = save_video_with_metadata(
+            frames,
+            audio,
+            audio_sample_rate,
+            params,
+            "outpaint_vid",
+            model_info=pipeline_manager.current_model_info,
+            lossless=video_lossless,
+        )
+
+        # Thumbnail from the poster PNG (same base name as the mp4).
+        base_name = os.path.splitext(filename)[0]
+        poster_path = os.path.join(settings.outputs_dir, f"{base_name}.png")
+        if os.path.exists(poster_path):
+            create_thumbnail(poster_path)
+
+        # Record video-specific fields into parameters JSON for the gallery.
+        num_frames_out = int(frames.shape[0])
+        fps_out = float(params.get("frame_rate", 24.0))
+        params_for_db = {k: v for k, v in params.items() if not k.startswith("_")}
+        params_for_db["num_frames"] = num_frames_out
+        params_for_db["fps"] = fps_out
+        params_for_db["duration"] = (num_frames_out / fps_out) if fps_out else 0.0
+        params_for_db["audio_enable"] = bool(params.get("audio_enable", True) and audio is not None)
+        params_for_db["is_video"] = True
+        _effective_warnings = get_warnings()
+        if _effective_warnings:
+            params_for_db["effective_warnings"] = _effective_warnings
+
+        model_name, model_hash = extract_model_info(pipeline_manager)
+
+        db_image = create_db_image_record(
+            GeneratedImage,
+            filename=filename,
+            params=params_for_db,
+            actual_seed=actual_seed,
+            generation_type="outpaint_vid",
+            image_hash="",
+            lora_names=None,
+            model_name=model_name,
+            model_hash=model_hash,
+            source_image_hash=metadata.get("source_image_hash"),
+        )
+        db.add(db_image)
+        db.commit()
+        db.refresh(db_image)
+
+        complete_generation({"image_id": db_image.id, "filename": filename, "seed": actual_seed})
+        return {"success": True, "image": db_image.to_dict(), "actual_seed": actual_seed, "warnings": get_warnings()}
+
+    except (GenerationError, CustomValidationError, NotFoundError) as e:
+        fail_generation(str(e))
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        fail_generation(str(e))
+        raise GenerationError(
+            "Video outpaint generation failed",
             detail=f"{str(e)}\n\n{error_detail}"
         )
 

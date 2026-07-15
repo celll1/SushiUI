@@ -394,6 +394,53 @@ TXT2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 IMG2VID_DEFAULTS: Dict[str, Any] = dict(VIDEO_GEN_DEFAULTS)
 
 # ---------------------------------------------------------------------------
+# Video temporal outpaint (POST /generate/outpaint/video — LTX-2.3)
+# ---------------------------------------------------------------------------
+# Places a (optionally trimmed) input clip at a latent-frame offset inside a
+# LONGER total timeline and generates the frames before/after, preserving the
+# placed input frames byte-exact (see core.pipeline_backends.ltx2
+# ._generate_vidoutpaint_ltx2 + core.pipeline.generate_vid_outpaint). Pure
+# orchestration over the stock diffusers `LTX2ConditionPipeline` -- no new
+# denoise loop. Non-÷32 inputs are preprocessed ONCE (center-crop/resize to a
+# ÷32 working resolution) and the PREPROCESSED frames become the exact-
+# preserved content (mirrors the image outpaint RESIZE convention).
+OUTPAINT_VIDEO_DEFAULTS: Dict[str, Any] = {
+    **VIDEO_GEN_DEFAULTS,
+    # Total output timeline length (frames). Must satisfy (N-1) % 8 == 0,
+    # same constraint as txt2vid/img2vid's num_frames.
+    "total_frames": 121,
+    # Where the (trimmed) input clip is placed within the output timeline, as
+    # a PIXEL frame offset. Snapped server-side to the nearest valid latent
+    # frame index's pixel start -- {0, 1, 9, 17, ..., 8m+1} -- since
+    # LTX2VideoCondition.index addresses a LATENT frame, not a pixel frame.
+    "input_offset_frames": 0,
+    # Trim applied to the input clip BEFORE placement, in pixel frames. 0/0 =
+    # no trim (use the whole clip, subject to fitting inside total_frames).
+    "input_trim_start_frames": 0,
+    "input_trim_end_frames": 0,
+    # "regenerate" (default) = use LTX's own whole-timeline generated audio
+    # as-is (the input clip's own audio is NOT preserved). "preserve_input" =
+    # after generation, mux the input clip's ORIGINAL audio over its placed
+    # span, keeping LTX-generated audio outside that span, with a short
+    # crossfade confined to the GENERATED side of each boundary so every
+    # input audio sample stays exact. Only relevant when audio_enable is
+    # true; falls back to "regenerate" (with a warning) if the uploaded clip
+    # has no audio stream.
+    "outpaint_video_audio_mode": "regenerate",
+    # When true, encode the output with FFV1 (`-pix_fmt rgb24`, no forced
+    # colorspace conversion) instead of libx264, so the pasted input frames
+    # are BIT-EXACT after decode (empirically verified -- see
+    # utils.video_utils.save_video_with_metadata's docstring for why plain
+    # libx264 "-qp 0" is NOT actually bit-exact). Audio (when present) uses
+    # FLAC instead of AAC in this mode. Trade-offs: much larger file size,
+    # and the mp4 will generally NOT play back in a browser's native
+    # <video> element (FFV1 has no mainstream browser decoder) -- intended
+    # for archival/verification of the exact preserved frames, not casual
+    # playback.
+    "video_lossless": False,
+}
+
+# ---------------------------------------------------------------------------
 # Audio generation (POST /generate/txt2aud — ACE-Step 1.5 turbo)
 # ---------------------------------------------------------------------------
 # Audio-only keys, kept out of GENERATION_DEFAULTS (no overlap with the image

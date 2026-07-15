@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import Card from "../common/Card";
+import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
 import Textarea from "../common/Textarea";
@@ -15,6 +16,10 @@ import ControlNetSelector from "../common/ControlNetSelector";
 import GenerationQueue from "../common/GenerationQueue";
 import OutpaintPlacementCanvas, { OutpaintPlacementParams } from "./OutpaintPlacementCanvas";
 import OutpaintTimeline from "./OutpaintTimeline";
+import ImageViewer from "../common/ImageViewer";
+import PostEditControls from "../common/PostEditControls";
+import { PostEditState, NEUTRAL_POST_EDIT, buildFilterString } from "@/utils/postEdit";
+import { usePostEditPreview } from "@/hooks/usePostEditPreview";
 import {
   getSamplers,
   getScheduleTypes,
@@ -237,6 +242,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedImage, setGeneratedImage] = useState<string | null>(null);
   const [generatedImageSeed, setGeneratedImageSeed] = useState<number | null>(null);
   const [generatedImageAncestralSeed, setGeneratedImageAncestralSeed] = useState<number | null>(null);
+  // Preview zoom (image result only), mirrors Txt2ImgPanel/Img2ImgPanel/InpaintPanel.
+  const [previewViewerOpen, setPreviewViewerOpen] = useState(false);
+  // Client-side post-edit (brightness/saturation/flatten) for the current preview image.
+  // Never sent to the backend; reset to neutral on each new generated image.
+  const [postEdit, setPostEdit] = useState<PostEditState>({ ...NEUTRAL_POST_EDIT });
+  // Color-flatten preview for the inline result image (b/s stay as CSS filter).
+  const effectiveGeneratedImage = usePostEditPreview(generatedImage, postEdit.flatten);
+  useEffect(() => {
+    setPostEdit({ ...NEUTRAL_POST_EDIT });
+  }, [generatedImage]);
 
   const [inputImage, setInputImage] = useState<File | null>(null);
   const [inputImagePreview, setInputImagePreview] = useState<string | null>(null);
@@ -253,6 +268,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [videoDurationSec, setVideoDurationSec] = useState<number | null>(null);
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
+  const [generatedVideoSeed, setGeneratedVideoSeed] = useState<number | null>(null);
 
   // Audio temporal outpaint (outpaint_aud) input clip + result. Not persisted
   // across reloads either -- mirrors videoFile's rationale (an uploaded File
@@ -263,6 +279,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [audioDurationSec, setAudioDurationSec] = useState<number | null>(null);
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
+  const [generatedAudioSeed, setGeneratedAudioSeed] = useState<number | null>(null);
 
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
@@ -1103,6 +1120,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setPreviewImage(null);
       setGeneratedImage(null);
       setGeneratedVideo(null);
+      setGeneratedVideoSeed(null);
       try {
         const clip = nextItem.inputVideo;
         if (!clip) {
@@ -1111,6 +1129,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const result = await generateOutpaintVideo(nextItem.params as OutpaintVideoParams, clip);
         const videoUrl = `/outputs/${getResultFilename(result)}`;
         setGeneratedVideo(videoUrl);
+        setGeneratedVideoSeed(getResultSeed(result));
         setGeneratedVideoInfo({
           num_frames: result.image?.num_frames,
           fps: result.image?.fps,
@@ -1149,6 +1168,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       setPreviewImage(null);
       setGeneratedImage(null);
       setGeneratedAudio(null);
+      setGeneratedAudioSeed(null);
       try {
         const referenceAudio = nextItem.inputAudio;
         if (!referenceAudio) {
@@ -1157,6 +1177,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         const result = await generateOutpaintAudio(nextItem.params as OutpaintAudioParams, referenceAudio);
         const audioUrl = `/outputs/${result.image.filename}`;
         setGeneratedAudio(audioUrl);
+        setGeneratedAudioSeed(getResultSeed(result));
         setGeneratedAudioInfo({
           duration: result.image?.duration,
           sample_rate: result.image?.sample_rate,
@@ -1668,20 +1689,87 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <NumberInput
-                label="Seed (-1 = random)"
-                value={params.seed ?? -1}
-                onCommit={(v) => setParams({ ...params, seed: v })}
-                parse="int"
-                className="w-full"
-              />
-              <NumberInput
-                label="Ancestral Seed (-1 = random)"
-                value={params.ancestral_seed ?? -1}
-                onCommit={(v) => setParams({ ...params, ancestral_seed: v })}
-                parse="int"
-                className="w-full"
-              />
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Seed
+                </label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    value={params.seed ?? -1}
+                    onChange={(e) => setParams({ ...params, seed: parseInt(e.target.value) })}
+                    className="flex-1"
+                  />
+                  <Button
+                    onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                    variant="secondary"
+                    size="sm"
+                    title="Random seed"
+                  >
+                    🎲
+                  </Button>
+                  <Button
+                    onClick={() => setParams({ ...params, seed: -1 })}
+                    variant="secondary"
+                    size="sm"
+                    title="Reset to random (-1)"
+                  >
+                    -1
+                  </Button>
+                  <Button
+                    onClick={() => generatedImageSeed !== null && setParams({ ...params, seed: generatedImageSeed })}
+                    variant="secondary"
+                    size="sm"
+                    title="Use seed from preview image"
+                    disabled={generatedImageSeed === null}
+                  >
+                    ♻️
+                  </Button>
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Ancestral Seed
+                  <span className="text-xs text-gray-500 ml-2">(for Euler a, DPM2 a, etc.)</span>
+                </label>
+                <div className="flex gap-2">
+                  <Input
+                    type="number"
+                    value={params.ancestral_seed ?? -1}
+                    onChange={(e) => setParams({ ...params, ancestral_seed: parseInt(e.target.value) })}
+                    className="flex-1"
+                    placeholder="-1 (use main seed)"
+                  />
+                  <Button
+                    onClick={() => setParams({ ...params, ancestral_seed: Math.floor(Math.random() * 2147483647) })}
+                    variant="secondary"
+                    size="sm"
+                    title="Random ancestral seed"
+                  >
+                    🎲
+                  </Button>
+                  <Button
+                    onClick={() => setParams({ ...params, ancestral_seed: -1 })}
+                    variant="secondary"
+                    size="sm"
+                    title="Use main seed (-1)"
+                  >
+                    -1
+                  </Button>
+                  <Button
+                    onClick={() => generatedImageAncestralSeed !== null && generatedImageAncestralSeed !== -1 && setParams({ ...params, ancestral_seed: generatedImageAncestralSeed })}
+                    variant="secondary"
+                    size="sm"
+                    title="Use ancestral seed from preview image"
+                    disabled={generatedImageAncestralSeed === null || generatedImageAncestralSeed === -1}
+                  >
+                    ♻️
+                  </Button>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  -1 = use main seed (default). Set a different value to vary details while keeping composition.
+                </p>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -2061,12 +2149,42 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               step={0.1}
               parse="float"
             />
-            <NumberInput
-              label="Seed"
-              value={params.seed ?? -1}
-              onCommit={(v) => setParams({ ...params, seed: v })}
-              parse="int"
-            />
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Seed</label>
+              <div className="flex gap-1">
+                <NumberInput
+                  value={params.seed ?? -1}
+                  onCommit={(v) => setParams({ ...params, seed: v })}
+                  parse="int"
+                  className="flex-1 min-w-0"
+                />
+                <Button
+                  onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                  variant="secondary"
+                  size="sm"
+                  title="Random seed"
+                >
+                  🎲
+                </Button>
+                <Button
+                  onClick={() => setParams({ ...params, seed: -1 })}
+                  variant="secondary"
+                  size="sm"
+                  title="Reset to random (-1)"
+                >
+                  -1
+                </Button>
+                <Button
+                  onClick={() => generatedVideoSeed !== null && setParams({ ...params, seed: generatedVideoSeed })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use seed from result video"
+                  disabled={generatedVideoSeed === null}
+                >
+                  ♻️
+                </Button>
+              </div>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
@@ -2261,12 +2379,42 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               step={0.1}
               parse="float"
             />
-            <NumberInput
-              label="Seed"
-              value={params.seed ?? -1}
-              onCommit={(v) => setParams({ ...params, seed: v })}
-              parse="int"
-            />
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Seed</label>
+              <div className="flex gap-1">
+                <NumberInput
+                  value={params.seed ?? -1}
+                  onCommit={(v) => setParams({ ...params, seed: v })}
+                  parse="int"
+                  className="flex-1 min-w-0"
+                />
+                <Button
+                  onClick={() => setParams({ ...params, seed: Math.floor(Math.random() * 2147483647) })}
+                  variant="secondary"
+                  size="sm"
+                  title="Random seed"
+                >
+                  🎲
+                </Button>
+                <Button
+                  onClick={() => setParams({ ...params, seed: -1 })}
+                  variant="secondary"
+                  size="sm"
+                  title="Reset to random (-1)"
+                >
+                  -1
+                </Button>
+                <Button
+                  onClick={() => generatedAudioSeed !== null && setParams({ ...params, seed: generatedAudioSeed })}
+                  variant="secondary"
+                  size="sm"
+                  title="Use seed from result audio"
+                  disabled={generatedAudioSeed === null}
+                >
+                  ♻️
+                </Button>
+              </div>
+            </div>
           </div>
 
           <Select
@@ -2364,7 +2512,14 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 </div>
               )}
 
-              <div className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center">
+              <div
+                className="w-full aspect-square max-h-[500px] lg:max-h-none bg-gray-800 rounded-lg flex items-center justify-center cursor-pointer"
+                onDoubleClick={() => {
+                  if (!isVideo && !isAudio && generatedImage) {
+                    setPreviewViewerOpen(true);
+                  }
+                }}
+              >
                 {isVideo && generatedVideo ? (
                   <div className="w-full space-y-2">
                     <video
@@ -2399,7 +2554,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     )}
                   </div>
                 ) : generatedImage ? (
-                  <img src={generatedImage} alt="Generated" className="max-w-full max-h-full rounded-lg" />
+                  <img
+                    src={effectiveGeneratedImage ?? generatedImage}
+                    alt="Generated"
+                    className="max-w-full max-h-full rounded-lg"
+                    style={{ filter: buildFilterString(postEdit) }}
+                  />
                 ) : previewImage ? (
                   <img
                     src={`data:image/jpeg;base64,${previewImage}`}
@@ -2410,6 +2570,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                   <p className="text-gray-500">No image/video/audio generated yet</p>
                 )}
               </div>
+
+              {/* Post-Edit controls (client-side brightness/saturation/flatten) */}
+              {!isVideo && !isAudio && generatedImage && (
+                <PostEditControls value={postEdit} onChange={setPostEdit} />
+              )}
 
               {!isVideo && !isAudio && generatedImage && (
                 <div className="space-y-3 mt-4">
@@ -2474,6 +2639,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </div>
         </Card>
       </div>
+
+      {/* Preview Image Viewer (image result only) */}
+      {previewViewerOpen && generatedImage && (
+        <ImageViewer
+          imageUrl={generatedImage}
+          onClose={() => setPreviewViewerOpen(false)}
+          postEdit={postEdit}
+          onPostEditChange={setPostEdit}
+        />
+      )}
     </div>
   );
 }

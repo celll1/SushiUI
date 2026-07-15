@@ -4516,6 +4516,68 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         return image, seed, actual_ancestral_seed
 
+    def generate_outpaint(
+        self,
+        params: Dict[str, Any],
+        input_image: Image.Image,
+        progress_callback=None,
+        step_callback=None,
+    ) -> tuple[Image.Image, int, int]:
+        """Generate an outpainted image: place ``input_image`` inside a larger
+        canvas and generate everything outside it, preserving the placed
+        region byte-exact.
+
+        Pure orchestration -- no new sampling loop, no arch-specific code.
+        Builds the enlarged canvas + an outward-only-blurred mask (see
+        ``core.inference.outpaint_utils``), delegates to the existing
+        all-architecture ``generate_inpaint``, then performs an UNCONDITIONAL
+        final pixel paste of the placed rectangle. That paste -- not
+        generate_inpaint's own (gated/latent-only) compositing -- is the
+        strict-preservation guarantee, so it holds regardless of loaded
+        architecture or denoising_strength.
+
+        The canvas is built 16-aligned (not 8): 7 of 9 image architectures
+        re-round their working resolution to their own 16px grid internally
+        (FLUX.2/Anima floor down, Lens nearest-16, Ideogram4/MiniT2I round to
+        16, Krea2 rounds up), so an only-8-aligned canvas can come back from
+        generate_inpaint at a DIFFERENT size, silently misaligning (or
+        clipping) the preserved rect. 16-alignment is a fixed point for
+        every architecture's grid. ``reconcile_and_paste`` is the defensive
+        second half of this fix -- it re-squares the result to the canvas
+        size before pasting, in case some arch still returns a different
+        size despite the 16-aligned request.
+
+        Returns:
+            tuple: (image, actual_seed, actual_ancestral_seed) -- same shape
+            as generate_inpaint's return contract.
+        """
+        from core.inference.outpaint_utils import (
+            build_outpaint_canvas,
+            build_outpaint_mask,
+            reconcile_and_paste,
+        )
+
+        canvas_img, placed_img, rect = build_outpaint_canvas(input_image, params, align=16)
+        mask_img = build_outpaint_mask(
+            canvas_img.size, rect, params.get("mask_blur", 4)
+        )
+
+        # The canvas IS the actual output size for this generation -- must
+        # match canvas_img.size exactly, otherwise generate_inpaint's own
+        # width/height resize (see custom_sampling target_width/target_height)
+        # would resize our carefully-built canvas and destroy `rect`'s
+        # correspondence to the preserved content.
+        params["width"], params["height"] = canvas_img.size
+
+        result_image, actual_seed, actual_ancestral_seed = self.generate_inpaint(
+            params, canvas_img, mask_img,
+            progress_callback=progress_callback, step_callback=step_callback,
+        )
+
+        result_image = reconcile_and_paste(result_image, placed_img, rect, canvas_img.size)
+
+        return result_image, actual_seed, actual_ancestral_seed
+
     # =============================================================
     # Anima generation methods
     # =============================================================

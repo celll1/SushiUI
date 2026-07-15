@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 import Card from "../common/Card";
 import NumberInput from "../common/NumberInput";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
+import Textarea from "../common/Textarea";
 import Button from "../common/Button";
 import Slider from "../common/Slider";
 import Select from "../common/Select";
@@ -19,6 +20,7 @@ import {
   getScheduleTypes,
   generateOutpaint,
   generateOutpaintVideo,
+  generateOutpaintAudio,
   getCurrentModel,
   cancelGeneration,
   getResultFilename,
@@ -26,6 +28,7 @@ import {
   getResultAncestralSeed,
   OutpaintParams as ApiOutpaintParams,
   OutpaintVideoParams,
+  OutpaintAudioParams,
   LoRAConfig,
   ControlNetConfig,
 } from "@/utils/api";
@@ -37,13 +40,16 @@ import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
 // Extends the image OutpaintParams with the video (outpaint_vid, LTX-2.3)
-// fields. A single unified `params` object is used for both modalities --
-// same convention as Txt2ImgPanel/Img2ImgPanel's isVideo/isAudio branches --
-// so most fields (prompt/negative_prompt/width/height/seed/vae_path/
-// text_encoder_path/fbcache_*/spectrum_*) are reused as-is: their numeric
-// defaults are IDENTICAL between OUTPAINT_DEFAULTS (derived from
-// INPAINT_DEFAULTS) and OUTPAINT_VIDEO_DEFAULTS (derived from
-// VIDEO_GEN_DEFAULTS), and mean the same thing in both routes.
+// AND audio (outpaint_aud, ACE-Step 1.5 extend) fields. A single unified
+// `params` object is used for all three modalities -- same convention as
+// Txt2ImgPanel/Img2ImgPanel's isVideo/isAudio branches -- so most fields
+// (prompt/negative_prompt/width/height/seed/vae_path/text_encoder_path/
+// fbcache_*/spectrum_*) are reused as-is: their numeric defaults are
+// IDENTICAL between OUTPAINT_DEFAULTS (derived from INPAINT_DEFAULTS),
+// OUTPAINT_VIDEO_DEFAULTS (derived from VIDEO_GEN_DEFAULTS), and
+// OUTPAINT_AUDIO_DEFAULTS (derived from AUD2AUD_DEFAULTS), and mean the same
+// thing across whichever routes accept them (e.g. `guidance_scale` defaults
+// to 1.0 in both the video and audio dicts).
 //
 // `blocks_to_swap` is the one exception: the IMAGE route gates it behind a
 // separate `enable_block_swap` boolean (default magnitude 20, ignored unless
@@ -67,15 +73,25 @@ interface OutpaintPanelParams extends ApiOutpaintParams {
   outpaint_video_audio_mode?: "regenerate" | "preserve_input";
   video_lossless?: boolean;
   video_blocks_to_swap?: number;
+  // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
+  lyrics?: string;
+  inference_steps?: number;
+  shift?: number;
+  vocal_language?: string;
+  total_duration?: number;
+  input_offset_sec?: number;
+  input_trim_start_sec?: number;
+  input_trim_end_sec?: number;
 }
 
 // Mirrors backend OUTPAINT_DEFAULTS (backend/api/param_defaults.py) --
 // derived from the full inpaint parameter set + the placement fields --
 // plus OUTPAINT_VIDEO_DEFAULTS (derived from VIDEO_GEN_DEFAULTS) for the
-// video branch. This object is a fallback only; on mount it is overridden by
-// generationDefaults.outpaint / generationDefaults.outpaint_vid fetched from
-// GET /schema/generation-defaults (single source of truth), unless the user
-// already has localStorage state.
+// video branch and OUTPAINT_AUDIO_DEFAULTS (derived from AUD2AUD_DEFAULTS)
+// for the audio branch. This object is a fallback only; on mount it is
+// overridden by generationDefaults.outpaint / .outpaint_vid / .outpaint_aud
+// fetched from GET /schema/generation-defaults (single source of truth),
+// unless the user already has localStorage state.
 const DEFAULT_PARAMS: OutpaintPanelParams = {
   prompt: "",
   negative_prompt: "",
@@ -193,6 +209,15 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_video_audio_mode: "regenerate",
   video_lossless: false,
   video_blocks_to_swap: 0,
+  // --- Audio temporal outpaint (outpaint_aud, ACE-Step 1.5 extend) ---
+  lyrics: "",
+  inference_steps: 8,
+  shift: 3.0,
+  vocal_language: "en",
+  total_duration: 60.0,
+  input_offset_sec: 0.0,
+  input_trim_start_sec: 0.0,
+  input_trim_end_sec: 0.0,
 };
 
 const STORAGE_KEY = "outpaint_params";
@@ -229,6 +254,16 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null);
   const [generatedVideoInfo, setGeneratedVideoInfo] = useState<{ num_frames?: number; fps?: number; duration?: number } | null>(null);
 
+  // Audio temporal outpaint (outpaint_aud) input clip + result. Not persisted
+  // across reloads either -- mirrors videoFile's rationale (an uploaded File
+  // can't be cheaply round-tripped through localStorage/IndexedDB the way
+  // the image input is).
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [audioPreviewUrl, setAudioPreviewUrl] = useState<string | null>(null);
+  const [audioDurationSec, setAudioDurationSec] = useState<number | null>(null);
+  const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
+  const [generatedAudioInfo, setGeneratedAudioInfo] = useState<{ duration?: number; sample_rate?: number } | null>(null);
+
   const [progress, setProgress] = useState(0);
   const [totalSteps, setTotalSteps] = useState(0);
   const [progressMessage, setProgressMessage] = useState("");
@@ -264,6 +299,14 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoPreviewUrl]);
+
+  // Same rationale as above, for the audio branch's uploaded clip.
+  useEffect(() => {
+    return () => {
+      if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [audioPreviewUrl]);
 
   const handleProgress = useCallback((step: number, total: number, message: string, preview?: string, _metrics?: CFGMetrics) => {
     if (isGeneratingRef.current) {
@@ -498,21 +541,24 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   }, [generatedImage, isMounted]);
 
   // Apply backend-fetched defaults when they arrive (only if no localStorage value exists).
-  // Merges BOTH the image (outpaint) and video (outpaint_vid) default dicts --
-  // they share the unified `params` object (see OutpaintPanelParams). Fields
-  // whose numeric defaults are IDENTICAL in OUTPAINT_DEFAULTS and
-  // OUTPAINT_VIDEO_DEFAULTS (prompt/negative_prompt/seed/vae_path/
-  // text_encoder_path/fbcache_*/spectrum_*) are already covered by the
-  // `outpaint` spread, so only the video-SPECIFIC fields are pulled from
-  // `outpaint_vid` here -- notably `blocks_to_swap`, which is remapped to
-  // `video_blocks_to_swap` (see OutpaintPanelParams' doc comment for why a
-  // blind spread of the raw backend dict would silently clobber the image
-  // mode's `blocks_to_swap` default with the video route's different one).
+  // Merges the image (outpaint), video (outpaint_vid), AND audio
+  // (outpaint_aud) default dicts -- they share the unified `params` object
+  // (see OutpaintPanelParams). Fields whose numeric defaults are IDENTICAL
+  // across dicts (prompt/negative_prompt/seed/vae_path/text_encoder_path/
+  // fbcache_*/spectrum_*/loras) are already covered by the `outpaint`
+  // spread, so only the video/audio-SPECIFIC fields are pulled from
+  // `outpaint_vid`/`outpaint_aud` here -- notably `blocks_to_swap`, which is
+  // remapped to `video_blocks_to_swap` (see OutpaintPanelParams' doc comment
+  // for why a blind spread of the raw backend dict would silently clobber
+  // the image mode's `blocks_to_swap` default with the video route's
+  // different one). `guidance_scale` is shared verbatim between the video
+  // and audio dicts (both default 1.0), so either can supply it.
   useEffect(() => {
     if (!generationDefaults) return;
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
       const vidDefaults = (generationDefaults.outpaint_vid || {}) as Record<string, unknown>;
+      const audDefaults = (generationDefaults.outpaint_aud || {}) as Record<string, unknown>;
       setParams(prev => ({
         ...DEFAULT_PARAMS,
         ...(generationDefaults.outpaint as Partial<ApiOutpaintParams>),
@@ -520,7 +566,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         height: vidDefaults.height as number ?? DEFAULT_PARAMS.height,
         frame_rate: vidDefaults.frame_rate as number ?? DEFAULT_PARAMS.frame_rate,
         num_inference_steps: vidDefaults.num_inference_steps as number ?? DEFAULT_PARAMS.num_inference_steps,
-        guidance_scale: vidDefaults.guidance_scale as number ?? DEFAULT_PARAMS.guidance_scale,
+        guidance_scale: (vidDefaults.guidance_scale ?? audDefaults.guidance_scale) as number ?? DEFAULT_PARAMS.guidance_scale,
         num_videos_per_prompt: vidDefaults.num_videos_per_prompt as number ?? DEFAULT_PARAMS.num_videos_per_prompt,
         max_sequence_length: vidDefaults.max_sequence_length as number ?? DEFAULT_PARAMS.max_sequence_length,
         audio_enable: (vidDefaults.audio_enable as boolean) ?? DEFAULT_PARAMS.audio_enable,
@@ -531,6 +577,15 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         outpaint_video_audio_mode: (vidDefaults.outpaint_video_audio_mode as "regenerate" | "preserve_input") ?? DEFAULT_PARAMS.outpaint_video_audio_mode,
         video_lossless: (vidDefaults.video_lossless as boolean) ?? DEFAULT_PARAMS.video_lossless,
         video_blocks_to_swap: vidDefaults.blocks_to_swap as number ?? DEFAULT_PARAMS.video_blocks_to_swap,
+        // --- Audio temporal outpaint (outpaint_aud) ---
+        lyrics: (audDefaults.lyrics as string) ?? DEFAULT_PARAMS.lyrics,
+        inference_steps: audDefaults.inference_steps as number ?? DEFAULT_PARAMS.inference_steps,
+        shift: audDefaults.shift as number ?? DEFAULT_PARAMS.shift,
+        vocal_language: (audDefaults.vocal_language as string) ?? DEFAULT_PARAMS.vocal_language,
+        total_duration: audDefaults.total_duration as number ?? DEFAULT_PARAMS.total_duration,
+        input_offset_sec: audDefaults.input_offset_sec as number ?? DEFAULT_PARAMS.input_offset_sec,
+        input_trim_start_sec: audDefaults.input_trim_start_sec as number ?? DEFAULT_PARAMS.input_trim_start_sec,
+        input_trim_end_sec: audDefaults.input_trim_end_sec as number ?? DEFAULT_PARAMS.input_trim_end_sec,
       }));
     }
   }, [generationDefaults]);
@@ -698,6 +753,51 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     ? Math.max(1, Math.round(videoDurationSec * (params.frame_rate ?? 24.0)))
     : 0;
 
+  // --- Audio temporal outpaint (outpaint_aud) input clip handling ---
+
+  const processAudioFile = (file: File) => {
+    if (!file.type.startsWith('audio/')) {
+      alert('Please upload a valid audio file');
+      return;
+    }
+    if (audioPreviewUrl) {
+      URL.revokeObjectURL(audioPreviewUrl);
+    }
+    setAudioFile(file);
+    setAudioDurationSec(null);
+    // A brand-new clip resets the placement so it doesn't inherit the
+    // previous clip's stale offset/trim (mirrors processVideoFile's reset).
+    setParams(prev => ({ ...prev, input_offset_sec: 0, input_trim_start_sec: 0, input_trim_end_sec: 0 }));
+    setAudioPreviewUrl(URL.createObjectURL(file));
+  };
+
+  const handleAudioUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) processAudioFile(file);
+  };
+
+  const handleAudioLoadedMetadata = (e: React.SyntheticEvent<HTMLAudioElement>) => {
+    const duration = e.currentTarget.duration;
+    if (Number.isFinite(duration) && duration > 0) {
+      setAudioDurationSec(duration);
+    }
+  };
+
+  const handleClearAudio = () => {
+    if (audioPreviewUrl) {
+      URL.revokeObjectURL(audioPreviewUrl);
+    }
+    setAudioFile(null);
+    setAudioPreviewUrl(null);
+    setAudioDurationSec(null);
+    setParams(prev => ({ ...prev, input_offset_sec: 0, input_trim_start_sec: 0, input_trim_end_sec: 0 }));
+  };
+
+  // Backend rule: total_duration must be in (0, 240] seconds. A UX nicety
+  // only -- the backend re-validates/clamps regardless (see
+  // OUTPAINT_AUDIO_DEFAULTS.total_duration).
+  const clampAudioTotalDuration = (n: number): number => Math.min(240, Math.max(0.1, n));
+
   const sendToTxt2Img = () => {
     if (!generatedImage) {
       alert("No image to send");
@@ -779,14 +879,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   const [visibility] = useState({ lora: true, controlnet: true });
 
-  // Add generation request to queue. Audio outpaint (ACE-Step extend) is a
-  // later phase (Phase 3) -- disabled with a notice below. Video (outpaint_vid,
-  // LTX-2.3) is implemented here (Phase 2).
+  // Add generation request to queue. Three modality branches: image
+  // (outpaint), video (outpaint_vid, LTX-2.3), and audio (outpaint_aud,
+  // ACE-Step 1.5 extend) -- mutually exclusive on the loaded model's
+  // modality, matching Txt2ImgPanel/Img2ImgPanel's isVideo/isAudio dispatch.
   const handleAddToQueue = async () => {
-    if (isAudio) {
-      alert("Audio outpaint is planned for a later phase.");
-      return;
-    }
     if (!params.prompt) {
       alert("Please enter a prompt");
       return;
@@ -849,6 +946,38 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       return;
     }
 
+    // Audio mode: an audio model (ACE-Step 1.5) is loaded -> enqueue an
+    // outpaint_aud item using the uploaded reference clip. No loop-generation
+    // (matches Upscale + the video/audio branches of the merged txt2img/img2img
+    // panels). No negative_prompt (the audio route has no such field).
+    if (isAudio) {
+      if (!audioFile) {
+        alert("Please upload a reference audio clip");
+        return;
+      }
+      const audioParams: OutpaintAudioParams = {
+        prompt: processedPrompt,
+        lyrics: params.lyrics,
+        seed: params.seed,
+        inference_steps: params.inference_steps,
+        guidance_scale: params.guidance_scale,
+        shift: params.shift,
+        vocal_language: params.vocal_language,
+        loras: params.loras,
+        total_duration: params.total_duration,
+        input_offset_sec: params.input_offset_sec,
+        input_trim_start_sec: params.input_trim_start_sec,
+        input_trim_end_sec: params.input_trim_end_sec,
+      };
+      addToQueue({
+        type: "outpaint_aud",
+        params: audioParams as any,
+        inputAudio: audioFile,
+        prompt: processedPrompt,
+      });
+      return;
+    }
+
     if (!inputImagePreview) {
       alert("Please upload an input image");
       return;
@@ -875,7 +1004,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     if (isGenerating) return;
 
     const nextItem = startNextInQueue();
-    if (!nextItem || (nextItem.type !== "outpaint" && nextItem.type !== "outpaint_vid")) return;
+    if (!nextItem || (nextItem.type !== "outpaint" && nextItem.type !== "outpaint_vid" && nextItem.type !== "outpaint_aud")) return;
 
     // Video branch: outpaint_vid item (LTX-2.3). The queued input clip is a
     // File (see inputVideo on QueueItem). Produces an .mp4 and renders a
@@ -912,6 +1041,51 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       } catch (error: any) {
         console.error("[Outpaint] Video generation failed:", error);
         alert(`Video outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        failCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      }
+      return;
+    }
+
+    // Audio branch: outpaint_aud item (ACE-Step 1.5 extend). The queued
+    // input clip is a File (see inputAudio on QueueItem). Produces a .flac
+    // and renders an <audio> instead of an <img>. No loop-generation handling.
+    if (nextItem.type === "outpaint_aud") {
+      setIsGenerating(true);
+      setProgress(0);
+      setProgressMessage("");
+      setTotalSteps((nextItem.params as OutpaintAudioParams).inference_steps || 8);
+      setPreviewImage(null);
+      setGeneratedImage(null);
+      setGeneratedAudio(null);
+      try {
+        const referenceAudio = nextItem.inputAudio;
+        if (!referenceAudio) {
+          throw new Error("No reference audio available for audio outpaint generation");
+        }
+        const result = await generateOutpaintAudio(nextItem.params as OutpaintAudioParams, referenceAudio);
+        const audioUrl = `/outputs/${result.image.filename}`;
+        setGeneratedAudio(audioUrl);
+        setGeneratedAudioInfo({
+          duration: result.image?.duration,
+          sample_rate: result.image?.sample_rate,
+        });
+        if (onImageGenerated) onImageGenerated(audioUrl);
+        setIsGenerating(false);
+        setProgress(0);
+        setProgressMessage("");
+        completeCurrentItem();
+        setTimeout(() => {
+          if (processQueueRef.current) processQueueRef.current();
+        }, 100);
+      } catch (error: any) {
+        console.error("[Outpaint] Audio generation failed:", error);
+        alert(`Audio outpaint generation failed: ${error?.response?.data?.detail || error?.message || "Unknown error"}`);
         setIsGenerating(false);
         setProgress(0);
         setProgressMessage("");
@@ -994,7 +1168,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   processQueueRef.current = processQueue;
 
   useEffect(() => {
-    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid"));
+    const hasPendingItems = queue.some(item => item.status === "pending" && (item.type === "outpaint" || item.type === "outpaint_vid" || item.type === "outpaint_aud"));
     const isCurrentItemNull = currentItem === null;
     if (hasPendingItems && isCurrentItemNull && !isGenerating) {
       processQueue();
@@ -1016,25 +1190,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     mask_blur: params.mask_blur ?? 4,
   };
 
-  // Phase 2 adds video (LTX-2.3 temporal outpaint). Audio (ACE-Step extend)
-  // remains a later phase (Phase 3) -- ModelLoadSection stays available (so
-  // the user can switch to an image/video model from this tab), but Generate
-  // is disabled and a notice is shown instead of a broken generation attempt
-  // while an audio model is loaded.
-  const modalityBlocked = isAudio;
-
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
       <div className="space-y-4">
-        {modalityBlocked && (
-          <div className="bg-yellow-900/20 border border-yellow-600/30 rounded-lg p-3">
-            <p className="text-sm text-yellow-200">
-              Audio outpaint — coming in a later phase. Outpaint does not support audio models yet; Generate is disabled while an audio model is loaded.
-            </p>
-          </div>
-        )}
-
         <ModelLoadSection
           onModelLoad={async () => {
             const modelInfo = await getCurrentModel();
@@ -1065,7 +1224,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           storageKeyPrefix="outpaint"
         />
 
-        {!isVideo && (
+        {!isVideo && !isAudio && (
         <Card
           title="Input Image"
           collapsible={true}
@@ -1181,6 +1340,65 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         </Card>
         )}
 
+        {isAudio && (
+        <Card
+          title="Input Audio"
+          collapsible={true}
+          defaultCollapsed={false}
+          storageKey="outpaint_audio_input_collapsed"
+          collapsedPreview={
+            audioPreviewUrl ? (
+              <span className="text-green-400 text-sm">✓ Audio loaded</span>
+            ) : (
+              <span className="text-gray-500 text-sm">No audio</span>
+            )
+          }
+        >
+          <div className="space-y-4">
+            <div className="flex gap-2">
+              <input
+                type="file"
+                accept="audio/*"
+                onChange={handleAudioUpload}
+                className="block w-full text-sm text-gray-400
+                  file:mr-4 file:py-2 file:px-4
+                  file:rounded-lg file:border-0
+                  file:text-sm file:font-medium
+                  file:bg-blue-600 file:text-white
+                  hover:file:bg-blue-700
+                  file:cursor-pointer cursor-pointer"
+              />
+              {audioPreviewUrl && (
+                <Button onClick={handleClearAudio} variant="secondary" size="sm" title="Clear input audio">
+                  Clear
+                </Button>
+              )}
+            </div>
+            {audioPreviewUrl ? (
+              <audio
+                src={audioPreviewUrl}
+                onLoadedMetadata={handleAudioLoadedMetadata}
+                className="w-full"
+                controls
+              />
+            ) : (
+              <div className="bg-gray-800 rounded-lg border-2 border-dashed border-gray-600 py-6">
+                <p className="text-gray-500 text-center text-sm px-4">
+                  Use the file picker above to select an audio clip to extend
+                </p>
+              </div>
+            )}
+            {audioDurationSec != null && (
+              <p className="text-xs text-gray-500">
+                Clip length: {audioDurationSec.toFixed(2)}s. Uploads not already 48kHz/16-bit stereo are
+                resampled/requantized once during normalization; the placed span is otherwise sample-exact.
+              </p>
+            )}
+          </div>
+        </Card>
+        )}
+
+        {!isAudio && (
         <Card title="Prompt">
           <TextareaWithTagSuggestions
             label="Positive Prompt"
@@ -1202,8 +1420,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             enableWeightControl={true}
           />
         </Card>
+        )}
 
-        {!isVideo && (
+        {!isVideo && !isAudio && (
         <Card title="Placement">
           <OutpaintPlacementCanvas
             inputImagePreview={inputImagePreview}
@@ -1242,7 +1461,35 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         </Card>
         )}
 
-        {!isVideo && (
+        {isAudio && (
+        <Card title="Temporal Placement">
+          <OutpaintTimeline
+            totalUnits={params.total_duration ?? 60.0}
+            onTotalUnitsChange={(v) => setParams(prev => ({ ...prev, total_duration: v }))}
+            totalUnitsSnapFn={clampAudioTotalDuration}
+            totalUnitsMin={0.1}
+            totalUnitsStep={1}
+            rawSegmentLength={audioDurationSec ?? 0}
+            trimStart={params.input_trim_start_sec ?? 0}
+            onTrimStartChange={(v) => setParams(prev => ({ ...prev, input_trim_start_sec: v }))}
+            trimEnd={params.input_trim_end_sec ?? 0}
+            onTrimEndChange={(v) => setParams(prev => ({ ...prev, input_trim_end_sec: v }))}
+            offset={params.input_offset_sec ?? 0}
+            onOffsetChange={(v) => setParams(prev => ({ ...prev, input_offset_sec: v }))}
+            gridSize={1 / 25}
+            minSegmentLength={1 / 25}
+            unitRate={1}
+            unitLabel="s"
+            unitParse="float"
+            disabled={!audioPreviewUrl}
+          />
+          <p className="text-xs text-gray-500 mt-2">
+            Offset/trim are snapped to the ACE-Step VAE's latent frame rate (1/25s); the backend re-snaps and clamps regardless.
+          </p>
+        </Card>
+        )}
+
+        {!isVideo && !isAudio && (
         <Card title="Parameters">
           <div className="space-y-4">
             <Slider
@@ -1880,6 +2127,82 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         </Card>
         )}
 
+        {isAudio && (
+        <Card title="Audio">
+          <Textarea
+            label="Caption"
+            placeholder="Describe the music (genre, mood, instruments)..."
+            rows={4}
+            value={params.prompt}
+            onChange={(e) => setParams({ ...params, prompt: e.target.value })}
+          />
+          <Textarea
+            label="Lyrics"
+            placeholder="Enter lyrics (optional)..."
+            rows={6}
+            value={params.lyrics ?? ""}
+            onChange={(e) => setParams({ ...params, lyrics: e.target.value })}
+          />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <NumberInput
+              label="Steps"
+              value={params.inference_steps ?? 8}
+              onCommit={(v) => setParams({ ...params, inference_steps: v })}
+              min={1}
+              max={100}
+              step={1}
+              parse="int"
+            />
+            <NumberInput
+              label="Shift"
+              value={params.shift ?? 3.0}
+              onCommit={(v) => setParams({ ...params, shift: v })}
+              min={0}
+              max={20}
+              step={0.1}
+              parse="float"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+            <NumberInput
+              label="Guidance Scale"
+              value={params.guidance_scale ?? 1.0}
+              onCommit={(v) => setParams({ ...params, guidance_scale: v })}
+              min={0}
+              max={20}
+              step={0.1}
+              parse="float"
+            />
+            <NumberInput
+              label="Seed"
+              value={params.seed ?? -1}
+              onCommit={(v) => setParams({ ...params, seed: v })}
+              parse="int"
+            />
+          </div>
+
+          <Select
+            label="Vocal Language"
+            value={params.vocal_language ?? "en"}
+            onChange={(e) => setParams({ ...params, vocal_language: e.target.value })}
+            options={[
+              { value: "en", label: "English" },
+              { value: "zh", label: "Chinese" },
+              { value: "ja", label: "Japanese" },
+              { value: "ko", label: "Korean" },
+              { value: "es", label: "Spanish" },
+              { value: "fr", label: "French" },
+              { value: "de", label: "German" },
+              { value: "ru", label: "Russian" },
+              { value: "it", label: "Italian" },
+              { value: "pt", label: "Portuguese" },
+            ]}
+          />
+        </Card>
+        )}
+
         {!isVideo && visibility.lora && (
           <LoRASelector
             value={params.loras || []}
@@ -1889,7 +2212,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           />
         )}
 
-        {!isVideo && visibility.controlnet && (
+        {!isVideo && !isAudio && visibility.controlnet && (
           <ControlNetSelector
             value={params.controlnets || []}
             onChange={(controlnets: ControlNetConfig[]) => setParams({ ...params, controlnets })}
@@ -1907,8 +2230,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           variant="primary"
           size="lg"
           className="w-full"
-          disabled={modalityBlocked || (isVideo ? !videoFile : !inputImagePreview)}
-          title={modalityBlocked ? "Outpaint does not support audio models yet" : undefined}
+          disabled={isVideo ? !videoFile : isAudio ? !audioFile : !inputImagePreview}
         >
           {isGenerating ? "Add to Queue" : "Generate"}
         </Button>
@@ -1976,6 +2298,20 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       </div>
                     )}
                   </div>
+                ) : isAudio && generatedAudio ? (
+                  <div className="w-full space-y-2">
+                    <audio
+                      src={generatedAudio}
+                      className="w-full"
+                      controls
+                    />
+                    {generatedAudioInfo && (
+                      <div className="text-xs text-gray-400">
+                        {generatedAudioInfo.duration != null && Number.isFinite(Number(generatedAudioInfo.duration)) && <span>{Number(generatedAudioInfo.duration).toFixed(2)}s</span>}
+                        {generatedAudioInfo.sample_rate != null && <span> · {generatedAudioInfo.sample_rate} Hz</span>}
+                      </div>
+                    )}
+                  </div>
                 ) : generatedImage ? (
                   <img src={generatedImage} alt="Generated" className="max-w-full max-h-full rounded-lg" />
                 ) : previewImage ? (
@@ -1985,11 +2321,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     className="max-w-full max-h-full rounded-lg opacity-80"
                   />
                 ) : (
-                  <p className="text-gray-500">No image/video generated yet</p>
+                  <p className="text-gray-500">No image/video/audio generated yet</p>
                 )}
               </div>
 
-              {!isVideo && generatedImage && (
+              {!isVideo && !isAudio && generatedImage && (
                 <div className="space-y-3 mt-4">
                   <div className="flex flex-wrap gap-2 text-sm">
                     <label className="flex items-center gap-2 cursor-pointer">

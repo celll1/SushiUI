@@ -70,6 +70,13 @@ export interface OutpaintTimelineProps {
   /** units-per-second, for a seconds ruler under the bar (omit to label in raw units). */
   unitRate?: number;
   unitLabel?: string;
+  /**
+   * NumberInput parse mode for the four numeric fields (total/offset/trim).
+   * Default "int" (units are whole numbers, e.g. video frames). Pass "float"
+   * when units are already fractional seconds (e.g. audio, gridSize<1) so
+   * typed values aren't rounded to whole numbers.
+   */
+  unitParse?: "int" | "float";
   disabled?: boolean;
 }
 
@@ -106,6 +113,7 @@ export default function OutpaintTimeline({
   minSegmentLength = 1,
   unitRate,
   unitLabel = "units",
+  unitParse = "int",
   disabled = false,
 }: OutpaintTimelineProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -204,7 +212,7 @@ export default function OutpaintTimeline({
             onCommit={(v) => onTotalUnitsChange(totalUnitsSnapFn ? totalUnitsSnapFn(v) : Math.max(totalUnitsMin, v))}
             min={totalUnitsMin}
             step={totalUnitsStep}
-            parse="int"
+            parse={unitParse}
             className="w-full"
             disabled={disabled}
           />
@@ -217,7 +225,7 @@ export default function OutpaintTimeline({
             min={0}
             max={Math.max(0, safeTotalUnits - segmentLength)}
             step={gridSize}
-            parse="int"
+            parse={unitParse}
             className="w-full"
             disabled={disabled}
           />
@@ -230,7 +238,7 @@ export default function OutpaintTimeline({
             min={0}
             max={Math.max(0, rawSegmentLength - trimEnd - minSegmentLength)}
             step={gridSize}
-            parse="int"
+            parse={unitParse}
             className="w-full"
             disabled={disabled}
           />
@@ -243,7 +251,7 @@ export default function OutpaintTimeline({
             min={0}
             max={Math.max(0, rawSegmentLength - trimStart - minSegmentLength)}
             step={gridSize}
-            parse="int"
+            parse={unitParse}
             className="w-full"
             disabled={disabled}
           />

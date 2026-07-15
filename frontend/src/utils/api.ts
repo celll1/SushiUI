@@ -577,6 +577,32 @@ export interface Aud2AudParams {
   repaint_end?: number;          // seconds, repaint mode only; default 0.0
 }
 
+// Audio temporal outpaint (ACE-Step 1.5 extend): place a (optionally
+// trimmed) input clip at a time offset inside a LONGER total_duration output
+// timeline and generate the audio before/and-or after it, preserving the
+// placed input sample-exact (see core/pipeline_backends/acestep.py
+// AceStepMixin._generate_audoutpaint_acestep + OUTPAINT_AUDIO_DEFAULTS,
+// param_defaults.py). Structurally the INVERSE of Aud2AudParams'
+// `mode="repaint"`: repaint holds everything OUTSIDE a window and generates
+// INSIDE it; outpaint holds the placed input window itself and generates
+// OUTSIDE it. No mode/cover_strength/repaint_start/repaint_end -- outpaint
+// has no cover/repaint sub-mode, it always holds the placed span.
+export interface OutpaintAudioParams {
+  prompt: string;              // caption text (also accepted as "caption")
+  lyrics?: string;
+  seed?: number;                // default -1
+  inference_steps?: number;    // turbo distilled default 8
+  guidance_scale?: number;     // turbo is CFG-distilled; default 1.0
+  shift?: number;               // default 3.0
+  vocal_language?: string;      // default "en"
+  loras?: LoRAConfig[];
+  // --- Placement (outpaint-only), all in SECONDS ---
+  total_duration?: number;         // output timeline length; (0, 240], default 60.0
+  input_offset_sec?: number;       // where the (trimmed) clip lands, snapped server-side to 1/25s
+  input_trim_start_sec?: number;   // trim applied to the UPLOADED clip before placement
+  input_trim_end_sec?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Schema defaults — fetched once at startup, backend is source of truth
 // ---------------------------------------------------------------------------
@@ -587,6 +613,7 @@ export interface GenerationDefaultsResponse {
   inpaint:  Partial<GenerationParams> & Record<string, unknown>;
   outpaint: Partial<OutpaintParams> & Record<string, unknown>;
   outpaint_vid: Partial<OutpaintVideoParams> & Record<string, unknown>;
+  outpaint_aud: Partial<OutpaintAudioParams> & Record<string, unknown>;
   upscale: Partial<UpscaleParams> & Record<string, unknown>;
   txt2vid: Partial<Txt2VidParams> & Record<string, unknown>;
   img2vid: Partial<Img2VidParams> & Record<string, unknown>;
@@ -1767,6 +1794,44 @@ export const generateOutpaintVideo = async (params: OutpaintVideoParams, video: 
   formData.append("video_lossless", String(params.video_lossless ?? false));
 
   const response = await api.post("/generate/outpaint/video", formData, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return response.data;
+};
+
+// Audio temporal outpaint (ACE-Step 1.5 extend): multipart POST
+// /generate/outpaint/audio with an uploaded `reference_audio` clip. Clone of
+// generateAud2Aud's FormData sender (CLAUDE.md param-threading) plus the
+// placement fields; every OutpaintAudioParams field is appended explicitly,
+// matching the Form parameter names of routes.py's generate_outpaint_audio 1:1.
+export const generateOutpaintAudio = async (params: OutpaintAudioParams, referenceAudio: File | string) => {
+  const formData = new FormData();
+
+  // Handle both File objects and data URLs (mirrors generateAud2Aud's `reference_audio` handling).
+  if (typeof referenceAudio === "string") {
+    const response = await fetch(referenceAudio);
+    const blob = await response.blob();
+    formData.append("reference_audio", blob, "reference.wav");
+  } else {
+    formData.append("reference_audio", referenceAudio);
+  }
+
+  formData.append("prompt", params.prompt);
+  formData.append("lyrics", params.lyrics || "");
+  formData.append("seed", String(params.seed ?? -1));
+  formData.append("inference_steps", String(params.inference_steps ?? 8));
+  formData.append("guidance_scale", String(params.guidance_scale ?? 1.0));
+  formData.append("shift", String(params.shift ?? 3.0));
+  formData.append("vocal_language", params.vocal_language ?? "en");
+  formData.append("loras", JSON.stringify(params.loras || []));
+
+  // Placement (outpaint-only), all in seconds.
+  formData.append("total_duration", String(params.total_duration ?? 60.0));
+  formData.append("input_offset_sec", String(params.input_offset_sec ?? 0.0));
+  formData.append("input_trim_start_sec", String(params.input_trim_start_sec ?? 0.0));
+  formData.append("input_trim_end_sec", String(params.input_trim_end_sec ?? 0.0));
+
+  const response = await api.post("/generate/outpaint/audio", formData, {
     headers: { "Content-Type": "multipart/form-data" },
   });
   return response.data;

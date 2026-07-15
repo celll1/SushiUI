@@ -3823,6 +3823,18 @@ def custom_inpaint_sampling_loop(
                                         # _outpaint_reference_filter_store above). 0 = off (default; byte-identical
                                         # to B2). Only active when outpaint_noise_init is True and not a dedicated
                                         # 9ch inpaint UNet -- same gate family as B1/B2.
+    outpaint_commit_strength: float = 0.0,  # BOUNDARY-OUTWARD COMMITMENT FRONT (scratchpad/commitment_front_synthesis.md):
+                                        # AUGMENTS B1's x0-projection with a distance-graded, low-frequency,
+                                        # EMA-anchored commit proximal -- see the block right after
+                                        # `x0_hat = predict_x0(...)` in the main loop. 0 = off (default;
+                                        # byte-identical to B1/B2/B3 alone). Only active when outpaint_noise_init
+                                        # is True and not a dedicated 9ch inpaint UNet -- same gate family as B1.
+    outpaint_commit_near: float = 0.35,  # commit front: schedule progress fraction at which boundary-touching
+                                        # (distance 0) generate cells begin committing.
+    outpaint_commit_far: float = 0.80,  # commit front: schedule progress fraction at which the farthest
+                                        # generate cells (distance >= outpaint_commit_distance) begin committing.
+    outpaint_commit_distance: float = 32.0,  # commit front: distance (latent cells) from the boundary at which
+                                        # the per-cell commit-progress schedule saturates to outpaint_commit_far.
     region_prompt_embeds: Optional[torch.Tensor] = None,  # Regional additional prompt (STAGE R1): region-positive
                                         # text embeds, encoded the SAME way as prompt_embeds. None/unused unless
                                         # region_has_positive is True.
@@ -4229,6 +4241,42 @@ def custom_inpaint_sampling_loop(
         _outpaint_collar_weight_map = _outpaint_collar_weight(mask_latent)
         if _outpaint_collar_weight_map is not None:
             _outpaint_target_lowfreq = _outpaint_gaussian_lowpass(image_latents)
+
+    # OUTPAINT BOUNDARY-OUTWARD COMMITMENT FRONT (scratchpad/commitment_front_
+    # synthesis.md): precompute the STATIC per-cell freeze-fraction map f(p)
+    # once (mask_latent never changes across steps). d(p) = the FULL latent-
+    # cell distance-transform-EDT of the generate region (d=0 on keep cells;
+    # NOT the 6-cell-clipped collar above -- this needs the true distance out
+    # to the interior, uncapped, before being capped by outpaint_commit_distance
+    # below). f(p) = f_near + (f_far - f_near) * clip(d(p)/d_max, 0, 1)**gamma
+    # (gamma=1), d_max = min(max(d), outpaint_commit_distance). f(p) is the
+    # schedule-progress fraction at which cell p starts committing (small
+    # d = near the boundary = commits early; see the per-step block below).
+    # None/no-op when the flag or strength is off, or there is no generate
+    # region at all -- the per-step block is gated on this being non-None, so
+    # outpaint_commit_strength == 0 is byte-identical to B1/B2/B3 alone.
+    _outpaint_commit_f_map = None
+    _outpaint_commit_anchor = None    # EMA anchor A; lazily = x0_hat.detach() on first advance
+    _outpaint_commit_max_i_seen = -1  # guards against re-advancing A on a B2 backward-jump revisit
+    if outpaint_noise_init and outpaint_commit_strength > 0.0 and not is_inpaint_unet:
+        from scipy import ndimage as _outpaint_commit_ndimage
+        _commit_mask_np = mask_latent.detach().to(dtype=torch.float32, device="cpu").numpy()
+        _commit_gen_np = (_commit_mask_np[0, 0] > 0.5).astype(np.float64)
+        if _commit_gen_np.max() > 0:
+            _commit_dist_np = _outpaint_commit_ndimage.distance_transform_edt(_commit_gen_np)
+            _commit_d_max = max(min(float(_commit_dist_np.max()), outpaint_commit_distance), 1e-6)
+            _commit_f_np = (
+                outpaint_commit_near
+                + (outpaint_commit_far - outpaint_commit_near)
+                * np.clip(_commit_dist_np / _commit_d_max, 0.0, 1.0) ** 1.0
+            )
+            # Match the model dtype (fp16 in default SD/SDXL inference) -- a
+            # float32 f-map would type-promote x0_hat -> fp32 via the per-step
+            # proximal (mask*C*(LP-LP)), upcasting the whole latent trajectory
+            # and dtype-mismatching the fp16 UNet next step. B1's collar weight
+            # uses mask_latent.dtype for the same reason; mirror it.
+            _commit_f_t = torch.from_numpy(_commit_f_np).to(device=mask_latent.device, dtype=mask_latent.dtype)
+            _outpaint_commit_f_map = _commit_f_t.view(1, 1, *_commit_f_t.shape)
 
     # Prepare Reference Guide latents while VAE is still on GPU
     ref_guides = []
@@ -5490,6 +5538,54 @@ def custom_inpaint_sampling_loop(
         if outpaint_noise_init and not is_inpaint_unet:
             predict_x0, to_model_output = _outpaint_x0_transform(scheduler, latents, t, i)
             x0_hat = predict_x0(noise_pred)
+
+            # BOUNDARY-OUTWARD COMMITMENT FRONT (scratchpad/commitment_front_
+            # synthesis.md): AUGMENTS the x0-projection below with a distance-
+            # graded, low-frequency, EMA-anchored commit proximal -- makes
+            # near-boundary generate cells commit their COARSE structure
+            # EARLIER in the schedule (following the preserved rect outward)
+            # than far-interior cells, approximating an autoregressive-in-
+            # space (rings-by-distance) factorization of the generate region
+            # conditioned on the known content. A biased continuity
+            # regularizer, NOT an exact-sampler change -- only the LOW-
+            # FREQUENCY band is nudged (G_kappa), so high-frequency detail
+            # keeps refining every step; full-band freezing would lock in
+            # early (still-blurry) x0 estimation errors. Keyed on the LOGICAL
+            # step index `i` (not visit_idx), matching B1/B2. No-op
+            # (byte-identical) when outpaint_commit_strength == 0 or there is
+            # no generate region (_outpaint_commit_f_map is None).
+            if _outpaint_commit_f_map is not None:
+                _commit_rho = (t_start + i) / num_inference_steps
+                _commit_ramp = 0.08
+                _commit_z = torch.clamp(
+                    (_commit_rho - _outpaint_commit_f_map + _commit_ramp / 2.0) / _commit_ramp,
+                    0.0, 1.0,
+                )
+                # smoothstep S(z) = 3z^2 - 2z^3: C rises 0->1 as the front
+                # sweeps past a cell's commit fraction f(p).
+                _outpaint_commit_C = _commit_z * _commit_z * (3.0 - 2.0 * _commit_z)
+
+                # EMA anchor: only advance past ~10% schedule progress, and
+                # only on the FIRST visit to a given logical step `i` -- a B2
+                # backward-jump revisit re-applies the proximal with the
+                # recomputed C but must NOT re-capture a different anchor
+                # (see the design doc's "Interaction / exactness").
+                if _commit_rho >= 0.1 and i > _outpaint_commit_max_i_seen:
+                    if _outpaint_commit_anchor is None:
+                        _outpaint_commit_anchor = x0_hat.detach().clone()
+                    else:
+                        _outpaint_commit_anchor = (
+                            0.5 * _outpaint_commit_anchor + 0.5 * x0_hat.detach()
+                        )
+                    _outpaint_commit_max_i_seen = i
+
+                if _outpaint_commit_anchor is not None:
+                    _commit_kappa = 2.0
+                    x0_hat = x0_hat + outpaint_commit_strength * mask_latent * _outpaint_commit_C * (
+                        _outpaint_gaussian_lowpass(_outpaint_commit_anchor, kappa=_commit_kappa)
+                        - _outpaint_gaussian_lowpass(x0_hat, kappa=_commit_kappa)
+                    )
+
             # Project the known constraint: keep region = clean image latents,
             # generate region = the model's own x0 estimate.
             x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat

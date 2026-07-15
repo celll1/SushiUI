@@ -355,6 +355,28 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # Strength ("gamma") scales the injected reference Key/Value; 0 disables
     # the mechanism entirely (default, until tuned).
     "outpaint_reference_strength": 0.0,
+    # Boundary-outward commitment front (SD/SDXL only; EXPERIMENTAL; AUGMENTS
+    # B1's x0-space projection -- core.inference.custom_sampling's
+    # outpaint_noise_init-gated commit proximal): a distance-graded,
+    # low-frequency, EMA-anchored proximal that makes near-boundary generate
+    # cells commit their COARSE structure earlier in the schedule (following
+    # the preserved rect outward) than far-interior cells, approximating an
+    # autoregressive-in-space factorization of the generate region conditioned
+    # on the known content. Only the low-frequency band is committed (high-
+    # frequency detail keeps refining every step); this is a biased continuity
+    # regularizer, not an exact sampler change. 0 disables the proximal
+    # entirely (default; byte-identical to B1 alone).
+    "outpaint_commit_strength": 0.0,
+    # Schedule progress (0-1) fraction at which boundary-touching generate
+    # cells (distance 0) start committing.
+    "outpaint_commit_near": 0.35,
+    # Schedule progress (0-1) fraction at which the farthest generate cells
+    # (distance >= outpaint_commit_distance) start committing.
+    "outpaint_commit_far": 0.80,
+    # Distance (in latent cells) from the preserved rect boundary at which the
+    # commit-fraction schedule saturates to outpaint_commit_far. Cells farther
+    # than this all commit at outpaint_commit_far.
+    "outpaint_commit_distance": 32.0,
 }
 
 # ---------------------------------------------------------------------------

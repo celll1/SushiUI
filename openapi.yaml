@@ -6703,6 +6703,56 @@ components:
                 on a subset of self-attention layers. 0 disables the
                 mechanism entirely.
               example: 0.35
+            outpaint_commit_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                SD/SDXL only. EXPERIMENTAL, off by default. Boundary-outward
+                commitment front: augments the in-loop x0-space projection
+                with a distance-graded, low-frequency, EMA-anchored proximal
+                that makes generate cells near the preserved rectangle commit
+                their coarse structure earlier in the denoise schedule than
+                far-interior cells, following the boundary outward. Only the
+                low-frequency band is nudged (high-frequency detail keeps
+                refining every step); this reduces seam-adjacent structural
+                artifacts (razor cuts, haze, doubled features) at the cost of
+                a mild bias toward the preserved region's layout near the
+                boundary. 0 disables the proximal entirely (byte-identical to
+                the boundary-color/resample/reference mechanisms alone).
+              example: 0.35
+            outpaint_commit_near:
+              type: number
+              default: 0.35
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                SD/SDXL only. Schedule progress fraction (0-1) at which
+                generate cells directly touching the preserved rectangle's
+                boundary begin committing under `outpaint_commit_strength`.
+              example: 0.35
+            outpaint_commit_far:
+              type: number
+              default: 0.80
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                SD/SDXL only. Schedule progress fraction (0-1) at which the
+                farthest generate cells (at or beyond
+                `outpaint_commit_distance` from the boundary) begin
+                committing under `outpaint_commit_strength`.
+              example: 0.80
+            outpaint_commit_distance:
+              type: number
+              default: 32.0
+              minimum: 1.0
+              description: |
+                SD/SDXL only. Distance, in latent cells, from the preserved
+                rectangle's boundary at which the per-cell commit-progress
+                schedule saturates to `outpaint_commit_far`. Cells farther
+                than this all commit at `outpaint_commit_far`.
+              example: 32.0
 
     UpscaleRequest:
       type: object

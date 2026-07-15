@@ -18,12 +18,96 @@ where:
     actual_seed = the concrete seed used (random draw resolved when seed < 0).
 """
 
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, Tuple
 import random
 
 import numpy as np
 import torch
 from PIL import Image
+
+
+def _center_crop_resize_frames(frames: np.ndarray, target_width: int, target_height: int) -> np.ndarray:
+    """Center-crop (to the target aspect ratio) then LANCZOS-resize every
+    frame to (target_width, target_height). Returns `frames` unchanged when
+    the source already matches exactly.
+
+    Mirrors the image-outpaint convention (`core.inference.outpaint_utils
+    .build_outpaint_canvas`'s crop -> LANCZOS-resize-once pipeline): the
+    RESULT of this preprocessing -- not the raw uploaded clip -- becomes the
+    exact-preserved content for non-conforming (non-target-resolution, or
+    non-÷32) inputs. Every frame in a single LTX-2.3 video shares one
+    resolution, so (unlike image outpaint's separate canvas/place sizes)
+    there is a single target here: `params["width"]`/`params["height"]`.
+    """
+    num_frames, src_h, src_w, channels = frames.shape
+    if src_w == target_width and src_h == target_height:
+        return frames
+
+    target_ar = target_width / target_height
+    src_ar = src_w / src_h
+    if src_ar > target_ar:
+        new_w = max(1, int(round(src_h * target_ar)))
+        x0 = (src_w - new_w) // 2
+        cropped = frames[:, :, x0:x0 + new_w, :]
+    elif src_ar < target_ar:
+        new_h = max(1, int(round(src_w / target_ar)))
+        y0 = (src_h - new_h) // 2
+        cropped = frames[:, y0:y0 + new_h, :, :]
+    else:
+        cropped = frames
+
+    out = np.empty((num_frames, target_height, target_width, channels), dtype=np.uint8)
+    for i in range(num_frames):
+        img = Image.fromarray(cropped[i], mode="RGB")
+        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        out[i] = np.array(img)
+    return out
+
+
+def _snap_offset_to_latent_index(
+    offset_frames: int, frame_scale_factor: int, latent_num_frames: int
+) -> Tuple[int, int]:
+    """Resolve a desired pixel-frame offset to the nearest VALID latent frame
+    index (and its corresponding pixel start), per `LTX2VideoCondition.index`'s
+    contract (`preprocess_conditions`, pipeline_ltx2_condition.py:732-746):
+    valid latent indices L map to pixel starts {0 (L=0), 1, 1+scale, 1+2*scale,
+    ...} i.e. `start_idx = max((L - 1) * scale + 1, 0)`.
+
+    Returns:
+        (latent_index, pixel_start), with `latent_index` clamped to
+        [0, latent_num_frames - 1].
+    """
+    offset_frames = max(0, int(offset_frames))
+    max_index = max(0, latent_num_frames - 1)
+    if offset_frames <= 0 or max_index <= 0:
+        return 0, 0
+
+    # Invert pixel_start(L) = (L - 1) * scale + 1  =>  L = (offset - 1) / scale + 1.
+    candidate = int(round((offset_frames - 1) / frame_scale_factor)) + 1
+    candidate = max(1, min(candidate, max_index))
+    candidate_pixel_start = (candidate - 1) * frame_scale_factor + 1
+
+    dist_candidate = abs(candidate_pixel_start - offset_frames)
+    dist_zero = offset_frames  # abs(0 - offset_frames)
+    if dist_candidate <= dist_zero:
+        return candidate, candidate_pixel_start
+    return 0, 0
+
+
+def _trim_conditioning_sequence_frames(
+    start_frame: int, sequence_num_frames: int, target_num_frames: int, scale_factor: int
+) -> int:
+    """Pure re-implementation of `LTX2ConditionPipeline.trim_conditioning_sequence`
+    (pipeline_ltx2_condition.py:657-672), computed locally (rather than via a
+    pipeline instance) so the placement/paste-span math doesn't require the
+    condition pipeline to be built (and block-swap-wrapped) before the
+    fits-in-timeline check is known.
+    """
+    num_frames = min(sequence_num_frames, target_num_frames - start_frame)
+    if num_frames <= 0:
+        return 0
+    num_frames = (num_frames - 1) // scale_factor * scale_factor + 1
+    return max(0, num_frames)
 
 
 class LTX2Mixin:
@@ -374,10 +458,14 @@ class LTX2Mixin:
         ``supports_backward=False`` — inference only) and wraps the transformer
         with ``Ltx2BlockLoopWrapper``. Both ``pipeline.transformer`` and
         ``self.ltx2_components["transformer"]`` are updated to the wrapper so
-        every consumer (base pipeline and a later-built i2v pipeline) sees the
-        same object. An already-cached i2v pipeline (if any) has its
-        ``transformer`` ref updated too, since it shares every module with the
-        base pipeline rather than owning its own weights.
+        every consumer (base pipeline and a later-built i2v/cond pipeline)
+        sees the same object. An already-cached i2v pipeline AND/OR an
+        already-cached cond (video-outpaint) pipeline (if either exists) have
+        their ``transformer`` ref updated too, since they share every module
+        with the base pipeline rather than owning their own weights -- this
+        is what keeps a 2nd+ vid_outpaint call (whose requested block-swap/
+        FBCache/Spectrum state can differ from cond_pipeline's build-time
+        state) from running against a stale/unwrapped transformer.
 
         Must be called AFTER `_ensure_ltx2_offload(blocks_to_swap)` so the
         transformer's device placement (whole-GPU via the offload-exclusion
@@ -412,6 +500,9 @@ class LTX2Mixin:
                 i2v = self.ltx2_components.get("i2v_pipeline")
                 if i2v is not None:
                     i2v.transformer = wrapper
+                cond = self.ltx2_components.get("cond_pipeline")
+                if cond is not None:
+                    cond.transformer = wrapper
                 self._ltx2_block_swap_count = 0
                 print("[LTX-2.3] FBCache-only wrap active (Ltx2BlockLoopWrapper, no block offloader)")
                 return
@@ -424,6 +515,9 @@ class LTX2Mixin:
                 i2v = self.ltx2_components.get("i2v_pipeline")
                 if i2v is not None:
                     i2v.transformer = inner
+                cond = self.ltx2_components.get("cond_pipeline")
+                if cond is not None:
+                    cond.transformer = inner
                 print("[LTX-2.3] Block Swap disabled; transformer unwrapped (stock forward)")
             self._ltx2_block_swap_count = 0
             return
@@ -459,6 +553,9 @@ class LTX2Mixin:
         i2v = self.ltx2_components.get("i2v_pipeline")
         if i2v is not None:
             i2v.transformer = wrapper
+        cond = self.ltx2_components.get("cond_pipeline")
+        if cond is not None:
+            cond.transformer = wrapper
         self._ltx2_block_swap_count = blocks_to_swap
         print(f"[LTX-2.3] Block Swap enabled: {blocks_to_swap} blocks to swap "
               f"(Ltx2BlockLoopWrapper active)")
@@ -749,6 +846,400 @@ class LTX2Mixin:
             torch.cuda.empty_cache()
 
         return frames, audio_out, audio_sample_rate, seed
+
+    def _ensure_ltx2_condition_pipeline(self):
+        """Build (once) and return the LTX2ConditionPipeline.
+
+        Same "no weight reload" construction as `_ensure_ltx2_i2v_pipeline`:
+        every module is shared with the base `LTX2Pipeline` (and the i2v
+        pipeline, if already built) -- only the denoise loop differs
+        (arbitrary latent-index frame/video conditioning via
+        `LTX2VideoCondition`, vs. the i2v pipeline's fixed first-frame
+        keyframe). Cached under `ltx2_components["cond_pipeline"]` so it
+        survives across calls and is freed by the load_model eviction loop
+        (which iterates the components dict) on a model swap.
+
+        Offload: identical policy to `_ensure_ltx2_i2v_pipeline` -- this
+        pipeline never gets its own `enable_model_cpu_offload` call; it
+        drives the SAME shared module objects the base pipeline's offload
+        hooks are already attached to.
+
+        NOTE: unlike `LTX2ImageToVideoPipeline.__init__` (which accepts a
+        `processor` kwarg -- see `_ensure_ltx2_i2v_pipeline`),
+        `LTX2ConditionPipeline.__init__` (pipeline_ltx2_condition.py:248-258)
+        does NOT have a `processor` parameter at all -- passing one raises a
+        TypeError. Verified directly against the venv's
+        `pipeline_ltx2_condition.py`, not assumed from the i2v pipeline's
+        signature.
+        """
+        cached = self.ltx2_components.get("cond_pipeline")
+        if cached is not None:
+            return cached
+
+        base = self.ltx2_components.get("pipeline")
+        if base is None:
+            raise RuntimeError("LTX-2.3 pipeline reference missing from components")
+
+        from core.models.ltx2 import LTX2ConditionPipeline
+
+        cond_pipeline = LTX2ConditionPipeline(
+            scheduler=self.ltx2_components.get("scheduler"),
+            vae=self.ltx2_components.get("vae"),
+            audio_vae=self.ltx2_components.get("audio_vae"),
+            text_encoder=self.ltx2_components.get("text_encoder"),
+            tokenizer=self.ltx2_components.get("tokenizer"),
+            connectors=self.ltx2_components.get("connectors"),
+            transformer=self.ltx2_components.get("transformer"),
+            vocoder=self.ltx2_components.get("vocoder"),
+        )
+        self.ltx2_components["cond_pipeline"] = cond_pipeline
+        print("[LTX-2.3] LTX2ConditionPipeline constructed from shared components "
+              "(no weight reload; offload owned by base pipeline)")
+        return cond_pipeline
+
+    def _generate_vidoutpaint_ltx2(
+        self,
+        params: Dict[str, Any],
+        video_frames: np.ndarray,
+        fps: float,
+        input_audio: Optional[bytes],
+        progress_callback: Optional[Callable] = None,
+        step_callback: Optional[Callable] = None,
+    ):
+        """Video temporal outpaint with LTX-2.3: place a (trimmed) input clip
+        at a latent-frame offset inside a LONGER output timeline and generate
+        the frames before/after, preserving the placed input frames
+        byte-exact.
+
+        Pure orchestration over the stock `diffusers.LTX2ConditionPipeline`
+        (no new denoise loop) -- see `core.pipeline.generate_vid_outpaint` /
+        `scratchpad/outpaint_design.md` section 4.
+
+        Args:
+            params: see `OUTPAINT_VIDEO_DEFAULTS`.
+            video_frames: np.uint8 [T, H, W, 3] decoded input clip (RGB), as
+                returned by `utils.video_utils.load_video_frames`.
+            fps: the input clip's own probed frame rate -- used ONLY to
+                convert `input_trim_start_frames` into a real-time offset
+                into the ORIGINAL audio track for `preserve_input` mode
+                (placement of the VIDEO frames themselves is purely
+                frame-index based and does not depend on this value).
+            input_audio: WAV bytes of the input clip's original (untrimmed)
+                audio track (see `utils.video_utils.extract_audio_stream`),
+                or None if the clip has no audio stream. Only consulted when
+                `outpaint_video_audio_mode == "preserve_input"`.
+            progress_callback / step_callback: see `_generate_img2vid_ltx2`.
+
+        Returns:
+            (frames, audio, audio_sample_rate, actual_seed) -- identical
+            contract to `_generate_img2vid_ltx2` / `_generate_txt2vid_ltx2`.
+        """
+        if not self.ltx2_components:
+            raise RuntimeError("LTX-2.3 components not loaded. Please load an LTX-2.3 model first.")
+        if video_frames is None or len(video_frames) == 0:
+            raise RuntimeError("vid_outpaint requires a decoded input video clip")
+
+        from api.error_handlers import ValidationError
+
+        prompt = params.get("prompt", "") or ""
+        negative_prompt = params.get("negative_prompt", "") or ""
+        width = int(params.get("width", 768))
+        height = int(params.get("height", 512))
+        total_frames = int(params.get("total_frames", 121))
+        frame_rate = float(params.get("frame_rate", 24.0))
+        num_inference_steps = int(params.get("num_inference_steps", 8))
+        guidance_scale = float(params.get("guidance_scale", 1.0))
+        num_videos_per_prompt = int(params.get("num_videos_per_prompt", 1))
+        max_sequence_length = int(params.get("max_sequence_length", 1024))
+        audio_enable = bool(params.get("audio_enable", True))
+        audio_mode = params.get("outpaint_video_audio_mode", "regenerate") or "regenerate"
+
+        # ---- Trim the decoded clip (pixel frames) BEFORE preprocessing ----
+        trim_start = max(0, int(params.get("input_trim_start_frames", 0) or 0))
+        trim_end = max(0, int(params.get("input_trim_end_frames", 0) or 0))
+        total_src_frames = video_frames.shape[0]
+        end_idx = total_src_frames - trim_end if trim_end > 0 else total_src_frames
+        trimmed_frames = video_frames[trim_start:end_idx]
+        if trimmed_frames.shape[0] < 1:
+            raise ValidationError(
+                "vid_outpaint input trim leaves no frames",
+                detail=f"input has {total_src_frames} frames; "
+                       f"trim_start={trim_start}, trim_end={trim_end}",
+            )
+
+        # ---- Preprocess ONCE to the working (÷32) resolution -- the RESULT
+        # is the exact-preserved content (mirrors the image-outpaint RESIZE
+        # convention), not the raw upload. ----
+        canonical_input_frames = _center_crop_resize_frames(trimmed_frames, width, height)
+
+        # ---- Placement math (pure, no pipeline/GPU dependency) ----
+        vae_component = self.ltx2_components.get("vae")
+        frame_scale_factor = int(getattr(vae_component, "temporal_compression_ratio", 8) or 8)
+        latent_num_frames = (total_frames - 1) // frame_scale_factor + 1
+
+        desired_offset = max(0, int(params.get("input_offset_frames", 0) or 0))
+        latent_index, pixel_start = _snap_offset_to_latent_index(
+            desired_offset, frame_scale_factor, latent_num_frames
+        )
+        if pixel_start != desired_offset:
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    f"input_offset_frames snapped from {desired_offset} to {pixel_start} "
+                    f"(nearest valid latent frame index {latent_index})",
+                    code="outpaint_video_offset_snapped",
+                )
+            except Exception:
+                pass
+
+        cond_num_frames = canonical_input_frames.shape[0]
+        t_eff = _trim_conditioning_sequence_frames(
+            pixel_start, cond_num_frames, total_frames, frame_scale_factor
+        )
+        if t_eff < 1:
+            raise ValidationError(
+                "vid_outpaint placement leaves no room for the input clip",
+                detail=f"pixel_start={pixel_start}, total_frames={total_frames}, "
+                       f"cond_num_frames={cond_num_frames}",
+            )
+
+        # Frame-drop transparency: `t_eff` is `cond_num_frames` rounded DOWN to
+        # LTX-2.3's 8k+1 grid (`_trim_conditioning_sequence_frames`) -- when
+        # that rounds below the full (trimmed) clip length, tail frames are
+        # silently dropped from the preserved span unless surfaced here. The
+        # user requires the input preserved exactly, so this must be visible:
+        # warn, and record the EFFECTIVE preserved span (frame count + pixel
+        # range) into `params` in place, so routes.py's `params.copy()` ->
+        # gallery metadata/DB path picks it up automatically.
+        params["outpaint_effective_preserved_frames"] = t_eff
+        params["outpaint_effective_pixel_start"] = pixel_start
+        params["outpaint_effective_pixel_end"] = pixel_start + t_eff
+        if t_eff < cond_num_frames:
+            dropped = cond_num_frames - t_eff
+            try:
+                from api.generation_status import add_warning
+                add_warning(
+                    f"{dropped} tail frame(s) of the (trimmed) input clip were dropped to fit "
+                    f"LTX-2.3's 8k+1 frame grid; the effective preserved span is frames "
+                    f"[{pixel_start}, {pixel_start + t_eff}) of the output ({t_eff} of "
+                    f"{cond_num_frames} clip frames)",
+                    code="outpaint_video_tail_frames_dropped",
+                )
+            except Exception:
+                pass
+
+        # LTX2VideoCondition's non-PIL (ndarray/tensor) preprocessing branch
+        # inside VaeImageProcessor.preprocess() does NOT auto-divide by 255
+        # (only the PIL path does, via pil_to_numpy), and its resize() step
+        # calls F.interpolate, which requires a floating dtype -- passing our
+        # raw uint8 array directly would raise. Verified against the venv's
+        # image_processor.py, not assumed.
+        cond_frames_float = canonical_input_frames.astype(np.float32) / 255.0
+
+        from core.models.ltx2 import LTX2VideoCondition
+        condition = LTX2VideoCondition(frames=cond_frames_float, index=latent_index, strength=1.0)
+
+        # ---- FBCache/Spectrum/Block-Swap: identical wiring to _generate_img2vid_ltx2 ----
+        blocks_to_swap = int(params.get("blocks_to_swap", 0) or 0)
+        fbcache = self._ltx2_build_fbcache(params, blocks_to_swap > 0)
+        spectrum_video, spectrum_audio = self._ltx2_build_spectrum(
+            params, num_inference_steps, blocks_to_swap > 0
+        )
+        force_wrap = (fbcache is not None or spectrum_video is not None) and blocks_to_swap <= 0
+
+        self._ensure_ltx2_swap_and_offload(blocks_to_swap, force_wrap=force_wrap)
+        cond_pipeline = self._ensure_ltx2_condition_pipeline()
+
+        from core.models.ltx2_block_loop_wrapper import Ltx2BlockLoopWrapper
+        fbcache_target = cond_pipeline.transformer if isinstance(cond_pipeline.transformer, Ltx2BlockLoopWrapper) else None
+        if fbcache is not None and fbcache_target is not None:
+            fbcache_target.attach_fbcache(fbcache)
+        elif fbcache is not None:
+            print("[FBCache] LTX-2.3 vid_outpaint: could not attach (transformer not wrapped)")
+            fbcache = None
+        spectrum_target = None
+        if spectrum_video is not None and fbcache_target is not None:
+            spectrum_target = fbcache_target
+            spectrum_target.attach_spectrum(spectrum_video, spectrum_audio)
+        elif spectrum_video is not None:
+            print("[Spectrum] LTX-2.3 vid_outpaint: could not attach (transformer not wrapped)")
+            spectrum_video = spectrum_audio = None
+
+        # Seed: -1 (or negative/None) -> random draw, recorded back for the caller.
+        seed = params.get("seed", -1)
+        try:
+            seed = int(seed)
+        except (TypeError, ValueError):
+            seed = -1
+        if seed < 0:
+            seed = random.randint(0, 2**32 - 1)
+
+        gen_device = "cuda" if torch.cuda.is_available() else "cpu"
+        generator = torch.Generator(device=gen_device).manual_seed(seed)
+
+        if progress_callback is not None or fbcache_target is not None or spectrum_target is not None:
+            def _cb(pipe, step_index, timestep, callback_kwargs):
+                if progress_callback is not None:
+                    try:
+                        progress_callback(step_index + 1, num_inference_steps)
+                    except Exception:
+                        pass
+                if fbcache_target is not None:
+                    fbcache_target._fbcache_step = step_index + 1
+                if spectrum_target is not None:
+                    spectrum_target._spectrum_step = step_index + 1
+                return callback_kwargs
+            callback = _cb
+        else:
+            callback = None
+
+        print(f"[LTX-2.3] vid_outpaint: {width}x{height} total_frames={total_frames} "
+              f"placed at latent_idx={latent_index} (pixel {pixel_start}..{pixel_start + t_eff}) "
+              f"fps={frame_rate} steps={num_inference_steps} cfg={guidance_scale} "
+              f"seed={seed} audio_mode={audio_mode}")
+
+        try:
+            video, audio = cond_pipeline(
+                conditions=[condition],
+                prompt=prompt,
+                negative_prompt=negative_prompt,
+                height=height,
+                width=width,
+                num_frames=total_frames,
+                frame_rate=frame_rate,
+                num_inference_steps=num_inference_steps,
+                guidance_scale=guidance_scale,
+                num_videos_per_prompt=num_videos_per_prompt,
+                generator=generator,
+                output_type="np",
+                return_dict=False,
+                max_sequence_length=max_sequence_length,
+                callback_on_step_end=callback,
+            )
+        finally:
+            if fbcache_target is not None:
+                print(f"[FBCache] LTX-2.3 vid_outpaint summary: {fbcache.n_hits} hit(s), {fbcache.n_miss} miss(es)")
+                fbcache_target.attach_fbcache(None)
+            if spectrum_target is not None:
+                v_stats = spectrum_video.stats()
+                print(f"[Spectrum] LTX-2.3 vid_outpaint summary: {v_stats['anchors']} anchor(s), "
+                      f"{v_stats['forecasts']} forecast(s) of {v_stats['total']} step(s)")
+                spectrum_target.attach_spectrum(None, None)
+
+        frames_np = video[0]  # [T, H, W, C], float in [0, 1]
+        frames_out = (np.clip(frames_np, 0.0, 1.0) * 255.0).round().astype(np.uint8)
+
+        # ---- STRICT preservation: unconditional frame-exact paste over the
+        # EFFECTIVE (possibly truncated by trim_conditioning_sequence) span. ----
+        frames_out[pixel_start:pixel_start + t_eff] = canonical_input_frames[:t_eff]
+
+        audio_out = None
+        audio_sample_rate = None
+        if audio_enable and audio is not None:
+            try:
+                audio_sample_rate = int(cond_pipeline.vocoder.config.output_sampling_rate)
+            except Exception:
+                audio_sample_rate = 24000
+            try:
+                audio_out = audio[0].detach().float().cpu()
+            except Exception as e:
+                print(f"[LTX-2.3] vid_outpaint audio extraction failed ({e}); saving video without audio")
+                audio_out = None
+                audio_sample_rate = None
+
+            if audio_out is not None and audio_mode == "preserve_input":
+                if input_audio is None:
+                    print("[LTX-2.3] vid_outpaint: outpaint_video_audio_mode='preserve_input' requested "
+                          "but the input clip has no audio stream -- falling back to 'regenerate'")
+                    try:
+                        from api.generation_status import add_warning
+                        add_warning(
+                            "preserve_input audio mode requested but the input clip has no audio "
+                            "stream; falling back to regenerate",
+                            code="outpaint_video_no_input_audio",
+                        )
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        from utils.video_utils import extract_audio_window, mux_audio_over_span
+
+                        # Placement in the OUTPUT timeline (what the pasted
+                        # frames actually occupy, at the OUTPUT frame_rate).
+                        offset_sec = pixel_start / frame_rate if frame_rate else 0.0
+                        target_dur_sec = t_eff / frame_rate if frame_rate else 0.0
+                        # The SAME t_eff frames, measured in the SOURCE clip's
+                        # OWN real time (fps probed from the upload). When
+                        # source fps != output frame_rate, these two durations
+                        # differ -- the frames are reused 1:1 at frame_rate,
+                        # so pasting the source audio at its native tempo
+                        # would drift out of sync with the placed video.
+                        # extract_audio_window pitch-preservingly time-stretches
+                        # the source window to close that gap.
+                        src_start_sec = trim_start / fps if fps else 0.0
+                        src_dur_sec = t_eff / fps if fps else target_dur_sec
+
+                        if target_dur_sec > 0 and abs(src_dur_sec - target_dur_sec) / target_dur_sec > 0.005:
+                            try:
+                                from api.generation_status import add_warning
+                                add_warning(
+                                    f"preserve_input audio was time-stretched ({src_dur_sec:.3f}s -> "
+                                    f"{target_dur_sec:.3f}s) because the input clip's frame rate "
+                                    f"({fps:.3f}) differs from the output frame_rate ({frame_rate:.3f}); "
+                                    "preserve_input assumes matching fps for an untouched splice",
+                                    code="outpaint_video_audio_stretched",
+                                )
+                            except Exception:
+                                pass
+
+                        generated_audio_np = audio_out.numpy()
+
+                        # Pad the generated (vocoder) track to the AUTHORITATIVE
+                        # video duration first -- the vocoder's own temporal
+                        # grid can fall short of total_frames/frame_rate, and
+                        # splicing against a too-short array would silently
+                        # clamp/lose part of the placed window.
+                        full_video_samples = int(round((total_frames / frame_rate) * audio_sample_rate)) if frame_rate else generated_audio_np.shape[1]
+                        if full_video_samples > generated_audio_np.shape[1]:
+                            pad_amount = full_video_samples - generated_audio_np.shape[1]
+                            generated_audio_np = np.pad(
+                                generated_audio_np, ((0, 0), (0, pad_amount)), mode="constant"
+                            )
+
+                        input_window = extract_audio_window(
+                            input_audio, src_start_sec, src_dur_sec, target_dur_sec,
+                            sample_rate=audio_sample_rate,
+                            channels=generated_audio_np.shape[0],
+                        )
+                        if input_window is None:
+                            # NEVER overwrite with silence -- keep the
+                            # regenerated audio untouched on extraction failure.
+                            print("[LTX-2.3] vid_outpaint audio window extraction failed; "
+                                  "keeping the regenerated audio track (no splice)")
+                            try:
+                                from api.generation_status import add_warning
+                                add_warning(
+                                    "preserve_input audio window extraction failed; kept the "
+                                    "regenerated audio track unspliced",
+                                    code="outpaint_video_audio_extract_failed",
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            spliced = mux_audio_over_span(
+                                generated_audio_np, input_window,
+                                offset_sec=offset_sec, dur_sec=target_dur_sec,
+                                sample_rate=audio_sample_rate, crossfade_ms=50.0,
+                            )
+                            audio_out = torch.from_numpy(spliced)
+                    except Exception as e:
+                        print(f"[LTX-2.3] vid_outpaint audio preserve_input mux failed ({e}); "
+                              "keeping the regenerated audio track")
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        return frames_out, audio_out, audio_sample_rate, seed
 
     def _generate_txt2vid_ltx2(
         self,

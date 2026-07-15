@@ -2411,6 +2411,49 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/img2vid.",
         )
 
+    def generate_vid_outpaint(
+        self,
+        params: Dict[str, Any],
+        video_frames,
+        fps: float,
+        input_audio,
+        progress_callback=None,
+        step_callback=None,
+    ):
+        """Video temporal outpaint: place a (trimmed) input clip at a
+        latent-frame offset inside a LONGER output timeline and generate the
+        frames before/after (LTX-2.3 only).
+
+        Pure orchestration over the stock `diffusers.LTX2ConditionPipeline`
+        (no new denoise loop) -- see
+        `core.pipeline_backends.ltx2._generate_vidoutpaint_ltx2` and
+        `scratchpad/outpaint_design.md` section 4.
+
+        Args:
+            params: see `OUTPAINT_VIDEO_DEFAULTS`.
+            video_frames: np.uint8 [T, H, W, 3] decoded input clip, as
+                returned by `utils.video_utils.load_video_frames`.
+            fps: the input clip's own probed frame rate.
+            input_audio: WAV bytes of the input clip's original audio track
+                (see `utils.video_utils.extract_audio_stream`), or None.
+            progress_callback: Called as (step, total_steps) at each denoise step.
+            step_callback: Reserved (unused for LTX-2.3 vid_outpaint).
+
+        Returns:
+            tuple: (frames, audio, audio_sample_rate, actual_seed) --
+            identical contract to generate_img2vid/generate_txt2vid.
+        """
+        if self.is_ltx2_model:
+            return self._generate_vidoutpaint_ltx2(
+                params, video_frames, fps, input_audio, progress_callback, step_callback
+            )
+
+        from api.error_handlers import ValidationError
+        raise ValidationError(
+            "Video outpaint requires an LTX-2.3 model",
+            detail="The currently loaded model is not a video model. Load an LTX-2.3 model to use /generate/outpaint/video.",
+        )
+
     def generate_txt2aud(self, params: Dict[str, Any], progress_callback=None, step_callback=None):
         """Generate music/audio from text (ACE-Step 1.5 only).
 

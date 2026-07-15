@@ -41,6 +41,13 @@ from diffusers import (
 )
 from diffusers.pipelines.ltx2.connectors import LTX2TextConnectors
 from diffusers.pipelines.ltx2.vocoder import LTX2Vocoder, LTX2VocoderWithBWE
+# LTX2VideoCondition (the per-condition dataclass consumed by
+# LTX2ConditionPipeline.__call__(conditions=[...])) is NOT re-exported from
+# either the `diffusers` top-level namespace or `diffusers.pipelines.ltx2`'s
+# own lazy `__init__` -- verified directly (neither exposes the attribute).
+# It only lives on the pipeline's own submodule, so it is imported from
+# there explicitly (Phase 2: video temporal outpaint).
+from diffusers.pipelines.ltx2.pipeline_ltx2_condition import LTX2VideoCondition
 
 __all__ = [
     "AutoencoderKLLTX2Audio",
@@ -53,4 +60,5 @@ __all__ = [
     "LTX2TextConnectors",
     "LTX2Vocoder",
     "LTX2VocoderWithBWE",
+    "LTX2VideoCondition",
 ]

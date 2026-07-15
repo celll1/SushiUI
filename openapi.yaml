@@ -155,6 +155,9 @@ paths:
                   outpaint:
                     type: object
                     additionalProperties: true
+                  outpaint_vid:
+                    type: object
+                    additionalProperties: true
   /schema/training-defaults:
     get:
       summary: Get default parameter values for LoRA / Full-FT training
@@ -620,6 +623,90 @@ paths:
                 seed: 5555555555
         '400':
           description: Invalid parameters (including degenerate placement geometry)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Generation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /generate/outpaint/video:
+    post:
+      tags: [generation]
+      summary: Video temporal outpaint (place a clip at an offset in a longer timeline, LTX-2.3)
+      description: |
+        Places a (optionally trimmed) input `video` clip at a frame offset
+        inside a LONGER `total_frames` output timeline and generates the
+        frames before/after with a loaded LTX-2.3 model. Internally
+        delegates to the stock `diffusers.LTX2ConditionPipeline`
+        (`LTX2VideoCondition`) -- no new denoise loop, no mask upload.
+
+        **Strict preservation guarantee:** the placed input frames in the
+        returned video are BYTE-IDENTICAL to the (trimmed + preprocessed)
+        input clip, over the EFFECTIVE placed span (which may be shorter
+        than the full trimmed clip if it runs past `total_frames` -- see
+        `input_offset_frames`). This is enforced by an unconditional
+        frame-exact paste performed AFTER generation.
+
+        **÷32 preprocessing:** every frame in a single LTX-2.3 video shares
+        one resolution (`width`x`height`, both required ÷32 like
+        `/generate/txt2vid`). A clip whose native resolution or aspect ratio
+        does not match is center-cropped and LANCZOS-resized ONCE to that
+        resolution -- the PREPROCESSED frames (not the raw upload) become
+        the exact-preserved content, mirroring `/generate/outpaint`'s
+        placed-image RESIZE convention.
+
+        **Placement:** `input_offset_frames` is a desired PIXEL frame offset
+        into the output timeline. Because `LTX2VideoCondition.index`
+        addresses a LATENT frame (temporal compression 8x), it is snapped
+        server-side to the nearest valid pixel start
+        ({0, 1, 9, 17, ..., 8m+1}) -- a warning is returned in the response
+        when snapping changes the requested offset. `input_trim_start_frames`
+        / `input_trim_end_frames` trim the UPLOADED clip itself (in the
+        clip's own pixel frames) before placement.
+
+        **Audio (`outpaint_video_audio_mode`, only relevant when
+        `audio_enable` is true):**
+        - `regenerate` (default): use LTX-2.3's own whole-timeline generated
+          audio as-is. The input clip's own audio is NOT preserved.
+        - `preserve_input`: after generation, mux the input clip's ORIGINAL
+          audio over its placed span, keeping the LTX-generated audio
+          outside that span, with a ~50ms crossfade confined to the
+          GENERATED side of each boundary so every input audio sample stays
+          exact. Falls back to `regenerate` (with a warning) if the
+          uploaded clip has no audio stream.
+
+        **Requirements:**
+        - An LTX-2.3 model must be loaded (otherwise 400).
+        - `width`/`height` divisible by 32; `total_frames` must satisfy
+          `(total_frames - 1) % 8 == 0`.
+      operationId: generateOutpaintVideo
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OutpaintVideoRequest'
+      responses:
+        '200':
+          description: Generation successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerationResponse'
+              example:
+                success: true
+                actual_seed: 1234567890
+                image:
+                  id: 88
+                  filename: "outpaint_vid_20260715_120000_1234567890.mp4"
+                  generation_type: "outpaint_vid"
+        '400':
+          description: Invalid parameters or no LTX-2.3 model loaded
           content:
             application/json:
               schema:
@@ -5631,6 +5718,206 @@ components:
               type: string
               format: binary
               description: "First-frame keyframe image (multipart file upload). Resized to (width, height) before conditioning."
+
+    OutpaintVideoRequest:
+      type: object
+      required:
+        - prompt
+        - video
+      description: |
+        Distinct from `Txt2VidRequest`/`Img2VidRequest`: uses `total_frames`
+        (not `num_frames`) for the output timeline length, and does not
+        accept `controlnets` (no style-transfer wiring for video outpaint in
+        this phase). All other video-generation knobs (block swap /
+        FBCache / Spectrum / per-generation component overrides) are the
+        same as `Txt2VidRequest`.
+      properties:
+        prompt:
+          type: string
+          description: "Text prompt describing the generated (non-preserved) portion of the video."
+          example: "A cat playing a piano on a stage, warm stage lighting"
+        negative_prompt:
+          type: string
+          default: ""
+          description: "Content to steer away from. Applied only when guidance_scale > 1."
+        video:
+          type: string
+          format: binary
+          description: "Input video clip to place inside the output timeline (any ffmpeg-demuxable container)."
+        width:
+          type: integer
+          multipleOf: 32
+          default: 768
+          description: "Output video width in pixels. Must be divisible by 32. The uploaded clip is center-cropped + resized to this resolution (see the endpoint's ÷32 preprocessing note)."
+          example: 768
+        height:
+          type: integer
+          multipleOf: 32
+          default: 512
+          description: "Output video height in pixels. Must be divisible by 32."
+          example: 512
+        total_frames:
+          type: integer
+          default: 121
+          description: "Total number of frames in the OUTPUT timeline. Must satisfy (total_frames - 1) % 8 == 0."
+          example: 121
+        frame_rate:
+          type: number
+          default: 24.0
+          description: "Output frames per second."
+          example: 24.0
+        num_inference_steps:
+          type: integer
+          default: 8
+          description: "Number of denoising steps (distilled default: 8)."
+          example: 8
+        guidance_scale:
+          type: number
+          default: 1.0
+          description: "Classifier-free guidance scale. 1.0 disables CFG (distilled default)."
+          example: 1.0
+        seed:
+          type: integer
+          default: -1
+          description: "Random seed. -1 draws a random seed (returned in actual_seed)."
+          example: -1
+        num_videos_per_prompt:
+          type: integer
+          default: 1
+          example: 1
+        max_sequence_length:
+          type: integer
+          default: 1024
+          description: "Maximum prompt token length for the Gemma-3 text encoder."
+          example: 1024
+        audio_enable:
+          type: boolean
+          default: true
+          description: "When true, mux an audio track into the mp4 (see outpaint_video_audio_mode for its source)."
+          example: true
+        input_offset_frames:
+          type: integer
+          default: 0
+          description: |
+            Desired PIXEL frame offset (in the OUTPUT timeline) at which the
+            (trimmed) input clip is placed. Snapped server-side to the
+            nearest valid latent frame index's pixel start
+            ({0, 1, 9, 17, ..., 8m+1}) -- a warning is added to the response
+            when the requested value is not already a valid pixel start.
+          example: 0
+        input_trim_start_frames:
+          type: integer
+          default: 0
+          description: "Trim this many PIXEL frames off the START of the uploaded clip (in the clip's own frames) before placement."
+          example: 0
+        input_trim_end_frames:
+          type: integer
+          default: 0
+          description: "Trim this many PIXEL frames off the END of the uploaded clip before placement."
+          example: 0
+        outpaint_video_audio_mode:
+          type: string
+          enum: [regenerate, preserve_input]
+          default: regenerate
+          description: |
+            "regenerate": use LTX-2.3's own whole-timeline generated audio
+            as-is (the input clip's own audio is NOT preserved).
+            "preserve_input": mux the input clip's ORIGINAL audio over its
+            placed span after generation, keeping LTX-generated audio
+            outside that span, with a ~50ms crossfade confined to the
+            GENERATED side of each boundary. Falls back to "regenerate"
+            (with a warning) if the uploaded clip has no audio stream. Only
+            relevant when audio_enable is true.
+          example: regenerate
+        blocks_to_swap:
+          type: integer
+          default: 0
+          description: "Number of LTX-2.3 transformer blocks kept CPU-resident and streamed to GPU during the denoise loop. 0 disables block swap."
+          example: 0
+        fbcache_enable:
+          type: boolean
+          default: false
+          example: false
+        fbcache_threshold:
+          type: number
+          default: 0.12
+          example: 0.12
+        fbcache_warmup_steps:
+          type: integer
+          default: 1
+          example: 1
+        spectrum_enable:
+          type: boolean
+          default: false
+          example: false
+        spectrum_w:
+          type: number
+          default: 0.5
+          example: 0.5
+        spectrum_w_decay:
+          type: number
+          default: 0.0
+          example: 0.0
+        spectrum_delta_cap:
+          type: number
+          default: 0.0
+          example: 0.0
+        spectrum_m:
+          type: integer
+          default: 4
+          example: 4
+        spectrum_lam:
+          type: number
+          default: 0.1
+          example: 0.1
+        spectrum_warmup_steps:
+          type: integer
+          default: 3
+          example: 3
+        spectrum_window_size:
+          type: integer
+          default: 4
+          example: 4
+        spectrum_flex_window:
+          type: number
+          default: 0.75
+          example: 0.75
+        spectrum_tail:
+          type: number
+          default: 0.12
+          example: 0.12
+        spectrum_max_cache:
+          type: integer
+          default: 0
+          example: 0
+        vae_path:
+          type: string
+          nullable: true
+          description: "Per-generation VAE override. Unsupported on the LTX-2.3 video model: accepted-but-ignored with a warning."
+        text_encoder_path:
+          type: string
+          nullable: true
+          description: "Per-generation text-encoder override. Unsupported on the LTX-2.3 video model: accepted-but-ignored with a warning."
+        video_lossless:
+          type: boolean
+          default: false
+          description: |
+            When true, encodes the output with FFV1 (`-pix_fmt rgb24`)
+            instead of H.264, so the pasted (preserved) input frames are
+            BIT-EXACT after decode -- empirically verified: plain
+            "libx264 -qp 0" is NOT actually bit-exact (observed up to 2/255
+            per-channel drift from RGB<->YUV/GBR colorspace rounding even at
+            "lossless" x264 settings), while FFV1 with no forced colorspace
+            conversion gives an exact roundtrip. Audio (when present) uses
+            FLAC instead of AAC in this mode -- FLAC adds no further lossy
+            compression beyond the existing 16-bit PCM quantization this
+            pipeline always applies, it does not exceed 16-bit precision.
+            Trade-offs: much larger file size, and the resulting mp4 will
+            generally NOT play back in a browser's native <video> element
+            (FFV1 has no mainstream browser decoder) -- intended for
+            archival/verification of the exact preserved frames, not casual
+            playback.
+          example: false
 
     Txt2AudRequest:
       type: object

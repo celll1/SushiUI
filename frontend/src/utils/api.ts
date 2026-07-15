@@ -264,6 +264,12 @@ export interface GenerationParams {
   pid_sr_output?: string | null;   // "4x" | "original"
   pid_use_gemma?: boolean;
   pid_low_vram?: boolean;
+  // PiD large-output (>4096px) decode controls: default = tiled true
+  // super-resolution; pid_fast_large_decode = true switches to a faster
+  // cap+bicubic path (lower quality).
+  pid_tile_native?: number;
+  pid_tile_overlap_ratio?: number;
+  pid_fast_large_decode?: boolean;
   // Video generation fields (used when a video model is loaded; the merged
   // txt2img/img2img panels carry these and map them into Txt2VidParams/Img2VidParams).
   num_frames?: number;              // 8k+1 (default 121)
@@ -683,6 +689,9 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
   formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
   formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+  formData.append("pid_tile_native", String(paramsWithImages.pid_tile_native ?? 512));
+  formData.append("pid_tile_overlap_ratio", String(paramsWithImages.pid_tile_overlap_ratio ?? 0.25));
+  formData.append("pid_fast_large_decode", String(paramsWithImages.pid_fast_large_decode ?? false));
 
   // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
   formData.append("loop_decode", paramsWithImages.loop_decode || "full");
@@ -1033,6 +1042,9 @@ export const generateImg2Img = async (
   formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
   formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
   formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+  formData.append("pid_tile_native", String(paramsWithImages.pid_tile_native ?? 512));
+  formData.append("pid_tile_overlap_ratio", String(paramsWithImages.pid_tile_overlap_ratio ?? 0.25));
+  formData.append("pid_fast_large_decode", String(paramsWithImages.pid_fast_large_decode ?? false));
 
   // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts)
   formData.append("loop_decode", paramsWithImages.loop_decode || "full");
@@ -1416,6 +1428,9 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("pid_sr_output", paramsWithImages.pid_sr_output || "4x");
   formData.append("pid_use_gemma", String(paramsWithImages.pid_use_gemma ?? false));
   formData.append("pid_low_vram", String(paramsWithImages.pid_low_vram ?? false));
+  formData.append("pid_tile_native", String(paramsWithImages.pid_tile_native ?? 512));
+  formData.append("pid_tile_overlap_ratio", String(paramsWithImages.pid_tile_overlap_ratio ?? 0.25));
+  formData.append("pid_fast_large_decode", String(paramsWithImages.pid_fast_large_decode ?? false));
 
   // Loop-generation decode mode (heavy-decoder aware; see loopGenerationInheritance.ts).
   // NOTE: inpaint does NOT support loop_decode="none" / input_latent_id (backend

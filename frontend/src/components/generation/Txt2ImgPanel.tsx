@@ -107,6 +107,9 @@ const DEFAULT_PARAMS: GenerationParams = {
   pid_sr_output: "4x",
   pid_use_gemma: false,
   pid_low_vram: false,
+  pid_tile_native: 512,
+  pid_tile_overlap_ratio: 0.25,
+  pid_fast_large_decode: false,
   // Video generation fields (used when a video model is loaded; the panel maps
   // these into Txt2VidParams for txt2vid requests). Carried alongside the image
   // params so a single params object drives both modes.
@@ -1327,6 +1330,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         pid_sr_output: mainParams.pid_sr_output, // Inherit PiD decoder options (model-global)
         pid_use_gemma: mainParams.pid_use_gemma,
         pid_low_vram: mainParams.pid_low_vram,
+        pid_tile_native: mainParams.pid_tile_native,
+        pid_tile_overlap_ratio: mainParams.pid_tile_overlap_ratio,
+        pid_fast_large_decode: mainParams.pid_fast_large_decode,
       };
 
       // Genre-based inheritance. Each genre toggle defaults to the legacy combined
@@ -1529,6 +1535,9 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
       stepParams.pid_sr_output = mainParams.pid_sr_output;
       stepParams.pid_use_gemma = mainParams.pid_use_gemma;
       stepParams.pid_low_vram = mainParams.pid_low_vram;
+      stepParams.pid_tile_native = mainParams.pid_tile_native;
+      stepParams.pid_tile_overlap_ratio = mainParams.pid_tile_overlap_ratio;
+      stepParams.pid_fast_large_decode = mainParams.pid_fast_large_decode;
 
       const processedPrompt = await replaceWildcardsInPrompt(stepParams.prompt);
       const processedNegativePrompt = await replaceWildcardsInPrompt(stepParams.negative_prompt);
@@ -2106,6 +2115,12 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           onPidUseGemmaChange={(value) => setParams({ ...params, pid_use_gemma: value })}
           pidLowVram={params.pid_low_vram ?? false}
           onPidLowVramChange={(value) => setParams({ ...params, pid_low_vram: value })}
+          pidTileNative={params.pid_tile_native ?? 512}
+          onPidTileNativeChange={(value) => setParams({ ...params, pid_tile_native: value })}
+          pidTileOverlapRatio={params.pid_tile_overlap_ratio ?? 0.25}
+          onPidTileOverlapRatioChange={(value) => setParams({ ...params, pid_tile_overlap_ratio: value })}
+          pidFastLargeDecode={params.pid_fast_large_decode ?? false}
+          onPidFastLargeDecodeChange={(value) => setParams({ ...params, pid_fast_large_decode: value })}
           storageKeyPrefix="txt2img"
         />
 

@@ -1610,11 +1610,13 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               />
             </div>
           </details>
+          )}
 
           {/* Seam Structure Continuity (SSC): continues thin structures that
               cross the region boundary (a held rod/staff, limb, torso, lines)
               into the generated region. See backend/api/routes.py
               generate_outpaint seam_structure_* Form params. */}
+          {!isVideo && !isAudio && (
           <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
             <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
               Seam Structure Continuity

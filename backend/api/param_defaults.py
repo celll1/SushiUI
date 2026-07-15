@@ -182,6 +182,19 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     "inpaint_fill_mode": "original",
     "inpaint_fill_strength": 1.0,
     "inpaint_blur_strength": 1.0,
+    # Regional additional prompt (SD/SDXL only, inpaint/outpaint): an
+    # additional positive/negative prompt that conditions ONLY the generated
+    # region (outpaint = mask_latent==1; inpaint = the repaint mask), leaving
+    # the main whole-image prompt and the preserved region untouched. Active
+    # iff region_prompt_strength > 0 AND (region_prompt or
+    # region_negative_prompt) is non-empty. See
+    # core.inference.custom_sampling.custom_inpaint_sampling_loop's REGIONAL
+    # ADDITIONAL PROMPT block.
+    "region_prompt": "",
+    "region_negative_prompt": "",
+    "region_prompt_strength": 1.0,   # 0-2; 0 = feature inactive
+    "region_prompt_method": "cfg",   # "cfg" (spatial/masked CFG) | "attention" (not yet implemented -- falls back to "cfg" with a warning)
+    "region_mask_feather": 0.0,      # Gaussian sigma (latent cells) for the region mask edge; 0 = hard mask
     # Loop-generation decode mode (txt2img/img2img/inpaint, all steps of a
     # client-driven loop). "full" = decode with the active VAE (PiD if
     # overridden) + save + gallery (current/default behavior). "cheap" = if a
@@ -225,6 +238,11 @@ _IMG2IMG_ONLY = frozenset({
 _INPAINT_ONLY = frozenset({
     "mask_blur", "inpaint_full_res", "inpaint_full_res_padding",
     "inpaint_fill_mode", "inpaint_fill_strength", "inpaint_blur_strength",
+    # Regional additional prompt: mask-scoped, so it only makes sense where a
+    # generate/repaint mask exists (inpaint) -- inherited by OUTPAINT_DEFAULTS
+    # below via the same path as mask_blur.
+    "region_prompt", "region_negative_prompt", "region_prompt_strength",
+    "region_prompt_method", "region_mask_feather",
 })
 
 TXT2IMG_DEFAULTS: Dict[str, Any] = {

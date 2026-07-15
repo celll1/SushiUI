@@ -3334,6 +3334,11 @@ async def generate_inpaint(
     inpaint_fill_mode: str = Form("original"),
     inpaint_fill_strength: float = Form(1.0),
     inpaint_blur_strength: float = Form(1.0),
+    region_prompt: str = Form(GENERATION_DEFAULTS["region_prompt"]),  # Regional additional prompt (SD/SDXL): conditions ONLY the generated/repaint region
+    region_negative_prompt: str = Form(GENERATION_DEFAULTS["region_negative_prompt"]),
+    region_prompt_strength: float = Form(GENERATION_DEFAULTS["region_prompt_strength"]),  # 0-2; 0 = feature inactive
+    region_prompt_method: str = Form(GENERATION_DEFAULTS["region_prompt_method"]),  # "cfg" | "attention" (not yet implemented)
+    region_mask_feather: float = Form(GENERATION_DEFAULTS["region_mask_feather"]),  # Gaussian sigma (latent cells); 0 = hard mask
     prompt_chunking_mode: str = Form("a1111"),
     max_prompt_chunks: int = Form(0),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -3581,6 +3586,11 @@ async def generate_inpaint(
             "inpaint_fill_mode": inpaint_fill_mode,
             "inpaint_fill_strength": inpaint_fill_strength,
             "inpaint_blur_strength": inpaint_blur_strength,
+            "region_prompt": region_prompt,
+            "region_negative_prompt": region_negative_prompt,
+            "region_prompt_strength": region_prompt_strength,
+            "region_prompt_method": region_prompt_method,
+            "region_mask_feather": region_mask_feather,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,
@@ -3895,6 +3905,11 @@ async def generate_outpaint(
     inpaint_fill_mode: str = Form(OUTPAINT_DEFAULTS["inpaint_fill_mode"]),
     inpaint_fill_strength: float = Form(OUTPAINT_DEFAULTS["inpaint_fill_strength"]),
     inpaint_blur_strength: float = Form(OUTPAINT_DEFAULTS["inpaint_blur_strength"]),
+    region_prompt: str = Form(OUTPAINT_DEFAULTS["region_prompt"]),  # Regional additional prompt (SD/SDXL): conditions ONLY the generated region
+    region_negative_prompt: str = Form(OUTPAINT_DEFAULTS["region_negative_prompt"]),
+    region_prompt_strength: float = Form(OUTPAINT_DEFAULTS["region_prompt_strength"]),  # 0-2; 0 = feature inactive
+    region_prompt_method: str = Form(OUTPAINT_DEFAULTS["region_prompt_method"]),  # "cfg" | "attention" (not yet implemented)
+    region_mask_feather: float = Form(OUTPAINT_DEFAULTS["region_mask_feather"]),  # Gaussian sigma (latent cells); 0 = hard mask
     outpaint_seam_fix: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_fix"]),  # Post-generation exposure/tone harmonizer between the generated surroundings and the preserved rect
     outpaint_boundary_color_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_boundary_color_strength"]),  # B1 continuity fix: in-loop low-freq boundary color proximal strength (SD/SDXL only, 0=off)
     outpaint_resample_count: int = Form(OUTPAINT_DEFAULTS["outpaint_resample_count"]),  # B2 continuity fix: RePaint-style time-travel resample count (SD/SDXL only, 1=off)
@@ -4178,6 +4193,11 @@ async def generate_outpaint(
             "inpaint_fill_mode": inpaint_fill_mode,
             "inpaint_fill_strength": inpaint_fill_strength,
             "inpaint_blur_strength": inpaint_blur_strength,
+            "region_prompt": region_prompt,
+            "region_negative_prompt": region_negative_prompt,
+            "region_prompt_strength": region_prompt_strength,
+            "region_prompt_method": region_prompt_method,
+            "region_mask_feather": region_mask_feather,
             "outpaint_seam_fix": outpaint_seam_fix,
             "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
             "outpaint_resample_count": outpaint_resample_count,

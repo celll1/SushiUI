@@ -6384,6 +6384,61 @@ components:
               type: number
               default: 1.0
               description: "Strength of the mask-edge blend when compositing the inpainted region back into the original image."
+            region_prompt:
+              type: string
+              default: ""
+              description: |
+                SD/SDXL only. An additional POSITIVE prompt that conditions
+                ONLY the repaint mask region, leaving the main prompt and the
+                preserved (unmasked) region untouched. Encoded and combined
+                with the main prompt the same way region_negative_prompt is
+                (see region_prompt_method). Active only when
+                region_prompt_strength > 0 and at least one of
+                region_prompt/region_negative_prompt is non-empty.
+              example: "continue the character, full body"
+            region_negative_prompt:
+              type: string
+              default: ""
+              description: |
+                SD/SDXL only. An additional NEGATIVE prompt that suppresses
+                content ONLY in the repaint mask region (e.g. suppressing
+                invented UI/HUD chrome that a whole-image negative prompt
+                cannot target without affecting the preserved region).
+              example: "ui, hud, frame, border, text, watermark"
+            region_prompt_strength:
+              type: number
+              default: 1.0
+              minimum: 0.0
+              maximum: 2.0
+              description: |
+                SD/SDXL only. Blend strength for the regional additional
+                prompt. 0 disables the feature entirely (regardless of
+                region_prompt/region_negative_prompt content). 1.0 is the
+                canonical spatial blend; values above 1.0 extrapolate a
+                stronger regional effect.
+              example: 1.0
+            region_prompt_method:
+              type: string
+              enum: [cfg, attention]
+              default: cfg
+              description: |
+                SD/SDXL only. Mechanism used to apply the regional additional
+                prompt. "cfg" (default): an extra masked/spatial classifier-
+                free-guidance denoise branch, blended into the main branch's
+                result via the (feathered) region mask -- costs roughly
+                1.5x-2x the base U-Net forward count (higher under outpaint
+                time-travel resampling). "attention" is not yet available in
+                this build and falls back to "cfg" with a warning.
+              example: cfg
+            region_mask_feather:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              description: |
+                SD/SDXL only. Gaussian sigma, in latent cells, for feathering
+                the region mask's edge before the spatial blend (method
+                "cfg"). 0 (default) uses a hard mask (no feathering).
+              example: 0.0
 
     OutpaintRequest:
       allOf:
@@ -6520,6 +6575,60 @@ components:
               type: number
               default: 1.0
               description: "Strength of the mask-edge blend when compositing the generated region back onto the canvas (internal to generate_inpaint; the final preserved-rect paste happens afterward regardless)."
+            region_prompt:
+              type: string
+              default: ""
+              description: |
+                SD/SDXL only. An additional POSITIVE prompt that conditions
+                ONLY the generated (outside-the-preserved-rect) region,
+                leaving the main prompt and the preserved input rectangle
+                untouched. Active only when region_prompt_strength > 0 and at
+                least one of region_prompt/region_negative_prompt is
+                non-empty.
+              example: "continue the character, full body"
+            region_negative_prompt:
+              type: string
+              default: ""
+              description: |
+                SD/SDXL only. An additional NEGATIVE prompt that suppresses
+                content ONLY in the generated region (e.g. suppressing
+                invented UI/HUD chrome that a whole-image negative prompt
+                cannot target without affecting the preserved rectangle).
+              example: "ui, hud, frame, border, text, watermark, game screenshot"
+            region_prompt_strength:
+              type: number
+              default: 1.0
+              minimum: 0.0
+              maximum: 2.0
+              description: |
+                SD/SDXL only. Blend strength for the regional additional
+                prompt. 0 disables the feature entirely. 1.0 is the canonical
+                spatial blend; values above 1.0 extrapolate a stronger
+                regional effect.
+              example: 1.0
+            region_prompt_method:
+              type: string
+              enum: [cfg, attention]
+              default: cfg
+              description: |
+                SD/SDXL only. Mechanism used to apply the regional additional
+                prompt. "cfg" (default): an extra masked/spatial classifier-
+                free-guidance denoise branch, blended into the main branch's
+                result via the (feathered) region mask -- costs roughly
+                1.5x-2x the base U-Net forward count, multiplied further by
+                outpaint time-travel resampling's own NFE multiplier when
+                outpaint_resample_count > 1. "attention" is not yet available
+                in this build and falls back to "cfg" with a warning.
+              example: cfg
+            region_mask_feather:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              description: |
+                SD/SDXL only. Gaussian sigma, in latent cells, for feathering
+                the region mask's edge before the spatial blend (method
+                "cfg"). 0 (default) uses a hard mask (no feathering).
+              example: 0.0
             outpaint_seam_fix:
               type: boolean
               default: true

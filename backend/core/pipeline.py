@@ -4246,6 +4246,37 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         if negative_pooled_prompt_embeds is not None:
             print(f"[inpaint] Negative pooled prompt embeddings shape: {negative_pooled_prompt_embeds.shape}")
 
+        # Regional additional prompt (STAGE R1, method "cfg"): an additional
+        # positive/negative prompt that conditions ONLY the generated region
+        # (outpaint = mask_latent==1; inpaint = the repaint mask), leaving the
+        # main whole-image prompt and the preserved region untouched. Encoded
+        # the SAME way as the main prompt (reuse _encode_prompt_with_weights)
+        # -- see scratchpad/regional_prompt_synthesis.md. Only encoded when
+        # active (strength>0 AND at least one region string non-empty) --
+        # otherwise this whole block is skipped (no extra encode pass, byte-
+        # identical to before this feature).
+        region_prompt_text = params.get("region_prompt", "") or ""
+        region_negative_prompt_text = params.get("region_negative_prompt", "") or ""
+        region_prompt_strength = params.get("region_prompt_strength", 1.0)
+        region_prompt_method = params.get("region_prompt_method", "cfg")
+        region_mask_feather = params.get("region_mask_feather", 0.0)
+        region_has_positive = bool(region_prompt_text.strip())
+        region_has_negative = bool(region_negative_prompt_text.strip())
+        region_prompt_active = region_prompt_strength > 0 and (region_has_positive or region_has_negative)
+        region_prompt_embeds = None
+        region_negative_prompt_embeds = None
+        region_pooled_prompt_embeds = None
+        region_negative_pooled_prompt_embeds = None
+        if region_prompt_active:
+            print(f"[RegionalPrompt] Encoding region prompt (method={region_prompt_method}): "
+                  f"positive={region_has_positive}, negative={region_has_negative}")
+            (region_prompt_embeds, region_negative_prompt_embeds,
+             region_pooled_prompt_embeds, region_negative_pooled_prompt_embeds) = self._encode_prompt_with_weights(
+                region_prompt_text,
+                region_negative_prompt_text,
+                pipeline=pipeline_to_use,
+            )
+
         # Pre-calculate all prompt editing embeddings if needed
         embeds_cache = {}
         if prompt_processor:
@@ -4307,6 +4338,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             nag_negative_prompt_embeds = nag_negative_prompt_embeds.to(device)
         if nag_negative_pooled_prompt_embeds is not None:
             nag_negative_pooled_prompt_embeds = nag_negative_pooled_prompt_embeds.to(device)
+        if region_prompt_embeds is not None:
+            region_prompt_embeds = region_prompt_embeds.to(device)
+        if region_negative_prompt_embeds is not None:
+            region_negative_prompt_embeds = region_negative_prompt_embeds.to(device)
+        if region_pooled_prompt_embeds is not None:
+            region_pooled_prompt_embeds = region_pooled_prompt_embeds.to(device)
+        if region_negative_pooled_prompt_embeds is not None:
+            region_negative_pooled_prompt_embeds = region_negative_pooled_prompt_embeds.to(device)
 
         # Offload text encoders to CPU after all encoding is complete (unless kept hot)
         if _kh_keep_te:
@@ -4515,6 +4554,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             outpaint_resample_count=params.get("outpaint_resample_count", 2),
             outpaint_jump_length=params.get("outpaint_jump_length", 4),
             outpaint_reference_strength=params.get("outpaint_reference_strength", 0.0),
+            region_prompt_embeds=region_prompt_embeds,
+            region_negative_prompt_embeds=region_negative_prompt_embeds,
+            region_pooled_prompt_embeds=region_pooled_prompt_embeds,
+            region_negative_pooled_prompt_embeds=region_negative_pooled_prompt_embeds,
+            region_has_positive=region_has_positive,
+            region_has_negative=region_has_negative,
+            region_prompt_strength=region_prompt_strength,
+            region_prompt_method=region_prompt_method,
+            region_mask_feather=region_mask_feather,
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -4539,6 +4587,10 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             negative_pooled_prompt_embeds = None
             nag_negative_prompt_embeds = None
             nag_negative_pooled_prompt_embeds = None
+            region_prompt_embeds = None
+            region_negative_prompt_embeds = None
+            region_pooled_prompt_embeds = None
+            region_negative_pooled_prompt_embeds = None
 
             # Offload all components to CPU to free VRAM -- EXCEPT components kept
             # hot on a SUCCESSFUL generation (see generate_txt2img for the contract).

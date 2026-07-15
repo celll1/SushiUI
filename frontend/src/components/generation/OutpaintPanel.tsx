@@ -117,6 +117,11 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   inpaint_fill_mode: "original",
   inpaint_fill_strength: 1.0,
   inpaint_blur_strength: 1.0,
+  region_prompt: "",
+  region_negative_prompt: "",
+  region_prompt_strength: 1.0,
+  region_prompt_method: "cfg",
+  region_mask_feather: 0.0,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -1526,6 +1531,77 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             onChange={(e) => setParams({ ...params, negative_prompt: e.target.value })}
             enableWeightControl={true}
           />
+
+          {/* Regional additional prompt (image outpaint only, SD/SDXL): conditions
+              ONLY the generated region, leaving the main prompt + the placed
+              (preserved) region untouched. See backend/api/routes.py
+              generate_outpaint region_* Form params. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Regional prompt (generated area only)
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                Conditions only the generated region — the main prompt above and the placed (preserved) input pixels are unaffected.
+                Cost: "cfg" runs an extra regional denoise branch (up to ~2x U-Net forwards, more with outpaint's resampling passes). "attention" adds no extra forward pass.
+              </p>
+              <TextareaWithTagSuggestions
+                label="Generated-region positive prompt"
+                placeholder="Additional prompt applied only in the generated region..."
+                rows={2}
+                value={params.region_prompt || ""}
+                onChange={(e) => setParams({ ...params, region_prompt: e.target.value })}
+                enableWeightControl={true}
+              />
+              <div className="relative">
+                <TextareaWithTagSuggestions
+                  label="Generated-region negative prompt"
+                  placeholder="Additional negative prompt applied only in the generated region..."
+                  rows={2}
+                  value={params.region_negative_prompt || ""}
+                  onChange={(e) => setParams({ ...params, region_negative_prompt: e.target.value })}
+                  enableWeightControl={true}
+                />
+                <button
+                  type="button"
+                  onClick={() => setParams({
+                    ...params,
+                    region_negative_prompt: "ui, hud, frame, border, text, watermark, logo, letterbox, game screenshot, game ui, health bar, speech bubble, dialogue box",
+                  })}
+                  className="mt-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
+                >
+                  Fill with chrome-suppression default
+                </button>
+              </div>
+              <Slider
+                label="Regional Prompt Strength"
+                min={0}
+                max={2}
+                step={0.05}
+                value={params.region_prompt_strength ?? 1.0}
+                onChange={(e) => setParams({ ...params, region_prompt_strength: parseFloat(e.target.value) })}
+              />
+              <Select
+                label="Regional Prompt Method"
+                options={[
+                  { value: "cfg", label: "Spatial CFG (stronger, ~2x slower)" },
+                  { value: "attention", label: "Attention (free, softer)" },
+                ]}
+                value={params.region_prompt_method || "cfg"}
+                onChange={(e) => setParams({ ...params, region_prompt_method: e.target.value })}
+              />
+              <Slider
+                label="Region Mask Feather (latent px)"
+                min={0}
+                max={8}
+                step={0.5}
+                value={params.region_mask_feather ?? 0.0}
+                onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
+              />
+            </div>
+          </details>
+          )}
         </Card>
         )}
 

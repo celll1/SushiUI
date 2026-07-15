@@ -3915,6 +3915,10 @@ async def generate_outpaint(
     outpaint_resample_count: int = Form(OUTPAINT_DEFAULTS["outpaint_resample_count"]),  # B2 continuity fix: RePaint-style time-travel resample count (SD/SDXL only, 1=off)
     outpaint_jump_length: int = Form(OUTPAINT_DEFAULTS["outpaint_jump_length"]),  # B2 continuity fix: time-travel jump-back length in step indices
     outpaint_reference_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_reference_strength"]),  # B3 continuity fix: masked self-attention KV injection strength (SD/SDXL only, 0=off)
+    outpaint_commit_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_strength"]),  # Boundary-outward commitment front (SD/SDXL only, EXPERIMENTAL, 0=off): augments B1's x0-projection
+    outpaint_commit_near: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_near"]),  # commit-front: schedule progress at which boundary-touching cells commit
+    outpaint_commit_far: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_far"]),  # commit-front: schedule progress at which the farthest generate cells commit
+    outpaint_commit_distance: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_distance"]),  # commit-front: distance (latent cells) at which the commit schedule saturates
     prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
     max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -4203,6 +4207,10 @@ async def generate_outpaint(
             "outpaint_resample_count": outpaint_resample_count,
             "outpaint_jump_length": outpaint_jump_length,
             "outpaint_reference_strength": outpaint_reference_strength,
+            "outpaint_commit_strength": outpaint_commit_strength,
+            "outpaint_commit_near": outpaint_commit_near,
+            "outpaint_commit_far": outpaint_commit_far,
+            "outpaint_commit_distance": outpaint_commit_distance,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,

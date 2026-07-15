@@ -123,6 +123,11 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   region_prompt_strength: 1.0,
   region_prompt_method: "cfg",
   region_mask_feather: 0.0,
+  seam_structure_strength: 0.0,
+  seam_structure_depth: 6.0,
+  seam_structure_end: 0.70,
+  seam_structure_saliency: 2.0,
+  seam_structure_max_area: 0.25,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -1603,6 +1608,66 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 value={params.region_mask_feather ?? 0.0}
                 onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
               />
+            </div>
+          </details>
+
+          {/* Seam Structure Continuity (SSC): continues thin structures that
+              cross the region boundary (a held rod/staff, limb, torso, lines)
+              into the generated region. See backend/api/routes.py
+              generate_outpaint seam_structure_* Form params. */}
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Seam Structure Continuity
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                SD/SDXL only. Continues thin structures that cross the region boundary (a held rod/staff, limb, torso, lines) into the generated region.
+                x0-space, no extra U-Net forwards. 0 = off.
+              </p>
+              <Slider
+                label="Seam Structure Strength"
+                min={0}
+                max={1.5}
+                step={0.05}
+                value={params.seam_structure_strength ?? 0.0}
+                onChange={(e) => setParams({ ...params, seam_structure_strength: parseFloat(e.target.value) })}
+              />
+              {developerMode && (
+                <>
+                  <Slider
+                    label="Seam Structure Depth (latent cells)"
+                    min={1}
+                    max={24}
+                    step={1}
+                    value={params.seam_structure_depth ?? 6.0}
+                    onChange={(e) => setParams({ ...params, seam_structure_depth: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Seam Structure End (schedule progress)"
+                    min={0.45}
+                    max={1.0}
+                    step={0.05}
+                    value={params.seam_structure_end ?? 0.70}
+                    onChange={(e) => setParams({ ...params, seam_structure_end: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Seam Structure Saliency"
+                    min={0}
+                    max={6}
+                    step={0.5}
+                    value={params.seam_structure_saliency ?? 2.0}
+                    onChange={(e) => setParams({ ...params, seam_structure_saliency: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Seam Structure Max Area"
+                    min={0.05}
+                    max={1.0}
+                    step={0.05}
+                    value={params.seam_structure_max_area ?? 0.25}
+                    onChange={(e) => setParams({ ...params, seam_structure_max_area: parseFloat(e.target.value) })}
+                  />
+                </>
+              )}
             </div>
           </details>
           )}

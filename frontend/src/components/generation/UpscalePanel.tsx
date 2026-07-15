@@ -19,7 +19,7 @@ import {
   UpscalerModelInfo,
 } from "@/utils/api";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendImageToImg2Img, sendImageToInpaint } from "@/utils/sendHelpers";
+import { sendImageToImg2Img, sendImageToInpaint, sendImageToOutpaint } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
@@ -493,6 +493,23 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
     }
   };
 
+  const sendToOutpaint = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+    if (sendImage) {
+      try {
+        await sendImageToOutpaint(generatedImage);
+      } catch (error) {
+        console.error("[Upscale] Failed to send image to outpaint:", error);
+      }
+    }
+    if (onTabChange) {
+      onTabChange("outpaint");
+    }
+  };
+
   const backendOptions = [
     { value: "pil", label: "PIL resize (no model)" },
     { value: "spandrel", label: "GAN/transformer model (.pth/.safetensors)" },
@@ -810,7 +827,7 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
                 </label>
               </div>
 
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <Button onClick={sendToTxt2Img} variant="secondary" size="sm">
                   Send to txt2img
                 </Button>
@@ -819,6 +836,9 @@ export default function UpscalePanel({ onTabChange }: UpscalePanelProps = {}) {
                 </Button>
                 <Button onClick={sendToInpaint} variant="secondary" size="sm" disabled={!sendImage}>
                   Send to inpaint
+                </Button>
+                <Button onClick={sendToOutpaint} variant="secondary" size="sm" disabled={!sendImage}>
+                  Send to outpaint
                 </Button>
               </div>
             </div>

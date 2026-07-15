@@ -34,7 +34,7 @@ import {
 } from "@/utils/api";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, fetchUrlToFile, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { fixFloatingPointParams } from "@/utils/numberUtils";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
@@ -482,6 +482,60 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     return () => window.removeEventListener("outpaint_input_updated", handleInputUpdate);
   }, []);
 
+  // Listen for a video clip sent from a result's "Send to Outpaint" (e.g.
+  // Txt2Img/Img2Img/Outpaint's own outpaint_vid result). Transport is the
+  // plain `/outputs/<filename>` URL (too large for base64/localStorage) --
+  // fetch it into a real File so it flows through the same videoFile path an
+  // upload does (mirrors processVideoFile's reset of the trim/offset fields).
+  useEffect(() => {
+    const handleVideoInputUpdate = async () => {
+      const url = localStorage.getItem("outpaint_input_video");
+      if (!url) return;
+      try {
+        const file = await fetchUrlToFile(url);
+        setVideoPreviewUrl(prev => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(file);
+        });
+        setVideoFile(file);
+        setVideoDurationSec(null);
+        setParams(prev => ({ ...prev, input_offset_frames: 0, input_trim_start_frames: 0, input_trim_end_frames: 0 }));
+      } catch (error) {
+        console.error("[Outpaint] Failed to load sent video:", error);
+      } finally {
+        localStorage.removeItem("outpaint_input_video");
+      }
+    };
+    window.addEventListener("outpaint_input_video_updated", handleVideoInputUpdate);
+    return () => window.removeEventListener("outpaint_input_video_updated", handleVideoInputUpdate);
+  }, []);
+
+  // Listen for an audio clip sent from a result's "Send to Outpaint" (e.g.
+  // Txt2Img/Img2Img/Outpaint's own outpaint_aud result). Mirrors the video
+  // listener above (mirrors processAudioFile's reset of the trim/offset fields).
+  useEffect(() => {
+    const handleAudioInputUpdate = async () => {
+      const url = localStorage.getItem("outpaint_input_audio");
+      if (!url) return;
+      try {
+        const file = await fetchUrlToFile(url);
+        setAudioPreviewUrl(prev => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(file);
+        });
+        setAudioFile(file);
+        setAudioDurationSec(null);
+        setParams(prev => ({ ...prev, input_offset_sec: 0, input_trim_start_sec: 0, input_trim_end_sec: 0 }));
+      } catch (error) {
+        console.error("[Outpaint] Failed to load sent audio:", error);
+      } finally {
+        localStorage.removeItem("outpaint_input_audio");
+      }
+    };
+    window.addEventListener("outpaint_input_audio_updated", handleAudioInputUpdate);
+    return () => window.removeEventListener("outpaint_input_audio_updated", handleAudioInputUpdate);
+  }, []);
+
   // Listen for param updates dispatched from the Gallery / other panels
   useEffect(() => {
     const handleParamsUpdate = () => {
@@ -873,6 +927,38 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       }
     }
     if (onTabChange) onTabChange("upscale");
+  };
+
+  // Outpaint's own outpaint_vid result -> Outpaint again (self-send = iterate
+  // an extend, e.g. keep pushing the clip further out).
+  const sendVideoResultToOutpaint = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToOutpaint(generatedVideo);
+    if (onTabChange) onTabChange("outpaint");
+  };
+
+  // Outpaint's own outpaint_aud result -> Outpaint again (self-send = iterate
+  // an extend).
+  const sendAudioResultToOutpaint = () => {
+    if (!generatedAudio) {
+      alert("No audio to send");
+      return;
+    }
+    sendAudioToOutpaint(generatedAudio);
+    if (onTabChange) onTabChange("outpaint");
+  };
+
+  // Outpaint's own outpaint_aud result -> Img2Img as the aud2aud reference clip.
+  const sendAudioResultToImg2Img = () => {
+    if (!generatedAudio) {
+      alert("No audio to send");
+      return;
+    }
+    sendAudioToImg2Img(generatedAudio);
+    if (onTabChange) onTabChange("img2img");
   };
 
   const { addToQueue, startNextInQueue, completeCurrentItem, failCurrentItem, currentItem, queue } = useGenerationQueue();
@@ -2353,6 +2439,29 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     </Button>
                     <Button onClick={sendToUpscale} variant="secondary" size="sm" disabled={!generatedImage}>
                       Send to Upscale
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {isVideo && generatedVideo && (
+                <div className="space-y-3 mt-4">
+                  <div className="grid grid-cols-1 gap-2">
+                    <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
+                      Send to outpaint
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {isAudio && generatedAudio && (
+                <div className="space-y-3 mt-4">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button onClick={sendAudioResultToOutpaint} variant="secondary" size="sm">
+                      Send to outpaint
+                    </Button>
+                    <Button onClick={sendAudioResultToImg2Img} variant="secondary" size="sm">
+                      Send to img2img
                     </Button>
                   </div>
                 </div>

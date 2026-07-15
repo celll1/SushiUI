@@ -30,7 +30,7 @@ import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import VramInspector from "../common/VramInspector";
 import { saveTempImage, loadTempImage } from "@/utils/tempImageStorage";
-import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendBase64ImageToInpaint, sendBase64ImageToUpscale, sendBase64ImageToOutpaint, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -728,6 +728,68 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     if (onTabChange) {
       onTabChange("inpaint");
     }
+  };
+
+  const sendToOutpaint = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    // Send image if checked
+    if (sendImage) {
+      try {
+        await sendBase64ImageToOutpaint(generatedImage);
+      } catch (error) {
+        console.error("[Txt2Img] Failed to send image to outpaint:", error);
+      }
+    }
+
+    // Use generated image params if available, otherwise fall back to current UI params
+    const sourceParams = generatedImageParams || params;
+
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "outpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: false,
+      dispatchEvent: "outpaint_params_updated"
+    });
+
+    // Navigate to outpaint tab
+    if (onTabChange) {
+      onTabChange("outpaint");
+    }
+  };
+
+  // generatedVideo (Txt2Vid) result -> Outpaint's outpaint_vid clip input.
+  const sendVideoResultToOutpaint = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToOutpaint(generatedVideo);
+    if (onTabChange) onTabChange("outpaint");
+  };
+
+  // generatedAudio (Txt2Aud) result -> Outpaint's outpaint_aud clip input.
+  const sendAudioResultToOutpaint = () => {
+    if (!generatedAudio) {
+      alert("No audio to send");
+      return;
+    }
+    sendAudioToOutpaint(generatedAudio);
+    if (onTabChange) onTabChange("outpaint");
+  };
+
+  // generatedAudio (Txt2Aud) result -> Img2Img as the aud2aud reference clip.
+  const sendAudioResultToImg2Img = () => {
+    if (!generatedAudio) {
+      alert("No audio to send");
+      return;
+    }
+    sendAudioToImg2Img(generatedAudio);
+    if (onTabChange) onTabChange("img2img");
   };
 
   const importFromImage = (imageData: any) => {
@@ -3801,7 +3863,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -3828,12 +3890,43 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                     Send to inpaint
                   </Button>
                   <Button
+                    onClick={sendToOutpaint}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to outpaint
+                  </Button>
+                  <Button
                     onClick={sendToUpscale}
                     variant="secondary"
                     size="sm"
                     disabled={!generatedImage}
                   >
                     Send to Upscale
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isVideo && generatedVideo && (
+              <div className="space-y-3 mt-4">
+                <div className="grid grid-cols-1 gap-2">
+                  <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
+                    Send to outpaint
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isAudio && generatedAudio && (
+              <div className="space-y-3 mt-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button onClick={sendAudioResultToOutpaint} variant="secondary" size="sm">
+                    Send to outpaint
+                  </Button>
+                  <Button onClick={sendAudioResultToImg2Img} variant="secondary" size="sm">
+                    Send to img2img
                   </Button>
                 </div>
               </div>

@@ -287,6 +287,18 @@ export async function sendImageToOutpaint(
 }
 
 /**
+ * Sends base64 image to outpaint panel (no fetching needed)
+ */
+export async function sendBase64ImageToOutpaint(
+  base64Image: string,
+  storageKey: string = "outpaint_input_image"
+): Promise<void> {
+  const tempRef = await saveTempImage(base64Image);
+  localStorage.setItem(storageKey, tempRef);
+  window.dispatchEvent(new Event("outpaint_input_updated"));
+}
+
+/**
  * Sends base64 image to img2img panel (no fetching needed)
  */
 export async function sendBase64ImageToImg2Img(
@@ -398,4 +410,46 @@ export async function sendBase64ImageToImg2Vid(
   const tempRef = await saveTempImage(base64Image);
   localStorage.setItem(storageKey, tempRef);
   window.dispatchEvent(new Event("img2vid_input_updated"));
+}
+
+/**
+ * Fetches a URL (e.g. `/outputs/<filename>` or a blob: URL) and materializes
+ * it as a File. Video/audio results are too large for the base64 +
+ * localStorage transport used by images, so the video/audio send-to helpers
+ * below just hand off the URL string; the receiving panel calls this to get
+ * a real File for its videoFile/audioFile/referenceAudioFile state (queue
+ * items require a File, not a URL).
+ */
+export async function fetchUrlToFile(url: string, filename?: string): Promise<File> {
+  const response = await fetch(url);
+  const blob = await response.blob();
+  const name = filename || url.split("/").pop()?.split("?")[0] || "file";
+  return new File([blob], name, { type: blob.type });
+}
+
+/**
+ * Sends a video result to the Outpaint panel's outpaint_vid clip input.
+ * Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ */
+export function sendVideoToOutpaint(videoUrl: string): void {
+  localStorage.setItem("outpaint_input_video", videoUrl);
+  window.dispatchEvent(new Event("outpaint_input_video_updated"));
+}
+
+/**
+ * Sends an audio result to the Outpaint panel's outpaint_aud clip input.
+ * Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ */
+export function sendAudioToOutpaint(audioUrl: string): void {
+  localStorage.setItem("outpaint_input_audio", audioUrl);
+  window.dispatchEvent(new Event("outpaint_input_audio_updated"));
+}
+
+/**
+ * Sends an audio result to the Img2Img panel's aud2aud reference clip input.
+ * Transport is the plain URL (not base64) -- see fetchUrlToFile.
+ */
+export function sendAudioToImg2Img(audioUrl: string): void {
+  localStorage.setItem("img2img_input_audio", audioUrl);
+  window.dispatchEvent(new Event("img2img_input_audio_updated"));
 }

@@ -30,7 +30,7 @@ import { useActiveTraining } from "@/hooks/useActiveTraining";
 import { wsClient, CFGMetrics } from "@/utils/websocket";
 import CFGMetricsGraph from "../common/CFGMetricsGraph";
 import { saveTempImage, loadTempImage, deleteTempImageRef } from "@/utils/tempImageStorage";
-import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale } from "@/utils/sendHelpers";
+import { sendToPanel, sendImageToImg2Img, sendImageToInpaint, sendImageToUpscale, sendImageToOutpaint, fetchUrlToFile, sendVideoToOutpaint, sendAudioToOutpaint, sendAudioToImg2Img } from "@/utils/sendHelpers";
 import { useStartup } from "@/contexts/StartupContext";
 import { useGenerationQueue } from "@/contexts/GenerationQueueContext";
 
@@ -729,6 +729,34 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     };
   }, []);
 
+  // Accept an audio reference clip sent from a result's "Send to Img2Img"
+  // (aud2aud reference, e.g. Txt2Img/Outpaint's generatedAudio). Transport is
+  // the plain `/outputs/<filename>` URL (too large for base64/localStorage) --
+  // fetch it into a real File so it flows through the same referenceAudioFile
+  // path an upload does (mirrors handleReferenceAudioUpload).
+  useEffect(() => {
+    const handleAudioInputUpdate = async () => {
+      const url = localStorage.getItem("img2img_input_audio");
+      if (!url) return;
+      try {
+        const file = await fetchUrlToFile(url);
+        setReferenceAudioPreview(prev => {
+          if (prev) URL.revokeObjectURL(prev);
+          return URL.createObjectURL(file);
+        });
+        setReferenceAudioFile(file);
+      } catch (error) {
+        console.error("[Img2Img] Failed to load sent audio:", error);
+      } finally {
+        localStorage.removeItem("img2img_input_audio");
+      }
+    };
+    window.addEventListener("img2img_input_audio_updated", handleAudioInputUpdate);
+    return () => {
+      window.removeEventListener("img2img_input_audio_updated", handleAudioInputUpdate);
+    };
+  }, []);
+
   // Save params to localStorage whenever they change (but only after mounted and initial load complete)
   useEffect(() => {
     if (isMounted && !isInitialLoad) {
@@ -1166,6 +1194,69 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
     if (onTabChange) {
       onTabChange("inpaint");
     }
+  };
+
+  const sendToOutpaint = async () => {
+    if (!generatedImage) {
+      alert("No image to send");
+      return;
+    }
+
+    // Use generated image params if available, otherwise fall back to current UI params
+    const sourceParams = generatedImageParams || params;
+
+    // Send image if checked
+    if (sendImage) {
+      try {
+        await sendImageToOutpaint(generatedImage);
+      } catch (error) {
+        console.error("Failed to send image to outpaint:", error);
+      }
+    }
+
+    // Send prompt and/or parameters
+    sendToPanel(sourceParams, "outpaint_params", {
+      sendPrompt,
+      sendParameters,
+      includeDenoising: true,
+      dispatchEvent: "outpaint_params_updated"
+    });
+
+    // Navigate to outpaint tab
+    if (onTabChange) {
+      onTabChange("outpaint");
+    }
+  };
+
+  // generatedVideo (Img2Vid) result -> Outpaint's outpaint_vid clip input.
+  const sendVideoResultToOutpaint = () => {
+    if (!generatedVideo) {
+      alert("No video to send");
+      return;
+    }
+    sendVideoToOutpaint(generatedVideo);
+    if (onTabChange) onTabChange("outpaint");
+  };
+
+  // generatedAudio (aud2aud) result -> Outpaint's outpaint_aud clip input.
+  const sendAudioResultToOutpaint = () => {
+    if (!generatedAudio) {
+      alert("No audio to send");
+      return;
+    }
+    sendAudioToOutpaint(generatedAudio);
+    if (onTabChange) onTabChange("outpaint");
+  };
+
+  // generatedAudio (aud2aud) result -> Img2Img again as a new reference clip
+  // (self-send = iterate the cover/reference further).
+  const sendAudioResultToImg2Img = () => {
+    if (!generatedAudio) {
+      alert("No audio to send");
+      return;
+    }
+    sendAudioToImg2Img(generatedAudio);
+    if (onTabChange) onTabChange("img2img");
   };
 
   // FLUX.2 Image Edit: Reference image handlers
@@ -4251,7 +4342,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     <span className="text-gray-300">Send parameters</span>
                   </label>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-5 gap-2">
                   <Button
                     onClick={sendToTxt2Img}
                     variant="secondary"
@@ -4278,12 +4369,43 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
                     Send to inpaint
                   </Button>
                   <Button
+                    onClick={sendToOutpaint}
+                    variant="secondary"
+                    size="sm"
+                    disabled={!sendImage && !sendPrompt && !sendParameters}
+                  >
+                    Send to outpaint
+                  </Button>
+                  <Button
                     onClick={sendToUpscale}
                     variant="secondary"
                     size="sm"
                     disabled={!generatedImage}
                   >
                     Send to Upscale
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isVideo && generatedVideo && (
+              <div className="space-y-3 mt-4">
+                <div className="grid grid-cols-1 gap-2">
+                  <Button onClick={sendVideoResultToOutpaint} variant="secondary" size="sm">
+                    Send to outpaint
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {isAudio && generatedAudio && (
+              <div className="space-y-3 mt-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <Button onClick={sendAudioResultToOutpaint} variant="secondary" size="sm">
+                    Send to outpaint
+                  </Button>
+                  <Button onClick={sendAudioResultToImg2Img} variant="secondary" size="sm">
+                    Send to img2img
                   </Button>
                 </div>
               </div>

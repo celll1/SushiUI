@@ -228,7 +228,7 @@ export default function OutpaintPlacementCanvas({
 
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Slider
           label="Canvas Width"
           value={canvasWidth}
@@ -318,7 +318,7 @@ export default function OutpaintPlacementCanvas({
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Slider
           label="Place X"
           value={placeX}
@@ -358,7 +358,7 @@ export default function OutpaintPlacementCanvas({
           Input Crop (trim before placement)
         </summary>
         <p className="text-xs text-gray-500 mt-2 mb-2">0 width/height = no trim (use the full input).</p>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Slider
             label="Crop X"
             value={inputCropX}

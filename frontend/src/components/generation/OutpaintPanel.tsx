@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
+import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
@@ -303,6 +304,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   const [developerMode, setDeveloperMode] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
+  // Mobile bottom-fixed generate bar expand/collapse (mirrors
+  // Txt2ImgPanel/Img2ImgPanel/InpaintPanel's isMobileControlsOpen).
+  const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
 
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -2535,15 +2539,20 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         {/* Loop Generation is intentionally NOT implemented for Outpaint
             (all phases) -- see the design doc §3.3 / §7 decision 9. */}
 
-        <Button
-          onClick={handleAddToQueue}
-          variant="primary"
-          size="lg"
-          className="w-full"
-          disabled={isVideo ? !videoFile : isAudio ? !audioFile : !inputImagePreview}
-        >
-          {isGenerating ? "Add to Queue" : "Generate"}
-        </Button>
+        {/* Generate button - Desktop only (hidden on mobile, which uses the
+            fixed bottom bar in the Preview panel instead, mirrors
+            Txt2ImgPanel/Img2ImgPanel/InpaintPanel). */}
+        <div className="hidden lg:block">
+          <Button
+            onClick={handleAddToQueue}
+            variant="primary"
+            size="lg"
+            className="w-full"
+            disabled={isVideo ? !videoFile : isAudio ? !audioFile : !inputImagePreview}
+          >
+            {isGenerating ? "Add to Queue" : "Generate"}
+          </Button>
+        </div>
       </div>
 
       {/* Preview Panel */}
@@ -2573,16 +2582,69 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 </Button>
               </div>
 
+              {/* Action Buttons - Mobile only (fixed bar at bottom with inline toggle).
+                  Mirrors Txt2ImgPanel/Img2ImgPanel/InpaintPanel's mobile bottom bar --
+                  shares handleAddToQueue/cancelGeneration/resetToDefault with the
+                  desktop button above (no generateForever/long-press here since
+                  Outpaint doesn't implement that feature). */}
+              <div className={`lg:hidden fixed bottom-0 z-40 bg-gray-900 border-t transition-all ${isMobileControlsOpen ? 'left-0 right-0 border-gray-700' : 'left-auto right-0 border-l border-gray-700'}`}>
+                <div className="flex gap-2 p-3 items-center">
+                  {isMobileControlsOpen && (
+                    <>
+                      <Button
+                        onClick={handleAddToQueue}
+                        disabled={isVideo ? !videoFile : isAudio ? !audioFile : !inputImagePreview}
+                        className="flex-1"
+                        size="lg"
+                      >
+                        {isGenerating ? "Add Queue" : "Generate"}
+                      </Button>
+                      {isGenerating && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              await cancelGeneration();
+                            } catch (error) {
+                              console.error("[Outpaint] Failed to cancel generation:", error);
+                            }
+                          }}
+                          className="p-3 bg-gray-800 hover:bg-gray-700 text-white rounded transition-colors"
+                          title="Cancel generation"
+                        >
+                          <X className="h-6 w-6" />
+                        </button>
+                      )}
+                      <button
+                        onClick={resetToDefault}
+                        disabled={isGenerating}
+                        className="p-3 bg-gray-800 hover:bg-gray-700 text-white rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Reset to default"
+                      >
+                        <RotateCcw className="h-6 w-6" />
+                      </button>
+                    </>
+                  )}
+
+                  {/* Toggle button (always visible on the right) */}
+                  <button
+                    onClick={() => setIsMobileControlsOpen(!isMobileControlsOpen)}
+                    className="p-2 text-gray-400 hover:text-white transition-colors flex-shrink-0"
+                  >
+                    {isMobileControlsOpen ? <ChevronRight className="h-6 w-6" /> : <ChevronLeft className="h-6 w-6" />}
+                  </button>
+                </div>
+              </div>
+
               {isGenerating && (
                 <div className="space-y-1">
                   <div className="flex justify-between text-xs text-gray-400">
                     <span>{progressMessage || "Generating..."}</span>
-                    <span>{progress}/{totalSteps} steps</span>
+                    <span>{Math.min(progress, totalSteps)}/{totalSteps} steps</span>
                   </div>
                   <div className="w-full bg-gray-700 rounded-full h-2">
                     <div
                       className="bg-blue-600 h-2 rounded-full transition-all duration-200"
-                      style={{ width: totalSteps > 0 ? `${(progress / totalSteps) * 100}%` : "0%" }}
+                      style={{ width: `${Math.min(100, Math.max(0, totalSteps > 0 ? (progress / totalSteps) * 100 : 0))}%` }}
                     />
                   </div>
                 </div>

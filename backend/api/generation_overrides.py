@@ -480,11 +480,15 @@ def apply_overrides(
     pid_sr_output: str = "4x",
     pid_use_gemma: bool = False,
     pid_low_vram: bool = False,
+    pid_tile_native: int = 512,
+    pid_tile_overlap_ratio: float = 0.25,
+    pid_fast_large_decode: bool = False,
     prompt: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Apply (or restore, when a slot is None) the planned overrides.
 
-    ``pid_sr_output``/``pid_use_gemma``/``pid_low_vram`` only matter when
+    ``pid_sr_output``/``pid_use_gemma``/``pid_low_vram``/``pid_tile_native``/
+    ``pid_tile_overlap_ratio``/``pid_fast_large_decode`` only matter when
     ``plan["vae_kind"] == "pid_decoder"`` (ignored otherwise). ``prompt`` is
     forwarded to the active ``PidVaeWrapper`` (via
     ``pipeline_manager.set_pid_prompt``) only when ``pid_use_gemma`` is set —
@@ -493,6 +497,10 @@ def apply_overrides(
     sites only see pre-computed embeddings). ``pid_low_vram`` opts into the
     row-chunked PiTBlock/FinalLayer decode path (default False = the exact
     original, unchunked forward — see ``PidVaeWrapper.low_vram_decode``).
+    ``pid_tile_native``/``pid_tile_overlap_ratio`` configure the F9 tiled
+    large-output decode (the default path once native > native_cap);
+    ``pid_fast_large_decode=True`` opts back into the original whole-latent
+    cap+bicubic path (see ``PidVaeWrapper``'s module docstring, F7/F9).
 
     Returns a metadata dict to fold into the generation params for the DB.
     Never raises: an apply failure degrades to a warning so generation can
@@ -507,6 +515,9 @@ def apply_overrides(
             pid_sr_output=pid_sr_output,
             pid_use_gemma=pid_use_gemma,
             pid_low_vram=pid_low_vram,
+            pid_tile_native=pid_tile_native,
+            pid_tile_overlap_ratio=pid_tile_overlap_ratio,
+            pid_fast_large_decode=pid_fast_large_decode,
         )
     except Exception as e:
         _warn(f"VAE override could not be applied: {e}", code="vae_override_error")

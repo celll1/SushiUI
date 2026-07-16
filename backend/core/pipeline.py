@@ -4578,6 +4578,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             boundary_relax_full_until=params.get("boundary_relax_full_until", 0.37),
             boundary_relax_end=params.get("boundary_relax_end", 0.55),
             boundary_relax_paste=params.get("boundary_relax_paste", "feather"),
+            outpaint_controlnet_gate=params.get("outpaint_controlnet_gate"),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -4663,6 +4664,19 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 image = ext.process_after_generation(image, params)
 
         return image, seed, actual_ancestral_seed
+
+    def _outpaint_controlnet_model_is_lllite(self, model_path: str) -> bool:
+        """Best-effort LLLite check for Outpaint ControlNet's OWN configured
+        model (see the mutual-exclusion note in generate_outpaint). Reuses
+        controlnet_manager.is_lllite_model (a cheap safetensors-header peek in
+        the common case); never raises -- an unresolvable/invalid path is
+        treated as "not LLLite" so it falls through to the normal load path,
+        which will surface its own error."""
+        try:
+            from core.extensions.controlnet_manager import controlnet_manager
+            return bool(controlnet_manager.is_lllite_model(model_path))
+        except Exception:
+            return False
 
     def generate_outpaint(
         self,
@@ -4785,6 +4799,130 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # the exposure harmonizer's transition-band skip below.
         work["mask_blur"] = 0
 
+        # ============================================================
+        # OUTPAINT-CONTROLNET (PART A -- edge-extrapolation ControlNet;
+        # scratchpad/outpaint_controlnet_synthesis.md). Detects structures in
+        # the PRESERVED region that cross the rect boundary and extrapolates
+        # them a short, confidence-tapered distance into the generate region
+        # as a synthetic ControlNet control image, injected into
+        # work["controlnet_images"] exactly like a real user ControlNet
+        # entry. The same confidence field is ALSO threaded through as
+        # work["outpaint_controlnet_gate"] -- a per-residual spatial gate
+        # applied in the shared ControlNet block of custom_inpaint_sampling_
+        # loop (RESIDUAL MASKING), so the ControlNet's influence tapers to 0
+        # with distance from the boundary instead of applying at a flat
+        # conditioning_scale everywhere.
+        #
+        # v1 scope: SD/SDXL only; mutually exclusive with a user-supplied
+        # ControlNet/LLLite (never overrides the user's own request -- see
+        # the _ocn_user_cn check below); forces the byte-exact boundary paste
+        # variant (BDR's "feather" leaves a ~24px non-exact strip, which
+        # would defeat this feature's own boundary-geometry enforcement);
+        # disables Seam Structure Continuity (both mechanisms extrapolate the
+        # same boundary-crossing structures into the generate region --
+        # running both would double-enforce the same geometry).
+        #
+        # Fully gated on outpaint_controlnet_enable: when False (default),
+        # none of this runs, work["outpaint_controlnet_gate"] stays unset
+        # (generate_inpaint's params.get(...) below returns None), and the
+        # whole ControlNet/inpaint path is byte-identical to before this
+        # feature existed.
+        # ============================================================
+        if work.get("outpaint_controlnet_enable", False):
+            from api.generation_status import add_warning as _ocn_warn
+
+            _ocn_sd_family = self.current_pipeline_kind in ("sd15", "sdxl")
+            _ocn_user_cn = [
+                c for c in (work.get("controlnet_images") or [])
+                if not c.get("is_reference_guide")
+            ]
+
+            if not _ocn_sd_family:
+                _ocn_warn(
+                    "Outpaint ControlNet (edge extrapolation) is implemented for SD/SDXL "
+                    "only; skipped on the currently loaded architecture.",
+                    code="outpaint_controlnet_arch_unsupported",
+                )
+            elif _ocn_user_cn:
+                _ocn_warn(
+                    "Outpaint ControlNet (edge extrapolation) was skipped: a user-supplied "
+                    "ControlNet/LLLite is already active for this generation, and this "
+                    "feature never overrides a user's own ControlNet request.",
+                    code="outpaint_controlnet_user_cn_conflict",
+                )
+            elif not work.get("outpaint_controlnet_model"):
+                _ocn_warn(
+                    "Outpaint ControlNet (edge extrapolation) was skipped: no ControlNet "
+                    "model path was provided.",
+                    code="outpaint_controlnet_no_model",
+                )
+            elif self._outpaint_controlnet_model_is_lllite(work["outpaint_controlnet_model"]):
+                # LLLite ControlNets are applied directly to the U-Net's attention
+                # layers and never return down/mid residuals -- there is nothing
+                # for RESIDUAL MASKING to gate, so this feature cannot drive one.
+                _ocn_warn(
+                    "Outpaint ControlNet (edge extrapolation) was skipped: the configured "
+                    "ControlNet model is an LLLite model, which does not produce the "
+                    "residuals this feature masks.",
+                    code="outpaint_controlnet_lllite_unsupported",
+                )
+            else:
+                from core.inference.outpaint_control import build_outpaint_control_image
+                _ocn_result = build_outpaint_control_image(
+                    placed_img, rect, canvas_img.size,
+                    detector=work.get("outpaint_controlnet_detector", "canny"),
+                    depth_px=int(work.get("outpaint_controlnet_depth", 160)),
+                    taper_power=float(work.get("outpaint_controlnet_taper", 2.0)),
+                )
+                if _ocn_result is None:
+                    _ocn_warn(
+                        "Outpaint ControlNet (edge extrapolation): no eligible "
+                        "boundary-crossing structure was found in the preserved region; "
+                        "skipped.",
+                        code="outpaint_controlnet_no_crossings",
+                    )
+                else:
+                    _ocn_control_img, _ocn_gate = _ocn_result
+                    _ocn_scale = float(work.get("outpaint_controlnet_scale", 0.6))
+                    _ocn_gstart = float(work.get("outpaint_controlnet_guidance_start", 0.0))
+                    _ocn_gend = float(work.get("outpaint_controlnet_guidance_end", 0.55))
+                    # Match the exact ControlNet config dict keys _apply_controlnets +
+                    # generate_inpaint's controlnet_kwargs builder read (model_path,
+                    # image, strength, start_step/end_step in 0-1000 units, etc.) --
+                    # see backend/api/generation_utils.py's process_controlnet_configs,
+                    # the schema this dict must match.
+                    work["controlnet_images"] = list(work.get("controlnet_images") or []) + [{
+                        "model_path": work["outpaint_controlnet_model"],
+                        "image": _ocn_control_img,
+                        "strength": _ocn_scale,
+                        "start_step": _ocn_gstart * 1000.0,
+                        "end_step": _ocn_gend * 1000.0,
+                        "layer_weights": None,
+                        "prompt": None,
+                        "is_lllite": False,
+                        "is_reference_guide": False,
+                    }]
+                    work["outpaint_controlnet_gate"] = _ocn_gate
+
+                    if str(work.get("boundary_relax_paste", "feather")) != "exact":
+                        work["boundary_relax_paste"] = "exact"
+
+                    if float(work.get("seam_structure_strength", 0.0) or 0.0) > 0.0:
+                        work["seam_structure_strength"] = 0.0
+                        _ocn_warn(
+                            "Outpaint ControlNet (edge extrapolation) disabled Seam "
+                            "Structure Continuity (seam_structure_strength) to avoid "
+                            "double geometry enforcement at the boundary.",
+                            code="outpaint_controlnet_ssc_disabled",
+                        )
+
+                    _ocn_warn(
+                        "Outpaint ControlNet (edge extrapolation) is active: extrapolating "
+                        "structures crossing the preserved boundary into the generate "
+                        "region.",
+                        code="outpaint_controlnet_active",
+                    )
+
         result_image, actual_seed, actual_ancestral_seed = self.generate_inpaint(
             work, canvas_img, mask_img,
             progress_callback=progress_callback, step_callback=step_callback,
@@ -4795,9 +4933,16 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # generate-adjacent edges so the model's bridged seam rendering survives
         # instead of the exact input (the interior stays byte-exact). See
         # scratchpad/boundary_relaxation_synthesis.md Q3 variant B.
+        # NOTE: reads `work` (not the caller's `params`) for boundary_relax_paste
+        # specifically, since Outpaint ControlNet (above) forces work["boundary_
+        # relax_paste"] = "exact" without leaking that override into `params`
+        # (which is persisted to the DB/PNG metadata as the user's requested
+        # parameters). Byte-identical to reading `params` whenever that override
+        # never fired -- `work` starts as an unmodified copy of `params` for this
+        # key otherwise.
         _paste_alpha = None
         _bdr_on = float(params.get("boundary_relax_strength", 0.0) or 0.0) > 0.0
-        if _bdr_on and str(params.get("boundary_relax_paste", "feather")) == "feather":
+        if _bdr_on and str(work.get("boundary_relax_paste", "feather")) == "feather":
             from core.inference.outpaint_utils import build_paste_alpha
             # erosion/feather in pixels: tie to the soft strip (W_soft=2 latent
             # cells -> ~16 px) plus an 8 px feather. VAE scale factor 8.

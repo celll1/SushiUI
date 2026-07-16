@@ -3952,6 +3952,14 @@ async def generate_outpaint(
     outpaint_commit_near: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_near"]),  # commit-front: schedule progress at which boundary-touching cells commit
     outpaint_commit_far: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_far"]),  # commit-front: schedule progress at which the farthest generate cells commit
     outpaint_commit_distance: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_distance"]),  # commit-front: distance (latent cells) at which the commit schedule saturates
+    outpaint_controlnet_enable: bool = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_enable"]),  # PART A edge-extrapolation ControlNet (SD/SDXL only); 0/False = off (byte-identical)
+    outpaint_controlnet_model: str = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_model"]),  # ControlNet model checkpoint path (required when enabled)
+    outpaint_controlnet_detector: str = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_detector"]),  # "canny" | "lineart" | "lineart_anime"
+    outpaint_controlnet_scale: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_scale"]),  # ControlNet conditioning scale
+    outpaint_controlnet_guidance_start: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_guidance_start"]),  # guidance window start (0-1)
+    outpaint_controlnet_guidance_end: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_guidance_end"]),  # guidance window end (0-1)
+    outpaint_controlnet_depth: int = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_depth"]),  # max extrapolation depth (canvas px)
+    outpaint_controlnet_taper: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_taper"]),  # cosine-squared taper exponent
     prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
     max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -4255,6 +4263,14 @@ async def generate_outpaint(
             "outpaint_commit_near": outpaint_commit_near,
             "outpaint_commit_far": outpaint_commit_far,
             "outpaint_commit_distance": outpaint_commit_distance,
+            "outpaint_controlnet_enable": outpaint_controlnet_enable,
+            "outpaint_controlnet_model": outpaint_controlnet_model,
+            "outpaint_controlnet_detector": outpaint_controlnet_detector,
+            "outpaint_controlnet_scale": outpaint_controlnet_scale,
+            "outpaint_controlnet_guidance_start": outpaint_controlnet_guidance_start,
+            "outpaint_controlnet_guidance_end": outpaint_controlnet_guidance_end,
+            "outpaint_controlnet_depth": outpaint_controlnet_depth,
+            "outpaint_controlnet_taper": outpaint_controlnet_taper,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,

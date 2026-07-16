@@ -4296,6 +4296,13 @@ def custom_inpaint_sampling_loop(
     boundary_relax_full_until: float = 0.37,  # BDR: progress up to which the band is fully soft (sigma threshold).
     boundary_relax_end: float = 0.55,  # BDR: progress by which the hard pin is fully restored (sigma threshold).
     boundary_relax_paste: str = "feather",  # BDR Q3 paste variant: "feather" (B) | "exact" (A). Consumed in outpaint_utils (BDR2).
+    outpaint_controlnet_gate: Optional[np.ndarray] = None,  # OUTPAINT-CONTROLNET (PART A; scratchpad/
+                                        # outpaint_controlnet_synthesis.md): canvas-size [H,W] float32
+                                        # confidence field (core.inference.outpaint_control.
+                                        # build_outpaint_control_image's `gate`) that spatially masks the
+                                        # ControlNet residuals in the CN block below (RESIDUAL MASKING),
+                                        # area-resized to each residual's own shape. None (default) = the
+                                        # mechanism is fully inert -- byte-identical to before this feature.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -4456,6 +4463,57 @@ def custom_inpaint_sampling_loop(
             control_guidance_end = 1.0
         if not isinstance(control_guidance_end, list):
             control_guidance_end = [control_guidance_end] * len(control_image_tensors)
+
+    # OUTPAINT-CONTROLNET RESIDUAL MASKING (PART A; scratchpad/
+    # outpaint_controlnet_synthesis.md): a canvas-size [H,W] confidence field
+    # (core.inference.outpaint_control.build_outpaint_control_image's `gate`,
+    # threaded through core.pipeline.generate_outpaint -> generate_inpaint)
+    # that spatially gates the ControlNet's residual contribution so it tapers
+    # to 0 with distance from the boundary instead of applying uniformly. Off
+    # (outpaint_controlnet_gate is None -- true whenever the feature is
+    # disabled, or has_controlnet is False) this entire mechanism is inert:
+    # _ocn_gate_active stays False and every residual tensor reaches the U-Net
+    # completely unmodified (byte-identical to before this feature existed).
+    _ocn_gate_active = outpaint_controlnet_gate is not None
+    _ocn_gate_base = None
+    _ocn_gate_cache: Dict[Tuple[int, int, str, torch.dtype], torch.Tensor] = {}
+    if _ocn_gate_active:
+        _ocn_gate_base = torch.from_numpy(
+            np.ascontiguousarray(outpaint_controlnet_gate, dtype=np.float32)
+        )[None, None].to(device=device)  # [1, 1, H, W], canvas pixel resolution
+
+    def _ocn_gate_for_shape(h: int, w: int, res_device: torch.device, res_dtype: torch.dtype) -> torch.Tensor:
+        """Area-resize the outpaint ControlNet gate to a residual tensor's own
+        [-2:] spatial shape (never hardcoded -- derived from the residual
+        itself), cached per (h, w, device, dtype) since the same handful of
+        U-Net block resolutions repeat every denoise step."""
+        key = (h, w, str(res_device), res_dtype)
+        cached = _ocn_gate_cache.get(key)
+        if cached is not None:
+            return cached
+        resized = torch.nn.functional.interpolate(
+            _ocn_gate_base.to(device=res_device), size=(h, w), mode="area"
+        ).to(dtype=res_dtype)
+        _ocn_gate_cache[key] = resized
+        return resized
+
+    def _ocn_mask_residuals(down_samples, mid_sample):
+        """RESIDUAL MASKING: multiply each down/mid ControlNet residual by the
+        outpaint gate resized to that residual's own shape, broadcasting the
+        [1, 1, h, w] gate over the [B, C, h, w] residual (batch covers the CFG
+        uncond/cond -- and, for the 2-pass CFG branches below, this same
+        already-masked pair is reused for BOTH the uncond and cond U-Net
+        calls, so masking once here covers both)."""
+        if down_samples is not None:
+            down_samples = [
+                r * _ocn_gate_for_shape(r.shape[-2], r.shape[-1], r.device, r.dtype)
+                for r in down_samples
+            ]
+        if mid_sample is not None:
+            mid_sample = mid_sample * _ocn_gate_for_shape(
+                mid_sample.shape[-2], mid_sample.shape[-1], mid_sample.device, mid_sample.dtype
+            )
+        return down_samples, mid_sample
 
     scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = scheduler.timesteps
@@ -5430,6 +5488,13 @@ def custom_inpaint_sampling_loop(
                                 t,
                                 **controlnet_kwargs
                             )
+
+            # OUTPAINT-CONTROLNET RESIDUAL MASKING -- see _ocn_mask_residuals above.
+            # Inert (no-op) unless outpaint_controlnet_gate was supplied.
+            if _ocn_gate_active:
+                down_block_res_samples, mid_block_res_sample = _ocn_mask_residuals(
+                    down_block_res_samples, mid_block_res_sample
+                )
 
         with torch.no_grad():
             # Use autocast for FP8 or UINT quantized U-Net (required for FP16 activations)

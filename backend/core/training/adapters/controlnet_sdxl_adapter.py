@@ -83,7 +83,7 @@ class ControlNetSDXLAdapter(BaseControlNetAdapter):
             controlnet = ControlNetModel.from_unet(
                 unet,
                 load_weights_from_unet=True,
-                conditioning_channels=3,
+                conditioning_channels=self.conditioning_channels,
             )
             print(f"[ControlNetSDXL] ControlNet initialized from UNet")
 
@@ -92,7 +92,7 @@ class ControlNetSDXLAdapter(BaseControlNetAdapter):
             controlnet = ControlNetModel.from_unet(
                 unet,
                 load_weights_from_unet=False,
-                conditioning_channels=3,
+                conditioning_channels=self.conditioning_channels,
             )
             print(f"[ControlNetSDXL] ControlNet initialized with random weights")
 

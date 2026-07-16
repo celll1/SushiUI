@@ -86,7 +86,7 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
             controlnet = ControlNetModel.from_unet(
                 unet,
                 load_weights_from_unet=True,
-                conditioning_channels=3,
+                conditioning_channels=self.conditioning_channels,
             )
             print(f"[ControlNetSD15] ControlNet initialized from UNet")
 
@@ -96,7 +96,7 @@ class ControlNetSD15Adapter(BaseControlNetAdapter):
             controlnet = ControlNetModel.from_unet(
                 unet,
                 load_weights_from_unet=False,
-                conditioning_channels=3,
+                conditioning_channels=self.conditioning_channels,
             )
             print(f"[ControlNetSD15] ControlNet initialized with random weights")
 

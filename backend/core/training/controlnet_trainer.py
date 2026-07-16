@@ -23,6 +23,7 @@ import torch.nn as nn
 
 from .base_trainer import BaseTrainer, log_verbose
 from .adapters import ControlNetSD15Adapter, ControlNetSDXLAdapter
+from .crop_planner import OutpaintControlPlanner
 
 
 class ControlNetTrainer(BaseTrainer):
@@ -48,6 +49,18 @@ class ControlNetTrainer(BaseTrainer):
         # Condition generation (Phase 4)
         condition_preprocessors: Optional[List[str]] = None,
         condition_cache_mode: str = "on_the_fly",
+        # Outpaint-native conditioning (PART B): self-supervised crop->full.
+        # conditioning_mode="preprocessor" (default) = existing behavior (paired /
+        # aux-preprocessor condition images). "outpaint" = build the 4-ch
+        # crop+mask conditioning from each item's OWN image (no paired dataset).
+        conditioning_mode: str = "preprocessor",
+        outpaint_crop_min_area: float = 0.15,
+        outpaint_crop_max_area: float = 0.8,
+        outpaint_edge_anchor_prob: float = 0.34,
+        outpaint_corner_anchor_prob: float = 0.33,
+        outpaint_mask_channel: bool = True,
+        outpaint_known_loss_weight: float = 0.3,
+        outpaint_seam_loss_boost: float = 0.0,
         **kwargs
     ):
         """
@@ -71,6 +84,23 @@ class ControlNetTrainer(BaseTrainer):
         self.lllite_rank = lllite_rank
         self.condition_preprocessors = condition_preprocessors
         self.condition_cache_mode = condition_cache_mode
+
+        # Outpaint-native conditioning (PART B).
+        self.conditioning_mode = str(conditioning_mode or "preprocessor")
+        self.outpaint_crop_min_area = float(outpaint_crop_min_area)
+        self.outpaint_crop_max_area = float(outpaint_crop_max_area)
+        self.outpaint_edge_anchor_prob = float(outpaint_edge_anchor_prob)
+        self.outpaint_corner_anchor_prob = float(outpaint_corner_anchor_prob)
+        self.outpaint_mask_channel = bool(outpaint_mask_channel)
+        self.outpaint_known_loss_weight = float(outpaint_known_loss_weight)
+        self.outpaint_seam_loss_boost = float(outpaint_seam_loss_boost)
+        self._is_outpaint_mode = (self.conditioning_mode == "outpaint")
+        # Channel count for the ControlNet conditioning-embedding conv: outpaint mode
+        # adds a binary known-mask channel (crop RGB + mask = 4ch) unless the mask
+        # channel is ablated off; every other mode is 3-ch RGB.
+        self.conditioning_channels = 4 if (self._is_outpaint_mode and self.outpaint_mask_channel) else 3
+        # Deterministic per-(item, epoch) crop-rect sampler (built lazily; needs seed).
+        self._outpaint_planner = None
 
         # ControlNet module storage (set by _create_controlnet)
         self.controlnet: Optional[nn.Module] = None
@@ -140,11 +170,11 @@ class ControlNetTrainer(BaseTrainer):
     def _create_adapter(self):
         """Create model-specific ControlNet adapter based on detected model type."""
         if self.is_sdxl:
-            self.adapter = ControlNetSDXLAdapter(self, self.controlnet_type)
-            print(f"{self.log_prefix} Using ControlNetSDXLAdapter ({self.controlnet_type})")
+            self.adapter = ControlNetSDXLAdapter(self, self.controlnet_type, self.conditioning_channels)
+            print(f"{self.log_prefix} Using ControlNetSDXLAdapter ({self.controlnet_type}, {self.conditioning_channels}ch cond)")
         else:
-            self.adapter = ControlNetSD15Adapter(self, self.controlnet_type)
-            print(f"{self.log_prefix} Using ControlNetSD15Adapter ({self.controlnet_type})")
+            self.adapter = ControlNetSD15Adapter(self, self.controlnet_type, self.conditioning_channels)
+            print(f"{self.log_prefix} Using ControlNetSD15Adapter ({self.controlnet_type}, {self.conditioning_channels}ch cond)")
 
     def _create_controlnet(self):
         """Create ControlNet model using adapter."""
@@ -161,6 +191,21 @@ class ControlNetTrainer(BaseTrainer):
             print(f"{self.log_prefix} Gradient checkpointing enabled for ControlNet")
 
         print(f"{self.log_prefix} ControlNet created successfully")
+
+    def get_outpaint_planner(self) -> OutpaintControlPlanner:
+        """Lazily build the deterministic crop-rect sampler for outpaint conditioning
+        mode. Only meaningful when conditioning_mode == 'outpaint'; the base-trainer
+        condition-load branch calls this to sample each item's known-region rect."""
+        if self._outpaint_planner is None:
+            seed = int(getattr(self, "seed", 0) or 0)
+            self._outpaint_planner = OutpaintControlPlanner(
+                seed=seed,
+                min_area=self.outpaint_crop_min_area,
+                max_area=self.outpaint_crop_max_area,
+                edge_anchor_prob=self.outpaint_edge_anchor_prob,
+                corner_anchor_prob=self.outpaint_corner_anchor_prob,
+            )
+        return self._outpaint_planner
 
     def setup_trainable_parameters(self) -> List[Dict]:
         """

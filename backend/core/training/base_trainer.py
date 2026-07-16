@@ -5029,6 +5029,22 @@ class BaseTrainer(ABC):
         controlnet_module = self.controlnet
         is_lllite = getattr(self, 'controlnet_type', 'standard') == 'lllite'
 
+        # The base device-management (onthefly_gpu / swap_onthefly latent+text
+        # encoding, post-load VRAM offload) only tracks the UNet/TE/VAE. The
+        # trainable ControlNet is a SEPARATE model, created at the base UNet's
+        # device -- which is CPU when the UNet has been offloaded after load --
+        # and is never moved back, so its first forward hits a cuda-vs-cpu addmm
+        # mismatch. Ensure it is resident on the compute device before the
+        # forward (a no-op once it is already there; cheap first-parameter
+        # device check keeps per-step overhead negligible).
+        if not is_lllite:
+            try:
+                _cn_first_param = next(controlnet_module.parameters())
+                if _cn_first_param.device != self.device:
+                    controlnet_module.to(self.device)
+            except StopIteration:
+                pass
+
         if is_lllite:
             # LLLite mode: apply patches to UNet attention layers before forward
             controlnet_module.apply_patches(self.unet, condition_images)

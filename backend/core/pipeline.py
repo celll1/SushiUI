@@ -4867,13 +4867,30 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     code="outpaint_controlnet_lllite_unsupported",
                 )
             else:
-                from core.inference.outpaint_control import build_outpaint_control_image
-                _ocn_result = build_outpaint_control_image(
-                    placed_img, rect, canvas_img.size,
-                    detector=work.get("outpaint_controlnet_detector", "canny"),
-                    depth_px=int(work.get("outpaint_controlnet_depth", 160)),
-                    taper_power=float(work.get("outpaint_controlnet_taper", 2.0)),
-                )
+                _ocn_mode = str(work.get("outpaint_controlnet_mode", "edge_extrapolate"))
+                if _ocn_mode == "crop_mask":
+                    # PART B: trained outpaint-native 4-channel conditioning (crop RGB
+                    # + binary known-mask), the EXACT format the ControlNet was trained
+                    # on (core.utils.crop_mask_condition, shared with training -> no
+                    # skew). The net LEARNED the continuation, so there is no edge
+                    # extrapolation / termination heuristic; the gate is flat 1.0 over
+                    # the whole generate region (no distance taper). Requires a
+                    # ControlNet trained with conditioning_mode="outpaint" (4-ch); a
+                    # 3-ch model will raise a channel mismatch at the ControlNet forward.
+                    from core.utils.crop_mask_condition import build_crop_mask_condition
+                    import numpy as _np
+                    _cond_np, _gate_np = build_crop_mask_condition(
+                        _np.array(canvas_img.convert("RGB")), rect, canvas_img.size
+                    )
+                    _ocn_result = (_cond_np, _gate_np)
+                else:
+                    from core.inference.outpaint_control import build_outpaint_control_image
+                    _ocn_result = build_outpaint_control_image(
+                        placed_img, rect, canvas_img.size,
+                        detector=work.get("outpaint_controlnet_detector", "canny"),
+                        depth_px=int(work.get("outpaint_controlnet_depth", 160)),
+                        taper_power=float(work.get("outpaint_controlnet_taper", 2.0)),
+                    )
                 if _ocn_result is None:
                     _ocn_warn(
                         "Outpaint ControlNet (edge extrapolation): no eligible "
@@ -4917,9 +4934,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         )
 
                     _ocn_warn(
-                        "Outpaint ControlNet (edge extrapolation) is active: extrapolating "
-                        "structures crossing the preserved boundary into the generate "
-                        "region.",
+                        (
+                            "Outpaint ControlNet (crop_mask, trained) is active: driving a "
+                            "trained outpaint-native ControlNet from the 4-channel crop+mask "
+                            "conditioning."
+                            if _ocn_mode == "crop_mask" else
+                            "Outpaint ControlNet (edge extrapolation) is active: extrapolating "
+                            "structures crossing the preserved boundary into the generate "
+                            "region."
+                        ),
                         code="outpaint_controlnet_active",
                     )
 

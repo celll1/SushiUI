@@ -437,8 +437,19 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # active (see PipelineManager.generate_outpaint). 0/False = off
     # (byte-identical to before this feature existed).
     "outpaint_controlnet_enable": False,
+    # Conditioning mode. "edge_extrapolate" (default, PART A): detect edges in
+    # the preserved region and extrapolate them a confidence-tapered distance
+    # across the boundary -- drives a general "anytest"-style structure
+    # ControlNet over a GUESSED geometry. "crop_mask" (PART B): build the
+    # trained outpaint-native 4-channel conditioning (crop RGB + binary
+    # known-mask, via core.utils.crop_mask_condition) -- requires a ControlNet
+    # trained with conditioning_mode="outpaint" (4-ch), which LEARNED the
+    # continuation, so no extrapolation/termination heuristic and a flat
+    # (untapered) residual gate over the whole generate region.
+    "outpaint_controlnet_mode": "edge_extrapolate",
     # Path to the ControlNet model checkpoint driving this feature. Required
-    # (non-empty) for the feature to take effect when enabled.
+    # (non-empty) for the feature to take effect when enabled. For "crop_mask"
+    # this must be an outpaint-trained diffusers directory (4-ch conditioning).
     "outpaint_controlnet_model": "",
     # Edge/structure detector run over the preserved region only (never the
     # synthetic canvas fill): "canny" (cv2, no model download) or

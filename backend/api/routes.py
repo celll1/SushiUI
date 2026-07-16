@@ -3953,6 +3953,7 @@ async def generate_outpaint(
     outpaint_commit_far: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_far"]),  # commit-front: schedule progress at which the farthest generate cells commit
     outpaint_commit_distance: float = Form(OUTPAINT_DEFAULTS["outpaint_commit_distance"]),  # commit-front: distance (latent cells) at which the commit schedule saturates
     outpaint_controlnet_enable: bool = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_enable"]),  # PART A edge-extrapolation ControlNet (SD/SDXL only); 0/False = off (byte-identical)
+    outpaint_controlnet_mode: str = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_mode"]),  # "edge_extrapolate" (PART A, anytest) | "crop_mask" (PART B, trained 4-ch outpaint-native CN)
     outpaint_controlnet_model: str = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_model"]),  # ControlNet model checkpoint path (required when enabled)
     outpaint_controlnet_detector: str = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_detector"]),  # "canny" | "lineart" | "lineart_anime"
     outpaint_controlnet_scale: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_scale"]),  # ControlNet conditioning scale
@@ -4264,6 +4265,7 @@ async def generate_outpaint(
             "outpaint_commit_far": outpaint_commit_far,
             "outpaint_commit_distance": outpaint_commit_distance,
             "outpaint_controlnet_enable": outpaint_controlnet_enable,
+            "outpaint_controlnet_mode": outpaint_controlnet_mode,
             "outpaint_controlnet_model": outpaint_controlnet_model,
             "outpaint_controlnet_detector": outpaint_controlnet_detector,
             "outpaint_controlnet_scale": outpaint_controlnet_scale,

@@ -375,3 +375,111 @@ class CropPlanner:
             f"ds={dataset_fingerprint}",
         ]
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+class OutpaintControlPlanner:
+    """Deterministic per-(item, epoch) crop-rectangle sampler for the outpaint-native
+    ControlNet's self-supervised crop->full conditioning (PART B).
+
+    The sampled rect is the KNOWN region (the simulated "placed input"); the FULL
+    image is the training target. The rect + the full image are then handed to
+    ``core.utils.crop_mask_condition.build_crop_mask_condition`` to build the 4-ch
+    conditioning the ControlNet sees. Sibling to :class:`CropPlanner`: it reuses the
+    same independent SHA256(seed|epoch|image_path) RNG so a resumed run regenerates
+    identical crops regardless of the interruption point.
+
+    Anchor modes (which teach the real outpaint geometry -- extend AWAY from what is
+    given):
+      - interior: rect free-floating inside the canvas (extend in all directions)
+      - edge:     rect flush against one canvas edge (one-directional extend)
+      - corner:   rect flush into one canvas corner (two-directional extend)
+
+    This is a genuinely different sampling law from :class:`CropPlanner` (area-frac +
+    anchor, not min-area-ratio + aspect bucketing), so it is a standalone class rather
+    than a config mode of CropPlanner; it deliberately shares only the determinism
+    contract.
+    """
+
+    def __init__(
+        self,
+        seed: int = 0,
+        min_area: float = 0.15,
+        max_area: float = 0.8,
+        edge_anchor_prob: float = 0.34,
+        corner_anchor_prob: float = 0.33,
+        aspect_jitter: float = 0.25,
+        snap: int = 8,
+    ):
+        self.seed = int(seed)
+        # Clamp to a sane sub-full range so a generate region always exists.
+        self.min_area = float(max(0.02, min(0.95, min_area)))
+        self.max_area = float(max(self.min_area, min(0.95, max_area)))
+        e = float(max(0.0, edge_anchor_prob))
+        c = float(max(0.0, corner_anchor_prob))
+        if e + c > 1.0:
+            # Normalize into [0,1]; interior takes whatever is left (>=0).
+            s = e + c
+            e, c = e / s, c / s
+        self.edge_prob = e
+        self.corner_prob = c
+        self.aspect_jitter = float(max(0.0, aspect_jitter))
+        self.snap = max(1, int(snap))
+
+    def _item_rng(self, epoch: int, image_path: str) -> random.Random:
+        """Independent RNG seeded by (seed, epoch, image_path) -- identical scheme to
+        :meth:`CropPlanner._item_rng` so the two planners are jointly resume-safe."""
+        h = hashlib.sha256(f"{self.seed}|{epoch}|{image_path}".encode("utf-8")).digest()
+        return random.Random(int.from_bytes(h[:8], "big"))
+
+    def _snap(self, v: int, lo: int, hi: int) -> int:
+        v = int(round(v / self.snap)) * self.snap
+        return max(lo, min(hi, v))
+
+    def rect_for(self, epoch: int, image_path: str, canvas_w: int, canvas_h: int) -> Tuple[int, int, int, int]:
+        """Return the known-region rect (x0, y0, x1, y1) in canvas pixels, half-open.
+        Pure function of (seed, epoch, image_path, canvas_w, canvas_h). Guarantees a
+        non-empty generate region (the rect never covers the whole canvas)."""
+        W, H = max(1, int(canvas_w)), max(1, int(canvas_h))
+        rng = self._item_rng(epoch, image_path)
+
+        area = rng.uniform(self.min_area, self.max_area) * (W * H)
+        # Aspect around the canvas aspect with multiplicative jitter.
+        a = (W / H) * math.exp(rng.uniform(-self.aspect_jitter, self.aspect_jitter))
+        cw = int(round(math.sqrt(area * a)))
+        ch = int(round(math.sqrt(area / a)))
+        # Snap + clamp; keep at least one snap of generate room on the larger axis so a
+        # generate region always exists even after aspect jitter hits a clamp.
+        cw = self._snap(cw, self.snap, max(self.snap, W - self.snap))
+        ch = self._snap(ch, self.snap, max(self.snap, H - self.snap))
+        cw = min(cw, W); ch = min(ch, H)
+        if cw >= W and ch >= H:
+            # Degenerate (no generate region) -> shrink the larger axis by one snap.
+            if W >= H:
+                cw = max(self.snap, W - self.snap)
+            else:
+                ch = max(self.snap, H - self.snap)
+
+        mx, my = W - cw, H - ch  # placement margins (>= 0)
+        r = rng.random()
+        if r < self.edge_prob and (mx > 0 or my > 0):
+            # Flush against one canvas edge; free along the parallel axis.
+            edge = rng.randrange(4)  # 0 top, 1 bottom, 2 left, 3 right
+            if edge in (0, 1):
+                x0 = rng.randint(0, mx) if mx > 0 else 0
+                y0 = 0 if edge == 0 else my
+            else:
+                y0 = rng.randint(0, my) if my > 0 else 0
+                x0 = 0 if edge == 2 else mx
+        elif r < self.edge_prob + self.corner_prob:
+            # Flush into one canvas corner.
+            corner = rng.randrange(4)  # 0 TL, 1 TR, 2 BL, 3 BR
+            x0 = 0 if corner in (0, 2) else mx
+            y0 = 0 if corner in (0, 1) else my
+        else:
+            # Interior: random free placement.
+            x0 = rng.randint(0, mx) if mx > 0 else 0
+            y0 = rng.randint(0, my) if my > 0 else 0
+
+        x0 = self._snap(x0, 0, max(0, W - cw))
+        y0 = self._snap(y0, 0, max(0, H - ch))
+        return (x0, y0, x0 + cw, y0 + ch)

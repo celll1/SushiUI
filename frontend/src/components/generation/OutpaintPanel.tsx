@@ -128,6 +128,12 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   seam_structure_end: 0.70,
   seam_structure_saliency: 2.0,
   seam_structure_max_area: 0.25,
+  boundary_relax_strength: 0.0,
+  boundary_relax_width: 3.0,
+  boundary_relax_noise: 0.35,
+  boundary_relax_full_until: 0.37,
+  boundary_relax_end: 0.55,
+  boundary_relax_paste: "feather",
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -1667,6 +1673,77 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     step={0.05}
                     value={params.seam_structure_max_area ?? 0.25}
                     onChange={(e) => setParams({ ...params, seam_structure_max_area: parseFloat(e.target.value) })}
+                  />
+                </>
+              )}
+            </div>
+          </details>
+          )}
+
+          {/* Boundary Determinism Relaxation (BDR): soft-pins a narrow
+              saliency-gated seam band (annealed soft->hard) so the known-side
+              latent can bend to meet the continuation. See backend/api/routes.py
+              generate_outpaint boundary_relax_* Form params. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Boundary Relaxation
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                SD/SDXL only. Soft-pins a narrow saliency-gated seam band (annealed soft-&gt;hard) so the known-side latent can bend to meet the continuation.
+                Most effective with Seam Structure Continuity &gt; 0. 0 = off.
+              </p>
+              <Slider
+                label="Boundary Relax Strength"
+                min={0.0}
+                max={0.5}
+                step={0.05}
+                value={params.boundary_relax_strength ?? 0.0}
+                onChange={(e) => setParams({ ...params, boundary_relax_strength: parseFloat(e.target.value) })}
+              />
+              {developerMode && (
+                <>
+                  <Slider
+                    label="Boundary Relax Width (latent px)"
+                    min={1}
+                    max={6}
+                    step={1}
+                    value={params.boundary_relax_width ?? 3.0}
+                    onChange={(e) => setParams({ ...params, boundary_relax_width: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Boundary Relax Noise"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.boundary_relax_noise ?? 0.35}
+                    onChange={(e) => setParams({ ...params, boundary_relax_noise: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Boundary Relax Full Until (schedule progress)"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.boundary_relax_full_until ?? 0.37}
+                    onChange={(e) => setParams({ ...params, boundary_relax_full_until: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Boundary Relax End (schedule progress)"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.boundary_relax_end ?? 0.55}
+                    onChange={(e) => setParams({ ...params, boundary_relax_end: parseFloat(e.target.value) })}
+                  />
+                  <Select
+                    label="Boundary Relax Paste Mode"
+                    options={[
+                      { value: "feather", label: "Feather (thin model-rendered seam strip)" },
+                      { value: "exact", label: "Exact (full byte-exact input)" },
+                    ]}
+                    value={params.boundary_relax_paste || "feather"}
+                    onChange={(e) => setParams({ ...params, boundary_relax_paste: e.target.value })}
                   />
                 </>
               )}

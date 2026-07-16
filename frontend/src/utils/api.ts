@@ -344,6 +344,16 @@ export interface InpaintParams extends GenerationParams {
   seam_structure_end?: number;
   seam_structure_saliency?: number;
   seam_structure_max_area?: number;
+  // Boundary Determinism Relaxation (BDR, SD/SDXL only): soft-pins a narrow
+  // saliency-gated seam band (annealed soft->hard) so the known-side latent
+  // can bend to meet the continuation. Most effective with Seam Structure
+  // Continuity > 0. 0 = off.
+  boundary_relax_strength?: number;
+  boundary_relax_width?: number;
+  boundary_relax_noise?: number;
+  boundary_relax_full_until?: number;
+  boundary_relax_end?: number;
+  boundary_relax_paste?: string;
 }
 
 // Outpaint: place a (optionally trimmed/resized) input image inside a LARGER
@@ -383,6 +393,16 @@ export interface OutpaintParams extends GenerationParams {
   seam_structure_end?: number;
   seam_structure_saliency?: number;
   seam_structure_max_area?: number;
+  // Boundary Determinism Relaxation (BDR, SD/SDXL only): soft-pins a narrow
+  // saliency-gated seam band (annealed soft->hard) so the known-side latent
+  // can bend to meet the continuation. Most effective with Seam Structure
+  // Continuity > 0. 0 = off.
+  boundary_relax_strength?: number;
+  boundary_relax_width?: number;
+  boundary_relax_noise?: number;
+  boundary_relax_full_until?: number;
+  boundary_relax_end?: number;
+  boundary_relax_paste?: string;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -1469,6 +1489,13 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("seam_structure_end", String(paramsWithImages.seam_structure_end ?? 0.70));
   formData.append("seam_structure_saliency", String(paramsWithImages.seam_structure_saliency ?? 2.0));
   formData.append("seam_structure_max_area", String(paramsWithImages.seam_structure_max_area ?? 0.25));
+  // Boundary Determinism Relaxation (BDR, SD/SDXL only); 0 = off
+  formData.append("boundary_relax_strength", String(paramsWithImages.boundary_relax_strength ?? 0.0));
+  formData.append("boundary_relax_width", String(paramsWithImages.boundary_relax_width ?? 3.0));
+  formData.append("boundary_relax_noise", String(paramsWithImages.boundary_relax_noise ?? 0.35));
+  formData.append("boundary_relax_full_until", String(paramsWithImages.boundary_relax_full_until ?? 0.37));
+  formData.append("boundary_relax_end", String(paramsWithImages.boundary_relax_end ?? 0.55));
+  formData.append("boundary_relax_paste", String(paramsWithImages.boundary_relax_paste ?? "feather"));
   formData.append("sampler", paramsWithImages.sampler || "euler");
   formData.append("schedule_type", paramsWithImages.schedule_type || "uniform");
   formData.append("seed", String(paramsWithImages.seed || -1));
@@ -1677,6 +1704,13 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("seam_structure_end", String(paramsWithImages.seam_structure_end ?? 0.70));
   formData.append("seam_structure_saliency", String(paramsWithImages.seam_structure_saliency ?? 2.0));
   formData.append("seam_structure_max_area", String(paramsWithImages.seam_structure_max_area ?? 0.25));
+  // Boundary Determinism Relaxation (BDR, SD/SDXL only); 0 = off
+  formData.append("boundary_relax_strength", String(paramsWithImages.boundary_relax_strength ?? 0.0));
+  formData.append("boundary_relax_width", String(paramsWithImages.boundary_relax_width ?? 3.0));
+  formData.append("boundary_relax_noise", String(paramsWithImages.boundary_relax_noise ?? 0.35));
+  formData.append("boundary_relax_full_until", String(paramsWithImages.boundary_relax_full_until ?? 0.37));
+  formData.append("boundary_relax_end", String(paramsWithImages.boundary_relax_end ?? 0.55));
+  formData.append("boundary_relax_paste", String(paramsWithImages.boundary_relax_paste ?? "feather"));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

@@ -71,6 +71,16 @@ interface InpaintParams {
   seam_structure_end?: number;
   seam_structure_saliency?: number;
   seam_structure_max_area?: number;
+  // Boundary Determinism Relaxation (BDR, SD/SDXL only): soft-pins a narrow
+  // saliency-gated seam band (annealed soft->hard) so the known-side latent
+  // can bend to meet the continuation. Most effective with Seam Structure
+  // Continuity > 0. 0 = off.
+  boundary_relax_strength?: number;
+  boundary_relax_width?: number;
+  boundary_relax_noise?: number;
+  boundary_relax_full_until?: number;
+  boundary_relax_end?: number;
+  boundary_relax_paste?: string;
   prompt_chunking_mode?: string;
   max_prompt_chunks?: number;
   loras?: LoRAConfig[];
@@ -158,6 +168,12 @@ const DEFAULT_PARAMS: InpaintParams = {
   seam_structure_end: 0.70,
   seam_structure_saliency: 2.0,
   seam_structure_max_area: 0.25,
+  boundary_relax_strength: 0.0,
+  boundary_relax_width: 3.0,
+  boundary_relax_noise: 0.35,
+  boundary_relax_full_until: 0.37,
+  boundary_relax_end: 0.55,
+  boundary_relax_paste: "feather",
   prompt_chunking_mode: "a1111",
   max_prompt_chunks: 0,
   loras: [],
@@ -1674,6 +1690,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         seam_structure_end: mainParams.seam_structure_end,
         seam_structure_saliency: mainParams.seam_structure_saliency,
         seam_structure_max_area: mainParams.seam_structure_max_area,
+        boundary_relax_strength: mainParams.boundary_relax_strength,
+        boundary_relax_width: mainParams.boundary_relax_width,
+        boundary_relax_noise: mainParams.boundary_relax_noise,
+        boundary_relax_full_until: mainParams.boundary_relax_full_until,
+        boundary_relax_end: mainParams.boundary_relax_end,
+        boundary_relax_paste: mainParams.boundary_relax_paste,
         unet_quantization: mainParams.unet_quantization, // Inherit quantization from main
         original_size_w: mainParams.original_size_w,
         original_size_h: mainParams.original_size_h,
@@ -1915,6 +1937,12 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
         seam_structure_end: nextItem.params.seam_structure_end,
         seam_structure_saliency: nextItem.params.seam_structure_saliency,
         seam_structure_max_area: nextItem.params.seam_structure_max_area,
+        boundary_relax_strength: nextItem.params.boundary_relax_strength,
+        boundary_relax_width: nextItem.params.boundary_relax_width,
+        boundary_relax_noise: nextItem.params.boundary_relax_noise,
+        boundary_relax_full_until: nextItem.params.boundary_relax_full_until,
+        boundary_relax_end: nextItem.params.boundary_relax_end,
+        boundary_relax_paste: nextItem.params.boundary_relax_paste,
         resize_mode: nextItem.params.resize_mode,
         resampling_method: nextItem.params.resampling_method,
         loras: nextItem.params.loras,
@@ -2782,6 +2810,66 @@ export default function InpaintPanel({ onTabChange, onImageGenerated }: InpaintP
                     step={0.05}
                     value={params.seam_structure_max_area ?? 0.25}
                     onChange={(e) => setParams({ ...params, seam_structure_max_area: parseFloat(e.target.value) })}
+                  />
+                </>
+              )}
+            </div>
+          </details>
+
+          {/* Boundary Determinism Relaxation (BDR): soft-pins a narrow
+              saliency-gated seam band (annealed soft->hard) so the known-side
+              latent can bend to meet the continuation. See backend/api/routes.py
+              generate_inpaint boundary_relax_* Form params. */}
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Boundary Relaxation
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                SD/SDXL only. Soft-pins a narrow saliency-gated seam band (annealed soft-&gt;hard) so the known-side latent can bend to meet the continuation.
+                Most effective with Seam Structure Continuity &gt; 0. 0 = off.
+              </p>
+              <Slider
+                label="Boundary Relax Strength"
+                min={0.0}
+                max={0.5}
+                step={0.05}
+                value={params.boundary_relax_strength ?? 0.0}
+                onChange={(e) => setParams({ ...params, boundary_relax_strength: parseFloat(e.target.value) })}
+              />
+              {developerMode && (
+                <>
+                  <Slider
+                    label="Boundary Relax Width (latent px)"
+                    min={1}
+                    max={6}
+                    step={1}
+                    value={params.boundary_relax_width ?? 3.0}
+                    onChange={(e) => setParams({ ...params, boundary_relax_width: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Boundary Relax Noise"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.boundary_relax_noise ?? 0.35}
+                    onChange={(e) => setParams({ ...params, boundary_relax_noise: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Boundary Relax Full Until (schedule progress)"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.boundary_relax_full_until ?? 0.37}
+                    onChange={(e) => setParams({ ...params, boundary_relax_full_until: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Boundary Relax End (schedule progress)"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.boundary_relax_end ?? 0.55}
+                    onChange={(e) => setParams({ ...params, boundary_relax_end: parseFloat(e.target.value) })}
                   />
                 </>
               )}

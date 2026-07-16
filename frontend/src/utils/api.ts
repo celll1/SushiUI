@@ -403,6 +403,18 @@ export interface OutpaintParams extends GenerationParams {
   boundary_relax_full_until?: number;
   boundary_relax_end?: number;
   boundary_relax_paste?: string;
+  // Outpaint ControlNet (structure continuity, SD/SDXL only): synthesizes an
+  // edge-extrapolation control image (canny/lineart) from the placed region
+  // and conditions the generated surround with it, tapering out with
+  // distance/schedule progress. false/0 = off (byte-identical).
+  outpaint_controlnet_enable?: boolean;
+  outpaint_controlnet_model?: string;
+  outpaint_controlnet_detector?: string;
+  outpaint_controlnet_scale?: number;
+  outpaint_controlnet_guidance_start?: number;
+  outpaint_controlnet_guidance_end?: number;
+  outpaint_controlnet_depth?: number;
+  outpaint_controlnet_taper?: number;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -1711,6 +1723,15 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("boundary_relax_full_until", String(paramsWithImages.boundary_relax_full_until ?? 0.37));
   formData.append("boundary_relax_end", String(paramsWithImages.boundary_relax_end ?? 0.55));
   formData.append("boundary_relax_paste", String(paramsWithImages.boundary_relax_paste ?? "feather"));
+  // Outpaint ControlNet (structure continuity, SD/SDXL only); false = off
+  formData.append("outpaint_controlnet_enable", String(paramsWithImages.outpaint_controlnet_enable ?? false));
+  formData.append("outpaint_controlnet_model", paramsWithImages.outpaint_controlnet_model ?? "");
+  formData.append("outpaint_controlnet_detector", paramsWithImages.outpaint_controlnet_detector ?? "canny");
+  formData.append("outpaint_controlnet_scale", String(paramsWithImages.outpaint_controlnet_scale ?? 0.6));
+  formData.append("outpaint_controlnet_guidance_start", String(paramsWithImages.outpaint_controlnet_guidance_start ?? 0.0));
+  formData.append("outpaint_controlnet_guidance_end", String(paramsWithImages.outpaint_controlnet_guidance_end ?? 0.55));
+  formData.append("outpaint_controlnet_depth", String(paramsWithImages.outpaint_controlnet_depth ?? 160));
+  formData.append("outpaint_controlnet_taper", String(paramsWithImages.outpaint_controlnet_taper ?? 2.0));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

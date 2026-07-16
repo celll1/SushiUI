@@ -202,9 +202,31 @@ class ControlNetManager:
                 continue
 
             print(f"[ControlNetManager] Scanning directory: {controlnet_dir}")
-            # Look for .safetensors and .pth files
+
+            # First pass: detect diffusers ControlNet DIRECTORIES (a folder with a
+            # config.json + a diffusion_pytorch_model.* weight file). These are how
+            # trained ControlNets are saved (e.g. the 4-channel outpaint-native CN,
+            # which cannot be a single .safetensors -- it needs the config for its
+            # conditioning-channel count). Surface the directory itself; load path
+            # is controlnet_manager.load_controlnet's is_dir -> from_pretrained branch.
+            diffusers_dirs = set()
+            for cfg in controlnet_dir.glob("**/config.json"):
+                d = cfg.parent
+                has_weights = any(
+                    (d / f"diffusion_pytorch_model{ext}").exists()
+                    for ext in (".safetensors", ".bin")
+                ) or any(d.glob("diffusion_pytorch_model*.safetensors"))
+                if has_weights:
+                    diffusers_dirs.add(d)
+                    controlnets.append(str(d.relative_to(controlnet_dir)))
+
+            # Second pass: loose weight files, skipping any that live INSIDE a
+            # diffusers directory already surfaced above (so the inner
+            # diffusion_pytorch_model.safetensors isn't offered as a bogus single-file).
             for file in controlnet_dir.glob("**/*"):
                 if file.suffix in [".safetensors", ".pth", ".pt", ".bin"]:
+                    if any(dd in file.parents for dd in diffusers_dirs):
+                        continue
                     # Validate file before adding
                     if self._is_valid_controlnet_file(file):
                         relative_path = file.relative_to(controlnet_dir)
@@ -1001,19 +1023,43 @@ class ControlNetManager:
 
     def prepare_controlnet_image(
         self,
-        image: Image.Image,
+        image,
         width: int,
         height: int
     ) -> torch.Tensor:
-        """Prepare ControlNet conditioning image"""
-        # Resize image to target dimensions
+        """Prepare ControlNet conditioning image.
+
+        Accepts either:
+        - a PIL RGB image (the normal 3-channel path: resize -> [0,1] -> [1,3,H,W]), or
+        - a PRE-BUILT conditioning array/tensor already in [0,1] at the target
+          resolution (e.g. the outpaint crop_mask 4-channel conditioning = crop RGB
+          + binary known-mask, built by core.utils.crop_mask_condition). A numpy
+          [H,W,C] becomes [1,C,H,W]; a torch [C,H,W]/[1,C,H,W] passes through. This is
+          the path a 4-channel outpaint-native ControlNet needs -- the channel count
+          is preserved (never forced to RGB), so prepare_controlnet_image is
+          conditioning-channel-agnostic.
+        """
+        # Pre-built torch conditioning tensor (already [0,1], target res).
+        if isinstance(image, torch.Tensor):
+            t = image.float()
+            if t.dim() == 3:
+                t = t.unsqueeze(0)  # [C,H,W] -> [1,C,H,W]
+            return t
+
+        # Pre-built numpy conditioning array [H,W,C] in [0,1].
+        if isinstance(image, np.ndarray):
+            arr = image
+            if arr.ndim == 3:
+                return torch.from_numpy(arr.astype(np.float32)).permute(2, 0, 1).unsqueeze(0)
+            raise ValueError(
+                f"prepare_controlnet_image: numpy conditioning must be HxWxC, got shape {arr.shape}"
+            )
+
+        # Normal PIL path (3-channel RGB).
         image = image.convert("RGB")
         image = image.resize((width, height), Image.LANCZOS)
-
-        # Convert to tensor
         image_np = np.array(image).astype(np.float32) / 255.0
         image_tensor = torch.from_numpy(image_np).permute(2, 0, 1).unsqueeze(0)
-
         return image_tensor
 
     def apply_layer_weights(

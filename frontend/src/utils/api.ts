@@ -408,6 +408,7 @@ export interface OutpaintParams extends GenerationParams {
   // and conditions the generated surround with it, tapering out with
   // distance/schedule progress. false/0 = off (byte-identical).
   outpaint_controlnet_enable?: boolean;
+  outpaint_controlnet_mode?: string;
   outpaint_controlnet_model?: string;
   outpaint_controlnet_detector?: string;
   outpaint_controlnet_scale?: number;
@@ -1725,6 +1726,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("boundary_relax_paste", String(paramsWithImages.boundary_relax_paste ?? "feather"));
   // Outpaint ControlNet (structure continuity, SD/SDXL only); false = off
   formData.append("outpaint_controlnet_enable", String(paramsWithImages.outpaint_controlnet_enable ?? false));
+  formData.append("outpaint_controlnet_mode", paramsWithImages.outpaint_controlnet_mode ?? "edge_extrapolate");
   formData.append("outpaint_controlnet_model", paramsWithImages.outpaint_controlnet_model ?? "");
   formData.append("outpaint_controlnet_detector", paramsWithImages.outpaint_controlnet_detector ?? "canny");
   formData.append("outpaint_controlnet_scale", String(paramsWithImages.outpaint_controlnet_scale ?? 0.6));

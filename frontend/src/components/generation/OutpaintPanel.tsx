@@ -136,6 +136,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   boundary_relax_end: 0.55,
   boundary_relax_paste: "feather",
   outpaint_controlnet_enable: false,
+  outpaint_controlnet_mode: "edge_extrapolate",
   outpaint_controlnet_model: "",
   outpaint_controlnet_detector: "canny",
   outpaint_controlnet_scale: 0.6,
@@ -1805,6 +1806,20 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               </div>
               {params.outpaint_controlnet_enable && (
                 <>
+                  <Select
+                    label="Mode"
+                    options={[
+                      { value: "edge_extrapolate", label: "Edge extrapolate (anytest)" },
+                      { value: "crop_mask", label: "Crop mask (trained outpaint CN)" },
+                    ]}
+                    value={params.outpaint_controlnet_mode || "edge_extrapolate"}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_mode: e.target.value })}
+                  />
+                  <p className="text-xs text-gray-500">
+                    {params.outpaint_controlnet_mode === "crop_mask"
+                      ? "Crop mask: builds the trained 4-channel crop+mask conditioning. Requires a ControlNet trained with conditioning_mode=outpaint (4-ch diffusers directory). Detector/depth/taper do not apply."
+                      : "Edge extrapolate: detects and extrapolates boundary-crossing edges over a guessed geometry (any structure ControlNet)."}
+                  </p>
                   <Select
                     label="ControlNet Model"
                     options={

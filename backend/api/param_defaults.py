@@ -419,6 +419,46 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # commit-fraction schedule saturates to outpaint_commit_far. Cells farther
     # than this all commit at outpaint_commit_far.
     "outpaint_commit_distance": 32.0,
+    # Outpaint ControlNet -- PART A edge-extrapolation ControlNet (SD/SDXL
+    # only; scratchpad/outpaint_controlnet_synthesis.md; core.inference.
+    # outpaint_control.build_outpaint_control_image + PipelineManager.
+    # generate_outpaint). Detects structures in the preserved region that
+    # cross the rect boundary (a held rod, a limb, architectural lines) and
+    # extrapolates them a short, confidence-tapered distance into the
+    # generate region as a synthetic ControlNet, driving a general structure
+    # ControlNet model (e.g. an "anytest"-style checkpoint). The same
+    # confidence field also spatially gates the ControlNet's residual
+    # contribution in the denoise loop, so its influence tapers to 0 with
+    # distance from the boundary instead of applying uniformly. This is an
+    # ENFORCEMENT tool over a GUESSED continuation geometry, not a learned
+    # one -- off by default. v1: mutually exclusive with a user-supplied
+    # ControlNet/LLLite (never overrides the user's own request) and forces
+    # boundary_relax_paste="exact" + disables seam_structure_strength while
+    # active (see PipelineManager.generate_outpaint). 0/False = off
+    # (byte-identical to before this feature existed).
+    "outpaint_controlnet_enable": False,
+    # Path to the ControlNet model checkpoint driving this feature. Required
+    # (non-empty) for the feature to take effect when enabled.
+    "outpaint_controlnet_model": "",
+    # Edge/structure detector run over the preserved region only (never the
+    # synthetic canvas fill): "canny" (cv2, no model download) or
+    # "lineart"/"lineart_anime" (controlnet_aux, opt-in; falls back to canny
+    # if unavailable offline).
+    "outpaint_controlnet_detector": "canny",
+    # ControlNet conditioning scale for the synthetic control image.
+    "outpaint_controlnet_scale": 0.6,
+    # ControlNet guidance window start (schedule progress fraction, 0-1).
+    "outpaint_controlnet_guidance_start": 0.0,
+    # ControlNet guidance window end (schedule progress fraction, 0-1).
+    "outpaint_controlnet_guidance_end": 0.55,
+    # Maximum extrapolation depth (canvas pixels) a detected boundary-crossing
+    # structure is continued into the generate region before its confidence
+    # tapers to 0.
+    "outpaint_controlnet_depth": 160,
+    # Exponent of the cosine-squared distance taper applied to each
+    # extrapolated structure's confidence (higher = sharper falloff near the
+    # taper depth).
+    "outpaint_controlnet_taper": 2.0,
 }
 
 # ---------------------------------------------------------------------------

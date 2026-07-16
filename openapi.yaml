@@ -6938,6 +6938,86 @@ components:
                 schedule saturates to `outpaint_commit_far`. Cells farther
                 than this all commit at `outpaint_commit_far`.
               example: 32.0
+            outpaint_controlnet_enable:
+              type: boolean
+              default: false
+              description: |
+                SD/SDXL only. Edge-extrapolation ControlNet: detects
+                structures in the preserved region that cross the rect
+                boundary (a held rod, a limb, architectural lines) and
+                extrapolates them a short, confidence-tapered distance into
+                the generate region as a synthetic ControlNet control image,
+                driving a general structure ControlNet model. The same
+                confidence field also spatially gates the ControlNet's
+                residual contribution during denoising, so its influence
+                tapers to 0 with distance from the boundary instead of
+                applying uniformly. This enforces a GUESSED continuation
+                geometry (not a learned one), so it is off by default.
+                Mutually exclusive with a user-supplied ControlNet or
+                LLLite model in this version -- skipped (with a warning) if
+                one is already active, never overriding the user's own
+                request. When active, forces `boundary_relax_paste` to
+                "exact" and disables `seam_structure_strength` to avoid
+                double geometry enforcement at the boundary.
+              example: false
+            outpaint_controlnet_model:
+              type: string
+              default: ""
+              description: |
+                Path to the ControlNet model checkpoint driving Outpaint
+                ControlNet. Required (non-empty) for the feature to take
+                effect when `outpaint_controlnet_enable` is true.
+              example: "controlnet/CN-anytest4-canny.safetensors"
+            outpaint_controlnet_detector:
+              type: string
+              enum: [canny, lineart, lineart_anime]
+              default: canny
+              description: |
+                Edge/structure detector run over the preserved region only
+                (never the synthetic canvas fill). "canny" (default) uses
+                cv2 with no model download; "lineart"/"lineart_anime" use
+                controlnet_aux (opt-in) and fall back to canny if
+                unavailable offline.
+              example: canny
+            outpaint_controlnet_scale:
+              type: number
+              default: 0.6
+              minimum: 0.0
+              maximum: 2.0
+              description: "ControlNet conditioning scale for the synthetic control image."
+              example: 0.6
+            outpaint_controlnet_guidance_start:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 1.0
+              description: "ControlNet guidance window start (schedule progress fraction, 0-1)."
+              example: 0.0
+            outpaint_controlnet_guidance_end:
+              type: number
+              default: 0.55
+              minimum: 0.0
+              maximum: 1.0
+              description: "ControlNet guidance window end (schedule progress fraction, 0-1)."
+              example: 0.55
+            outpaint_controlnet_depth:
+              type: integer
+              default: 160
+              minimum: 4
+              description: |
+                Maximum extrapolation depth, in canvas pixels, a detected
+                boundary-crossing structure is continued into the generate
+                region before its confidence tapers to 0.
+              example: 160
+            outpaint_controlnet_taper:
+              type: number
+              default: 2.0
+              minimum: 0.5
+              description: |
+                Exponent of the cosine-squared distance taper applied to
+                each extrapolated structure's confidence (higher = sharper
+                falloff near the taper depth).
+              example: 2.0
 
     UpscaleRequest:
       type: object

@@ -5167,7 +5167,21 @@ class BaseTrainer(ABC):
             # GENERATE region at full weight (see condition-load branch that builds
             # this map). Broadcasts [B,1,H,W] over [B,C,H,W]. None (default,
             # non-outpaint) skips this entirely -> unweighted loss unchanged.
-            loss_per_element = loss_per_element * loss_weight_map.to(loss_per_element)
+            _wm = loss_weight_map.to(loss_per_element)
+            # GENERATE-region-only MSE (monitoring, no grad): mean raw MSE over ONLY
+            # the generate cells (known region excluded). The weighted `loss` scalar
+            # is diluted ~21% by the trivially-predictable known region and buried in
+            # per-timestep noise; this metric isolates the region the ControlNet must
+            # actually outpaint, so genuine learning becomes visible above the noise
+            # floor. Generate cells = weight >= ~1.0 (known cells are down-weighted to
+            # outpaint_known_loss_weight, e.g. 0.3), so a >0.5 threshold splits them.
+            with torch.no_grad():
+                _gen_mask = (_wm > 0.5).float()  # [B,1,H,W]
+                _denom = _gen_mask.sum() * float(loss_per_element.shape[1]) + 1e-8
+                self._last_gen_region_loss = float((loss_per_element * _gen_mask).sum() / _denom)
+            loss_per_element = loss_per_element * _wm
+        else:
+            self._last_gen_region_loss = None
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Apply Min-SNR gamma weighting
@@ -9827,6 +9841,26 @@ class BaseTrainer(ABC):
                         self.writer.add_scalar("train/pred_loss", mnt_pred_loss_value, global_step)
                         self.writer.add_scalar("train/recon_loss", mnt_recon_loss_value, global_step)
                         self.writer.add_scalar("train/lr", mnt_current_lr, global_step)
+
+                        # Outpaint conditioning: generate-region-only MSE (monitoring).
+                        # Set by train_step_controlnet only in outpaint mode; None
+                        # otherwise -> skipped (no effect on any other training path).
+                        # Logged to TensorBoard AND a plain JSONL sidecar so the
+                        # generate-region learning trend can be read back cheaply
+                        # without a DB schema change.
+                        _gen_loss = getattr(self, "_last_gen_region_loss", None)
+                        if _gen_loss is not None:
+                            self.writer.add_scalar("train/gen_loss", _gen_loss, global_step)
+                            try:
+                                import json as _json
+                                with open(self.output_dir / "gen_region_loss.jsonl", "a") as _gf:
+                                    _gf.write(_json.dumps({
+                                        "step": global_step,
+                                        "gen_loss": _gen_loss,
+                                        "loss": mnt_loss_value,
+                                    }) + "\n")
+                            except Exception:
+                                pass
 
                         # Database logging (per-iteration, loss only - grad_norm logged at optimizer step)
                         # Grad norm is only available after optimizer step, so we don't log it here.

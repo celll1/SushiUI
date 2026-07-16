@@ -4790,10 +4790,33 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             progress_callback=progress_callback, step_callback=step_callback,
         )
 
+        # BDR Variant B (feather): when boundary relaxation is active AND the
+        # paste mode is "feather", erode/feather a thin strip at the rect's
+        # generate-adjacent edges so the model's bridged seam rendering survives
+        # instead of the exact input (the interior stays byte-exact). See
+        # scratchpad/boundary_relaxation_synthesis.md Q3 variant B.
+        _paste_alpha = None
+        _bdr_on = float(params.get("boundary_relax_strength", 0.0) or 0.0) > 0.0
+        if _bdr_on and str(params.get("boundary_relax_paste", "feather")) == "feather":
+            from core.inference.outpaint_utils import build_paste_alpha
+            # erosion/feather in pixels: tie to the soft strip (W_soft=2 latent
+            # cells -> ~16 px) plus an 8 px feather. VAE scale factor 8.
+            _erode_px = 8.0 * 2.0
+            _feather_px = 8.0
+            _paste_alpha = build_paste_alpha(rect, canvas_img.size, _erode_px, _feather_px)
+            from api.generation_status import add_warning as _bdr_fx_warn
+            _bdr_fx_warn(
+                "Boundary relaxation feather paste: a thin strip (~24 px) inside the placed rect at "
+                "generated-adjacent edges is model-rendered, not byte-identical to the input; the "
+                "interior beyond the strip is byte-exact.",
+                code="boundary_relax_feather_nonexact",
+            )
+
         result_image = reconcile_and_paste(
             result_image, placed_img, rect, canvas_img.size,
             mask_blur=mask_blur,
             outpaint_seam_fix=bool(params.get("outpaint_seam_fix", True)),
+            paste_alpha=_paste_alpha,
         )
 
         return result_image, actual_seed, actual_ancestral_seed

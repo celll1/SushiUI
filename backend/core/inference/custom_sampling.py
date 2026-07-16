@@ -1328,6 +1328,16 @@ def _bdr_precompute(
                     for c in range(C)], dtype=np.float32)
     s_c_t = torch.from_numpy(s_c).to(device=device, dtype=dt).view(1, C, 1, 1)
 
+    # Variant B (feather) "late soft floor" strip: the innermost W_soft keep cells
+    # of the SALIENT band that stay partly soft late (so their latent holds the
+    # model's bridged rendering, not exact K) and are kept model-rendered by the
+    # feathered final paste. Only meaningful where b>0 (a salient crossing
+    # structure). W_soft = 2 latent cells (matches the feather paste's ~16px
+    # erosion). Zero elsewhere.
+    W_soft = 2.0
+    strip = ((keep & (d_keep <= W_soft)).astype(np.float64)) * (Sgate > 0.05).astype(np.float64)
+    strip_t = torch.from_numpy(strip).to(device=device, dtype=dt).view(1, 1, h, w)
+
     # sigma-bar anneal endpoints (static; scheduler.sigmas is fixed after set_timesteps)
     idx_F = int(round(min(max(full_until, 0.0), 1.0) * num_inference_steps))
     idx_E = int(round(min(max(end, 0.0), 1.0) * num_inference_steps))
@@ -1335,7 +1345,8 @@ def _bdr_precompute(
     idx_E = min(max(idx_E, 0), num_inference_steps - 1)
     sigma_F = _outpaint_step_sigma(scheduler, scheduler.timesteps[idx_F], idx_F)
     sigma_E = _outpaint_step_sigma(scheduler, scheduler.timesteps[idx_E], idx_E)
-    return {"b": b_t, "s_c": s_c_t, "sigma_F": float(sigma_F), "sigma_E": float(sigma_E)}
+    return {"b": b_t, "s_c": s_c_t, "strip": strip_t,
+            "sigma_F": float(sigma_F), "sigma_E": float(sigma_E)}
 
 
 def _bdr_omega(sigma_i: float, sigma_F: float, sigma_E: float) -> float:
@@ -1353,7 +1364,7 @@ def _bdr_omega(sigma_i: float, sigma_F: float, sigma_E: float) -> float:
 
 
 def _bdr_apply(x0_hat, mask_latent, image_latents, state, noise, strength, noise_frac,
-               sigma_i, omega, visit_count):
+               sigma_i, omega, visit_count, strip_floor=False):
     """Per-step BDR soft/noised keep-band projection, REPLACING the hard B1
     projection ``x0_proj = (1-M)*K + M*x0_hat``. Keyed on the LOGICAL step via
     the caller's ``omega`` (0 => this reduces to the hard projection). ``noise``
@@ -1361,11 +1372,21 @@ def _bdr_apply(x0_hat, mask_latent, image_latents, state, noise, strength, noise
     on every B2 revisit). ``visit_count`` = B2 visits to this logical i (>=1);
     the dose is divided by it so revisits don't multiply relaxation.
     Deep keep (b=0) stays exactly K; generate cells (M=1) stay exactly x0_hat.
+    ``strip_floor`` (Variant B/feather): keep the innermost strip cells partly
+    soft (>=0.3 of the MEAN-freedom term) even late, so their latent holds the
+    model's bridged rendering for the feathered paste (the noise term still
+    decays with sigma). Off the strip the per-cell weight is the scalar omega.
     """
     b = state["b"]; s_c = state["s_c"]
     vc = max(int(visit_count), 1)
-    # soft-pin fraction a and band-noise std, both gated by b and annealed by omega
-    a = (strength / vc) * omega * b                                  # [1,1,h,w]
+    # per-cell mean-freedom weight: scalar omega, floored on the feather strip.
+    if strip_floor and "strip" in state:
+        om_map = torch.clamp(state["strip"] * 0.3, min=float(omega))   # [1,1,h,w] >= omega
+    else:
+        om_map = omega
+    # soft-pin fraction a (floored on the strip) and band-noise std (plain omega,
+    # decays with sigma so no late stochasticity in the strip)
+    a = (strength / vc) * om_map * b                                # [1,1,h,w] or scalar*b
     u_i = sigma_i / (1.0 + sigma_i * sigma_i) ** 0.5                 # VP noise std coord in [0,1]
     c_noise = (strength * noise_frac / (3.0 * vc)) * u_i * omega     # scalar
     xi = torch.clamp(noise, -3.0, 3.0).to(dtype=x0_hat.dtype)
@@ -6209,11 +6230,16 @@ def custom_inpaint_sampling_loop(
             if _bdr_state is not None:
                 _bdr_sigma_i = _outpaint_step_sigma(scheduler, t, t_start + i)
                 _bdr_om = _bdr_omega(_bdr_sigma_i, _bdr_state["sigma_F"], _bdr_state["sigma_E"])
-                if _bdr_om > 0.0:
+                _bdr_feather = (boundary_relax_paste == "feather")
+                # Variant B keeps the innermost strip partly soft even after the
+                # global anneal reaches 0, so apply whenever omega>0 OR the strip
+                # floor is active (feather). Off both -> hard projection.
+                if _bdr_om > 0.0 or _bdr_feather:
                     x0_proj = _bdr_apply(
                         x0_hat, mask_latent, image_latents, _bdr_state, noise,
                         boundary_relax_strength, boundary_relax_noise,
                         _bdr_sigma_i, _bdr_om, _bdr_visit_counts.get(i, 1),
+                        strip_floor=_bdr_feather,
                     )
                 else:
                     x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
@@ -6336,7 +6362,14 @@ def custom_inpaint_sampling_loop(
                 # the unconditional final paste in outpaint_utils regardless
                 # of this).
                 if visit_idx == len(_outpaint_visit_schedule) - 1:
-                    latents = (1 - mask_latent) * image_latents + mask_latent * latents
+                    # BDR Variant B (feather): do NOT re-pin the salient strip to
+                    # exact K on the final visit -- keep the model's bridged
+                    # rendering there so the feathered paste preserves it (else the
+                    # strip latent = K and the feather is a pure fidelity loss).
+                    _fv_mask = mask_latent
+                    if _bdr_state is not None and boundary_relax_paste == "feather" and "strip" in _bdr_state:
+                        _fv_mask = torch.maximum(mask_latent, _bdr_state["strip"])
+                    latents = (1 - _fv_mask) * image_latents + _fv_mask * latents
                 if pred_original_sample is not None:
                     pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
             else:
@@ -6516,6 +6549,19 @@ def custom_inpaint_sampling_loop(
             size=(image.shape[2], image.shape[3]),
             mode="nearest"
         )
+
+        # BDR Variant B (feather): keep the salient seam STRIP as GENERATED
+        # (model-bridged) content here too, else this pixel blend re-pins it to
+        # the original and the feathered final paste preserves nothing. m_B =
+        # max(mask, strip) in pixel space; only when boundary relaxation +
+        # feather are active (byte-identical otherwise).
+        if _bdr_state is not None and boundary_relax_paste == "feather" and "strip" in _bdr_state:
+            strip_pixel = torch.nn.functional.interpolate(
+                _bdr_state["strip"].to(device=device, dtype=dtype),
+                size=(image.shape[2], image.shape[3]),
+                mode="nearest",
+            )
+            mask_pixel = torch.maximum(mask_pixel, strip_pixel)
 
         # Blend: keep original where mask=0, use generated where mask=1
         image = (1 - mask_pixel) * original_tensor + mask_pixel * image

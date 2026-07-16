@@ -18,7 +18,7 @@ unit-testable and side-effect-free at import time.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -513,20 +513,66 @@ def match_generated_exposure(
     return out
 
 
+def build_paste_alpha(
+    rect: Tuple[int, int, int, int],
+    canvas_size: Tuple[int, int],
+    erode_px: float,
+    feather_px: float,
+) -> "np.ndarray":
+    """Alpha mask (uint8 [rh, rw], the placed-rect size) for the BDR Variant B
+    "feather" paste: 0 in a thin strip at the rect's GENERATE-ADJACENT edges
+    (so the model's bridged rendering there survives instead of the exact
+    input), raised-cosine 0->255 over ``feather_px``, and 255 (byte-exact input)
+    from ``erode_px + feather_px`` inward. Rect edges that coincide with the
+    canvas boundary are NOT eroded (no generation borders them). alpha==255
+    regions are copied byte-exact by PIL's masked paste.
+    """
+    import numpy as np
+    x0, y0, x1, y1 = rect
+    W, H = canvas_size
+    rw, rh = x1 - x0, y1 - y0
+    big = 1e9
+    xs = np.arange(rw, dtype=np.float64)
+    ys = np.arange(rh, dtype=np.float64)
+    dl = xs if x0 > 0 else np.full(rw, big)          # dist to (gen-adjacent) left edge
+    dr = (rw - 1 - xs) if x1 < W else np.full(rw, big)
+    dt = ys if y0 > 0 else np.full(rh, big)
+    db = (rh - 1 - ys) if y1 < H else np.full(rh, big)
+    dx = np.minimum(dl, dr)                           # [rw]
+    dy = np.minimum(dt, db)                           # [rh]
+    d = np.minimum(dx[None, :], dy[:, None])          # [rh, rw] min dist to any gen-adjacent edge
+    E = float(erode_px); F = max(float(feather_px), 1e-6)
+    a = np.where(d < E, 0.0,
+                 np.where(d < E + F, 0.5 * (1.0 - np.cos(np.pi * (d - E) / F)), 1.0))
+    return (a * 255.0).astype(np.uint8)
+
+
 def paste_preserved_region(
     result_img: Image.Image,
     placed_img: Image.Image,
     rect: Tuple[int, int, int, int],
+    alpha: "Optional[np.ndarray]" = None,
 ) -> Image.Image:
-    """Unconditional final pixel paste of the preserved input rectangle.
+    """Final pixel paste of the preserved input rectangle.
 
-    THE strict-preservation contract: regardless of architecture, denoising
-    strength, VAE round-trip drift, or any per-arch inpaint compositing
-    (or lack thereof), the returned image's ``rect`` pixels are byte-identical
+    Default (``alpha is None``) is THE strict-preservation contract: regardless
+    of architecture, denoising strength, VAE round-trip drift, or any per-arch
+    inpaint compositing, the returned image's ``rect`` pixels are byte-identical
     to ``placed_img``.
+
+    When ``alpha`` (uint8 [rh, rw], from ``build_paste_alpha``) is given (BDR
+    Variant B "feather"), the paste is masked: alpha==255 pixels are byte-exact
+    input, alpha==0 pixels keep the generated (model-bridged) content, and the
+    feather band blends. This is a DELIBERATE, opt-in exception to strict
+    preservation (a thin seam strip inside the rect is no longer byte-identical;
+    the interior beyond the strip is).
     """
     result = result_img.copy()
-    result.paste(placed_img, (rect[0], rect[1]))
+    if alpha is None:
+        result.paste(placed_img, (rect[0], rect[1]))
+    else:
+        amask = Image.fromarray(alpha, mode="L")
+        result.paste(placed_img, (rect[0], rect[1]), mask=amask)
     return result
 
 
@@ -537,6 +583,7 @@ def reconcile_and_paste(
     canvas_size: Tuple[int, int],
     mask_blur: int = 4,
     outpaint_seam_fix: bool = True,
+    paste_alpha: Optional[np.ndarray] = None,
 ) -> Image.Image:
     """Defensive belt-and-suspenders wrapper around ``paste_preserved_region``.
 
@@ -562,4 +609,4 @@ def reconcile_and_paste(
         result_img = result_img.resize(canvas_size, Image.Resampling.LANCZOS)
     if outpaint_seam_fix:
         result_img = match_generated_exposure(result_img, placed_img, rect, mask_blur)
-    return paste_preserved_region(result_img, placed_img, rect)
+    return paste_preserved_region(result_img, placed_img, rect, alpha=paste_alpha)

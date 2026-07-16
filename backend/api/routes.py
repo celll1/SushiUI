@@ -9939,6 +9939,15 @@ class TrainingRunCreateRequest(BaseModel):
     lllite_rank: int = 64  # Rank for LLLite linear layers
     condition_preprocessors: Optional[List[str]] = None  # controlnet-aux preprocessor types (e.g., ["canny", "hed"])
     condition_cache_mode: str = "on_the_fly"  # "pre_generate" or "on_the_fly"
+    # Outpaint-native conditioning (PART B)
+    conditioning_mode: str = "preprocessor"  # "preprocessor" (default) or "outpaint"
+    outpaint_crop_min_area: float = 0.15  # Minimum cropped-region area fraction for outpaint conditioning
+    outpaint_crop_max_area: float = 0.8  # Maximum cropped-region area fraction for outpaint conditioning
+    outpaint_edge_anchor_prob: float = 0.34  # Probability of anchoring the crop to an edge
+    outpaint_corner_anchor_prob: float = 0.33  # Probability of anchoring the crop to a corner
+    outpaint_mask_channel: bool = True  # Include a known/unknown mask as an extra conditioning channel
+    outpaint_known_loss_weight: float = 0.3  # Loss weight applied to the known (non-outpainted) region
+    outpaint_seam_loss_boost: float = 0.0  # Additional loss weight applied at the known/unknown seam
     # sample_condition_image_path is now per-prompt in sample_prompts[].condition_image_path
     # Pre-flight: detect dataset drift + auto-rescan + cleanup orphan
     # latent cache.  Four modes (see core/training/dataset_drift.py):
@@ -10272,6 +10281,14 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "lllite_rank": ("network.controlnet",),
     "condition_preprocessors": ("network.controlnet",),
     "condition_cache_mode": ("network.controlnet",),
+    "conditioning_mode": ("network.controlnet",),
+    "outpaint_crop_min_area": ("network.controlnet",),
+    "outpaint_crop_max_area": ("network.controlnet",),
+    "outpaint_edge_anchor_prob": ("network.controlnet",),
+    "outpaint_corner_anchor_prob": ("network.controlnet",),
+    "outpaint_mask_channel": ("network.controlnet",),
+    "outpaint_known_loss_weight": ("network.controlnet",),
+    "outpaint_seam_loss_boost": ("network.controlnet",),
     # train section with renamed key
     "total_steps": ("train", "steps"),
     "learning_rate": ("train", "lr"),
@@ -10285,6 +10302,9 @@ _CONTROLNET_ONLY_FIELDS = {
     "controlnet_type", "controlnet_pretrained_path", "controlnet_init_from_unet",
     "lllite_conditioning_channels", "lllite_rank",
     "condition_preprocessors", "condition_cache_mode",
+    "conditioning_mode", "outpaint_crop_min_area", "outpaint_crop_max_area",
+    "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob", "outpaint_mask_channel",
+    "outpaint_known_loss_weight", "outpaint_seam_loss_boost",
 }
 
 # Fields excluded from auto-extraction (they need special handling outside the schema loop)

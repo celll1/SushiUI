@@ -756,6 +756,15 @@ class TrainingConfigGenerator:
         if p.get("condition_preprocessors"):
             controlnet_network_config["condition_preprocessors"] = p["condition_preprocessors"]
             controlnet_network_config["condition_cache_mode"] = p.get("condition_cache_mode", "on_the_fly")
+        # Outpaint-native conditioning (PART B)
+        controlnet_network_config["conditioning_mode"] = p.get("conditioning_mode", "preprocessor")
+        controlnet_network_config["outpaint_crop_min_area"] = p.get("outpaint_crop_min_area", 0.15)
+        controlnet_network_config["outpaint_crop_max_area"] = p.get("outpaint_crop_max_area", 0.8)
+        controlnet_network_config["outpaint_edge_anchor_prob"] = p.get("outpaint_edge_anchor_prob", 0.34)
+        controlnet_network_config["outpaint_corner_anchor_prob"] = p.get("outpaint_corner_anchor_prob", 0.33)
+        controlnet_network_config["outpaint_mask_channel"] = p.get("outpaint_mask_channel", True)
+        controlnet_network_config["outpaint_known_loss_weight"] = p.get("outpaint_known_loss_weight", 0.3)
+        controlnet_network_config["outpaint_seam_loss_boost"] = p.get("outpaint_seam_loss_boost", 0.0)
 
         config = {
             "job": run_name,

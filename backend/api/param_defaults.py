@@ -998,6 +998,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "lllite_rank": 64,
     "condition_preprocessors": None,
     "condition_cache_mode": "on_the_fly",
+    # Outpaint-native conditioning (PART B)
+    "conditioning_mode": "preprocessor",
+    "outpaint_crop_min_area": 0.15,
+    "outpaint_crop_max_area": 0.8,
+    "outpaint_edge_anchor_prob": 0.34,
+    "outpaint_corner_anchor_prob": 0.33,
+    "outpaint_mask_channel": True,
+    "outpaint_known_loss_weight": 0.3,
+    "outpaint_seam_loss_boost": 0.0,
     # Pre-flight dataset drift check + optional rescan.  4 modes:
     #   "off"   — skip entirely (default)
     #   "path"  — only detect added/missing files

@@ -830,8 +830,15 @@ class TrainingMetrics(TrainingBase):
     # Metrics
     loss = Column(Float, nullable=True)
     recon_loss = Column(Float, nullable=True)
-    repa_loss = Column(Float, nullable=True)  # REPA alignment loss (MiniT2I only), nullable
     learning_rate = Column(Float, nullable=True)
+
+    # Bespoke, arch/method-specific per-step scalar metrics (e.g. REPA alignment
+    # for MiniT2I, generate-region MSE for outpaint ControlNet). Stored as a
+    # {name: float} JSON dict so a new metric needs NO schema/threading change —
+    # the trainer calls log_extra_metric(name, value) and the loss chart renders
+    # it via core.training.metric_registry.EXTRA_METRIC_DEFS. Replaces the former
+    # dedicated repa_loss column (backfilled by auto_migrate).
+    extra_metrics = Column(JSON, nullable=True)
 
     # Gradient norms
     grad_norm = Column(Float, nullable=True)  # Total gradient norm (all parameters)
@@ -867,7 +874,7 @@ class TrainingMetrics(TrainingBase):
             "step": self.step,
             "loss": self.loss,
             "recon_loss": self.recon_loss,
-            "repa_loss": self.repa_loss,
+            "extra_metrics": self.extra_metrics or {},
             "learning_rate": self.learning_rate,
             "grad_norm": self.grad_norm,
             "grad_norm_text_encoder": self.grad_norm_text_encoder,

@@ -2,13 +2,22 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { RefreshCw } from "lucide-react";
-import { getTrainingMetrics, type MetricPoint, type EpochBoundary, type ResumeMarker } from "@/utils/api";
+import { getTrainingMetrics, type MetricPoint, type EpochBoundary, type ResumeMarker, type MetricSeriesDef } from "@/utils/api";
 import { wsClient, type TrainingMetrics } from "@/utils/websocket";
 import SharedMetricChart, { type ChartSeries } from "./SharedMetricChart";
 
 interface LossChartProps {
   runId: number;
   isRunning: boolean;
+}
+
+// Deterministic color for a bespoke metric with no registry def, so an unknown
+// series still renders with a stable (per-name) hue instead of colliding.
+const FALLBACK_PALETTE = ["#f59e0b", "#a78bfa", "#f472b6", "#22d3ee", "#a3e635", "#fb923c", "#e879f9"];
+function fallbackColor(key: string): string {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return FALLBACK_PALETTE[h % FALLBACK_PALETTE.length];
 }
 
 /**
@@ -19,7 +28,11 @@ interface LossChartProps {
 export default function LossChart({ runId, isRunning }: LossChartProps) {
   const [lossData, setLossData] = useState<MetricPoint[]>([]);
   const [reconLossData, setReconLossData] = useState<MetricPoint[]>([]);
-  const [repaLossData, setRepaLossData] = useState<MetricPoint[]>([]);
+  // Bespoke arch/method-specific metrics (REPA, outpaint gen_loss, …), keyed by
+  // metric name so new ones appear with no code change. Display metadata (label/
+  // color/dashed) comes from extraDefs, echoed by the backend metric registry.
+  const [extraData, setExtraData] = useState<Record<string, MetricPoint[]>>({});
+  const [extraDefs, setExtraDefs] = useState<Record<string, MetricSeriesDef>>({});
   const [fetchedBoundaries, setFetchedBoundaries] = useState<EpochBoundary[]>([]);
   const [fetchedMarkers, setFetchedMarkers] = useState<ResumeMarker[]>([]);
   const [liveBoundaries, setLiveBoundaries] = useState<EpochBoundary[]>([]);
@@ -38,7 +51,8 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       const data = await getTrainingMetrics(runId);
       setLossData(data.loss);
       setReconLossData(data.recon_loss || []);
-      setRepaLossData(data.repa_loss || []);
+      setExtraData(data.extra_metrics || {});
+      setExtraDefs(data.extra_metric_defs || {});
       setFetchedBoundaries(data.epoch_boundaries || []);
       setFetchedMarkers(data.resume_markers || []);
     } catch (err: any) {
@@ -75,7 +89,17 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       };
       if (m.loss !== undefined && m.loss !== null) setLossData((p) => upsert(p, m.loss));
       if (m.recon_loss !== undefined && m.recon_loss !== null) setReconLossData((p) => upsert(p, m.recon_loss as number));
-      if (m.repa_loss !== undefined && m.repa_loss !== null) setRepaLossData((p) => upsert(p, m.repa_loss as number));
+      if (m.extra_metrics) {
+        const em = m.extra_metrics;
+        setExtraData((prev) => {
+          const next = { ...prev };
+          for (const [k, v] of Object.entries(em)) {
+            if (v === undefined || v === null) continue;
+            next[k] = upsert(next[k] || [], v as number);
+          }
+          return next;
+        });
+      }
 
       // Live epoch boundary: when epoch increments, the previous epoch ended at its max step.
       if (m.epoch !== undefined && m.epoch !== null) {
@@ -113,11 +137,27 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
     return [...map.entries()].sort((a, b) => a[0] - b[0]).map(([resume_seq, step]) => ({ resume_seq, step }));
   }, [fetchedMarkers, liveMarkers]);
 
-  const series = useMemo<ChartSeries[]>(() => ([
-    { id: "loss", label: "Loss", color: "#60a5fa", points: lossData },
-    { id: "recon", label: "Recon", color: "#34d399", points: reconLossData, dashed: true },
-    { id: "repa", label: "REPA", color: "#f59e0b", points: repaLossData, dashed: true },
-  ] as ChartSeries[]).filter((s) => s.points.length > 0), [lossData, reconLossData, repaLossData]);
+  const series = useMemo<ChartSeries[]>(() => {
+    const base: ChartSeries[] = [
+      { id: "loss", label: "Loss", color: "#60a5fa", points: lossData },
+      { id: "recon", label: "Recon", color: "#34d399", points: reconLossData, dashed: true },
+    ];
+    // Dynamic bespoke metrics: one series per key, styled from the backend
+    // registry def (falling back to the raw key + a hashed color when unknown).
+    const extra: ChartSeries[] = Object.entries(extraData)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, points]) => {
+        const def = extraDefs[key] || {};
+        return {
+          id: `extra:${key}`,
+          label: def.label || key,
+          color: def.color || fallbackColor(key),
+          points,
+          dashed: def.dashed ?? true,
+        } as ChartSeries;
+      });
+    return [...base, ...extra].filter((s) => s.points.length > 0);
+  }, [lossData, reconLossData, extraData, extraDefs]);
 
   return (
     <div>

@@ -138,6 +138,10 @@ export default function SharedMetricChart({
   const [smoothing, setSmoothing] = useState(smoothable ? defaultSmoothing : 0);
   const [logScale, setLogScale] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
+  // Series hidden via legend clicks. Hidden series are excluded from rendering
+  // AND from the Y-range pooling, so the remaining series auto-rescale to fill
+  // the view (lets you isolate one metric's variation instead of all forced on).
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [xRange, setXRange] = useState<{ min: number; max: number } | null>(null);
   const [brush, setBrush] = useState<{ startStep: number; endStep: number } | null>(null);
   const pointerXRef = useRef<number | null>(null);
@@ -169,7 +173,14 @@ export default function SharedMetricChart({
     () => series.filter((s) => s.points && s.points.length > 0),
     [series],
   );
-  const allPoints = useMemo(() => seriesNonEmpty.flatMap((s) => s.points), [seriesNonEmpty]);
+  // Series actually drawn/scaled: the non-empty set minus any hidden via legend.
+  // The legend itself still lists every non-empty series (hidden ones dimmed) so
+  // they can be toggled back on.
+  const visibleSeries = useMemo(
+    () => seriesNonEmpty.filter((s) => !hiddenIds.has(s.id)),
+    [seriesNonEmpty, hiddenIds],
+  );
+  const allPoints = useMemo(() => visibleSeries.flatMap((s) => s.points), [visibleSeries]);
   const totalPoints = allPoints.length;
 
   const minStepAll = useMemo(
@@ -184,11 +195,11 @@ export default function SharedMetricChart({
   // Per-series smoothed points
   const smoothedSeries = useMemo<Map<string, Pt[]>>(() => {
     const out = new Map<string, Pt[]>();
-    for (const s of seriesNonEmpty) {
+    for (const s of visibleSeries) {
       out.set(s.id, applySmoothing(s.points.map((p) => ({ step: p.step, value: p.value })), smoothing));
     }
     return out;
-  }, [seriesNonEmpty, smoothing]);
+  }, [visibleSeries, smoothing]);
 
   // Layout
   const chartW = Math.max(50, width - PAD.left - PAD.right);
@@ -213,18 +224,18 @@ export default function SharedMetricChart({
   }, [smoothedSeries, xRange, xMin, xMax]);
   const visibleRaw = useMemo<Map<string, Pt[]>>(() => {
     const out = new Map<string, Pt[]>();
-    for (const s of seriesNonEmpty) {
+    for (const s of visibleSeries) {
       const pts = s.points.map((p) => ({ step: p.step, value: p.value }));
       out.set(s.id, xRange ? pts.filter((p) => inX(p.step)) : pts);
     }
     return out;
-  }, [seriesNonEmpty, xRange, xMin, xMax]);
+  }, [visibleSeries, xRange, xMin, xMax]);
 
   // Y scale (pool primary series; rawRange/dashed series contribute raw min/max only)
   const { primaryVals, mustInclude } = useMemo(() => {
     const prim: number[] = [];
     const must: number[] = [];
-    for (const s of seriesNonEmpty) {
+    for (const s of visibleSeries) {
       const sm = visibleSmoothed.get(s.id) ?? [];
       const rw = visibleRaw.get(s.id) ?? [];
       if (s.dashed || s.rawRange) {
@@ -236,7 +247,7 @@ export default function SharedMetricChart({
       }
     }
     return { primaryVals: prim, mustInclude: must };
-  }, [seriesNonEmpty, visibleSmoothed, visibleRaw, smoothing]);
+  }, [visibleSeries, visibleSmoothed, visibleRaw, smoothing]);
 
   const rawYRange = robustYRange(primaryVals, yMinFloor, mustInclude, bounded);
   const canLog = allowLogScale && logScale && rawYRange.min > 0;
@@ -330,7 +341,7 @@ export default function SharedMetricChart({
     const stepTolerance = (16 / Math.max(1, chartW)) * xSpan;
     const values: { id: string; label: string; color: string; value: number; smoothValue: number | null }[] = [];
     let anchorY: number | null = null;
-    for (const s of seriesNonEmpty) {
+    for (const s of visibleSeries) {
       const pts = visibleRaw.get(s.id) ?? [];
       const sm = visibleSmoothed.get(s.id) ?? [];
       if (pts.length === 0) continue;
@@ -373,7 +384,10 @@ export default function SharedMetricChart({
     return { x, w: toX(bClamped) - x };
   })() : null;
 
-  const showLegend = hasEnoughData && seriesNonEmpty.length > 1;
+  // Legend visibility is based on the FULL non-empty set (not the visible subset)
+  // and only needs a measured width — so toggling a series off (even all of them)
+  // never hides the legend that toggles it back on.
+  const showLegend = width > 0 && seriesNonEmpty.length > 1;
 
   return (
     <div className="bg-gray-800 rounded p-2 border border-gray-700">
@@ -425,12 +439,24 @@ export default function SharedMetricChart({
 
       {showLegend && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mb-1">
-          {(legendOpen || seriesNonEmpty.length <= 4 ? seriesNonEmpty : seriesNonEmpty.slice(0, 4)).map((s) => (
-            <span key={s.id} className="inline-flex items-center gap-1 text-[10px] text-gray-400">
-              <span style={{ background: s.color, width: 10, height: 2, display: "inline-block", borderTop: s.dashed ? `2px dashed ${s.color}` : undefined }} />
-              {s.label}
-            </span>
-          ))}
+          {(legendOpen || seriesNonEmpty.length <= 4 ? seriesNonEmpty : seriesNonEmpty.slice(0, 4)).map((s) => {
+            const hidden = hiddenIds.has(s.id);
+            return (
+              <button
+                key={s.id}
+                onClick={() => setHiddenIds((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(s.id)) next.delete(s.id); else next.add(s.id);
+                  return next;
+                })}
+                className={`inline-flex items-center gap-1 text-[10px] transition-opacity hover:text-gray-200 ${hidden ? "text-gray-600 opacity-50 line-through" : "text-gray-400"}`}
+                title={hidden ? `Show ${s.label}` : `Hide ${s.label}`}
+              >
+                <span style={{ background: s.color, width: 10, height: 2, display: "inline-block", borderTop: s.dashed ? `2px dashed ${s.color}` : undefined }} />
+                {s.label}
+              </button>
+            );
+          })}
           {seriesNonEmpty.length > 4 && (
             <button onClick={() => setLegendOpen((v) => !v)} className="text-[10px] text-blue-400 hover:text-blue-300">
               {legendOpen ? "−" : `+${seriesNonEmpty.length - 4}`}
@@ -483,12 +509,12 @@ export default function SharedMetricChart({
 
             {/* Series lines. When smoothing is on, the raw values are drawn faintly
                 behind the smoothed line (so the actual noise is still visible). */}
-            {smoothing > 0 && seriesNonEmpty.map((s) => (
+            {smoothing > 0 && visibleSeries.map((s) => (
               <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
                 fill="none" stroke={s.color} strokeWidth={1}
                 strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.22} />
             ))}
-            {seriesNonEmpty.map((s) => {
+            {visibleSeries.map((s) => {
               const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
               return (
                 <path key={s.id} d={buildPath(pts)} fill="none" stroke={s.color} strokeWidth={1.5}

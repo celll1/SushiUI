@@ -11598,6 +11598,7 @@ async def get_training_metrics_db(
         }
     """
     from database.models import TrainingMetrics
+    from core.training.metric_registry import EXTRA_METRIC_DEFS
 
     # Check if run exists
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
@@ -11661,7 +11662,9 @@ async def get_training_metrics_db(
         # Convert to response format
         loss_data = []
         recon_loss_data = []
-        repa_loss_data = []
+        # Bespoke arch/method-specific metrics (REPA, outpaint gen_loss, …) stored
+        # generically in TrainingMetrics.extra_metrics -> {name: MetricPoint[]}.
+        extra_series: dict[str, list] = {}
         lr_data = []
         grad_norm_data = []
         grad_norm_te_data = []
@@ -11701,8 +11704,10 @@ async def get_training_metrics_db(
             if is_valid_float(m.recon_loss):
                 recon_loss_data.append({**point, "value": m.recon_loss})
 
-            if is_valid_float(getattr(m, "repa_loss", None)):
-                repa_loss_data.append({**point, "value": m.repa_loss})
+            _extra = getattr(m, "extra_metrics", None) or {}
+            for _k, _v in _extra.items():
+                if is_valid_float(_v):
+                    extra_series.setdefault(_k, []).append({**point, "value": _v})
 
             if is_valid_float(m.learning_rate):
                 lr_data.append({**point, "value": m.learning_rate})
@@ -11770,7 +11775,11 @@ async def get_training_metrics_db(
         return {
             "loss": loss_data,
             "recon_loss": recon_loss_data,
-            "repa_loss": repa_loss_data,
+            "extra_metrics": extra_series,
+            "extra_metric_defs": {
+                k: EXTRA_METRIC_DEFS.get(k, {"label": k, "dashed": True})
+                for k in extra_series
+            },
             "learning_rate": lr_data,
             "grad_norm": grad_norm_data,
             "grad_norm_text_encoder": grad_norm_te_data,

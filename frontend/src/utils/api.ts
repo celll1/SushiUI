@@ -3586,10 +3586,21 @@ export interface ResumeMarker {
   step: number;
 }
 
+/** Display metadata for a bespoke extra metric (from the backend registry). */
+export interface MetricSeriesDef {
+  label?: string;
+  color?: string;
+  dashed?: boolean;
+}
+
 export interface TrainingMetrics {
   loss: MetricPoint[];
   recon_loss: MetricPoint[];
-  repa_loss?: MetricPoint[];
+  // Bespoke, arch/method-specific metrics (REPA, outpaint gen_loss, …) keyed by
+  // metric name. Grows without a code change per metric — see extra_metric_defs
+  // for display metadata (label/color/dashed) echoed from the backend registry.
+  extra_metrics?: Record<string, MetricPoint[]>;
+  extra_metric_defs?: Record<string, MetricSeriesDef>;
   learning_rate: MetricPoint[];
   grad_norm: MetricPoint[];
   grad_norm_text_encoder: MetricPoint[];

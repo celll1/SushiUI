@@ -155,7 +155,8 @@ synchronous `send_progress_sync` path is actually exercised.
 
 LoRA/Full-FT training step metrics. Sent from
 `ConnectionManager.send_training_metrics()` (`backend/api/websocket.py:55-109`),
-called from the training loop in `backend/core/training/base_trainer.py:13289`.
+called from the training loop in `backend/core/training/base_trainer.py` (the
+`_flush_metrics_to_db` broadcast site).
 
 | field | type | description |
 |-------|------|-------------|
@@ -166,7 +167,7 @@ called from the training loop in `backend/core/training/base_trainer.py:13289`.
 | `resume_seq` | int | 0 for the initial run, incremented per resume, so a resumed run's metrics can be charted as a separate curve |
 | `epoch` | int (optional) | current epoch, if known |
 | `recon_loss` | float (optional) | reconstruction loss component, if computed |
-| `repa_loss` | float (optional) | REPA loss component, if computed |
+| `extra_metrics` | object (optional) | `{name: float}` bespoke arch/method-specific per-step scalars (REPA `repa_loss`, outpaint ControlNet `gen_loss`, …). Display metadata comes from `core.training.metric_registry.EXTRA_METRIC_DEFS`; replaces the former dedicated `repa_loss` field |
 | `learning_rate` | float (optional) | current LR |
 | `grad_norm` | float (optional) | overall gradient norm |
 | `grad_norm_text_encoder` | float (optional) | gradient norm, single/shared text encoder |

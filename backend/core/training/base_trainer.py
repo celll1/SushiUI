@@ -680,6 +680,11 @@ class BaseTrainer(ABC):
         # Batch DB commits every N steps instead of every step
         self._metrics_buffer = []
         self._metrics_flush_interval = 10  # Flush every 10 steps (configurable)
+        # Bespoke per-step scalar metrics (arch/method-specific) accumulated by
+        # log_extra_metric() and captured into each metrics-buffer row as a
+        # {name: float} dict (TrainingMetrics.extra_metrics JSON). Cleared after
+        # each capture so a metric emitted only every N steps never goes stale.
+        self._extra_metrics = {}
         # Epoch / resume-session tags recorded with each metric (for the UI's
         # epoch-boundary lines and resume markers). resume_seq is recomputed at
         # run start; _current_epoch is updated in the epoch loop.
@@ -1333,7 +1338,6 @@ class BaseTrainer(ABC):
         """
         self.repa_enable = bool(self.config.get("repa_enable", False))
         self._repa_moved = False
-        self._minit2i_last_repa_loss = None
         if not self.repa_enable:
             return
 
@@ -9851,6 +9855,10 @@ class BaseTrainer(ABC):
                         _gen_loss = getattr(self, "_last_gen_region_loss", None)
                         if _gen_loss is not None:
                             self.writer.add_scalar("train/gen_loss", _gen_loss, global_step)
+                            # Route into the generic extra-metrics channel so it
+                            # is persisted to DB + charted (captured by the
+                            # _log_metrics_to_db call just below, same step).
+                            self.log_extra_metric("gen_loss", _gen_loss)
                             try:
                                 import json as _json
                                 with open(self.output_dir / "gen_region_loss.jsonl", "a") as _gf:
@@ -10442,6 +10450,28 @@ class BaseTrainer(ABC):
 
         return total_grad_norm, text_encoder_grad_norm, text_encoder_1_grad_norm, text_encoder_2_grad_norm, unet_grad_norm, vision_encoder_grad_norm
 
+    def log_extra_metric(self, name: str, value):
+        """Record a bespoke, arch/method-specific per-step scalar metric.
+
+        This is the SINGLE producer hook for optional metrics that are not
+        universal across trainers (e.g. REPA alignment for MiniT2I, the
+        generate-region-only MSE for outpaint ControlNet). The value is routed
+        generically into TrainingMetrics.extra_metrics (a {name: float} JSON
+        dict) and surfaced on the loss chart via
+        core.training.metric_registry.EXTRA_METRIC_DEFS — so a new metric needs
+        no DB column, no API/param threading, and no chart change.
+
+        Non-finite values (NaN/inf) are dropped: SQLite's JSON1 functions reject
+        the non-standard ``NaN`` token json.dumps would emit.
+        """
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(v):
+            return
+        self._extra_metrics[name] = v
+
     def _log_metrics_to_db(
         self,
         step: int,
@@ -10537,6 +10567,11 @@ class BaseTrainer(ABC):
                 existing_entry['param_cumulative_drift_te2'] = param_cumulative_drift_te2
             if param_cumulative_drift_ve is not None:
                 existing_entry['param_cumulative_drift_ve'] = param_cumulative_drift_ve
+            # Merge any bespoke metrics accumulated for this same step (per key),
+            # then clear the accumulator so it isn't re-applied on a later call.
+            if self._extra_metrics:
+                existing_entry['extra'] = {**(existing_entry.get('extra') or {}), **self._extra_metrics}
+                self._extra_metrics = {}
         else:
             # New step: add to buffer. epoch/resume_seq are run-context attributes
             # (set in the epoch loop / at run start) rather than per-call args, so
@@ -10547,10 +10582,11 @@ class BaseTrainer(ABC):
                 'resume_seq': getattr(self, 'resume_seq', 0),
                 'loss': loss,
                 'recon_loss': recon_loss,
-                # REPA alignment loss (MiniT2I only): a run-context attribute set by
-                # train_step_minit2i, mirroring the epoch/resume_seq pattern above so
-                # the many _log_metrics_to_db call sites stay unchanged. None otherwise.
-                'repa_loss': getattr(self, '_minit2i_last_repa_loss', None),
+                # Bespoke arch/method-specific scalars (REPA, outpaint gen_loss, …)
+                # accumulated via log_extra_metric() this step. Captured by value;
+                # the accumulator is cleared below so metrics emitted only some
+                # steps never carry stale values forward.
+                'extra': dict(self._extra_metrics) if self._extra_metrics else None,
                 'learning_rate': learning_rate,
                 'grad_norm': grad_norm,
                 'grad_norm_text_encoder': grad_norm_text_encoder,
@@ -10567,6 +10603,9 @@ class BaseTrainer(ABC):
                 'param_cumulative_drift_te2': param_cumulative_drift_te2,
                 'param_cumulative_drift_ve': param_cumulative_drift_ve,
             })
+            # Reset the per-step extra-metric accumulator now that it is captured.
+            if self._extra_metrics:
+                self._extra_metrics = {}
 
         # Only flush when buffer is full or force_flush is requested
         should_flush = force_flush or len(self._metrics_buffer) >= self._metrics_flush_interval
@@ -10608,7 +10647,7 @@ class BaseTrainer(ABC):
                 m_step = metrics['step']
                 m_loss = metrics['loss']
                 m_recon_loss = metrics['recon_loss']
-                m_repa_loss = metrics.get('repa_loss')
+                m_extra = metrics.get('extra')
                 m_learning_rate = metrics['learning_rate']
                 m_grad_norm = metrics['grad_norm']
                 m_grad_norm_te = metrics['grad_norm_text_encoder']
@@ -10637,8 +10676,10 @@ class BaseTrainer(ABC):
                         existing.loss = m_loss
                     if m_recon_loss is not None:
                         existing.recon_loss = m_recon_loss
-                    if m_repa_loss is not None:
-                        existing.repa_loss = m_repa_loss
+                    if m_extra:
+                        # Reassign a NEW dict so SQLAlchemy sees the mutation
+                        # (in-place edits of a JSON column are not tracked).
+                        existing.extra_metrics = {**(existing.extra_metrics or {}), **m_extra}
                     if m_learning_rate is not None:
                         existing.learning_rate = m_learning_rate
                     if m_grad_norm is not None:
@@ -10679,7 +10720,7 @@ class BaseTrainer(ABC):
                         resume_seq=metrics.get('resume_seq', 0),
                         loss=m_loss if m_loss is not None else 0.0,
                         recon_loss=m_recon_loss if m_recon_loss is not None else 0.0,
-                        repa_loss=m_repa_loss,
+                        extra_metrics=(m_extra or None),
                         learning_rate=m_learning_rate if m_learning_rate is not None else 0.0,
                         grad_norm=m_grad_norm,
                         grad_norm_text_encoder=m_grad_norm_te,
@@ -10713,7 +10754,7 @@ class BaseTrainer(ABC):
                         step=latest['step'],
                         loss=latest['loss'],
                         recon_loss=latest['recon_loss'],
-                        repa_loss=latest.get('repa_loss'),
+                        extra=latest.get('extra'),
                         learning_rate=latest['learning_rate'],
                         grad_norm=latest['grad_norm'],
                         grad_norm_text_encoder=latest['grad_norm_text_encoder'],

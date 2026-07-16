@@ -25,16 +25,22 @@ class BaseControlNetAdapter(ABC):
     and checkpoint saving logic.
     """
 
-    def __init__(self, trainer, controlnet_type: str = "standard"):
+    def __init__(self, trainer, controlnet_type: str = "standard", conditioning_channels: int = 3):
         """
         Initialize adapter.
 
         Args:
             trainer: Parent ControlNetTrainer instance
             controlnet_type: "standard" (diffusers ControlNetModel) or "lllite" (sd-scripts compatible)
+            conditioning_channels: Number of channels in the ControlNet conditioning image.
+                3 (default) for a normal RGB control image; 4 for the outpaint-native
+                mode (crop RGB + binary known-mask channel). ControlNetModel.from_unet
+                freshly-inits the conditioning-embedding conv for the requested channel
+                count regardless of load_weights_from_unet, so 4-ch adds no init cost.
         """
         self.trainer = trainer
         self.controlnet_type = controlnet_type
+        self.conditioning_channels = int(conditioning_channels)
 
     @abstractmethod
     def create_controlnet(

@@ -4253,6 +4253,7 @@ class BaseTrainer(ABC):
                 lens_latent_shape=b["lens_latent_shape"],
                 mnt_repa_pixels=leaves["mnt_repa_pixels"],
                 mnt_time_ids=b["mnt_time_ids"][lo:hi] if b["mnt_time_ids"] is not None else None,
+                loss_weight_maps_batch=b["loss_weight_maps_batch"][lo:hi] if b.get("loss_weight_maps_batch") is not None else None,
                 loss_scale=w / eff_bs,
             )
             for n, leaf in leaves.items():
@@ -4285,6 +4286,7 @@ class BaseTrainer(ABC):
         mnt_repa_pixels: Optional[torch.Tensor] = None,
         mnt_time_ids: Optional[torch.Tensor] = None,
         effective_batch_size: Optional[int] = None,
+        loss_weight_maps_batch: Optional[torch.Tensor] = None,
     ) -> Tuple[float, float, float, bool]:
         """
         Execute forward + backward pass with OOM recovery via batch splitting.
@@ -4306,6 +4308,8 @@ class BaseTrainer(ABC):
             condition_images_batch: ControlNet condition images
             reference_latents_nested: Reference latents for FLUX.2
             min_split_batch_size: Minimum batch size (stop splitting below this)
+            loss_weight_maps_batch: Outpaint-mode per-item latent-space loss weight maps
+                [B, 1, H/8, W/8] (None outside outpaint conditioning_mode)
 
         Returns:
             Tuple of (loss_value, pred_loss_value, recon_loss_value, cuda_error_skip) as Python floats
@@ -4329,7 +4333,7 @@ class BaseTrainer(ABC):
             alphas_cumprod_cached=alphas_cumprod_cached, use_condition_images=use_condition_images,
             condition_images_batch=condition_images_batch, reference_latents_nested=reference_latents_nested,
             lens_latent_shape=lens_latent_shape, mnt_repa_pixels=mnt_repa_pixels,
-            mnt_time_ids=mnt_time_ids,
+            mnt_time_ids=mnt_time_ids, loss_weight_maps_batch=loss_weight_maps_batch,
         )
 
         _disp_cm, _disp_info = self._activation_dispatch_begin(mnt_latents)
@@ -4631,6 +4635,7 @@ class BaseTrainer(ABC):
         lens_latent_shape: Optional[Tuple[int, int]] = None,
         mnt_repa_pixels: Optional[torch.Tensor] = None,
         mnt_time_ids: Optional[torch.Tensor] = None,
+        loss_weight_maps_batch: Optional[torch.Tensor] = None,
         loss_scale: float = 1.0,
     ) -> Tuple[float, float, float]:
         """
@@ -4824,6 +4829,7 @@ class BaseTrainer(ABC):
                 timesteps=timesteps,
                 profile_vram=self.debug_vram,
                 alphas_cumprod_cached=alphas_cumprod_cached,
+                loss_weight_map=loss_weight_maps_batch,
             )
         else:
             # SD1.5/SDXL — P6a: route via the arch handler (registry dispatch).
@@ -4919,6 +4925,7 @@ class BaseTrainer(ABC):
         timesteps: Optional[torch.Tensor] = None,
         profile_vram: bool = False,
         alphas_cumprod_cached: Optional[torch.Tensor] = None,
+        loss_weight_map: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, float, float]:
         """
         Perform single ControlNet training step (SD1.5/SDXL).
@@ -4939,6 +4946,9 @@ class BaseTrainer(ABC):
             timesteps: Optional timesteps tensor
             profile_vram: If True, print VRAM usage
             alphas_cumprod_cached: Pre-cached alphas_cumprod on GPU
+            loss_weight_map: Optional per-sample latent-space loss weight
+                [B, 1, H, W] (outpaint conditioning_mode only). None (default)
+                reproduces the unweighted loss exactly.
 
         Returns:
             (loss_tensor, pred_loss_value, recon_loss_value)
@@ -5136,6 +5146,12 @@ class BaseTrainer(ABC):
 
         # Calculate loss (always in fp32)
         loss_per_element = F.mse_loss(model_pred.float(), target.float(), reduction="none")
+        if loss_weight_map is not None:
+            # Outpaint conditioning_mode: down-weight the KNOWN region and keep the
+            # GENERATE region at full weight (see condition-load branch that builds
+            # this map). Broadcasts [B,1,H,W] over [B,C,H,W]. None (default,
+            # non-outpaint) skips this entirely -> unweighted loss unchanged.
+            loss_per_element = loss_per_element * loss_weight_map.to(loss_per_element)
         loss_per_sample = loss_per_element.mean([1, 2, 3])
 
         # Apply Min-SNR gamma weighting
@@ -7602,9 +7618,12 @@ class BaseTrainer(ABC):
                     print(f"{self.log_prefix} [DanbooruAug] Disabled: requires "
                           f"latent_encoding_mode swap_onthefly/onthefly_gpu "
                           f"(got {latent_encoding_mode}).")
-                elif getattr(self, "use_condition_images", False):
+                elif getattr(self, "use_condition_images", False) and not getattr(self, "_is_outpaint_mode", False):
                     # ControlNet condition-image training needs a paired condition
                     # image per sample, which Danbooru-injected samples don't have.
+                    # Outpaint conditioning_mode is exempt: its condition is built
+                    # from each item's OWN image (no paired dataset), so a
+                    # Danbooru-injected sample is just as usable as any other item.
                     print(f"{self.log_prefix} [DanbooruAug] Disabled: not supported "
                           f"with ControlNet condition-image training.")
                 else:
@@ -8829,6 +8848,7 @@ class BaseTrainer(ABC):
                     auxiliary_data_list = []  # Unified: attention_mask (Z-Image), pooled_embeddings (SDXL), or None (SD1.5)
                     reference_latents_list = []  # FLUX.2 reference image conditioning
                     condition_images_list = []  # ControlNet condition images [B, 3, H, W]
+                    loss_weight_maps_list = []  # Outpaint-mode per-item latent-space loss weight [1,1,H/8,W/8] or None (parallel to condition_images_list)
                     repa_pixels_list = []  # REPA clean-image S x S [-1,1] tensors (MiniT2I, parallel to latents_list)
                     _repa_active = bool(getattr(self, "repa_enable", False)) and self.is_minit2i
                     # SDXL micro-conditioning: per-item (orig_h,orig_w,crop_top,crop_left,
@@ -9164,23 +9184,95 @@ class BaseTrainer(ABC):
                         # Condition images stay in pixel space [0, 1] (not VAE-encoded)
                         use_condition_images = getattr(self, 'use_condition_images', False)
                         if use_condition_images:
-                            reference_images = item.get("reference_images", [])
-                            if reference_images:
+                            if getattr(self, '_is_outpaint_mode', False):
+                                # Outpaint-native conditioning (PART B): self-supervised
+                                # crop->full. Build the conditioning from the item's OWN
+                                # image (no paired reference_images dataset) -- reference
+                                # images are ignored entirely in this mode.
                                 try:
-                                    # Use first reference image only
-                                    cond_image = Image.open(reference_images[0]).convert("RGB")
-                                    # Resize to match target dimensions
-                                    cond_image = cond_image.resize((width, height), Image.LANCZOS)
-                                    # Convert to tensor [0, 1] range: [1, 3, H, W]
-                                    import torchvision.transforms.functional as TF
-                                    cond_tensor = TF.to_tensor(cond_image).unsqueeze(0)  # [1, 3, H, W]
+                                    from core.utils.crop_mask_condition import build_crop_mask_condition
+                                    # Danbooru-injected items (fake "danbooru://" image_path,
+                                    # no real file on disk) carry their pixels in
+                                    # _danbooru_image_bytes instead -- same convention as the
+                                    # latent-load branch above. NOTE: onthefly_gpu latent
+                                    # loading nulls this after its own use (same item, earlier
+                                    # in this per-item loop), so it is only available here for
+                                    # modes that don't consume it first.
+                                    _danb_b = item.get("_danbooru_image_bytes")
+                                    if _danb_b is not None:
+                                        full_image = Image.open(BytesIO(_danb_b)).convert("RGB").resize(
+                                            (width, height), Image.LANCZOS
+                                        )
+                                    else:
+                                        full_image = Image.open(image_path).convert("RGB").resize(
+                                            (width, height), Image.LANCZOS
+                                        )
+                                    full_np = np.array(full_image)
+                                    rect = self.get_outpaint_planner().rect_for(epoch, image_path, width, height)
+                                    cond_np, gate_np = build_crop_mask_condition(full_np, rect, (width, height))
+                                    if not self.outpaint_mask_channel:
+                                        cond_np = cond_np[:, :, :3]
+                                    cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).float()  # [1, C, H, W]
+
+                                    # Loss weight map (latent space [1,1,H/8,W/8]): the
+                                    # KNOWN region (inside rect, gate==0) is down-weighted
+                                    # to outpaint_known_loss_weight; the GENERATE region
+                                    # (gate==1) stays at full weight 1.0. Derived from the
+                                    # same gate the conditioning was built from (pixel-exact
+                                    # agreement), then downsampled with the codebase's
+                                    # standard mask->latent convention (nearest, /8) --
+                                    # see custom_sampling.py's inpaint mask_latent build.
+                                    # Computed BEFORE the two list appends so an exception
+                                    # here can never desync condition_images_list from
+                                    # loss_weight_maps_list (both append together, below).
+                                    _F = torch.nn.functional
+                                    known_w = float(self.outpaint_known_loss_weight)
+                                    gate_t = torch.from_numpy(gate_np).unsqueeze(0).unsqueeze(0).float()  # [1,1,H,W]
+                                    weight_t = known_w + (1.0 - known_w) * gate_t
+                                    weight_latent = _F.interpolate(
+                                        weight_t, size=(height // 8, width // 8), mode="nearest"
+                                    )
+                                    # Optional seam-ring boost: add extra loss weight on the
+                                    # GENERATE-side latent cells immediately adjacent to the
+                                    # known region (the boundary the model must render a
+                                    # coherent continuation across). 0 (default) = no boost.
+                                    seam_boost = float(self.outpaint_seam_loss_boost)
+                                    if seam_boost > 0.0:
+                                        known_latent = _F.interpolate(
+                                            (1.0 - gate_t), size=(height // 8, width // 8), mode="nearest"
+                                        )  # 1 on known, 0 on generate (latent res, binary)
+                                        dil = _F.max_pool2d(known_latent, kernel_size=3, stride=1, padding=1)
+                                        ring = (dil > 0.5).float() * (known_latent <= 0.5).float()  # generate cells touching known
+                                        weight_latent = weight_latent + seam_boost * ring
+
+                                    # Both appends adjacent -> lists stay length-aligned.
                                     condition_images_list.append(cond_tensor)
+                                    loss_weight_maps_list.append(weight_latent)
                                 except Exception as e:
-                                    print(f"{self.log_prefix} WARNING: Failed to load condition image {reference_images[0]}: {e}")
+                                    print(f"{self.log_prefix} WARNING: Failed to build outpaint condition for {image_path}: {e}")
                                     condition_images_list.append(None)
+                                    loss_weight_maps_list.append(None)
                             else:
-                                # No reference image - mark as None (will skip this item)
-                                condition_images_list.append(None)
+                                reference_images = item.get("reference_images", [])
+                                if reference_images:
+                                    try:
+                                        # Use first reference image only
+                                        cond_image = Image.open(reference_images[0]).convert("RGB")
+                                        # Resize to match target dimensions
+                                        cond_image = cond_image.resize((width, height), Image.LANCZOS)
+                                        # Convert to tensor [0, 1] range: [1, 3, H, W]
+                                        import torchvision.transforms.functional as TF
+                                        cond_tensor = TF.to_tensor(cond_image).unsqueeze(0)  # [1, 3, H, W]
+                                        condition_images_list.append(cond_tensor)
+                                        loss_weight_maps_list.append(None)
+                                    except Exception as e:
+                                        print(f"{self.log_prefix} WARNING: Failed to load condition image {reference_images[0]}: {e}")
+                                        condition_images_list.append(None)
+                                        loss_weight_maps_list.append(None)
+                                else:
+                                    # No reference image - mark as None (will skip this item)
+                                    condition_images_list.append(None)
+                                    loss_weight_maps_list.append(None)
 
                     # Skip batch if corrupted image was detected
                     if batch_has_corrupted_image:
@@ -9191,6 +9283,8 @@ class BaseTrainer(ABC):
                             del reference_latents_list
                         if condition_images_list:
                             del condition_images_list
+                        if loss_weight_maps_list:
+                            del loss_weight_maps_list
                         # Update global_step for skipped batch (to maintain step counting)
                         # Each batch would have processed multi_noise_timesteps steps
                         global_step += multi_noise_timesteps
@@ -9217,6 +9311,8 @@ class BaseTrainer(ABC):
                                 reference_latents_list = [reference_latents_list[i] for i in valid_indices]
                             if condition_images_list:
                                 condition_images_list = [condition_images_list[i] for i in valid_indices]
+                            if loss_weight_maps_list:
+                                loss_weight_maps_list = [loss_weight_maps_list[i] for i in valid_indices]
                             if repa_pixels_list:
                                 repa_pixels_list = [repa_pixels_list[i] for i in valid_indices]
                             if micro_cond_list:
@@ -9339,11 +9435,21 @@ class BaseTrainer(ABC):
 
                     # Prepare condition images batch for ControlNet training
                     condition_images_batch = None
+                    loss_weight_maps_batch = None
                     use_condition_images = getattr(self, 'use_condition_images', False)
                     if use_condition_images and condition_images_list:
                         # Only use batch if ALL items have valid condition images
                         if all(ci is not None for ci in condition_images_list):
                             condition_images_batch = torch.cat(condition_images_list, dim=0)  # [B, 3, H, W]
+                            # Outpaint mode: parallel per-item latent-space loss weight
+                            # maps (built in lockstep with condition_images_list in the
+                            # condition-load branch above), so a successful condition
+                            # always has a matching weight map here. Non-outpaint modes
+                            # never populate loss_weight_maps_list with non-None entries,
+                            # so this stays None for them (unchanged behavior).
+                            if getattr(self, '_is_outpaint_mode', False) and loss_weight_maps_list \
+                                    and all(w is not None for w in loss_weight_maps_list):
+                                loss_weight_maps_batch = torch.cat(loss_weight_maps_list, dim=0)  # [B, 1, H/8, W/8]
                         else:
                             # Mixed batch (some without condition images) - skip this batch
                             print(f"{self.log_prefix} WARNING: Some items in batch missing condition images, skipping batch")
@@ -9351,6 +9457,8 @@ class BaseTrainer(ABC):
                             if reference_latents_list:
                                 del reference_latents_list
                             del condition_images_list
+                            if loss_weight_maps_list:
+                                del loss_weight_maps_list
                             continue
 
                     # Free individual item lists (no longer needed, batch tensors are created)
@@ -9359,6 +9467,8 @@ class BaseTrainer(ABC):
                         del reference_latents_list
                     if condition_images_list:
                         del condition_images_list
+                    if loss_weight_maps_list:
+                        del loss_weight_maps_list
 
                     # Collect batch captions for debug (done once, outside MNT loop)
                     batch_captions = [item.get("caption", "") for item, dataset in batch]
@@ -9619,6 +9729,7 @@ class BaseTrainer(ABC):
                                 lens_latent_shape=batch_lens_latent_shape,
                                 mnt_repa_pixels=mnt_repa_pixels,
                                 mnt_time_ids=mnt_time_ids,
+                                loss_weight_maps_batch=loss_weight_maps_batch,
                             )
                         except Exception as batch_error:
                             # Final safety net: if all OOM recovery attempts failed,

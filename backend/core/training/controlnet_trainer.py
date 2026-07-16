@@ -277,6 +277,14 @@ class ControlNetTrainer(BaseTrainer):
         if not hasattr(self, '_condition_image_cache'):
             self._condition_image_cache = {}  # path -> PIL.Image
 
+        # Outpaint conditioning mode has no paired condition image: its 4-channel
+        # crop+mask conditioning is built from each item's OWN image at train time
+        # (build_crop_mask_condition) and is not yet wired for sample generation.
+        # Return None so generate_sample falls back to the base model (no ControlNet)
+        # instead of feeding a 3-channel RGB image to a 4-channel ControlNet.
+        if getattr(self, "_is_outpaint_mode", False):
+            return None
+
         # Option 1: Per-prompt condition image path
         if condition_image_path:
             # Check cache
@@ -303,7 +311,9 @@ class ControlNetTrainer(BaseTrainer):
         datasets = getattr(self, '_training_datasets', None)
         if datasets:
             for ds in datasets:
-                items = ds.get("items", [])
+                # _training_datasets entries are TrainRunnerDataset objects (with an
+                # .items attribute), not dicts -- support both.
+                items = ds.get("items", []) if isinstance(ds, dict) else getattr(ds, "items", [])
                 for item in items:
                     ref_images = item.get("reference_images", [])
                     if ref_images:

@@ -4759,7 +4759,10 @@ def custom_inpaint_sampling_loop(
     # multiply the relaxation dose.
     _bdr_state = None
     _bdr_visit_counts = {}
-    if outpaint_noise_init and boundary_relax_strength > 0.0 and not is_inpaint_unet:
+    # NOT gated on outpaint_noise_init: serves the OUTPAINT B1 x0-projection path
+    # AND normal inpaint (where BDR soft-pins the band in the post-step noised-K
+    # keep blend below). byte-identical when strength == 0.
+    if boundary_relax_strength > 0.0 and not is_inpaint_unet:
         _bdr_state = _bdr_precompute(
             mask_latent, image_latents, scheduler, num_inference_steps,
             width=boundary_relax_width,
@@ -6386,8 +6389,24 @@ def custom_inpaint_sampling_loop(
                         noise_timestep.unsqueeze(0) if noise_timestep.dim() == 0 else noise_timestep
                     )
 
+                # BOUNDARY DETERMINISM RELAXATION for normal INPAINT: soft-pin
+                # the SSC-salient known-side seam band instead of hard-blending
+                # it, so the adjacent known-side latent can bend to meet the
+                # continuation. init_latents_proper is the NOISED K (add_noise
+                # above), which already carries the stochasticity, so inpaint BDR
+                # only needs the graded mask (no separate noise term). Annealed
+                # soft->hard, keyed on the LOGICAL step; deep keep (b=0) and gen
+                # (M=1) unchanged; byte-identical when _bdr_state is None.
+                _ip_mask = mask_latent
+                if _bdr_state is not None:
+                    _ip_sigma = _outpaint_step_sigma(scheduler, t, t_start + i)
+                    _ip_om = _bdr_omega(_ip_sigma, _bdr_state["sigma_F"], _bdr_state["sigma_E"])
+                    if _ip_om > 0.0:
+                        _ip_a = min(float(boundary_relax_strength) * _ip_om, 1.0)
+                        _ip_mask = mask_latent + (1 - mask_latent) * (_ip_a * _bdr_state["b"])
+
                 # Blend: preserve original outside mask (mask=0), use generated inside mask (mask=1)
-                latents = (1 - mask_latent) * init_latents_proper + mask_latent * latents
+                latents = (1 - _ip_mask) * init_latents_proper + _ip_mask * latents
 
                 # Apply same mask blending to pred_original_sample for consistent x0 preview
                 # Without this, the preview shows unblended generation (incorrect outside mask area)

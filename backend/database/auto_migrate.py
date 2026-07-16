@@ -105,6 +105,10 @@ def auto_migrate(engine, base, db_name="database"):
                 # CREATE.  Each statement is idempotent so reruns are no-ops.
                 _reconcile_indices(conn, db_name, table_name, applied)
 
+                # One-shot data backfills for columns that were replaced by a
+                # generic channel (idempotent; skipped once nothing to move).
+                _backfill_data(conn, db_name, table_name, applied)
+
         return applied
 
     except Exception as e:
@@ -112,6 +116,37 @@ def auto_migrate(engine, base, db_name="database"):
         import traceback
         traceback.print_exc()
         return []
+
+
+def _backfill_data(conn, db_name: str, table_name: str, applied: list) -> None:
+    """Move data from legacy dedicated columns into their generic replacement.
+
+    training_metrics.repa_loss (a former dedicated column) is now stored in the
+    generic ``extra_metrics`` JSON dict under the ``repa_loss`` key. Old DBs
+    still carry the orphaned column with historical values; copy them once so
+    MiniT2I runs trained before the change still chart. Idempotent: only rows
+    whose extra_metrics does not yet hold repa_loss are touched, and the whole
+    step is skipped when the legacy column is gone (fresh DBs never had it).
+    """
+    if table_name != "training_metrics":
+        return
+    try:
+        cols = get_db_columns(conn.engine, table_name)
+        if "repa_loss" not in cols or "extra_metrics" not in cols:
+            return  # Fresh DB (no legacy column) or column-add failed — nothing to do.
+        result = conn.execute(text(
+            "UPDATE training_metrics "
+            "SET extra_metrics = json_set(coalesce(extra_metrics, '{}'), '$.repa_loss', repa_loss) "
+            "WHERE repa_loss IS NOT NULL "
+            "AND json_extract(coalesce(extra_metrics, '{}'), '$.repa_loss') IS NULL"
+        ))
+        conn.commit()
+        moved = getattr(result, "rowcount", -1)
+        if moved and moved > 0:
+            applied.append(f"{table_name}.repa_loss->extra_metrics ({moved} rows)")
+            print(f"[AutoMigrate] {db_name}: backfilled repa_loss into extra_metrics ({moved} rows)")
+    except OperationalError as e:
+        print(f"[AutoMigrate] {db_name}: repa_loss backfill skipped: {e}")
 
 
 def _reconcile_indices(conn, db_name: str, table_name: str, applied: list) -> None:

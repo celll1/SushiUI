@@ -333,7 +333,6 @@ def train_step(
     # projector. Added to the backward loss; pred/recon above stay diffusion-only.
     # The tap (transformer.model.net._repa_tap_out) is grad-connected (it is the
     # double-block loop output, gradient-checkpoint safe).
-    trainer._minit2i_last_repa_loss = None
     if getattr(trainer, "repa_enable", False) and repa_pixels is not None:
         trainer._ensure_repa_on_device()
         net = trainer.transformer.model.net
@@ -350,7 +349,7 @@ def train_step(
             )
             rloss = _repa_loss_fn(tap, targets, trainer.repa_projector)
             loss = loss + trainer.repa_weight * rloss
-            trainer._minit2i_last_repa_loss = float(rloss.detach().item())
+            trainer.log_extra_metric("repa_loss", float(rloss.detach().item()))
             del targets
         # Release the captured graph reference (avoid retaining the activation graph).
         net._repa_tap_out = None

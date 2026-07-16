@@ -8748,6 +8748,46 @@ components:
         condition_cache_mode:
           type: 'string'
           default: 'on_the_fly'
+        conditioning_mode:
+          type: 'string'
+          description: "ControlNet conditioning mode. 'preprocessor' (default) uses paired/auxiliary-preprocessor condition images; 'outpaint' builds a self-supervised crop+mask conditioning from each item's own image (crop->full)."
+          default: 'preprocessor'
+          example: 'outpaint'
+        outpaint_crop_min_area:
+          type: 'number'
+          description: "Outpaint conditioning: minimum area fraction of the canvas for the sampled known-region crop."
+          default: 0.15
+          example: 0.15
+        outpaint_crop_max_area:
+          type: 'number'
+          description: "Outpaint conditioning: maximum area fraction of the canvas for the sampled known-region crop."
+          default: 0.8
+          example: 0.8
+        outpaint_edge_anchor_prob:
+          type: 'number'
+          description: "Outpaint conditioning: probability the known-region crop is flush against a canvas edge (one-directional extend)."
+          default: 0.34
+          example: 0.34
+        outpaint_corner_anchor_prob:
+          type: 'number'
+          description: "Outpaint conditioning: probability the known-region crop is flush into a canvas corner (two-directional extend)."
+          default: 0.33
+          example: 0.33
+        outpaint_mask_channel:
+          type: 'boolean'
+          description: "Outpaint conditioning: include the binary known-mask as a 4th conditioning channel (crop RGB + mask). False = 3-channel RGB only (ablation)."
+          default: true
+          example: true
+        outpaint_known_loss_weight:
+          type: 'number'
+          description: "Outpaint conditioning: loss weight applied to the KNOWN (given-crop) region; the generate region stays at 1.0. Down-weighting focuses capacity on the continuation."
+          default: 0.3
+          example: 0.3
+        outpaint_seam_loss_boost:
+          type: 'number'
+          description: "Outpaint conditioning: additional loss weight added on the generate-side cells adjacent to the known/unknown boundary. 0 = off."
+          default: 0.0
+          example: 0.0
         rescan_before_training:
           type: 'object'
           additionalProperties: true

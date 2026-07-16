@@ -2676,6 +2676,16 @@ def main():
             condition_preprocessors = controlnet_config.get('condition_preprocessors')
             condition_cache_mode = controlnet_config.get('condition_cache_mode', 'on_the_fly')
 
+            # Outpaint-native conditioning (PART B)
+            conditioning_mode = controlnet_config.get('conditioning_mode', 'preprocessor')
+            outpaint_crop_min_area = controlnet_config.get('outpaint_crop_min_area', 0.15)
+            outpaint_crop_max_area = controlnet_config.get('outpaint_crop_max_area', 0.8)
+            outpaint_edge_anchor_prob = controlnet_config.get('outpaint_edge_anchor_prob', 0.34)
+            outpaint_corner_anchor_prob = controlnet_config.get('outpaint_corner_anchor_prob', 0.33)
+            outpaint_mask_channel = controlnet_config.get('outpaint_mask_channel', True)
+            outpaint_known_loss_weight = controlnet_config.get('outpaint_known_loss_weight', 0.3)
+            outpaint_seam_loss_boost = controlnet_config.get('outpaint_seam_loss_boost', 0.0)
+
             # Prompt chunking settings
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
             max_prompt_chunks = train_config.get('max_prompt_chunks', 0)
@@ -2711,6 +2721,14 @@ def main():
                 lllite_rank=lllite_rank,
                 condition_preprocessors=condition_preprocessors,
                 condition_cache_mode=condition_cache_mode,
+                conditioning_mode=conditioning_mode,
+                outpaint_crop_min_area=outpaint_crop_min_area,
+                outpaint_crop_max_area=outpaint_crop_max_area,
+                outpaint_edge_anchor_prob=outpaint_edge_anchor_prob,
+                outpaint_corner_anchor_prob=outpaint_corner_anchor_prob,
+                outpaint_mask_channel=outpaint_mask_channel,
+                outpaint_known_loss_weight=outpaint_known_loss_weight,
+                outpaint_seam_loss_boost=outpaint_seam_loss_boost,
                 learning_rate=train_config.get('lr', 1e-4),
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,

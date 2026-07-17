@@ -1018,6 +1018,11 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "outpaint_mask_channel": True,
     "outpaint_known_loss_weight": 0.3,
     "outpaint_seam_loss_boost": 0.0,
+    # False = current byte-identical behavior (weighted loss .mean() over all
+    # elements, so per-sample loss scale depends on rect area). True divides
+    # each sample's weighted loss by that sample's mean weight, decoupling
+    # per-sample scale from rect area.
+    "outpaint_loss_normalize": False,
     # Pre-flight dataset drift check + optional rescan.  4 modes:
     #   "off"   — skip entirely (default)
     #   "path"  — only detect added/missing files

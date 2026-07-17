@@ -9948,8 +9948,9 @@ class TrainingRunCreateRequest(BaseModel):
     outpaint_edge_anchor_prob: float = 0.34  # Probability of anchoring the crop to an edge
     outpaint_corner_anchor_prob: float = 0.33  # Probability of anchoring the crop to a corner
     outpaint_mask_channel: bool = True  # Include a known/unknown mask as an extra conditioning channel
-    outpaint_known_loss_weight: float = 0.3  # Loss weight applied to the known (non-outpainted) region
+    outpaint_known_loss_weight: float = Field(0.3, ge=0.0, lt=0.5)  # Loss weight applied to the known (non-outpainted) region; must stay below the gen-mask threshold (0.5)
     outpaint_seam_loss_boost: float = 0.0  # Additional loss weight applied at the known/unknown seam
+    outpaint_loss_normalize: bool = TRAINING_DEFAULTS["outpaint_loss_normalize"]  # Divide each sample's weighted loss by its mean weight (decouples loss scale from rect area)
     # sample_condition_image_path is now per-prompt in sample_prompts[].condition_image_path
     # Pre-flight: detect dataset drift + auto-rescan + cleanup orphan
     # latent cache.  Four modes (see core/training/dataset_drift.py):
@@ -10291,6 +10292,7 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "outpaint_mask_channel": ("network.controlnet",),
     "outpaint_known_loss_weight": ("network.controlnet",),
     "outpaint_seam_loss_boost": ("network.controlnet",),
+    "outpaint_loss_normalize": ("network.controlnet",),
     # train section with renamed key
     "total_steps": ("train", "steps"),
     "learning_rate": ("train", "lr"),
@@ -10306,7 +10308,7 @@ _CONTROLNET_ONLY_FIELDS = {
     "condition_preprocessors", "condition_cache_mode",
     "conditioning_mode", "outpaint_crop_min_area", "outpaint_crop_max_area",
     "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob", "outpaint_mask_channel",
-    "outpaint_known_loss_weight", "outpaint_seam_loss_boost",
+    "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_loss_normalize",
 }
 
 # Fields excluded from auto-extraction (they need special handling outside the schema loop)

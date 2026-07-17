@@ -3062,6 +3062,17 @@ class BaseTrainer(ABC):
             lrs.append(getattr(self, 'unet_lr', self.learning_rate))
             names.append("U-Net")
 
+        # ControlNetTrainer sets train_unet=False (it never trains the base UNet)
+        # but still creates a single optimizer group over ITS OWN module at
+        # unet_lr (see controlnet_sd15_adapter.py / controlnet_sdxl_adapter.py
+        # setup_trainable_parameters -> {"params": ..., "lr": self.trainer.unet_lr}).
+        # Without this entry the list stays empty for ControlNet runs and the
+        # resume LR-remap in train() falls through to its `else: new_lr =
+        # self.learning_rate` branch, silently overwriting the intended unet_lr.
+        if getattr(self, 'controlnet', None) is not None:
+            lrs.append(getattr(self, 'unet_lr', self.learning_rate))
+            names.append("ControlNet")
+
         if getattr(self, 'train_text_encoder', False):
             if getattr(self, 'text_encoder', None) is not None:
                 lrs.append(getattr(self, 'text_encoder_1_lr',
@@ -5044,14 +5055,19 @@ class BaseTrainer(ABC):
         # and is never moved back, so its first forward hits a cuda-vs-cpu addmm
         # mismatch. Ensure it is resident on the compute device before the
         # forward (a no-op once it is already there; cheap first-parameter
-        # device check keeps per-step overhead negligible).
-        if not is_lllite:
-            try:
-                _cn_first_param = next(controlnet_module.parameters())
-                if _cn_first_param.device != self.device:
-                    controlnet_module.to(self.device)
-            except StopIteration:
-                pass
+        # device check keeps per-step overhead negligible). This applies to BOTH
+        # standard ControlNet (forward below) AND LLLite (apply_patches below) --
+        # the LLLite module's Conv2d/Linear weights also inherit the UNet's
+        # device at creation time and are never moved by move_main_model_to_gpu/cpu
+        # (which only tracks unet/text_encoder/vae), so gating this on
+        # `not is_lllite` left LLLite's first apply_patches() on a possibly-CPU
+        # module while inputs are on self.device -> device-mismatch crash.
+        try:
+            _cn_first_param = next(controlnet_module.parameters())
+            if _cn_first_param.device != self.device:
+                controlnet_module.to(self.device)
+        except StopIteration:
+            pass
 
         if is_lllite:
             # LLLite mode: apply patches to UNet attention layers before forward
@@ -5188,6 +5204,18 @@ class BaseTrainer(ABC):
                 _denom = _gen_mask.sum() * float(loss_per_element.shape[1]) + 1e-8
                 self._last_gen_region_loss = float((loss_per_element * _gen_mask).sum() / _denom)
             loss_per_element = loss_per_element * _wm
+            # Opt-in (outpaint_loss_normalize, default False = unchanged behavior):
+            # loss_per_sample below is a plain .mean([1,2,3]) over ALL C*H*W
+            # elements, so the weighted sum gets diluted by the total pixel count
+            # regardless of how much of it is full-weight (generate) vs
+            # down-weighted (known) -- a larger generate-region rect (more
+            # full-weight pixels) yields a larger per-sample loss purely from
+            # area, not learning signal. When enabled, divide each sample's
+            # weighted loss by that sample's own mean weight so the reduction is
+            # effectively per-weighted-pixel and decoupled from rect size.
+            if getattr(self, 'outpaint_loss_normalize', False):
+                _sample_mean_w = _wm.mean(dim=[1, 2, 3], keepdim=True).clamp_min(1e-8)
+                loss_per_element = loss_per_element / _sample_mean_w
         else:
             self._last_gen_region_loss = None
         loss_per_sample = loss_per_element.mean([1, 2, 3])
@@ -7367,6 +7395,18 @@ class BaseTrainer(ABC):
                         print(f"{self.log_prefix} WARNING: Could not extract step number from loaded checkpoint: {checkpoint_path}")
                         checkpoint_step = 0
                     checkpoint_result = (checkpoint_path, checkpoint_step)
+                elif getattr(self, '_manages_own_resume', False):
+                    # Subclasses that manage their own checkpoint format (currently
+                    # ControlNetTrainer: directory saves for standard CN, adapter
+                    # .safetensors for LLLite) already ran their own resume-detection
+                    # in __init__ and left _loaded_checkpoint_path unset because
+                    # NOTHING was found there (a legitimate fresh run). Falling back
+                    # to find_latest_checkpoint() here would independently rescan
+                    # generic `*_step_*_state.json` sidecars and could restore
+                    # global_step/optimizer state onto the freshly-initialized
+                    # ControlNet weights (an orphaned state.json from a deleted/
+                    # differently-named checkpoint) -- start fresh instead.
+                    checkpoint_result = None
                 else:
                     # Fallback to find_latest_checkpoint (should not normally happen)
                     checkpoint_result = self.find_latest_checkpoint()
@@ -9497,6 +9537,12 @@ class BaseTrainer(ABC):
                             del condition_images_list
                             if loss_weight_maps_list:
                                 del loss_weight_maps_list
+                            # Update global_step for skipped batch (to maintain step counting),
+                            # consistent with the corrupted-image skip above -- both are
+                            # per-batch skips of what would have been multi_noise_timesteps
+                            # MNT iterations, so leaving this one un-advanced drifts
+                            # progress/resume totals relative to the other skip path.
+                            global_step += multi_noise_timesteps
                             continue
 
                     # Free individual item lists (no longer needed, batch tensors are created)

@@ -390,8 +390,15 @@ class OutpaintControlPlanner:
 
     Anchor modes (which teach the real outpaint geometry -- extend AWAY from what is
     given):
-      - interior: rect free-floating inside the canvas (extend in all directions)
-      - edge:     rect flush against one canvas edge (one-directional extend)
+      - border:   rect spans one FULL canvas axis (cw == W or ch == H) with a partial
+                  band on the other axis, flush to one edge -- the exact inverse of
+                  ``build_outpaint_canvas``'s single-direction extend (the dominant
+                  inference case); a small sub-fraction places the band interior
+                  (two-parallel-sides extend)
+      - interior: rect free-floating inside the canvas (extend in all directions;
+                  also covers the "frame"/all-around extend)
+      - edge:     rect flush against one canvas edge (one-directional extend, but
+                  NOT axis-spanning)
       - corner:   rect flush into one canvas corner (two-directional extend)
 
     This is a genuinely different sampling law from :class:`CropPlanner` (area-frac +
@@ -399,6 +406,22 @@ class OutpaintControlPlanner:
     than a config mode of CropPlanner; it deliberately shares only the determinism
     contract.
     """
+
+    # ---- Border/side mode probabilities (hardcoded; could be promoted to config
+    # params later -- param plumbing is intentionally NOT added here because the
+    # param surface is being edited in parallel elsewhere).
+    #
+    # BORDER_MODE_PROB: fraction of samples whose known rect spans one full canvas
+    # axis. Single-direction extend (known image flush across the entire width or
+    # height) is the canonical inference geometry, so it gets the single largest
+    # share; the remaining probability mass keeps the pre-existing edge/corner/
+    # interior partition intact (scaled by 1 - BORDER_MODE_PROB) so multi-direction
+    # extend stays well covered.
+    BORDER_MODE_PROB = 0.35
+    # Within border mode: probability the band is flush to one edge (single-direction
+    # extend). The remainder places the band interior along the partial axis, i.e.
+    # the two-parallel-sides extend case.
+    BORDER_FLUSH_PROB = 0.8
 
     def __init__(
         self,
@@ -435,12 +458,54 @@ class OutpaintControlPlanner:
         v = int(round(v / self.snap)) * self.snap
         return max(lo, min(hi, v))
 
+    def _border_rect(self, rng: random.Random, W: int, H: int) -> Tuple[int, int, int, int]:
+        """Known rect spanning one FULL canvas axis (cw == W or ch == H) with a partial
+        band on the other axis. Flush placement (BORDER_FLUSH_PROB) inverts
+        ``build_outpaint_canvas``'s single-direction extend: the known region is the
+        original image and the generate region is a border strip on the opposite side.
+        Interior placement covers the two-parallel-sides extend. Half-open rect,
+        strictly inside the canvas, always leaves a non-empty generate region."""
+        horizontal = rng.random() < 0.5  # True: cw == W (extend top/bottom)
+        # Band fraction on the partial axis. Since the other axis is full-span, this
+        # IS the area fraction, so area coverage stays within [min_area, max_area].
+        frac = rng.uniform(self.min_area, self.max_area)
+        if horizontal:
+            cw = W
+            ch = self._snap(int(round(frac * H)), self.snap, max(self.snap, H - self.snap))
+            if ch >= H:  # tiny-canvas guard (H <= snap): keep the generate region non-empty
+                ch = max(1, H - 1)
+            m = H - ch
+        else:
+            ch = H
+            cw = self._snap(int(round(frac * W)), self.snap, max(self.snap, W - self.snap))
+            if cw >= W:
+                cw = max(1, W - 1)
+            m = W - cw
+
+        if rng.random() < self.BORDER_FLUSH_PROB or m < 2 * self.snap:
+            # Single-direction extend: band flush to one edge, generate strip opposite.
+            off = 0 if rng.random() < 0.5 else m
+        else:
+            # Two-parallel-sides extend: band interior, generate strips on both sides
+            # (offset snapped into [snap, m - snap] so neither strip collapses).
+            off = self._snap(rng.randint(self.snap, m - self.snap), self.snap, m - self.snap)
+
+        if horizontal:
+            return (0, off, W, off + ch)
+        return (off, 0, off + cw, H)
+
     def rect_for(self, epoch: int, image_path: str, canvas_w: int, canvas_h: int) -> Tuple[int, int, int, int]:
         """Return the known-region rect (x0, y0, x1, y1) in canvas pixels, half-open.
         Pure function of (seed, epoch, image_path, canvas_w, canvas_h). Guarantees a
         non-empty generate region (the rect never covers the whole canvas)."""
         W, H = max(1, int(canvas_w)), max(1, int(canvas_h))
         rng = self._item_rng(epoch, image_path)
+
+        # Mode draw FIRST (fixed draw position for determinism): border/side mode
+        # produces a full-axis-spanning known rect matching the single-direction
+        # extend geometry used at inference (see class docstring).
+        if rng.random() < self.BORDER_MODE_PROB:
+            return self._border_rect(rng, W, H)
 
         area = rng.uniform(self.min_area, self.max_area) * (W * H)
         # Aspect around the canvas aspect with multiplicative jitter.

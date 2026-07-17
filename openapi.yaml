@@ -8798,14 +8798,21 @@ components:
           example: true
         outpaint_known_loss_weight:
           type: 'number'
-          description: "Outpaint conditioning: loss weight applied to the KNOWN (given-crop) region; the generate region stays at 1.0. Down-weighting focuses capacity on the continuation."
+          description: "Outpaint conditioning: loss weight applied to the KNOWN (given-crop) region; the generate region stays at 1.0. Down-weighting focuses capacity on the continuation. Must stay below 0.5 (the gen-region metric threshold); values outside [0.0, 0.5) are clamped."
           default: 0.3
+          minimum: 0.0
+          exclusiveMaximum: 0.5
           example: 0.3
         outpaint_seam_loss_boost:
           type: 'number'
           description: "Outpaint conditioning: additional loss weight added on the generate-side cells adjacent to the known/unknown boundary. 0 = off."
           default: 0.0
           example: 0.0
+        outpaint_loss_normalize:
+          type: 'boolean'
+          description: "Outpaint conditioning: when true, divides each sample's weighted loss by that sample's own mean loss-weight before averaging, decoupling per-sample loss scale from the known/generate rect area. False (default) keeps the existing behavior (weighted loss averaged over all elements)."
+          default: false
+          example: false
         rescan_before_training:
           type: 'object'
           additionalProperties: true

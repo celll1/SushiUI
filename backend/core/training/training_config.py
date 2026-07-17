@@ -765,6 +765,7 @@ class TrainingConfigGenerator:
         controlnet_network_config["outpaint_mask_channel"] = p.get("outpaint_mask_channel", True)
         controlnet_network_config["outpaint_known_loss_weight"] = p.get("outpaint_known_loss_weight", 0.3)
         controlnet_network_config["outpaint_seam_loss_boost"] = p.get("outpaint_seam_loss_boost", 0.0)
+        controlnet_network_config["outpaint_loss_normalize"] = p.get("outpaint_loss_normalize", False)
 
         config = {
             "job": run_name,

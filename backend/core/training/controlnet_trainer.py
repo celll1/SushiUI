@@ -113,6 +113,13 @@ class ControlNetTrainer(BaseTrainer):
         # Flag to signal base_trainer to load condition images
         self.use_condition_images = True
 
+        # ControlNet resumes its OWN checkpoint format (standard = directory,
+        # lllite = adapter .safetensors) in this __init__ after the base setup.
+        # Tell base_trainer.__init__ NOT to run its file-based resume detection
+        # (which would try to load an lllite adapter as a full base model, or
+        # silently find nothing for a directory checkpoint). Set before super().
+        self._manages_own_resume = True
+
         # Initialize base trainer (loads model components)
         super().__init__(**kwargs)
 
@@ -138,6 +145,16 @@ class ControlNetTrainer(BaseTrainer):
 
         # Create ControlNet using adapter
         self._create_controlnet()
+
+        # Resume: load the ControlNet adapter weights from its own checkpoint.
+        # base_trainer.__init__'s resume path only recognizes *.safetensors FILE
+        # checkpoints (LoRA/full-ft) via _list_checkpoint_entries, so it silently
+        # finds nothing for ControlNet (which saves DIRECTORY checkpoints
+        # *_controlnet_step_NNNNNN/) and would start from scratch. Load them here
+        # and set _loaded_checkpoint_path so base_trainer.train() restores
+        # global_step / optimizer / epoch from the matching *_state.json.
+        if self.resume_from_checkpoint:
+            self._resume_controlnet_weights()
 
         print(f"{self.log_prefix} Initialized")
         print(f"{self.log_prefix} ControlNet type: {self.controlnet_type}")
@@ -191,6 +208,68 @@ class ControlNetTrainer(BaseTrainer):
             print(f"{self.log_prefix} Gradient checkpointing enabled for ControlNet")
 
         print(f"{self.log_prefix} ControlNet created successfully")
+
+    def _find_latest_controlnet_checkpoint(self) -> "Optional[Path]":
+        """Return the highest-step ControlNet checkpoint under output_dir, or None.
+
+        Standard CN saves DIRECTORY checkpoints (``{run}_controlnet_step_NNNNNN/``);
+        LLLite saves single ``{run}_lllite_step_NNNNNN.safetensors`` files. Mirrors
+        the naming in save_checkpoint().
+        """
+        import re
+        if self.controlnet_type == "standard":
+            candidates = [p for p in self.output_dir.glob(f"{self.run_name}_controlnet_step_*") if p.is_dir()]
+        else:
+            candidates = list(self.output_dir.glob(f"{self.run_name}_lllite_step_*.safetensors"))
+        best = None
+        best_step = -1
+        for p in candidates:
+            m = re.search(r"_step_(\d+)", p.stem)
+            if not m:
+                continue
+            step = int(m.group(1))
+            if step > best_step:
+                best_step, best = step, p
+        return best
+
+    def _resume_controlnet_weights(self):
+        """Load ControlNet adapter weights for resume and record the checkpoint
+        path so base_trainer.train() restores global_step / optimizer / epoch.
+
+        "latest" is the auto-detect DEFAULT (param_defaults / frontend), so a
+        brand-new run legitimately has no checkpoint yet: in that case start fresh
+        (leave _loaded_checkpoint_path unset -> train() falls through to "from
+        scratch"), matching LoRA/full-ft. Only a specifically-named-but-missing
+        checkpoint fails loud (that IS a user error worth aborting on, and avoids
+        silently discarding the run the user meant to continue).
+        """
+        req = str(self.resume_from_checkpoint)
+        is_latest = req.lower() == "latest"
+        if is_latest:
+            ckpt = self._find_latest_controlnet_checkpoint()
+        else:
+            cand = self.output_dir / req
+            if not cand.exists():
+                cand = Path(req)
+            ckpt = cand if cand.exists() else None
+
+        if ckpt is None:
+            if is_latest:
+                # First run / auto-resume with nothing to resume from -> start fresh.
+                print(f"{self.log_prefix} Resume: no ControlNet checkpoint under "
+                      f"{self.output_dir}; starting from scratch")
+                return
+            raise RuntimeError(
+                f"{self.log_prefix} resume_from_checkpoint={self.resume_from_checkpoint!r} "
+                f"was requested but that ControlNet checkpoint was not found under "
+                f"{self.output_dir}. Aborting to avoid silently restarting from scratch."
+            )
+
+        self.load_checkpoint(str(ckpt))
+        # Signal base_trainer.train() to restore step/optimizer/epoch state from
+        # the matching *_state.json (it extracts the step from this path's name).
+        self._loaded_checkpoint_path = str(ckpt)
+        print(f"{self.log_prefix} Resume: ControlNet weights loaded from {ckpt.name}")
 
     def get_outpaint_planner(self) -> OutpaintControlPlanner:
         """Lazily build the deterministic crop-rect sampler for outpaint conditioning

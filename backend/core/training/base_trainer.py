@@ -1079,7 +1079,11 @@ class BaseTrainer(ABC):
 
         # Check if resuming from checkpoint
         checkpoint_to_load = None
-        if self.resume_from_checkpoint:
+        # Trainers that manage their own checkpoint format (ControlNet: directory
+        # or lllite-adapter saves) load weights themselves after this __init__ and
+        # set _loaded_checkpoint_path directly; skip the file-based base-model
+        # resume detection here so it can't mis-load an adapter as a base model.
+        if self.resume_from_checkpoint and not getattr(self, '_manages_own_resume', False):
             if self.resume_from_checkpoint.lower() == "latest":
                 # Find latest checkpoint in output directory (single-file OR
                 # sharded index; shard members are excluded as entries).

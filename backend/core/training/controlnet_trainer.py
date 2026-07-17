@@ -61,6 +61,7 @@ class ControlNetTrainer(BaseTrainer):
         outpaint_mask_channel: bool = True,
         outpaint_known_loss_weight: float = 0.3,
         outpaint_seam_loss_boost: float = 0.0,
+        outpaint_loss_normalize: bool = False,
         **kwargs
     ):
         """
@@ -92,8 +93,26 @@ class ControlNetTrainer(BaseTrainer):
         self.outpaint_edge_anchor_prob = float(outpaint_edge_anchor_prob)
         self.outpaint_corner_anchor_prob = float(outpaint_corner_anchor_prob)
         self.outpaint_mask_channel = bool(outpaint_mask_channel)
-        self.outpaint_known_loss_weight = float(outpaint_known_loss_weight)
+        # Clamp to the valid half-open range [0.0, 0.5). base_trainer's gen-region
+        # metric gate is `_gen_mask = (_wm > 0.5)` (weight = known_w + (1-known_w)*gate),
+        # so a keep-weight >= 0.5 would put the KNOWN region on the "generate" side
+        # of that threshold and corrupt the gen-region-only metric; a negative
+        # weight would invert the loss on the known region entirely. 0.5 itself is
+        # excluded so the keep region always stays strictly below the gen-mask
+        # threshold.
+        _known_w = float(outpaint_known_loss_weight)
+        if not (0.0 <= _known_w < 0.5):
+            _clamped = min(max(_known_w, 0.0), 0.499999)
+            print(f"[ControlNet Trainer] WARNING: outpaint_known_loss_weight={_known_w} "
+                  f"is outside the valid range [0.0, 0.5); clamping to {_clamped}")
+            _known_w = _clamped
+        self.outpaint_known_loss_weight = _known_w
         self.outpaint_seam_loss_boost = float(outpaint_seam_loss_boost)
+        # Opt-in (default False = current byte-identical behavior). When True,
+        # the weighted-loss reduction in base_trainer.train_step_controlnet
+        # divides each sample's weighted loss by that sample's own mean weight,
+        # decoupling per-sample loss scale from the known/generate rect area.
+        self.outpaint_loss_normalize = bool(outpaint_loss_normalize)
         self._is_outpaint_mode = (self.conditioning_mode == "outpaint")
         # Channel count for the ControlNet conditioning-embedding conv: outpaint mode
         # adds a binary known-mask channel (crop RGB + mask = 4ch) unless the mask
@@ -101,6 +120,21 @@ class ControlNetTrainer(BaseTrainer):
         self.conditioning_channels = 4 if (self._is_outpaint_mode and self.outpaint_mask_channel) else 3
         # Deterministic per-(item, epoch) crop-rect sampler (built lazily; needs seed).
         self._outpaint_planner = None
+
+        # Outpaint conditioning is structurally incompatible with LLLite: the
+        # LLLiteConditioningEncoder hardcodes in_channels=3 (lllite_module.py
+        # LLLiteAttentionModule.__init__), but outpaint mode needs a 4-channel
+        # (crop RGB + known-mask) conditioning tensor. Feeding that mismatched
+        # tensor through would only surface as an opaque Conv2d shape
+        # RuntimeError deep in the first forward pass -- fail fast here instead,
+        # before any model weights are loaded.
+        if self._is_outpaint_mode and self.controlnet_type == "lllite":
+            raise ValueError(
+                f"{self.__class__.__name__}: conditioning_mode='outpaint' requires "
+                f"controlnet_type='standard'. LLLite's conditioning encoder is "
+                f"hardcoded to 3 input channels and is not yet parameterized for "
+                f"the 4-channel (crop RGB + known-mask) outpaint conditioning."
+            )
 
         # ControlNet module storage (set by _create_controlnet)
         self.controlnet: Optional[nn.Module] = None
@@ -125,6 +159,31 @@ class ControlNetTrainer(BaseTrainer):
 
         # Override log prefix
         self.log_prefix = "[ControlNet Trainer]"
+
+        # Outpaint conditioning builds its 4-ch cond by a plain resize of the
+        # FULL image (base_trainer.py build_crop_mask_condition), while the
+        # target latents may instead honor bucket_strategy="crop"/"random_crop"
+        # or crop-augment (_crop_spec) -- either would make the known-region
+        # cond pixels stop corresponding to the teacher latent's actual crop,
+        # breaking the self-supervision the outpaint mode relies on. Only
+        # bucket_strategy="resize" with crop-augment disabled keeps the cond
+        # and latent geometry aligned. Fail fast at construction (self.config
+        # is the full YAML train_config dict, populated by BaseTrainer.__init__
+        # just above) rather than silently training on misaligned pairs.
+        if self._is_outpaint_mode:
+            _bucket_strategy = str((self.config or {}).get("bucket_strategy", "resize") or "resize")
+            _crop_augment_enable = bool((self.config or {}).get("crop_augment_enable", False))
+            if _bucket_strategy != "resize" or _crop_augment_enable:
+                raise ValueError(
+                    f"{self.log_prefix} conditioning_mode='outpaint' requires "
+                    f"bucket_strategy='resize' and crop_augment_enable=False (got "
+                    f"bucket_strategy={_bucket_strategy!r}, "
+                    f"crop_augment_enable={_crop_augment_enable}). Outpaint "
+                    f"conditioning is built from a plain resize of the full "
+                    f"image; any crop-based bucketing or crop augmentation "
+                    f"desynchronizes the known-region conditioning from the "
+                    f"target latent's actual crop, breaking self-supervision."
+                )
 
         # Validate model type (only SD1.5/SDXL supported)
         if self.is_zimage or self.is_flux2:
@@ -329,6 +388,71 @@ class ControlNetTrainer(BaseTrainer):
         step = self.adapter.load_checkpoint(self.controlnet, checkpoint_path)
         print(f"{self.log_prefix} Loaded checkpoint from step {step}")
         return step
+
+    def _cleanup_old_checkpoints(self, max_step_saves_to_keep: int):
+        """
+        Delete old ControlNet checkpoints, keeping only the most recent N.
+
+        base_trainer._cleanup_old_checkpoints / _list_checkpoint_entries only
+        recognize FILE checkpoints matching ``*_step_*.safetensors[.index.json]``.
+        Standard ControlNet saves a DIRECTORY (``{run}_controlnet_step_NNNNNN/``)
+        which never matches that glob, so pruning silently never fires for it.
+        LLLite saves a matching file (``{run}_lllite_step_NNNNNN.safetensors``)
+        so the base glob technically finds it, but this override handles both
+        uniformly and is dispatched instead (same 1-positional-arg signature as
+        the base version -> train()'s inspect.signature dispatch picks this one
+        for ControlNetTrainer instances).
+
+        Note: the optimizer/state sidecars are always named
+        ``{run_name}_step_{step:06d}_{optimizer.pt,state.json}`` (base ``_step_``,
+        NOT ``_controlnet_step_`` / ``_lllite_step_`` — see save_optimizer_state /
+        save_training_state in base_trainer.py), so the sidecar glob must use the
+        plain step number, independent of the checkpoint-entry naming.
+        """
+        import re
+        import shutil
+
+        if max_step_saves_to_keep is None or max_step_saves_to_keep <= 0:
+            return
+
+        if self.controlnet_type == "standard":
+            candidates = [p for p in self.output_dir.glob(f"{self.run_name}_controlnet_step_*") if p.is_dir()]
+        else:
+            candidates = [p for p in self.output_dir.glob(f"{self.run_name}_lllite_step_*.safetensors") if p.is_file()]
+
+        def get_step(path):
+            m = re.search(r"_step_(\d+)", path.stem if path.is_file() else path.name)
+            return int(m.group(1)) if m else 0
+
+        if len(candidates) <= max_step_saves_to_keep:
+            return
+
+        candidates.sort(key=get_step, reverse=True)
+        to_delete = candidates[max_step_saves_to_keep:]
+
+        for entry in to_delete:
+            step_num = get_step(entry)
+            print(f"{self.log_prefix} Deleting old checkpoint: {entry.name}")
+            try:
+                if entry.is_dir():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    self._safe_unlink(entry)
+            except Exception as e:
+                print(f"{self.log_prefix} WARNING: could not delete {entry.name} ({e}); leaving it (non-fatal)")
+
+            # Sidecars are always keyed off the base run_name + plain step number,
+            # regardless of controlnet_type (see docstring above).
+            optimizer_pt_path = self.output_dir / f"{self.run_name}_step_{step_num:06d}_optimizer.pt"
+            state_json_path = self.output_dir / f"{self.run_name}_step_{step_num:06d}_state.json"
+
+            if optimizer_pt_path.exists():
+                print(f"{self.log_prefix} Deleting old optimizer state: {optimizer_pt_path.name}")
+                self._safe_unlink(optimizer_pt_path)
+
+            if state_json_path.exists():
+                print(f"{self.log_prefix} Deleting old training state: {state_json_path.name}")
+                self._safe_unlink(state_json_path)
 
     # ============================================================
     # Sample Generation (ControlNet-aware)

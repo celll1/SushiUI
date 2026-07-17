@@ -2685,6 +2685,7 @@ def main():
             outpaint_mask_channel = controlnet_config.get('outpaint_mask_channel', True)
             outpaint_known_loss_weight = controlnet_config.get('outpaint_known_loss_weight', 0.3)
             outpaint_seam_loss_boost = controlnet_config.get('outpaint_seam_loss_boost', 0.0)
+            outpaint_loss_normalize = controlnet_config.get('outpaint_loss_normalize', False)
 
             # Prompt chunking settings
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
@@ -2733,6 +2734,7 @@ def main():
                 outpaint_mask_channel=outpaint_mask_channel,
                 outpaint_known_loss_weight=outpaint_known_loss_weight,
                 outpaint_seam_loss_boost=outpaint_seam_loss_boost,
+                outpaint_loss_normalize=outpaint_loss_normalize,
                 learning_rate=train_config.get('lr', 1e-4),
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,

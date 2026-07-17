@@ -265,6 +265,12 @@ class ControlNetManager:
         if full_path is None:
             return False
 
+        # A directory is a diffusers ControlNet (config.json + diffusion_pytorch_
+        # model.*), never an LLLite single-file. Skip it early: torch.load() on a
+        # directory raises PermissionError (Errno 13) on Windows.
+        if full_path.is_dir():
+            return False
+
         try:
             # Load state dict keys
             if full_path.suffix == '.safetensors':

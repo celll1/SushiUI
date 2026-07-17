@@ -4665,6 +4665,27 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         return image, seed, actual_ancestral_seed
 
+    def _outpaint_controlnet_conditioning_channels(self, model_path: str) -> int:
+        """Return the ControlNet's conditioning-input channel count (3 for a
+        normal RGB/edge ControlNet, 4 for an outpaint-native crop+mask model).
+
+        A trained outpaint CN is a diffusers DIRECTORY whose config.json records
+        conditioning_channels=4; anything else (single-file edge CN, unresolvable
+        path) is treated as 3. Best-effort, never raises -- used only to give a
+        clear error before the cryptic conv2d channel-mismatch."""
+        try:
+            from core.extensions.controlnet_manager import controlnet_manager
+            resolved = controlnet_manager._resolve_controlnet_path(model_path)
+            if resolved is not None and resolved.is_dir():
+                cfg = resolved / "config.json"
+                if cfg.exists():
+                    import json as _json
+                    with open(cfg, "r", encoding="utf-8") as _f:
+                        return int(_json.load(_f).get("conditioning_channels", 3) or 3)
+        except Exception:
+            pass
+        return 3
+
     def _outpaint_controlnet_model_is_lllite(self, model_path: str) -> bool:
         """Best-effort LLLite check for Outpaint ControlNet's OWN configured
         model (see the mutual-exclusion note in generate_outpaint). Reuses
@@ -4868,6 +4889,28 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 )
             else:
                 _ocn_mode = str(work.get("outpaint_controlnet_mode", "edge_extrapolate"))
+                # Fail loud on a channel/mode mismatch BEFORE the ControlNet forward
+                # (a 4-ch crop-mask model fed a 3-ch edge image, or vice-versa,
+                # otherwise crashes deep inside conv2d with an opaque "expected
+                # input to have 4 channels, but got 3" message).
+                _ocn_ch = self._outpaint_controlnet_conditioning_channels(work["outpaint_controlnet_model"])
+                if _ocn_ch == 4 and _ocn_mode != "crop_mask":
+                    raise ValueError(
+                        f"Outpaint ControlNet model '{work['outpaint_controlnet_model']}' is a "
+                        f"4-channel outpaint-trained ControlNet, which requires Mode = "
+                        f"'crop_mask'. The current Mode is '{_ocn_mode}' (edge extrapolation "
+                        f"builds a 3-channel control image). Switch the Outpaint ControlNet "
+                        f"Mode to 'Crop mask (trained outpaint CN)'."
+                    )
+                if _ocn_ch != 4 and _ocn_mode == "crop_mask":
+                    raise ValueError(
+                        f"Outpaint ControlNet Mode is 'crop_mask' (4-channel crop+mask "
+                        f"conditioning) but the selected model "
+                        f"'{work['outpaint_controlnet_model']}' is a 3-channel ControlNet. "
+                        f"Use a ControlNet trained with conditioning_mode='outpaint' (a "
+                        f"diffusers directory with conditioning_channels=4), or switch Mode "
+                        f"to 'Edge extrapolate'."
+                    )
                 if _ocn_mode == "crop_mask":
                     # PART B: trained outpaint-native 4-channel conditioning (crop RGB
                     # + binary known-mask), the EXACT format the ControlNet was trained

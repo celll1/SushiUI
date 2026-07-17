@@ -285,6 +285,56 @@ def save_image_with_metadata(
     except Exception:
         pass
 
+    # ------------------------------------------------------------------
+    # Full JSON parameter blob (reproducibility): the individual add_text()
+    # calls above are a hand-maintained per-key whitelist kept for
+    # human-readable/back-compat metadata (external tools, quick inspection).
+    # Any parameter NOT explicitly whitelisted there (e.g. outpaint
+    # placement/continuity knobs, region prompts, seam/boundary controls, or
+    # any future param) was silently dropped, making the saved image
+    # unreproducible from its own metadata. Write the COMPLETE params dict as
+    # a single JSON chunk so every param present today -- and any added in
+    # the future -- is captured with zero per-param maintenance.
+    #
+    # Reuses prepare_params_for_db(), the SAME sanitizer already used for the
+    # DB `parameters` column, so raw image/mask/reference pixel data
+    # (controlnet_images[].image, style_transfer(s)[].image, ref_images) is
+    # replaced with stable hashes instead of being embedded as base64 (which
+    # would bloat the PNG and risks corrupting the tEXt chunk). This also
+    # keeps the PNG blob and the DB record in parity by construction.
+    try:
+        import json
+        from api.generation_utils import prepare_params_for_db
+        _full_params = prepare_params_for_db(params, calculate_image_hash)
+        # prepare_params_for_db hashes the DECODED image fields
+        # (controlnet_images[].image, style_transfer(s)[].image, ref_images) but
+        # NOT the raw `controlnets`/`style_transfers` request configs, whose
+        # entries still carry a full base64 PNG under `image_base64` (txt2img
+        # sends both keys). Drop those base64 strings here so the PNG tEXt chunk
+        # can't be bloated by ~0.5-2MB per control/reference image -- the hashed
+        # controlnet_images + model_path/strength/mode keep reproducibility.
+        for _list_key in ("controlnets", "style_transfers"):
+            _lst = _full_params.get(_list_key)
+            if isinstance(_lst, list):
+                _full_params[_list_key] = [
+                    {k: v for k, v in e.items() if k != "image_base64"}
+                    if isinstance(e, dict) else e
+                    for e in _lst
+                ]
+        if isinstance(_full_params.get("style_transfer"), dict):
+            _full_params["style_transfer"] = {
+                k: v for k, v in _full_params["style_transfer"].items() if k != "image_base64"
+            }
+        # default=str is a defensive fallback only (e.g. a stray PIL Image or
+        # Enum/Path slipping past the sanitizer serializes to its short repr,
+        # not raw pixel data).
+        metadata.add_text(
+            "sushi_parameters",
+            json.dumps(_full_params, default=str, ensure_ascii=False)
+        )
+    except Exception as e:
+        print(f"[Metadata] Failed to write full sushi_parameters JSON blob: {e}")
+
     # Save image
     try:
         image.save(filepath, pnginfo=metadata)

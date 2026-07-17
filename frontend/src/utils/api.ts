@@ -3389,6 +3389,17 @@ export interface TrainingRunCreateRequest {
   lllite_rank?: number;
   condition_preprocessors?: string[] | null;
   condition_cache_mode?: string;
+  // Outpaint-native ControlNet conditioning (PART B): self-supervised
+  // crop->full instead of preprocessor-derived condition images.
+  conditioning_mode?: "preprocessor" | "outpaint";
+  outpaint_crop_min_area?: number;
+  outpaint_crop_max_area?: number;
+  outpaint_edge_anchor_prob?: number;
+  outpaint_corner_anchor_prob?: number;
+  outpaint_mask_channel?: boolean;
+  outpaint_known_loss_weight?: number;
+  outpaint_seam_loss_boost?: number;
+  outpaint_loss_normalize?: boolean;
   // Pre-flight dataset drift check + optional rescan + orphan latent
   // cache cleanup.  Modes:
   //   "off"   — skip

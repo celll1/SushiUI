@@ -256,6 +256,15 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lllite_rank: 64,
   condition_preprocessors: null,
   condition_cache_mode: "on_the_fly",
+  conditioning_mode: "preprocessor",
+  outpaint_crop_min_area: 0.15,
+  outpaint_crop_max_area: 0.8,
+  outpaint_edge_anchor_prob: 0.34,
+  outpaint_corner_anchor_prob: 0.33,
+  outpaint_mask_channel: true,
+  outpaint_known_loss_weight: 0.3,
+  outpaint_seam_loss_boost: 0.0,
+  outpaint_loss_normalize: false,
   rescan_before_training: "off",
 };
 
@@ -367,6 +376,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const llliteRank = params.lllite_rank ?? 64;
   const conditionPreprocessors = params.condition_preprocessors ?? [];
   const conditionCacheMode = (params.condition_cache_mode ?? "on_the_fly") as "on_the_fly" | "pre_generate";
+  const conditioningMode = (params.conditioning_mode ?? "preprocessor") as "preprocessor" | "outpaint";
+  const outpaintCropMinArea = params.outpaint_crop_min_area ?? 0.15;
+  const outpaintCropMaxArea = params.outpaint_crop_max_area ?? 0.8;
+  const outpaintEdgeAnchorProb = params.outpaint_edge_anchor_prob ?? 0.34;
+  const outpaintCornerAnchorProb = params.outpaint_corner_anchor_prob ?? 0.33;
+  const outpaintMaskChannel = params.outpaint_mask_channel ?? true;
+  const outpaintKnownLossWeight = params.outpaint_known_loss_weight ?? 0.3;
+  const outpaintSeamLossBoost = params.outpaint_seam_loss_boost ?? 0.0;
+  const outpaintLossNormalize = params.outpaint_loss_normalize ?? false;
 
   // ReLoRA parameters (Phase 3d: migrated to params)
   const reloraMergeEvery = params.relora_merge_every ?? 500;
@@ -819,6 +837,15 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lllite_rank: trainingMethod === "controlnet" && params.controlnet_type === "lllite" ? params.lllite_rank : undefined,
       condition_preprocessors: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_preprocessors : undefined,
       condition_cache_mode: trainingMethod === "controlnet" && (params.condition_preprocessors?.length ?? 0) > 0 ? params.condition_cache_mode : undefined,
+      conditioning_mode: trainingMethod === "controlnet" ? params.conditioning_mode : undefined,
+      outpaint_crop_min_area: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_crop_min_area : undefined,
+      outpaint_crop_max_area: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_crop_max_area : undefined,
+      outpaint_edge_anchor_prob: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_edge_anchor_prob : undefined,
+      outpaint_corner_anchor_prob: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_corner_anchor_prob : undefined,
+      outpaint_mask_channel: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_mask_channel : undefined,
+      outpaint_known_loss_weight: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_known_loss_weight : undefined,
+      outpaint_seam_loss_boost: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_seam_loss_boost : undefined,
+      outpaint_loss_normalize: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_loss_normalize : undefined,
       rescan_before_training: params.rescan_before_training ?? "off",
       danbooru_aug_enable: params.danbooru_aug_enable,
       danbooru_aug_queries: params.danbooru_aug_queries,
@@ -1023,6 +1050,9 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "controlnet_type", "controlnet_init_from_unet",
       "lllite_conditioning_channels", "lllite_rank",
       "condition_cache_mode",
+      "conditioning_mode", "outpaint_crop_min_area", "outpaint_crop_max_area",
+      "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob", "outpaint_mask_channel",
+      "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_loss_normalize",
       "sample_every", "sample_prompts", "sample_width", "sample_height",
       "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
       "debug_latents", "debug_latents_every",
@@ -2638,9 +2668,152 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
               >
                 <option value="standard">Standard (diffusers ControlNetModel)</option>
-                <option value="lllite">LLLite (kohya-ss sd-scripts compatible)</option>
+                <option value="lllite" disabled={conditioningMode === "outpaint"}>LLLite (kohya-ss sd-scripts compatible){conditioningMode === "outpaint" ? " - unavailable in Outpaint-native mode" : ""}</option>
               </select>
             </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">Conditioning Source</label>
+              <select
+                value={conditioningMode}
+                onChange={(e) => {
+                  const mode = e.target.value as "preprocessor" | "outpaint";
+                  updateParam("conditioning_mode", mode);
+                  // Outpaint conditioning is structurally incompatible with LLLite
+                  // (4-ch crop+mask cond vs. LLLite's hardcoded 3-ch encoder).
+                  if (mode === "outpaint" && controlnetType === "lllite") {
+                    updateParam("controlnet_type", "standard");
+                  }
+                }}
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              >
+                <option value="preprocessor">Preprocessor (paired / aux)</option>
+                <option value="outpaint">Outpaint-native (crop→full)</option>
+              </select>
+              <p className="text-xs text-gray-500 mt-1">Outpaint-native builds a self-supervised crop-to-full conditioning pair from each dataset item's own image (no paired condition images needed).</p>
+            </div>
+
+            {conditioningMode === "outpaint" && (
+              <div className={`text-xs rounded p-2 border ${bucketStrategy === "resize" && !params.crop_augment_enable ? "border-gray-700 bg-gray-900/50 text-gray-400" : "border-yellow-700 bg-yellow-900/20 text-yellow-300"}`}>
+                Outpaint-native conditioning requires <strong>ControlNet Type = Standard</strong>, <strong>Bucketing Strategy = Resize</strong>, and <strong>Crop Augmentation = disabled</strong> (Dataset / Bucketing section). Mismatched settings will fail training at startup.
+                {(bucketStrategy !== "resize" || params.crop_augment_enable) && (
+                  <> Current: bucket_strategy=&quot;{bucketStrategy}&quot;, crop_augment_enable={String(!!params.crop_augment_enable)}.</>
+                )}
+              </div>
+            )}
+
+            {conditioningMode === "outpaint" && (
+              <div className="space-y-3 border-t border-gray-700 pt-3">
+                <h4 className="text-xs font-semibold text-gray-300">Outpaint Conditioning Settings</h4>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Crop Min Area</label>
+                    <input
+                      type="number"
+                      value={outpaintCropMinArea}
+                      onChange={(e) => updateParam("outpaint_crop_min_area", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_crop_min_area", 0.15); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Crop Max Area</label>
+                    <input
+                      type="number"
+                      value={outpaintCropMaxArea}
+                      onChange={(e) => updateParam("outpaint_crop_max_area", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_crop_max_area", 0.8); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Edge Anchor Probability</label>
+                    <input
+                      type="number"
+                      value={outpaintEdgeAnchorProb}
+                      onChange={(e) => updateParam("outpaint_edge_anchor_prob", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_edge_anchor_prob", 0.34); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Corner Anchor Probability</label>
+                    <input
+                      type="number"
+                      value={outpaintCornerAnchorProb}
+                      onChange={(e) => updateParam("outpaint_corner_anchor_prob", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_corner_anchor_prob", 0.33); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Known-region Loss Weight</label>
+                    <input
+                      type="number"
+                      value={outpaintKnownLossWeight}
+                      onChange={(e) => updateParam("outpaint_known_loss_weight", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_known_loss_weight", 0.3); }}
+                      min="0.0"
+                      max="0.499"
+                      step="0.01"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Must stay below 0.5 (backend clamps to [0, 0.5)).</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Seam Loss Boost</label>
+                    <input
+                      type="number"
+                      value={outpaintSeamLossBoost}
+                      onChange={(e) => updateParam("outpaint_seam_loss_boost", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_seam_loss_boost", 0.0); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.05"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={outpaintMaskChannel}
+                      onChange={(e) => updateParam("outpaint_mask_channel", e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm">Add known-region mask channel (4-ch conditioning)</span>
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1">Adds a binary known/unknown mask as a 4th conditioning channel alongside crop RGB.</p>
+                </div>
+
+                <div>
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={outpaintLossNormalize}
+                      onChange={(e) => updateParam("outpaint_loss_normalize", e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-sm">Normalize loss by weight-sum (opt-in)</span>
+                  </label>
+                  <p className="text-xs text-gray-500 mt-1">Decouples per-sample loss scale from the known/generate rect area. Default off preserves existing behavior.</p>
+                </div>
+              </div>
+            )}
 
             {controlnetType === "standard" && (
               <div>
@@ -2699,31 +2872,33 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
             )}
 
-            <div>
-              <label className="block text-xs text-gray-400 mb-1">Condition Image Preprocessors</label>
-              <div className="flex flex-wrap gap-2 mt-1">
-                {["canny", "hed", "lineart", "lineart_anime", "depth_midas", "depth_zoe", "normal_bae", "openpose", "pidi", "shuffle", "teed", "anyline"].map((pp) => (
-                  <label key={pp} className="flex items-center space-x-1 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={conditionPreprocessors.includes(pp)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          updateParam("condition_preprocessors", [...conditionPreprocessors, pp]);
-                        } else {
-                          updateParam("condition_preprocessors", conditionPreprocessors.filter(p => p !== pp));
-                        }
-                      }}
-                      className="w-3.5 h-3.5"
-                    />
-                    <span className="text-xs text-gray-300">{pp}</span>
-                  </label>
-                ))}
+            {conditioningMode === "preprocessor" && (
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Condition Image Preprocessors</label>
+                <div className="flex flex-wrap gap-2 mt-1">
+                  {["canny", "hed", "lineart", "lineart_anime", "depth_midas", "depth_zoe", "normal_bae", "openpose", "pidi", "shuffle", "teed", "anyline"].map((pp) => (
+                    <label key={pp} className="flex items-center space-x-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={conditionPreprocessors.includes(pp)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            updateParam("condition_preprocessors", [...conditionPreprocessors, pp]);
+                          } else {
+                            updateParam("condition_preprocessors", conditionPreprocessors.filter(p => p !== pp));
+                          }
+                        }}
+                        className="w-3.5 h-3.5"
+                      />
+                      <span className="text-xs text-gray-300">{pp}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Auto-generate condition images when reference images are not provided. Multiple selections = random per image.</p>
               </div>
-              <p className="text-xs text-gray-500 mt-1">Auto-generate condition images when reference images are not provided. Multiple selections = random per image.</p>
-            </div>
+            )}
 
-            {conditionPreprocessors.length > 0 && (
+            {conditioningMode === "preprocessor" && conditionPreprocessors.length > 0 && (
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Cache Mode</label>
                 <select

@@ -4750,13 +4750,35 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # mask_blur (4) and the legacy fill-blend path are UNCHANGED when
         # boundary relaxation is off (byte-identical). See
         # scratchpad/boundary_relaxation_synthesis.md Q2.
-        if params.get("boundary_relax_strength", 0.0) and float(params.get("boundary_relax_strength", 0.0)) > 0.0:
+        _bdr_hard_mask = bool(
+            params.get("boundary_relax_strength", 0.0)
+            and float(params.get("boundary_relax_strength", 0.0)) > 0.0
+        )
+        # Trained crop_mask ControlNet: the CN was trained (loss weight 1.0, cond
+        # mask channel 0, no residual gate) that the first generate-side cell is
+        # 100% its to render. A soft inference mask (default mask_blur=4) instead
+        # overwrites ~45% of that first latent cell / first ~8 px with
+        # encode(replicate fill) via the x0-projection AND the post-decode pixel
+        # blend -- injecting the "bleed band" into the exact band the CN owns, so
+        # the seam can never be model-determined. Force the hard mask here too, so
+        # the mask_latent is binary and the CN's rendering survives untouched. See
+        # scratchpad/outpaint_vae_boundary_alignment.md Q2.
+        _crop_mask_cn = (
+            bool(params.get("outpaint_controlnet_enable", False))
+            and str(params.get("outpaint_controlnet_mode", "edge_extrapolate")) == "crop_mask"
+        )
+        if _bdr_hard_mask or _crop_mask_cn:
             if mask_blur and mask_blur > 0:
                 from api.generation_status import add_warning as _bdr_add_warning
                 _bdr_add_warning(
+                    "Trained crop_mask ControlNet active: using a hard outpaint mask so the "
+                    "seam band is fully model-determined; the legacy outward fill-blend "
+                    "(mask_blur) is bypassed."
+                    if _crop_mask_cn and not _bdr_hard_mask else
                     "Boundary relaxation active: using a hard outpaint mask; the legacy outward "
                     "fill-blend (mask_blur) is bypassed for the seam transition.",
-                    code="boundary_relax_hard_mask",
+                    code="outpaint_crop_mask_hard_mask" if _crop_mask_cn and not _bdr_hard_mask
+                    else "boundary_relax_hard_mask",
                 )
             mask_blur = 0
         mask_img = build_outpaint_mask(canvas_img.size, rect, mask_blur)
@@ -4962,7 +4984,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         "is_lllite": False,
                         "is_reference_guide": False,
                     }]
-                    work["outpaint_controlnet_gate"] = _ocn_gate
+                    # Residual gate: edge-extrapolation NEEDS it (residual masking
+                    # IS its mechanism -- confine the untrained edge CN to the
+                    # generate region). The trained crop_mask CN was trained
+                    # GATELESS (residuals applied over the full field, keep region
+                    # only loss-down-weighted 0.3), so gating it at inference feeds
+                    # the UNet a residual field it never saw in training (keep side
+                    # zeroed + fractional coarse-block cells at the seam). Leave the
+                    # gate UNSET (None -> inert) for crop_mask to match training;
+                    # the keep region stays exact via the mask_latent x0-pin + the
+                    # final byte-exact paste. See outpaint_vae_boundary_alignment.md Q2b.
+                    if _ocn_mode != "crop_mask":
+                        work["outpaint_controlnet_gate"] = _ocn_gate
 
                     if str(work.get("boundary_relax_paste", "feather")) != "exact":
                         work["boundary_relax_paste"] = "exact"

@@ -416,6 +416,12 @@ export interface OutpaintParams extends GenerationParams {
   outpaint_controlnet_guidance_end?: number;
   outpaint_controlnet_depth?: number;
   outpaint_controlnet_taper?: number;
+  // Harmonic boundary-offset membrane (post-decode): adjusts generated
+  // pixels to meet the preserved boundary exactly; the preserved region
+  // remains byte-identical. Distinct from outpaint_seam_fix (a per-edge
+  // exposure/tone gain). false = off (byte-identical).
+  outpaint_seam_membrane?: boolean;
+  outpaint_seam_membrane_band?: number;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -1734,6 +1740,9 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("outpaint_controlnet_guidance_end", String(paramsWithImages.outpaint_controlnet_guidance_end ?? 0.55));
   formData.append("outpaint_controlnet_depth", String(paramsWithImages.outpaint_controlnet_depth ?? 160));
   formData.append("outpaint_controlnet_taper", String(paramsWithImages.outpaint_controlnet_taper ?? 2.0));
+  // Harmonic boundary-offset membrane (post-decode); false = off
+  formData.append("outpaint_seam_membrane", String(paramsWithImages.outpaint_seam_membrane ?? false));
+  formData.append("outpaint_seam_membrane_band", String(paramsWithImages.outpaint_seam_membrane_band ?? 0));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

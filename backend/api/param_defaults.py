@@ -361,6 +361,20 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # so it never touches the preserved rect. On by default; disable to see
     # the model's raw, uncorrected output.
     "outpaint_seam_fix": True,
+    # Harmonic boundary-offset membrane (core.inference.seam_membrane): a
+    # post-decode local correction, distinct from the exposure harmonizer
+    # above. Solves a smooth per-channel offset field over the generated
+    # region (harmonic away from the boundary) whose value AT the seam
+    # exactly equals the preserved rect's own pixels there, tapering to 0
+    # within seam_membrane_band px. Runs after the exposure harmonizer and
+    # before the final unconditional paste, so the preserved rect is never
+    # altered (double-guaranteed: the membrane itself never writes rect
+    # pixels, and the final paste re-establishes byte-exactness regardless).
+    # 0/False = off (byte-identical; the module is not even imported).
+    "outpaint_seam_membrane": False,
+    # Taper band width (px) over which the membrane's correction fades to 0.
+    # 0 = auto (clamp(max(canvas_width, canvas_height) // 8, 64, 256)).
+    "outpaint_seam_membrane_band": 0,
     # B1 continuity fix (SD/SDXL only; core.inference.custom_sampling's
     # outpaint_noise_init-gated x0-space projection injection): a weak
     # low-frequency color/illumination correction applied to the generate

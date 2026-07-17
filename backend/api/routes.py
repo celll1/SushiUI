@@ -3944,6 +3944,8 @@ async def generate_outpaint(
     boundary_relax_end: float = Form(OUTPAINT_DEFAULTS["boundary_relax_end"]),  # BDR: progress by which the hard pin is restored
     boundary_relax_paste: str = Form(OUTPAINT_DEFAULTS["boundary_relax_paste"]),  # BDR Q3 paste variant: "feather" | "exact"
     outpaint_seam_fix: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_fix"]),  # Post-generation exposure/tone harmonizer between the generated surroundings and the preserved rect
+    outpaint_seam_membrane: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_membrane"]),  # Harmonic boundary-offset blend (post-decode, before the final paste); False = off (byte-identical)
+    outpaint_seam_membrane_band: int = Form(OUTPAINT_DEFAULTS["outpaint_seam_membrane_band"]),  # Taper band width (px) for the seam membrane; 0 = auto
     outpaint_boundary_color_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_boundary_color_strength"]),  # B1 continuity fix: in-loop low-freq boundary color proximal strength (SD/SDXL only, 0=off)
     outpaint_resample_count: int = Form(OUTPAINT_DEFAULTS["outpaint_resample_count"]),  # B2 continuity fix: RePaint-style time-travel resample count (SD/SDXL only, 1=off)
     outpaint_jump_length: int = Form(OUTPAINT_DEFAULTS["outpaint_jump_length"]),  # B2 continuity fix: time-travel jump-back length in step indices
@@ -4256,6 +4258,8 @@ async def generate_outpaint(
             "boundary_relax_end": boundary_relax_end,
             "boundary_relax_paste": boundary_relax_paste,
             "outpaint_seam_fix": outpaint_seam_fix,
+            "outpaint_seam_membrane": outpaint_seam_membrane,
+            "outpaint_seam_membrane_band": outpaint_seam_membrane_band,
             "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
             "outpaint_resample_count": outpaint_resample_count,
             "outpaint_jump_length": outpaint_jump_length,

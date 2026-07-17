@@ -144,6 +144,8 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_controlnet_guidance_end: 0.55,
   outpaint_controlnet_depth: 160,
   outpaint_controlnet_taper: 2.0,
+  outpaint_seam_membrane: false,
+  outpaint_seam_membrane_band: 0,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -1882,6 +1884,49 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
                   />
                 </>
+              )}
+            </div>
+          </details>
+          )}
+
+          {/* Seam Membrane: post-decode harmonic boundary-offset blend.
+              Adjusts generated pixels to meet the preserved boundary
+              exactly; the preserved region remains byte-identical. See
+              backend/core/inference/seam_membrane.py +
+              backend/api/routes.py generate_outpaint outpaint_seam_membrane*
+              Form params. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Seam Membrane
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                Solves a smooth per-channel offset field over the generated region, equal to the preserved rectangle&apos;s own pixels at the seam and diffused smoothly away from it, tapering to zero over a fixed band.
+                Runs after the exposure harmonizer above and before the final unconditional paste; the preserved rectangle stays byte-identical.
+              </p>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="outpaint_seam_membrane"
+                  checked={params.outpaint_seam_membrane ?? false}
+                  onChange={(e) => setParams({ ...params, outpaint_seam_membrane: e.target.checked })}
+                  disabled={isGenerating}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="outpaint_seam_membrane" className="text-sm text-gray-300">
+                  Enable
+                </label>
+              </div>
+              {params.outpaint_seam_membrane && developerMode && (
+                <Slider
+                  label="Taper Band (px, 0 = auto)"
+                  min={0}
+                  max={256}
+                  step={8}
+                  value={params.outpaint_seam_membrane_band ?? 0}
+                  onChange={(e) => setParams({ ...params, outpaint_seam_membrane_band: parseInt(e.target.value, 10) })}
+                />
               )}
             </div>
           </details>

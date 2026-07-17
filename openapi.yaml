@@ -7036,6 +7036,30 @@ components:
                 each extrapolated structure's confidence (higher = sharper
                 falloff near the taper depth).
               example: 2.0
+            outpaint_seam_membrane:
+              type: boolean
+              default: false
+              description: |
+                Harmonic boundary-offset blend: adjusts generated pixels to
+                meet the preserved boundary exactly; the preserved region
+                remains byte-identical. Distinct from `outpaint_seam_fix`
+                (a per-edge exposure/tone gain): this solves a smooth
+                per-channel offset field over the generated region, equal to
+                the preserved rectangle's own pixels at the seam and
+                harmonic (smoothly diffused) away from it, tapering to zero
+                within `outpaint_seam_membrane_band` pixels. Runs after
+                `outpaint_seam_fix` and before the final unconditional
+                paste. False = off (the underlying module is not imported).
+              example: false
+            outpaint_seam_membrane_band:
+              type: integer
+              default: 0
+              minimum: 0
+              description: |
+                Taper band width, in pixels, over which the seam membrane's
+                correction fades to zero. 0 = automatic
+                (clamp(max(canvas_width, canvas_height) // 8, 64, 256)).
+              example: 0
 
     UpscaleRequest:
       type: object

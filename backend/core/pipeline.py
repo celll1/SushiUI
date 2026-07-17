@@ -5023,11 +5023,18 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 code="boundary_relax_feather_nonexact",
             )
 
+        def _seam_membrane_warn(message: str, code: str) -> None:
+            from api.generation_status import add_warning as _sm_warn
+            _sm_warn(message, code=code)
+
         result_image = reconcile_and_paste(
             result_image, placed_img, rect, canvas_img.size,
             mask_blur=mask_blur,
             outpaint_seam_fix=bool(params.get("outpaint_seam_fix", True)),
             paste_alpha=_paste_alpha,
+            seam_membrane=bool(params.get("outpaint_seam_membrane", False)),
+            seam_membrane_band=int(params.get("outpaint_seam_membrane_band", 0) or 0),
+            warn_callback=_seam_membrane_warn,
         )
 
         return result_image, actual_seed, actual_ancestral_seed

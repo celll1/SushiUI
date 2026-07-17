@@ -2717,6 +2717,10 @@ def main():
                 controlnet_type=controlnet_type,
                 controlnet_pretrained_path=controlnet_pretrained_path,
                 init_from_unet=init_from_unet,
+                # ControlNet loads its own (directory/lllite) checkpoint in __init__
+                # on resume, so the constructor needs this (base_trainer only used it
+                # via .train() before, which is why CN resume silently restarted).
+                resume_from_checkpoint=train_config.get('resume_from_checkpoint'),
                 lllite_conditioning_channels=lllite_conditioning_channels,
                 lllite_rank=lllite_rank,
                 condition_preprocessors=condition_preprocessors,

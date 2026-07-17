@@ -584,6 +584,9 @@ def reconcile_and_paste(
     mask_blur: int = 4,
     outpaint_seam_fix: bool = True,
     paste_alpha: Optional[np.ndarray] = None,
+    seam_membrane: bool = False,
+    seam_membrane_band: int = 0,
+    warn_callback: Optional[Any] = None,
 ) -> Image.Image:
     """Defensive belt-and-suspenders wrapper around ``paste_preserved_region``.
 
@@ -600,13 +603,64 @@ def reconcile_and_paste(
     surroundings. Then, when ``outpaint_seam_fix`` is True, the arch-independent
     exposure harmonizer (``match_generated_exposure``) corrects the generated
     surroundings' tone against the preserved rect (using ``mask_blur`` to skip
-    the mask's blended transition band). Finally ``placed_img`` is pasted at
-    ``rect`` exactly as ``paste_preserved_region`` does -- this paste is always
-    the LAST mutation, re-establishing byte-exactness of the preserved rect
-    regardless of any architecture-side re-rounding or the harmonizer above.
+    the mask's blended transition band). Then, when ``seam_membrane`` is True,
+    the harmonic boundary-offset membrane (``core.inference.seam_membrane``,
+    imported lazily here -- ONLY entered when the flag is on, so this module's
+    numpy/PIL/stdlib-only import-time policy is unaffected when it's off)
+    bends the generated pixels near the seam to meet the preserved rect's own
+    values exactly (C0 continuity), tapering out over a fixed band -- see
+    ``scratchpad/outpaint_seam_redesign.md``. Finally ``placed_img`` is pasted
+    at ``rect`` exactly as ``paste_preserved_region`` does -- this paste is
+    always the LAST mutation, re-establishing byte-exactness of the preserved
+    rect regardless of any architecture-side re-rounding or the correction
+    steps above. ``seam_membrane`` writes only pixels outside ``rect`` by
+    construction (see its own module docstring), so this is a double
+    guarantee, not a single point of failure.
+
+    ``warn_callback``, if given, is called as ``warn_callback(message, code)``
+    for feature-degradation notices (F1 large-correction / F3 post-resize) --
+    kept as an opaque callable (not an ``api.*`` import) to preserve this
+    module's decoupling policy; the caller (``PipelineManager.generate_outpaint``)
+    passes one that lazily wraps ``api.generation_status.add_warning``.
     """
-    if result_img.size != canvas_size:
+    was_resized = result_img.size != canvas_size
+    if was_resized:
         result_img = result_img.resize(canvas_size, Image.Resampling.LANCZOS)
     if outpaint_seam_fix:
         result_img = match_generated_exposure(result_img, placed_img, rect, mask_blur)
+    if seam_membrane:
+        from core.inference.seam_membrane import apply_seam_membrane
+
+        result_arr = np.array(result_img.convert("RGB"))
+        placed_arr = np.array(placed_img.convert("RGB"))
+        out_arr, membrane_info = apply_seam_membrane(
+            result_arr, placed_arr, rect, canvas_size, band=seam_membrane_band,
+        )
+        result_img = Image.fromarray(out_arr, mode="RGB")
+        if warn_callback is not None:
+            if was_resized:
+                # F3: ring `g` values were LANCZOS-interpolated by the resize
+                # above -- the membrane stays self-consistent (offsets are
+                # computed post-resize against the same grid), but the
+                # boundary data source changed; log for diagnosis.
+                try:
+                    warn_callback(
+                        "Seam membrane ran after a size-mismatch resize of the decoded "
+                        "result to the outpaint canvas -- its boundary data source is the "
+                        "resized (interpolated) result, not the raw decode.",
+                        "seam_membrane_after_resize",
+                    )
+                except Exception:
+                    pass
+            if membrane_info.get("large_correction"):
+                try:
+                    warn_callback(
+                        "Seam membrane applied a large correction "
+                        f"(mean |offset| {membrane_info.get('mean_abs_h_far_band', 0.0):.1f}/255 "
+                        "in the far part of the taper band) -- the generated content likely "
+                        "disagreed substantially with the preserved boundary.",
+                        "seam_membrane_large_correction",
+                    )
+                except Exception:
+                    pass
     return paste_preserved_region(result_img, placed_img, rect, alpha=paste_alpha)

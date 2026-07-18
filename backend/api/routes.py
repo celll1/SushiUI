@@ -9954,6 +9954,8 @@ class TrainingRunCreateRequest(BaseModel):
     outpaint_mask_channel: bool = True  # Include a known/unknown mask as an extra conditioning channel
     outpaint_known_loss_weight: float = Field(0.3, ge=0.0, lt=0.5)  # Loss weight applied to the known (non-outpainted) region; must stay below the gen-mask threshold (0.5)
     outpaint_seam_loss_boost: float = 0.0  # Additional loss weight applied at the known/unknown seam
+    outpaint_seam_ring_width: int = Field(TRAINING_DEFAULTS["outpaint_seam_ring_width"], ge=1, le=2)  # Number of seam rings the boost covers (1 = current 1-cell ring, 2 adds a second ring at half the boost increment)
+    outpaint_seam_grad_lambda: float = Field(TRAINING_DEFAULTS["outpaint_seam_grad_lambda"], ge=0.0)  # Weight of the cross-seam error-continuity term (native prediction space); 0.0 disables it
     outpaint_loss_normalize: bool = TRAINING_DEFAULTS["outpaint_loss_normalize"]  # Divide each sample's weighted loss by its mean weight (decouples loss scale from rect area)
     # sample_condition_image_path is now per-prompt in sample_prompts[].condition_image_path
     # Pre-flight: detect dataset drift + auto-rescan + cleanup orphan
@@ -10296,6 +10298,8 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "outpaint_mask_channel": ("network.controlnet",),
     "outpaint_known_loss_weight": ("network.controlnet",),
     "outpaint_seam_loss_boost": ("network.controlnet",),
+    "outpaint_seam_ring_width": ("network.controlnet",),
+    "outpaint_seam_grad_lambda": ("network.controlnet",),
     "outpaint_loss_normalize": ("network.controlnet",),
     # train section with renamed key
     "total_steps": ("train", "steps"),
@@ -10312,7 +10316,8 @@ _CONTROLNET_ONLY_FIELDS = {
     "condition_preprocessors", "condition_cache_mode",
     "conditioning_mode", "outpaint_crop_min_area", "outpaint_crop_max_area",
     "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob", "outpaint_mask_channel",
-    "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_loss_normalize",
+    "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_seam_ring_width",
+    "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
 }
 
 # Fields excluded from auto-extraction (they need special handling outside the schema loop)

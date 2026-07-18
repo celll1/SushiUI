@@ -8832,6 +8832,19 @@ components:
           description: "Outpaint conditioning: additional loss weight added on the generate-side cells adjacent to the known/unknown boundary. 0 = off."
           default: 0.0
           example: 0.0
+        outpaint_seam_ring_width:
+          type: 'integer'
+          description: "Outpaint conditioning: number of seam rings outpaint_seam_loss_boost covers. 1 (default) applies the boost to the single generate-side latent cell adjacent to the known region. 2 adds a second ring (one more cell outward) weighted at half the boost increment. No effect when outpaint_seam_loss_boost is 0."
+          default: 1
+          minimum: 1
+          maximum: 2
+          example: 1
+        outpaint_seam_grad_lambda:
+          type: 'number'
+          description: "Outpaint conditioning: weight of the cross-seam prediction-error continuity term, computed on the native prediction (model output minus target) across known/generate boundary pairs and added to the per-sample loss before Min-SNR weighting. 0.0 (default) disables the term entirely."
+          default: 0.0
+          minimum: 0.0
+          example: 0.0
         outpaint_loss_normalize:
           type: 'boolean'
           description: "Outpaint conditioning: when true, divides each sample's weighted loss by that sample's own mean loss-weight before averaging, decoupling per-sample loss scale from the known/generate rect area. False (default) keeps the existing behavior (weighted loss averaged over all elements)."

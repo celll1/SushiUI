@@ -1032,6 +1032,15 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "outpaint_mask_channel": True,
     "outpaint_known_loss_weight": 0.3,
     "outpaint_seam_loss_boost": 0.0,
+    # 1 = current byte-identical 1-cell generate-side ring (default). 2 adds a
+    # second ring (one more max_pool2d dilation step outward) weighted at half
+    # the boost increment of the first ring. No effect unless
+    # outpaint_seam_loss_boost > 0.
+    "outpaint_seam_ring_width": 1,
+    # 0.0 (default) = off, byte-identical to current loss. >0 adds a cross-seam
+    # error-continuity term (native prediction space, computed directly on
+    # model_pred - target, no x0 reconstruction) before Min-SNR weighting.
+    "outpaint_seam_grad_lambda": 0.0,
     # False = current byte-identical behavior (weighted loss .mean() over all
     # elements, so per-sample loss scale depends on rect area). True divides
     # each sample's weighted loss by that sample's mean weight, decoupling

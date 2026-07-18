@@ -30,4 +30,8 @@ EXTRA_METRIC_DEFS = {
     # signal that matters for outpaint, isolated from the byte-identical known
     # region which the training masks out).
     "gen_loss": {"label": "Gen region", "color": "#a78bfa", "dashed": True},
+    # Outpaint ControlNet: raw MSE over ONLY the 1-cell generate-side ring
+    # adjacent to the known region (~2-3% of generate cells) -- gen_loss
+    # averages this away, so this is the dedicated instrument for the seam band.
+    "seam_loss": {"label": "Seam", "color": "#f43f5e", "dashed": True},
 }

@@ -5203,6 +5203,44 @@ class BaseTrainer(ABC):
                 _gen_mask = (_wm > 0.5).float()  # [B,1,H,W]
                 _denom = _gen_mask.sum() * float(loss_per_element.shape[1]) + 1e-8
                 self._last_gen_region_loss = float((loss_per_element * _gen_mask).sum() / _denom)
+            # seam_loss (monitoring, no grad, ALWAYS computed in outpaint mode --
+            # behavior-neutral instrument): raw (unweighted) MSE over ONLY the
+            # 1-cell generate-side ring immediately adjacent to the known region
+            # (the same ring outpaint_seam_loss_boost targets, re-derived from _wm
+            # so it stays correct regardless of the boost/ring-width settings).
+            # gen_loss cannot see this -- the ring is only ~2-3% of generate
+            # cells, invisible under per-timestep noise averaged over the whole
+            # generate region.
+            _known_mask = (_wm < 0.5)  # [B,1,H,W] bool, robust to any generate-side boost
+            with torch.no_grad():
+                _dil = F.max_pool2d(_known_mask.float(), kernel_size=3, stride=1, padding=1)
+                _ring_mask = (_dil > 0.5) & (~_known_mask)  # [B,1,H,W] bool
+                _ring_count = _ring_mask.float().sum()
+                if _ring_count.item() > 0:
+                    _ring_denom = _ring_count * float(loss_per_element.shape[1]) + 1e-8
+                    self._last_seam_ring_loss = float((loss_per_element * _ring_mask.float()).sum() / _ring_denom)
+                else:
+                    # Degenerate rect (e.g. full-bleed / no known region) -> no ring exists.
+                    self._last_seam_ring_loss = None
+            # Cross-seam error-continuity aux term (grad-carrying), opt-in via
+            # outpaint_seam_grad_lambda (default 0.0 = off, term not computed,
+            # loss byte-identical to today). Computed DIRECTLY on the native
+            # prediction-space error e = model_pred - target (no x0
+            # reconstruction needed -- per-sample-scalar timestep factor makes
+            # any spatial finite difference of the x0-space error proportional
+            # to the same finite difference in native space; see
+            # scratchpad/outpaint_seam_auxloss.md SS2.2).
+            _seam_lambda = float(getattr(self, "outpaint_seam_grad_lambda", 0.0) or 0.0)
+            if _seam_lambda > 0.0:
+                _e = model_pred.float() - target.float()
+                _mx = (_known_mask[..., :, 1:] != _known_mask[..., :, :-1]).float()
+                _my = (_known_mask[..., 1:, :] != _known_mask[..., :-1, :]).float()
+                _num = ((_e[..., :, 1:] - _e[..., :, :-1]).pow(2) * _mx).sum([1, 2, 3]) \
+                    + ((_e[..., 1:, :] - _e[..., :-1, :]).pow(2) * _my).sum([1, 2, 3])
+                _den = (_mx.sum([1, 2, 3]) + _my.sum([1, 2, 3])) * float(_e.shape[1]) + 1e-8
+                seam_grad_per_sample = _num / _den  # [B], per-cross-seam-pair normalized
+            else:
+                seam_grad_per_sample = None
             loss_per_element = loss_per_element * _wm
             # Opt-in (outpaint_loss_normalize, default False = unchanged behavior):
             # loss_per_sample below is a plain .mean([1,2,3]) over ALL C*H*W
@@ -5218,7 +5256,13 @@ class BaseTrainer(ABC):
                 loss_per_element = loss_per_element / _sample_mean_w
         else:
             self._last_gen_region_loss = None
+            self._last_seam_ring_loss = None
+            seam_grad_per_sample = None
         loss_per_sample = loss_per_element.mean([1, 2, 3])
+        if seam_grad_per_sample is not None:
+            # Added BEFORE Min-SNR so the aux term inherits the same per-sample
+            # timestep balancing as the main loss (constraint 4 in the design doc).
+            loss_per_sample = loss_per_sample + _seam_lambda * seam_grad_per_sample
 
         # Apply Min-SNR gamma weighting
         if self.min_snr_gamma > 0 and prediction_target == "epsilon":
@@ -9319,9 +9363,19 @@ class BaseTrainer(ABC):
                                         known_latent = _F.interpolate(
                                             (1.0 - gate_t), size=(height // 8, width // 8), mode="nearest"
                                         )  # 1 on known, 0 on generate (latent res, binary)
-                                        dil = _F.max_pool2d(known_latent, kernel_size=3, stride=1, padding=1)
-                                        ring = (dil > 0.5).float() * (known_latent <= 0.5).float()  # generate cells touching known
-                                        weight_latent = weight_latent + seam_boost * ring
+                                        dil1 = _F.max_pool2d(known_latent, kernel_size=3, stride=1, padding=1)
+                                        ring1 = (dil1 > 0.5).float() * (known_latent <= 0.5).float()  # generate cells touching known
+                                        weight_latent = weight_latent + seam_boost * ring1
+                                        # Optional 2nd ring (outpaint_seam_ring_width=2, default 1 =
+                                        # byte-identical to the single-ring behavior above): one more
+                                        # dilation step outward (k=5), weighted at HALF the boost
+                                        # increment -- the seam physics (visible discontinuity +
+                                        # VAE encode-bleed floor) spans roughly the first 1-2 latent
+                                        # cells, not a hard cliff at cell 1.
+                                        if int(getattr(self, "outpaint_seam_ring_width", 1)) >= 2:
+                                            dil2 = _F.max_pool2d(known_latent, kernel_size=5, stride=1, padding=2)
+                                            ring2 = (dil2 > 0.5).float() * (known_latent <= 0.5).float() * (1.0 - ring1)
+                                            weight_latent = weight_latent + (seam_boost * 0.5) * ring2
 
                                     # Both appends adjacent -> lists stay length-aligned.
                                     condition_images_list.append(cond_tensor)
@@ -9919,6 +9973,16 @@ class BaseTrainer(ABC):
                                     }) + "\n")
                             except Exception:
                                 pass
+
+                        # Outpaint conditioning: seam-ring-only MSE (monitoring, always
+                        # on in outpaint mode -- unlike gen_loss, this isolates the
+                        # ~2-3% of generate cells immediately adjacent to the known
+                        # region, which gen_loss averages away. Behavior-neutral
+                        # instrument, independent of outpaint_seam_loss_boost.
+                        _seam_loss = getattr(self, "_last_seam_ring_loss", None)
+                        if _seam_loss is not None:
+                            self.writer.add_scalar("train/seam_loss", _seam_loss, global_step)
+                            self.log_extra_metric("seam_loss", _seam_loss)
 
                         # Database logging (per-iteration, loss only - grad_norm logged at optimizer step)
                         # Grad norm is only available after optimizer step, so we don't log it here.

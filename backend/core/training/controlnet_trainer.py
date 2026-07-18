@@ -61,6 +61,8 @@ class ControlNetTrainer(BaseTrainer):
         outpaint_mask_channel: bool = True,
         outpaint_known_loss_weight: float = 0.3,
         outpaint_seam_loss_boost: float = 0.0,
+        outpaint_seam_ring_width: int = 1,
+        outpaint_seam_grad_lambda: float = 0.0,
         outpaint_loss_normalize: bool = False,
         **kwargs
     ):
@@ -108,6 +110,21 @@ class ControlNetTrainer(BaseTrainer):
             _known_w = _clamped
         self.outpaint_known_loss_weight = _known_w
         self.outpaint_seam_loss_boost = float(outpaint_seam_loss_boost)
+        # Number of seam rings the boost covers. 1 (default) = current 1-cell
+        # generate-side ring (byte-identical). 2 adds a second ring (one more
+        # max_pool2d dilation step outward) weighted at half the boost increment
+        # of the first ring. Clamped to {1, 2} -- any other value is invalid.
+        _ring_w = int(outpaint_seam_ring_width)
+        if _ring_w not in (1, 2):
+            _clamped_ring_w = min(max(_ring_w, 1), 2)
+            print(f"[ControlNet Trainer] WARNING: outpaint_seam_ring_width={_ring_w} "
+                  f"is outside the valid set {{1, 2}}; clamping to {_clamped_ring_w}")
+            _ring_w = _clamped_ring_w
+        self.outpaint_seam_ring_width = _ring_w
+        # Weight (lambda) of the cross-seam error-continuity aux term (native
+        # prediction space, no x0 reconstruction). 0.0 (default) = off, byte-
+        # identical loss. Never negative.
+        self.outpaint_seam_grad_lambda = max(0.0, float(outpaint_seam_grad_lambda))
         # Opt-in (default False = current byte-identical behavior). When True,
         # the weighted-loss reduction in base_trainer.train_step_controlnet
         # divides each sample's weighted loss by that sample's own mean weight,

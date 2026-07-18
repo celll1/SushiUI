@@ -264,6 +264,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   outpaint_mask_channel: true,
   outpaint_known_loss_weight: 0.3,
   outpaint_seam_loss_boost: 0.0,
+  outpaint_seam_ring_width: 1,
+  outpaint_seam_grad_lambda: 0.0,
   outpaint_loss_normalize: false,
   rescan_before_training: "off",
 };
@@ -384,6 +386,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const outpaintMaskChannel = params.outpaint_mask_channel ?? true;
   const outpaintKnownLossWeight = params.outpaint_known_loss_weight ?? 0.3;
   const outpaintSeamLossBoost = params.outpaint_seam_loss_boost ?? 0.0;
+  const outpaintSeamRingWidth = params.outpaint_seam_ring_width ?? 1;
+  const outpaintSeamGradLambda = params.outpaint_seam_grad_lambda ?? 0.0;
   const outpaintLossNormalize = params.outpaint_loss_normalize ?? false;
 
   // ReLoRA parameters (Phase 3d: migrated to params)
@@ -845,6 +849,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       outpaint_mask_channel: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_mask_channel : undefined,
       outpaint_known_loss_weight: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_known_loss_weight : undefined,
       outpaint_seam_loss_boost: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_seam_loss_boost : undefined,
+      outpaint_seam_ring_width: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_seam_ring_width : undefined,
+      outpaint_seam_grad_lambda: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_seam_grad_lambda : undefined,
       outpaint_loss_normalize: trainingMethod === "controlnet" && params.conditioning_mode === "outpaint" ? params.outpaint_loss_normalize : undefined,
       rescan_before_training: params.rescan_before_training ?? "off",
       danbooru_aug_enable: params.danbooru_aug_enable,
@@ -1052,7 +1058,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "condition_cache_mode",
       "conditioning_mode", "outpaint_crop_min_area", "outpaint_crop_max_area",
       "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob", "outpaint_mask_channel",
-      "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_loss_normalize",
+      "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_seam_ring_width",
+      "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
       "sample_every", "sample_prompts", "sample_width", "sample_height",
       "sample_steps", "sample_cfg_scale", "sample_sampler", "sample_schedule_type", "sample_seed",
       "debug_latents", "debug_latents_every",
@@ -2784,6 +2791,32 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                       step="0.05"
                       className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
                     />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Seam Ring Width (latent cells)</label>
+                    <select
+                      value={outpaintSeamRingWidth}
+                      onChange={(e) => updateParam("outpaint_seam_ring_width", parseInt(e.target.value, 10))}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value={1}>1 (single ring)</option>
+                      <option value={2}>2 (adds a second ring at half the boost increment)</option>
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Number of seam rings Seam Loss Boost covers. No effect when Seam Loss Boost is 0.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Seam Continuity Lambda</label>
+                    <input
+                      type="number"
+                      value={outpaintSeamGradLambda}
+                      onChange={(e) => updateParam("outpaint_seam_grad_lambda", e.target.value === '' ? (undefined as any) : parseFloat(e.target.value))}
+                      onBlur={(e) => { if (e.target.value === '' || isNaN(parseFloat(e.target.value))) updateParam("outpaint_seam_grad_lambda", 0.0); }}
+                      min="0.0"
+                      max="1.0"
+                      step="0.05"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Weight of the cross-seam prediction-error continuity term. 0 (default) disables it.</p>
                   </div>
                 </div>
 

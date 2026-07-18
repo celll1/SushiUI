@@ -3408,6 +3408,8 @@ export interface TrainingRunCreateRequest {
   outpaint_mask_channel?: boolean;
   outpaint_known_loss_weight?: number;
   outpaint_seam_loss_boost?: number;
+  outpaint_seam_ring_width?: number;
+  outpaint_seam_grad_lambda?: number;
   outpaint_loss_normalize?: boolean;
   // Pre-flight dataset drift check + optional rescan + orphan latent
   // cache cleanup.  Modes:

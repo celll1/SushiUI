@@ -34,4 +34,10 @@ EXTRA_METRIC_DEFS = {
     # adjacent to the known region (~2-3% of generate cells) -- gen_loss
     # averages this away, so this is the dedicated instrument for the seam band.
     "seam_loss": {"label": "Seam", "color": "#f43f5e", "dashed": True},
+    # Outpaint ControlNet: raw MSE over the known (anchored) region only --
+    # the loss-vs-timestep instrumentation's live-chart counterpart to
+    # gen_loss/seam_loss (full per-sample/per-timestep breakdown goes to the
+    # loss_vs_t.jsonl sidecar; see scratchpad "Outpaint ControlNet:
+    # loss-vs-timestep instrumentation" design doc).
+    "known_loss": {"label": "Known region", "color": "#34d399", "dashed": True},
 }

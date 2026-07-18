@@ -324,6 +324,35 @@ def apply_snr_weight(loss, timesteps, noise_scheduler, min_snr_gamma=5.0, return
     return weighted_loss
 
 
+def _per_sample_masked_mean(per_element: torch.Tensor, mask: torch.Tensor, channels: int) -> torch.Tensor:
+    """Per-sample mean of `per_element` [B,C,H,W] over cells where `mask` [B,1,H,W]
+    (float or bool) is truthy. Returns a [B] tensor. Samples whose mask is entirely
+    empty (e.g. no seam ring exists for that crop) return NaN rather than a spurious
+    0/eps -- callers must convert NaN -> null when serializing so an empty-mask
+    sample doesn't silently bias a bin's mean toward 0.
+
+    Monitoring-only helper (outpaint loss-vs-timestep instrumentation); never used
+    inside the gradient path.
+    """
+    m = mask.float()
+    cell_count = m.sum(dim=[1, 2, 3])  # [B], H*W cells (mask channel dim is 1)
+    denom = (cell_count * float(channels)).clamp_min(1e-8)
+    num = (per_element * m).sum(dim=[1, 2, 3])
+    result = num / denom
+    return torch.where(cell_count > 0, result, torch.full_like(result, float("nan")))
+
+
+def _per_sample_snr(noise_process: str, timesteps: torch.Tensor, noise_scheduler, alphas_cumprod_cached=None) -> torch.Tensor:
+    """Per-sample SNR = alpha_bar/(1-alpha_bar) (DDPM, integer `timesteps`) or
+    ((1-t)/t)^2 (flow, continuous t in [0,1]). Monitoring-only (loss-vs-timestep
+    instrumentation); independent of Min-SNR gamma clamping used for the loss.
+    """
+    if noise_process == "flow":
+        t = timesteps.float().clamp_min(1e-6)
+        return ((1.0 - t) / t) ** 2
+    return compute_snr(noise_scheduler, timesteps, alphas_cumprod_cached)
+
+
 def get_target_from_prediction_type(
     noise_scheduler,
     prediction_type: str,
@@ -5222,6 +5251,34 @@ class BaseTrainer(ABC):
                 else:
                     # Degenerate rect (e.g. full-bleed / no known region) -> no ring exists.
                     self._last_seam_ring_loss = None
+            # Loss-vs-timestep instrumentation (monitoring, no grad, ALWAYS on in
+            # outpaint mode -- see scratchpad "Outpaint ControlNet: loss-vs-timestep
+            # instrumentation" design doc). Per-SAMPLE raw eps-space region MSE
+            # (known/generate/seam-ring) + per-sample SNR, stashed for the JSONL
+            # sidecar written at the logging site. Per-sample, NOT batch-mean:
+            # with B=2, binning batch-mean-t against batch-mean loss convolves the
+            # loss curve with the triangular mean-t distribution and destroys the
+            # high-noise-tail curvature the diagnostic exists to read (design doc
+            # G2). Computed on loss_per_element BEFORE the _wm multiply below and
+            # BEFORE Min-SNR -- raw region MSE, not what is actually trained on
+            # (design doc G1); x0-space companions are added in the recon block.
+            with torch.no_grad():
+                _lvt_c = float(loss_per_element.shape[1])
+                _eps_known_ps = _per_sample_masked_mean(loss_per_element, _known_mask, _lvt_c)
+                _eps_gen_ps = _per_sample_masked_mean(loss_per_element, _gen_mask, _lvt_c)
+                _eps_seam_ps = _per_sample_masked_mean(loss_per_element, _ring_mask.float(), _lvt_c)
+                _snr_ps = _per_sample_snr(noise_process, timesteps, self.noise_scheduler, alphas_cumprod_cached)
+
+                def _nan_to_none(_vals):
+                    return [None if v != v else v for v in _vals]
+
+                self._last_loss_vs_t = {
+                    "t": timesteps.detach().float().cpu().tolist(),
+                    "snr": _snr_ps.detach().float().cpu().tolist(),
+                    "eps_known": _nan_to_none(_eps_known_ps.detach().cpu().tolist()),
+                    "eps_gen": _nan_to_none(_eps_gen_ps.detach().cpu().tolist()),
+                    "eps_seam": _nan_to_none(_eps_seam_ps.detach().cpu().tolist()),
+                }
             # Cross-seam error-continuity aux term (grad-carrying), opt-in via
             # outpaint_seam_grad_lambda (default 0.0 = off, term not computed,
             # loss byte-identical to today). Computed DIRECTLY on the native
@@ -5257,6 +5314,7 @@ class BaseTrainer(ABC):
         else:
             self._last_gen_region_loss = None
             self._last_seam_ring_loss = None
+            self._last_loss_vs_t = None
             seam_grad_per_sample = None
         loss_per_sample = loss_per_element.mean([1, 2, 3])
         if seam_grad_per_sample is not None:
@@ -5288,6 +5346,22 @@ class BaseTrainer(ABC):
             )
             recon_loss_per_element = F.mse_loss(predicted_latent.float(), latents.float(), reduction="none")
             recon_loss = recon_loss_per_element.mean()
+
+            # Loss-vs-timestep instrumentation, x0-space half (see eps-space block
+            # above for rationale). This is where the diagnostic reads cleanest
+            # (design doc G3): unlike eps-space MSE, x0-space error genuinely rises
+            # with noise level for unanchored (generate) pixels, so a known-region
+            # curve that stays flat/low at high t is real evidence of anchoring.
+            # recon_loss_per_element already exists unconditionally above (used for
+            # the always-on `recon_loss` monitor) -- region-masking it here is free,
+            # no extra forward/backward and no new tensor materialized beyond the
+            # per-sample reductions themselves.
+            if self._last_loss_vs_t is not None:
+                _lvt_c2 = float(recon_loss_per_element.shape[1])
+                _x0_known_ps = _per_sample_masked_mean(recon_loss_per_element, _known_mask, _lvt_c2)
+                _x0_gen_ps = _per_sample_masked_mean(recon_loss_per_element, _gen_mask, _lvt_c2)
+                self._last_loss_vs_t["x0_known"] = _nan_to_none(_x0_known_ps.detach().cpu().tolist())
+                self._last_loss_vs_t["x0_gen"] = _nan_to_none(_x0_gen_ps.detach().cpu().tolist())
 
         if profile_vram:
             print_vram_usage("[train_step_controlnet] After loss calculation")
@@ -9983,6 +10057,41 @@ class BaseTrainer(ABC):
                         if _seam_loss is not None:
                             self.writer.add_scalar("train/seam_loss", _seam_loss, global_step)
                             self.log_extra_metric("seam_loss", _seam_loss)
+
+                        # Outpaint conditioning: loss-vs-timestep instrumentation
+                        # (monitoring, always on in outpaint mode -- see scratchpad
+                        # "Outpaint ControlNet: loss-vs-timestep instrumentation"
+                        # design doc). Per-sample (t, snr, region-loss) tuples for
+                        # the last MNT micro-batch, written to a JSONL sidecar for
+                        # offline re-binning (batch-mean-t would destroy the
+                        # high-noise-tail curvature -- per-sample arrays are
+                        # mandatory, see design doc G2). `known_loss` (the
+                        # batch-mean of eps_known, ignoring empty-mask samples) is
+                        # also routed into the generic extra-metrics channel for a
+                        # live known-vs-gen glance on the existing loss chart; t/snr
+                        # /x0 stay JSONL-only (not per-step scalars, would need
+                        # per-sample keys and pollute the chart registry).
+                        _lvt = getattr(self, "_last_loss_vs_t", None)
+                        if _lvt is not None:
+                            _known_vals = [v for v in _lvt.get("eps_known", []) if v is not None]
+                            if _known_vals:
+                                _known_loss_mean = sum(_known_vals) / len(_known_vals)
+                                self.log_extra_metric("known_loss", _known_loss_mean)
+                            try:
+                                import json as _json
+                                with open(self.output_dir / "loss_vs_t.jsonl", "a") as _lf:
+                                    _lf.write(_json.dumps({
+                                        "step": global_step,
+                                        "t": _lvt.get("t", []),
+                                        "snr": _lvt.get("snr", []),
+                                        "eps_known": _lvt.get("eps_known", []),
+                                        "eps_gen": _lvt.get("eps_gen", []),
+                                        "eps_seam": _lvt.get("eps_seam", []),
+                                        "x0_known": _lvt.get("x0_known", []),
+                                        "x0_gen": _lvt.get("x0_gen", []),
+                                    }) + "\n")
+                            except Exception:
+                                pass
 
                         # Database logging (per-iteration, loss only - grad_norm logged at optimizer step)
                         # Grad norm is only available after optimizer step, so we don't log it here.

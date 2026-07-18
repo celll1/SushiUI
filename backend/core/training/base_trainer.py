@@ -10658,6 +10658,18 @@ class BaseTrainer(ABC):
                         total_grad_norm += param_norm ** 2
                         vision_encoder_grad_norm += param_norm ** 2
 
+            # Iterate through ControlNet parameters (ControlNet training freezes
+            # UNet/TE/VAE and trains self.controlnet, so none of the branches above
+            # catch its grads -> total_grad_norm was 0.0 for every CN step. Report
+            # the CN grad norm under both the total and the "unet" (main trainable
+            # model) slot so the convergence signal is usable.
+            if getattr(self, 'controlnet', None) is not None:
+                for param in self.controlnet.parameters():
+                    if param.grad is not None:
+                        param_norm = param.grad.data.norm(2).item()
+                        total_grad_norm += param_norm ** 2
+                        unet_grad_norm += param_norm ** 2
+
         # Take square root to get L2 norm
         total_grad_norm = total_grad_norm ** 0.5
         text_encoder_grad_norm = text_encoder_grad_norm ** 0.5

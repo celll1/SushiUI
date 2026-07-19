@@ -1650,6 +1650,118 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           </details>
           )}
 
+          {/* Outpaint ControlNet (structure continuity): synthesizes an
+              edge-extrapolation control image (canny/lineart) from the
+              placed region and conditions the generated surround with it,
+              tapering out with distance/schedule progress. See
+              backend/api/routes.py generate_outpaint outpaint_controlnet_*
+              Form params. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Outpaint ControlNet (structure continuity)
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                SD/SDXL only. Extrapolates edges from the placed region into the generated surround using a ControlNet, tapering out with distance from the seam.
+                Mutually exclusive with a user-supplied ControlNet/LLLite above; forces Boundary Relax Paste Mode to Exact and disables Seam Structure Continuity while active.
+              </p>
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="outpaint_controlnet_enable"
+                  checked={params.outpaint_controlnet_enable ?? false}
+                  onChange={(e) => setParams({ ...params, outpaint_controlnet_enable: e.target.checked })}
+                  disabled={isGenerating}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="outpaint_controlnet_enable" className="text-sm text-gray-300">
+                  Enable
+                </label>
+              </div>
+              {params.outpaint_controlnet_enable && (
+                <>
+                  <Select
+                    label="Mode"
+                    options={[
+                      { value: "edge_extrapolate", label: "Edge extrapolate (anytest)" },
+                      { value: "crop_mask", label: "Crop mask (trained outpaint CN)" },
+                    ]}
+                    value={params.outpaint_controlnet_mode || "edge_extrapolate"}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_mode: e.target.value })}
+                  />
+                  <p className="text-xs text-gray-500">
+                    {params.outpaint_controlnet_mode === "crop_mask"
+                      ? "Crop mask: builds the trained 4-channel crop+mask conditioning. Requires a ControlNet trained with conditioning_mode=outpaint (4-ch diffusers directory). Detector/depth/taper do not apply."
+                      : "Edge extrapolate: detects and extrapolates boundary-crossing edges over a guessed geometry (any structure ControlNet)."}
+                  </p>
+                  <Select
+                    label="ControlNet Model"
+                    options={
+                      outpaintControlNetModels.length > 0
+                        ? outpaintControlNetModels.map((m) => ({ value: m.path, label: m.name }))
+                        : [{ value: "", label: "No ControlNet models found" }]
+                    }
+                    value={params.outpaint_controlnet_model || ""}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_model: e.target.value })}
+                    disabled={isGenerating || outpaintControlNetModels.length === 0}
+                  />
+                  <Select
+                    label="Detector"
+                    options={[
+                      { value: "canny", label: "Canny" },
+                      { value: "lineart", label: "Lineart" },
+                      { value: "lineart_anime", label: "Lineart (Anime)" },
+                    ]}
+                    value={params.outpaint_controlnet_detector || "canny"}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_detector: e.target.value })}
+                  />
+                  <Slider
+                    label="Conditioning Scale"
+                    min={0.0}
+                    max={1.5}
+                    step={0.05}
+                    value={params.outpaint_controlnet_scale ?? 0.6}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_scale: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Guidance Start (schedule progress)"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.outpaint_controlnet_guidance_start ?? 0.0}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_start: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Guidance End (schedule progress)"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={params.outpaint_controlnet_guidance_end ?? 0.55}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_end: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Extrapolation Depth (px)"
+                    min={32}
+                    max={320}
+                    step={16}
+                    value={params.outpaint_controlnet_depth ?? 160}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_depth: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Confidence Taper"
+                    min={0.5}
+                    max={4.0}
+                    step={0.25}
+                    value={params.outpaint_controlnet_taper ?? 2.0}
+                    onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
+                  />
+                </>
+              )}
+            </div>
+          </details>
+          )}
+
           {/* Seam Structure Continuity (SSC): continues thin structures that
               cross the region boundary (a held rod/staff, limb, torso, lines)
               into the generated region. See backend/api/routes.py
@@ -1776,118 +1888,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     ]}
                     value={params.boundary_relax_paste || "feather"}
                     onChange={(e) => setParams({ ...params, boundary_relax_paste: e.target.value })}
-                  />
-                </>
-              )}
-            </div>
-          </details>
-          )}
-
-          {/* Outpaint ControlNet (structure continuity): synthesizes an
-              edge-extrapolation control image (canny/lineart) from the
-              placed region and conditions the generated surround with it,
-              tapering out with distance/schedule progress. See
-              backend/api/routes.py generate_outpaint outpaint_controlnet_*
-              Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Outpaint ControlNet (structure continuity)
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                SD/SDXL only. Extrapolates edges from the placed region into the generated surround using a ControlNet, tapering out with distance from the seam.
-                Mutually exclusive with a user-supplied ControlNet/LLLite above; forces Boundary Relax Paste Mode to Exact and disables Seam Structure Continuity while active.
-              </p>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="outpaint_controlnet_enable"
-                  checked={params.outpaint_controlnet_enable ?? false}
-                  onChange={(e) => setParams({ ...params, outpaint_controlnet_enable: e.target.checked })}
-                  disabled={isGenerating}
-                  className="w-4 h-4"
-                />
-                <label htmlFor="outpaint_controlnet_enable" className="text-sm text-gray-300">
-                  Enable
-                </label>
-              </div>
-              {params.outpaint_controlnet_enable && (
-                <>
-                  <Select
-                    label="Mode"
-                    options={[
-                      { value: "edge_extrapolate", label: "Edge extrapolate (anytest)" },
-                      { value: "crop_mask", label: "Crop mask (trained outpaint CN)" },
-                    ]}
-                    value={params.outpaint_controlnet_mode || "edge_extrapolate"}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_mode: e.target.value })}
-                  />
-                  <p className="text-xs text-gray-500">
-                    {params.outpaint_controlnet_mode === "crop_mask"
-                      ? "Crop mask: builds the trained 4-channel crop+mask conditioning. Requires a ControlNet trained with conditioning_mode=outpaint (4-ch diffusers directory). Detector/depth/taper do not apply."
-                      : "Edge extrapolate: detects and extrapolates boundary-crossing edges over a guessed geometry (any structure ControlNet)."}
-                  </p>
-                  <Select
-                    label="ControlNet Model"
-                    options={
-                      outpaintControlNetModels.length > 0
-                        ? outpaintControlNetModels.map((m) => ({ value: m.path, label: m.name }))
-                        : [{ value: "", label: "No ControlNet models found" }]
-                    }
-                    value={params.outpaint_controlnet_model || ""}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_model: e.target.value })}
-                    disabled={isGenerating || outpaintControlNetModels.length === 0}
-                  />
-                  <Select
-                    label="Detector"
-                    options={[
-                      { value: "canny", label: "Canny" },
-                      { value: "lineart", label: "Lineart" },
-                      { value: "lineart_anime", label: "Lineart (Anime)" },
-                    ]}
-                    value={params.outpaint_controlnet_detector || "canny"}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_detector: e.target.value })}
-                  />
-                  <Slider
-                    label="Conditioning Scale"
-                    min={0.0}
-                    max={1.5}
-                    step={0.05}
-                    value={params.outpaint_controlnet_scale ?? 0.6}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_scale: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Guidance Start (schedule progress)"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.outpaint_controlnet_guidance_start ?? 0.0}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_start: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Guidance End (schedule progress)"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.outpaint_controlnet_guidance_end ?? 0.55}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_end: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Extrapolation Depth (px)"
-                    min={32}
-                    max={320}
-                    step={16}
-                    value={params.outpaint_controlnet_depth ?? 160}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_depth: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Confidence Taper"
-                    min={0.5}
-                    max={4.0}
-                    step={0.25}
-                    value={params.outpaint_controlnet_taper ?? 2.0}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
                   />
                 </>
               )}

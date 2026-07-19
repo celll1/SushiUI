@@ -9404,8 +9404,17 @@ class BaseTrainer(ABC):
                                             (width, height), Image.LANCZOS
                                         )
                                     full_np = np.array(full_image)
-                                    rect = self.get_outpaint_planner().rect_for(epoch, image_path, width, height)
-                                    cond_np, gate_np = build_crop_mask_condition(full_np, rect, (width, height))
+                                    _op_planner = self.get_outpaint_planner()
+                                    rect = _op_planner.rect_for(epoch, image_path, width, height)
+                                    # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1):
+                                    # per-sample randomized edge softness, drawn from an RNG
+                                    # stream independent of rect_for's (see feather_for's
+                                    # docstring). 0.0/0.0 range (default) -> always 0.0 -> the
+                                    # razor-sharp default path, byte-identical to before R1.
+                                    _edge_feather_px = _op_planner.feather_for(epoch, image_path)
+                                    cond_np, gate_np = build_crop_mask_condition(
+                                        full_np, rect, (width, height), edge_feather_px=_edge_feather_px
+                                    )
                                     if not self.outpaint_mask_channel:
                                         cond_np = cond_np[:, :, :3]
                                     cond_tensor = torch.from_numpy(cond_np).permute(2, 0, 1).unsqueeze(0).float()  # [1, C, H, W]

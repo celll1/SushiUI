@@ -64,6 +64,13 @@ class ControlNetTrainer(BaseTrainer):
         outpaint_seam_ring_width: int = 1,
         outpaint_seam_grad_lambda: float = 0.0,
         outpaint_loss_normalize: bool = False,
+        # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1): per-sample
+        # randomized crop_mask_condition edge softness range, in canvas px. Both
+        # default to 0.0 -> OutpaintControlPlanner.feather_for() always returns
+        # 0.0 -> build_crop_mask_condition's razor-sharp default path -> byte-
+        # identical to before this feature existed unless a run opts in.
+        outpaint_edge_feather_min_px: float = 0.0,
+        outpaint_edge_feather_max_px: float = 0.0,
         **kwargs
     ):
         """
@@ -130,6 +137,13 @@ class ControlNetTrainer(BaseTrainer):
         # divides each sample's weighted loss by that sample's own mean weight,
         # decoupling per-sample loss scale from the known/generate rect area.
         self.outpaint_loss_normalize = bool(outpaint_loss_normalize)
+        # R1 edge-feather range (see param docstring above); clamp to a sane
+        # non-negative, min<=max range the same way the other outpaint ranges
+        # (min_area/max_area) are clamped in OutpaintControlPlanner.
+        self.outpaint_edge_feather_min_px = float(max(0.0, outpaint_edge_feather_min_px))
+        self.outpaint_edge_feather_max_px = float(max(
+            self.outpaint_edge_feather_min_px, outpaint_edge_feather_max_px
+        ))
         self._is_outpaint_mode = (self.conditioning_mode == "outpaint")
         # Channel count for the ControlNet conditioning-embedding conv: outpaint mode
         # adds a binary known-mask channel (crop RGB + mask = 4ch) unless the mask
@@ -359,6 +373,8 @@ class ControlNetTrainer(BaseTrainer):
                 max_area=self.outpaint_crop_max_area,
                 edge_anchor_prob=self.outpaint_edge_anchor_prob,
                 corner_anchor_prob=self.outpaint_corner_anchor_prob,
+                edge_feather_min_px=self.outpaint_edge_feather_min_px,
+                edge_feather_max_px=self.outpaint_edge_feather_max_px,
             )
         return self._outpaint_planner
 

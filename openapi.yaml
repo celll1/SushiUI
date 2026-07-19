@@ -7084,6 +7084,18 @@ components:
                 each extrapolated structure's confidence (higher = sharper
                 falloff near the taper depth).
               example: 2.0
+            outpaint_controlnet_edge_feather_px:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              description: |
+                Fixed inference-time inward edge-feather (canvas px) applied to
+                the crop_mask ControlNet conditioning perimeter. MUST be 0.0 for
+                a hard-edge-trained ControlNet (the current live checkpoint) so
+                inference matches training byte-for-byte. Set to the training
+                feather-range midpoint only once an R1-retrained (soft-edge) CN
+                becomes the live model.
+              example: 0.0
             outpaint_seam_membrane:
               type: boolean
               default: false
@@ -9047,6 +9059,18 @@ components:
           description: "Outpaint conditioning: when true, divides each sample's weighted loss by that sample's own mean loss-weight before averaging, decoupling per-sample loss scale from the known/generate rect area. False (default) keeps the existing behavior (weighted loss averaged over all elements)."
           default: false
           example: false
+        outpaint_edge_feather_min_px:
+          type: 'number'
+          description: "Outpaint crop_mask ControlNet conditioning: lower bound (canvas px) of the per-sample RANDOM inward edge-feather drawn during training. The known/unknown rect perimeter is softened INWARD over a randomly drawn width in [min, max] px so the ControlNet does not learn the razor-sharp axis-aligned edge as scene structure (a 'frame'). 0.0 (default) = razor-sharp/off (byte-identical resume-safe conditioning)."
+          default: 0.0
+          minimum: 0.0
+          example: 0.0
+        outpaint_edge_feather_max_px:
+          type: 'number'
+          description: "Outpaint crop_mask ControlNet conditioning: upper bound (canvas px) of the per-sample RANDOM inward edge-feather drawn during training (paired with outpaint_edge_feather_min_px). Must be >= min. 0.0 (default) = razor-sharp/off (byte-identical resume-safe conditioning)."
+          default: 0.0
+          minimum: 0.0
+          example: 0.0
         rescan_before_training:
           type: 'object'
           additionalProperties: true

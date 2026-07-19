@@ -80,6 +80,7 @@ export default function ImageGrid() {
   const [filterTxt2Img, setFilterTxt2Img] = useState(true);
   const [filterImg2Img, setFilterImg2Img] = useState(true);
   const [filterInpaint, setFilterInpaint] = useState(true);
+  const [filterOutpaint, setFilterOutpaint] = useState(true);
   const [filterTxt2Vid, setFilterTxt2Vid] = useState(true);
   const [filterImg2Vid, setFilterImg2Vid] = useState(true);
   // Audio (ACE-Step) results: txt2aud/aud2aud/repaint. Shown by default,
@@ -121,6 +122,7 @@ export default function ImageGrid() {
       if (filterTxt2Img) types.push("txt2img");
       if (filterImg2Img) types.push("img2img");
       if (filterInpaint) types.push("inpaint");
+      if (filterOutpaint) types.push("outpaint");
       if (filterTxt2Vid) types.push("txt2vid");
       if (filterImg2Vid) types.push("img2vid");
       // Audio (ACE-Step) generations: txt2aud/aud2aud/repaint, gated by the
@@ -150,12 +152,12 @@ export default function ImageGrid() {
     } finally {
       setLoading(false);
     }
-  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [currentPage, filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Reset to page 1 when filters change, then load images
   useEffect(() => {
     setCurrentPage(1);
-  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
+  }, [filterTxt2Img, filterImg2Img, filterInpaint, filterOutpaint, filterTxt2Vid, filterImg2Vid, filterAudio, dateFrom, dateTo, committedWidthRange, committedHeightRange]);
 
   // Load images when filters or page change
   useEffect(() => {
@@ -2218,6 +2220,8 @@ export default function ImageGrid() {
             setFilterImg2Img={setFilterImg2Img}
             filterInpaint={filterInpaint}
             setFilterInpaint={setFilterInpaint}
+            filterOutpaint={filterOutpaint}
+            setFilterOutpaint={setFilterOutpaint}
             filterTxt2Vid={filterTxt2Vid}
             setFilterTxt2Vid={setFilterTxt2Vid}
             filterImg2Vid={filterImg2Vid}

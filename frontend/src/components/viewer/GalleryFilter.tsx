@@ -22,6 +22,8 @@ interface GalleryFilterProps {
   setFilterImg2Img: (value: boolean) => void;
   filterInpaint: boolean;
   setFilterInpaint: (value: boolean) => void;
+  filterOutpaint: boolean;
+  setFilterOutpaint: (value: boolean) => void;
   filterTxt2Vid: boolean;
   setFilterTxt2Vid: (value: boolean) => void;
   filterImg2Vid: boolean;
@@ -76,6 +78,8 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
   setFilterImg2Img,
   filterInpaint,
   setFilterInpaint,
+  filterOutpaint,
+  setFilterOutpaint,
   filterTxt2Vid,
   setFilterTxt2Vid,
   filterImg2Vid,
@@ -152,6 +156,15 @@ const GalleryFilter: React.FC<GalleryFilterProps> = memo(({
                   className="rounded"
                 />
                 <span className="text-sm text-gray-300">inpaint</span>
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filterOutpaint}
+                  onChange={(e) => setFilterOutpaint(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-sm text-gray-300">outpaint</span>
               </label>
               <label className="flex items-center gap-2 cursor-pointer">
                 <input

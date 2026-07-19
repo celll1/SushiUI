@@ -15,6 +15,24 @@ const clamp = (value: number, min: number, max: number): number => Math.min(Math
 const MIN_PLACE_SIZE = 8;
 const PREVIEW_MAX_DIM = 480;
 
+// Resolves the backend's "input_crop_w/h <= 0 means to the input's edge"
+// sentinel (see validate_and_snap_placement in outpaint_utils.py) to a
+// concrete pixel rect. Used anywhere the UI needs a real crop-w/h to derive
+// a place:crop scale factor (drag math, preview rendering).
+const resolveCropRect = (
+  cropX: number,
+  cropY: number,
+  cropW: number,
+  cropH: number,
+  inputW: number,
+  inputH: number
+) => ({
+  x: cropX,
+  y: cropY,
+  w: cropW > 0 ? cropW : Math.max(1, inputW - cropX),
+  h: cropH > 0 ? cropH : Math.max(1, inputH - cropY),
+});
+
 export interface OutpaintPlacementParams {
   canvas_width: number;
   canvas_height: number;
@@ -46,6 +64,14 @@ interface DragStart {
   placeY: number;
   placeWidth: number;
   placeHeight: number;
+  // Input-crop geometry at drag start, ALREADY resolved from the backend's
+  // "0 = auto/full" sentinel to concrete pixel values (see resolveCropRect
+  // below) -- crop-mode math always needs concrete numbers to derive a
+  // place:crop scale factor.
+  cropX: number;
+  cropY: number;
+  cropW: number;
+  cropH: number;
 }
 
 const fillModeOptions = [
@@ -77,8 +103,21 @@ export default function OutpaintPlacementCanvas({
   } = params;
 
   const [snapEnabled, setSnapEnabled] = useState(true);
+  // Governs Ctrl+drag RESIZE mode only (normal drag is always a
+  // non-distorting crop -- see onPointerMove). Default ON per spec.
+  const [maintainAspect, setMaintainAspect] = useState(true);
   const [dragMode, setDragMode] = useState<DragMode>(null);
   const dragStartRef = useRef<DragStart | null>(null);
+  // The ACTUAL kind of change last applied by onPointerMove during the
+  // current drag ("move" never touches size/crop; "resize" is Ctrl+drag,
+  // place-only; "crop" is the default no-Ctrl drag, place+crop coupled).
+  // onPointerUp reads this (not dragMode, which is just which handle was
+  // grabbed) to decide whether the release-time snap may also touch
+  // input_crop_w/h -- see onPointerUp.
+  const lastDragKindRef = useRef<"move" | "resize" | "crop" | null>(null);
+
+  const inputNativeW = inputImageSize?.width || 0;
+  const inputNativeH = inputImageSize?.height || 0;
 
   // Fit the canvas into a PREVIEW_MAX_DIM x PREVIEW_MAX_DIM box, preserving
   // its aspect ratio -- this is purely a display transform; all committed
@@ -89,6 +128,40 @@ export default function OutpaintPlacementCanvas({
   const previewW = Math.max(1, Math.round(canvasWidth * scale));
   const previewH = Math.max(1, Math.round(canvasHeight * scale));
 
+  // Truthful preview geometry (fix A): render ONLY the input_crop_*
+  // sub-rectangle of the source image, stretched to place_width x
+  // place_height exactly like build_outpaint_canvas's
+  // cropped.resize((place_width, place_height)) -- via CSS
+  // background-position/background-size on the placed rect itself, instead
+  // of an <img object-cover>, which (a) showed the WHOLE input regardless of
+  // input_crop_* and (b) center-cropped to the frame's aspect instead of
+  // reflecting an actual per-axis stretch. This is exact for every
+  // combination of crop/place, in every drag mode.
+  const previewCrop = resolveCropRect(inputCropX, inputCropY, inputCropW, inputCropH, inputNativeW, inputNativeH);
+  const previewSx = previewCrop.w > 0 ? (placeWidth / previewCrop.w) * scale : scale;
+  const previewSy = previewCrop.h > 0 ? (placeHeight / previewCrop.h) * scale : scale;
+  const previewBackgroundStyle = !inputImagePreview
+    ? undefined
+    : inputNativeW > 0 && inputNativeH > 0
+      ? {
+          backgroundImage: `url(${inputImagePreview})`,
+          backgroundRepeat: "no-repeat" as const,
+          backgroundPosition: `${-previewCrop.x * previewSx}px ${-previewCrop.y * previewSy}px`,
+          backgroundSize: `${inputNativeW * previewSx}px ${inputNativeH * previewSy}px`,
+        }
+      : {
+          // Native size not known yet (the async img.onload that populates
+          // inputImageSize hasn't fired) -- fall back to a simple
+          // aspect-preserving cover so the thumbnail still appears
+          // immediately during that brief decode window, same as the old
+          // <img object-cover>. This ignores input_crop_* until the exact
+          // crop/stretch background above takes over on the next render.
+          backgroundImage: `url(${inputImagePreview})`,
+          backgroundRepeat: "no-repeat" as const,
+          backgroundPosition: "center" as const,
+          backgroundSize: "cover" as const,
+        };
+
   const commitDrag = (patch: Partial<OutpaintPlacementParams>) => {
     onChange(patch);
   };
@@ -98,6 +171,7 @@ export default function OutpaintPlacementCanvas({
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     setDragMode(mode);
+    const resolvedCrop = resolveCropRect(inputCropX, inputCropY, inputCropW, inputCropH, inputNativeW, inputNativeH);
     dragStartRef.current = {
       mouseX: e.clientX,
       mouseY: e.clientY,
@@ -105,6 +179,10 @@ export default function OutpaintPlacementCanvas({
       placeY,
       placeWidth,
       placeHeight,
+      cropX: resolvedCrop.x,
+      cropY: resolvedCrop.y,
+      cropW: resolvedCrop.w,
+      cropH: resolvedCrop.h,
     };
   };
 
@@ -115,54 +193,174 @@ export default function OutpaintPlacementCanvas({
     const dy = (e.clientY - start.mouseY) / scale;
 
     if (dragMode === "move") {
+      lastDragKindRef.current = "move";
       const newX = clamp(Math.round(start.placeX + dx), 0, Math.max(0, canvasWidth - start.placeWidth));
       const newY = clamp(Math.round(start.placeY + dy), 0, Math.max(0, canvasHeight - start.placeHeight));
       onChange({ place_x: newX, place_y: newY });
       return;
     }
 
-    let newX = start.placeX;
-    let newY = start.placeY;
-    let newW = start.placeWidth;
-    let newH = start.placeHeight;
+    // Ctrl (or Cmd on Mac) held during an edge/corner drag = RESIZE/SCALE
+    // mode: adjusts place_width/place_height only (the placed input is
+    // scaled -- and, per the "Maintain aspect ratio" checkbox, may be
+    // stretched). This is the OLD default drag behavior, now opt-in.
+    if (e.ctrlKey || e.metaKey) {
+      lastDragKindRef.current = "resize";
+      let newX = start.placeX;
+      let newY = start.placeY;
+      let newW = start.placeWidth;
+      let newH = start.placeHeight;
 
-    if (dragMode.includes("e")) newW = start.placeWidth + dx;
-    if (dragMode.includes("w")) { newW = start.placeWidth - dx; newX = start.placeX + dx; }
-    if (dragMode.includes("s")) newH = start.placeHeight + dy;
-    if (dragMode.includes("n")) { newH = start.placeHeight - dy; newY = start.placeY + dy; }
+      if (dragMode.includes("e")) newW = start.placeWidth + dx;
+      if (dragMode.includes("w")) { newW = start.placeWidth - dx; newX = start.placeX + dx; }
+      if (dragMode.includes("s")) newH = start.placeHeight + dy;
+      if (dragMode.includes("n")) { newH = start.placeHeight - dy; newY = start.placeY + dy; }
 
-    // Shift = preserve the input's original aspect ratio (derived from the
-    // drag-start size, not the live one, so it stays stable mid-drag).
-    if (e.shiftKey && start.placeHeight > 0) {
-      const aspect = start.placeWidth / start.placeHeight;
-      newH = newW / aspect;
-      if (dragMode.includes("n")) newY = start.placeY + start.placeHeight - newH;
+      // "Maintain aspect ratio" checkbox governs proportional resize; Shift
+      // inverts it for the current drag (a temporary override), same
+      // interaction pattern as most image editors' free-transform tools.
+      const effectiveAspectLock = maintainAspect !== e.shiftKey;
+      if (effectiveAspectLock && start.placeHeight > 0) {
+        const aspect = start.placeWidth / start.placeHeight;
+        newH = newW / aspect;
+        if (dragMode.includes("n")) newY = start.placeY + start.placeHeight - newH;
+      }
+
+      newW = clamp(newW, MIN_PLACE_SIZE, canvasWidth);
+      newH = clamp(newH, MIN_PLACE_SIZE, canvasHeight);
+      newX = clamp(newX, 0, canvasWidth - newW);
+      newY = clamp(newY, 0, canvasHeight - newH);
+
+      onChange({
+        place_x: Math.round(newX),
+        place_y: Math.round(newY),
+        place_width: Math.round(newW),
+        place_height: Math.round(newH),
+      });
+      return;
     }
 
-    newW = clamp(newW, MIN_PLACE_SIZE, canvasWidth);
-    newH = clamp(newH, MIN_PLACE_SIZE, canvasHeight);
-    newX = clamp(newX, 0, canvasWidth - newW);
-    newY = clamp(newY, 0, canvasHeight - newH);
+    // Default (no Ctrl) = CROP mode: adjusts input_crop_* (which part of the
+    // input is used), never place_width:place_height's ratio to
+    // input_crop_w:input_crop_h -- i.e. the backend's
+    // cropped.resize((place_width, place_height)) in build_outpaint_canvas
+    // is always a UNIFORM (non-distorting) scale, matching whatever
+    // place:crop scale was already in effect (1:1 -- true native pixels --
+    // until the user explicitly scales via Ctrl+drag).
+    //
+    // Geometry: sx/sy (canvas px per input px) is locked from the
+    // drag-start place:crop ratio. Each dragged edge maps its canvas-pixel
+    // delta to an input-pixel crop delta via dx/sx (dy/sy), with the
+    // OPPOSITE edge staying anchored (mirrors the resize-mode w/n branch
+    // above). The crop delta is clamped to the input's own bounds AND
+    // (converted back through sx/sy) to the canvas bounds in a SINGLE pass,
+    // so place is re-derived from the final crop and can never diverge from
+    // the sx/sy ratio -- this is what keeps validate_and_snap_placement's
+    // independent per-axis place_w/place_h cap from ever binding in a way
+    // that would distort the resize.
+    lastDragKindRef.current = "crop";
+    const inW = inputNativeW || start.cropX + start.cropW;
+    const inH = inputNativeH || start.cropY + start.cropH;
+    const sxRaw = start.cropW > 0 ? start.placeWidth / start.cropW : 1;
+    const syRaw = start.cropH > 0 ? start.placeHeight / start.cropH : 1;
+    const sx = Number.isFinite(sxRaw) && sxRaw > 0 ? sxRaw : 1;
+    const sy = Number.isFinite(syRaw) && syRaw > 0 ? syRaw : 1;
+
+    const minCropW = Math.max(1, MIN_PLACE_SIZE / sx);
+    const minCropH = Math.max(1, MIN_PLACE_SIZE / sy);
+
+    let newCropW = start.cropW;
+    let newCropX = start.cropX;
+    if (dragMode.includes("e")) {
+      const maxCropW = Math.min(inW - start.cropX, (canvasWidth - start.placeX) / sx);
+      newCropW = clamp(start.cropW + dx / sx, minCropW, Math.max(minCropW, maxCropW));
+      newCropX = start.cropX;
+    } else if (dragMode.includes("w")) {
+      const rightEdgeInput = start.cropX + start.cropW;
+      const rightEdgeCanvas = start.placeX + start.placeWidth;
+      const maxCropW = Math.min(rightEdgeInput, rightEdgeCanvas / sx);
+      newCropW = clamp(start.cropW - dx / sx, minCropW, Math.max(minCropW, maxCropW));
+      newCropX = rightEdgeInput - newCropW;
+    }
+
+    let newCropH = start.cropH;
+    let newCropY = start.cropY;
+    if (dragMode.includes("s")) {
+      const maxCropH = Math.min(inH - start.cropY, (canvasHeight - start.placeY) / sy);
+      newCropH = clamp(start.cropH + dy / sy, minCropH, Math.max(minCropH, maxCropH));
+      newCropY = start.cropY;
+    } else if (dragMode.includes("n")) {
+      const bottomEdgeInput = start.cropY + start.cropH;
+      const bottomEdgeCanvas = start.placeY + start.placeHeight;
+      const maxCropH = Math.min(bottomEdgeInput, bottomEdgeCanvas / sy);
+      newCropH = clamp(start.cropH - dy / sy, minCropH, Math.max(minCropH, maxCropH));
+      newCropY = bottomEdgeInput - newCropH;
+    }
+
+    // Place is derived FROM the (already fully clamped) crop at the locked
+    // sx/sy scale -- guarantees place_w:place_h == crop_w:crop_h exactly.
+    const newPlaceW = sx * newCropW;
+    const newPlaceH = sy * newCropH;
+    const newPlaceX = dragMode.includes("w") ? start.placeX + start.placeWidth - newPlaceW : start.placeX;
+    const newPlaceY = dragMode.includes("n") ? start.placeY + start.placeHeight - newPlaceH : start.placeY;
 
     onChange({
-      place_x: Math.round(newX),
-      place_y: Math.round(newY),
-      place_width: Math.round(newW),
-      place_height: Math.round(newH),
+      input_crop_x: Math.round(newCropX),
+      input_crop_y: Math.round(newCropY),
+      input_crop_w: Math.round(newCropW),
+      input_crop_h: Math.round(newCropH),
+      place_x: Math.round(newPlaceX),
+      place_y: Math.round(newPlaceY),
+      place_width: Math.round(newPlaceW),
+      place_height: Math.round(newPlaceH),
     });
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!dragMode) return;
+    // The ACTUAL applied kind for this drag (not just "which handle was
+    // grabbed" -- dragMode alone can't distinguish Ctrl-resize from a
+    // no-Ctrl crop-drag on the same handle). null if pointerup fired
+    // without any pointermove (a plain click) -- nothing changed, so no
+    // snap-driven patch is needed either way.
+    const kind = lastDragKindRef.current;
     setDragMode(null);
     dragStartRef.current = null;
-    if (snapEnabled) {
-      commitDrag({
+    lastDragKindRef.current = null;
+    if (snapEnabled && kind) {
+      const patch: Partial<OutpaintPlacementParams> = {
         place_x: roundToN(placeX, 8),
         place_y: roundToN(placeY, 8),
-        place_width: Math.max(MIN_PLACE_SIZE, roundToN(placeWidth, 8)),
-        place_height: Math.max(MIN_PLACE_SIZE, roundToN(placeHeight, 8)),
-      });
+      };
+      // A plain move never touches size, so only snap position -- snapping
+      // place_width/height here too (the old, pre-F3 behavior) could shift
+      // the place:crop scale for no reason, since move never intended a
+      // resize (a non-8-multiple Place Width/Height slider value plus any
+      // move+release would silently nudge the resize scale).
+      if (kind === "resize" || kind === "crop") {
+        const snappedW = Math.max(MIN_PLACE_SIZE, roundToN(placeWidth, 8));
+        const snappedH = Math.max(MIN_PLACE_SIZE, roundToN(placeHeight, 8));
+        patch.place_width = snappedW;
+        patch.place_height = snappedH;
+
+        // Only a crop-drag (never a Ctrl-resize) re-derives input_crop_w/h:
+        // re-deriving it after resize would overwrite/erode the crop on
+        // every Ctrl-resize release (Ctrl-resize intentionally never
+        // touches input_crop_* -- see onPointerMove). For a crop-drag, this
+        // re-derives input_crop_w/h from the SAME (current, pre-snap)
+        // place:crop scale so this cosmetic 8px snap can never reintroduce
+        // a place_w:place_h != input_crop_w:input_crop_h mismatch --
+        // crop_x/crop_y (position) are unaffected since only size ratios
+        // can cause resize() distortion.
+        if (kind === "crop") {
+          const resolved = resolveCropRect(inputCropX, inputCropY, inputCropW, inputCropH, inputNativeW, inputNativeH);
+          const curSx = resolved.w > 0 ? placeWidth / resolved.w : 0;
+          const curSy = resolved.h > 0 ? placeHeight / resolved.h : 0;
+          if (Number.isFinite(curSx) && curSx > 0) patch.input_crop_w = Math.max(1, Math.round(snappedW / curSx));
+          if (Number.isFinite(curSy) && curSy > 0) patch.input_crop_h = Math.max(1, Math.round(snappedH / curSy));
+        }
+      }
+      commitDrag(patch);
     }
   };
 
@@ -273,6 +471,22 @@ export default function OutpaintPlacementCanvas({
         <span className="text-xs text-gray-500">(cosmetic only -- the backend always guarantees exact placement)</span>
       </div>
 
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="outpaint_maintain_aspect"
+          checked={maintainAspect}
+          onChange={(e) => setMaintainAspect(e.target.checked)}
+          className="rounded"
+        />
+        <label htmlFor="outpaint_maintain_aspect" className="text-sm text-gray-300">
+          Maintain aspect ratio when resizing (Ctrl+drag)
+        </label>
+        <span className="text-xs text-gray-500">
+          (normal drag crops the input at native scale; Ctrl+drag scales/stretches the placed input -- this checkbox controls whether that scale is proportional)
+        </span>
+      </div>
+
       {/* Scaled visual preview: canvas box + draggable/resizable placed rect */}
       <div className="flex justify-center py-2">
         <div
@@ -293,17 +507,10 @@ export default function OutpaintPlacementCanvas({
               top: placeY * scale,
               width: Math.max(1, placeWidth * scale),
               height: Math.max(1, placeHeight * scale),
+              ...previewBackgroundStyle,
             }}
-            title="Drag to move; drag corner handles to resize (hold Shift to preserve aspect)"
+            title="Drag to move. Drag edges/corners to CROP the input (native scale, never stretches). Hold Ctrl while dragging edges/corners to RESIZE/scale the placed input instead (Shift inverts the 'Maintain aspect ratio' checkbox for that drag)."
           >
-            {inputImagePreview && (
-              <img
-                src={inputImagePreview}
-                alt="Placed input"
-                className="w-full h-full object-cover pointer-events-none"
-                draggable={false}
-              />
-            )}
             {handles.map((h) => (
               <div
                 key={h.key}

@@ -406,7 +406,7 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # module is not imported). Internal constants (low/high-frequency band
     # widths, Gaussian sigma, taper shape, clamp) are fixed -- validated
     # against a real decode in scratchpad/outpaint_seamless_vae_native.md.
-    "outpaint_seam_offset_prop": 0.0,
+    "outpaint_seam_offset_prop": 1.0,
     # Paste-band reconciliation feather ("Option E", core.inference.
     # outpaint_utils.reconcile_and_paste's paste_feather_px; see
     # scratchpad/outpaint_seam_latent_stage.md section 4.1): at the FINAL
@@ -474,7 +474,7 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # Costs roughly 1.5-2x the requested step count in actual denoise passes.
     # Only takes effect with a resample-compatible sampler (Euler, Euler
     # Ancestral, DDIM, DDPM); other samplers fall back to B1 only.
-    "outpaint_resample_count": 2,
+    "outpaint_resample_count": 1,
     # B2 jump-back length ("u", in step indices) for each resample cycle.
     "outpaint_jump_length": 4,
     # B3 continuity fix (SD/SDXL only; core.inference.custom_sampling's
@@ -538,7 +538,7 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # trained with conditioning_mode="outpaint" (4-ch), which LEARNED the
     # continuation, so no extrapolation/termination heuristic and a flat
     # (untapered) residual gate over the whole generate region.
-    "outpaint_controlnet_mode": "edge_extrapolate",
+    "outpaint_controlnet_mode": "crop_mask",
     # Path to the ControlNet model checkpoint driving this feature. Required
     # (non-empty) for the feature to take effect when enabled. For "crop_mask"
     # this must be an outpaint-trained diffusers directory (4-ch conditioning).

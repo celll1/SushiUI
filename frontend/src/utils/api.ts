@@ -437,6 +437,26 @@ export interface OutpaintParams extends GenerationParams {
   // generated pixels adjacent to the seam. Writes only generated-side
   // pixels; the preserved region is unaffected. 0 = off (byte-identical).
   outpaint_seam_offset_prop?: number;
+  // B1 continuity fix (SD/SDXL only): weak low-frequency color/illumination
+  // correction applied to the generate region only, within a narrow collar
+  // near the preserved rect's boundary, active mid/late in the schedule.
+  // 0 = off.
+  outpaint_boundary_color_strength?: number;
+  // B2 continuity fix (SD/SDXL only): RePaint-style band-limited time-travel
+  // resampling -- after a denoise step inside a mid-schedule band, jumps
+  // back outpaint_jump_length steps by re-noising the whole latent and
+  // re-denoising, repeated outpaint_resample_count times per band segment.
+  // 1 = off (B1 only). Values > 1 multiply the number of denoise passes
+  // actually run (roughly 1.5-2x the requested step count).
+  outpaint_resample_count?: number;
+  // B2 jump-back length ("u", in step indices) for each resample cycle.
+  outpaint_jump_length?: number;
+  // B3 continuity fix (SD/SDXL only): masked self-attention KV injection --
+  // a noise-matched reference composite built from the preserved rect's own
+  // clean latents, restricted to known-region tokens via spatial masking,
+  // so generate-region self-attention queries can attend to the input's own
+  // clean features. 0 = off.
+  outpaint_reference_strength?: number;
   // Paste-band reconciliation feather ("Option E"): at the final preserved-
   // rectangle paste, the last N rows/columns of the preserved rectangle at
   // its generate-adjacent edges are blended (raised cosine) from the exact
@@ -1772,7 +1792,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("boundary_relax_paste", String(paramsWithImages.boundary_relax_paste ?? "feather"));
   // Outpaint ControlNet (structure continuity, SD/SDXL only); false = off
   formData.append("outpaint_controlnet_enable", String(paramsWithImages.outpaint_controlnet_enable ?? false));
-  formData.append("outpaint_controlnet_mode", paramsWithImages.outpaint_controlnet_mode ?? "edge_extrapolate");
+  formData.append("outpaint_controlnet_mode", paramsWithImages.outpaint_controlnet_mode ?? "crop_mask");
   formData.append("outpaint_controlnet_model", paramsWithImages.outpaint_controlnet_model ?? "");
   formData.append("outpaint_controlnet_detector", paramsWithImages.outpaint_controlnet_detector ?? "canny");
   formData.append("outpaint_controlnet_scale", String(paramsWithImages.outpaint_controlnet_scale ?? 0.6));
@@ -1787,7 +1807,12 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("outpaint_seam_tone_strength", String(paramsWithImages.outpaint_seam_tone_strength ?? 0.0));
   formData.append("outpaint_seam_tone_band", String(paramsWithImages.outpaint_seam_tone_band ?? 0));
   // Boundary-offset propagation ("G_prop16", post-decode); 0 = off (byte-identical, generated-side-only)
-  formData.append("outpaint_seam_offset_prop", String(paramsWithImages.outpaint_seam_offset_prop ?? 0.0));
+  formData.append("outpaint_seam_offset_prop", String(paramsWithImages.outpaint_seam_offset_prop ?? 1.0));
+  // In-loop continuity fixes B1/B2/B3 (SD/SDXL only)
+  formData.append("outpaint_boundary_color_strength", String(paramsWithImages.outpaint_boundary_color_strength ?? 0.25));
+  formData.append("outpaint_resample_count", String(paramsWithImages.outpaint_resample_count ?? 1));
+  formData.append("outpaint_jump_length", String(paramsWithImages.outpaint_jump_length ?? 4));
+  formData.append("outpaint_reference_strength", String(paramsWithImages.outpaint_reference_strength ?? 0.0));
   // Paste-band reconciliation feather ("Option E"); 0 = off (byte-identical)
   formData.append("outpaint_paste_feather_px", String(paramsWithImages.outpaint_paste_feather_px ?? 0));
   // Preserved-region compositing mode; "exact" = off (byte-identical)

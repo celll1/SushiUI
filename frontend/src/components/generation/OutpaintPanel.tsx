@@ -136,7 +136,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   boundary_relax_end: 0.55,
   boundary_relax_paste: "feather",
   outpaint_controlnet_enable: false,
-  outpaint_controlnet_mode: "edge_extrapolate",
+  outpaint_controlnet_mode: "crop_mask",
   outpaint_controlnet_model: "",
   outpaint_controlnet_detector: "canny",
   outpaint_controlnet_scale: 0.6,
@@ -148,7 +148,11 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_seam_membrane_band: 0,
   outpaint_seam_tone_strength: 0.0,
   outpaint_seam_tone_band: 0,
-  outpaint_seam_offset_prop: 0.0,
+  outpaint_seam_offset_prop: 1.0,
+  outpaint_boundary_color_strength: 0.25,
+  outpaint_resample_count: 1,
+  outpaint_jump_length: 4,
+  outpaint_reference_strength: 0.0,
   outpaint_paste_feather_px: 0,
   outpaint_preserve_mode: "exact",
   outpaint_preview_unpinned_x0: false,
@@ -2003,9 +2007,89 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 min={0}
                 max={2.0}
                 step={0.05}
-                value={params.outpaint_seam_offset_prop ?? 0.0}
+                value={params.outpaint_seam_offset_prop ?? 1.0}
                 onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop: parseFloat(e.target.value) })}
               />
+            </div>
+          </details>
+          )}
+
+          {/* In-loop continuity fixes B1/B2/B3 (SD/SDXL only; core.inference.
+              custom_sampling's outpaint_noise_init-gated mechanisms). Unlike
+              the post-decode seam mechanisms above, these run inside the
+              denoise loop itself. See backend/api/param_defaults.py
+              OUTPAINT_DEFAULTS outpaint_boundary_color_strength /
+              outpaint_resample_count / outpaint_jump_length /
+              outpaint_reference_strength. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              In-loop Continuity（境界連続性）
+            </summary>
+            <div className="mt-3 space-y-4">
+              <div className="space-y-2">
+                <p className="text-xs text-gray-500">
+                  B1: a weak low-frequency color/illumination correction applied to the generate region only, within a narrow collar near the preserved rectangle&apos;s boundary, active mid/late in the schedule. 0 = off.
+                </p>
+                <Slider
+                  label="Boundary Color Strength (0 = off)"
+                  min={0}
+                  max={1.0}
+                  step={0.05}
+                  value={params.outpaint_boundary_color_strength ?? 0.25}
+                  onChange={(e) => setParams({ ...params, outpaint_boundary_color_strength: parseFloat(e.target.value) })}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs text-gray-500">
+                  B2: after a denoise step inside a mid-schedule band, jumps back the jump-back length in step indices by re-noising the whole latent (keep + generate together) and re-denoising, repeated the resample count times per band segment. 1 = off (B1 only). Values above 1 multiply the number of denoise passes actually run -- roughly 1.5-2x the requested step count at a resample count of 2. Only takes effect with a resample-compatible sampler (Euler, Euler Ancestral, DDIM, DDPM).
+                </p>
+                <div className="flex items-center gap-2">
+                  <label htmlFor="outpaint_resample_count" className="text-xs text-gray-400">Resample Count (1 = off)</label>
+                  <NumberInput
+                    id="outpaint_resample_count"
+                    min={1}
+                    max={8}
+                    step={1}
+                    parse="int"
+                    value={params.outpaint_resample_count ?? 1}
+                    defaultValue={1}
+                    onCommit={(v) => setParams({ ...params, outpaint_resample_count: v })}
+                    className="w-20"
+                  />
+                </div>
+                {(params.outpaint_resample_count ?? 1) > 1 && (
+                  <div className="flex items-center gap-2 ml-6">
+                    <label htmlFor="outpaint_jump_length" className="text-xs text-gray-400">Jump-Back Length (steps)</label>
+                    <NumberInput
+                      id="outpaint_jump_length"
+                      min={1}
+                      max={32}
+                      step={1}
+                      parse="int"
+                      value={params.outpaint_jump_length ?? 4}
+                      defaultValue={4}
+                      onCommit={(v) => setParams({ ...params, outpaint_jump_length: v })}
+                      className="w-20"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-xs text-gray-500">
+                  B3: masked self-attention KV injection -- a noise-matched reference composite built from the preserved rectangle&apos;s own clean latents, restricted to known-region tokens via spatial masking, so generate-region self-attention queries can attend to the input&apos;s own clean features. 0 = off.
+                </p>
+                <Slider
+                  label="Reference Strength (0 = off)"
+                  min={0}
+                  max={1.0}
+                  step={0.05}
+                  value={params.outpaint_reference_strength ?? 0.0}
+                  onChange={(e) => setParams({ ...params, outpaint_reference_strength: parseFloat(e.target.value) })}
+                />
+              </div>
             </div>
           </details>
           )}

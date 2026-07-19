@@ -6842,7 +6842,7 @@ components:
               example: 0.25
             outpaint_resample_count:
               type: integer
-              default: 2
+              default: 1
               minimum: 1
               description: |
                 SD/SDXL only. RePaint-style time-travel resampling: the
@@ -6855,12 +6855,13 @@ components:
                 generate region to the preserved-region constraint while it
                 is still malleable, addressing content divergence (invented
                 or unrelated composition) that persists with
-                `outpaint_boundary_color_strength` alone. 1 disables
-                resampling. Costs roughly 1.5-2x the requested step count in
-                actual denoise passes. Only takes effect with a
-                resample-compatible sampler (Euler, Euler Ancestral, DDIM,
-                DDPM); other samplers run without resampling.
-              example: 2
+                `outpaint_boundary_color_strength` alone. 1 (default) disables
+                resampling. Values above 1 cost roughly 1.5-2x the requested
+                step count in actual denoise passes (e.g. ~2x at a count of
+                2). Only takes effect with a resample-compatible sampler
+                (Euler, Euler Ancestral, DDIM, DDPM); other samplers run
+                without resampling.
+              example: 1
             outpaint_jump_length:
               type: integer
               default: 4
@@ -6963,19 +6964,19 @@ components:
             outpaint_controlnet_mode:
               type: string
               enum: ["edge_extrapolate", "crop_mask"]
-              default: "edge_extrapolate"
+              default: "crop_mask"
               description: |
-                Conditioning mode. "edge_extrapolate" (default, PART A):
-                detect + extrapolate boundary-crossing edges to drive a
-                general "anytest"-style structure ControlNet over a GUESSED
-                geometry. "crop_mask" (PART B): build the trained
+                Conditioning mode. "edge_extrapolate" (PART A): detect +
+                extrapolate boundary-crossing edges to drive a general
+                "anytest"-style structure ControlNet over a GUESSED geometry.
+                "crop_mask" (default, PART B): build the trained
                 outpaint-native 4-channel conditioning (crop RGB + binary
                 known-mask) -- requires a ControlNet trained with
                 conditioning_mode="outpaint" (4-ch diffusers directory),
                 which LEARNED the continuation, so no extrapolation/termination
                 heuristic and a flat (untapered) residual gate over the whole
                 generate region.
-              example: "edge_extrapolate"
+              example: "crop_mask"
             outpaint_controlnet_model:
               type: string
               default: ""
@@ -7089,7 +7090,7 @@ components:
               example: 0
             outpaint_seam_offset_prop:
               type: number
-              default: 0.0
+              default: 1.0
               minimum: 0.0
               maximum: 2.0
               description: |
@@ -7106,9 +7107,9 @@ components:
                 zero moving away from the seam. Writes only generated-side
                 pixels; the preserved region is unaffected. Runs after
                 `outpaint_seam_tone_strength` and before the final
-                unconditional paste. Scales the applied offset; 0 (default) =
-                off (the module is not imported).
-              example: 0.0
+                unconditional paste. Scales the applied offset; 0 = off (the
+                module is not imported).
+              example: 1.0
             outpaint_paste_feather_px:
               type: integer
               default: 0

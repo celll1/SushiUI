@@ -264,6 +264,152 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   input_trim_end_sec: 0.0,
 };
 
+// Image-tab outpaint options are grouped into a single-open tabbed accordion
+// (see the "Outpaint Options" Card below) instead of a stack of <details>
+// elements. Each tab owns a disjoint set of param keys, used both by its
+// "reset to default" button and by its active-highlight predicate (which
+// tabs currently have an enabled/non-neutral option, not merely "differs
+// from default" -- see isOutpaintOptionsTabActive below).
+type OutpaintOptionsTabId =
+  | "controlnet"
+  | "regional_prompt"
+  | "seam"
+  | "continuity"
+  | "acceleration"
+  | "post_process";
+
+const OUTPAINT_OPTIONS_TABS: { id: OutpaintOptionsTabId; label: string }[] = [
+  { id: "controlnet", label: "ControlNet" },
+  { id: "regional_prompt", label: "Regional Prompt" },
+  { id: "seam", label: "Seam（継ぎ目）" },
+  { id: "continuity", label: "Continuity（連続性）" },
+  { id: "acceleration", label: "Acceleration（高速化）" },
+  { id: "post_process", label: "Post-process（色補正）" },
+];
+
+const OUTPAINT_OPTIONS_TAB_KEYS: Record<OutpaintOptionsTabId, (keyof OutpaintPanelParams)[]> = {
+  controlnet: [
+    "outpaint_controlnet_enable",
+    "outpaint_controlnet_mode",
+    "outpaint_controlnet_model",
+    "outpaint_controlnet_detector",
+    "outpaint_controlnet_scale",
+    "outpaint_controlnet_guidance_start",
+    "outpaint_controlnet_guidance_end",
+    "outpaint_controlnet_depth",
+    "outpaint_controlnet_taper",
+  ],
+  regional_prompt: [
+    "region_prompt",
+    "region_negative_prompt",
+    "region_prompt_strength",
+    "region_prompt_method",
+    "region_mask_feather",
+  ],
+  seam: [
+    "outpaint_seam_membrane",
+    "outpaint_seam_membrane_band",
+    "outpaint_seam_tone_strength",
+    "outpaint_seam_tone_band",
+    "outpaint_seam_offset_prop",
+    "outpaint_paste_feather_px",
+    "outpaint_preserve_mode",
+  ],
+  continuity: [
+    "seam_structure_strength",
+    "seam_structure_depth",
+    "seam_structure_end",
+    "seam_structure_saliency",
+    "seam_structure_max_area",
+    "boundary_relax_strength",
+    "boundary_relax_width",
+    "boundary_relax_noise",
+    "boundary_relax_full_until",
+    "boundary_relax_end",
+    "boundary_relax_paste",
+    "outpaint_boundary_color_strength",
+    "outpaint_resample_count",
+    "outpaint_jump_length",
+    "outpaint_reference_strength",
+  ],
+  acceleration: [
+    "spectrum_enable",
+    "spectrum_feature_mode",
+    "spectrum_cache_branch",
+    "spectrum_w",
+    "spectrum_w_decay",
+    "spectrum_delta_cap",
+    "spectrum_m",
+    "spectrum_lam",
+    "spectrum_warmup_steps",
+    "spectrum_window_size",
+    "spectrum_flex_window",
+    "spectrum_tail",
+    "fbcache_enable",
+    "fbcache_threshold",
+    "fbcache_warmup_steps",
+  ],
+  post_process: [
+    "color_flatten_strength",
+    "flatten_in_loop",
+    "flatten_in_loop_last_steps",
+    "flatten_in_loop_min_region",
+    "vae_drift_correction",
+  ],
+};
+
+// "Active" means the group is currently doing something to the generation,
+// not just "differs from DEFAULT_PARAMS". Two tabs are legitimately active
+// out of the box because their own default is already "on":
+// outpaint_seam_offset_prop defaults to 1.0 (Boundary-Offset Propagation is
+// enabled by default) and outpaint_boundary_color_strength defaults to 0.25
+// (In-loop Continuity's B1 correction is enabled by default).
+function isOutpaintOptionsTabActive(tabId: OutpaintOptionsTabId, params: OutpaintPanelParams): boolean {
+  switch (tabId) {
+    case "controlnet":
+      return !!params.outpaint_controlnet_enable;
+    case "regional_prompt":
+      return !!(params.region_prompt?.trim() || params.region_negative_prompt?.trim());
+    case "seam":
+      return (
+        (params.outpaint_seam_offset_prop ?? 1.0) > 0 ||
+        (params.outpaint_seam_tone_strength ?? 0) > 0 ||
+        !!params.outpaint_seam_membrane ||
+        (params.outpaint_paste_feather_px ?? 0) > 0 ||
+        (params.outpaint_preserve_mode ?? "exact") !== "exact"
+      );
+    case "continuity":
+      return (
+        (params.seam_structure_strength ?? 0) > 0 ||
+        (params.boundary_relax_strength ?? 0) > 0 ||
+        (params.outpaint_boundary_color_strength ?? 0.25) !== 0 ||
+        (params.outpaint_resample_count ?? 1) > 1 ||
+        (params.outpaint_reference_strength ?? 0) > 0
+      );
+    case "acceleration":
+      return !!params.spectrum_enable || !!params.fbcache_enable;
+    case "post_process":
+      return (
+        (params.color_flatten_strength ?? 0) > 0 ||
+        !!params.flatten_in_loop ||
+        !!params.vae_drift_correction
+      );
+    default:
+      return false;
+  }
+}
+
+// Builds a { ...key: DEFAULT_PARAMS[key] } patch for exactly the given tab's
+// keys, for the tab's own "デフォルトに戻す" button (resets only that tab,
+// not the whole params object).
+function outpaintOptionsResetPatch(tabId: OutpaintOptionsTabId): Partial<OutpaintPanelParams> {
+  const patch: Partial<OutpaintPanelParams> = {};
+  for (const key of OUTPAINT_OPTIONS_TAB_KEYS[tabId]) {
+    (patch as any)[key] = DEFAULT_PARAMS[key];
+  }
+  return patch;
+}
+
 const STORAGE_KEY = "outpaint_params";
 const PREVIEW_STORAGE_KEY = "outpaint_preview";
 const INPUT_IMAGE_STORAGE_KEY = "outpaint_input_image";
@@ -341,6 +487,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
   const [developerMode, setDeveloperMode] = useState(false);
   const [showAdvancedCFG, setShowAdvancedCFG] = useState(false);
+  // Which "Outpaint Options" tab (ControlNet / Regional Prompt / Seam /
+  // Continuity / Acceleration / Post-process) is expanded, if any. Single-
+  // open accordion: opening one tab closes the others. Starts closed so the
+  // options area stays compact until the user opts into a group.
+  const [outpaintOptionsTab, setOutpaintOptionsTab] = useState<OutpaintOptionsTabId | null>(null);
   // Mobile bottom-fixed generate bar expand/collapse (mirrors
   // Txt2ImgPanel/Img2ImgPanel/InpaintPanel's isMobileControlsOpen).
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
@@ -1583,588 +1734,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             enableWeightControl={true}
           />
 
-          {/* Regional additional prompt (image outpaint only, SD/SDXL): conditions
-              ONLY the generated region, leaving the main prompt + the placed
-              (preserved) region untouched. See backend/api/routes.py
-              generate_outpaint region_* Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Regional prompt (generated area only)
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                Conditions only the generated region — the main prompt above and the placed (preserved) input pixels are unaffected.
-                Cost: "cfg" runs an extra regional denoise branch (up to ~2x U-Net forwards, more with outpaint's resampling passes). "attention" adds no extra forward pass.
-              </p>
-              <TextareaWithTagSuggestions
-                label="Generated-region positive prompt"
-                placeholder="Additional prompt applied only in the generated region..."
-                rows={2}
-                value={params.region_prompt || ""}
-                onChange={(e) => setParams({ ...params, region_prompt: e.target.value })}
-                enableWeightControl={true}
-              />
-              <div className="relative">
-                <TextareaWithTagSuggestions
-                  label="Generated-region negative prompt"
-                  placeholder="Additional negative prompt applied only in the generated region..."
-                  rows={2}
-                  value={params.region_negative_prompt || ""}
-                  onChange={(e) => setParams({ ...params, region_negative_prompt: e.target.value })}
-                  enableWeightControl={true}
-                />
-                <button
-                  type="button"
-                  onClick={() => setParams({
-                    ...params,
-                    region_negative_prompt: "ui, hud, frame, border, text, watermark, logo, letterbox, game screenshot, game ui, health bar, speech bubble, dialogue box",
-                  })}
-                  className="mt-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
-                >
-                  Fill with chrome-suppression default
-                </button>
-              </div>
-              <Slider
-                label="Regional Prompt Strength"
-                min={0}
-                max={2}
-                step={0.05}
-                value={params.region_prompt_strength ?? 1.0}
-                onChange={(e) => setParams({ ...params, region_prompt_strength: parseFloat(e.target.value) })}
-              />
-              <Select
-                label="Regional Prompt Method"
-                options={[
-                  { value: "cfg", label: "Spatial CFG (stronger, ~2x slower)" },
-                  { value: "attention", label: "Attention (free, softer)" },
-                ]}
-                value={params.region_prompt_method || "cfg"}
-                onChange={(e) => setParams({ ...params, region_prompt_method: e.target.value })}
-              />
-              <Slider
-                label="Region Mask Feather (latent px)"
-                min={0}
-                max={8}
-                step={0.5}
-                value={params.region_mask_feather ?? 0.0}
-                onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
-              />
-            </div>
-          </details>
-          )}
-
-          {/* Outpaint ControlNet (structure continuity): synthesizes an
-              edge-extrapolation control image (canny/lineart) from the
-              placed region and conditions the generated surround with it,
-              tapering out with distance/schedule progress. See
-              backend/api/routes.py generate_outpaint outpaint_controlnet_*
-              Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Outpaint ControlNet (structure continuity)
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                SD/SDXL only. Extrapolates edges from the placed region into the generated surround using a ControlNet, tapering out with distance from the seam.
-                Mutually exclusive with a user-supplied ControlNet/LLLite above; forces Boundary Relax Paste Mode to Exact and disables Seam Structure Continuity while active.
-              </p>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="outpaint_controlnet_enable"
-                  checked={params.outpaint_controlnet_enable ?? false}
-                  onChange={(e) => setParams({ ...params, outpaint_controlnet_enable: e.target.checked })}
-                  disabled={isGenerating}
-                  className="w-4 h-4"
-                />
-                <label htmlFor="outpaint_controlnet_enable" className="text-sm text-gray-300">
-                  Enable
-                </label>
-              </div>
-              {params.outpaint_controlnet_enable && (
-                <>
-                  <Select
-                    label="Mode"
-                    options={[
-                      { value: "edge_extrapolate", label: "Edge extrapolate (anytest)" },
-                      { value: "crop_mask", label: "Crop mask (trained outpaint CN)" },
-                    ]}
-                    value={params.outpaint_controlnet_mode || "edge_extrapolate"}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_mode: e.target.value })}
-                  />
-                  <p className="text-xs text-gray-500">
-                    {params.outpaint_controlnet_mode === "crop_mask"
-                      ? "Crop mask: builds the trained 4-channel crop+mask conditioning. Requires a ControlNet trained with conditioning_mode=outpaint (4-ch diffusers directory). Detector/depth/taper do not apply."
-                      : "Edge extrapolate: detects and extrapolates boundary-crossing edges over a guessed geometry (any structure ControlNet)."}
-                  </p>
-                  <Select
-                    label="ControlNet Model"
-                    options={
-                      outpaintControlNetModels.length > 0
-                        ? outpaintControlNetModels.map((m) => ({ value: m.path, label: m.name }))
-                        : [{ value: "", label: "No ControlNet models found" }]
-                    }
-                    value={params.outpaint_controlnet_model || ""}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_model: e.target.value })}
-                    disabled={isGenerating || outpaintControlNetModels.length === 0}
-                  />
-                  <Select
-                    label="Detector"
-                    options={[
-                      { value: "canny", label: "Canny" },
-                      { value: "lineart", label: "Lineart" },
-                      { value: "lineart_anime", label: "Lineart (Anime)" },
-                    ]}
-                    value={params.outpaint_controlnet_detector || "canny"}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_detector: e.target.value })}
-                  />
-                  <Slider
-                    label="Conditioning Scale"
-                    min={0.0}
-                    max={1.5}
-                    step={0.05}
-                    value={params.outpaint_controlnet_scale ?? 0.6}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_scale: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Guidance Start (schedule progress)"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.outpaint_controlnet_guidance_start ?? 0.0}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_start: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Guidance End (schedule progress)"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.outpaint_controlnet_guidance_end ?? 0.55}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_end: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Extrapolation Depth (px)"
-                    min={32}
-                    max={320}
-                    step={16}
-                    value={params.outpaint_controlnet_depth ?? 160}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_depth: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Confidence Taper"
-                    min={0.5}
-                    max={4.0}
-                    step={0.25}
-                    value={params.outpaint_controlnet_taper ?? 2.0}
-                    onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
-                  />
-                </>
-              )}
-            </div>
-          </details>
-          )}
-
-          {/* Seam Structure Continuity (SSC): continues thin structures that
-              cross the region boundary (a held rod/staff, limb, torso, lines)
-              into the generated region. See backend/api/routes.py
-              generate_outpaint seam_structure_* Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Seam Structure Continuity
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                SD/SDXL only. Continues thin structures that cross the region boundary (a held rod/staff, limb, torso, lines) into the generated region.
-                x0-space, no extra U-Net forwards. 0 = off.
-              </p>
-              <Slider
-                label="Seam Structure Strength"
-                min={0}
-                max={1.5}
-                step={0.05}
-                value={params.seam_structure_strength ?? 0.0}
-                onChange={(e) => setParams({ ...params, seam_structure_strength: parseFloat(e.target.value) })}
-              />
-              {developerMode && (
-                <>
-                  <Slider
-                    label="Seam Structure Depth (latent cells)"
-                    min={1}
-                    max={24}
-                    step={1}
-                    value={params.seam_structure_depth ?? 6.0}
-                    onChange={(e) => setParams({ ...params, seam_structure_depth: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Seam Structure End (schedule progress)"
-                    min={0.45}
-                    max={1.0}
-                    step={0.05}
-                    value={params.seam_structure_end ?? 0.70}
-                    onChange={(e) => setParams({ ...params, seam_structure_end: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Seam Structure Saliency"
-                    min={0}
-                    max={6}
-                    step={0.5}
-                    value={params.seam_structure_saliency ?? 2.0}
-                    onChange={(e) => setParams({ ...params, seam_structure_saliency: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Seam Structure Max Area"
-                    min={0.05}
-                    max={1.0}
-                    step={0.05}
-                    value={params.seam_structure_max_area ?? 0.25}
-                    onChange={(e) => setParams({ ...params, seam_structure_max_area: parseFloat(e.target.value) })}
-                  />
-                </>
-              )}
-            </div>
-          </details>
-          )}
-
-          {/* Boundary Determinism Relaxation (BDR): soft-pins a narrow
-              saliency-gated seam band (annealed soft->hard) so the known-side
-              latent can bend to meet the continuation. See backend/api/routes.py
-              generate_outpaint boundary_relax_* Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Boundary Relaxation
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                SD/SDXL only. Soft-pins a narrow saliency-gated seam band (annealed soft-&gt;hard) so the known-side latent can bend to meet the continuation.
-                Most effective with Seam Structure Continuity &gt; 0. 0 = off.
-              </p>
-              <Slider
-                label="Boundary Relax Strength"
-                min={0.0}
-                max={0.5}
-                step={0.05}
-                value={params.boundary_relax_strength ?? 0.0}
-                onChange={(e) => setParams({ ...params, boundary_relax_strength: parseFloat(e.target.value) })}
-              />
-              {developerMode && (
-                <>
-                  <Slider
-                    label="Boundary Relax Width (latent px)"
-                    min={1}
-                    max={6}
-                    step={1}
-                    value={params.boundary_relax_width ?? 3.0}
-                    onChange={(e) => setParams({ ...params, boundary_relax_width: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Boundary Relax Noise"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.boundary_relax_noise ?? 0.35}
-                    onChange={(e) => setParams({ ...params, boundary_relax_noise: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Boundary Relax Full Until (schedule progress)"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.boundary_relax_full_until ?? 0.37}
-                    onChange={(e) => setParams({ ...params, boundary_relax_full_until: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="Boundary Relax End (schedule progress)"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={params.boundary_relax_end ?? 0.55}
-                    onChange={(e) => setParams({ ...params, boundary_relax_end: parseFloat(e.target.value) })}
-                  />
-                  <Select
-                    label="Boundary Relax Paste Mode"
-                    options={[
-                      { value: "feather", label: "Feather (thin model-rendered seam strip)" },
-                      { value: "exact", label: "Exact (full byte-exact input)" },
-                    ]}
-                    value={params.boundary_relax_paste || "feather"}
-                    onChange={(e) => setParams({ ...params, boundary_relax_paste: e.target.value })}
-                  />
-                </>
-              )}
-            </div>
-          </details>
-          )}
-
-          {/* Seam Membrane: post-decode harmonic boundary-offset blend.
-              Adjusts generated pixels to meet the preserved boundary
-              exactly; the preserved region remains byte-identical. See
-              backend/core/inference/seam_membrane.py +
-              backend/api/routes.py generate_outpaint outpaint_seam_membrane*
-              Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Seam Membrane
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                Solves a smooth per-channel offset field over the generated region, equal to the preserved rectangle&apos;s own pixels at the seam and diffused smoothly away from it, tapering to zero over a fixed band.
-                Runs after the exposure harmonizer above and before the final unconditional paste; the preserved rectangle stays byte-identical.
-              </p>
-              <div className="flex items-center space-x-2">
-                <input
-                  type="checkbox"
-                  id="outpaint_seam_membrane"
-                  checked={params.outpaint_seam_membrane ?? false}
-                  onChange={(e) => setParams({ ...params, outpaint_seam_membrane: e.target.checked })}
-                  disabled={isGenerating}
-                  className="w-4 h-4"
-                />
-                <label htmlFor="outpaint_seam_membrane" className="text-sm text-gray-300">
-                  Enable
-                </label>
-              </div>
-              {params.outpaint_seam_membrane && developerMode && (
-                <Slider
-                  label="Taper Band (px, 0 = auto)"
-                  min={0}
-                  max={256}
-                  step={8}
-                  value={params.outpaint_seam_membrane_band ?? 0}
-                  onChange={(e) => setParams({ ...params, outpaint_seam_membrane_band: parseInt(e.target.value, 10) })}
-                />
-              )}
-            </div>
-          </details>
-          )}
-
-          {/* Cross-Seam Tone Membrane ("R2"): post-decode low-frequency
-              tone correction, distinct from the harmonic membrane above.
-              Measures the tone step between the preserved rectangle's own
-              pixels and the decoded generated pixels immediately across the
-              seam and writes a decaying offset into the generated side
-              only. See backend/core/inference/seam_membrane.py
-              apply_cross_seam_tone + backend/api/routes.py generate_outpaint
-              outpaint_seam_tone_* Form params. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Cross-Seam Tone Membrane
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                Measures the tone step between the preserved rectangle&apos;s own pixels and the decoded generated pixels immediately across the seam, subtracts the local content gradient estimated from the preserved side, and writes a decaying offset into the generated side only, within the decay band.
-                Runs after the harmonic membrane above and before the final unconditional paste; the preserved rectangle stays byte-identical.
-              </p>
-              <Slider
-                label="Strength (0 = off)"
-                min={0}
-                max={2.0}
-                step={0.05}
-                value={params.outpaint_seam_tone_strength ?? 0.0}
-                onChange={(e) => setParams({ ...params, outpaint_seam_tone_strength: parseFloat(e.target.value) })}
-              />
-              {(params.outpaint_seam_tone_strength ?? 0) > 0 && developerMode && (
-                <Slider
-                  label="Decay Band (px, 0 = auto)"
-                  min={0}
-                  max={64}
-                  step={2}
-                  value={params.outpaint_seam_tone_band ?? 0}
-                  onChange={(e) => setParams({ ...params, outpaint_seam_tone_band: parseInt(e.target.value, 10) })}
-                />
-              )}
-            </div>
-          </details>
-          )}
-
-          {/* Boundary-offset propagation ("G_prop16"): post-decode, a third
-              seam mechanism distinct from both membranes above. Measures the
-              same offset the harmonic membrane measures (preserved pixels
-              vs the decoded reconstruction of that same region, not the
-              cross-seam comparison the tone membrane uses), and writes it
-              directly into the generated pixels adjacent to the seam.
-              Writes only generated-side pixels; the preserved region is
-              unaffected. See backend/core/inference/seam_membrane.py
-              apply_seam_offset_propagation + backend/api/routes.py
-              generate_outpaint outpaint_seam_offset_prop Form param. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Boundary-Offset Propagation
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                Measures the offset between the preserved rectangle&apos;s own pixels and the decoded reconstruction of that same region, and writes it directly into the generated pixels adjacent to the seam as a low-frequency term plus a short high-frequency residual term, each tapered to zero moving away from the seam.
-                Writes only generated-side pixels; the preserved rectangle stays byte-identical. Runs after the cross-seam tone membrane above and before the final unconditional paste.
-              </p>
-              <Slider
-                label="Strength (0 = off)"
-                min={0}
-                max={2.0}
-                step={0.05}
-                value={params.outpaint_seam_offset_prop ?? 1.0}
-                onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop: parseFloat(e.target.value) })}
-              />
-            </div>
-          </details>
-          )}
-
-          {/* In-loop continuity fixes B1/B2/B3 (SD/SDXL only; core.inference.
-              custom_sampling's outpaint_noise_init-gated mechanisms). Unlike
-              the post-decode seam mechanisms above, these run inside the
-              denoise loop itself. See backend/api/param_defaults.py
-              OUTPAINT_DEFAULTS outpaint_boundary_color_strength /
-              outpaint_resample_count / outpaint_jump_length /
-              outpaint_reference_strength. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              In-loop Continuity（境界連続性）
-            </summary>
-            <div className="mt-3 space-y-4">
-              <div className="space-y-2">
-                <p className="text-xs text-gray-500">
-                  B1: a weak low-frequency color/illumination correction applied to the generate region only, within a narrow collar near the preserved rectangle&apos;s boundary, active mid/late in the schedule. 0 = off.
-                </p>
-                <Slider
-                  label="Boundary Color Strength (0 = off)"
-                  min={0}
-                  max={1.0}
-                  step={0.05}
-                  value={params.outpaint_boundary_color_strength ?? 0.25}
-                  onChange={(e) => setParams({ ...params, outpaint_boundary_color_strength: parseFloat(e.target.value) })}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <p className="text-xs text-gray-500">
-                  B2: after a denoise step inside a mid-schedule band, jumps back the jump-back length in step indices by re-noising the whole latent (keep + generate together) and re-denoising, repeated the resample count times per band segment. 1 = off (B1 only). Values above 1 multiply the number of denoise passes actually run -- roughly 1.5-2x the requested step count at a resample count of 2. Only takes effect with a resample-compatible sampler (Euler, Euler Ancestral, DDIM, DDPM).
-                </p>
-                <div className="flex items-center gap-2">
-                  <label htmlFor="outpaint_resample_count" className="text-xs text-gray-400">Resample Count (1 = off)</label>
-                  <NumberInput
-                    id="outpaint_resample_count"
-                    min={1}
-                    max={8}
-                    step={1}
-                    parse="int"
-                    value={params.outpaint_resample_count ?? 1}
-                    defaultValue={1}
-                    onCommit={(v) => setParams({ ...params, outpaint_resample_count: v })}
-                    className="w-20"
-                  />
-                </div>
-                {(params.outpaint_resample_count ?? 1) > 1 && (
-                  <div className="flex items-center gap-2 ml-6">
-                    <label htmlFor="outpaint_jump_length" className="text-xs text-gray-400">Jump-Back Length (steps)</label>
-                    <NumberInput
-                      id="outpaint_jump_length"
-                      min={1}
-                      max={32}
-                      step={1}
-                      parse="int"
-                      value={params.outpaint_jump_length ?? 4}
-                      defaultValue={4}
-                      onCommit={(v) => setParams({ ...params, outpaint_jump_length: v })}
-                      className="w-20"
-                    />
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <p className="text-xs text-gray-500">
-                  B3: masked self-attention KV injection -- a noise-matched reference composite built from the preserved rectangle&apos;s own clean latents, restricted to known-region tokens via spatial masking, so generate-region self-attention queries can attend to the input&apos;s own clean features. 0 = off.
-                </p>
-                <Slider
-                  label="Reference Strength (0 = off)"
-                  min={0}
-                  max={1.0}
-                  step={0.05}
-                  value={params.outpaint_reference_strength ?? 0.0}
-                  onChange={(e) => setParams({ ...params, outpaint_reference_strength: parseFloat(e.target.value) })}
-                />
-              </div>
-            </div>
-          </details>
-          )}
-
-          {/* Paste-band reconciliation feather ("Option E"): at the final
-              preserved-rectangle paste, the last N rows/columns of the
-              preserved rectangle at its generate-adjacent edges are blended
-              from the exact input toward the decoded canvas underneath
-              instead of pasted byte-exact. Independent of boundary relaxation's
-              own feather paste and takes precedence over it when both are
-              active. See backend/core/inference/outpaint_utils.py
-              reconcile_and_paste's paste_feather_px + backend/api/routes.py
-              generate_outpaint outpaint_paste_feather_px Form param. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Paste-Band Reconciliation Feather
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                At the final preserved-rectangle paste, blends the last N rows/columns of the preserved rectangle at its generate-adjacent edges from the exact input toward the decoded canvas already underneath them, instead of pasting byte-exact.
-                Independent of the boundary relaxation feather paste and takes precedence over it when both are active; only the N-row/column band loses byte-exactness.
-              </p>
-              <Slider
-                label="Feather Width (px, 0 = off)"
-                min={0}
-                max={8}
-                step={1}
-                value={params.outpaint_paste_feather_px ?? 0}
-                onChange={(e) => setParams({ ...params, outpaint_paste_feather_px: parseInt(e.target.value, 10) })}
-              />
-            </div>
-          </details>
-          )}
-
-          {/* Preserved-region compositing mode: "exact" (default) is the
-              current byte-exact paste, unchanged. "vae_reconstruct" outputs
-              a single uniform VAE decode of the whole canvas with no paste
-              at all -- the preserved region becomes a VAE reconstruction of
-              the input rather than byte-identical to it, removing the hard
-              raw/decoded pixel discontinuity at the boundary.
-              "vae_reconstruct_hf" additionally restores the preserved
-              region's own high-frequency detail on top of that uniform
-              decode, tapering to zero at the boundary; implemented for
-              SD1.5/SDXL, falls back to "vae_reconstruct" on other
-              architectures. See backend/core/inference/outpaint_utils.py
-              reconcile_and_paste's outpaint_preserve_mode + backend/api/
-              routes.py generate_outpaint outpaint_preserve_mode Form param. */}
-          {!isVideo && !isAudio && (
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
-            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-              Preserved-Region Compositing Mode
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                Controls how the preserved (placed input) rectangle is combined with the generated surroundings.
-                &quot;Exact&quot; keeps the input byte-for-byte identical. The other two modes replace it with a VAE
-                reconstruction of the input (not byte-identical) in exchange for a boundary with no hard raw/decoded
-                pixel discontinuity; &quot;VAE reconstruct + HF restore&quot; additionally restores the input&apos;s own
-                high-frequency detail on top of that reconstruction (implemented for SD1.5/SDXL only).
-              </p>
-              <Select
-                label="Preserve Mode"
-                options={[
-                  { value: "exact", label: "Exact (byte-identical input, default)" },
-                  { value: "vae_reconstruct", label: "VAE reconstruct (uniform decode, not byte-identical)" },
-                  { value: "vae_reconstruct_hf", label: "VAE reconstruct + HF restore (not byte-identical, SD1.5/SDXL)" },
-                ]}
-                value={params.outpaint_preserve_mode || "exact"}
-                onChange={(e) => setParams({ ...params, outpaint_preserve_mode: e.target.value as "exact" | "vae_reconstruct" | "vae_reconstruct_hf" })}
-              />
-            </div>
-          </details>
-          )}
-
           {/* Honest outpaint preview (display-only): sends the unpinned
               model x0 prediction to the mid-sampling preview decoder instead
               of the pinned known/generated composite. Does not affect the
@@ -2186,6 +1755,772 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               Preview: show unpinned prediction (display only, final image unaffected)
             </label>
           </div>
+          )}
+        </Card>
+        )}
+
+        {/* Outpaint Options: a single-open tabbed accordion replacing the
+            previous stack of individual <details> collapsibles. Every
+            control below is unchanged from its original location (same
+            param binding / handler / conditional reveal) -- only the
+            container changed. See OUTPAINT_OPTIONS_TAB_KEYS /
+            isOutpaintOptionsTabActive / outpaintOptionsResetPatch above. */}
+        {!isVideo && !isAudio && (
+        <Card title="Outpaint Options">
+          <div className="flex flex-wrap gap-1 border-b border-gray-700 -mb-px">
+            {OUTPAINT_OPTIONS_TABS.map((tab) => {
+              const isTabActive = isOutpaintOptionsTabActive(tab.id, params);
+              const isTabOpen = outpaintOptionsTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setOutpaintOptionsTab(isTabOpen ? null : tab.id)}
+                  className={`px-2.5 py-1.5 text-xs sm:text-sm font-medium transition-colors whitespace-nowrap flex items-center gap-1.5 ${
+                    isTabOpen ? "border-b-2 border-blue-500 text-white" : "text-gray-400 hover:text-white"
+                  }`}
+                  title={isTabActive ? "This group currently has enabled/non-neutral options" : undefined}
+                >
+                  {isTabActive && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 flex-shrink-0" aria-hidden="true" />
+                  )}
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {outpaintOptionsTab && (
+            <div className="mt-3 space-y-3">
+              <div className="flex justify-end">
+                <Button
+                  onClick={() => {
+                    const tabId = outpaintOptionsTab;
+                    setParams((prev) => ({ ...prev, ...outpaintOptionsResetPatch(tabId) }));
+                  }}
+                  variant="secondary"
+                  size="sm"
+                >
+                  デフォルトに戻す
+                </Button>
+              </div>
+
+              {outpaintOptionsTab === "controlnet" && (
+                <div className="space-y-3">
+                  {/* Outpaint ControlNet (structure continuity): synthesizes an
+                      edge-extrapolation control image (canny/lineart) from the
+                      placed region and conditions the generated surround with it,
+                      tapering out with distance/schedule progress. See
+                      backend/api/routes.py generate_outpaint outpaint_controlnet_*
+                      Form params. */}
+                  <p className="text-xs text-gray-500">
+                    SD/SDXL only. Extrapolates edges from the placed region into the generated surround using a ControlNet, tapering out with distance from the seam.
+                    Mutually exclusive with a user-supplied ControlNet/LLLite above; forces Boundary Relax Paste Mode to Exact and disables Seam Structure Continuity while active.
+                  </p>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id="outpaint_controlnet_enable"
+                      checked={params.outpaint_controlnet_enable ?? false}
+                      onChange={(e) => setParams({ ...params, outpaint_controlnet_enable: e.target.checked })}
+                      disabled={isGenerating}
+                      className="w-4 h-4"
+                    />
+                    <label htmlFor="outpaint_controlnet_enable" className="text-sm text-gray-300">
+                      Enable
+                    </label>
+                  </div>
+                  {params.outpaint_controlnet_enable && (
+                    <>
+                      <Select
+                        label="Mode"
+                        options={[
+                          { value: "edge_extrapolate", label: "Edge extrapolate (anytest)" },
+                          { value: "crop_mask", label: "Crop mask (trained outpaint CN)" },
+                        ]}
+                        value={params.outpaint_controlnet_mode || "edge_extrapolate"}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_mode: e.target.value })}
+                      />
+                      <p className="text-xs text-gray-500">
+                        {params.outpaint_controlnet_mode === "crop_mask"
+                          ? "Crop mask: builds the trained 4-channel crop+mask conditioning. Requires a ControlNet trained with conditioning_mode=outpaint (4-ch diffusers directory). Detector/depth/taper do not apply."
+                          : "Edge extrapolate: detects and extrapolates boundary-crossing edges over a guessed geometry (any structure ControlNet)."}
+                      </p>
+                      <Select
+                        label="ControlNet Model"
+                        options={
+                          outpaintControlNetModels.length > 0
+                            ? outpaintControlNetModels.map((m) => ({ value: m.path, label: m.name }))
+                            : [{ value: "", label: "No ControlNet models found" }]
+                        }
+                        value={params.outpaint_controlnet_model || ""}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_model: e.target.value })}
+                        disabled={isGenerating || outpaintControlNetModels.length === 0}
+                      />
+                      <Select
+                        label="Detector"
+                        options={[
+                          { value: "canny", label: "Canny" },
+                          { value: "lineart", label: "Lineart" },
+                          { value: "lineart_anime", label: "Lineart (Anime)" },
+                        ]}
+                        value={params.outpaint_controlnet_detector || "canny"}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_detector: e.target.value })}
+                      />
+                      <Slider
+                        label="Conditioning Scale"
+                        min={0.0}
+                        max={1.5}
+                        step={0.05}
+                        value={params.outpaint_controlnet_scale ?? 0.6}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_scale: parseFloat(e.target.value) })}
+                      />
+                      <Slider
+                        label="Guidance Start (schedule progress)"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={params.outpaint_controlnet_guidance_start ?? 0.0}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_start: parseFloat(e.target.value) })}
+                      />
+                      <Slider
+                        label="Guidance End (schedule progress)"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={params.outpaint_controlnet_guidance_end ?? 0.55}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_guidance_end: parseFloat(e.target.value) })}
+                      />
+                      <Slider
+                        label="Extrapolation Depth (px)"
+                        min={32}
+                        max={320}
+                        step={16}
+                        value={params.outpaint_controlnet_depth ?? 160}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_depth: parseFloat(e.target.value) })}
+                      />
+                      <Slider
+                        label="Confidence Taper"
+                        min={0.5}
+                        max={4.0}
+                        step={0.25}
+                        value={params.outpaint_controlnet_taper ?? 2.0}
+                        onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
+                      />
+                    </>
+                  )}
+                </div>
+              )}
+
+              {outpaintOptionsTab === "regional_prompt" && (
+                <div className="space-y-3">
+                  {/* Regional additional prompt (image outpaint only, SD/SDXL): conditions
+                      ONLY the generated region, leaving the main prompt + the placed
+                      (preserved) region untouched. See backend/api/routes.py
+                      generate_outpaint region_* Form params. */}
+                  <p className="text-xs text-gray-500">
+                    Conditions only the generated region — the main prompt above and the placed (preserved) input pixels are unaffected.
+                    Cost: "cfg" runs an extra regional denoise branch (up to ~2x U-Net forwards, more with outpaint's resampling passes). "attention" adds no extra forward pass.
+                  </p>
+                  <TextareaWithTagSuggestions
+                    label="Generated-region positive prompt"
+                    placeholder="Additional prompt applied only in the generated region..."
+                    rows={2}
+                    value={params.region_prompt || ""}
+                    onChange={(e) => setParams({ ...params, region_prompt: e.target.value })}
+                    enableWeightControl={true}
+                  />
+                  <div className="relative">
+                    <TextareaWithTagSuggestions
+                      label="Generated-region negative prompt"
+                      placeholder="Additional negative prompt applied only in the generated region..."
+                      rows={2}
+                      value={params.region_negative_prompt || ""}
+                      onChange={(e) => setParams({ ...params, region_negative_prompt: e.target.value })}
+                      enableWeightControl={true}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setParams({
+                        ...params,
+                        region_negative_prompt: "ui, hud, frame, border, text, watermark, logo, letterbox, game screenshot, game ui, health bar, speech bubble, dialogue box",
+                      })}
+                      className="mt-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded"
+                    >
+                      Fill with chrome-suppression default
+                    </button>
+                  </div>
+                  <Slider
+                    label="Regional Prompt Strength"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={params.region_prompt_strength ?? 1.0}
+                    onChange={(e) => setParams({ ...params, region_prompt_strength: parseFloat(e.target.value) })}
+                  />
+                  <Select
+                    label="Regional Prompt Method"
+                    options={[
+                      { value: "cfg", label: "Spatial CFG (stronger, ~2x slower)" },
+                      { value: "attention", label: "Attention (free, softer)" },
+                    ]}
+                    value={params.region_prompt_method || "cfg"}
+                    onChange={(e) => setParams({ ...params, region_prompt_method: e.target.value })}
+                  />
+                  <Slider
+                    label="Region Mask Feather (latent px)"
+                    min={0}
+                    max={8}
+                    step={0.5}
+                    value={params.region_mask_feather ?? 0.0}
+                    onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
+                  />
+                </div>
+              )}
+
+              {outpaintOptionsTab === "seam" && (
+                <div className="space-y-5">
+                  {/* Seam Membrane: post-decode harmonic boundary-offset blend.
+                      Adjusts generated pixels to meet the preserved boundary
+                      exactly; the preserved region remains byte-identical. See
+                      backend/core/inference/seam_membrane.py +
+                      backend/api/routes.py generate_outpaint outpaint_seam_membrane*
+                      Form params. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Seam Membrane</div>
+                    <p className="text-xs text-gray-500">
+                      Solves a smooth per-channel offset field over the generated region, equal to the preserved rectangle&apos;s own pixels at the seam and diffused smoothly away from it, tapering to zero over a fixed band.
+                      Runs after the exposure harmonizer above and before the final unconditional paste; the preserved rectangle stays byte-identical.
+                    </p>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="checkbox"
+                        id="outpaint_seam_membrane"
+                        checked={params.outpaint_seam_membrane ?? false}
+                        onChange={(e) => setParams({ ...params, outpaint_seam_membrane: e.target.checked })}
+                        disabled={isGenerating}
+                        className="w-4 h-4"
+                      />
+                      <label htmlFor="outpaint_seam_membrane" className="text-sm text-gray-300">
+                        Enable
+                      </label>
+                    </div>
+                    {params.outpaint_seam_membrane && developerMode && (
+                      <Slider
+                        label="Taper Band (px, 0 = auto)"
+                        min={0}
+                        max={256}
+                        step={8}
+                        value={params.outpaint_seam_membrane_band ?? 0}
+                        onChange={(e) => setParams({ ...params, outpaint_seam_membrane_band: parseInt(e.target.value, 10) })}
+                      />
+                    )}
+                  </div>
+
+                  {/* Cross-Seam Tone Membrane ("R2"): post-decode low-frequency
+                      tone correction, distinct from the harmonic membrane above.
+                      Measures the tone step between the preserved rectangle's own
+                      pixels and the decoded generated pixels immediately across the
+                      seam and writes a decaying offset into the generated side
+                      only. See backend/core/inference/seam_membrane.py
+                      apply_cross_seam_tone + backend/api/routes.py generate_outpaint
+                      outpaint_seam_tone_* Form params. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Cross-Seam Tone Membrane</div>
+                    <p className="text-xs text-gray-500">
+                      Measures the tone step between the preserved rectangle&apos;s own pixels and the decoded generated pixels immediately across the seam, subtracts the local content gradient estimated from the preserved side, and writes a decaying offset into the generated side only, within the decay band.
+                      Runs after the harmonic membrane above and before the final unconditional paste; the preserved rectangle stays byte-identical.
+                    </p>
+                    <Slider
+                      label="Strength (0 = off)"
+                      min={0}
+                      max={2.0}
+                      step={0.05}
+                      value={params.outpaint_seam_tone_strength ?? 0.0}
+                      onChange={(e) => setParams({ ...params, outpaint_seam_tone_strength: parseFloat(e.target.value) })}
+                    />
+                    {(params.outpaint_seam_tone_strength ?? 0) > 0 && developerMode && (
+                      <Slider
+                        label="Decay Band (px, 0 = auto)"
+                        min={0}
+                        max={64}
+                        step={2}
+                        value={params.outpaint_seam_tone_band ?? 0}
+                        onChange={(e) => setParams({ ...params, outpaint_seam_tone_band: parseInt(e.target.value, 10) })}
+                      />
+                    )}
+                  </div>
+
+                  {/* Boundary-offset propagation ("G_prop16"): post-decode, a third
+                      seam mechanism distinct from both membranes above. Measures the
+                      same offset the harmonic membrane measures (preserved pixels
+                      vs the decoded reconstruction of that same region, not the
+                      cross-seam comparison the tone membrane uses), and writes it
+                      directly into the generated pixels adjacent to the seam.
+                      Writes only generated-side pixels; the preserved region is
+                      unaffected. See backend/core/inference/seam_membrane.py
+                      apply_seam_offset_propagation + backend/api/routes.py
+                      generate_outpaint outpaint_seam_offset_prop Form param. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Boundary-Offset Propagation</div>
+                    <p className="text-xs text-gray-500">
+                      Measures the offset between the preserved rectangle&apos;s own pixels and the decoded reconstruction of that same region, and writes it directly into the generated pixels adjacent to the seam as a low-frequency term plus a short high-frequency residual term, each tapered to zero moving away from the seam.
+                      Writes only generated-side pixels; the preserved rectangle stays byte-identical. Runs after the cross-seam tone membrane above and before the final unconditional paste.
+                    </p>
+                    <Slider
+                      label="Strength (0 = off)"
+                      min={0}
+                      max={2.0}
+                      step={0.05}
+                      value={params.outpaint_seam_offset_prop ?? 1.0}
+                      onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop: parseFloat(e.target.value) })}
+                    />
+                  </div>
+
+                  {/* Paste-band reconciliation feather ("Option E"): at the final
+                      preserved-rectangle paste, the last N rows/columns of the
+                      preserved rectangle at its generate-adjacent edges are blended
+                      from the exact input toward the decoded canvas underneath
+                      instead of pasted byte-exact. Independent of boundary relaxation's
+                      own feather paste and takes precedence over it when both are
+                      active. See backend/core/inference/outpaint_utils.py
+                      reconcile_and_paste's paste_feather_px + backend/api/routes.py
+                      generate_outpaint outpaint_paste_feather_px Form param. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Paste-Band Reconciliation Feather</div>
+                    <p className="text-xs text-gray-500">
+                      At the final preserved-rectangle paste, blends the last N rows/columns of the preserved rectangle at its generate-adjacent edges from the exact input toward the decoded canvas already underneath them, instead of pasting byte-exact.
+                      Independent of the boundary relaxation feather paste and takes precedence over it when both are active; only the N-row/column band loses byte-exactness.
+                    </p>
+                    <Slider
+                      label="Feather Width (px, 0 = off)"
+                      min={0}
+                      max={8}
+                      step={1}
+                      value={params.outpaint_paste_feather_px ?? 0}
+                      onChange={(e) => setParams({ ...params, outpaint_paste_feather_px: parseInt(e.target.value, 10) })}
+                    />
+                  </div>
+
+                  {/* Preserved-region compositing mode: "exact" (default) is the
+                      current byte-exact paste, unchanged. "vae_reconstruct" outputs
+                      a single uniform VAE decode of the whole canvas with no paste
+                      at all -- the preserved region becomes a VAE reconstruction of
+                      the input rather than byte-identical to it, removing the hard
+                      raw/decoded pixel discontinuity at the boundary.
+                      "vae_reconstruct_hf" additionally restores the preserved
+                      region's own high-frequency detail on top of that uniform
+                      decode, tapering to zero at the boundary; implemented for
+                      SD1.5/SDXL, falls back to "vae_reconstruct" on other
+                      architectures. See backend/core/inference/outpaint_utils.py
+                      reconcile_and_paste's outpaint_preserve_mode + backend/api/
+                      routes.py generate_outpaint outpaint_preserve_mode Form param. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Preserved-Region Compositing Mode</div>
+                    <p className="text-xs text-gray-500">
+                      Controls how the preserved (placed input) rectangle is combined with the generated surroundings.
+                      &quot;Exact&quot; keeps the input byte-for-byte identical. The other two modes replace it with a VAE
+                      reconstruction of the input (not byte-identical) in exchange for a boundary with no hard raw/decoded
+                      pixel discontinuity; &quot;VAE reconstruct + HF restore&quot; additionally restores the input&apos;s own
+                      high-frequency detail on top of that reconstruction (implemented for SD1.5/SDXL only).
+                    </p>
+                    <Select
+                      label="Preserve Mode"
+                      options={[
+                        { value: "exact", label: "Exact (byte-identical input, default)" },
+                        { value: "vae_reconstruct", label: "VAE reconstruct (uniform decode, not byte-identical)" },
+                        { value: "vae_reconstruct_hf", label: "VAE reconstruct + HF restore (not byte-identical, SD1.5/SDXL)" },
+                      ]}
+                      value={params.outpaint_preserve_mode || "exact"}
+                      onChange={(e) => setParams({ ...params, outpaint_preserve_mode: e.target.value as "exact" | "vae_reconstruct" | "vae_reconstruct_hf" })}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {outpaintOptionsTab === "continuity" && (
+                <div className="space-y-5">
+                  {/* Seam Structure Continuity (SSC): continues thin structures that
+                      cross the region boundary (a held rod/staff, limb, torso, lines)
+                      into the generated region. See backend/api/routes.py
+                      generate_outpaint seam_structure_* Form params. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Seam Structure Continuity</div>
+                    <p className="text-xs text-gray-500">
+                      SD/SDXL only. Continues thin structures that cross the region boundary (a held rod/staff, limb, torso, lines) into the generated region.
+                      x0-space, no extra U-Net forwards. 0 = off.
+                    </p>
+                    <Slider
+                      label="Seam Structure Strength"
+                      min={0}
+                      max={1.5}
+                      step={0.05}
+                      value={params.seam_structure_strength ?? 0.0}
+                      onChange={(e) => setParams({ ...params, seam_structure_strength: parseFloat(e.target.value) })}
+                    />
+                    {developerMode && (
+                      <>
+                        <Slider
+                          label="Seam Structure Depth (latent cells)"
+                          min={1}
+                          max={24}
+                          step={1}
+                          value={params.seam_structure_depth ?? 6.0}
+                          onChange={(e) => setParams({ ...params, seam_structure_depth: parseFloat(e.target.value) })}
+                        />
+                        <Slider
+                          label="Seam Structure End (schedule progress)"
+                          min={0.45}
+                          max={1.0}
+                          step={0.05}
+                          value={params.seam_structure_end ?? 0.70}
+                          onChange={(e) => setParams({ ...params, seam_structure_end: parseFloat(e.target.value) })}
+                        />
+                        <Slider
+                          label="Seam Structure Saliency"
+                          min={0}
+                          max={6}
+                          step={0.5}
+                          value={params.seam_structure_saliency ?? 2.0}
+                          onChange={(e) => setParams({ ...params, seam_structure_saliency: parseFloat(e.target.value) })}
+                        />
+                        <Slider
+                          label="Seam Structure Max Area"
+                          min={0.05}
+                          max={1.0}
+                          step={0.05}
+                          value={params.seam_structure_max_area ?? 0.25}
+                          onChange={(e) => setParams({ ...params, seam_structure_max_area: parseFloat(e.target.value) })}
+                        />
+                      </>
+                    )}
+                  </div>
+
+                  {/* Boundary Determinism Relaxation (BDR): soft-pins a narrow
+                      saliency-gated seam band (annealed soft->hard) so the known-side
+                      latent can bend to meet the continuation. See backend/api/routes.py
+                      generate_outpaint boundary_relax_* Form params. */}
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-300">Boundary Relaxation</div>
+                    <p className="text-xs text-gray-500">
+                      SD/SDXL only. Soft-pins a narrow saliency-gated seam band (annealed soft-&gt;hard) so the known-side latent can bend to meet the continuation.
+                      Most effective with Seam Structure Continuity &gt; 0. 0 = off.
+                    </p>
+                    <Slider
+                      label="Boundary Relax Strength"
+                      min={0.0}
+                      max={0.5}
+                      step={0.05}
+                      value={params.boundary_relax_strength ?? 0.0}
+                      onChange={(e) => setParams({ ...params, boundary_relax_strength: parseFloat(e.target.value) })}
+                    />
+                    {developerMode && (
+                      <>
+                        <Slider
+                          label="Boundary Relax Width (latent px)"
+                          min={1}
+                          max={6}
+                          step={1}
+                          value={params.boundary_relax_width ?? 3.0}
+                          onChange={(e) => setParams({ ...params, boundary_relax_width: parseFloat(e.target.value) })}
+                        />
+                        <Slider
+                          label="Boundary Relax Noise"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={params.boundary_relax_noise ?? 0.35}
+                          onChange={(e) => setParams({ ...params, boundary_relax_noise: parseFloat(e.target.value) })}
+                        />
+                        <Slider
+                          label="Boundary Relax Full Until (schedule progress)"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={params.boundary_relax_full_until ?? 0.37}
+                          onChange={(e) => setParams({ ...params, boundary_relax_full_until: parseFloat(e.target.value) })}
+                        />
+                        <Slider
+                          label="Boundary Relax End (schedule progress)"
+                          min={0}
+                          max={1}
+                          step={0.05}
+                          value={params.boundary_relax_end ?? 0.55}
+                          onChange={(e) => setParams({ ...params, boundary_relax_end: parseFloat(e.target.value) })}
+                        />
+                        <Select
+                          label="Boundary Relax Paste Mode"
+                          options={[
+                            { value: "feather", label: "Feather (thin model-rendered seam strip)" },
+                            { value: "exact", label: "Exact (full byte-exact input)" },
+                          ]}
+                          value={params.boundary_relax_paste || "feather"}
+                          onChange={(e) => setParams({ ...params, boundary_relax_paste: e.target.value })}
+                        />
+                      </>
+                    )}
+                  </div>
+
+                  {/* In-loop continuity fixes B1/B2/B3 (SD/SDXL only; core.inference.
+                      custom_sampling's outpaint_noise_init-gated mechanisms). Unlike
+                      the post-decode seam mechanisms above, these run inside the
+                      denoise loop itself. See backend/api/param_defaults.py
+                      OUTPAINT_DEFAULTS outpaint_boundary_color_strength /
+                      outpaint_resample_count / outpaint_jump_length /
+                      outpaint_reference_strength. */}
+                  <div className="space-y-4">
+                    <div className="text-sm font-medium text-gray-300">In-loop Continuity（境界連続性）</div>
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-500">
+                        B1: a weak low-frequency color/illumination correction applied to the generate region only, within a narrow collar near the preserved rectangle&apos;s boundary, active mid/late in the schedule. 0 = off.
+                      </p>
+                      <Slider
+                        label="Boundary Color Strength (0 = off)"
+                        min={0}
+                        max={1.0}
+                        step={0.05}
+                        value={params.outpaint_boundary_color_strength ?? 0.25}
+                        onChange={(e) => setParams({ ...params, outpaint_boundary_color_strength: parseFloat(e.target.value) })}
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-500">
+                        B2: after a denoise step inside a mid-schedule band, jumps back the jump-back length in step indices by re-noising the whole latent (keep + generate together) and re-denoising, repeated the resample count times per band segment. 1 = off (B1 only). Values above 1 multiply the number of denoise passes actually run -- roughly 1.5-2x the requested step count at a resample count of 2. Only takes effect with a resample-compatible sampler (Euler, Euler Ancestral, DDIM, DDPM).
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <label htmlFor="outpaint_resample_count" className="text-xs text-gray-400">Resample Count (1 = off)</label>
+                        <NumberInput
+                          id="outpaint_resample_count"
+                          min={1}
+                          max={8}
+                          step={1}
+                          parse="int"
+                          value={params.outpaint_resample_count ?? 1}
+                          defaultValue={1}
+                          onCommit={(v) => setParams({ ...params, outpaint_resample_count: v })}
+                          className="w-20"
+                        />
+                      </div>
+                      {(params.outpaint_resample_count ?? 1) > 1 && (
+                        <div className="flex items-center gap-2 ml-6">
+                          <label htmlFor="outpaint_jump_length" className="text-xs text-gray-400">Jump-Back Length (steps)</label>
+                          <NumberInput
+                            id="outpaint_jump_length"
+                            min={1}
+                            max={32}
+                            step={1}
+                            parse="int"
+                            value={params.outpaint_jump_length ?? 4}
+                            defaultValue={4}
+                            onCommit={(v) => setParams({ ...params, outpaint_jump_length: v })}
+                            className="w-20"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-2">
+                      <p className="text-xs text-gray-500">
+                        B3: masked self-attention KV injection -- a noise-matched reference composite built from the preserved rectangle&apos;s own clean latents, restricted to known-region tokens via spatial masking, so generate-region self-attention queries can attend to the input&apos;s own clean features. 0 = off.
+                      </p>
+                      <Slider
+                        label="Reference Strength (0 = off)"
+                        min={0}
+                        max={1.0}
+                        step={0.05}
+                        value={params.outpaint_reference_strength ?? 0.0}
+                        onChange={(e) => setParams({ ...params, outpaint_reference_strength: parseFloat(e.target.value) })}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {outpaintOptionsTab === "acceleration" && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="spectrum_enable_outpaint"
+                      checked={params.spectrum_enable || false}
+                      onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="spectrum_enable_outpaint" className="text-sm text-gray-300">
+                      Spectrum (Spectral Feature Forecasting)
+                    </label>
+                    <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
+                  </div>
+                  {params.spectrum_enable && (
+                    <div className="ml-6 mt-1 flex items-center gap-2">
+                      <label className="text-xs text-gray-400">Mode</label>
+                      <select
+                        value={params.spectrum_feature_mode ?? "output"}
+                        onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
+                        className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                      >
+                        <option value="output">output (black-box, max speed)</option>
+                        <option value="block">block (deep-feature, higher quality)</option>
+                      </select>
+                      {params.spectrum_feature_mode === "block" && (
+                        <label className="text-xs text-gray-400 flex items-center gap-1">
+                          Branch
+                          <input type="number" min={1} max={3} step={1}
+                            value={params.spectrum_cache_branch ?? 1}
+                            onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
+                            className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                        </label>
+                      )}
+                    </div>
+                  )}
+                  {params.spectrum_enable && (
+                    <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
+                        <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
+                          onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Mix w decay
+                        <input type="number" min={0} step={0.25} value={params.spectrum_w_decay ?? 0.0}
+                          onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">Delta cap
+                        <input type="number" step={0.25} value={params.spectrum_delta_cap ?? 0.0}
+                          onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Basis m
+                        <input type="number" min={1} max={8} step={1} value={params.spectrum_m ?? 4}
+                          onChange={(e) => setParams({ ...params, spectrum_m: parseInt(e.target.value) || 4 })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Ridge λ
+                        <input type="number" min={0} step={0.01} value={params.spectrum_lam ?? 0.1}
+                          onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Warmup
+                        <input type="number" min={1} step={1} value={params.spectrum_warmup_steps ?? 3}
+                          onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Window
+                        <input type="number" min={1} step={1} value={params.spectrum_window_size ?? 4}
+                          onChange={(e) => setParams({ ...params, spectrum_window_size: parseInt(e.target.value) || 4 })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Flex
+                        <input type="number" min={0} max={1} step={0.05} value={params.spectrum_flex_window ?? 0.75}
+                          onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Tail
+                        <input type="number" min={0} max={0.5} step={0.02} value={params.spectrum_tail ?? 0.12}
+                          onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
+                          className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                      </label>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="checkbox"
+                      id="fbcache_enable_outpaint"
+                      checked={params.fbcache_enable || false}
+                      onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="fbcache_enable_outpaint" className="text-sm text-gray-300">
+                      First Block Cache (dynamic caching)
+                    </label>
+                    <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
+                  </div>
+                  {params.fbcache_enable && (
+                    <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold (higher = more skips)
+                        <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
+                          defaultValue={0.12}
+                          placeholder="0.12"
+                          onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
+                          className="w-20" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1">Warmup steps
+                        <NumberInput min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
+                          defaultValue={1}
+                          placeholder="1"
+                          onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
+                          className="w-20" />
+                      </label>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {outpaintOptionsTab === "post_process" && (
+                <div className="space-y-2">
+                  <div title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+                    <Slider
+                      label="Color Flatten（色ムラ除去）"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={params.color_flatten_strength ?? 0}
+                      onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 mt-2">
+                    <input
+                      type="checkbox"
+                      id="flatten_in_loop_outpaint"
+                      checked={params.flatten_in_loop || false}
+                      onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="flatten_in_loop_outpaint" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
+                      In-loop background flatten（背景ベタ塗り化）
+                    </label>
+                  </div>
+                  {params.flatten_in_loop && (
+                    <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                      <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
+                        Flatten last N steps
+                        <NumberInput min={1} max={16} step={1}
+                          value={params.flatten_in_loop_last_steps ?? 3}
+                          defaultValue={3}
+                          placeholder="3"
+                          onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
+                          className="w-20" />
+                      </label>
+                      <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
+                        Min region fraction
+                        <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+                          value={params.flatten_in_loop_min_region ?? 0.02}
+                          defaultValue={0.02}
+                          placeholder="0.02"
+                          onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
+                          className="w-20" />
+                      </label>
+                    </div>
+                  )}
+
+                  <div className="flex items-center space-x-2 mt-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
+                    <input
+                      type="checkbox"
+                      id="vae_drift_correction_outpaint"
+                      checked={params.vae_drift_correction ?? false}
+                      onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
+                      className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="vae_drift_correction_outpaint" className="text-sm text-gray-300">
+                      VAE drift correction
+                    </label>
+                  </div>
+                </div>
+              )}
+            </div>
           )}
         </Card>
         )}
@@ -2765,185 +3100,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               </div>
             </details>
 
-            <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration（高速化）</div>
-
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="checkbox"
-                id="spectrum_enable_outpaint"
-                checked={params.spectrum_enable || false}
-                onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
-                className="rounded"
-              />
-              <label htmlFor="spectrum_enable_outpaint" className="text-sm text-gray-300">
-                Spectrum (Spectral Feature Forecasting)
-              </label>
-              <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
-            </div>
-            {params.spectrum_enable && (
-              <div className="ml-6 mt-1 flex items-center gap-2">
-                <label className="text-xs text-gray-400">Mode</label>
-                <select
-                  value={params.spectrum_feature_mode ?? "output"}
-                  onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
-                  className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
-                >
-                  <option value="output">output (black-box, max speed)</option>
-                  <option value="block">block (deep-feature, higher quality)</option>
-                </select>
-                {params.spectrum_feature_mode === "block" && (
-                  <label className="text-xs text-gray-400 flex items-center gap-1">
-                    Branch
-                    <input type="number" min={1} max={3} step={1}
-                      value={params.spectrum_cache_branch ?? 1}
-                      onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
-                      className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                  </label>
-                )}
-              </div>
-            )}
-            {params.spectrum_enable && (
-              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-                <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
-                  <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
-                    onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Mix w decay
-                  <input type="number" min={0} step={0.25} value={params.spectrum_w_decay ?? 0.0}
-                    onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">Delta cap
-                  <input type="number" step={0.25} value={params.spectrum_delta_cap ?? 0.0}
-                    onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Basis m
-                  <input type="number" min={1} max={8} step={1} value={params.spectrum_m ?? 4}
-                    onChange={(e) => setParams({ ...params, spectrum_m: parseInt(e.target.value) || 4 })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Ridge λ
-                  <input type="number" min={0} step={0.01} value={params.spectrum_lam ?? 0.1}
-                    onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Warmup
-                  <input type="number" min={1} step={1} value={params.spectrum_warmup_steps ?? 3}
-                    onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Window
-                  <input type="number" min={1} step={1} value={params.spectrum_window_size ?? 4}
-                    onChange={(e) => setParams({ ...params, spectrum_window_size: parseInt(e.target.value) || 4 })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Flex
-                  <input type="number" min={0} max={1} step={0.05} value={params.spectrum_flex_window ?? 0.75}
-                    onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Tail
-                  <input type="number" min={0} max={0.5} step={0.02} value={params.spectrum_tail ?? 0.12}
-                    onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
-                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="checkbox"
-                id="fbcache_enable_outpaint"
-                checked={params.fbcache_enable || false}
-                onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
-                className="rounded"
-              />
-              <label htmlFor="fbcache_enable_outpaint" className="text-sm text-gray-300">
-                First Block Cache (dynamic caching)
-              </label>
-              <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
-            </div>
-            {params.fbcache_enable && (
-              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-                <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold (higher = more skips)
-                  <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
-                    defaultValue={0.12}
-                    placeholder="0.12"
-                    onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
-                    className="w-20" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1">Warmup steps
-                  <NumberInput min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
-                    defaultValue={1}
-                    placeholder="1"
-                    onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
-                    className="w-20" />
-                </label>
-              </div>
-            )}
-
-            <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Post-process（色補正）</div>
-
-            <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
-              <Slider
-                label="Color Flatten（色ムラ除去）"
-                min={0}
-                max={100}
-                step={1}
-                value={params.color_flatten_strength ?? 0}
-                onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
-              />
-            </div>
-
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="checkbox"
-                id="flatten_in_loop_outpaint"
-                checked={params.flatten_in_loop || false}
-                onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
-                className="rounded"
-              />
-              <label htmlFor="flatten_in_loop_outpaint" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
-                In-loop background flatten（背景ベタ塗り化）
-              </label>
-            </div>
-            {params.flatten_in_loop && (
-              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-                <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
-                  Flatten last N steps
-                  <NumberInput min={1} max={16} step={1}
-                    value={params.flatten_in_loop_last_steps ?? 3}
-                    defaultValue={3}
-                    placeholder="3"
-                    onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
-                    className="w-20" />
-                </label>
-                <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
-                  Min region fraction
-                  <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
-                    value={params.flatten_in_loop_min_region ?? 0.02}
-                    defaultValue={0.02}
-                    placeholder="0.02"
-                    onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
-                    className="w-20" />
-                </label>
-              </div>
-            )}
-
-            <div className="flex items-center space-x-2 mt-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
-              <input
-                type="checkbox"
-                id="vae_drift_correction_outpaint"
-                checked={params.vae_drift_correction ?? false}
-                onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
-                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
-              />
-              <label htmlFor="vae_drift_correction_outpaint" className="text-sm text-gray-300">
-                VAE drift correction
-              </label>
-            </div>
           </div>
         </Card>
         )}

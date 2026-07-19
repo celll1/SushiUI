@@ -7105,6 +7105,30 @@ components:
                 the N-row/column band loses byte-exactness when > 0; the rest
                 of the preserved rectangle is unaffected.
               example: 0
+            outpaint_preserve_mode:
+              type: string
+              enum: [exact, vae_reconstruct, vae_reconstruct_hf]
+              default: exact
+              description: |
+                Preserved-region compositing mode. `exact` (default) is the
+                current byte-exact behavior: the preserved rectangle is
+                pasted pixel-for-pixel from the input, unchanged by this
+                parameter's existence. `vae_reconstruct` outputs a single
+                uniform VAE decode of the whole canvas with no paste at all
+                -- the preserved region becomes a VAE reconstruction of the
+                input rather than byte-identical to it, removing the hard
+                raw/decoded pixel discontinuity at the boundary.
+                `vae_reconstruct_hf` additionally restores the preserved
+                region's own high-frequency detail (its raw pixels minus
+                their own VAE roundtrip reconstruction) on top of the
+                uniform decode, tapering that restoration to zero over the
+                rows/columns closest to the boundary so the boundary itself
+                still matches the uniform decode exactly. `vae_reconstruct_hf`
+                is implemented for SD1.5/SDXL; on other architectures it
+                falls back to the `vae_reconstruct` behavior. Both non-`exact`
+                modes make the preserved region not byte-identical to the
+                input and emit a warning.
+              example: exact
             outpaint_preview_unpinned_x0:
               type: boolean
               default: false

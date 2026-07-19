@@ -589,6 +589,7 @@ def reconcile_and_paste(
     seam_membrane_band: int = 0,
     seam_tone_strength: float = 0.0,
     seam_tone_band: int = 0,
+    outpaint_preserve_mode: str = "exact",
     warn_callback: Optional[Any] = None,
 ) -> Image.Image:
     """Defensive belt-and-suspenders wrapper around ``paste_preserved_region``.
@@ -647,10 +648,41 @@ def reconcile_and_paste(
     kept as an opaque callable (not an ``api.*`` import) to preserve this
     module's decoupling policy; the caller (``PipelineManager.generate_outpaint``)
     passes one that lazily wraps ``api.generation_status.add_warning``.
+
+    ``outpaint_preserve_mode`` (default ``"exact"``) selects the preserved-
+    region compositing strategy. ``"exact"`` runs everything above unchanged
+    (this parameter's default is a strict no-op). ``"vae_reconstruct"`` and
+    ``"vae_reconstruct_hf"`` both SKIP the final ``paste_preserved_region``
+    call entirely (and every corrective mechanism above it -- the exposure
+    harmonizer / seam membrane / cross-seam tone / paste feather -- which
+    exist only to counteract the hard paste's own discontinuity and would
+    otherwise warp an already-continuous decoded canvas for no reason):
+    ``result_img`` (after the size-reconciliation resize, if any) is returned
+    as-is, i.e. a single uniform decode of the whole canvas with no paste.
+    The two modes differ only in what the CALLER already baked into
+    ``result_img`` before this function ever saw it: for SD1.5/SDXL,
+    ``core.inference.custom_sampling.custom_inpaint_sampling_loop`` composites
+    the high-frequency-restored preserved region into its own output when
+    ``outpaint_preserve_mode == "vae_reconstruct_hf"`` (see that module for
+    the roundtrip/residual/taper construction); on every other architecture
+    (no such hook exists), ``"vae_reconstruct_hf"`` is therefore identical to
+    ``"vae_reconstruct"`` here -- the caller is responsible for warning about
+    that fallback (see ``PipelineManager.generate_outpaint``). An unrecognized
+    mode string raises ``ValueError`` rather than silently falling back to
+    ``"exact"``.
     """
     was_resized = result_img.size != canvas_size
     if was_resized:
         result_img = result_img.resize(canvas_size, Image.Resampling.LANCZOS)
+
+    _mode = (outpaint_preserve_mode or "exact").lower()
+    if _mode not in ("exact", "vae_reconstruct", "vae_reconstruct_hf"):
+        raise ValueError(f"Unknown outpaint_preserve_mode: {outpaint_preserve_mode!r}")
+    if _mode != "exact":
+        # VAE-uniform modes: no paste happens anywhere for either mode value
+        # here -- see the docstring paragraph above for why the two modes
+        # are indistinguishable at this specific call site.
+        return result_img
     if outpaint_seam_fix:
         result_img = match_generated_exposure(result_img, placed_img, rect, mask_blur)
     if seam_membrane:

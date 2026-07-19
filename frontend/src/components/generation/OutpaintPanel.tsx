@@ -149,6 +149,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_seam_tone_strength: 0.0,
   outpaint_seam_tone_band: 0,
   outpaint_paste_feather_px: 0,
+  outpaint_preserve_mode: "exact",
   outpaint_preview_unpinned_x0: false,
   resize_mode: "image",
   resampling_method: "lanczos",
@@ -2002,6 +2003,46 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 step={1}
                 value={params.outpaint_paste_feather_px ?? 0}
                 onChange={(e) => setParams({ ...params, outpaint_paste_feather_px: parseInt(e.target.value, 10) })}
+              />
+            </div>
+          </details>
+          )}
+
+          {/* Preserved-region compositing mode: "exact" (default) is the
+              current byte-exact paste, unchanged. "vae_reconstruct" outputs
+              a single uniform VAE decode of the whole canvas with no paste
+              at all -- the preserved region becomes a VAE reconstruction of
+              the input rather than byte-identical to it, removing the hard
+              raw/decoded pixel discontinuity at the boundary.
+              "vae_reconstruct_hf" additionally restores the preserved
+              region's own high-frequency detail on top of that uniform
+              decode, tapering to zero at the boundary; implemented for
+              SD1.5/SDXL, falls back to "vae_reconstruct" on other
+              architectures. See backend/core/inference/outpaint_utils.py
+              reconcile_and_paste's outpaint_preserve_mode + backend/api/
+              routes.py generate_outpaint outpaint_preserve_mode Form param. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Preserved-Region Compositing Mode
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                Controls how the preserved (placed input) rectangle is combined with the generated surroundings.
+                &quot;Exact&quot; keeps the input byte-for-byte identical. The other two modes replace it with a VAE
+                reconstruction of the input (not byte-identical) in exchange for a boundary with no hard raw/decoded
+                pixel discontinuity; &quot;VAE reconstruct + HF restore&quot; additionally restores the input&apos;s own
+                high-frequency detail on top of that reconstruction (implemented for SD1.5/SDXL only).
+              </p>
+              <Select
+                label="Preserve Mode"
+                options={[
+                  { value: "exact", label: "Exact (byte-identical input, default)" },
+                  { value: "vae_reconstruct", label: "VAE reconstruct (uniform decode, not byte-identical)" },
+                  { value: "vae_reconstruct_hf", label: "VAE reconstruct + HF restore (not byte-identical, SD1.5/SDXL)" },
+                ]}
+                value={params.outpaint_preserve_mode || "exact"}
+                onChange={(e) => setParams({ ...params, outpaint_preserve_mode: e.target.value as "exact" | "vae_reconstruct" | "vae_reconstruct_hf" })}
               />
             </div>
           </details>

@@ -7060,6 +7060,33 @@ components:
                 correction fades to zero. 0 = automatic
                 (clamp(max(canvas_width, canvas_height) // 8, 64, 256)).
               example: 0
+            outpaint_seam_tone_strength:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 2.0
+              description: |
+                Cross-seam low-frequency tone membrane ("R2"), a separate
+                mechanism from `outpaint_seam_membrane`: measures the
+                per-channel tone step between the preserved rectangle's own
+                pixels and the decoded generated pixels immediately across
+                the seam, subtracts the local content gradient estimated from
+                the preserved side so a legitimate ramp is not flattened,
+                low-passes the residual along the seam axis, and writes a
+                decaying offset into the generated side only, within
+                `outpaint_seam_tone_band` pixels of the seam. Runs after
+                `outpaint_seam_membrane` and before the final unconditional
+                paste; the preserved region remains byte-identical. Scales
+                the applied offset; 0 = off (the module is not imported).
+              example: 0.0
+            outpaint_seam_tone_band:
+              type: integer
+              default: 0
+              minimum: 0
+              description: |
+                Decay band width, in pixels, over which the cross-seam tone
+                membrane's offset fades to zero. 0 = automatic (16 px).
+              example: 0
 
     UpscaleRequest:
       type: object

@@ -429,6 +429,264 @@ def apply_seam_membrane(
     return out2, info
 
 
+# --- R2: cross-seam low-frequency tone membrane -----------------------------
+# ``scratchpad/outpaint_seam_redesign_v2.md`` section 2 (measurement) and
+# section 4 Phase 1 (design). Unlike ``apply_seam_membrane`` above (the C0
+# harmonic membrane, which is a proven no-op here: its ring Dirichlet data is
+# ``placed - result-at-rect-interior``, and a well-trained ControlNet
+# reconstructs the known region faithfully, so that residual is ~0), this
+# targets a DIFFERENT, measured defect: a low-frequency TONE STEP baked into
+# the decoded canvas ACROSS the seam between the preserved content and the
+# generated surroundings (measured: row-diff ~5.8x background, B-channel step
+# ~4.6/255). It measures ``placed`` (the true preserved pixels, unbiased)
+# against the GENERATED side immediately across the seam (not the rect
+# interior), subtracts the legitimate local content gradient (so a genuine
+# ramp across the boundary is not flattened), low-passes the residual along
+# the seam axis, and writes a decaying offset into the GENERATED side only.
+TONE_BAND_DEFAULT_PX = 16.0
+TONE_CAP_DEFAULT = 6.0
+TONE_SIGMA_DEFAULT = 16.0
+TONE_GRAD_ROWS_DEFAULT = 8
+
+
+def _cosine_decay(d: np.ndarray, band: float) -> np.ndarray:
+    """Raised-cosine decay: 1 at ``d == 0``, 0 at ``d >= band``. Same taper
+    shape as ``_distance_taper``'s falloff segment, applied here over the
+    full ``[0, band)`` range (no flat inner plateau -- the tone offset is
+    meant to be strongest exactly at the seam and fade out smoothly)."""
+    band = max(float(band), 1e-6)
+    dn = np.clip(d.astype(np.float64) / band, 0.0, 1.0)
+    return (0.5 * (1.0 + np.cos(np.pi * dn))).astype(np.float32)
+
+
+def _tone_edge_profile(
+    near_seam_placed: np.ndarray,
+    first_gen_result: np.ndarray,
+    grad_stack_deep_to_near: np.ndarray,
+    sigma: float,
+    cap: float,
+) -> np.ndarray:
+    """Per-edge tone-step profile along the seam axis, corrected for the
+    legitimate local content gradient and low-passed/clamped.
+
+    Args:
+        near_seam_placed: (L, 3) float32, the preserved pixel row/column
+            immediately inside the rect at the seam.
+        first_gen_result: (L, 3) float32, the decoded result's first
+            generated row/column immediately outside the rect.
+        grad_stack_deep_to_near: (gr, L, 3) float32, the last ``gr`` preserved
+            rows/columns, ORDERED from deepest-inside-the-rect to nearest-the
+            -seam (index 0 = deepest); used to estimate the local gradient
+            toward the seam so a genuine ramp is not treated as an artifact.
+            May have ``gr < 2`` (degenerate -- gradient term is then 0).
+        sigma: Gaussian low-pass sigma (px) along the seam axis.
+        cap: symmetric clamp (/255) applied to the corrected, low-passed step.
+
+    Returns:
+        ``s_low``: (L, 3) float32, the offset to ADD to the generated side at
+        the seam (``d == 0``) to cancel the tone discontinuity while leaving
+        a legitimate content gradient untouched.
+    """
+    observed_step = near_seam_placed.astype(np.float32) - first_gen_result.astype(np.float32)
+    if grad_stack_deep_to_near.shape[0] >= 2:
+        diffs = np.diff(grad_stack_deep_to_near, axis=0)
+        slope = np.median(diffs, axis=0)
+    else:
+        slope = np.zeros_like(observed_step)
+    # expected_step_from_preserved_gradient = -slope (the value observed_step
+    # would take if the generated side purely continued the preserved side's
+    # own local gradient, with no additional discontinuity -- see the module
+    # docstring derivation in the design doc).
+    s_corrected = observed_step + slope
+    s_low = ndimage.gaussian_filter1d(s_corrected, sigma=float(sigma), axis=0, mode="nearest")
+    return np.clip(s_low, -float(cap), float(cap)).astype(np.float32)
+
+
+def apply_cross_seam_tone(
+    result_arr: np.ndarray,
+    placed_arr: np.ndarray,
+    rect: Tuple[int, int, int, int],
+    canvas_size: Tuple[int, int],
+    strength: float = 1.0,
+    band: int = 0,
+    cap: float = TONE_CAP_DEFAULT,
+    sigma: float = TONE_SIGMA_DEFAULT,
+    grad_rows: int = TONE_GRAD_ROWS_DEFAULT,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Apply the cross-seam low-frequency tone membrane (R2) to the GENERATED
+    region of a decoded outpaint result.
+
+    For each rect edge that borders generated content (``_edge_flags``), this
+    measures the per-channel tone step between the preserved pixels
+    immediately inside the rect and the decoded generated pixels immediately
+    outside it, subtracts the local content gradient estimated from the last
+    ``grad_rows`` preserved rows/columns (so a legitimate ramp across the
+    boundary is not flattened), low-passes the residual along the seam axis
+    (Gaussian, ``sigma``), clamps it to ``+/- cap``, and adds it -- scaled by
+    ``strength`` and a raised-cosine distance decay -- to the generated pixels
+    within ``band`` px of the seam. Each edge's band strip spans only that
+    edge's own extent along the seam axis (bottom/top over cols ``[x0,x1)``,
+    left/right over rows ``[y0,y1)``), so the four strips are geometrically
+    disjoint; the diagonal corner regions beyond the rect corners are not
+    tone-corrected (they border no straight seam edge). The ``+=`` into a
+    zeroed full-canvas accumulator is therefore never a double write.
+
+    Args:
+        result_arr: (H, W, 3) uint8, the DECODED generate result BEFORE the
+            final preserved-rect paste (and, when combined with
+            ``apply_seam_membrane`` in ``reconcile_and_paste``, after that
+            membrane's own correction -- this function's own edge sampling is
+            unaffected either way since it never reads the rect interior).
+        placed_arr: (rh, rw, 3) uint8, the preserved input content, rect-local
+            coords.
+        rect: ``(x0, y0, x1, y1)`` half-open, canvas pixel coords.
+        canvas_size: ``(W, H)``, matching ``result_arr.shape[1], shape[0]``.
+        strength: scales the applied offset; ``0`` = exact no-op.
+        band: decay band width in px; ``0`` = ``TONE_BAND_DEFAULT_PX`` (16).
+        cap: symmetric per-channel clamp (/255) on the corrected tone step.
+        sigma: Gaussian low-pass sigma (px) along the seam axis.
+        grad_rows: number of preserved rows/columns used to estimate the
+            local content gradient near the seam.
+
+    Returns:
+        ``(out_arr, info)`` where ``out_arr`` is (H, W, 3) uint8 (a copy of
+        ``result_arr`` with ONLY ``gen_mask`` pixels modified) and ``info``:
+        ``applied`` (bool), ``band_px`` (int), ``max_abs_offset`` (float),
+        ``edges`` (list[str], edges that bordered generated content and were
+        processed), ``mean_abs_step`` (float, mean |corrected tone step|
+        across all processed edges -- diagnostic magnitude signal),
+        ``max_abs_step`` (float, pre-strength post-clamp peak |tone step| --
+        the strength-independent "clamp saturated" signal).
+
+    Never writes ``rect`` pixels: only band strips OUTSIDE the rect (the exact
+    geometric complement) are ever written, and the rect crop is additionally
+    restored from ``result_arr`` unconditionally before returning
+    (belt-and-suspenders, mirrors ``apply_seam_membrane``).
+    """
+    x0, y0, x1, y1 = rect
+    W, H = canvas_size
+    info: Dict[str, Any] = {
+        "applied": False,
+        "band_px": 0,
+        "max_abs_offset": 0.0,
+        "edges": [],
+        "mean_abs_step": 0.0,
+        "max_abs_step": 0.0,
+    }
+    out = np.array(result_arr, copy=True)
+
+    if strength is None or float(strength) <= 0.0:
+        return out, info
+
+    flags = _edge_flags(rect, canvas_size)
+    if not any(flags.values()):
+        # F4-equivalent: every rect edge is flush with the canvas.
+        return out, info
+
+    gen_mask = _build_gen_mask(rect, canvas_size)
+    if not gen_mask.any():
+        return out, info
+
+    rw, rh = x1 - x0, y1 - y0
+    B = float(band) if band and band > 0 else TONE_BAND_DEFAULT_PX
+    B = max(1.0, B)
+    strength_f = float(strength)
+    gr_v = max(0, int(grad_rows))
+
+    total_offset = np.zeros((H, W, 3), dtype=np.float32)
+    step_samples = []
+    edges_applied = []
+
+    if flags["bottom"] and y1 < H:
+        band_rows = min(int(np.ceil(B)), H - y1)
+        if band_rows > 0:
+            near_seam_placed = placed_arr[rh - 1, :, :3]
+            first_gen_result = result_arr[y1, x0:x1, :3]
+            gr = min(gr_v, rh)
+            grad_stack = placed_arr[rh - gr:rh, :, :3].astype(np.float32) if gr >= 2 else np.zeros((0, rw, 3), dtype=np.float32)
+            s_low = _tone_edge_profile(near_seam_placed, first_gen_result, grad_stack, sigma, cap)
+            d = np.arange(band_rows, dtype=np.float32)
+            decay = _cosine_decay(d, B)
+            offset = decay[:, None, None] * s_low[None, :, :] * strength_f
+            total_offset[y1:y1 + band_rows, x0:x1, :] += offset
+            step_samples.append(s_low)
+            edges_applied.append("bottom")
+
+    if flags["top"] and y0 > 0:
+        band_rows = min(int(np.ceil(B)), y0)
+        if band_rows > 0:
+            near_seam_placed = placed_arr[0, :, :3]
+            first_gen_result = result_arr[y0 - 1, x0:x1, :3]
+            gr = min(gr_v, rh)
+            grad_stack = placed_arr[0:gr, :, :3].astype(np.float32)[::-1] if gr >= 2 else np.zeros((0, rw, 3), dtype=np.float32)
+            s_low = _tone_edge_profile(near_seam_placed, first_gen_result, grad_stack, sigma, cap)
+            d = np.arange(band_rows, dtype=np.float32)
+            decay = _cosine_decay(d, B)
+            offset = decay[:, None, None] * s_low[None, :, :] * strength_f
+            # offset[0] (d=0) belongs at row y0-1 (nearest the seam); ascending
+            # row index in the target slice moves AWAY from the seam, so the
+            # slice is written in reverse distance order.
+            total_offset[y0 - band_rows:y0, x0:x1, :] += offset[::-1]
+            step_samples.append(s_low)
+            edges_applied.append("top")
+
+    if flags["left"] and x0 > 0:
+        band_rows = min(int(np.ceil(B)), x0)
+        if band_rows > 0:
+            near_seam_placed = placed_arr[:, 0, :3]
+            first_gen_result = result_arr[y0:y1, x0 - 1, :3]
+            gr = min(gr_v, rw)
+            grad_stack = np.moveaxis(placed_arr[:, 0:gr, :3], 1, 0).astype(np.float32)[::-1] if gr >= 2 else np.zeros((0, rh, 3), dtype=np.float32)
+            s_low = _tone_edge_profile(near_seam_placed, first_gen_result, grad_stack, sigma, cap)
+            d = np.arange(band_rows, dtype=np.float32)
+            decay = _cosine_decay(d, B)
+            offset = decay[:, None, None] * s_low[None, :, :] * strength_f  # (band_rows, rh, 3)
+            offset_t = np.moveaxis(offset, 0, 1)  # (rh, band_rows, 3), col index ascends with d
+            total_offset[y0:y1, x0 - band_rows:x0, :] += offset_t[:, ::-1, :]
+            step_samples.append(s_low)
+            edges_applied.append("left")
+
+    if flags["right"] and x1 < W:
+        band_rows = min(int(np.ceil(B)), W - x1)
+        if band_rows > 0:
+            near_seam_placed = placed_arr[:, rw - 1, :3]
+            first_gen_result = result_arr[y0:y1, x1, :3]
+            gr = min(gr_v, rw)
+            grad_stack = np.moveaxis(placed_arr[:, rw - gr:rw, :3], 1, 0).astype(np.float32) if gr >= 2 else np.zeros((0, rh, 3), dtype=np.float32)
+            s_low = _tone_edge_profile(near_seam_placed, first_gen_result, grad_stack, sigma, cap)
+            d = np.arange(band_rows, dtype=np.float32)
+            decay = _cosine_decay(d, B)
+            offset = decay[:, None, None] * s_low[None, :, :] * strength_f  # (band_rows, rh, 3)
+            offset_t = np.moveaxis(offset, 0, 1)  # (rh, band_rows, 3), col index ascends with d
+            total_offset[y0:y1, x1:x1 + band_rows, :] += offset_t
+            step_samples.append(s_low)
+            edges_applied.append("right")
+
+    if not edges_applied:
+        return out, info
+
+    g = out.astype(np.float32)
+    corrected = np.clip(np.round(g + total_offset), 0, 255).astype(np.uint8)
+    out2 = out.copy()
+    out2[gen_mask] = corrected[gen_mask]
+    # Defensive guard (belt-and-suspenders, mirrors apply_seam_membrane):
+    # restore the rect crop from the pre-correction result unconditionally,
+    # even though gen_mask already excludes it from every write above.
+    out2[y0:y1, x0:x1] = out[y0:y1, x0:x1]
+
+    info["applied"] = True
+    info["band_px"] = int(round(B))
+    info["edges"] = edges_applied
+    info["max_abs_offset"] = float(np.max(np.abs(total_offset))) if edges_applied else 0.0
+    if step_samples:
+        info["mean_abs_step"] = float(np.mean([np.mean(np.abs(s)) for s in step_samples]))
+        # Pre-strength, post-clamp peak: measures whether the +/-cap clamp bound
+        # (content disagreed enough to saturate), independent of `strength` --
+        # the faithful signal for the caller's "saturated its clamp" warning.
+        info["max_abs_step"] = float(np.max([np.max(np.abs(s)) for s in step_samples]))
+    return out2, info
+
+
 if __name__ == "__main__":
     # Minimal embedded self-test (no backend/GPU): synthetic canvas with a
     # known tone step across the seam. Run directly:
@@ -464,3 +722,39 @@ if __name__ == "__main__":
 
     print(f"[seam_membrane self-test] OK: rect byte-exact, jump {pre_jump:.3f} -> {post_jump:.3f}, "
           f"meta={meta}")
+
+    # --- R2 cross-seam tone self-test ---------------------------------------
+    ct_rng = np.random.default_rng(1)
+    ct_W, ct_H = 256, 256
+    ct_rect = (64, 64, 192, 192)
+    ct_x0, ct_y0, ct_x1, ct_y1 = ct_rect
+
+    ct_placed = (128 + ct_rng.normal(0, 2, size=(ct_y1 - ct_y0, ct_x1 - ct_x0, 3))).clip(0, 255).astype(np.uint8)
+    # The whole GENERATED surround carries a uniform low-frequency tone offset
+    # (-6) relative to `placed` -- the defect apply_cross_seam_tone targets.
+    ct_result = (122 + ct_rng.normal(0, 2, size=(ct_H, ct_W, 3))).clip(0, 255).astype(np.uint8)
+    # Rect-interior content is irrelevant to apply_cross_seam_tone (it never
+    # reads inside the rect except via `placed_arr`), but fill it plausibly.
+    ct_result[ct_y0:ct_y1, ct_x0:ct_x1] = ct_placed
+
+    ct_out, ct_meta = apply_cross_seam_tone(ct_result, ct_placed, ct_rect, (ct_W, ct_H))
+
+    assert np.array_equal(ct_out[ct_y0:ct_y1, ct_x0:ct_x1], ct_result[ct_y0:ct_y1, ct_x0:ct_x1]), \
+        "cross-seam tone membrane must never modify rect pixels"
+    assert ct_meta["applied"], "expected the tone membrane to apply on a well-formed rect"
+
+    ct_pre_jump = float(np.mean(np.abs(
+        ct_result[ct_y1, ct_x0:ct_x1, :].astype(np.float32) - ct_placed[-1, :, :].astype(np.float32)
+    )))
+    ct_post_jump = float(np.mean(np.abs(
+        ct_out[ct_y1, ct_x0:ct_x1, :].astype(np.float32) - ct_placed[-1, :, :].astype(np.float32)
+    )))
+    assert ct_post_jump < ct_pre_jump, \
+        f"expected cross-seam tone jump reduced: pre={ct_pre_jump} post={ct_post_jump}"
+
+    ct_out_zero, ct_meta_zero = apply_cross_seam_tone(ct_result, ct_placed, ct_rect, (ct_W, ct_H), strength=0.0)
+    assert np.array_equal(ct_out_zero, ct_result), "strength=0 must be an exact no-op"
+    assert not ct_meta_zero["applied"]
+
+    print(f"[cross_seam_tone self-test] OK: rect byte-exact, seam jump {ct_pre_jump:.3f} -> {ct_post_jump:.3f}, "
+          f"meta={ct_meta}")

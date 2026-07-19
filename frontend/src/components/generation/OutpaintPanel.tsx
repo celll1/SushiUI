@@ -146,6 +146,8 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_controlnet_taper: 2.0,
   outpaint_seam_membrane: false,
   outpaint_seam_membrane_band: 0,
+  outpaint_seam_tone_strength: 0.0,
+  outpaint_seam_tone_band: 0,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -1926,6 +1928,46 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                   step={8}
                   value={params.outpaint_seam_membrane_band ?? 0}
                   onChange={(e) => setParams({ ...params, outpaint_seam_membrane_band: parseInt(e.target.value, 10) })}
+                />
+              )}
+            </div>
+          </details>
+          )}
+
+          {/* Cross-Seam Tone Membrane ("R2"): post-decode low-frequency
+              tone correction, distinct from the harmonic membrane above.
+              Measures the tone step between the preserved rectangle's own
+              pixels and the decoded generated pixels immediately across the
+              seam and writes a decaying offset into the generated side
+              only. See backend/core/inference/seam_membrane.py
+              apply_cross_seam_tone + backend/api/routes.py generate_outpaint
+              outpaint_seam_tone_* Form params. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Cross-Seam Tone Membrane
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                Measures the tone step between the preserved rectangle&apos;s own pixels and the decoded generated pixels immediately across the seam, subtracts the local content gradient estimated from the preserved side, and writes a decaying offset into the generated side only, within the decay band.
+                Runs after the harmonic membrane above and before the final unconditional paste; the preserved rectangle stays byte-identical.
+              </p>
+              <Slider
+                label="Strength (0 = off)"
+                min={0}
+                max={2.0}
+                step={0.05}
+                value={params.outpaint_seam_tone_strength ?? 0.0}
+                onChange={(e) => setParams({ ...params, outpaint_seam_tone_strength: parseFloat(e.target.value) })}
+              />
+              {(params.outpaint_seam_tone_strength ?? 0) > 0 && developerMode && (
+                <Slider
+                  label="Decay Band (px, 0 = auto)"
+                  min={0}
+                  max={64}
+                  step={2}
+                  value={params.outpaint_seam_tone_band ?? 0}
+                  onChange={(e) => setParams({ ...params, outpaint_seam_tone_band: parseInt(e.target.value, 10) })}
                 />
               )}
             </div>

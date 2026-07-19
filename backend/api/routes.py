@@ -3946,6 +3946,8 @@ async def generate_outpaint(
     outpaint_seam_fix: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_fix"]),  # Post-generation exposure/tone harmonizer between the generated surroundings and the preserved rect
     outpaint_seam_membrane: bool = Form(OUTPAINT_DEFAULTS["outpaint_seam_membrane"]),  # Harmonic boundary-offset blend (post-decode, before the final paste); False = off (byte-identical)
     outpaint_seam_membrane_band: int = Form(OUTPAINT_DEFAULTS["outpaint_seam_membrane_band"]),  # Taper band width (px) for the seam membrane; 0 = auto
+    outpaint_seam_tone_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_seam_tone_strength"]),  # R2 cross-seam low-frequency tone membrane (post-decode, before the final paste); 0 = off (byte-identical)
+    outpaint_seam_tone_band: int = Form(OUTPAINT_DEFAULTS["outpaint_seam_tone_band"]),  # Decay band width (px) for the cross-seam tone membrane; 0 = auto (16)
     outpaint_boundary_color_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_boundary_color_strength"]),  # B1 continuity fix: in-loop low-freq boundary color proximal strength (SD/SDXL only, 0=off)
     outpaint_resample_count: int = Form(OUTPAINT_DEFAULTS["outpaint_resample_count"]),  # B2 continuity fix: RePaint-style time-travel resample count (SD/SDXL only, 1=off)
     outpaint_jump_length: int = Form(OUTPAINT_DEFAULTS["outpaint_jump_length"]),  # B2 continuity fix: time-travel jump-back length in step indices
@@ -4260,6 +4262,8 @@ async def generate_outpaint(
             "outpaint_seam_fix": outpaint_seam_fix,
             "outpaint_seam_membrane": outpaint_seam_membrane,
             "outpaint_seam_membrane_band": outpaint_seam_membrane_band,
+            "outpaint_seam_tone_strength": outpaint_seam_tone_strength,
+            "outpaint_seam_tone_band": outpaint_seam_tone_band,
             "outpaint_boundary_color_strength": outpaint_boundary_color_strength,
             "outpaint_resample_count": outpaint_resample_count,
             "outpaint_jump_length": outpaint_jump_length,

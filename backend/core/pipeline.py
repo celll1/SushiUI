@@ -5067,6 +5067,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             paste_alpha=_paste_alpha,
             seam_membrane=bool(params.get("outpaint_seam_membrane", False)),
             seam_membrane_band=int(params.get("outpaint_seam_membrane_band", 0) or 0),
+            seam_tone_strength=float(params.get("outpaint_seam_tone_strength", 0.0) or 0.0),
+            seam_tone_band=int(params.get("outpaint_seam_tone_band", 0) or 0),
             warn_callback=_seam_membrane_warn,
         )
 

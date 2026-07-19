@@ -21,7 +21,13 @@ class Settings(BaseSettings):
     lora_dir: str = os.path.realpath(os.path.join(_root_dir, "lora"))
     controlnet_dir: str = os.path.realpath(os.path.join(_root_dir, "controlnet"))
     cache_dir: str = os.path.realpath(os.path.join(_root_dir, "cache"))
+    previews_dir: str = os.path.realpath(os.path.join(_root_dir, "cache", "previews"))  # sized detail-view WebP cache (lazy-generated, see api/media_utils.py)
     training_dir: str = os.path.realpath(os.path.join(_root_dir, "training"))  # DEPRECATED: Use UserSettings.training_dir instead
+
+    # Detail-view preview cache (media_utils.py): bounds the sized-WebP cache
+    # directory to this many bytes via LRU-by-atime eviction after each new
+    # preview is written. Not a generation parameter -- internal cache tuning.
+    preview_cache_max_bytes: int = 2 * 1024 * 1024 * 1024  # 2 GB
 
     # Database (deprecated - now using separate databases in database/__init__.py)
     # database_url: str = f"sqlite:///{os.path.realpath(os.path.join(_root_dir, 'sd_webui.db'))}"

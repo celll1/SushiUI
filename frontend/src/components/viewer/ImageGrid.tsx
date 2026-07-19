@@ -122,7 +122,12 @@ export default function ImageGrid() {
       if (filterTxt2Img) types.push("txt2img");
       if (filterImg2Img) types.push("img2img");
       if (filterInpaint) types.push("inpaint");
-      if (filterOutpaint) types.push("outpaint");
+      // Single "outpaint" checkbox covers all outpaint modalities: image
+      // (outpaint), video (outpaint_vid), and audio (outpaint_aud) results
+      // all use distinct generation_type values on the backend, so all three
+      // must be pushed together or video/audio outpaint results would be
+      // hidden the same way the plain "outpaint" omission was.
+      if (filterOutpaint) types.push("outpaint", "outpaint_vid", "outpaint_aud");
       if (filterTxt2Vid) types.push("txt2vid");
       if (filterImg2Vid) types.push("img2vid");
       // Audio (ACE-Step) generations: txt2aud/aud2aud/repaint, gated by the

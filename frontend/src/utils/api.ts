@@ -574,21 +574,29 @@ export interface UpscalerModelInfo {
   source_dir: string;
 }
 
+// NOTE: `GET /images` (list) returns a slim per-row summary -- only the
+// fields the grid cell/page-local filtering actually read (id, filename,
+// prompt, negative_prompt, generation_type, width, height, seed, created_at,
+// is_favorite, image_hash, is_video, is_audio). Everything else below is
+// detail-only and populated by `GET /images/{id}` (see `getImage()`), fetched
+// on demand when a gallery cell is opened -- ImageGrid.tsx's `openImageDetail`
+// helper. Do not read detail-only fields off list/array items (`images`,
+// `filteredImages`); only off `selectedImage` after it resolves.
 export interface GeneratedImage {
   id: number;
   filename: string;
   prompt: string;
   negative_prompt: string;
-  model_name: string;
-  sampler: string;
-  steps: number;
-  cfg_scale: number;
+  model_name?: string;
+  sampler?: string;
+  steps?: number;
+  cfg_scale?: number;
   seed: number;
   ancestral_seed?: number;
   width: number;
   height: number;
   generation_type: string;
-  parameters: any;
+  parameters?: any;
   created_at: string;
   is_favorite: boolean;
   image_hash?: string;

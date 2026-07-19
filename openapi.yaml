@@ -7381,13 +7381,55 @@ components:
           type: string
           format: date-time
 
+    GeneratedImageSummary:
+      type: object
+      description: |
+        Light per-row payload returned by `GET /images` (the gallery list
+        endpoint). Omits the full `parameters` JSON and `mask_data` present on
+        `GeneratedImage` -- those can carry embedded base64 (ControlNet/style
+        reference images, inpaint masks) up to several MB per row and are only
+        needed by the detail view. Fetch `GET /images/{image_id}` for the full
+        `GeneratedImage` record when a gallery cell is opened.
+      properties:
+        id:
+          type: integer
+          example: 4821
+        filename:
+          type: string
+          example: txt2img_20260711_155444_55555.png
+        prompt:
+          type: string
+        negative_prompt:
+          type: string
+        generation_type:
+          type: string
+          enum: [txt2img, img2img, inpaint, outpaint, outpaint_vid, outpaint_aud, txt2vid, img2vid, txt2aud, aud2aud, repaint, upscale]
+        width:
+          type: integer
+        height:
+          type: integer
+        seed:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+        is_favorite:
+          type: boolean
+        image_hash:
+          type: string
+          description: SHA256 hash of the generated image (used for source/reference-image lookups within the current page).
+        is_video:
+          type: boolean
+        is_audio:
+          type: boolean
+
     ImageListResponse:
       type: object
       properties:
         images:
           type: array
           items:
-            $ref: '#/components/schemas/GeneratedImage'
+            $ref: '#/components/schemas/GeneratedImageSummary'
         total:
           type: integer
 

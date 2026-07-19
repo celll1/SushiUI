@@ -13,7 +13,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { SlidersHorizontal, X, Info, ArrowLeft, Download, Maximize, Camera } from "lucide-react";
-import { getImages, GeneratedImage, ImageFilters } from "@/utils/api";
+import { getImages, getImage, GeneratedImage, ImageFilters } from "@/utils/api";
 import Card from "../common/Card";
 import Button from "../common/Button";
 import GalleryFilter from "./GalleryFilter";
@@ -29,6 +29,50 @@ export default function ImageGrid() {
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<GeneratedImage | null>(null);
+  // True while the full detail record (GET /images/{id}) for the currently
+  // selected image is still loading -- the grid `images`/`filteredImages`
+  // arrays only carry the slim list summary (no parameters/mask_data), so
+  // opening a cell shows the summary immediately, then upgrades to the full
+  // record moments later. Small/non-blocking: sidebar fields that depend on
+  // `parameters` (sampler, LoRA, ControlNet, outpaint params, etc.) simply
+  // render once the full record lands.
+  const [detailLoading, setDetailLoading] = useState(false);
+  // True when the GET /images/{id} fetch for the currently selected image
+  // FAILED. Distinct from detailLoading: `selectedImage` is then still the
+  // incomplete list summary (no parameters/mask_data). The "Send to" buttons
+  // below read `selectedImage.parameters`/mask -- releasing their disabled
+  // gate on a failed fetch would let them fire against `{}`, silently
+  // dropping steps/cfg_scale/sampler (and, for inpaint, the mask), so this
+  // must keep the gate closed the same way detailLoading does.
+  const [detailError, setDetailError] = useState(false);
+  // Guards against a stale GET /images/{id} response clobbering a newer
+  // selection when the user navigates (prev/next/keyboard/swipe) faster than
+  // the in-flight fetch resolves.
+  const detailRequestRef = useRef(0);
+  // Open (or navigate to) a gallery item: show the already-known summary
+  // fields immediately, then fetch and swap in the full record. Every place
+  // that sets `selectedImage` to an entry from `images`/`filteredImages`
+  // (grid click, keyboard/swipe/prev-next navigation, source-image hash
+  // lookup) must go through this instead of `setSelectedImage` directly --
+  // those arrays only carry the list summary.
+  const openImageDetail = useCallback((image: GeneratedImage) => {
+    setSelectedImage(image);
+    setDetailLoading(true);
+    setDetailError(false);
+    const requestId = ++detailRequestRef.current;
+    getImage(image.id)
+      .then((full: GeneratedImage) => {
+        if (detailRequestRef.current !== requestId) return; // superseded
+        setSelectedImage(full);
+      })
+      .catch((error) => {
+        console.error("[ImageGrid] Failed to load image detail:", error);
+        if (detailRequestRef.current === requestId) setDetailError(true);
+      })
+      .finally(() => {
+        if (detailRequestRef.current === requestId) setDetailLoading(false);
+      });
+  }, []);
   // Client-side post-edit (brightness/saturation) for the currently selected
   // gallery image. Never sent to the backend; reset to neutral when the
   // selected image changes. Output-folder files are never modified.
@@ -176,7 +220,7 @@ export default function ImageGrid() {
   const handleSourceImageClick = (sourceHash: string) => {
     const sourceImage = findImageByHash(sourceHash);
     if (sourceImage) {
-      setSelectedImage(sourceImage);
+      openImageDetail(sourceImage);
     } else {
       alert("Source image not found in current gallery view. Try adjusting filters.");
     }
@@ -244,10 +288,10 @@ export default function ImageGrid() {
 
         if (e.key === 'ArrowLeft' && currentIndex > 0) {
           e.preventDefault();
-          setSelectedImage(filteredImages[currentIndex - 1]);
+          openImageDetail(filteredImages[currentIndex - 1]);
         } else if (e.key === 'ArrowRight' && currentIndex < filteredImages.length - 1) {
           e.preventDefault();
-          setSelectedImage(filteredImages[currentIndex + 1]);
+          openImageDetail(filteredImages[currentIndex + 1]);
         }
       } else {
         // Gallery pagination
@@ -263,7 +307,7 @@ export default function ImageGrid() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentPage, totalImages, loading, imagesPerPage, selectedImage, filteredImages]);
+  }, [currentPage, totalImages, loading, imagesPerPage, selectedImage, filteredImages, openImageDetail]);
 
   const handleTagSearchSubmit = useCallback(() => {
     if (tagSearchInput.trim() && !tagSearchCommitted.includes(tagSearchInput.trim())) {
@@ -958,9 +1002,9 @@ export default function ImageGrid() {
       const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage?.filename);
 
       if (isLeftSwipe && currentIndex < filteredImages.length - 1) {
-        setSelectedImage(filteredImages[currentIndex + 1]);
+        openImageDetail(filteredImages[currentIndex + 1]);
       } else if (isRightSwipe && currentIndex > 0) {
-        setSelectedImage(filteredImages[currentIndex - 1]);
+        openImageDetail(filteredImages[currentIndex - 1]);
       }
     }
     setTouchStart(null);
@@ -1026,6 +1070,14 @@ export default function ImageGrid() {
               <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden mb-4 pb-[env(safe-area-inset-bottom)]">
               <Card title="Image Details">
                 <div className="space-y-3 text-sm min-w-0 break-words">
+                  {detailLoading && (
+                    <div className="text-xs text-gray-500">Loading full details…</div>
+                  )}
+                  {detailError && (
+                    <div className="text-xs text-red-400">
+                      詳細の取得に失敗しました（Send toは無効化されています）。
+                    </div>
+                  )}
                   <div>
                     <span className="text-gray-400">Prompt:</span>
                     <p className="text-gray-100 break-words">{selectedImage.prompt}</p>
@@ -1830,8 +1882,8 @@ export default function ImageGrid() {
                           onClick={() => sendToTxt2Img(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={!sendPrompt && !sendParameters}
-                          title="Send image not applicable for txt2img"
+                          disabled={(!sendPrompt && !sendParameters) || detailLoading || detailError}
+                          title={detailLoading ? "Loading full image details..." : detailError ? "Failed to load full image details" : "Send image not applicable for txt2img"}
                         >
                           txt2img
                         </Button>
@@ -1839,7 +1891,7 @@ export default function ImageGrid() {
                           onClick={() => sendToImg2Img(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={!sendImage && !sendPrompt && !sendParameters}
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || detailLoading || detailError}
                         >
                           img2img
                         </Button>
@@ -1847,7 +1899,7 @@ export default function ImageGrid() {
                           onClick={() => sendToInpaint(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio}
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || isSelectedAudio || detailLoading || detailError}
                         >
                           inpaint
                         </Button>
@@ -1855,7 +1907,7 @@ export default function ImageGrid() {
                           onClick={() => sendToOutpaint(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={!sendImage && !sendPrompt && !sendParameters}
+                          disabled={(!sendImage && !sendPrompt && !sendParameters) || detailLoading || detailError}
                         >
                           outpaint
                         </Button>
@@ -1863,7 +1915,7 @@ export default function ImageGrid() {
                           onClick={() => sendToUpscale(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={isSelectedAudio}
+                          disabled={isSelectedAudio || detailLoading || detailError}
                         >
                           Upscale
                         </Button>
@@ -1871,7 +1923,7 @@ export default function ImageGrid() {
                           onClick={() => sendToImg2Vid(selectedImage)}
                           variant="secondary"
                           size="sm"
-                          disabled={isSelectedVideo || isSelectedAudio}
+                          disabled={isSelectedVideo || isSelectedAudio || detailLoading || detailError}
                           title={isSelectedVideo ? "Use Capture frame for videos" : "Send image to img2vid as a keyframe"}
                         >
                           img2vid
@@ -1945,7 +1997,7 @@ export default function ImageGrid() {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
                 return currentIndex > 0 && (
                   <button
-                    onClick={() => setSelectedImage(filteredImages[currentIndex - 1])}
+                    onClick={() => openImageDetail(filteredImages[currentIndex - 1])}
                     className="hidden lg:flex absolute left-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full items-center justify-center transition-all"
                     title="Previous image (← key)"
                   >
@@ -2000,7 +2052,7 @@ export default function ImageGrid() {
                 const currentIndex = filteredImages.findIndex(img => img.filename === selectedImage.filename);
                 return currentIndex < filteredImages.length - 1 && (
                   <button
-                    onClick={() => setSelectedImage(filteredImages[currentIndex + 1])}
+                    onClick={() => openImageDetail(filteredImages[currentIndex + 1])}
                     className="hidden lg:flex absolute right-4 z-10 bg-black bg-opacity-50 hover:bg-opacity-75 text-white text-3xl w-12 h-12 rounded-full items-center justify-center transition-all"
                     title="Next image (→ key)"
                   >
@@ -2281,7 +2333,7 @@ export default function ImageGrid() {
           <ImageList
             images={filteredImages}
             gridColumns={gridColumns}
-            onImageClick={setSelectedImage}
+            onImageClick={openImageDetail}
             loading={loading}
           />
           </div>

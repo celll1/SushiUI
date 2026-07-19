@@ -76,6 +76,38 @@ class GeneratedImage(GalleryBase):
     lora_names = Column(String, nullable=True)  # Comma-separated LoRA filenames
     model_hash = Column(String, nullable=True)  # SHA256 hash of model file
 
+    def to_summary_dict(self):
+        """Light per-row payload for the gallery LIST endpoint (``GET /images``).
+
+        Omits the full ``parameters`` JSON and ``mask_data`` — both can run
+        into multi-MB territory per row (embedded ControlNet/style-reference
+        base64, inpaint masks) and are never rendered by the grid cell, only
+        by the detail view (which uses ``to_dict()`` via ``GET /images/{id}``
+        instead). Fields below are exactly what the frontend grid reads off a
+        list item: cell rendering (id/filename/is_video/is_audio/
+        generation_type/prompt in ``ImageList.tsx``), page-local tag search/
+        suggestions (prompt/negative_prompt), and the "click a ControlNet/
+        source image hash to jump to it within the current page" lookup
+        (image_hash) in ``ImageGrid.tsx``.
+        """
+        is_video = bool(self.parameters.get("is_video")) if self.parameters else False
+        is_audio = bool(self.parameters.get("is_audio")) if self.parameters else False
+        return {
+            "id": self.id,
+            "filename": self.filename,
+            "prompt": self.prompt,
+            "negative_prompt": self.negative_prompt,
+            "generation_type": self.generation_type,
+            "width": self.width,
+            "height": self.height,
+            "seed": self.seed,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "is_favorite": self.is_favorite,
+            "image_hash": self.image_hash,
+            "is_video": is_video,
+            "is_audio": is_audio,
+        }
+
     def to_dict(self):
         result = {
             "id": self.id,

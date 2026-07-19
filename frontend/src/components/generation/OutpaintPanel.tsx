@@ -1831,7 +1831,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     </label>
                   </div>
                   {params.outpaint_controlnet_enable && (
-                    <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                       <Select
                         label="Mode"
                         options={[
@@ -1841,7 +1841,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         value={params.outpaint_controlnet_mode || "edge_extrapolate"}
                         onChange={(e) => setParams({ ...params, outpaint_controlnet_mode: e.target.value })}
                       />
-                      <p className="text-xs text-gray-500">
+                      <p className="text-xs text-gray-500 sm:col-span-2">
                         {params.outpaint_controlnet_mode === "crop_mask"
                           ? "Crop mask: builds the trained 4-channel crop+mask conditioning. Requires a ControlNet trained with conditioning_mode=outpaint (4-ch diffusers directory). Detector/depth/taper do not apply."
                           : "Edge extrapolate: detects and extrapolates boundary-crossing edges over a guessed geometry (any structure ControlNet)."}
@@ -1907,7 +1907,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                         value={params.outpaint_controlnet_taper ?? 2.0}
                         onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
                       />
-                    </>
+                    </div>
                   )}
                 </div>
               )}
@@ -1950,36 +1950,38 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       Fill with chrome-suppression default
                     </button>
                   </div>
-                  <Slider
-                    label="Regional Prompt Strength"
-                    min={0}
-                    max={2}
-                    step={0.05}
-                    value={params.region_prompt_strength ?? 1.0}
-                    onChange={(e) => setParams({ ...params, region_prompt_strength: parseFloat(e.target.value) })}
-                  />
-                  <Select
-                    label="Regional Prompt Method"
-                    options={[
-                      { value: "cfg", label: "Spatial CFG (stronger, ~2x slower)" },
-                      { value: "attention", label: "Attention (free, softer)" },
-                    ]}
-                    value={params.region_prompt_method || "cfg"}
-                    onChange={(e) => setParams({ ...params, region_prompt_method: e.target.value })}
-                  />
-                  <Slider
-                    label="Region Mask Feather (latent px)"
-                    min={0}
-                    max={8}
-                    step={0.5}
-                    value={params.region_mask_feather ?? 0.0}
-                    onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
-                  />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <Slider
+                      label="Regional Prompt Strength"
+                      min={0}
+                      max={2}
+                      step={0.05}
+                      value={params.region_prompt_strength ?? 1.0}
+                      onChange={(e) => setParams({ ...params, region_prompt_strength: parseFloat(e.target.value) })}
+                    />
+                    <Select
+                      label="Regional Prompt Method"
+                      options={[
+                        { value: "cfg", label: "Spatial CFG (stronger, ~2x slower)" },
+                        { value: "attention", label: "Attention (free, softer)" },
+                      ]}
+                      value={params.region_prompt_method || "cfg"}
+                      onChange={(e) => setParams({ ...params, region_prompt_method: e.target.value })}
+                    />
+                    <Slider
+                      label="Region Mask Feather (latent px)"
+                      min={0}
+                      max={8}
+                      step={0.5}
+                      value={params.region_mask_feather ?? 0.0}
+                      onChange={(e) => setParams({ ...params, region_mask_feather: parseFloat(e.target.value) })}
+                    />
+                  </div>
                 </div>
               )}
 
               {outpaintOptionsTab === "seam" && (
-                <div className="space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                   {/* Seam Membrane: post-decode harmonic boundary-offset blend.
                       Adjusts generated pixels to meet the preserved boundary
                       exactly; the preserved region remains byte-identical. See
@@ -2139,7 +2141,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               )}
 
               {outpaintOptionsTab === "continuity" && (
-                <div className="space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                   {/* Seam Structure Continuity (SSC): continues thin structures that
                       cross the region boundary (a held rod/staff, limb, torso, lines)
                       into the generated region. See backend/api/routes.py
@@ -2268,7 +2270,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       OUTPAINT_DEFAULTS outpaint_boundary_color_strength /
                       outpaint_resample_count / outpaint_jump_length /
                       outpaint_reference_strength. */}
-                  <div className="space-y-4">
+                  <div className="space-y-4 lg:col-span-2">
                     <div className="text-sm font-medium text-gray-300">In-loop Continuity（境界連続性）</div>
                     <div className="space-y-2">
                       <p className="text-xs text-gray-500">
@@ -2338,7 +2340,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               )}
 
               {outpaintOptionsTab === "acceleration" && (
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+                  <div className="space-y-2">
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -2423,7 +2426,9 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       </label>
                     </div>
                   )}
+                  </div>
 
+                  <div className="space-y-2">
                   <div className="flex items-center gap-2 mt-2">
                     <input
                       type="checkbox"
@@ -2455,11 +2460,12 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       </label>
                     </div>
                   )}
+                  </div>
                 </div>
               )}
 
               {outpaintOptionsTab === "post_process" && (
-                <div className="space-y-2">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                   <div title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
                     <Slider
                       label="Color Flatten（色ムラ除去）"
@@ -2471,6 +2477,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                     />
                   </div>
 
+                  <div className="lg:col-span-2">
                   <div className="flex items-center gap-2 mt-2">
                     <input
                       type="checkbox"
@@ -2505,6 +2512,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       </label>
                     </div>
                   )}
+                  </div>
 
                   <div className="flex items-center space-x-2 mt-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
                     <input

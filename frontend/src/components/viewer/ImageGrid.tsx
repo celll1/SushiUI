@@ -1451,6 +1451,243 @@ export default function ImageGrid() {
                   </div>
                 )}
 
+                {/* Outpaint Parameters */}
+                {selectedImage.generation_type === 'outpaint' && (
+                  <div className="border-t border-gray-700 pt-3">
+                    <span className="text-gray-400 font-medium">Outpaint Parameters:</span>
+                    <div className="mt-2 space-y-3 text-xs">
+                      {/* Placement */}
+                      <div className="space-y-2">
+                        <span className="text-gray-500 font-medium">Placement:</span>
+                        <div className="mt-1 space-y-2">
+                          {(selectedImage.parameters?.canvas_width !== undefined || selectedImage.parameters?.canvas_height !== undefined) && (
+                            <div>
+                              <span className="text-gray-500">Canvas Size:</span> {selectedImage.parameters?.canvas_width}x{selectedImage.parameters?.canvas_height}
+                            </div>
+                          )}
+                          {(selectedImage.parameters?.place_x !== undefined || selectedImage.parameters?.place_y !== undefined) && (
+                            <div>
+                              <span className="text-gray-500">Placement Offset:</span> ({selectedImage.parameters?.place_x}, {selectedImage.parameters?.place_y})
+                            </div>
+                          )}
+                          {(selectedImage.parameters?.place_width !== undefined || selectedImage.parameters?.place_height !== undefined) && (
+                            <div>
+                              <span className="text-gray-500">Placement Size:</span> {selectedImage.parameters?.place_width}x{selectedImage.parameters?.place_height}
+                            </div>
+                          )}
+                          {((selectedImage.parameters?.input_crop_w ?? 0) > 0 || (selectedImage.parameters?.input_crop_h ?? 0) > 0) && (
+                            <div>
+                              <span className="text-gray-500">Input Crop:</span> ({selectedImage.parameters?.input_crop_x ?? 0}, {selectedImage.parameters?.input_crop_y ?? 0}) {selectedImage.parameters?.input_crop_w}x{selectedImage.parameters?.input_crop_h}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.outpaint_fill_mode !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Fill Mode:</span> {selectedImage.parameters.outpaint_fill_mode}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.denoising_strength !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Denoising Strength:</span> {selectedImage.parameters.denoising_strength}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.img2img_fix_steps !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Fix Steps:</span> {selectedImage.parameters.img2img_fix_steps ? 'Yes' : 'No'}
+                            </div>
+                          )}
+                          {selectedImage.parameters?.mask_blur !== undefined && (
+                            <div>
+                              <span className="text-gray-500">Mask Blur:</span> {selectedImage.parameters.mask_blur}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Preserve / Seam */}
+                      {(
+                        (selectedImage.parameters?.outpaint_preserve_mode !== undefined && selectedImage.parameters.outpaint_preserve_mode !== 'exact') ||
+                        selectedImage.parameters?.outpaint_seam_fix !== undefined ||
+                        !!selectedImage.parameters?.outpaint_seam_membrane ||
+                        (selectedImage.parameters?.outpaint_seam_tone_strength ?? 0) > 0 ||
+                        (selectedImage.parameters?.outpaint_seam_offset_prop ?? 0) > 0 ||
+                        (selectedImage.parameters?.outpaint_paste_feather_px ?? 0) > 0
+                      ) && (
+                        <div className="space-y-2 border-t border-gray-800 pt-2">
+                          <span className="text-gray-500 font-medium">Preserve / Seam:</span>
+                          <div className="mt-1 space-y-2">
+                            {selectedImage.parameters?.outpaint_preserve_mode !== undefined && selectedImage.parameters.outpaint_preserve_mode !== 'exact' && (
+                              <div>
+                                <span className="text-gray-500">Preserve Mode:</span> {selectedImage.parameters.outpaint_preserve_mode}
+                              </div>
+                            )}
+                            {selectedImage.parameters?.outpaint_seam_fix !== undefined && (
+                              <div>
+                                <span className="text-gray-500">Seam Fix (exposure harmonizer):</span> {selectedImage.parameters.outpaint_seam_fix ? 'Yes' : 'No'}
+                              </div>
+                            )}
+                            {!!selectedImage.parameters?.outpaint_seam_membrane && (
+                              <div>
+                                <span className="text-gray-500">Seam Membrane:</span> Yes
+                                {(selectedImage.parameters?.outpaint_seam_membrane_band ?? 0) > 0 && ` (band: ${selectedImage.parameters.outpaint_seam_membrane_band}px)`}
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_seam_tone_strength ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Seam Tone Strength:</span> {selectedImage.parameters.outpaint_seam_tone_strength}
+                                {(selectedImage.parameters?.outpaint_seam_tone_band ?? 0) > 0 && ` (band: ${selectedImage.parameters.outpaint_seam_tone_band}px)`}
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_seam_offset_prop ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Seam Offset Propagation:</span> {selectedImage.parameters.outpaint_seam_offset_prop}
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_paste_feather_px ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Paste Feather:</span> {selectedImage.parameters.outpaint_paste_feather_px}px
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* In-loop continuity */}
+                      {(
+                        (selectedImage.parameters?.outpaint_boundary_color_strength !== undefined && selectedImage.parameters.outpaint_boundary_color_strength !== 0) ||
+                        (selectedImage.parameters?.outpaint_resample_count ?? 1) > 1 ||
+                        (selectedImage.parameters?.outpaint_reference_strength ?? 0) > 0 ||
+                        (selectedImage.parameters?.outpaint_commit_strength ?? 0) > 0
+                      ) && (
+                        <div className="space-y-2 border-t border-gray-800 pt-2">
+                          <span className="text-gray-500 font-medium">In-loop Continuity:</span>
+                          <div className="mt-1 space-y-2">
+                            {selectedImage.parameters?.outpaint_boundary_color_strength !== undefined && selectedImage.parameters.outpaint_boundary_color_strength !== 0 && (
+                              <div>
+                                <span className="text-gray-500">Boundary Color Strength:</span> {selectedImage.parameters.outpaint_boundary_color_strength}
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_resample_count ?? 1) > 1 && (
+                              <div>
+                                <span className="text-gray-500">Resample Count:</span> {selectedImage.parameters.outpaint_resample_count} (jump length: {selectedImage.parameters?.outpaint_jump_length ?? 4})
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_reference_strength ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Reference Strength:</span> {selectedImage.parameters.outpaint_reference_strength}
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_commit_strength ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Commit Strength:</span> {selectedImage.parameters.outpaint_commit_strength} (near: {selectedImage.parameters?.outpaint_commit_near ?? 0.35}, far: {selectedImage.parameters?.outpaint_commit_far ?? 0.80}, distance: {selectedImage.parameters?.outpaint_commit_distance ?? 32.0})
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Region / structure */}
+                      {(
+                        !!selectedImage.parameters?.region_prompt?.trim?.() ||
+                        !!selectedImage.parameters?.region_negative_prompt?.trim?.() ||
+                        (selectedImage.parameters?.seam_structure_strength ?? 0) > 0 ||
+                        (selectedImage.parameters?.boundary_relax_strength ?? 0) > 0
+                      ) && (
+                        <div className="space-y-2 border-t border-gray-800 pt-2">
+                          <span className="text-gray-500 font-medium">Region / Structure:</span>
+                          <div className="mt-1 space-y-2">
+                            {(!!selectedImage.parameters?.region_prompt?.trim?.() || !!selectedImage.parameters?.region_negative_prompt?.trim?.()) && (
+                              <>
+                                {!!selectedImage.parameters?.region_prompt?.trim?.() && (
+                                  <div className="break-words">
+                                    <span className="text-gray-500">Region Prompt:</span> {selectedImage.parameters.region_prompt}
+                                  </div>
+                                )}
+                                {!!selectedImage.parameters?.region_negative_prompt?.trim?.() && (
+                                  <div className="break-words">
+                                    <span className="text-gray-500">Region Negative Prompt:</span> {selectedImage.parameters.region_negative_prompt}
+                                  </div>
+                                )}
+                                {selectedImage.parameters?.region_prompt_strength !== undefined && (
+                                  <div>
+                                    <span className="text-gray-500">Region Prompt Strength:</span> {selectedImage.parameters.region_prompt_strength}
+                                  </div>
+                                )}
+                                {selectedImage.parameters?.region_prompt_method !== undefined && (
+                                  <div>
+                                    <span className="text-gray-500">Region Prompt Method:</span> {selectedImage.parameters.region_prompt_method}
+                                  </div>
+                                )}
+                                {(selectedImage.parameters?.region_mask_feather ?? 0) > 0 && (
+                                  <div>
+                                    <span className="text-gray-500">Region Mask Feather:</span> {selectedImage.parameters.region_mask_feather}
+                                  </div>
+                                )}
+                              </>
+                            )}
+                            {(selectedImage.parameters?.seam_structure_strength ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Seam Structure Strength:</span> {selectedImage.parameters.seam_structure_strength}
+                                {' '}(depth: {selectedImage.parameters?.seam_structure_depth ?? 6.0}, end: {selectedImage.parameters?.seam_structure_end ?? 0.70}, saliency: {selectedImage.parameters?.seam_structure_saliency ?? 2.0}, max area: {selectedImage.parameters?.seam_structure_max_area ?? 0.25})
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.boundary_relax_strength ?? 0) > 0 && (
+                              <div>
+                                <span className="text-gray-500">Boundary Relax Strength:</span> {selectedImage.parameters.boundary_relax_strength}
+                                {' '}(width: {selectedImage.parameters?.boundary_relax_width ?? 3.0}, noise: {selectedImage.parameters?.boundary_relax_noise ?? 0.35}, full until: {selectedImage.parameters?.boundary_relax_full_until ?? 0.37}, end: {selectedImage.parameters?.boundary_relax_end ?? 0.55}, paste: {selectedImage.parameters?.boundary_relax_paste ?? 'feather'})
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Outpaint ControlNet */}
+                      {!!selectedImage.parameters?.outpaint_controlnet_enable && (
+                        <div className="space-y-2 border-t border-gray-800 pt-2">
+                          <span className="text-gray-500 font-medium">Outpaint ControlNet:</span>
+                          <div className="mt-1 space-y-2">
+                            {selectedImage.parameters?.outpaint_controlnet_mode !== undefined && (
+                              <div>
+                                <span className="text-gray-500">Mode:</span> {selectedImage.parameters.outpaint_controlnet_mode}
+                              </div>
+                            )}
+                            {selectedImage.parameters?.outpaint_controlnet_model && (
+                              <div className="break-words">
+                                <span className="text-gray-500">Model:</span>{' '}
+                                <span className="text-gray-200 break-all">{selectedImage.parameters.outpaint_controlnet_model}</span>
+                              </div>
+                            )}
+                            {selectedImage.parameters?.outpaint_controlnet_scale !== undefined && (
+                              <div>
+                                <span className="text-gray-500">Conditioning Scale:</span> {selectedImage.parameters.outpaint_controlnet_scale}
+                              </div>
+                            )}
+                            {(selectedImage.parameters?.outpaint_controlnet_guidance_start !== undefined || selectedImage.parameters?.outpaint_controlnet_guidance_end !== undefined) && (
+                              <div>
+                                <span className="text-gray-500">Guidance Window:</span> {selectedImage.parameters?.outpaint_controlnet_guidance_start ?? 0.0} - {selectedImage.parameters?.outpaint_controlnet_guidance_end ?? 0.55}
+                              </div>
+                            )}
+                            {selectedImage.parameters?.outpaint_controlnet_detector !== undefined && (
+                              <div>
+                                <span className="text-gray-500">Detector:</span> {selectedImage.parameters.outpaint_controlnet_detector}
+                              </div>
+                            )}
+                            {selectedImage.parameters?.outpaint_controlnet_depth !== undefined && (
+                              <div>
+                                <span className="text-gray-500">Extrapolation Depth:</span> {selectedImage.parameters.outpaint_controlnet_depth}px
+                              </div>
+                            )}
+                            {selectedImage.parameters?.outpaint_controlnet_taper !== undefined && (
+                              <div>
+                                <span className="text-gray-500">Confidence Taper:</span> {selectedImage.parameters.outpaint_controlnet_taper}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {/* ControlNet Information */}
                 {selectedImage.parameters?.controlnet_images && selectedImage.parameters.controlnet_images.length > 0 && (
                   <div className="border-t border-gray-700 pt-3">

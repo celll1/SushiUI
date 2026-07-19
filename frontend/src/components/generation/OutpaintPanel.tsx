@@ -148,6 +148,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_seam_membrane_band: 0,
   outpaint_seam_tone_strength: 0.0,
   outpaint_seam_tone_band: 0,
+  outpaint_seam_offset_prop: 0.0,
   outpaint_paste_feather_px: 0,
   outpaint_preserve_mode: "exact",
   outpaint_preview_unpinned_x0: false,
@@ -1973,6 +1974,38 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                   onChange={(e) => setParams({ ...params, outpaint_seam_tone_band: parseInt(e.target.value, 10) })}
                 />
               )}
+            </div>
+          </details>
+          )}
+
+          {/* Boundary-offset propagation ("G_prop16"): post-decode, a third
+              seam mechanism distinct from both membranes above. Measures the
+              same offset the harmonic membrane measures (preserved pixels
+              vs the decoded reconstruction of that same region, not the
+              cross-seam comparison the tone membrane uses), and writes it
+              directly into the generated pixels adjacent to the seam.
+              Writes only generated-side pixels; the preserved region is
+              unaffected. See backend/core/inference/seam_membrane.py
+              apply_seam_offset_propagation + backend/api/routes.py
+              generate_outpaint outpaint_seam_offset_prop Form param. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Boundary-Offset Propagation
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                Measures the offset between the preserved rectangle&apos;s own pixels and the decoded reconstruction of that same region, and writes it directly into the generated pixels adjacent to the seam as a low-frequency term plus a short high-frequency residual term, each tapered to zero moving away from the seam.
+                Writes only generated-side pixels; the preserved rectangle stays byte-identical. Runs after the cross-seam tone membrane above and before the final unconditional paste.
+              </p>
+              <Slider
+                label="Strength (0 = off)"
+                min={0}
+                max={2.0}
+                step={0.05}
+                value={params.outpaint_seam_offset_prop ?? 0.0}
+                onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop: parseFloat(e.target.value) })}
+              />
             </div>
           </details>
           )}

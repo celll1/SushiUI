@@ -4411,6 +4411,27 @@ def custom_inpaint_sampling_loop(
                                         # outpaint_noise_init is False (legacy guided-from-fill
                                         # outpaint, denoising_strength<1.0) -- mirrors
                                         # outpaint_preview_unpinned_x0/paste_feather_px's own gate.
+    outpaint_seam_offset_prop: float = 0.0,  # G_PROP16 GATE (opt-in; core.inference.seam_membrane.
+                                        # apply_seam_offset_propagation via outpaint_utils.
+                                        # reconcile_and_paste). That function measures the boundary
+                                        # offset between the preserved rect's own pixels and the
+                                        # DECODED RECONSTRUCTION of that same region -- but when
+                                        # outpaint_preserve_mode=="exact" the hard keep-region paste
+                                        # below already overwrites the reconstruction with the raw
+                                        # input before reconcile_and_paste ever runs, so that offset
+                                        # measures identically 0 (validated: the same "two pastes"
+                                        # defect Option E hit -- see scratchpad/
+                                        # outpaint_seamless_vae_native.md). When outpaint_noise_init
+                                        # is True AND this is > 0 (regardless of
+                                        # outpaint_preserve_mode), the hard keep-region paste below is
+                                        # ALSO skipped (identically to the "vae_reconstruct" gate
+                                        # above), leaving `image` the uniform VAE decode so
+                                        # reconcile_and_paste's apply_seam_offset_propagation can
+                                        # measure the real offset; reconcile_and_paste's own final
+                                        # unconditional paste (still entered, since
+                                        # outpaint_preserve_mode=="exact" here) then restores the
+                                        # preserved rect byte-exact. 0 (default) = no effect on this
+                                        # gate.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -6786,7 +6807,26 @@ def custom_inpaint_sampling_loop(
             mode="nearest"
         )
 
-        if outpaint_noise_init and outpaint_preserve_mode in ("vae_reconstruct", "vae_reconstruct_hf"):
+        # G_PROP16 GATE (opt-in; see this function's own `outpaint_seam_offset_prop`
+        # parameter doc for the full "two pastes" rationale). Widens the
+        # vae_reconstruct*-only gate below to ALSO skip the hard keep-region
+        # paste when `outpaint_seam_offset_prop > 0`, even though
+        # `outpaint_preserve_mode` stays "exact" -- reconcile_and_paste still
+        # takes its normal "exact" branch (it is NOT told preserve_mode
+        # changed) and performs its own final unconditional byte-exact paste,
+        # so the preserved region ends up byte-identical exactly as before;
+        # only the INTERMEDIATE `image` this function returns differs (stays
+        # the uniform decode instead of being pre-pasted), which is what lets
+        # `apply_seam_offset_propagation` measure a real offset instead of 0.
+        _skip_keep_paste_for_offset_prop = (
+            outpaint_noise_init
+            and outpaint_preserve_mode == "exact"
+            and float(outpaint_seam_offset_prop or 0.0) > 0.0
+        )
+        if outpaint_noise_init and (
+            outpaint_preserve_mode in ("vae_reconstruct", "vae_reconstruct_hf")
+            or _skip_keep_paste_for_offset_prop
+        ):
             # VAE-UNIFORM OUTPAINT PRESERVE MODES (opt-in, non-"exact" -- see
             # param_defaults.py OUTPAINT_DEFAULTS + this function's own
             # `outpaint_preserve_mode` parameter doc). The hard keep-region
@@ -6799,7 +6839,12 @@ def custom_inpaint_sampling_loop(
             # VAE decode already computed above (arm B). The preserved
             # region here is therefore a VAE RECONSTRUCTION of the input,
             # not byte-identical to it (a warning is emitted by the caller,
-            # PipelineManager.generate_outpaint).
+            # PipelineManager.generate_outpaint). `_skip_keep_paste_for_offset_prop`
+            # (see above) enters this same branch for a THIRD reason --
+            # outpaint_preserve_mode=="exact" with outpaint_seam_offset_prop>0
+            # -- where the preserved region DOES end up byte-identical, just
+            # not via this function's own paste (reconcile_and_paste's final
+            # paste does it instead).
             if outpaint_preserve_mode == "vae_reconstruct_hf" and _outpaint_hf_roundtrip is not None:
                 # Arm C_taper: additionally restore the preserved region's own
                 # high-frequency detail (its raw pixels minus their own VAE
@@ -6826,10 +6871,18 @@ def custom_inpaint_sampling_loop(
                     print("[CustomSampling][Outpaint] preserve_mode='vae_reconstruct_hf' requested but "
                           "the roundtrip reference decode was unavailable -- falling back to "
                           "'vae_reconstruct' (uniform decode, no high-frequency restoration)")
-                print("[CustomSampling][Outpaint] preserve_mode="
-                      f"'{outpaint_preserve_mode}': skipping the keep-region hard paste -- `image` "
-                      "stays the uniform VAE decode of the whole canvas (NOT byte-identical to the "
-                      "input in the preserved region)")
+                if _skip_keep_paste_for_offset_prop:
+                    print("[CustomSampling][Outpaint] outpaint_seam_offset_prop > 0 with "
+                          "preserve_mode='exact': skipping the keep-region hard paste here so "
+                          "`image` stays the uniform VAE decode -- apply_seam_offset_propagation "
+                          "(reconcile_and_paste) needs the un-pasted decode to measure the real "
+                          "boundary offset; reconcile_and_paste's own final unconditional paste "
+                          "still restores the preserved region byte-exact")
+                else:
+                    print("[CustomSampling][Outpaint] preserve_mode="
+                          f"'{outpaint_preserve_mode}': skipping the keep-region hard paste -- `image` "
+                          "stays the uniform VAE decode of the whole canvas (NOT byte-identical to the "
+                          "input in the preserved region)")
                 # `image` already IS the uniform decode computed above -- nothing to composite.
         else:
             print("[CustomSampling] Applying pixel-space mask blending for exact preservation")

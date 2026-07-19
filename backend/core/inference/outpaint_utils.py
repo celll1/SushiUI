@@ -589,6 +589,7 @@ def reconcile_and_paste(
     seam_membrane_band: int = 0,
     seam_tone_strength: float = 0.0,
     seam_tone_band: int = 0,
+    seam_offset_prop: float = 0.0,
     outpaint_preserve_mode: str = "exact",
     warn_callback: Optional[Any] = None,
 ) -> Image.Image:
@@ -622,7 +623,19 @@ def reconcile_and_paste(
     reconstruction ``seam_membrane`` keys on) and writes a decaying offset
     into the generated side within ``seam_tone_band`` px of the seam -- see
     ``scratchpad/outpaint_seam_redesign_v2.md`` section 4 Phase 1. Then, when
-    ``paste_feather_px`` is > 0 (Option E, "paste-band reconciliation feather"
+    ``seam_offset_prop`` is > 0 ("G_prop16", ``core.inference.seam_membrane.
+    apply_seam_offset_propagation``, also imported lazily) -- a THIRD, separate
+    mechanism from both membranes above, generated-side-only by construction
+    -- measures the SAME ``placed - result`` offset ``seam_membrane`` measures
+    (at the rect-interior boundary, not the cross-seam comparison
+    ``seam_tone_strength`` uses) and propagates it directly into the
+    generated band via a Gaussian low-frequency term plus a short
+    high-frequency residual term (each independently raised-cosine tapered),
+    instead of a Poisson solve -- see ``scratchpad/
+    outpaint_seamless_vae_native.md`` sections 2-5 for the measurement this
+    replaces (the harmonic membrane's numerics only reach half the achievable
+    seam reduction on the same data). Then, when ``paste_feather_px`` is > 0
+    (Option E, "paste-band reconciliation feather"
     -- see ``scratchpad/outpaint_seam_latent_stage.md`` section 4.1), a fresh
     ``build_paste_alpha(rect, canvas_size, erode_px=0, feather_px=paste_feather_px)``
     alpha OVERRIDES whatever ``paste_alpha`` the caller passed in (BDR Variant
@@ -638,10 +651,16 @@ def reconcile_and_paste(
     does -- this paste is always the LAST mutation, re-establishing
     byte-exactness of the preserved rect (or, when ``paste_feather_px``/
     ``paste_alpha`` opts out of it, the documented feather band) regardless of
-    any architecture-side re-rounding or the correction steps above. Both
-    ``seam_membrane`` and the cross-seam tone membrane write only pixels
-    outside ``rect`` by construction (see their own module docstrings), so
-    this is a double guarantee, not a single point of failure.
+    any architecture-side re-rounding or the correction steps above.
+    ``seam_membrane``, the cross-seam tone membrane, and the boundary-offset
+    propagation all write only pixels outside ``rect`` by construction (see
+    their own module docstrings), so this is a double guarantee, not a
+    single point of failure. All three seam mechanisms MAY be enabled
+    simultaneously (each is independently gated and none errors on stacked
+    input), but the validated recipe for ``seam_offset_prop`` measured no
+    additive benefit from also running ``seam_membrane``/``seam_tone_strength``
+    on the same seam -- see the design doc section 5 point 5 for the
+    recommendation (not enforced here) to prefer ``seam_offset_prop`` alone.
 
     ``warn_callback``, if given, is called as ``warn_callback(message, code)``
     for feature-degradation notices (F1 large-correction / F3 post-resize) --
@@ -741,6 +760,26 @@ def reconcile_and_paste(
                     f"edges {tone_info.get('edges', [])} -- the generated content's tone "
                     "likely disagreed substantially with the preserved boundary.",
                     "seam_tone_saturated",
+                )
+            except Exception:
+                pass
+    if seam_offset_prop and seam_offset_prop > 0:
+        from core.inference.seam_membrane import apply_seam_offset_propagation
+
+        result_arr = np.array(result_img.convert("RGB"))
+        placed_arr = np.array(placed_img.convert("RGB"))
+        out_arr, offset_prop_info = apply_seam_offset_propagation(
+            result_arr, placed_arr, rect, canvas_size, strength=seam_offset_prop,
+        )
+        result_img = Image.fromarray(out_arr, mode="RGB")
+        if warn_callback is not None and offset_prop_info.get("large_correction"):
+            try:
+                warn_callback(
+                    "Seam offset propagation clamped a large boundary offset "
+                    f"(max |offset| {offset_prop_info.get('max_abs_delta', 0.0):.1f}/255) on "
+                    f"edges {offset_prop_info.get('edges', [])} -- the generated content likely "
+                    "disagreed substantially with the preserved boundary.",
+                    "seam_offset_prop_large_correction",
                 )
             except Exception:
                 pass

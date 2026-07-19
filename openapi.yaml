@@ -7087,6 +7087,28 @@ components:
                 Decay band width, in pixels, over which the cross-seam tone
                 membrane's offset fades to zero. 0 = automatic (16 px).
               example: 0
+            outpaint_seam_offset_prop:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              maximum: 2.0
+              description: |
+                Boundary-offset propagation ("G_prop16"), a third seam
+                mechanism distinct from `outpaint_seam_membrane` and
+                `outpaint_seam_tone_strength`. Measures the same per-channel
+                offset between the preserved rectangle's own pixels and the
+                decoded reconstruction of that same region (the quantity
+                `outpaint_seam_membrane` also measures, not the cross-seam
+                comparison `outpaint_seam_tone_strength` uses), and writes it
+                directly into the generated pixels adjacent to the seam as a
+                Gaussian-smoothed low-frequency term plus a short
+                high-frequency residual term, each independently tapered to
+                zero moving away from the seam. Writes only generated-side
+                pixels; the preserved region is unaffected. Runs after
+                `outpaint_seam_tone_strength` and before the final
+                unconditional paste. Scales the applied offset; 0 (default) =
+                off (the module is not imported).
+              example: 0.0
             outpaint_paste_feather_px:
               type: integer
               default: 0

@@ -6608,7 +6608,12 @@ def custom_inpaint_sampling_loop(
     # pristine original regions are never altered). Both zero-cost when disabled.
     if color_flatten_strength and color_flatten_strength > 0:
         from core.inference.color_flatten import flatten_chroma
-        image = flatten_chroma(image, color_flatten_strength)
+        # flatten_chroma's contract leaves the output UNclamped (it may emit
+        # values slightly outside [0,1]); the caller must clamp before the uint8
+        # cast, else out-of-range values wrap modulo-256 (e.g. 1.07 -> 17),
+        # flipping colors (purple -> neon green). This only surfaced on the
+        # inpaint/outpaint decode path (txt2img/img2img clamp in vae_output_to_pil).
+        image = flatten_chroma(image, color_flatten_strength).clamp(0, 1)
     if _dc_bias is not None:
         image = (image - _dc_bias.to(image.device, image.dtype)).clamp(0, 1)
 
@@ -6652,7 +6657,9 @@ def custom_inpaint_sampling_loop(
         print("[CustomSampling] Pixel-space blending completed")
 
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-    image = (image * 255).round().astype("uint8")
+    # Defensive clip: any out-of-range value here would wrap modulo-256 in the
+    # uint8 cast and corrupt colors. Belt-and-suspenders for every post-decode pass.
+    image = (image.clip(0, 1) * 255).round().astype("uint8")
 
     # Clean up ControlNet after generation
     from core.extensions.controlnet_manager import controlnet_manager

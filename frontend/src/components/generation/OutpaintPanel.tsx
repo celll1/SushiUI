@@ -148,6 +148,8 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_seam_membrane_band: 0,
   outpaint_seam_tone_strength: 0.0,
   outpaint_seam_tone_band: 0,
+  outpaint_paste_feather_px: 0,
+  outpaint_preview_unpinned_x0: false,
   resize_mode: "image",
   resampling_method: "lanczos",
   prompt_chunking_mode: "a1111",
@@ -1972,6 +1974,60 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               )}
             </div>
           </details>
+          )}
+
+          {/* Paste-band reconciliation feather ("Option E"): at the final
+              preserved-rectangle paste, the last N rows/columns of the
+              preserved rectangle at its generate-adjacent edges are blended
+              from the exact input toward the decoded canvas underneath
+              instead of pasted byte-exact. Independent of boundary relaxation's
+              own feather paste and takes precedence over it when both are
+              active. See backend/core/inference/outpaint_utils.py
+              reconcile_and_paste's paste_feather_px + backend/api/routes.py
+              generate_outpaint outpaint_paste_feather_px Form param. */}
+          {!isVideo && !isAudio && (
+          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-3">
+            <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
+              Paste-Band Reconciliation Feather
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-gray-500">
+                At the final preserved-rectangle paste, blends the last N rows/columns of the preserved rectangle at its generate-adjacent edges from the exact input toward the decoded canvas already underneath them, instead of pasting byte-exact.
+                Independent of the boundary relaxation feather paste and takes precedence over it when both are active; only the N-row/column band loses byte-exactness.
+              </p>
+              <Slider
+                label="Feather Width (px, 0 = off)"
+                min={0}
+                max={8}
+                step={1}
+                value={params.outpaint_paste_feather_px ?? 0}
+                onChange={(e) => setParams({ ...params, outpaint_paste_feather_px: parseInt(e.target.value, 10) })}
+              />
+            </div>
+          </details>
+          )}
+
+          {/* Honest outpaint preview (display-only): sends the unpinned
+              model x0 prediction to the mid-sampling preview decoder instead
+              of the pinned known/generated composite. Does not affect the
+              sampler's own stepping math or the final saved image. See
+              backend/core/inference/custom_sampling.py's
+              outpaint_preview_unpinned_x0 kwarg + backend/api/routes.py
+              generate_outpaint outpaint_preview_unpinned_x0 Form param. */}
+          {!isVideo && !isAudio && developerMode && (
+          <div className="flex items-center space-x-2 mt-3">
+            <input
+              type="checkbox"
+              id="outpaint_preview_unpinned_x0"
+              checked={params.outpaint_preview_unpinned_x0 ?? false}
+              onChange={(e) => setParams({ ...params, outpaint_preview_unpinned_x0: e.target.checked })}
+              disabled={isGenerating}
+              className="w-4 h-4"
+            />
+            <label htmlFor="outpaint_preview_unpinned_x0" className="text-sm text-gray-300">
+              Preview: show unpinned prediction (display only, final image unaffected)
+            </label>
+          </div>
           )}
         </Card>
         )}

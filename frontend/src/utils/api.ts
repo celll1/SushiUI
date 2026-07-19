@@ -429,6 +429,20 @@ export interface OutpaintParams extends GenerationParams {
   // the generated side only. 0 = off (byte-identical).
   outpaint_seam_tone_strength?: number;
   outpaint_seam_tone_band?: number;
+  // Paste-band reconciliation feather ("Option E"): at the final preserved-
+  // rectangle paste, the last N rows/columns of the preserved rectangle at
+  // its generate-adjacent edges are blended (raised cosine) from the exact
+  // input toward the decoded canvas already underneath them, instead of
+  // pasted byte-exact. Independent of boundary_relax_strength/
+  // boundary_relax_paste's own feather and takes precedence over it when
+  // both are active. 0 = off (byte-identical).
+  outpaint_paste_feather_px?: number;
+  // Display-only preview substitution for outpaint generations: sends the
+  // unpinned model x0 prediction to the mid-sampling preview decoder instead
+  // of the pinned known/generated composite. Does not affect the sampler's
+  // own stepping math or the final saved image. false = off (prior preview
+  // behavior).
+  outpaint_preview_unpinned_x0?: boolean;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -1753,6 +1767,10 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   // Cross-seam low-frequency tone membrane ("R2", post-decode); 0 = off
   formData.append("outpaint_seam_tone_strength", String(paramsWithImages.outpaint_seam_tone_strength ?? 0.0));
   formData.append("outpaint_seam_tone_band", String(paramsWithImages.outpaint_seam_tone_band ?? 0));
+  // Paste-band reconciliation feather ("Option E"); 0 = off (byte-identical)
+  formData.append("outpaint_paste_feather_px", String(paramsWithImages.outpaint_paste_feather_px ?? 0));
+  // Honest outpaint preview (display-only); false = off
+  formData.append("outpaint_preview_unpinned_x0", String(paramsWithImages.outpaint_preview_unpinned_x0 ?? false));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

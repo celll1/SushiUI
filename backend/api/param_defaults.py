@@ -392,6 +392,33 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # Decay band width (px) over which the tone membrane's offset fades to 0.
     # 0 = auto (16 px).
     "outpaint_seam_tone_band": 0,
+    # Paste-band reconciliation feather ("Option E", core.inference.
+    # outpaint_utils.reconcile_and_paste's paste_feather_px; see
+    # scratchpad/outpaint_seam_latent_stage.md section 4.1): at the FINAL
+    # preserved-rect paste, the last N rows/columns of the preserved rect at
+    # its generate-adjacent edges are blended (raised-cosine, via the existing
+    # build_paste_alpha/paste_preserved_region alpha-paste path) from the
+    # exact input toward the decoded canvas already sitting underneath them,
+    # instead of pasted byte-exact -- turning the raw/decoded junction into a
+    # gradient. Independent of Boundary Relaxation's own feather paste (BDR
+    # Variant B, boundary_relax_strength/boundary_relax_paste above) and takes
+    # precedence over it when both are active; applies to every outpaint
+    # ControlNet mode including "crop_mask". 0 (default) = off, byte-identical
+    # to the strict-preservation contract. Only the N-row/column band loses
+    # exactness; the rest of the preserved rect is unaffected.
+    "outpaint_paste_feather_px": 0,
+    # Honest outpaint preview (display-only; core.inference.custom_sampling's
+    # outpaint sampling loop): the loop pins pred_original_sample to the
+    # composite (1-M)*K + M*x0_hat before it reaches the preview/TAESD
+    # decoder, so mid-sampling previews can show a boundary line that the
+    # actual scheduler math (and the final saved image) never has. When true,
+    # the UNPINNED model prediction (x0_hat, pre-composite) is sent to the
+    # preview decoder INSTEAD, for outpaint generations only. Purely a preview
+    # substitution: scheduler.step() still uses the pinned composite
+    # unchanged, so the final saved image for a given seed is byte-identical
+    # regardless of this flag. False (default) preserves prior preview
+    # behavior.
+    "outpaint_preview_unpinned_x0": False,
     # B1 continuity fix (SD/SDXL only; core.inference.custom_sampling's
     # outpaint_noise_init-gated x0-space projection injection): a weak
     # low-frequency color/illumination correction applied to the generate

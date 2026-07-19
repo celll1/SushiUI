@@ -4627,8 +4627,13 @@ async def get_images(
     # Order by created_at descending and apply pagination
     images = query.order_by(GeneratedImage.created_at.desc()).offset(skip).limit(limit).all()
 
+    # Summary DTO: the grid only renders/filters on a handful of fields (see
+    # GeneratedImage.to_summary_dict docstring) -- the full parameters JSON
+    # and mask_data are detail-only and can bloat a single row to several MB
+    # (embedded ControlNet/style-reference base64). Detail view fetches the
+    # full record via GET /images/{id} (below) on open.
     return {
-        "images": [img.to_dict() for img in images],
+        "images": [img.to_summary_dict() for img in images],
         "total": total_count,
         "skip": skip,
         "limit": limit

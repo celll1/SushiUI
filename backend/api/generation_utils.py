@@ -494,6 +494,32 @@ def prepare_params_for_db(params: Dict[str, Any], calculate_image_hash) -> Dict[
             calculate_image_hash(img) for img in params_for_db["ref_images"]
         ]
 
+    # params["controlnets"] is the RAW frontend ControlNet config list (set
+    # verbatim at routes.py, e.g. `params["controlnets"] = controlnet_configs`)
+    # -- unlike controlnet_images/style_transfer(s) above, these entries were
+    # never decoded/hashed and still carry the full base64-encoded reference
+    # image under "image_base64" (up to several MB per entry). Left in place,
+    # this bloats both the DB `parameters` column and every serialization of
+    # it (gallery list/detail JSON, PNG metadata). Strip it here so it never
+    # reaches storage; model_path/strength/mode stay intact and the decoded
+    # copy already lives in the hashed controlnet_images/style_transfers
+    # above, so nothing reproducibility-relevant is lost. style_transfers is
+    # covered defensively too (its "image" key is already hashed above, but
+    # if a caller ever sets it to a raw config carrying image_base64 instead,
+    # this keeps it capped as well).
+    for _list_key in ("controlnets", "style_transfers"):
+        _lst = params_for_db.get(_list_key)
+        if isinstance(_lst, list):
+            params_for_db[_list_key] = [
+                {k: v for k, v in entry.items() if k != "image_base64"}
+                if isinstance(entry, dict) else entry
+                for entry in _lst
+            ]
+    if isinstance(params_for_db.get("style_transfer"), dict):
+        params_for_db["style_transfer"] = {
+            k: v for k, v in params_for_db["style_transfer"].items() if k != "image_base64"
+        }
+
     return params_for_db
 
 

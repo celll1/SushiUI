@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 import os
@@ -162,6 +163,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# GZip middleware: compress JSON/text responses above the size threshold.
+# Primarily targets the gallery list/detail JSON payloads (uncompressed the
+# summary DTO is still tens of KB per 100-row page, and the full detail
+# response can carry a multi-KB parameters blob); also compresses static
+# outputs/thumbnails responses for free (already-compressed formats like PNG/
+# WebP/MP4 barely shrink further, so this has no meaningful cost there).
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # Include routers with versioning
 app.include_router(router, prefix="/api/v1")

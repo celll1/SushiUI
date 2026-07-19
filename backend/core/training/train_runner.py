@@ -2688,6 +2688,9 @@ def main():
             outpaint_seam_ring_width = controlnet_config.get('outpaint_seam_ring_width', 1)
             outpaint_seam_grad_lambda = controlnet_config.get('outpaint_seam_grad_lambda', 0.0)
             outpaint_loss_normalize = controlnet_config.get('outpaint_loss_normalize', False)
+            # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1)
+            outpaint_edge_feather_min_px = controlnet_config.get('outpaint_edge_feather_min_px', 0.0)
+            outpaint_edge_feather_max_px = controlnet_config.get('outpaint_edge_feather_max_px', 0.0)
 
             # Prompt chunking settings
             prompt_chunking_mode = train_config.get('prompt_chunking_mode', 'a1111')
@@ -2739,6 +2742,8 @@ def main():
                 outpaint_seam_ring_width=outpaint_seam_ring_width,
                 outpaint_seam_grad_lambda=outpaint_seam_grad_lambda,
                 outpaint_loss_normalize=outpaint_loss_normalize,
+                outpaint_edge_feather_min_px=outpaint_edge_feather_min_px,
+                outpaint_edge_feather_max_px=outpaint_edge_feather_max_px,
                 learning_rate=train_config.get('lr', 1e-4),
                 weight_dtype=weight_dtype,
                 training_dtype=training_dtype,

@@ -562,6 +562,21 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # extrapolated structure's confidence (higher = sharper falloff near the
     # taper depth).
     "outpaint_controlnet_taper": 2.0,
+    # "crop_mask" mode only: fixed INWARD edge-feather width (canvas px) passed to
+    # build_crop_mask_condition's edge_feather_px at inference (see D3-R1,
+    # scratchpad/outpaint_boundary_structure_fix.md). A crop_mask ControlNet
+    # RE-TRAINED with TRAINING_DEFAULTS' per-sample randomized
+    # outpaint_edge_feather_min_px/max_px range expects a soft perimeter at
+    # inference too (the no-skew contract) -- a single FIXED value keeps inference
+    # in-distribution without needing to sample per-request; set it to the
+    # midpoint of that training range.
+    #
+    # DEFAULT IS 0.0 (razor-sharp): the current live crop_mask ControlNet was
+    # trained BEFORE R1 (edge_feather_px always 0.0 in training), so it expects
+    # the razor-sharp cond it was actually trained on and inference must stay
+    # byte-faithful to it. Flip this to the training-range midpoint (e.g. 12.0)
+    # ONLY once an R1-retrained (soft-edge) crop_mask CN becomes the live model.
+    "outpaint_controlnet_edge_feather_px": 0.0,
 }
 
 # ---------------------------------------------------------------------------
@@ -1124,6 +1139,21 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # each sample's weighted loss by that sample's mean weight, decoupling
     # per-sample scale from rect area.
     "outpaint_loss_normalize": False,
+    # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1): per-sample
+    # RANDOMIZED softness of the crop_mask ControlNet conditioning's known/
+    # unknown perimeter (build_crop_mask_condition's edge_feather_px, canvas px),
+    # drawn per (epoch, image_path) by OutpaintControlPlanner.feather_for. Root
+    # cause: position/size/aspect/anchor mode are already randomized per sample,
+    # but the boundary is always razor-sharp -- the ControlNet learns to render
+    # that hard rect perimeter as scene structure (a "frame"). Randomizing edge
+    # softness removes the one invariant a frame-tracing shortcut can rely on.
+    # Both 0.0 (default) -> feather_for always returns 0.0 -> the razor-sharp
+    # default path in build_crop_mask_condition -> byte-identical to before this
+    # feature existed. The doc's recommended non-default training range is
+    # 0-24px; see outpaint_controlnet_edge_feather_px below for the matching
+    # fixed inference value.
+    "outpaint_edge_feather_min_px": 0.0,
+    "outpaint_edge_feather_max_px": 0.0,
     # Pre-flight dataset drift check + optional rescan.  4 modes:
     #   "off"   — skip entirely (default)
     #   "path"  — only detect added/missing files

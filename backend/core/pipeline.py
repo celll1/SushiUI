@@ -4948,8 +4948,21 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     # 3-ch model will raise a channel mismatch at the ControlNet forward.
                     from core.utils.crop_mask_condition import build_crop_mask_condition
                     import numpy as _np
+                    # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1): a
+                    # FIXED inward feather -- see param_defaults.py OUTPAINT_DEFAULTS
+                    # outpaint_controlnet_edge_feather_px for the no-skew rationale.
+                    # The fallback is single-sourced from OUTPAINT_DEFAULTS (default
+                    # 0.0 = razor-sharp, matching the current live pre-R1 CN); a
+                    # request may override it, and it flips to the training-range
+                    # midpoint only once an R1-retrained soft-edge CN is live.
+                    from api.param_defaults import OUTPAINT_DEFAULTS as _OUTPAINT_DEFAULTS
+                    _ocn_edge_feather_px = float(work.get(
+                        "outpaint_controlnet_edge_feather_px",
+                        _OUTPAINT_DEFAULTS["outpaint_controlnet_edge_feather_px"],
+                    ))
                     _cond_np, _gate_np = build_crop_mask_condition(
-                        _np.array(canvas_img.convert("RGB")), rect, canvas_img.size
+                        _np.array(canvas_img.convert("RGB")), rect, canvas_img.size,
+                        edge_feather_px=_ocn_edge_feather_px,
                     )
                     _ocn_result = (_cond_np, _gate_np)
                 else:

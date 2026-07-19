@@ -768,6 +768,11 @@ class TrainingConfigGenerator:
         controlnet_network_config["outpaint_seam_ring_width"] = p.get("outpaint_seam_ring_width", 1)
         controlnet_network_config["outpaint_seam_grad_lambda"] = p.get("outpaint_seam_grad_lambda", 0.0)
         controlnet_network_config["outpaint_loss_normalize"] = p.get("outpaint_loss_normalize", False)
+        # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1): per-sample
+        # randomized crop_mask conditioning edge-softness range (canvas px). 0/0
+        # (default) -> byte-identical (razor-sharp) behavior.
+        controlnet_network_config["outpaint_edge_feather_min_px"] = p.get("outpaint_edge_feather_min_px", 0.0)
+        controlnet_network_config["outpaint_edge_feather_max_px"] = p.get("outpaint_edge_feather_max_px", 0.0)
 
         config = {
             "job": run_name,

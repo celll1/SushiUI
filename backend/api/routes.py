@@ -3970,6 +3970,7 @@ async def generate_outpaint(
     outpaint_controlnet_guidance_end: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_guidance_end"]),  # guidance window end (0-1)
     outpaint_controlnet_depth: int = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_depth"]),  # max extrapolation depth (canvas px)
     outpaint_controlnet_taper: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_taper"]),  # cosine-squared taper exponent
+    outpaint_controlnet_edge_feather_px: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_edge_feather_px"]),  # crop_mask inward edge-feather (canvas px); 0.0 = hard edge (current live CN)
     prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
     max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -4290,6 +4291,7 @@ async def generate_outpaint(
             "outpaint_controlnet_guidance_end": outpaint_controlnet_guidance_end,
             "outpaint_controlnet_depth": outpaint_controlnet_depth,
             "outpaint_controlnet_taper": outpaint_controlnet_taper,
+            "outpaint_controlnet_edge_feather_px": outpaint_controlnet_edge_feather_px,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,
@@ -10019,6 +10021,8 @@ class TrainingRunCreateRequest(BaseModel):
     outpaint_seam_ring_width: int = Field(TRAINING_DEFAULTS["outpaint_seam_ring_width"], ge=1, le=2)  # Number of seam rings the boost covers (1 = current 1-cell ring, 2 adds a second ring at half the boost increment)
     outpaint_seam_grad_lambda: float = Field(TRAINING_DEFAULTS["outpaint_seam_grad_lambda"], ge=0.0)  # Weight of the cross-seam error-continuity term (native prediction space); 0.0 disables it
     outpaint_loss_normalize: bool = TRAINING_DEFAULTS["outpaint_loss_normalize"]  # Divide each sample's weighted loss by its mean weight (decouples loss scale from rect area)
+    outpaint_edge_feather_min_px: float = Field(TRAINING_DEFAULTS["outpaint_edge_feather_min_px"], ge=0.0)  # Minimum per-sample randomized crop_mask conditioning edge-softness (canvas px); 0/0 range disables (razor-sharp, current behavior)
+    outpaint_edge_feather_max_px: float = Field(TRAINING_DEFAULTS["outpaint_edge_feather_max_px"], ge=0.0)  # Maximum per-sample randomized crop_mask conditioning edge-softness (canvas px)
     # sample_condition_image_path is now per-prompt in sample_prompts[].condition_image_path
     # Pre-flight: detect dataset drift + auto-rescan + cleanup orphan
     # latent cache.  Four modes (see core/training/dataset_drift.py):
@@ -10363,6 +10367,8 @@ _YAML_FIELD_LOCATIONS: Dict[str, tuple] = {
     "outpaint_seam_ring_width": ("network.controlnet",),
     "outpaint_seam_grad_lambda": ("network.controlnet",),
     "outpaint_loss_normalize": ("network.controlnet",),
+    "outpaint_edge_feather_min_px": ("network.controlnet",),
+    "outpaint_edge_feather_max_px": ("network.controlnet",),
     # train section with renamed key
     "total_steps": ("train", "steps"),
     "learning_rate": ("train", "lr"),
@@ -10380,6 +10386,7 @@ _CONTROLNET_ONLY_FIELDS = {
     "outpaint_edge_anchor_prob", "outpaint_corner_anchor_prob", "outpaint_mask_channel",
     "outpaint_known_loss_weight", "outpaint_seam_loss_boost", "outpaint_seam_ring_width",
     "outpaint_seam_grad_lambda", "outpaint_loss_normalize",
+    "outpaint_edge_feather_min_px", "outpaint_edge_feather_max_px",
 }
 
 # Fields excluded from auto-extraction (they need special handling outside the schema loop)

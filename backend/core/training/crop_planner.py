@@ -432,6 +432,8 @@ class OutpaintControlPlanner:
         corner_anchor_prob: float = 0.33,
         aspect_jitter: float = 0.25,
         snap: int = 8,
+        edge_feather_min_px: float = 0.0,
+        edge_feather_max_px: float = 0.0,
     ):
         self.seed = int(seed)
         # Clamp to a sane sub-full range so a generate region always exists.
@@ -447,6 +449,12 @@ class OutpaintControlPlanner:
         self.corner_prob = c
         self.aspect_jitter = float(max(0.0, aspect_jitter))
         self.snap = max(1, int(snap))
+        # R1 (scratchpad/outpaint_boundary_structure_fix.md D3-R1): per-sample
+        # randomized crop_mask_condition edge_feather_px range. Both default to
+        # 0.0 -> feather_for() always returns 0.0 with no RNG draw at all, i.e.
+        # byte-identical to before this feature existed unless a caller opts in.
+        self.edge_feather_min_px = float(max(0.0, edge_feather_min_px))
+        self.edge_feather_max_px = float(max(self.edge_feather_min_px, edge_feather_max_px))
 
     def _item_rng(self, epoch: int, image_path: str) -> random.Random:
         """Independent RNG seeded by (seed, epoch, image_path) -- identical scheme to
@@ -548,3 +556,32 @@ class OutpaintControlPlanner:
         x0 = self._snap(x0, 0, max(0, W - cw))
         y0 = self._snap(y0, 0, max(0, H - ch))
         return (x0, y0, x0 + cw, y0 + ch)
+
+    def feather_for(self, epoch: int, image_path: str) -> float:
+        """Per-sample randomized ``crop_mask_condition.build_crop_mask_condition``
+        ``edge_feather_px`` draw (R1, ``scratchpad/outpaint_boundary_structure_fix.md``
+        D3-R1): the known/unknown boundary is the one thing held constant across
+        every sample by :meth:`rect_for` (position/size/aspect/anchor mode are
+        already randomized) -- a ControlNet trained on it learns to render the
+        rect perimeter as scene structure. Drawing a different edge softness per
+        sample removes that invariant.
+
+        Uses an INDEPENDENT RNG stream from :meth:`rect_for` (its own SHA256 salt,
+        ``"edge_feather"``) so this draw can never perturb the rect draw order or
+        values -- adding/removing/reordering calls to this method relative to
+        ``rect_for`` never desyncs either stream. Pure function of
+        (seed, epoch, image_path, edge_feather_min_px, edge_feather_max_px) ->
+        resume-deterministic (identical to :meth:`rect_for`'s determinism
+        contract).
+
+        Returns ``edge_feather_min_px`` (0.0 by default) with NO ``random.Random``
+        construction at all when ``edge_feather_max_px <= edge_feather_min_px``
+        (the default 0.0/0.0) -- i.e. calling this is a total no-op unless the
+        caller opts into a real range.
+        """
+        lo, hi = self.edge_feather_min_px, self.edge_feather_max_px
+        if hi <= lo:
+            return lo
+        h = hashlib.sha256(f"{self.seed}|{epoch}|{image_path}|edge_feather".encode("utf-8")).digest()
+        rng = random.Random(int.from_bytes(h[:8], "big"))
+        return float(rng.uniform(lo, hi))

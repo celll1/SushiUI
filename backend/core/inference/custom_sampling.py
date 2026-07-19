@@ -418,6 +418,78 @@ def compute_vae_dc_bias(pipeline, ref_latents: torch.Tensor, input_mean: torch.T
         return None
 
 
+# Outpaint HF-restore ("vae_reconstruct_hf" preserve mode): taper width in
+# px/latent-decode-pixels, matching the validated recipe (scratchpad/
+# vae_native_ab/analyze.py's C_taper, taper_rows=16).
+_HF_RESTORE_TAPER_PX = 16
+
+
+def compute_outpaint_hf_roundtrip(pipeline, image_latents: torch.Tensor, vae_shift: float) -> Optional[torch.Tensor]:
+    """VAE roundtrip reference decode = decode(encode(raw)) of the outpaint
+    canvas's own (unnoised) init latents, for the "vae_reconstruct_hf"
+    preserve mode's high-frequency-restore composite.
+
+    ``image_latents`` is the STATIC, already-computed unnoised encode of
+    ``init_image`` (== the SCALED init latents; see the "STATIC inputs"
+    comment near where it is built) -- reusing it costs one extra reference
+    DECODE only (no extra encode), mirroring ``compute_vae_dc_bias``'s own
+    pattern, and must be called while the VAE is still resident on GPU (i.e.
+    before ``move_vae_to_cpu``). Returns a [1,C,H,W] tensor in [0,1], or None
+    on failure (best-effort, like ``compute_vae_dc_bias``).
+    """
+    if image_latents is None:
+        return None
+    try:
+        lat = image_latents / pipeline.vae.config.scaling_factor + vae_shift
+        lat = lat.to(dtype=pipeline.vae.dtype)
+        with torch.no_grad():
+            roundtrip = pipeline.vae.decode(lat, return_dict=True).sample
+        return (roundtrip.float() / 2 + 0.5).clamp(0, 1)
+    except Exception as e:
+        print(f"[Outpaint][HF-restore] Reference roundtrip decode failed, skipping: {e}")
+        return None
+
+
+def _outpaint_hf_restore_weight(mask_pixel: torch.Tensor, taper_px: int = _HF_RESTORE_TAPER_PX) -> torch.Tensor:
+    """Per-pixel raised-cosine taper weight for the KEEP side of an outpaint
+    boundary, replicating scratchpad/vae_native_ab/analyze.py's C_taper
+    construction (``0.5*(1-cos(pi*d/(taper_px-1)))`` where ``d`` is the
+    distance in px from the generate-adjacent boundary) generalized from a
+    single straight boundary to an arbitrary rect: 0 immediately at the
+    boundary (so the HF-restored composite matches the uniform decode
+    exactly there -- no discontinuity), ramping to 1 by ``taper_px - 1`` px
+    inward, and 1 everywhere deeper into the keep region (full residual
+    restoration, matching the reference's measured high fidelity).
+
+    ``mask_pixel`` is the outpaint mask at image (pixel-space) resolution,
+    1.0 = generate / 0.0 = keep (mirrors ``build_outpaint_mask``'s white=
+    generate convention already used throughout this module). Distance is
+    computed via iterative 3x3 morphological erosion of the keep region
+    (Chebyshev distance-to-boundary) rather than reading rect/canvas
+    coordinates directly, so it works for any rect shape/position without
+    needing outpaint-specific geometry passed into this architecture-generic
+    sampling loop; ``max_pool2d``'s implicit negative-infinity padding means
+    erosion never treats the canvas's own physical edge as a generate-
+    adjacent boundary (a rect edge flush with the canvas edge borders no
+    generated content, matching ``outpaint_utils.build_paste_alpha``'s
+    explicit exemption of such edges).
+    """
+    taper_px = max(2, int(taper_px))
+    keep = (mask_pixel <= 0.5).to(dtype=mask_pixel.dtype)
+    dist = torch.full_like(keep, float(taper_px - 1))
+    cur = keep.clone()
+    for k in range(1, taper_px + 1):
+        eroded = -torch.nn.functional.max_pool2d(-cur, kernel_size=3, stride=1, padding=1)
+        newly_lost = (cur > 0.5) & (eroded <= 0.5)
+        if newly_lost.any():
+            dist = torch.where(newly_lost, torch.full_like(dist, float(k - 1)), dist)
+        cur = eroded
+        if not torch.any(cur > 0.5):
+            break
+    weight = 0.5 * (1.0 - torch.cos(math.pi * dist / float(taper_px - 1)))
+    return weight
+
+
 def compute_flatten_inject_steps(num_timesteps: int, last_steps: int) -> set:
     """Step indices on which the in-loop hard-flatten fires: the last ``last_steps``
     ACTUAL denoise steps the loop executes (``num_timesteps`` is ``len(timesteps)``,
@@ -4319,6 +4391,26 @@ def custom_inpaint_sampling_loop(
                                         # final paste in reconcile_and_paste can bridge raw->decoded there
                                         # instead of raw->raw (a no-op). Mirrors the BDR Variant B strip.
                                         # 0 (default) = the block pins the whole keep region (byte-identical).
+    outpaint_preserve_mode: str = "exact",  # PRESERVED-REGION COMPOSITING MODE (opt-in; see
+                                        # param_defaults.py OUTPAINT_DEFAULTS + outpaint_utils.
+                                        # reconcile_and_paste for the full contract). "exact"
+                                        # (default) = the pixel-space preservation blend below runs
+                                        # UNCHANGED (byte-identical). When outpaint_noise_init is
+                                        # True AND this is "vae_reconstruct" or "vae_reconstruct_hf",
+                                        # the hard keep-region paste below is SKIPPED entirely, so
+                                        # `image` stays a single uniform VAE decode of the whole
+                                        # canvas (no visible seam -- the seam is created by the raw-
+                                        # pixel paste itself, not by anything upstream). For
+                                        # "vae_reconstruct_hf" specifically, the preserved region's
+                                        # own high-frequency detail (its raw pixels minus their own
+                                        # VAE roundtrip reconstruction) is restored on top of that
+                                        # uniform decode, tapering to 0 over the last
+                                        # _HF_RESTORE_TAPER_PX rows/cols approaching the boundary so
+                                        # the boundary itself still matches the uniform decode
+                                        # exactly (see _outpaint_hf_restore_weight). Ignored when
+                                        # outpaint_noise_init is False (legacy guided-from-fill
+                                        # outpaint, denoising_strength<1.0) -- mirrors
+                                        # outpaint_preview_unpinned_x0/paste_feather_px's own gate.
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -6622,6 +6714,24 @@ def custom_inpaint_sampling_loop(
     if vae_drift_correction and not _pid_active and _drift_ref_latents is not None:
         _dc_bias = compute_vae_dc_bias(pipeline, _drift_ref_latents, _drift_input_mean, _vae_shift)
 
+    # Outpaint HF-restore reference roundtrip (one extra reference decode,
+    # VAE still on GPU -- see compute_outpaint_hf_roundtrip /
+    # _outpaint_hf_restore_weight). Only computed for outpaint +
+    # "vae_reconstruct_hf" (opt-in, non-exact preserve mode) on a non-inpaint
+    # UNet at full denoise (the same gate the composite is applied under,
+    # below); every other mode/path pays nothing extra. `image_latents` is
+    # the STATIC unnoised encode of `init_image` computed once at loop start
+    # (never mutated afterward).
+    _outpaint_hf_roundtrip = None
+    if (
+        outpaint_noise_init
+        and outpaint_preserve_mode == "vae_reconstruct_hf"
+        and not is_inpaint_unet
+        and t_start_override == 0
+        and not _pid_active
+    ):
+        _outpaint_hf_roundtrip = compute_outpaint_hf_roundtrip(pipeline, image_latents, _vae_shift)
+
     # Offload VAE to CPU after decoding (skipped for PiD — its held VAE was never staged).
     if not _pid_active or _use_real_vae_only:
         move_vae_to_cpu(pipeline)
@@ -6659,8 +6769,6 @@ def custom_inpaint_sampling_loop(
     # Apply pixel-space mask blending for non-inpaint UNets
     # This preserves the original image exactly in non-masked regions
     if not is_inpaint_unet and t_start_override == 0:
-        print("[CustomSampling] Applying pixel-space mask blending for exact preservation")
-
         # Convert original init_image to tensor in same format as decoded image
         if isinstance(init_image, Image.Image):
             original_tensor = torch.from_numpy(np.array(init_image)).float() / 255.0
@@ -6678,38 +6786,86 @@ def custom_inpaint_sampling_loop(
             mode="nearest"
         )
 
-        # BDR Variant B (feather): keep the salient seam STRIP as GENERATED
-        # (model-bridged) content here too, else this pixel blend re-pins it to
-        # the original and the feathered final paste preserves nothing. m_B =
-        # max(mask, strip) in pixel space; only when boundary relaxation +
-        # feather are active (byte-identical otherwise).
-        if _bdr_state is not None and boundary_relax_paste == "feather" and "strip" in _bdr_state:
-            strip_pixel = torch.nn.functional.interpolate(
-                _bdr_state["strip"].to(device=device, dtype=dtype),
-                size=(image.shape[2], image.shape[3]),
-                mode="nearest",
-            )
-            mask_pixel = torch.maximum(mask_pixel, strip_pixel)
+        if outpaint_noise_init and outpaint_preserve_mode in ("vae_reconstruct", "vae_reconstruct_hf"):
+            # VAE-UNIFORM OUTPAINT PRESERVE MODES (opt-in, non-"exact" -- see
+            # param_defaults.py OUTPAINT_DEFAULTS + this function's own
+            # `outpaint_preserve_mode` parameter doc). The hard keep-region
+            # paste below (raw input pixels overwriting the model's own
+            # decode) is what CREATES the visible seam at the boundary
+            # (validated: decode(z_final) alone measures a crossing ratio
+            # BELOW the background row-noise floor -- see
+            # scratchpad/vae_native_ab) -- so for these two modes, that paste
+            # is skipped entirely and `image` is left as the single uniform
+            # VAE decode already computed above (arm B). The preserved
+            # region here is therefore a VAE RECONSTRUCTION of the input,
+            # not byte-identical to it (a warning is emitted by the caller,
+            # PipelineManager.generate_outpaint).
+            if outpaint_preserve_mode == "vae_reconstruct_hf" and _outpaint_hf_roundtrip is not None:
+                # Arm C_taper: additionally restore the preserved region's own
+                # high-frequency detail (its raw pixels minus their own VAE
+                # roundtrip reconstruction) on top of the uniform decode,
+                # tapered to 0 at the boundary (matching the uniform decode
+                # exactly there -- no discontinuity) and to full strength
+                # `_HF_RESTORE_TAPER_PX` px inward (near-input fidelity deep
+                # in the preserved region). Composited in fp32 for precision
+                # (mirrors scratchpad/vae_native_ab/analyze.py's own math),
+                # regardless of the pipeline's compute dtype.
+                _weight = _outpaint_hf_restore_weight(mask_pixel, _HF_RESTORE_TAPER_PX).to(dtype=torch.float32)
+                _residual = original_tensor.to(dtype=torch.float32) - _outpaint_hf_roundtrip.to(
+                    device=original_tensor.device, dtype=torch.float32
+                )
+                _image_f32 = image.to(dtype=torch.float32)
+                _hf_composite = (_image_f32 + _residual * _weight).clamp(0, 1)
+                _mask_f32 = mask_pixel.to(dtype=torch.float32)
+                image = (1 - _mask_f32) * _hf_composite + _mask_f32 * _image_f32
+                print("[CustomSampling][Outpaint] preserve_mode='vae_reconstruct_hf': restored "
+                      "preserved-region high-frequency detail on top of the uniform VAE decode "
+                      "(tapered to 0 at the boundary) -- NOT byte-identical to the input")
+            else:
+                if outpaint_preserve_mode == "vae_reconstruct_hf":
+                    print("[CustomSampling][Outpaint] preserve_mode='vae_reconstruct_hf' requested but "
+                          "the roundtrip reference decode was unavailable -- falling back to "
+                          "'vae_reconstruct' (uniform decode, no high-frequency restoration)")
+                print("[CustomSampling][Outpaint] preserve_mode="
+                      f"'{outpaint_preserve_mode}': skipping the keep-region hard paste -- `image` "
+                      "stays the uniform VAE decode of the whole canvas (NOT byte-identical to the "
+                      "input in the preserved region)")
+                # `image` already IS the uniform decode computed above -- nothing to composite.
+        else:
+            print("[CustomSampling] Applying pixel-space mask blending for exact preservation")
 
-        # Option E (paste-band reconciliation): keep the last N keep-side rows/
-        # cols adjacent to the generate boundary as GENERATED (decoded) content,
-        # so reconcile_and_paste's feathered final paste can bridge raw->decoded
-        # there. Without this, this block hard-pins those rows to the original,
-        # and the feathered paste then blends raw->raw (a structural no-op --
-        # the reason Option E measured 0 effect before this fix). Mirrors the
-        # BDR Variant B strip above; only active for outpaint + feather>0.
-        if outpaint_noise_init and paste_feather_px and paste_feather_px > 0:
-            _N = max(1, int(round(float(paste_feather_px))))
-            _gen = (mask_pixel > 0.5).to(dtype=mask_pixel.dtype)  # 1 = generate region
-            # Dilate the generate region by N px; its intersection with the keep
-            # region (mask==0) is exactly the N-px keep-side boundary band.
-            _dil = torch.nn.functional.max_pool2d(_gen, kernel_size=2 * _N + 1, stride=1, padding=_N)
-            _band = (_dil > 0.5) & (mask_pixel <= 0.5)
-            mask_pixel = torch.maximum(mask_pixel, _band.to(dtype=mask_pixel.dtype))
+            # BDR Variant B (feather): keep the salient seam STRIP as GENERATED
+            # (model-bridged) content here too, else this pixel blend re-pins it to
+            # the original and the feathered final paste preserves nothing. m_B =
+            # max(mask, strip) in pixel space; only when boundary relaxation +
+            # feather are active (byte-identical otherwise).
+            if _bdr_state is not None and boundary_relax_paste == "feather" and "strip" in _bdr_state:
+                strip_pixel = torch.nn.functional.interpolate(
+                    _bdr_state["strip"].to(device=device, dtype=dtype),
+                    size=(image.shape[2], image.shape[3]),
+                    mode="nearest",
+                )
+                mask_pixel = torch.maximum(mask_pixel, strip_pixel)
 
-        # Blend: keep original where mask=0, use generated where mask=1
-        image = (1 - mask_pixel) * original_tensor + mask_pixel * image
-        print("[CustomSampling] Pixel-space blending completed")
+            # Option E (paste-band reconciliation): keep the last N keep-side rows/
+            # cols adjacent to the generate boundary as GENERATED (decoded) content,
+            # so reconcile_and_paste's feathered final paste can bridge raw->decoded
+            # there. Without this, this block hard-pins those rows to the original,
+            # and the feathered paste then blends raw->raw (a structural no-op --
+            # the reason Option E measured 0 effect before this fix). Mirrors the
+            # BDR Variant B strip above; only active for outpaint + feather>0.
+            if outpaint_noise_init and paste_feather_px and paste_feather_px > 0:
+                _N = max(1, int(round(float(paste_feather_px))))
+                _gen = (mask_pixel > 0.5).to(dtype=mask_pixel.dtype)  # 1 = generate region
+                # Dilate the generate region by N px; its intersection with the keep
+                # region (mask==0) is exactly the N-px keep-side boundary band.
+                _dil = torch.nn.functional.max_pool2d(_gen, kernel_size=2 * _N + 1, stride=1, padding=_N)
+                _band = (_dil > 0.5) & (mask_pixel <= 0.5)
+                mask_pixel = torch.maximum(mask_pixel, _band.to(dtype=mask_pixel.dtype))
+
+            # Blend: keep original where mask=0, use generated where mask=1
+            image = (1 - mask_pixel) * original_tensor + mask_pixel * image
+            print("[CustomSampling] Pixel-space blending completed")
 
     image = image.cpu().permute(0, 2, 3, 1).float().numpy()
     # Defensive clip: any out-of-range value here would wrap modulo-256 in the

@@ -4581,6 +4581,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             outpaint_controlnet_gate=params.get("outpaint_controlnet_gate"),
             outpaint_preview_unpinned_x0=bool(params.get("outpaint_preview_unpinned_x0", False)),
             paste_feather_px=float(params.get("outpaint_paste_feather_px", 0) or 0),
+            outpaint_preserve_mode=str(params.get("outpaint_preserve_mode", "exact") or "exact"),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -5088,6 +5089,35 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             from api.generation_status import add_warning as _sm_warn
             _sm_warn(message, code=code)
 
+        # Preserved-region compositing mode (opt-in, default "exact" = the
+        # unchanged byte-exact paste; see param_defaults.py OUTPAINT_DEFAULTS
+        # for the full mode descriptions and scratchpad/vae_native_ab for the
+        # validated recipe this trades against). Read from `params` (not
+        # `work`) -- nothing above mutates this key, mirroring how
+        # `_paste_feather_px` is resolved.
+        _preserve_mode = str(params.get("outpaint_preserve_mode", "exact") or "exact")
+        if _preserve_mode != "exact":
+            from api.generation_status import add_warning as _pm_warn
+            _sd_family = self.current_pipeline_kind in ("sd15", "sdxl")
+            if _preserve_mode == "vae_reconstruct_hf" and not _sd_family:
+                _pm_warn(
+                    "outpaint_preserve_mode='vae_reconstruct_hf' is implemented for "
+                    "SD1.5/SDXL only; the currently loaded architecture falls back to "
+                    "'vae_reconstruct' behavior (no high-frequency detail restoration).",
+                    code="outpaint_preserve_mode_hf_unsupported_arch",
+                )
+            _pm_warn(
+                "outpaint_preserve_mode is not 'exact': the preserved region is a "
+                + (
+                    "VAE reconstruction of the input"
+                    if _preserve_mode == "vae_reconstruct" or (_preserve_mode == "vae_reconstruct_hf" and not _sd_family)
+                    else "VAE reconstruction of the input with its high-frequency detail restored"
+                )
+                + ", NOT byte-identical to it -- this trades exact preservation for a "
+                "seamless boundary (no hard raw/decoded pixel discontinuity).",
+                code="outpaint_preserve_mode_nonexact",
+            )
+
         result_image = reconcile_and_paste(
             result_image, placed_img, rect, canvas_img.size,
             mask_blur=mask_blur,
@@ -5098,6 +5128,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             seam_membrane_band=int(params.get("outpaint_seam_membrane_band", 0) or 0),
             seam_tone_strength=float(params.get("outpaint_seam_tone_strength", 0.0) or 0.0),
             seam_tone_band=int(params.get("outpaint_seam_tone_band", 0) or 0),
+            outpaint_preserve_mode=_preserve_mode,
             warn_callback=_seam_membrane_warn,
         )
 

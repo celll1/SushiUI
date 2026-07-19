@@ -437,6 +437,17 @@ export interface OutpaintParams extends GenerationParams {
   // boundary_relax_paste's own feather and takes precedence over it when
   // both are active. 0 = off (byte-identical).
   outpaint_paste_feather_px?: number;
+  // Preserved-region compositing mode. "exact" (default) is the current
+  // byte-exact paste, unchanged. "vae_reconstruct" outputs a single uniform
+  // VAE decode of the whole canvas with no paste at all -- the preserved
+  // region becomes a VAE reconstruction of the input (not byte-identical),
+  // removing the hard raw/decoded pixel discontinuity at the boundary.
+  // "vae_reconstruct_hf" additionally restores the preserved region's own
+  // high-frequency detail on top of that uniform decode, tapering to zero
+  // at the boundary; implemented for SD1.5/SDXL, falls back to
+  // "vae_reconstruct" on other architectures. Both non-"exact" modes are
+  // NOT byte-identical to the input in the preserved region.
+  outpaint_preserve_mode?: "exact" | "vae_reconstruct" | "vae_reconstruct_hf";
   // Display-only preview substitution for outpaint generations: sends the
   // unpinned model x0 prediction to the mid-sampling preview decoder instead
   // of the pinned known/generated composite. Does not affect the sampler's
@@ -1769,6 +1780,8 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("outpaint_seam_tone_band", String(paramsWithImages.outpaint_seam_tone_band ?? 0));
   // Paste-band reconciliation feather ("Option E"); 0 = off (byte-identical)
   formData.append("outpaint_paste_feather_px", String(paramsWithImages.outpaint_paste_feather_px ?? 0));
+  // Preserved-region compositing mode; "exact" = off (byte-identical)
+  formData.append("outpaint_preserve_mode", paramsWithImages.outpaint_preserve_mode ?? "exact");
   // Honest outpaint preview (display-only); false = off
   formData.append("outpaint_preview_unpinned_x0", String(paramsWithImages.outpaint_preview_unpinned_x0 ?? false));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");

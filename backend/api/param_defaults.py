@@ -407,6 +407,25 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # to the strict-preservation contract. Only the N-row/column band loses
     # exactness; the rest of the preserved rect is unaffected.
     "outpaint_paste_feather_px": 0,
+    # Preserved-region compositing mode (opt-in; SD1.5/SDXL gets the full
+    # mechanism, other architectures get the "vae_reconstruct" behavior only
+    # -- see per-mode notes below and core.inference.outpaint_utils.
+    # reconcile_and_paste / core.inference.custom_sampling's outpaint keep-
+    # paste block). "exact" (default) is the CURRENT byte-exact behavior:
+    # the preserved rectangle is pasted pixel-for-pixel from the input,
+    # unchanged by this parameter's existence. "vae_reconstruct" outputs a
+    # single uniform VAE decode of the whole canvas with NO paste at all --
+    # the preserved region becomes a VAE reconstruction of the input, not
+    # byte-identical to it, but the boundary is no longer a hard raw/decoded
+    # pixel discontinuity. "vae_reconstruct_hf" additionally restores the
+    # preserved region's high-frequency detail (raw minus its own VAE
+    # roundtrip reconstruction) on top of the uniform decode, tapering that
+    # restoration to zero over the last rows/columns approaching the
+    # boundary so the boundary itself still matches the uniform decode
+    # exactly; higher fidelity to the input than "vae_reconstruct" while
+    # keeping the same seamless boundary. Both non-"exact" modes make the
+    # preserved region NOT byte-identical to the input and emit a warning.
+    "outpaint_preserve_mode": "exact",
     # Honest outpaint preview (display-only; core.inference.custom_sampling's
     # outpaint sampling loop): the loop pins pred_original_sample to the
     # composite (1-M)*K + M*x0_hat before it reaches the preview/TAESD

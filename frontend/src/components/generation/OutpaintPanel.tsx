@@ -2680,6 +2680,186 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 )}
               </div>
             </details>
+
+            <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration（高速化）</div>
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="spectrum_enable_outpaint"
+                checked={params.spectrum_enable || false}
+                onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="spectrum_enable_outpaint" className="text-sm text-gray-300">
+                Spectrum (Spectral Feature Forecasting)
+              </label>
+              <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
+            </div>
+            {params.spectrum_enable && (
+              <div className="ml-6 mt-1 flex items-center gap-2">
+                <label className="text-xs text-gray-400">Mode</label>
+                <select
+                  value={params.spectrum_feature_mode ?? "output"}
+                  onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
+                  className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                >
+                  <option value="output">output (black-box, max speed)</option>
+                  <option value="block">block (deep-feature, higher quality)</option>
+                </select>
+                {params.spectrum_feature_mode === "block" && (
+                  <label className="text-xs text-gray-400 flex items-center gap-1">
+                    Branch
+                    <input type="number" min={1} max={3} step={1}
+                      value={params.spectrum_cache_branch ?? 1}
+                      onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
+                      className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                  </label>
+                )}
+              </div>
+            )}
+            {params.spectrum_enable && (
+              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400 flex items-center gap-1">Mix w
+                  <input type="number" min={0} max={1} step={0.05} value={params.spectrum_w ?? 0.5}
+                    onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Mix w decay
+                  <input type="number" min={0} step={0.25} value={params.spectrum_w_decay ?? 0.0}
+                    onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">Delta cap
+                  <input type="number" step={0.25} value={params.spectrum_delta_cap ?? 0.0}
+                    onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Basis m
+                  <input type="number" min={1} max={8} step={1} value={params.spectrum_m ?? 4}
+                    onChange={(e) => setParams({ ...params, spectrum_m: parseInt(e.target.value) || 4 })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Ridge λ
+                  <input type="number" min={0} step={0.01} value={params.spectrum_lam ?? 0.1}
+                    onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Warmup
+                  <input type="number" min={1} step={1} value={params.spectrum_warmup_steps ?? 3}
+                    onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Window
+                  <input type="number" min={1} step={1} value={params.spectrum_window_size ?? 4}
+                    onChange={(e) => setParams({ ...params, spectrum_window_size: parseInt(e.target.value) || 4 })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Flex
+                  <input type="number" min={0} max={1} step={0.05} value={params.spectrum_flex_window ?? 0.75}
+                    onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Tail
+                  <input type="number" min={0} max={0.5} step={0.02} value={params.spectrum_tail ?? 0.12}
+                    onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
+                    className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+                </label>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="fbcache_enable_outpaint"
+                checked={params.fbcache_enable || false}
+                onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="fbcache_enable_outpaint" className="text-sm text-gray-300">
+                First Block Cache (dynamic caching)
+              </label>
+              <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
+            </div>
+            {params.fbcache_enable && (
+              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400 flex items-center gap-1">Residual threshold (higher = more skips)
+                  <NumberInput min={0} step={0.01} parse="float" value={params.fbcache_threshold ?? 0.12}
+                    defaultValue={0.12}
+                    placeholder="0.12"
+                    onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
+                    className="w-20" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1">Warmup steps
+                  <NumberInput min={0} step={1} value={params.fbcache_warmup_steps ?? 1}
+                    defaultValue={1}
+                    placeholder="1"
+                    onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
+                    className="w-20" />
+                </label>
+              </div>
+            )}
+
+            <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Post-process（色補正）</div>
+
+            <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+              <Slider
+                label="Color Flatten（色ムラ除去）"
+                min={0}
+                max={100}
+                step={1}
+                value={params.color_flatten_strength ?? 0}
+                onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+              />
+            </div>
+
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="flatten_in_loop_outpaint"
+                checked={params.flatten_in_loop || false}
+                onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="flatten_in_loop_outpaint" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
+                In-loop background flatten（背景ベタ塗り化）
+              </label>
+            </div>
+            {params.flatten_in_loop && (
+              <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
+                  Flatten last N steps
+                  <NumberInput min={1} max={16} step={1}
+                    value={params.flatten_in_loop_last_steps ?? 3}
+                    defaultValue={3}
+                    placeholder="3"
+                    onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
+                    className="w-20" />
+                </label>
+                <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
+                  Min region fraction
+                  <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+                    value={params.flatten_in_loop_min_region ?? 0.02}
+                    defaultValue={0.02}
+                    placeholder="0.02"
+                    onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
+                    className="w-20" />
+                </label>
+              </div>
+            )}
+
+            <div className="flex items-center space-x-2 mt-2" title="Subtracts the VAE encode/decode round-trip color bias (measured per image) from the output; independent of denoising strength.">
+              <input
+                type="checkbox"
+                id="vae_drift_correction_outpaint"
+                checked={params.vae_drift_correction ?? false}
+                onChange={(e) => setParams({ ...params, vae_drift_correction: e.target.checked })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500"
+              />
+              <label htmlFor="vae_drift_correction_outpaint" className="text-sm text-gray-300">
+                VAE drift correction
+              </label>
+            </div>
           </div>
         </Card>
         )}

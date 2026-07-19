@@ -2598,6 +2598,10 @@ class BaseTrainer(ABC):
             "random_state": random.getstate(),  # Save Python random state for batch shuffle reproducibility
             # Dataset fingerprint for change detection on resume
             "dataset_fingerprint": getattr(self, '_dataset_fingerprint', None),
+            # Batches-per-epoch: captures a batch_size-only change (not covered by the
+            # dataset fingerprint) so the resume structure-change guard can detect it.
+            # Read-side treats a missing key as "unchanged" for backward compatibility.
+            "batches_per_epoch": getattr(self, '_batches_per_epoch', None),
             # Crop-plan fingerprint: a change in crop augmentation params (or num_epochs)
             # invalidates the saved shuffle/crop reproducibility -> fresh fallback on resume.
             "crop_plan_fingerprint": getattr(self, '_crop_plan_fingerprint', None),
@@ -7096,6 +7100,9 @@ class BaseTrainer(ABC):
         total_items = sum(len(dataset.items) for dataset in datasets)
         batches_per_epoch = (total_items + batch_size - 1) // batch_size
         steps_per_epoch = batches_per_epoch * multi_noise_timesteps  # MNT multiplier
+        # Persist for save_training_state() so a batch_size-only change (which the dataset
+        # fingerprint does NOT capture) is detectable by the resume structure-change guard.
+        self._batches_per_epoch = batches_per_epoch
 
         # If total_steps is specified, calculate num_epochs; otherwise use num_epochs
         if total_steps is not None:
@@ -7684,6 +7691,49 @@ class BaseTrainer(ABC):
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")
+
+        # ============================================================
+        # Resume structure-change guard (dataset composition or batch structure)
+        # ============================================================
+        # The in-loop fingerprint check (~"Mid-epoch resume: restore random state")
+        # only fires INSIDE the epoch loop. When the stored epoch/batches_per_epoch
+        # combination makes ``range(start_epoch, num_epochs)`` empty (e.g. the dataset
+        # grew so the stored epoch index exceeds the new epoch count), that check never
+        # runs and the MNT-recompute below can produce a negative total_steps while the
+        # loop trains 0 batches. Hoist an equivalent guard to BEFORE the MNT-recompute so
+        # it fires even when the (broken) epoch range would be empty.
+        #
+        # Policy A': keep global_step + optimizer state + the configured ``steps`` as the
+        # global_step stop target; discard the non-portable epoch/batch bookkeeping and
+        # restart from a fresh epoch boundary. Fires ONLY when the dataset fingerprint or
+        # batches_per_epoch changed, so a normal same-structure resume is byte-identical.
+        self._resume_structure_changed = False
+        if resume_training_state is not None:
+            saved_fp = resume_training_state.get('dataset_fingerprint')
+            fp_changed = self._check_dataset_fingerprint_changed(saved_fp, self._dataset_fingerprint)
+            saved_bpe = resume_training_state.get('batches_per_epoch')
+            bpe_changed = (saved_bpe is not None and saved_bpe != batches_per_epoch)
+            if fp_changed or bpe_changed:
+                self._resume_structure_changed = True
+                print(f"{self.log_prefix} Dataset/batch structure changed since checkpoint "
+                      f"(fingerprint_changed={fp_changed}, batches_per_epoch: {saved_bpe} -> {batches_per_epoch})")
+                print(f"{self.log_prefix} Stored epoch/batch position is not portable; keeping "
+                      f"global_step={global_step} and optimizer state, restarting epoch bookkeeping from a fresh boundary.")
+                print(f"{self.log_prefix} Configured total_steps={actual_total_steps} is the global_step stop target "
+                      f"(remaining {actual_total_steps - global_step} steps ~= "
+                      f"{max(0, actual_total_steps - global_step) // max(1, multi_noise_timesteps)} batches at MNT={multi_noise_timesteps})")
+                start_epoch = 0
+                resume_batch_idx = 0
+                resume_training_state = None  # disarms MNT-recompute, in-loop restore, and batch truncation
+                if actual_total_steps <= global_step:
+                    print(f"{self.log_prefix} WARNING: global_step ({global_step}) already >= total_steps "
+                          f"({actual_total_steps}); increase `steps` in config to continue training.")
+                if str(lr_scheduler_type).lower() != "constant":
+                    print(f"{self.log_prefix} WARNING: non-constant LR scheduler across a dataset-structure change; "
+                          f"LR position was fast-forwarded by old global_step and may not match intent.")
+                if getattr(self, '_rc_active', False):
+                    print(f"{self.log_prefix} WARNING: res-curriculum epoch counter resets to 0; warmup would re-run. "
+                          f"Curriculum + dataset swap is unsupported.")
 
         # ============================================================
         # MNT Change Detection and total_steps Recalculation

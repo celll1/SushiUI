@@ -586,6 +586,8 @@ def reconcile_and_paste(
     paste_alpha: Optional[np.ndarray] = None,
     seam_membrane: bool = False,
     seam_membrane_band: int = 0,
+    seam_tone_strength: float = 0.0,
+    seam_tone_band: int = 0,
     warn_callback: Optional[Any] = None,
 ) -> Image.Image:
     """Defensive belt-and-suspenders wrapper around ``paste_preserved_region``.
@@ -609,12 +611,21 @@ def reconcile_and_paste(
     numpy/PIL/stdlib-only import-time policy is unaffected when it's off)
     bends the generated pixels near the seam to meet the preserved rect's own
     values exactly (C0 continuity), tapering out over a fixed band -- see
-    ``scratchpad/outpaint_seam_redesign.md``. Finally ``placed_img`` is pasted
-    at ``rect`` exactly as ``paste_preserved_region`` does -- this paste is
-    always the LAST mutation, re-establishing byte-exactness of the preserved
-    rect regardless of any architecture-side re-rounding or the correction
-    steps above. ``seam_membrane`` writes only pixels outside ``rect`` by
-    construction (see its own module docstring), so this is a double
+    ``scratchpad/outpaint_seam_redesign.md``. Then, when ``seam_tone_strength``
+    is > 0, the cross-seam low-frequency tone membrane ("R2",
+    ``core.inference.seam_membrane.apply_cross_seam_tone``, also imported
+    lazily) -- a SEPARATE mechanism from ``seam_membrane`` above -- measures
+    the tone step between the preserved rect's own pixels and the decoded
+    generated pixels immediately across the seam (not the rect-interior
+    reconstruction ``seam_membrane`` keys on) and writes a decaying offset
+    into the generated side within ``seam_tone_band`` px of the seam -- see
+    ``scratchpad/outpaint_seam_redesign_v2.md`` section 4 Phase 1. Finally
+    ``placed_img`` is pasted at ``rect`` exactly as ``paste_preserved_region``
+    does -- this paste is always the LAST mutation, re-establishing
+    byte-exactness of the preserved rect regardless of any architecture-side
+    re-rounding or the correction steps above. Both ``seam_membrane`` and the
+    cross-seam tone membrane write only pixels outside ``rect`` by
+    construction (see their own module docstrings), so this is a double
     guarantee, not a single point of failure.
 
     ``warn_callback``, if given, is called as ``warn_callback(message, code)``
@@ -663,4 +674,28 @@ def reconcile_and_paste(
                     )
                 except Exception:
                     pass
+    if seam_tone_strength and seam_tone_strength > 0:
+        from core.inference.seam_membrane import apply_cross_seam_tone, TONE_CAP_DEFAULT
+
+        result_arr = np.array(result_img.convert("RGB"))
+        placed_arr = np.array(placed_img.convert("RGB"))
+        out_arr, tone_info = apply_cross_seam_tone(
+            result_arr, placed_arr, rect, canvas_size,
+            strength=seam_tone_strength, band=seam_tone_band,
+        )
+        result_img = Image.fromarray(out_arr, mode="RGB")
+        # Key the saturation notice on the PRE-strength clamped tone step
+        # (max_abs_step, always <= cap) -- max_abs_offset is post-strength and
+        # would fire spuriously for strength>1 (or miss it for strength<1).
+        if warn_callback is not None and tone_info.get("max_abs_step", 0.0) >= 0.9 * TONE_CAP_DEFAULT:
+            try:
+                warn_callback(
+                    "Cross-seam tone membrane step saturated its clamp "
+                    f"(max |step| {tone_info.get('max_abs_step', 0.0):.1f}/255) on "
+                    f"edges {tone_info.get('edges', [])} -- the generated content's tone "
+                    "likely disagreed substantially with the preserved boundary.",
+                    "seam_tone_saturated",
+                )
+            except Exception:
+                pass
     return paste_preserved_region(result_img, placed_img, rect, alpha=paste_alpha)

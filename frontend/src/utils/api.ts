@@ -422,6 +422,13 @@ export interface OutpaintParams extends GenerationParams {
   // exposure/tone gain). false = off (byte-identical).
   outpaint_seam_membrane?: boolean;
   outpaint_seam_membrane_band?: number;
+  // Cross-seam low-frequency tone membrane ("R2", post-decode): a separate
+  // mechanism from outpaint_seam_membrane above. Measures the tone step
+  // between the preserved rectangle's own pixels and the decoded generated
+  // pixels immediately across the seam, and writes a decaying offset into
+  // the generated side only. 0 = off (byte-identical).
+  outpaint_seam_tone_strength?: number;
+  outpaint_seam_tone_band?: number;
   // --- Placement (outpaint-only) ---
   canvas_width?: number;
   canvas_height?: number;
@@ -1743,6 +1750,9 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   // Harmonic boundary-offset membrane (post-decode); false = off
   formData.append("outpaint_seam_membrane", String(paramsWithImages.outpaint_seam_membrane ?? false));
   formData.append("outpaint_seam_membrane_band", String(paramsWithImages.outpaint_seam_membrane_band ?? 0));
+  // Cross-seam low-frequency tone membrane ("R2", post-decode); 0 = off
+  formData.append("outpaint_seam_tone_strength", String(paramsWithImages.outpaint_seam_tone_strength ?? 0.0));
+  formData.append("outpaint_seam_tone_band", String(paramsWithImages.outpaint_seam_tone_band ?? 0));
   formData.append("prompt_chunking_mode", paramsWithImages.prompt_chunking_mode || "a1111");
   formData.append("max_prompt_chunks", String(paramsWithImages.max_prompt_chunks ?? 0));
   formData.append("loras", JSON.stringify(paramsWithImages.loras || []));

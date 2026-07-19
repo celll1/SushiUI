@@ -375,6 +375,23 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # Taper band width (px) over which the membrane's correction fades to 0.
     # 0 = auto (clamp(max(canvas_width, canvas_height) // 8, 64, 256)).
     "outpaint_seam_membrane_band": 0,
+    # Cross-seam low-frequency tone membrane (core.inference.seam_membrane.
+    # apply_cross_seam_tone, "R2"): a SEPARATE, distinct correction from the
+    # harmonic membrane above. Measures the per-channel tone step between the
+    # preserved rect's own pixels and the decoded GENERATED pixels
+    # immediately across the seam (not the rect-interior reconstruction the
+    # harmonic membrane keys on), subtracts the local content gradient
+    # estimated from the preserved side so a legitimate ramp is not
+    # flattened, low-passes the residual along the seam axis, and writes a
+    # decaying offset into the generated side only, within
+    # outpaint_seam_tone_band px of the seam. Runs after the harmonic
+    # membrane and before the final unconditional paste, so the preserved
+    # rect is never altered. 0 = off (byte-identical; the module is not even
+    # imported when both this and outpaint_seam_membrane are off).
+    "outpaint_seam_tone_strength": 0.0,
+    # Decay band width (px) over which the tone membrane's offset fades to 0.
+    # 0 = auto (16 px).
+    "outpaint_seam_tone_band": 0,
     # B1 continuity fix (SD/SDXL only; core.inference.custom_sampling's
     # outpaint_noise_init-gated x0-space projection injection): a weak
     # low-frequency color/illumination correction applied to the generate

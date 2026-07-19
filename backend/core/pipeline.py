@@ -4582,6 +4582,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             outpaint_preview_unpinned_x0=bool(params.get("outpaint_preview_unpinned_x0", False)),
             paste_feather_px=float(params.get("outpaint_paste_feather_px", 0) or 0),
             outpaint_preserve_mode=str(params.get("outpaint_preserve_mode", "exact") or "exact"),
+            outpaint_seam_offset_prop=float(params.get("outpaint_seam_offset_prop", 0.0) or 0.0),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -5085,6 +5086,20 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 code="outpaint_paste_feather_nonexact",
             )
 
+        # G_prop16 boundary-offset propagation (core.inference.seam_membrane.
+        # apply_seam_offset_propagation, opt-in): generated-side-only by
+        # construction -- see param_defaults.py OUTPAINT_DEFAULTS and
+        # scratchpad/outpaint_seamless_vae_native.md for the mechanism.
+        _seam_offset_prop = float(params.get("outpaint_seam_offset_prop", 0.0) or 0.0)
+        if _seam_offset_prop > 0:
+            from api.generation_status import add_warning as _sop_warn
+            _sop_warn(
+                "Seam offset propagation (G_prop16) modifies generated-side pixels "
+                "near the seam to match the preserved boundary's own tone; the "
+                "preserved region itself is unchanged.",
+                code="outpaint_seam_offset_prop_engaged",
+            )
+
         def _seam_membrane_warn(message: str, code: str) -> None:
             from api.generation_status import add_warning as _sm_warn
             _sm_warn(message, code=code)
@@ -5128,6 +5143,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             seam_membrane_band=int(params.get("outpaint_seam_membrane_band", 0) or 0),
             seam_tone_strength=float(params.get("outpaint_seam_tone_strength", 0.0) or 0.0),
             seam_tone_band=int(params.get("outpaint_seam_tone_band", 0) or 0),
+            seam_offset_prop=_seam_offset_prop,
             outpaint_preserve_mode=_preserve_mode,
             warn_callback=_seam_membrane_warn,
         )

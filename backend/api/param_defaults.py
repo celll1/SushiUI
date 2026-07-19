@@ -392,6 +392,21 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # Decay band width (px) over which the tone membrane's offset fades to 0.
     # 0 = auto (16 px).
     "outpaint_seam_tone_band": 0,
+    # Boundary-offset propagation ("G_prop16", core.inference.seam_membrane.
+    # apply_seam_offset_propagation): a THIRD, separate mechanism from the two
+    # membranes above, strict-preservation-native by construction (writes only
+    # generated-side pixels near the seam, never the preserved rect). Measures
+    # the same placed-vs-decoded-reconstruction offset the harmonic membrane
+    # measures (at the rect-interior boundary, not the cross-seam comparison
+    # the tone membrane uses), and propagates it directly into the generated
+    # band as a Gaussian low-frequency term plus a short high-frequency
+    # residual term (each independently tapered), instead of solving a
+    # Poisson field. Runs after the tone membrane and before the final
+    # unconditional paste. Scales the applied offset; 0 (default) = off (the
+    # module is not imported). Internal constants (low/high-frequency band
+    # widths, Gaussian sigma, taper shape, clamp) are fixed -- validated
+    # against a real decode in scratchpad/outpaint_seamless_vae_native.md.
+    "outpaint_seam_offset_prop": 0.0,
     # Paste-band reconciliation feather ("Option E", core.inference.
     # outpaint_utils.reconcile_and_paste's paste_feather_px; see
     # scratchpad/outpaint_seam_latent_stage.md section 4.1): at the FINAL

@@ -429,6 +429,14 @@ export interface OutpaintParams extends GenerationParams {
   // the generated side only. 0 = off (byte-identical).
   outpaint_seam_tone_strength?: number;
   outpaint_seam_tone_band?: number;
+  // Boundary-offset propagation ("G_prop16", post-decode): a third seam
+  // mechanism, distinct from both membranes above. Measures the same offset
+  // outpaint_seam_membrane measures (preserved pixels vs the decoded
+  // reconstruction of that same region, not the cross-seam comparison
+  // outpaint_seam_tone_strength uses), and writes it directly into the
+  // generated pixels adjacent to the seam. Writes only generated-side
+  // pixels; the preserved region is unaffected. 0 = off (byte-identical).
+  outpaint_seam_offset_prop?: number;
   // Paste-band reconciliation feather ("Option E"): at the final preserved-
   // rectangle paste, the last N rows/columns of the preserved rectangle at
   // its generate-adjacent edges are blended (raised cosine) from the exact
@@ -1778,6 +1786,8 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   // Cross-seam low-frequency tone membrane ("R2", post-decode); 0 = off
   formData.append("outpaint_seam_tone_strength", String(paramsWithImages.outpaint_seam_tone_strength ?? 0.0));
   formData.append("outpaint_seam_tone_band", String(paramsWithImages.outpaint_seam_tone_band ?? 0));
+  // Boundary-offset propagation ("G_prop16", post-decode); 0 = off (byte-identical, generated-side-only)
+  formData.append("outpaint_seam_offset_prop", String(paramsWithImages.outpaint_seam_offset_prop ?? 0.0));
   // Paste-band reconciliation feather ("Option E"); 0 = off (byte-identical)
   formData.append("outpaint_paste_feather_px", String(paramsWithImages.outpaint_paste_feather_px ?? 0));
   // Preserved-region compositing mode; "exact" = off (byte-identical)

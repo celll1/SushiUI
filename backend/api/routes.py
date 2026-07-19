@@ -3948,6 +3948,7 @@ async def generate_outpaint(
     outpaint_seam_membrane_band: int = Form(OUTPAINT_DEFAULTS["outpaint_seam_membrane_band"]),  # Taper band width (px) for the seam membrane; 0 = auto
     outpaint_seam_tone_strength: float = Form(OUTPAINT_DEFAULTS["outpaint_seam_tone_strength"]),  # R2 cross-seam low-frequency tone membrane (post-decode, before the final paste); 0 = off (byte-identical)
     outpaint_seam_tone_band: int = Form(OUTPAINT_DEFAULTS["outpaint_seam_tone_band"]),  # Decay band width (px) for the cross-seam tone membrane; 0 = auto (16)
+    outpaint_seam_offset_prop: float = Form(OUTPAINT_DEFAULTS["outpaint_seam_offset_prop"]),  # G_prop16 boundary-offset propagation (post-decode, before the final paste); generated-side-only, 0 = off (byte-identical)
     outpaint_paste_feather_px: int = Form(OUTPAINT_DEFAULTS["outpaint_paste_feather_px"]),  # Option E paste-band reconciliation feather (px); 0 = off (byte-identical), independent of/takes precedence over BDR's feather paste
     outpaint_preserve_mode: str = Form(OUTPAINT_DEFAULTS["outpaint_preserve_mode"]),  # "exact" (byte-exact paste, default) | "vae_reconstruct" | "vae_reconstruct_hf" (seamless, NOT byte-identical -- see param_defaults.py)
     outpaint_preview_unpinned_x0: bool = Form(OUTPAINT_DEFAULTS["outpaint_preview_unpinned_x0"]),  # Display-only: send the unpinned model x0 prediction to the mid-sampling preview decoder instead of the pinned composite; final saved image unaffected
@@ -4267,6 +4268,7 @@ async def generate_outpaint(
             "outpaint_seam_membrane_band": outpaint_seam_membrane_band,
             "outpaint_seam_tone_strength": outpaint_seam_tone_strength,
             "outpaint_seam_tone_band": outpaint_seam_tone_band,
+            "outpaint_seam_offset_prop": outpaint_seam_offset_prop,
             "outpaint_paste_feather_px": outpaint_paste_feather_px,
             "outpaint_preserve_mode": outpaint_preserve_mode,
             "outpaint_preview_unpinned_x0": outpaint_preview_unpinned_x0,

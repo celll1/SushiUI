@@ -60,6 +60,16 @@ COARSE_MAX_UNKNOWNS_DEFAULT = 120_000
 # mismatch at the boundary, not a seam-continuity issue).
 FAR_BAND_WARN_THRESHOLD = 8.0
 
+# Boundary-offset propagation ("G_prop16") internal constants -- see
+# ``scratchpad/outpaint_seamless_vae_native.md`` section 3.3/5 and the
+# validated sweep in the session scratchpad's ``vae_native_ab/g_arms3.py``
+# (variant ``lf16_hf4``, crossing ratio 2.03 -> 0.585, preserved region
+# byte-exact by construction). Not user-exposed -- only the overall
+# ``strength`` is a caller parameter.
+OFFSET_PROP_LF_SIGMA_DEFAULT = 8.0
+OFFSET_PROP_LF_ROWS_DEFAULT = 16
+OFFSET_PROP_HF_ROWS_DEFAULT = 4
+
 
 def _edge_flags(rect: Tuple[int, int, int, int], canvas_size: Tuple[int, int]) -> Dict[str, bool]:
     """Which rect edges border GENERATED content (mirrors
@@ -687,6 +697,239 @@ def apply_cross_seam_tone(
     return out2, info
 
 
+# --- G_prop16: generated-side-only boundary-offset propagation --------------
+# ``scratchpad/outpaint_seamless_vae_native.md`` sections 2-5. Distinct from
+# BOTH mechanisms above. ``apply_seam_membrane`` solves a harmonic (Poisson)
+# field over the whole generate region from the same ring Dirichlet data this
+# function uses, but the coarse-grid + bilinear-prolongation + limited
+# Gauss-Seidel refinement numerics attenuate short-wavelength (< ~19px)
+# structure in that data before it reaches the generated pixels a row or two
+# from the seam (measured: crossing ratio only 2.03 -> 1.28, half the
+# achievable reduction). ``apply_cross_seam_tone`` measures a DIFFERENT
+# quantity (the step BETWEEN the preserved edge and the first generated
+# pixel ACROSS the seam) and only ever writes a slowly-varying (sigma=16),
+# capped (+/-6) low-frequency term, so it cannot repay the high-frequency
+# half of the measured discontinuity either (2.03 -> 1.85).
+#
+# This function instead measures the SAME quantity ``apply_seam_membrane``'s
+# ring data does -- ``placed - result`` at the rect-interior boundary
+# row/column (the decoded reconstruction of the known region, still sitting
+# in ``result_arr`` before the final paste) -- but propagates it DIRECTLY
+# into the generated band with a simple two-term construction instead of a
+# PDE solve: a Gaussian-smoothed low-frequency term carried over
+# ``lf_rows`` generated rows/columns (raised-cosine taper to 0), plus the
+# high-frequency residual (the part the low-pass removed) carried over the
+# much shorter ``hf_rows`` (its own raised-cosine taper) -- both terms are
+# added together, not chosen exclusively, so the innermost generated
+# row/column receives the full (clamped) measured offset. The validated
+# sweep (``vae_native_ab/g_arms3.py``) found the high-frequency term
+# necessary (omitting it, "lf-only", only reaches 1.66): roughly half the
+# measured offset's energy is short-wavelength content the Poisson solve
+# above cannot deliver but a direct copy easily can.
+#
+# Byte-exactness: identical contract to ``apply_seam_membrane`` /
+# ``apply_cross_seam_tone`` above -- writes ONLY ``gen_mask`` pixels (the
+# geometric complement of ``rect``), plus an unconditional final rect-crop
+# restore as a second, independent guarantee.
+def _offset_prop_taper_weights(n: int) -> np.ndarray:
+    """Raised-cosine taper over ``n`` discrete steps: ``1.0`` at step 0 (the
+    step immediately adjacent to the seam), decaying to ``0.0`` at step
+    ``n - 1``. Mirrors ``g_arms3.py``'s ``cos_w`` exactly (the validated
+    arithmetic this module replicates) -- NOT the same shape as
+    ``_cosine_decay`` above (that one is a continuous distance-band taper
+    that reaches exactly 0 only at ``d >= band``; this one is discrete-step
+    and reaches exactly 0 at its last included step). ``n <= 1`` degenerates
+    to a single full-weight step (avoids a ``0/0`` division)."""
+    if n <= 1:
+        return np.ones((max(n, 0),), dtype=np.float64)
+    i = np.arange(n, dtype=np.float64)
+    return 0.5 * (1.0 + np.cos(np.pi * i / (n - 1)))
+
+
+def apply_seam_offset_propagation(
+    result_arr: np.ndarray,
+    placed_arr: np.ndarray,
+    rect: Tuple[int, int, int, int],
+    canvas_size: Tuple[int, int],
+    strength: float = 1.0,
+    lf_sigma: float = OFFSET_PROP_LF_SIGMA_DEFAULT,
+    lf_rows: int = OFFSET_PROP_LF_ROWS_DEFAULT,
+    hf_rows: int = OFFSET_PROP_HF_ROWS_DEFAULT,
+    clamp: float = CLAMP_DEFAULT,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Apply the G_prop16 boundary-offset propagation to the GENERATED region
+    of a decoded outpaint result.
+
+    For each rect edge that borders generated content (``_edge_flags``),
+    measures the per-channel offset ``placed - result`` at the rect-interior
+    boundary row/column (``result_arr`` there is still the pipeline's own
+    decoded reconstruction of the known region -- this is measurable without
+    a re-encode, exactly like ``apply_seam_membrane``'s ring data), clamps it
+    to ``+/- clamp``, splits it into a Gaussian-smoothed low-frequency term
+    (``lf_sigma`` along the seam axis) and the high-frequency residual, and
+    ADDS both -- independently raised-cosine-tapered over ``lf_rows`` and
+    ``hf_rows`` generated rows/columns respectively, scaled by ``strength``
+    -- into the generated pixels adjacent to that edge. Each edge's band
+    strip spans only that edge's own extent along the seam axis (bottom/top
+    over cols ``[x0, x1)``, left/right over rows ``[y0, y1)``), so the four
+    strips are geometrically disjoint and diagonal corners beyond the rect
+    corners are not touched (mirrors ``apply_cross_seam_tone``'s edge
+    generalization).
+
+    Args:
+        result_arr: (H, W, 3) uint8, the DECODED generate result BEFORE the
+            final preserved-rect paste (and after any earlier seam
+            corrections in the caller's pipeline, e.g. ``apply_seam_membrane``
+            / ``apply_cross_seam_tone`` -- this function only ever reads the
+            rect-interior boundary and the generated band, so running after
+            those is safe, though the design doc recommends NOT stacking all
+            three at once to avoid over-correction).
+        placed_arr: (rh, rw, 3) uint8, the preserved input content (rect-local
+            coords).
+        rect: ``(x0, y0, x1, y1)`` half-open, canvas pixel coords.
+        canvas_size: ``(W, H)``, matching ``result_arr.shape[1], shape[0]``.
+        strength: scales the applied offset; ``0`` (or negative) = exact
+            no-op.
+        lf_sigma, lf_rows, hf_rows, clamp: internal constants (see module
+            top), exposed as arguments only for the self-test / offline
+            sweep reproducibility -- not caller-configurable via the public
+            API.
+
+    Returns:
+        ``(out_arr, info)`` where ``out_arr`` is (H, W, 3) uint8 (a copy of
+        ``result_arr`` with ONLY ``gen_mask`` pixels modified) and ``info``:
+        ``applied`` (bool), ``edges`` (list[str]), ``max_abs_delta`` (float,
+        pre-strength post-clamp peak |offset| across all processed edges --
+        the strength-independent "clamp saturated" signal, mirrors
+        ``apply_cross_seam_tone``'s ``max_abs_step``), ``large_correction``
+        (bool, ``max_abs_delta >= 0.9 * clamp``).
+
+    Never writes ``rect`` pixels: only band strips OUTSIDE the rect (the
+    exact geometric complement) are ever written, and the rect crop is
+    additionally restored from ``result_arr`` unconditionally before
+    returning (belt-and-suspenders, mirrors both mechanisms above).
+    """
+    x0, y0, x1, y1 = rect
+    W, H = canvas_size
+    info: Dict[str, Any] = {
+        "applied": False,
+        "edges": [],
+        "max_abs_delta": 0.0,
+        "large_correction": False,
+    }
+    out = np.array(result_arr, copy=True)
+
+    if strength is None or float(strength) <= 0.0:
+        return out, info
+
+    flags = _edge_flags(rect, canvas_size)
+    if not any(flags.values()):
+        # F4-equivalent: every rect edge is flush with the canvas.
+        return out, info
+
+    gen_mask = _build_gen_mask(rect, canvas_size)
+    if not gen_mask.any():
+        return out, info
+
+    n_lf = max(0, int(lf_rows))
+    n_hf = max(0, int(hf_rows))
+    if n_lf == 0 and n_hf == 0:
+        return out, info
+
+    rw, rh = x1 - x0, y1 - y0
+    sigma = float(lf_sigma)
+    strength_f = float(strength)
+    clamp_f = float(clamp)
+    w_lf = _offset_prop_taper_weights(n_lf)
+    w_hf = _offset_prop_taper_weights(n_hf)
+
+    def _split(delta: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        delta_c = np.clip(delta, -clamp_f, clamp_f)
+        # No explicit `mode=` -- matches g_arms3.py's `gaussian_filter1d`
+        # call exactly (scipy's default, `mode="reflect"`), reproducing the
+        # validated arithmetic rather than this module's other functions'
+        # `mode="nearest"` convention.
+        dlf = ndimage.gaussian_filter1d(delta_c, sigma=sigma, axis=0)
+        dhf = delta_c - dlf
+        return dlf, dhf
+
+    total_offset = np.zeros((H, W, 3), dtype=np.float32)
+    clamped_deltas = []
+    edges_applied = []
+
+    if flags["bottom"] and y1 < H:
+        band = min(max(n_lf, n_hf), H - y1)
+        if band > 0:
+            delta = placed_arr[rh - 1, :, :3].astype(np.float32) - result_arr[y1 - 1, x0:x1, :3].astype(np.float32)
+            delta_c = np.clip(delta, -clamp_f, clamp_f)
+            dlf, dhf = _split(delta)
+            for i in range(min(n_lf, band)):
+                total_offset[y1 + i, x0:x1, :] += w_lf[i] * dlf * strength_f
+            for i in range(min(n_hf, band)):
+                total_offset[y1 + i, x0:x1, :] += w_hf[i] * dhf * strength_f
+            clamped_deltas.append(delta_c)
+            edges_applied.append("bottom")
+
+    if flags["top"] and y0 > 0:
+        band = min(max(n_lf, n_hf), y0)
+        if band > 0:
+            delta = placed_arr[0, :, :3].astype(np.float32) - result_arr[y0, x0:x1, :3].astype(np.float32)
+            delta_c = np.clip(delta, -clamp_f, clamp_f)
+            dlf, dhf = _split(delta)
+            for i in range(min(n_lf, band)):
+                total_offset[y0 - 1 - i, x0:x1, :] += w_lf[i] * dlf * strength_f
+            for i in range(min(n_hf, band)):
+                total_offset[y0 - 1 - i, x0:x1, :] += w_hf[i] * dhf * strength_f
+            clamped_deltas.append(delta_c)
+            edges_applied.append("top")
+
+    if flags["left"] and x0 > 0:
+        band = min(max(n_lf, n_hf), x0)
+        if band > 0:
+            delta = placed_arr[:, 0, :3].astype(np.float32) - result_arr[y0:y1, x0, :3].astype(np.float32)
+            delta_c = np.clip(delta, -clamp_f, clamp_f)
+            dlf, dhf = _split(delta)
+            for i in range(min(n_lf, band)):
+                total_offset[y0:y1, x0 - 1 - i, :] += w_lf[i] * dlf * strength_f
+            for i in range(min(n_hf, band)):
+                total_offset[y0:y1, x0 - 1 - i, :] += w_hf[i] * dhf * strength_f
+            clamped_deltas.append(delta_c)
+            edges_applied.append("left")
+
+    if flags["right"] and x1 < W:
+        band = min(max(n_lf, n_hf), W - x1)
+        if band > 0:
+            delta = placed_arr[:, rw - 1, :3].astype(np.float32) - result_arr[y0:y1, x1 - 1, :3].astype(np.float32)
+            delta_c = np.clip(delta, -clamp_f, clamp_f)
+            dlf, dhf = _split(delta)
+            for i in range(min(n_lf, band)):
+                total_offset[y0:y1, x1 + i, :] += w_lf[i] * dlf * strength_f
+            for i in range(min(n_hf, band)):
+                total_offset[y0:y1, x1 + i, :] += w_hf[i] * dhf * strength_f
+            clamped_deltas.append(delta_c)
+            edges_applied.append("right")
+
+    if not edges_applied:
+        return out, info
+
+    g = out.astype(np.float32)
+    corrected = np.clip(np.round(g + total_offset), 0, 255).astype(np.uint8)
+    out2 = out.copy()
+    out2[gen_mask] = corrected[gen_mask]
+    # Defensive guard (belt-and-suspenders, mirrors apply_seam_membrane /
+    # apply_cross_seam_tone): restore the rect crop from the pre-correction
+    # result unconditionally, even though gen_mask already excludes it from
+    # every write above.
+    out2[y0:y1, x0:x1] = out[y0:y1, x0:x1]
+
+    info["applied"] = True
+    info["edges"] = edges_applied
+    if clamped_deltas:
+        info["max_abs_delta"] = float(np.max([np.max(np.abs(d)) for d in clamped_deltas]))
+        info["large_correction"] = info["max_abs_delta"] >= 0.9 * clamp_f
+    return out2, info
+
+
 if __name__ == "__main__":
     # Minimal embedded self-test (no backend/GPU): synthetic canvas with a
     # known tone step across the seam. Run directly:
@@ -758,3 +1001,42 @@ if __name__ == "__main__":
 
     print(f"[cross_seam_tone self-test] OK: rect byte-exact, seam jump {ct_pre_jump:.3f} -> {ct_post_jump:.3f}, "
           f"meta={ct_meta}")
+
+    # --- G_prop16 boundary-offset propagation self-test ---------------------
+    op_rng = np.random.default_rng(2)
+    op_W, op_H = 256, 256
+    op_rect = (64, 64, 192, 192)
+    ox0, oy0, ox1, oy1 = op_rect
+
+    op_placed = (128 + op_rng.normal(0, 2, size=(oy1 - oy0, ox1 - ox0, 3))).clip(0, 255).astype(np.uint8)
+    # The whole decoded canvas (rect interior AND generated surroundings)
+    # sits at a uniform bias (-10) relative to `placed` -- exactly the
+    # structural defect this function targets: the decoded reconstruction of
+    # the known region (still sitting in `op_result`'s rect interior) is
+    # self-consistent with its own generated surroundings but NOT with the
+    # true preserved pixels the final paste will swap in.
+    op_result = (118 + op_rng.normal(0, 2, size=(op_H, op_W, 3))).clip(0, 255).astype(np.uint8)
+    op_result[oy0:oy1, ox0:ox1] = np.clip(op_placed.astype(np.int16) - 10, 0, 255).astype(np.uint8)
+
+    op_out, op_meta = apply_seam_offset_propagation(op_result, op_placed, op_rect, (op_W, op_H))
+
+    assert np.array_equal(op_out[oy0:oy1, ox0:ox1], op_result[oy0:oy1, ox0:ox1]), \
+        "seam offset propagation must never modify rect pixels"
+    assert op_meta["applied"], "expected offset propagation to apply on a well-formed rect"
+    assert set(op_meta["edges"]) == {"top", "bottom", "left", "right"}
+
+    op_pre_jump = float(np.mean(np.abs(
+        op_result[oy1, ox0:ox1, :].astype(np.float32) - op_placed[-1, :, :].astype(np.float32)
+    )))
+    op_post_jump = float(np.mean(np.abs(
+        op_out[oy1, ox0:ox1, :].astype(np.float32) - op_placed[-1, :, :].astype(np.float32)
+    )))
+    assert op_post_jump < op_pre_jump, \
+        f"expected boundary-offset jump reduced: pre={op_pre_jump} post={op_post_jump}"
+
+    op_out_zero, op_meta_zero = apply_seam_offset_propagation(op_result, op_placed, op_rect, (op_W, op_H), strength=0.0)
+    assert np.array_equal(op_out_zero, op_result), "strength=0 must be an exact no-op"
+    assert not op_meta_zero["applied"]
+
+    print(f"[seam_offset_propagation self-test] OK: rect byte-exact, boundary jump "
+          f"{op_pre_jump:.3f} -> {op_post_jump:.3f}, meta={op_meta}")

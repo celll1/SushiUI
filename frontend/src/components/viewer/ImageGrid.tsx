@@ -91,10 +91,20 @@ export default function ImageGrid() {
       return !prev;
     });
   };
+  // Full-resolution original -- used for the full-size popup, Download, and
+  // as the flatten (Color Flatten post-edit) pixel-pass input. Post-edit
+  // intentionally keeps reading the original (not the sized preview below)
+  // to avoid stacking two lossy re-encodes (gallery perf redesign Phase 2).
+  const selectedImageSrc = selectedImage ? `/outputs/${selectedImage.filename}` : undefined;
   // Color-flatten preview for the selected image (detail + full-size popup).
   // brightness/saturation remain a CSS filter layered on top (below).
-  const selectedImageSrc = selectedImage ? `/outputs/${selectedImage.filename}` : undefined;
   const effectiveSelectedSrc = usePostEditPreview(selectedImageSrc, postEdit.flatten);
+  // Sized WebP preview (~1024px long side) for the detail/lightbox <img> --
+  // lazy-generated and disk-cached server-side on first request (see
+  // GET /images/{id}/preview, backend/api/media_utils.py). Not used for
+  // video/audio (no preview endpoint for those) or for the full-size popup/
+  // Download (those keep the original above). Gallery perf redesign Phase 2.
+  const selectedPreviewSrc = selectedImage ? `/api/v1/images/${selectedImage.id}/preview?w=1024` : undefined;
   // Ref to the <video> element in the video detail view, used for frame-grab.
   const videoRef = useRef<HTMLVideoElement | null>(null);
   // Whether the selected item is a video (mp4/webm or is_video flag / video type).
@@ -2014,9 +2024,15 @@ export default function ImageGrid() {
               >
                 {isSelectedVideo ? (
                   // Same-origin /outputs path so the canvas frame-grab is not tainted.
+                  // poster = existing thumbnail (instant paint); preload="metadata"
+                  // fetches only the moov atom instead of the whole file on open --
+                  // playback/seeking then streams incrementally via the backend's
+                  // Range-aware /outputs serving (gallery perf redesign Phase 2).
                   <video
                     ref={videoRef}
                     src={`/outputs/${selectedImage.filename}`}
+                    poster={`/thumbnails/${selectedImage.filename.replace(/\.[^/.]+$/, "")}.png`}
+                    preload="metadata"
                     className="max-w-full max-h-full object-contain"
                     controls
                     loop
@@ -2031,13 +2047,18 @@ export default function ImageGrid() {
                     />
                     <audio
                       src={`/outputs/${selectedImage.filename}`}
+                      preload="metadata"
                       className="w-full"
                       controls
                     />
                   </div>
                 ) : (
+                  // Sized WebP preview when there's no post-edit flatten in progress;
+                  // once flatten > 0, usePostEditPreview's own (original-sourced,
+                  // 1024px-capped) result takes over so the pixel pass keeps reading
+                  // full quality (see selectedImageSrc/selectedPreviewSrc above).
                   <img
-                    src={effectiveSelectedSrc ?? `/outputs/${selectedImage.filename}`}
+                    src={postEdit.flatten > 0 ? (effectiveSelectedSrc ?? selectedImageSrc) : (selectedPreviewSrc ?? selectedImageSrc)}
                     alt="Generated"
                     className="max-w-full max-h-full object-contain cursor-pointer"
                     style={{ filter: buildFilterString(postEdit) }}

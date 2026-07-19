@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -167,9 +167,15 @@ app.add_middleware(
 # GZip middleware: compress JSON/text responses above the size threshold.
 # Primarily targets the gallery list/detail JSON payloads (uncompressed the
 # summary DTO is still tens of KB per 100-row page, and the full detail
-# response can carry a multi-KB parameters blob); also compresses static
-# outputs/thumbnails responses for free (already-compressed formats like PNG/
-# WebP/MP4 barely shrink further, so this has no meaningful cost there).
+# response can carry a multi-KB parameters blob); also compresses /thumbnails
+# responses for free (already-compressed PNG/WebP barely shrink further, so
+# this has no meaningful cost there). This middleware has no content-type
+# awareness -- it gzips ANY response body over minimum_size that doesn't
+# already carry a Content-Encoding header -- so /outputs (video/audio Range
+# streaming + sized previews) explicitly opts out via
+# `Content-Encoding: identity` in api/media_utils.range_file_response;
+# without that, gzip-ing a 206 Partial Content body would desync
+# Content-Range/Content-Length from the bytes actually sent and break seeking.
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # Include routers with versioning
@@ -199,10 +205,30 @@ async def redirect_legacy_endpoints(request: Request, call_next):
     response = await call_next(request)
     return response
 
-# Serve static files
+# Serve /outputs through a Range-aware route instead of a plain StaticFiles
+# mount: starlette 0.35.1's FileResponse has no HTTP Range support (verified
+# against starlette/responses.py -- Range landed in 0.36, which this project
+# does not pin), so <video>/<audio> elements downloaded the whole file on
+# open and could not seek. See api/media_utils.range_file_response for the
+# 206/Content-Range implementation and how it keeps GZipMiddleware from
+# mangling partial-content responses. Gallery perf redesign Phase 2 (Option D).
 if os.path.exists(settings.outputs_dir):
-    print(f"[Static] Mounting /outputs -> {settings.outputs_dir}")
-    app.mount("/outputs", StaticFiles(directory=settings.outputs_dir), name="outputs")
+    print(f"[Static] Serving /outputs -> {settings.outputs_dir} (Range-aware)")
+    from api.media_utils import range_file_response
+
+    _outputs_dir_real = os.path.realpath(settings.outputs_dir)
+
+    # FastAPI's APIRoute (unlike plain starlette.routing.Route) does not
+    # auto-add HEAD when only GET is declared, so declare both explicitly --
+    # <video>/<audio> elements sometimes probe with HEAD before the first
+    # Range GET.
+    @app.api_route("/outputs/{file_path:path}", methods=["GET", "HEAD"])
+    async def serve_output_file(file_path: str, request: Request):
+        abs_path = os.path.realpath(os.path.join(_outputs_dir_real, file_path))
+        # Prevent path traversal outside outputs_dir.
+        if not (abs_path == _outputs_dir_real or abs_path.startswith(_outputs_dir_real + os.sep)):
+            raise HTTPException(status_code=404, detail="File not found")
+        return await range_file_response(request, abs_path)
 else:
     print(f"[Static] WARNING: outputs_dir does not exist: {settings.outputs_dir}")
 

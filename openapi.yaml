@@ -1215,6 +1215,53 @@ paths:
                   message:
                     type: string
 
+  /images/{image_id}/preview:
+    get:
+      tags: [images]
+      summary: Get a sized WebP preview of a gallery image
+      description: |
+        Returns a medium-resolution WebP re-encode of the full-resolution
+        output file (longest side snapped to a fixed bucket, default 1024px),
+        generated lazily on first request and cached on disk
+        (`cache/previews/`) keyed by (filename, width bucket). Subsequent
+        requests for the same (image, width) serve the cached file directly.
+
+        Intended for the gallery detail/lightbox view, which does not need
+        the full lossless output PNG. The full-size popup and Download action
+        keep using `GET /outputs/{filename}` (the original file).
+
+        Only applies to image generations; rows flagged as video/audio return
+        404 (their detail view uses the poster thumbnail + range-streamed
+        original instead).
+      operationId: getImagePreview
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: w
+          in: query
+          description: Requested long-side width in pixels. Snapped to the nearest supported bucket (1024/1600/2048).
+          schema:
+            type: integer
+            default: 1024
+            example: 1024
+      responses:
+        '200':
+          description: WebP preview image (cached on disk after first generation)
+          content:
+            image/webp:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: Image row not found, source file missing on disk, or the row is a video/audio generation (no preview)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /temp-images/upload:
     post:
       tags: [images]

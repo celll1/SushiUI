@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import Response, StreamingResponse, FileResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -69,6 +69,7 @@ from api.error_handlers import (
     NotFoundError,
     ValidationError as CustomValidationError
 )
+from api.media_utils import get_or_create_preview, range_file_response, PREVIEW_DEFAULT_WIDTH
 
 router = APIRouter()
 
@@ -4646,6 +4647,50 @@ async def get_image(image_id: int, db: Session = Depends(get_gallery_db)):
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     return image.to_dict()
+
+@router.get("/images/{image_id}/preview")
+async def get_image_preview(
+    image_id: int,
+    request: Request,
+    w: int = PREVIEW_DEFAULT_WIDTH,
+    db: Session = Depends(get_gallery_db)
+):
+    """Sized WebP preview of a gallery image for the detail/lightbox view
+    (gallery perf redesign Phase 2, Option C). Generated lazily on first
+    request and cached on disk (settings.previews_dir); subsequent requests
+    for the same (image, width bucket) serve the cached file. Only applies
+    to image generations -- video/audio rows use the poster thumbnail +
+    range-streamed /outputs original instead (see get_or_create_preview /
+    range_file_response in api/media_utils.py).
+    """
+    image = db.query(GeneratedImage).filter(GeneratedImage.id == image_id).first()
+    if not image:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    is_video = bool(image.parameters.get("is_video")) if image.parameters else False
+    is_audio = bool(image.parameters.get("is_audio")) if image.parameters else False
+    if is_video or is_audio or re.search(r"\.(mp4|webm|flac|wav|mp3|ogg)$", image.filename, re.IGNORECASE):
+        raise HTTPException(status_code=404, detail="No preview for video/audio generations")
+
+    source_path = os.path.join(settings.outputs_dir, image.filename)
+    # Mirror main.py's /outputs traversal guard: image.filename is always a
+    # flat, server-generated name today, but this READ path re-serves
+    # whatever it opens as WebP, so a crafted `..` filename must not be able
+    # to walk it outside outputs_dir.
+    abs_src = os.path.realpath(source_path)
+    _out_real = os.path.realpath(settings.outputs_dir)
+    if not (abs_src == _out_real or abs_src.startswith(_out_real + os.sep)):
+        raise HTTPException(status_code=404, detail="Image not found")
+    if not os.path.isfile(source_path):
+        raise HTTPException(status_code=404, detail="Source file not found")
+
+    cache_path = await get_or_create_preview(source_path, image.filename, w)
+    return await range_file_response(
+        request,
+        cache_path,
+        media_type="image/webp",
+        cache_control="public, max-age=604800",
+    )
 
 @router.delete("/images/{image_id}")
 async def delete_image(image_id: int, db: Session = Depends(get_gallery_db)):

@@ -106,6 +106,10 @@ cache/datasets/
 **/cache_info.json
 *.latent
 
+# Gallery detail-view preview cache (lazy-generated sized WebP, disk cache
+# only -- see backend/api/media_utils.py / gallery_perf_redesign.md Phase 2)
+cache/previews/
+
 # Per-machine model component registry cache (RP1) — machine-local paths/hashes
 cache/model_component_registry.json
 backend/model_hash_cache.json

@@ -3035,21 +3035,6 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
 
         {/* Loop Generation is intentionally NOT implemented for Outpaint
             (all phases) -- see the design doc §3.3 / §7 decision 9. */}
-
-        {/* Generate button - Desktop only (hidden on mobile, which uses the
-            fixed bottom bar in the Preview panel instead, mirrors
-            Txt2ImgPanel/Img2ImgPanel/InpaintPanel). */}
-        <div className="hidden lg:block">
-          <Button
-            onClick={handleAddToQueue}
-            variant="primary"
-            size="lg"
-            className="w-full"
-            disabled={isVideo ? !videoFile : isAudio ? !audioFile : !inputImagePreview}
-          >
-            {isGenerating ? "Add to Queue" : "Generate"}
-          </Button>
-        </div>
       </div>
 
       {/* Preview Panel */}
@@ -3057,7 +3042,19 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         <Card title="Preview">
           <div className="flex flex-col lg:flex-row gap-2">
             <div className="flex-1 flex flex-col space-y-2 min-w-0">
+              {/* Action Buttons - Desktop only (hidden on mobile, which uses the
+                  fixed bottom bar below instead, mirrors
+                  Txt2ImgPanel/Img2ImgPanel/InpaintPanel). */}
               <div className="hidden lg:flex gap-2">
+                <Button
+                  onClick={handleAddToQueue}
+                  variant="primary"
+                  size="lg"
+                  className="flex-1"
+                  disabled={isVideo ? !videoFile : isAudio ? !audioFile : !inputImagePreview}
+                >
+                  {isGenerating ? "Add to Queue" : "Generate"}
+                </Button>
                 {isGenerating && (
                   <Button
                     onClick={async () => {

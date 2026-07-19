@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { ChevronLeft, ChevronRight, X, RotateCcw } from "lucide-react";
 import Card from "../common/Card";
+import TabbedOptions from "../common/TabbedOptions";
 import Input from "../common/Input";
 import NumberInput from "../common/NumberInput";
 import TextareaWithTagSuggestions from "../common/TextareaWithTagSuggestions";
@@ -135,6 +136,130 @@ const FRAME_OPTIONS = [9, 17, 25, 33, 49, 65, 81, 97, 121].map((n) => ({
   value: String(n),
   label: String(n),
 }));
+
+// Txt2Img's secondary options are grouped into a single-open tabbed accordion
+// (see the "Txt2Img Options" Card below, shared chrome via
+// frontend/src/components/common/TabbedOptions.tsx — ported from
+// OutpaintPanel/InpaintPanel's *_OPTIONS_TABS pattern). Every tab owns a
+// disjoint set of param keys, used both by its "reset to default" button and
+// by its active-highlight predicate (isTxt2ImgOptionsTabActive below).
+// LoRA/ControlNet are left outside the tabs (they're full component
+// selectors, not param groups); Sampler/Steps/CFG Scale/Seed/Width/Height
+// stay outside as core fields, matching Outpaint/Inpaint. Image-only (image
+// generation vs video/audio, gated by !isVideo && !isAudio at the call site).
+type Txt2ImgOptionsTabId =
+  | "cfg"
+  | "acceleration"
+  | "post_process"
+  | "prompt_chunking"
+  | "environment";
+
+const TXT2IMG_OPTIONS_TABS: { id: Txt2ImgOptionsTabId; label: string }[] = [
+  { id: "cfg", label: "CFG / NAG" },
+  { id: "acceleration", label: "Acceleration（高速化）" },
+  { id: "post_process", label: "Post-process（色補正）" },
+  { id: "prompt_chunking", label: "Prompt Chunking" },
+  { id: "environment", label: "Environment" },
+];
+
+const TXT2IMG_OPTIONS_TAB_KEYS: Record<Txt2ImgOptionsTabId, (keyof GenerationParams)[]> = {
+  cfg: [
+    "cfg_schedule_type",
+    "cfg_schedule_min",
+    "cfg_schedule_max",
+    "cfg_schedule_power",
+    "cfg_rescale_snr_alpha",
+    "dynamic_threshold_percentile",
+    "dynamic_threshold_mimic_scale",
+    "nag_enable",
+    "nag_scale",
+    "nag_tau",
+    "nag_alpha",
+    "nag_sigma_end",
+    "original_size_w",
+    "original_size_h",
+    "original_size_scale",
+  ],
+  acceleration: [
+    "spectrum_enable",
+    "spectrum_feature_mode",
+    "spectrum_cache_branch",
+    "spectrum_w",
+    "spectrum_w_decay",
+    "spectrum_delta_cap",
+    "spectrum_m",
+    "spectrum_lam",
+    "spectrum_warmup_steps",
+    "spectrum_window_size",
+    "spectrum_flex_window",
+    "spectrum_tail",
+    "fbcache_enable",
+    "fbcache_threshold",
+    "fbcache_warmup_steps",
+  ],
+  post_process: [
+    "color_flatten_strength",
+    "flatten_in_loop",
+    "flatten_in_loop_last_steps",
+    "flatten_in_loop_min_region",
+  ],
+  prompt_chunking: [
+    "prompt_chunking_mode",
+    "max_prompt_chunks",
+  ],
+  environment: [
+    "unet_quantization",
+    "text_encoder_quantization",
+    "cpu_text_encoding",
+    "vae_tiling",
+    "vae_tile_threshold",
+    "use_torch_compile",
+    "enable_block_swap",
+    "blocks_to_swap",
+    "use_pinned_memory",
+    "block_swap_h2d_only",
+    "block_swap_ring_size",
+  ],
+};
+
+// "Active" means the group is currently doing something to the generation
+// (enabled / non-neutral), not just "differs from DEFAULT_PARAMS" -- mirrors
+// isOutpaintOptionsTabActive/isInpaintOptionsTabActive's rationale.
+function isTxt2ImgOptionsTabActive(tabId: Txt2ImgOptionsTabId, params: GenerationParams): boolean {
+  switch (tabId) {
+    case "cfg":
+      return (
+        (params.cfg_schedule_type ?? "constant") !== "constant" ||
+        (params.dynamic_threshold_percentile ?? 0) > 0 ||
+        !!params.nag_enable ||
+        (params.original_size_w ?? 0) > 0 ||
+        (params.original_size_scale ?? 1.0) !== 1.0
+      );
+    case "acceleration":
+      return !!params.spectrum_enable || !!params.fbcache_enable;
+    case "post_process":
+      return (
+        (params.color_flatten_strength ?? 0) > 0 ||
+        !!params.flatten_in_loop
+      );
+    case "prompt_chunking":
+      return (
+        (params.prompt_chunking_mode ?? "a1111") !== "a1111" ||
+        (params.max_prompt_chunks ?? 0) > 0
+      );
+    case "environment":
+      return (
+        !!(params.unet_quantization && params.unet_quantization !== "none") ||
+        !!(params.text_encoder_quantization && params.text_encoder_quantization !== "none") ||
+        !!params.cpu_text_encoding ||
+        !!params.vae_tiling ||
+        !!params.use_torch_compile ||
+        !!params.enable_block_swap
+      );
+    default:
+      return false;
+  }
+}
 
 const STORAGE_KEY = "txt2img_params";
 const PREVIEW_STORAGE_KEY = "txt2img_preview";
@@ -2156,6 +2281,688 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [params, isPromptEditorOpen]);
 
+  // Render functions for each Txt2Img Options tab (see TXT2IMG_OPTIONS_TABS /
+  // TXT2IMG_OPTIONS_TAB_KEYS / isTxt2ImgOptionsTabActive above). Every control
+  // below is unchanged from its original in-Card location -- same param
+  // binding / handler / conditional reveal -- ported from Outpaint/Inpaint's
+  // *OptionsTabRender pattern.
+  const txt2imgOptionsTabRender: Record<Txt2ImgOptionsTabId, () => JSX.Element> = {
+    cfg: () => (
+      <div className="space-y-4">
+        {/* Advanced CFG Settings */}
+        {showAdvancedCFG && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Dynamic CFG Scheduling */}
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-300">
+                Dynamic CFG Schedule
+              </label>
+              <select
+                value={params.cfg_schedule_type || "constant"}
+                onChange={(e) => setParams({ ...params, cfg_schedule_type: e.target.value })}
+                className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="constant">Constant (no scheduling)</option>
+                <option value="linear">Linear (sigma-based)</option>
+                <option value="quadratic">Quadratic (sigma-based)</option>
+                <option value="cosine">Cosine (sigma-based)</option>
+                <option value="snr_based">SNR-Based Adaptive</option>
+              </select>
+
+              {params.cfg_schedule_type && params.cfg_schedule_type !== "constant" && params.cfg_schedule_type !== "snr_based" && (
+                <>
+                  <Slider
+                    label="CFG Min (end of generation)"
+                    min={1}
+                    max={15}
+                    step={0.5}
+                    value={params.cfg_schedule_min || 1.0}
+                    onChange={(e) => setParams({ ...params, cfg_schedule_min: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="CFG Max (start of generation)"
+                    min={1}
+                    max={30}
+                    step={0.5}
+                    value={params.cfg_schedule_max || params.cfg_scale}
+                    onChange={(e) => setParams({ ...params, cfg_schedule_max: parseFloat(e.target.value) })}
+                  />
+                  {params.cfg_schedule_type === "quadratic" && (
+                    <Slider
+                      label="Power (curve steepness)"
+                      min={0.5}
+                      max={4.0}
+                      step={0.1}
+                      value={params.cfg_schedule_power || 2.0}
+                      onChange={(e) => setParams({ ...params, cfg_schedule_power: parseFloat(e.target.value) })}
+                    />
+                  )}
+                </>
+              )}
+              {params.cfg_schedule_type === "snr_based" && (
+                <Slider
+                  label="SNR Alpha (0=off, 0.1-0.5 typical)"
+                  min={0}
+                  max={1.0}
+                  step={0.05}
+                  value={params.cfg_rescale_snr_alpha || 0.0}
+                  onChange={(e) => setParams({ ...params, cfg_rescale_snr_alpha: parseFloat(e.target.value) })}
+                />
+              )}
+            </div>
+
+            {/* Dynamic Thresholding */}
+            <div className="space-y-3">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0}
+                  onChange={(e) => setParams({
+                    ...params,
+                    dynamic_threshold_percentile: e.target.checked ? 99.5 : 0.0
+                  })}
+                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+                />
+                <label className="text-sm font-medium text-gray-300">
+                  Dynamic Thresholding
+                </label>
+              </div>
+              {params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0 && (
+                <>
+                  <Slider
+                    label="Threshold Percentile"
+                    min={90}
+                    max={100}
+                    step={0.5}
+                    value={params.dynamic_threshold_percentile || 99.5}
+                    onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: parseFloat(e.target.value) })}
+                  />
+                  <Slider
+                    label="Mimic Scale (static clamp)"
+                    min={1}
+                    max={30}
+                    step={0.5}
+                    value={params.dynamic_threshold_mimic_scale || 7.0}
+                    onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
+                  />
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* NAG (Normalized Attention Guidance) */}
+        {showAdvancedCFG && (
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={params.nag_enable || false}
+                onChange={(e) => setParams({
+                  ...params,
+                  nag_enable: e.target.checked
+                })}
+                className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
+              />
+              <label className="text-sm font-medium text-gray-300">
+                NAG (Normalized Attention Guidance)
+              </label>
+            </div>
+            {params.nag_enable && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <Slider
+                  label="NAG Scale"
+                  min={1}
+                  max={10}
+                  step={0.5}
+                  value={params.nag_scale || 5.0}
+                  onChange={(e) => setParams({ ...params, nag_scale: parseFloat(e.target.value) })}
+                />
+                <Slider
+                  label="NAG Tau (normalization threshold)"
+                  min={1.0}
+                  max={5.0}
+                  step={0.1}
+                  value={params.nag_tau || 3.5}
+                  onChange={(e) => setParams({ ...params, nag_tau: parseFloat(e.target.value) })}
+                />
+                <Slider
+                  label="NAG Alpha (blending factor)"
+                  min={0.05}
+                  max={1.0}
+                  step={0.05}
+                  value={params.nag_alpha || 0.25}
+                  onChange={(e) => setParams({ ...params, nag_alpha: parseFloat(e.target.value) })}
+                />
+                <Slider
+                  label="NAG Sigma End"
+                  min={0.0}
+                  max={5.0}
+                  step={0.1}
+                  value={params.nag_sigma_end ?? 3.0}
+                  onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* SDXL micro-conditioning: original_size override.
+            Sets original_size in SDXL time_ids separately from the output size.
+            Absolute = explicit W/H (both > 0); Scale = output size × scale. */}
+        <div className="space-y-3">
+          <div className="text-sm font-medium text-gray-300">Original Size (SDXL micro-conditioning)</div>
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-400">Source</span>
+            <div className="flex gap-1">
+              <Button
+                onClick={() => setParams({ ...params, original_size_w: params.width, original_size_h: params.height })}
+                variant={(params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0 ? "primary" : "secondary"}
+                size="sm"
+                className="text-xs px-2 py-0.5"
+              >
+                Absolute
+              </Button>
+              <Button
+                onClick={() => setParams({ ...params, original_size_w: 0, original_size_h: 0 })}
+                variant={!((params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0) ? "primary" : "secondary"}
+                size="sm"
+                className="text-xs px-2 py-0.5"
+              >
+                Scale
+              </Button>
+            </div>
+          </div>
+          {(params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Slider
+                label="Original Width"
+                min={64}
+                max={4096}
+                step={resolutionStep}
+                value={params.original_size_w || params.width}
+                onChange={(e) => setParams({ ...params, original_size_w: parseInt(e.target.value) })}
+              />
+              <Slider
+                label="Original Height"
+                min={64}
+                max={4096}
+                step={resolutionStep}
+                value={params.original_size_h || params.height}
+                onChange={(e) => setParams({ ...params, original_size_h: parseInt(e.target.value) })}
+              />
+            </div>
+          ) : (
+            <Slider
+              label={`Scale (${Math.round(params.width * (params.original_size_scale ?? 1.0))}x${Math.round(params.height * (params.original_size_scale ?? 1.0))})`}
+              min={0.25}
+              max={4.0}
+              step={0.05}
+              value={params.original_size_scale ?? 1.0}
+              onChange={(e) => setParams({ ...params, original_size_scale: parseFloat(e.target.value) })}
+            />
+          )}
+          <p className="text-xs text-gray-500">
+            SDXL only. Sets original_size in time_ids separately from the output size. Absolute uses explicit W/H; Scale uses output size × scale.
+          </p>
+        </div>
+      </div>
+    ),
+
+    acceleration: () => (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="spectrum_enable"
+            checked={params.spectrum_enable || false}
+            onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
+            className="rounded"
+          />
+          <label htmlFor="spectrum_enable" className="text-sm text-gray-300">
+            Spectrum (Spectral Feature Forecasting)
+          </label>
+          <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
+        </div>
+        {params.spectrum_enable && (
+          <div className="ml-6 mt-1 flex items-center gap-2">
+            <label className="text-xs text-gray-400">Mode</label>
+            <select
+              value={params.spectrum_feature_mode ?? "output"}
+              onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
+              className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+            >
+              <option value="output">output (black-box, max speed)</option>
+              <option value="block">block (deep-feature, higher quality)</option>
+            </select>
+            {params.spectrum_feature_mode === "block" && (
+              <label className="text-xs text-gray-400 flex items-center gap-1" title="down_blocks[branch:] + mid are forecast; lower skips more deep blocks.">
+                Branch
+                <input type="number" min={1} max={3} step={1}
+                  value={params.spectrum_cache_branch ?? 1}
+                  onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
+                  className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+              </label>
+            )}
+          </div>
+        )}
+        {params.spectrum_enable && (
+          <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Mix w
+              <input type="number" min={0} max={1} step={0.05}
+                value={params.spectrum_w ?? 1.0}
+                onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Mix w decay
+              <input type="number" min={0} step={0.25}
+                value={params.spectrum_w_decay ?? 0.0}
+                onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">
+              Delta cap
+              <input type="number" step={0.25}
+                value={params.spectrum_delta_cap ?? 0.0}
+                onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Basis m
+              <input type="number" min={1} max={8} step={1}
+                value={params.spectrum_m ?? 4}
+                onChange={(e) => setParams({ ...params, spectrum_m: parseInt(e.target.value) || 4 })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Ridge λ
+              <input type="number" min={0} step={0.01}
+                value={params.spectrum_lam ?? 0.1}
+                onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Warmup
+              <input type="number" min={1} step={1}
+                value={params.spectrum_warmup_steps ?? 3}
+                onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Window
+              <input type="number" min={1} step={1}
+                value={params.spectrum_window_size ?? 4}
+                onChange={(e) => setParams({ ...params, spectrum_window_size: parseInt(e.target.value) || 4 })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Flex
+              <input type="number" min={0} max={1} step={0.05}
+                value={params.spectrum_flex_window ?? 0.75}
+                onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1" title="Fraction of final steps forced to real forwards (preserves detail). Higher = sharper/slower.">
+              Tail
+              <input type="number" min={0} max={0.5} step={0.02}
+                value={params.spectrum_tail ?? 0.12}
+                onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
+                className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
+            </label>
+          </div>
+        )}
+        </div>
+
+        <div className="space-y-2">
+        <div className="flex items-center gap-2 mt-2">
+          <input
+            type="checkbox"
+            id="fbcache_enable"
+            checked={params.fbcache_enable || false}
+            onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
+            className="rounded"
+          />
+          <label htmlFor="fbcache_enable" className="text-sm text-gray-300">
+            First Block Cache (dynamic caching)
+          </label>
+          <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
+        </div>
+        {params.fbcache_enable && (
+          <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Residual threshold (higher = more skips)
+              <NumberInput min={0} step={0.01} parse="float"
+                value={params.fbcache_threshold ?? 0.12}
+                defaultValue={0.12}
+                placeholder="0.12"
+                onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
+                className="w-20" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1">
+              Warmup steps
+              <NumberInput min={0} step={1}
+                value={params.fbcache_warmup_steps ?? 1}
+                defaultValue={1}
+                placeholder="1"
+                onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
+                className="w-20" />
+            </label>
+          </div>
+        )}
+        </div>
+      </div>
+    ),
+
+    post_process: () => (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        <div title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
+          <Slider
+            label="Color Flatten（色ムラ除去）"
+            min={0}
+            max={100}
+            step={1}
+            value={params.color_flatten_strength ?? 0}
+            onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
+          />
+        </div>
+
+        <div className="lg:col-span-2">
+        <div className="flex items-center gap-2 mt-2">
+          <input
+            type="checkbox"
+            id="flatten_in_loop"
+            checked={params.flatten_in_loop || false}
+            onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
+            className="rounded"
+          />
+          <label htmlFor="flatten_in_loop" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
+            In-loop background flatten（背景ベタ塗り化）
+          </label>
+        </div>
+        {params.flatten_in_loop && (
+          <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
+            <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
+              Flatten last N steps
+              <NumberInput min={1} max={16} step={1}
+                value={params.flatten_in_loop_last_steps ?? 3}
+                defaultValue={3}
+                placeholder="3"
+                onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
+                className="w-20" />
+            </label>
+            <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
+              Min region fraction
+              <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
+                value={params.flatten_in_loop_min_region ?? 0.02}
+                defaultValue={0.02}
+                placeholder="0.02"
+                onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
+                className="w-20" />
+            </label>
+          </div>
+        )}
+        </div>
+      </div>
+    ),
+
+    prompt_chunking: () => (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <Select
+          label="Prompt Chunking Mode"
+          options={[
+            { value: "a1111", label: "A1111 (Separate chunks)" },
+            { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
+            { value: "nobos", label: "No BOS/EOS" },
+          ]}
+          value={params.prompt_chunking_mode || "a1111"}
+          onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
+        />
+        <Select
+          label="Max Chunks"
+          options={[
+            { value: "0", label: "Unlimited" },
+            { value: "1", label: "1 chunk (75 tokens)" },
+            { value: "2", label: "2 chunks (150 tokens)" },
+            { value: "3", label: "3 chunks (225 tokens)" },
+            { value: "4", label: "4 chunks (300 tokens)" },
+          ]}
+          value={params.max_prompt_chunks?.toString() || "0"}
+          onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
+        />
+      </div>
+    ),
+
+    environment: () => (
+      <div className="space-y-3">
+        <p className="text-xs text-gray-500">
+          モデル全体に適用され、Loop Generationにも常に引き継がれます。
+        </p>
+
+        {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
+        {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
+          <>
+            {/* Z-Image/FLUX.2: 2-column layout */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
+                value={params.unet_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  unet_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                ]}
+              />
+              <Select
+                label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
+                value={params.text_encoder_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                ]}
+              />
+            </div>
+            {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                <p className="text-xs text-blue-200">
+                  💡 Quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"}) is particularly large.
+                </p>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <>
+            {/* SD/SDXL: 1-column layout */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Select
+                label="U-Net Quantization"
+                value={params.unet_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  unet_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                ]}
+              />
+              <Select
+                label="Text Encoder Quantization (Z-Image)"
+                value={params.text_encoder_quantization || "none"}
+                onChange={(e) => setParams({
+                  ...params,
+                  text_encoder_quantization: e.target.value === "none" ? null : e.target.value
+                })}
+                options={[
+                  { value: "none", label: "None" },
+                  { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
+                  { value: "fp8_e5m2", label: "FP8 E5M2" },
+                ]}
+              />
+            </div>
+            {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
+              <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
+                <p className="text-xs text-blue-200">
+                  💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
+                </p>
+              </div>
+            ) : null}
+          </>
+        )}
+
+        {/* CPU Text Encoding — applies to all model types */}
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={params.cpu_text_encoding ?? false}
+            onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
+            className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
+          />
+          <span className="text-sm text-gray-300">CPU Text Encoding</span>
+          <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
+        </label>
+
+        <div className="flex items-center gap-2 mt-2">
+          <input
+            type="checkbox"
+            id="vae_tiling"
+            checked={params.vae_tiling || false}
+            onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
+            className="rounded"
+          />
+          <label htmlFor="vae_tiling" className="text-sm text-gray-300">
+            VAE Tiling
+          </label>
+          <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
+        </div>
+        {params.vae_tiling && (
+          <div className="flex items-center gap-2 mt-1 ml-6">
+            <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
+            <NumberInput
+              id="vae_tile_threshold"
+              min={0}
+              step={128}
+              value={params.vae_tile_threshold ?? 0}
+              defaultValue={0}
+              placeholder="0"
+              onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
+              className="w-24"
+            />
+            <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
+          </div>
+        )}
+
+        {developerMode && (
+          <>
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="checkbox"
+                id="use_torch_compile"
+                checked={params.use_torch_compile || false}
+                onChange={(e) => setParams({ ...params, use_torch_compile: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="use_torch_compile" className="text-sm text-gray-300">
+                ⚠️ torch.compile (Experimental, slow first run)
+              </label>
+            </div>
+            {params.use_torch_compile && (
+              <div className="bg-orange-900/20 border border-orange-600/30 rounded-lg p-3 mt-2">
+                <p className="text-xs text-orange-200">
+                  ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
+                  Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
+                </p>
+              </div>
+            )}
+
+            {/* Block Swap (Z-Image only) */}
+            <div className="flex items-center gap-2 mt-4">
+              <input
+                type="checkbox"
+                id="enable_block_swap"
+                checked={params.enable_block_swap || false}
+                onChange={(e) => setParams({ ...params, enable_block_swap: e.target.checked })}
+                className="rounded"
+              />
+              <label htmlFor="enable_block_swap" className="text-sm text-gray-300">
+                Block Swap (Z-Image Transformer offloading)
+              </label>
+            </div>
+            {params.enable_block_swap && (
+              <div className="space-y-3 mt-2 p-3 bg-blue-900/20 border border-blue-600/30 rounded-lg">
+                <Slider
+                  label="Blocks to Swap"
+                  min={1}
+                  max={29}
+                  step={1}
+                  value={params.blocks_to_swap || 20}
+                  onChange={(e) => setParams({ ...params, blocks_to_swap: parseInt(e.target.value) })}
+                />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="use_pinned_memory"
+                    checked={params.use_pinned_memory || false}
+                    onChange={(e) => setParams({ ...params, use_pinned_memory: e.target.checked })}
+                    className="rounded"
+                  />
+                  <label htmlFor="use_pinned_memory" className="text-xs text-gray-300">
+                    Use Pinned Memory (faster transfer, more RAM)
+                  </label>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    id="block_swap_h2d_only"
+                    checked={params.block_swap_h2d_only || false}
+                    onChange={(e) => setParams({ ...params, block_swap_h2d_only: e.target.checked })}
+                    className="rounded"
+                  />
+                  <label htmlFor="block_swap_h2d_only" className="text-xs text-gray-300">
+                    H2D-only (no device-to-host eviction of read-only weights)
+                  </label>
+                </div>
+                {params.block_swap_h2d_only && (
+                  <Slider
+                    label="Ring Size (GPU weight buffer slots)"
+                    min={1}
+                    max={4}
+                    step={1}
+                    value={params.block_swap_ring_size || 2}
+                    onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
+                  />
+                )}
+                <div className="text-xs text-blue-200">
+                  <p>
+                    <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
+                  </p>
+                  <p className="mt-1">
+                    <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
+                  </p>
+                  <p className="mt-1">
+                    <strong>H2D-only:</strong> Keeps a CPU master copy and only transfers host-to-device (inference / read-only weights). Ring Size 1 = minimum VRAM; 2+ = next block loads during current block compute.
+                  </p>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    ),
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
       {/* Parameters Panel */}
@@ -2581,6 +3388,26 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         )}
 
         {!isVideo && !isAudio && (<>
+        {/* Txt2Img Options: a single-open tabbed accordion (chrome shared via
+            frontend/src/components/common/TabbedOptions.tsx). Every control
+            below is unchanged from its original location (same param
+            binding / handler / conditional reveal) -- only the container
+            changed. See TXT2IMG_OPTIONS_TAB_KEYS / isTxt2ImgOptionsTabActive /
+            txt2imgOptionsTabRender above. */}
+        <TabbedOptions<GenerationParams>
+          cardTitle="Txt2Img Options"
+          params={params}
+          setParams={setParams}
+          defaultParams={DEFAULT_PARAMS}
+          tabs={TXT2IMG_OPTIONS_TABS.map((tab) => ({
+            id: tab.id,
+            label: tab.label,
+            keys: TXT2IMG_OPTIONS_TAB_KEYS[tab.id],
+            isActive: (p: GenerationParams) => isTxt2ImgOptionsTabActive(tab.id, p),
+            render: txt2imgOptionsTabRender[tab.id],
+          }))}
+        />
+
         <Card title="Parameters">
           <div className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -2600,165 +3427,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                 value={params.cfg_scale}
                 onChange={(e) => setParams({ ...params, cfg_scale: parseFloat(e.target.value) })}
               />
-
-              {/* Advanced CFG Settings */}
-              {showAdvancedCFG && (
-                <>
-              {/* Dynamic CFG Scheduling */}
-              <div className="space-y-3">
-                <label className="block text-sm font-medium text-gray-300">
-                  Dynamic CFG Schedule
-                </label>
-                <select
-                  value={params.cfg_schedule_type || "constant"}
-                  onChange={(e) => setParams({ ...params, cfg_schedule_type: e.target.value })}
-                  className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="constant">Constant (no scheduling)</option>
-                  <option value="linear">Linear (sigma-based)</option>
-                  <option value="quadratic">Quadratic (sigma-based)</option>
-                  <option value="cosine">Cosine (sigma-based)</option>
-                  <option value="snr_based">SNR-Based Adaptive</option>
-                </select>
-
-                {params.cfg_schedule_type && params.cfg_schedule_type !== "constant" && params.cfg_schedule_type !== "snr_based" && (
-                  <>
-                    <Slider
-                      label="CFG Min (end of generation)"
-                      min={1}
-                      max={15}
-                      step={0.5}
-                      value={params.cfg_schedule_min || 1.0}
-                      onChange={(e) => setParams({ ...params, cfg_schedule_min: parseFloat(e.target.value) })}
-                    />
-                    <Slider
-                      label="CFG Max (start of generation)"
-                      min={1}
-                      max={30}
-                      step={0.5}
-                      value={params.cfg_schedule_max || params.cfg_scale}
-                      onChange={(e) => setParams({ ...params, cfg_schedule_max: parseFloat(e.target.value) })}
-                    />
-                    {params.cfg_schedule_type === "quadratic" && (
-                      <Slider
-                        label="Power (curve steepness)"
-                        min={0.5}
-                        max={4.0}
-                        step={0.1}
-                        value={params.cfg_schedule_power || 2.0}
-                        onChange={(e) => setParams({ ...params, cfg_schedule_power: parseFloat(e.target.value) })}
-                      />
-                    )}
-                  </>
-                )}
-                {params.cfg_schedule_type === "snr_based" && (
-                  <Slider
-                    label="SNR Alpha (0=off, 0.1-0.5 typical)"
-                    min={0}
-                    max={1.0}
-                    step={0.05}
-                    value={params.cfg_rescale_snr_alpha || 0.0}
-                    onChange={(e) => setParams({ ...params, cfg_rescale_snr_alpha: parseFloat(e.target.value) })}
-                  />
-                )}
-              </div>
-
-              {/* Dynamic Thresholding */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0}
-                    onChange={(e) => setParams({
-                      ...params,
-                      dynamic_threshold_percentile: e.target.checked ? 99.5 : 0.0
-                    })}
-                    className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
-                  />
-                  <label className="text-sm font-medium text-gray-300">
-                    Dynamic Thresholding
-                  </label>
-                </div>
-                {params.dynamic_threshold_percentile !== undefined && params.dynamic_threshold_percentile > 0 && (
-                  <>
-                    <Slider
-                      label="Threshold Percentile"
-                      min={90}
-                      max={100}
-                      step={0.5}
-                      value={params.dynamic_threshold_percentile || 99.5}
-                      onChange={(e) => setParams({ ...params, dynamic_threshold_percentile: parseFloat(e.target.value) })}
-                    />
-                    <Slider
-                      label="Mimic Scale (static clamp)"
-                      min={1}
-                      max={30}
-                      step={0.5}
-                      value={params.dynamic_threshold_mimic_scale || 7.0}
-                      onChange={(e) => setParams({ ...params, dynamic_threshold_mimic_scale: parseFloat(e.target.value) })}
-                    />
-                  </>
-                )}
-              </div>
-              </>
-              )}
             </div>
-
-            {/* NAG (Normalized Attention Guidance) */}
-            {showAdvancedCFG && (
-            <div className="space-y-3">
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={params.nag_enable || false}
-                  onChange={(e) => setParams({
-                    ...params,
-                    nag_enable: e.target.checked
-                  })}
-                  className="w-4 h-4 text-blue-600 bg-gray-700 border-gray-600 rounded focus:ring-blue-500 focus:ring-2"
-                />
-                <label className="text-sm font-medium text-gray-300">
-                  NAG (Normalized Attention Guidance)
-                </label>
-              </div>
-              {params.nag_enable && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <Slider
-                    label="NAG Scale"
-                    min={1}
-                    max={10}
-                    step={0.5}
-                    value={params.nag_scale || 5.0}
-                    onChange={(e) => setParams({ ...params, nag_scale: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="NAG Tau (normalization threshold)"
-                    min={1.0}
-                    max={5.0}
-                    step={0.1}
-                    value={params.nag_tau || 3.5}
-                    onChange={(e) => setParams({ ...params, nag_tau: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="NAG Alpha (blending factor)"
-                    min={0.05}
-                    max={1.0}
-                    step={0.05}
-                    value={params.nag_alpha || 0.25}
-                    onChange={(e) => setParams({ ...params, nag_alpha: parseFloat(e.target.value) })}
-                  />
-                  <Slider
-                    label="NAG Sigma End"
-                    min={0.0}
-                    max={5.0}
-                    step={0.1}
-                    value={params.nag_sigma_end ?? 3.0}
-                    onChange={(e) => setParams({ ...params, nag_sigma_end: parseFloat(e.target.value) })}
-                  />
-                </div>
-              )}
-            </div>
-            )}
 
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -2779,70 +3448,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
                   onChange={(e) => setParams({ ...params, height: parseInt(e.target.value) })}
                 />
               </div>
-
-              {/* SDXL micro-conditioning: original_size override (collapsible, below Width/Height).
-                  Sets original_size in SDXL time_ids separately from the output size.
-                  Absolute = explicit W/H (both > 0); Scale = output size × scale. */}
-              <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3">
-                <summary className="text-sm font-medium text-gray-300 cursor-pointer select-none">
-                  Original Size (SDXL micro-conditioning)
-                </summary>
-                <div className="mt-3 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-gray-400">Source</span>
-                    <div className="flex gap-1">
-                      <Button
-                        onClick={() => setParams({ ...params, original_size_w: params.width, original_size_h: params.height })}
-                        variant={(params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0 ? "primary" : "secondary"}
-                        size="sm"
-                        className="text-xs px-2 py-0.5"
-                      >
-                        Absolute
-                      </Button>
-                      <Button
-                        onClick={() => setParams({ ...params, original_size_w: 0, original_size_h: 0 })}
-                        variant={!((params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0) ? "primary" : "secondary"}
-                        size="sm"
-                        className="text-xs px-2 py-0.5"
-                      >
-                        Scale
-                      </Button>
-                    </div>
-                  </div>
-                  {(params.original_size_w ?? 0) > 0 && (params.original_size_h ?? 0) > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <Slider
-                        label="Original Width"
-                        min={64}
-                        max={4096}
-                        step={resolutionStep}
-                        value={params.original_size_w || params.width}
-                        onChange={(e) => setParams({ ...params, original_size_w: parseInt(e.target.value) })}
-                      />
-                      <Slider
-                        label="Original Height"
-                        min={64}
-                        max={4096}
-                        step={resolutionStep}
-                        value={params.original_size_h || params.height}
-                        onChange={(e) => setParams({ ...params, original_size_h: parseInt(e.target.value) })}
-                      />
-                    </div>
-                  ) : (
-                    <Slider
-                      label={`Scale (${Math.round(params.width * (params.original_size_scale ?? 1.0))}x${Math.round(params.height * (params.original_size_scale ?? 1.0))})`}
-                      min={0.25}
-                      max={4.0}
-                      step={0.05}
-                      value={params.original_size_scale ?? 1.0}
-                      onChange={(e) => setParams({ ...params, original_size_scale: parseFloat(e.target.value) })}
-                    />
-                  )}
-                  <p className="text-xs text-gray-500">
-                    SDXL only. Sets original_size in time_ids separately from the output size. Absolute uses explicit W/H; Scale uses output size × scale.
-                  </p>
-                </div>
-              </details>
 
               {visibility.aspectRatioPresets && (
                 <div className="space-y-2">
@@ -3017,450 +3622,6 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             </div>
           </div>
 
-          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Acceleration（高速化）</div>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="spectrum_enable"
-              checked={params.spectrum_enable || false}
-              onChange={(e) => setParams({ ...params, spectrum_enable: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="spectrum_enable" className="text-sm text-gray-300">
-              Spectrum (Spectral Feature Forecasting)
-            </label>
-            <span className="text-xs text-gray-500">(skips U-Net steps via Chebyshev forecast; best at high step counts)</span>
-          </div>
-          {params.spectrum_enable && (
-            <div className="ml-6 mt-1 flex items-center gap-2">
-              <label className="text-xs text-gray-400">Mode</label>
-              <select
-                value={params.spectrum_feature_mode ?? "output"}
-                onChange={(e) => setParams({ ...params, spectrum_feature_mode: e.target.value })}
-                className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
-              >
-                <option value="output">output (black-box, max speed)</option>
-                <option value="block">block (deep-feature, higher quality)</option>
-              </select>
-              {params.spectrum_feature_mode === "block" && (
-                <label className="text-xs text-gray-400 flex items-center gap-1" title="down_blocks[branch:] + mid are forecast; lower skips more deep blocks.">
-                  Branch
-                  <input type="number" min={1} max={3} step={1}
-                    value={params.spectrum_cache_branch ?? 1}
-                    onChange={(e) => setParams({ ...params, spectrum_cache_branch: parseInt(e.target.value) || 1 })}
-                    className="w-16 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-                </label>
-              )}
-            </div>
-          )}
-          {params.spectrum_enable && (
-            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Mix w
-                <input type="number" min={0} max={1} step={0.05}
-                  value={params.spectrum_w ?? 1.0}
-                  onChange={(e) => setParams({ ...params, spectrum_w: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Mix w decay
-                <input type="number" min={0} step={0.25}
-                  value={params.spectrum_w_decay ?? 0.0}
-                  onChange={(e) => setParams({ ...params, spectrum_w_decay: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1" title="Limits how far a forecast may advance past the last real pass, relative to the observed trajectory speed. 0 disables the cap.">
-                Delta cap
-                <input type="number" step={0.25}
-                  value={params.spectrum_delta_cap ?? 0.0}
-                  onChange={(e) => setParams({ ...params, spectrum_delta_cap: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Basis m
-                <input type="number" min={1} max={8} step={1}
-                  value={params.spectrum_m ?? 4}
-                  onChange={(e) => setParams({ ...params, spectrum_m: parseInt(e.target.value) || 4 })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Ridge λ
-                <input type="number" min={0} step={0.01}
-                  value={params.spectrum_lam ?? 0.1}
-                  onChange={(e) => setParams({ ...params, spectrum_lam: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Warmup
-                <input type="number" min={1} step={1}
-                  value={params.spectrum_warmup_steps ?? 3}
-                  onChange={(e) => setParams({ ...params, spectrum_warmup_steps: parseInt(e.target.value) || 3 })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Window
-                <input type="number" min={1} step={1}
-                  value={params.spectrum_window_size ?? 4}
-                  onChange={(e) => setParams({ ...params, spectrum_window_size: parseInt(e.target.value) || 4 })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Flex
-                <input type="number" min={0} max={1} step={0.05}
-                  value={params.spectrum_flex_window ?? 0.75}
-                  onChange={(e) => setParams({ ...params, spectrum_flex_window: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1" title="Fraction of final steps forced to real forwards (preserves detail). Higher = sharper/slower.">
-                Tail
-                <input type="number" min={0} max={0.5} step={0.02}
-                  value={params.spectrum_tail ?? 0.12}
-                  onChange={(e) => setParams({ ...params, spectrum_tail: parseFloat(e.target.value) })}
-                  className="w-20 px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs" />
-              </label>
-            </div>
-          )}
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="fbcache_enable"
-              checked={params.fbcache_enable || false}
-              onChange={(e) => setParams({ ...params, fbcache_enable: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="fbcache_enable" className="text-sm text-gray-300">
-              First Block Cache (dynamic caching)
-            </label>
-            <span className="text-xs text-gray-500">(mutually exclusive with Spectrum)</span>
-          </div>
-          {params.fbcache_enable && (
-            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Residual threshold (higher = more skips)
-                <NumberInput min={0} step={0.01} parse="float"
-                  value={params.fbcache_threshold ?? 0.12}
-                  defaultValue={0.12}
-                  placeholder="0.12"
-                  onCommit={(v) => setParams({ ...params, fbcache_threshold: v })}
-                  className="w-20" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1">
-                Warmup steps
-                <NumberInput min={0} step={1}
-                  value={params.fbcache_warmup_steps ?? 1}
-                  defaultValue={1}
-                  placeholder="1"
-                  onCommit={(v) => setParams({ ...params, fbcache_warmup_steps: v })}
-                  className="w-20" />
-              </label>
-            </div>
-          )}
-
-          <div className="text-sm font-semibold text-gray-400 mt-4 mb-1">Post-process（色補正）</div>
-
-          <div className="mt-2" title="Applies the same chroma-smoothing as the post-edit Color Flatten at generation time, baked into the saved image; 0 = off.">
-            <Slider
-              label="Color Flatten（色ムラ除去）"
-              min={0}
-              max={100}
-              step={1}
-              value={params.color_flatten_strength ?? 0}
-              onChange={(e) => setParams({ ...params, color_flatten_strength: parseInt(e.target.value) })}
-            />
-          </div>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="flatten_in_loop"
-              checked={params.flatten_in_loop || false}
-              onChange={(e) => setParams({ ...params, flatten_in_loop: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="flatten_in_loop" className="text-sm text-gray-300" title="During the final denoise steps, detects the flat background region and replaces it with its solid dominant color (both luma and chroma become uniform - stronger than Color Flatten); no-op when no confident flat region is found; SD/SDXL only for now.">
-              In-loop background flatten（背景ベタ塗り化）
-            </label>
-          </div>
-          {params.flatten_in_loop && (
-            <div className="ml-6 mt-1 grid grid-cols-2 gap-2">
-              <label className="text-xs text-gray-400 flex items-center gap-1" title="Number of final denoise steps to apply the correction on; more = flatter background but more subject-detail change and +decode/encode cost per step.">
-                Flatten last N steps
-                <NumberInput min={1} max={16} step={1}
-                  value={params.flatten_in_loop_last_steps ?? 3}
-                  defaultValue={3}
-                  placeholder="3"
-                  onCommit={(v) => setParams({ ...params, flatten_in_loop_last_steps: v })}
-                  className="w-20" />
-              </label>
-              <label className="text-xs text-gray-400 flex items-center gap-1" title="Minimum fraction of the image the detected flat region must cover; below it the feature is a no-op (protects textured backgrounds).">
-                Min region fraction
-                <NumberInput min={0.005} max={0.5} step={0.005} parse="float"
-                  value={params.flatten_in_loop_min_region ?? 0.02}
-                  defaultValue={0.02}
-                  placeholder="0.02"
-                  onCommit={(v) => setParams({ ...params, flatten_in_loop_min_region: v })}
-                  className="w-20" />
-              </label>
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Select
-              label="Prompt Chunking Mode"
-              options={[
-                { value: "a1111", label: "A1111 (Separate chunks)" },
-                { value: "sd_scripts", label: "sd-scripts (Single BOS/EOS)" },
-                { value: "nobos", label: "No BOS/EOS" },
-              ]}
-              value={params.prompt_chunking_mode || "a1111"}
-              onChange={(e) => setParams({ ...params, prompt_chunking_mode: e.target.value })}
-            />
-            <Select
-              label="Max Chunks"
-              options={[
-                { value: "0", label: "Unlimited" },
-                { value: "1", label: "1 chunk (75 tokens)" },
-                { value: "2", label: "2 chunks (150 tokens)" },
-                { value: "3", label: "3 chunks (225 tokens)" },
-                { value: "4", label: "4 chunks (300 tokens)" },
-              ]}
-              value={params.max_prompt_chunks?.toString() || "0"}
-              onChange={(e) => setParams({ ...params, max_prompt_chunks: parseInt(e.target.value) })}
-            />
-          </div>
-
-          {/* Model / Environment（モデル/環境設定） — pipeline-global settings, applied last */}
-          <details className="bg-gray-800/40 border border-gray-700 rounded-lg p-3 mt-4">
-            <summary className="text-sm font-semibold text-gray-300 cursor-pointer select-none">
-              Model / Environment（モデル/環境設定）
-            </summary>
-            <div className="mt-3 space-y-3">
-              <p className="text-xs text-gray-500">
-                モデル全体に適用され、Loop Generationにも常に引き継がれます。
-              </p>
-
-          {/* Quantization: Z-Image/FLUX.2 uses 2-column layout (Transformer + Text Encoder), SD/SDXL uses 1-column (U-Net) */}
-          {(currentModelInfo?.model_info?.type === "zimage" || currentModelInfo?.model_info?.type === "flux2" || currentModelInfo?.model_info?.type === "anima") ? (
-            <>
-              {/* Z-Image/FLUX.2: 2-column layout */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Select
-                  label={`Transformer Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "FLUX.2" : "Z-Image"})`}
-                  value={params.unet_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    unet_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-                <Select
-                  label={`Text Encoder Quantization (${currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"})`}
-                  value={params.text_encoder_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-              </div>
-              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
-                  <p className="text-xs text-blue-200">
-                    💡 Quantization can reduce VRAM significantly. Text encoder ({currentModelInfo?.model_info?.type === "flux2" ? "Qwen3" : "Gemma2"}) is particularly large.
-                  </p>
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <>
-              {/* SD/SDXL: 1-column layout */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Select
-                  label="U-Net Quantization"
-                  value={params.unet_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    unet_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-                <Select
-                  label="Text Encoder Quantization (Z-Image)"
-                  value={params.text_encoder_quantization || "none"}
-                  onChange={(e) => setParams({
-                    ...params,
-                    text_encoder_quantization: e.target.value === "none" ? null : e.target.value
-                  })}
-                  options={[
-                    { value: "none", label: "None" },
-                    { value: "fp8_e4m3fn", label: "FP8 E4M3 (Recommended)" },
-                    { value: "fp8_e5m2", label: "FP8 E5M2" },
-                  ]}
-                />
-              </div>
-              {(params.unet_quantization && params.unet_quantization !== "none") || (params.text_encoder_quantization && params.text_encoder_quantization !== "none") ? (
-                <div className="bg-blue-900/20 border border-blue-600/30 rounded-lg p-3">
-                  <p className="text-xs text-blue-200">
-                    💡 Z-Image quantization can reduce VRAM significantly. Text encoder (Qwen 3.4B) is particularly large.
-                  </p>
-                </div>
-              ) : null}
-            </>
-          )}
-
-          {/* CPU Text Encoding — applies to all model types */}
-          <label className="flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={params.cpu_text_encoding ?? false}
-              onChange={(e) => setParams({ ...params, cpu_text_encoding: e.target.checked })}
-              className="w-4 h-4 rounded border-gray-600 bg-gray-700 text-blue-500 focus:ring-blue-500"
-            />
-            <span className="text-sm text-gray-300">CPU Text Encoding</span>
-            <span className="text-xs text-gray-500">(saves VRAM, slower)</span>
-          </label>
-
-          <div className="flex items-center gap-2 mt-2">
-            <input
-              type="checkbox"
-              id="vae_tiling"
-              checked={params.vae_tiling || false}
-              onChange={(e) => setParams({ ...params, vae_tiling: e.target.checked })}
-              className="rounded"
-            />
-            <label htmlFor="vae_tiling" className="text-sm text-gray-300">
-              VAE Tiling
-            </label>
-            <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
-          </div>
-          {params.vae_tiling && (
-            <div className="flex items-center gap-2 mt-1 ml-6">
-              <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
-              <NumberInput
-                id="vae_tile_threshold"
-                min={0}
-                step={128}
-                value={params.vae_tile_threshold ?? 0}
-                defaultValue={0}
-                placeholder="0"
-                onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
-                className="w-24"
-              />
-              <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
-            </div>
-          )}
-
-          {developerMode && (
-            <>
-              <div className="flex items-center gap-2 mt-2">
-                <input
-                  type="checkbox"
-                  id="use_torch_compile"
-                  checked={params.use_torch_compile || false}
-                  onChange={(e) => setParams({ ...params, use_torch_compile: e.target.checked })}
-                  className="rounded"
-                />
-                <label htmlFor="use_torch_compile" className="text-sm text-gray-300">
-                  ⚠️ torch.compile (Experimental, slow first run)
-                </label>
-              </div>
-              {params.use_torch_compile && (
-                <div className="bg-orange-900/20 border border-orange-600/30 rounded-lg p-3 mt-2">
-                  <p className="text-xs text-orange-200">
-                    ⚠️ <strong>Experimental feature:</strong> torch.compile takes several minutes on first run for compilation.
-                    Subsequent runs will be 1.3-2x faster. May fail on some GPU/Windows configurations.
-                  </p>
-                </div>
-              )}
-
-              {/* Block Swap (Z-Image only) */}
-              <div className="flex items-center gap-2 mt-4">
-                <input
-                  type="checkbox"
-                  id="enable_block_swap"
-                  checked={params.enable_block_swap || false}
-                  onChange={(e) => setParams({ ...params, enable_block_swap: e.target.checked })}
-                  className="rounded"
-                />
-                <label htmlFor="enable_block_swap" className="text-sm text-gray-300">
-                  Block Swap (Z-Image Transformer offloading)
-                </label>
-              </div>
-              {params.enable_block_swap && (
-                <div className="space-y-3 mt-2 p-3 bg-blue-900/20 border border-blue-600/30 rounded-lg">
-                  <Slider
-                    label="Blocks to Swap"
-                    min={1}
-                    max={29}
-                    step={1}
-                    value={params.blocks_to_swap || 20}
-                    onChange={(e) => setParams({ ...params, blocks_to_swap: parseInt(e.target.value) })}
-                  />
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="use_pinned_memory"
-                      checked={params.use_pinned_memory || false}
-                      onChange={(e) => setParams({ ...params, use_pinned_memory: e.target.checked })}
-                      className="rounded"
-                    />
-                    <label htmlFor="use_pinned_memory" className="text-xs text-gray-300">
-                      Use Pinned Memory (faster transfer, more RAM)
-                    </label>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="block_swap_h2d_only"
-                      checked={params.block_swap_h2d_only || false}
-                      onChange={(e) => setParams({ ...params, block_swap_h2d_only: e.target.checked })}
-                      className="rounded"
-                    />
-                    <label htmlFor="block_swap_h2d_only" className="text-xs text-gray-300">
-                      H2D-only (no device-to-host eviction of read-only weights)
-                    </label>
-                  </div>
-                  {params.block_swap_h2d_only && (
-                    <Slider
-                      label="Ring Size (GPU weight buffer slots)"
-                      min={1}
-                      max={4}
-                      step={1}
-                      value={params.block_swap_ring_size || 2}
-                      onChange={(e) => setParams({ ...params, block_swap_ring_size: parseInt(e.target.value) })}
-                    />
-                  )}
-                  <div className="text-xs text-blue-200">
-                    <p>
-                      <strong>Block Swap:</strong> Offloads Z-Image Transformer blocks between CPU and GPU to reduce VRAM usage.
-                    </p>
-                    <p className="mt-1">
-                      <strong>Blocks to Swap:</strong> Higher = more VRAM reduction, but slower generation.
-                    </p>
-                    <p className="mt-1">
-                      <strong>H2D-only:</strong> Keeps a CPU master copy and only transfers host-to-device (inference / read-only weights). Ring Size 1 = minimum VRAM; 2+ = next block loads during current block compute.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-            </div>
-          </details>
         </Card>
 
         {visibility.lora && (

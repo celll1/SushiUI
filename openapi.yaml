@@ -7087,6 +7087,40 @@ components:
                 Decay band width, in pixels, over which the cross-seam tone
                 membrane's offset fades to zero. 0 = automatic (16 px).
               example: 0
+            outpaint_paste_feather_px:
+              type: integer
+              default: 0
+              minimum: 0
+              description: |
+                Paste-band reconciliation feather ("Option E"): at the final
+                preserved-rectangle paste, the last N rows/columns of the
+                preserved rectangle at its generate-adjacent edges are
+                blended (raised cosine) from the exact input toward the
+                decoded canvas already underneath them, instead of pasted
+                byte-exact. Independent of the boundary relaxation feather
+                paste (`boundary_relax_strength`/`boundary_relax_paste`) and
+                takes precedence over it when both are active; applies to
+                every outpaint ControlNet mode. 0 (default) = off, the
+                preserved rectangle stays byte-identical to the input. Only
+                the N-row/column band loses byte-exactness when > 0; the rest
+                of the preserved rectangle is unaffected.
+              example: 0
+            outpaint_preview_unpinned_x0:
+              type: boolean
+              default: false
+              description: |
+                Display-only preview substitution for outpaint generations.
+                The sampling loop pins the model's predicted original sample
+                to the composite of the preserved region and the model's
+                generate-region prediction before it reaches the mid-sampling
+                preview decoder, so previews can show a boundary line that
+                the actual denoising math never produces. When true, the
+                unpinned model prediction is sent to the preview decoder
+                instead; the value used by the sampler's own step function is
+                unchanged either way, so the final saved image for a given
+                seed is byte-identical regardless of this flag. False
+                (default) preserves prior preview behavior.
+              example: false
 
     UpscaleRequest:
       type: object

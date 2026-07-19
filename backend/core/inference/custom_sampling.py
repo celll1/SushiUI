@@ -4303,6 +4303,22 @@ def custom_inpaint_sampling_loop(
                                         # ControlNet residuals in the CN block below (RESIDUAL MASKING),
                                         # area-resized to each residual's own shape. None (default) = the
                                         # mechanism is fully inert -- byte-identical to before this feature.
+    outpaint_preview_unpinned_x0: bool = False,  # HONEST OUTPAINT PREVIEW (display-only; scratchpad/
+                                        # outpaint_seam_latent_stage.md section 4.1 Phase 2): when True AND
+                                        # outpaint_noise_init is True, the mid-sampling preview callback is
+                                        # sent the UNPINNED model x0 prediction (pre mask/pin composite)
+                                        # instead of the pinned composite. Does NOT alter `pred_original_sample`
+                                        # itself or scheduler.step() -- only the tensor handed to the preview
+                                        # decoder differs, so the final saved image for a given seed is
+                                        # byte-identical regardless of this flag. False (default) = the prior
+                                        # behavior (pinned composite previewed, byte-identical).
+    paste_feather_px: float = 0.0,      # OPTION E band width (px; scratchpad/outpaint_seam_latent_stage.md
+                                        # 4.1). When >0 AND outpaint_noise_init, the last N keep-side rows/cols
+                                        # adjacent to the generate boundary are kept as GENERATED (decoded)
+                                        # content in the pixel-space preservation blend below, so the feathered
+                                        # final paste in reconcile_and_paste can bridge raw->decoded there
+                                        # instead of raw->raw (a no-op). Mirrors the BDR Variant B strip.
+                                        # 0 (default) = the block pins the whole keep region (byte-identical).
 ) -> Image.Image:
     """Custom inpaint sampling loop with prompt editing and ControlNet support"""
     # CRITICAL FIX: Use U-Net's device instead of pipeline.device
@@ -6412,6 +6428,17 @@ def custom_inpaint_sampling_loop(
                 pipeline, latents, pred_original_sample,
                 flatten_in_loop_min_region, _flatten_vae_shift)
 
+        # HONEST OUTPAINT PREVIEW (display-only; scratchpad/
+        # outpaint_seam_latent_stage.md section 4.1 Phase 2): snapshot the
+        # model's own x0 prediction here, BEFORE the mask/pin composite below
+        # (over)writes `pred_original_sample` to (1-M)*K + M*x0_hat. This
+        # snapshot is consumed ONLY by the progress_callback branch further
+        # down, and only when outpaint_preview_unpinned_x0 is set -- it never
+        # feeds back into `pred_original_sample`/`latents`, so
+        # scheduler.step() and the final saved image are completely
+        # unaffected by its existence.
+        preview_x0 = pred_original_sample
+
         # Apply mask blending ONLY for 4-channel UNets (regular models)
         # 9-channel inpaint UNets handle masking internally via concatenation
         if not is_inpaint_unet:
@@ -6500,10 +6527,22 @@ def custom_inpaint_sampling_loop(
                 if hasattr(scheduler, 'sigmas') and i < len(scheduler.sigmas):
                     cfg_metrics['sigma'] = float(scheduler.sigmas[i].item())
 
+            # HONEST OUTPAINT PREVIEW: substitute the pre-pin snapshot for the
+            # DISPLAYED x0 only -- `pred_original_sample` itself (the pinned
+            # composite) is untouched, so nothing downstream of this call
+            # (there is nothing downstream that reads pred_original_sample
+            # again in this loop) is affected. Gated on outpaint_noise_init
+            # (normal inpaint never pins, so preview_x0 == pred_original_sample
+            # there already; the flag additionally requires this to be an
+            # actual outpaint run, not merely non-None output).
+            _preview_pred_x0 = pred_original_sample
+            if outpaint_noise_init and outpaint_preview_unpinned_x0 and preview_x0 is not None:
+                _preview_pred_x0 = preview_x0
+
             # visit_idx/len(_outpaint_visit_schedule): a MONOTONIC progress
             # total (see the initial-preview call above) -- identical to
             # i/len(timesteps) off the OUTPAINT B2 resample path.
-            progress_callback(visit_idx, len(_outpaint_visit_schedule), latents, cfg_metrics=cfg_metrics, pred_original_sample=pred_original_sample)
+            progress_callback(visit_idx, len(_outpaint_visit_schedule), latents, cfg_metrics=cfg_metrics, pred_original_sample=_preview_pred_x0)
 
         if step_callback is not None:
             callback_kwargs = step_callback(pipeline, t_start + i, t, {"latents": latents})
@@ -6651,6 +6690,22 @@ def custom_inpaint_sampling_loop(
                 mode="nearest",
             )
             mask_pixel = torch.maximum(mask_pixel, strip_pixel)
+
+        # Option E (paste-band reconciliation): keep the last N keep-side rows/
+        # cols adjacent to the generate boundary as GENERATED (decoded) content,
+        # so reconcile_and_paste's feathered final paste can bridge raw->decoded
+        # there. Without this, this block hard-pins those rows to the original,
+        # and the feathered paste then blends raw->raw (a structural no-op --
+        # the reason Option E measured 0 effect before this fix). Mirrors the
+        # BDR Variant B strip above; only active for outpaint + feather>0.
+        if outpaint_noise_init and paste_feather_px and paste_feather_px > 0:
+            _N = max(1, int(round(float(paste_feather_px))))
+            _gen = (mask_pixel > 0.5).to(dtype=mask_pixel.dtype)  # 1 = generate region
+            # Dilate the generate region by N px; its intersection with the keep
+            # region (mask==0) is exactly the N-px keep-side boundary band.
+            _dil = torch.nn.functional.max_pool2d(_gen, kernel_size=2 * _N + 1, stride=1, padding=_N)
+            _band = (_dil > 0.5) & (mask_pixel <= 0.5)
+            mask_pixel = torch.maximum(mask_pixel, _band.to(dtype=mask_pixel.dtype))
 
         # Blend: keep original where mask=0, use generated where mask=1
         image = (1 - mask_pixel) * original_tensor + mask_pixel * image

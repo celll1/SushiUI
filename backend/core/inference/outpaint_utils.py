@@ -584,6 +584,7 @@ def reconcile_and_paste(
     mask_blur: int = 4,
     outpaint_seam_fix: bool = True,
     paste_alpha: Optional[np.ndarray] = None,
+    paste_feather_px: float = 0.0,
     seam_membrane: bool = False,
     seam_membrane_band: int = 0,
     seam_tone_strength: float = 0.0,
@@ -619,14 +620,27 @@ def reconcile_and_paste(
     generated pixels immediately across the seam (not the rect-interior
     reconstruction ``seam_membrane`` keys on) and writes a decaying offset
     into the generated side within ``seam_tone_band`` px of the seam -- see
-    ``scratchpad/outpaint_seam_redesign_v2.md`` section 4 Phase 1. Finally
+    ``scratchpad/outpaint_seam_redesign_v2.md`` section 4 Phase 1. Then, when
+    ``paste_feather_px`` is > 0 (Option E, "paste-band reconciliation feather"
+    -- see ``scratchpad/outpaint_seam_latent_stage.md`` section 4.1), a fresh
+    ``build_paste_alpha(rect, canvas_size, erode_px=0, feather_px=paste_feather_px)``
+    alpha OVERRIDES whatever ``paste_alpha`` the caller passed in (BDR Variant
+    B's own feather, if any): this parameter is independent of BDR and is the
+    one actually requested for the paste about to happen, so it wins on
+    conflict. Unlike BDR's ~24 px erode-then-feather strip, this one erodes
+    0 px -- the raised-cosine blend starts right at the rect's
+    generate-adjacent edge, over the last ``paste_feather_px`` rows/cols of
+    the KEEP side, blending the exact input pixels toward the decoded canvas
+    already sitting underneath them. ``paste_feather_px=0`` (the default) is a
+    no-op, so nothing below changes unless a caller opts in. Finally
     ``placed_img`` is pasted at ``rect`` exactly as ``paste_preserved_region``
     does -- this paste is always the LAST mutation, re-establishing
-    byte-exactness of the preserved rect regardless of any architecture-side
-    re-rounding or the correction steps above. Both ``seam_membrane`` and the
-    cross-seam tone membrane write only pixels outside ``rect`` by
-    construction (see their own module docstrings), so this is a double
-    guarantee, not a single point of failure.
+    byte-exactness of the preserved rect (or, when ``paste_feather_px``/
+    ``paste_alpha`` opts out of it, the documented feather band) regardless of
+    any architecture-side re-rounding or the correction steps above. Both
+    ``seam_membrane`` and the cross-seam tone membrane write only pixels
+    outside ``rect`` by construction (see their own module docstrings), so
+    this is a double guarantee, not a single point of failure.
 
     ``warn_callback``, if given, is called as ``warn_callback(message, code)``
     for feature-degradation notices (F1 large-correction / F3 post-resize) --
@@ -698,4 +712,12 @@ def reconcile_and_paste(
                 )
             except Exception:
                 pass
+    if paste_feather_px and paste_feather_px > 0:
+        # Option E: reads the CURRENT rect/canvas_size (post any resize above)
+        # so the alpha always matches the pixels it's about to be applied to.
+        # erode_px=0 -- see docstring; this deliberately overrides any BDR
+        # Variant B `paste_alpha` the caller supplied, independent of whatever
+        # forced BDR back to "exact" upstream (that override only ever touches
+        # BDR's own alpha computation, never this parameter).
+        paste_alpha = build_paste_alpha(rect, canvas_size, 0.0, float(paste_feather_px))
     return paste_preserved_region(result_img, placed_img, rect, alpha=paste_alpha)

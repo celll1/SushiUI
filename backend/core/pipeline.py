@@ -4579,6 +4579,8 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             boundary_relax_end=params.get("boundary_relax_end", 0.55),
             boundary_relax_paste=params.get("boundary_relax_paste", "feather"),
             outpaint_controlnet_gate=params.get("outpaint_controlnet_gate"),
+            outpaint_preview_unpinned_x0=bool(params.get("outpaint_preview_unpinned_x0", False)),
+            paste_feather_px=float(params.get("outpaint_paste_feather_px", 0) or 0),
             **controlnet_kwargs,
             )
             generation_timer.add("denoise", time.perf_counter() - _t_denoise)
@@ -5040,8 +5042,15 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # never fired -- `work` starts as an unmodified copy of `params` for this
         # key otherwise.
         _paste_alpha = None
+        # Option E band width (px). Computed here (before the BDR branch) because
+        # when it is active it OVERRIDES any BDR paste_alpha in
+        # reconcile_and_paste -- so we must skip building the BDR alpha AND its
+        # warning below, otherwise the user sees a BDR "~24 px model-rendered"
+        # notice for a strip that is actually discarded in favour of Option E's
+        # N-px band (different width and semantics).
+        _paste_feather_px = int(params.get("outpaint_paste_feather_px", 0) or 0)
         _bdr_on = float(params.get("boundary_relax_strength", 0.0) or 0.0) > 0.0
-        if _bdr_on and str(work.get("boundary_relax_paste", "feather")) == "feather":
+        if _bdr_on and _paste_feather_px <= 0 and str(work.get("boundary_relax_paste", "feather")) == "feather":
             from core.inference.outpaint_utils import build_paste_alpha
             # erosion/feather in pixels: tie to the soft strip (W_soft=2 latent
             # cells -> ~16 px) plus an 8 px feather. VAE scale factor 8.
@@ -5056,6 +5065,25 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 code="boundary_relax_feather_nonexact",
             )
 
+        # Option E (paste-band reconciliation feather, scratchpad/
+        # outpaint_seam_latent_stage.md section 4.1): reads `params` (NOT
+        # `work`), so the CN "force boundary_relax_paste=exact" guard above
+        # (which only ever mutates `work["boundary_relax_paste"]`) has no
+        # effect on this independent parameter -- it applies to crop_mask CN
+        # runs too. `reconcile_and_paste` itself gives this precedence over
+        # any BDR `paste_alpha` when both are set (see its docstring).
+        # `_paste_feather_px` was resolved above (before the BDR branch).
+        if _paste_feather_px > 0:
+            from api.generation_status import add_warning as _pf_warn
+            _pf_warn(
+                "Paste-band reconciliation feather: the last "
+                f"{_paste_feather_px} row(s)/column(s) of the preserved rect at its "
+                "generate-adjacent edges are blended (raised-cosine) toward the "
+                "decoded canvas underneath instead of pasted byte-exact; the rest of "
+                "the preserved rect is unaffected.",
+                code="outpaint_paste_feather_nonexact",
+            )
+
         def _seam_membrane_warn(message: str, code: str) -> None:
             from api.generation_status import add_warning as _sm_warn
             _sm_warn(message, code=code)
@@ -5065,6 +5093,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             mask_blur=mask_blur,
             outpaint_seam_fix=bool(params.get("outpaint_seam_fix", True)),
             paste_alpha=_paste_alpha,
+            paste_feather_px=float(_paste_feather_px),
             seam_membrane=bool(params.get("outpaint_seam_membrane", False)),
             seam_membrane_band=int(params.get("outpaint_seam_membrane_band", 0) or 0),
             seam_tone_strength=float(params.get("outpaint_seam_tone_strength", 0.0) or 0.0),

@@ -231,14 +231,15 @@ export default function SharedMetricChart({
     return out;
   }, [visibleSeries, xRange, xMin, xMax]);
 
-  // Y scale (pool primary series; rawRange/dashed series contribute raw min/max only)
+  // Y scale (pool all series through the percentile calc; only rawRange series
+  // are forced fully visible via raw min/max — dashed is purely a line style)
   const { primaryVals, mustInclude } = useMemo(() => {
     const prim: number[] = [];
     const must: number[] = [];
     for (const s of visibleSeries) {
       const sm = visibleSmoothed.get(s.id) ?? [];
       const rw = visibleRaw.get(s.id) ?? [];
-      if (s.dashed || s.rawRange) {
+      if (s.rawRange) {
         for (const p of rw) must.push(p.value);
       } else if (smoothing > 0 && sm.length > 0) {
         for (const p of sm) prim.push(p.value);

@@ -176,6 +176,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
         title="Loss"
         series={series}
         yMinFloor={0}
+        allowLogScale
         epochBoundaries={epochBoundaries}
         resumeMarkers={resumeMarkers}
       />

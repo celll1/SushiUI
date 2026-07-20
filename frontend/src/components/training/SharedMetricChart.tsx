@@ -136,6 +136,28 @@ export default function SharedMetricChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [smoothing, setSmoothing] = useState(smoothable ? defaultSmoothing : 0);
+  // Separate "display" value so the slider thumb / % label track the pointer
+  // instantly (cheap state, no recompute below), while the value that actually
+  // drives the EMA + Y-range recompute is committed at most once per animation
+  // frame. A native <input type=range> fires an 'input' event on every pixel of
+  // pointer movement during a drag — far more often than the browser can paint —
+  // and each commit re-runs the EMA over every series plus the Y-range percentile
+  // sort. Without this split, either the slider janks (if we committed on every
+  // event) or the thumb would visually snap back on unrelated re-renders (if we
+  // rAF-throttled the single controlled `value` directly).
+  const [smoothingDisplay, setSmoothingDisplay] = useState(smoothing);
+  const smoothingRafRef = useRef<number | null>(null);
+  const pendingSmoothingRef = useRef<number | null>(null);
+  useEffect(() => () => { if (smoothingRafRef.current !== null) cancelAnimationFrame(smoothingRafRef.current); }, []);
+  const scheduleSmoothing = (v: number) => {
+    setSmoothingDisplay(v);
+    pendingSmoothingRef.current = v;
+    if (smoothingRafRef.current !== null) return;
+    smoothingRafRef.current = requestAnimationFrame(() => {
+      smoothingRafRef.current = null;
+      if (pendingSmoothingRef.current !== null) setSmoothing(pendingSmoothingRef.current);
+    });
+  };
   const [logScale, setLogScale] = useState(false);
   const [legendOpen, setLegendOpen] = useState(false);
   // Series hidden via legend clicks. Hidden series are excluded from rendering
@@ -231,26 +253,41 @@ export default function SharedMetricChart({
     return out;
   }, [visibleSeries, xRange, xMin, xMax]);
 
-  // Y scale (pool all series through the percentile calc; only rawRange series
-  // are forced fully visible via raw min/max — dashed is purely a line style)
+  // Y scale (pool primary series through the percentile calc; rawRange series are
+  // forced fully visible via raw min/max, and dashed-but-not-rawRange series
+  // (secondary/aux-loss overlays, e.g. Recon/Gen region/Known region/Seam on the
+  // Loss chart) are excluded from the pool entirely so the axis tracks the
+  // primary series' own (smoothed) range instead of being diluted by unrelated
+  // aux metrics living on a different scale — they still render, just clipping
+  // out of frame if they exceed the primary-derived range. If NO non-dashed
+  // series remain visible (e.g. the primary was hidden via the legend), fall
+  // back to pooling the dashed series so the axis doesn't collapse to a flat
+  // yMinFloor..yMinFloor+1 default.
   const { primaryVals, mustInclude } = useMemo(() => {
     const prim: number[] = [];
+    const dashedFallback: number[] = [];
     const must: number[] = [];
     for (const s of visibleSeries) {
       const sm = visibleSmoothed.get(s.id) ?? [];
       const rw = visibleRaw.get(s.id) ?? [];
       if (s.rawRange) {
         for (const p of rw) must.push(p.value);
-      } else if (smoothing > 0 && sm.length > 0) {
-        for (const p of sm) prim.push(p.value);
-      } else {
-        for (const p of rw) prim.push(p.value);
+        continue;
       }
+      const vals = smoothing > 0 && sm.length > 0 ? sm : rw;
+      const target = s.dashed ? dashedFallback : prim;
+      for (const p of vals) target.push(p.value);
     }
-    return { primaryVals: prim, mustInclude: must };
+    return { primaryVals: prim.length > 0 ? prim : dashedFallback, mustInclude: must };
   }, [visibleSeries, visibleSmoothed, visibleRaw, smoothing]);
 
-  const rawYRange = robustYRange(primaryVals, yMinFloor, mustInclude, bounded);
+  // Memoized: robustYRange sorts the pooled array (O(n log n)). Without this,
+  // it re-sorted on every render — including ones unrelated to the pooled data,
+  // e.g. tooltip hover or brush-drag — since it was called inline in render body.
+  const rawYRange = useMemo(
+    () => robustYRange(primaryVals, yMinFloor, mustInclude, bounded),
+    [primaryVals, yMinFloor, mustInclude, bounded],
+  );
   const canLog = allowLogScale && logScale && rawYRange.min > 0;
   const yMin = canLog ? Math.log10(Math.max(rawYRange.min, 1e-9)) : rawYRange.min;
   const yMax = canLog ? Math.log10(Math.max(rawYRange.max, 1e-9)) : rawYRange.max;
@@ -400,12 +437,12 @@ export default function SharedMetricChart({
             <div className="flex items-center gap-1.5">
               <span className="text-[10px] text-gray-500">Smooth</span>
               <input
-                type="range" min={0} max={0.99} step={0.01} value={smoothing}
-                onChange={(e) => setSmoothing(parseFloat(e.target.value))}
+                type="range" min={0} max={0.99} step={0.01} value={smoothingDisplay}
+                onChange={(e) => scheduleSmoothing(parseFloat(e.target.value))}
                 className="w-20 h-1 cursor-pointer" title="EMA smoothing"
               />
               <span className="text-[10px] text-gray-400 font-mono w-7 text-right">
-                {(smoothing * 100).toFixed(0)}%
+                {(smoothingDisplay * 100).toFixed(0)}%
               </span>
             </div>
           )}

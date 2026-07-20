@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useId } from "react";
 
 /**
  * Generic multi-series metric chart shared by the image-gen and tagger training
@@ -104,6 +104,35 @@ function robustYRange(
   return { min: Math.max(yMinFloor, lo - pad), max: hi + pad };
 }
 
+/** Log-domain counterpart of robustYRange: same p5-p95 percentile-clip idea,
+ *  restricted to strictly-positive values (log10 is undefined at/below 0) and
+ *  padded in LOG space (not linear) so the padding stays proportionate across
+ *  a range spanning orders of magnitude. Returns null when no positive value
+ *  exists — the caller uses that to disable log mode rather than silently
+ *  showing an empty/degenerate axis.
+ *
+ *  Using the single absolute minimum positive value as the log floor (an
+ *  earlier version of this) let one low outlier — e.g. a transient near-zero
+ *  point during a resume's warm-up — pin the whole axis low and compress the
+ *  steady-state data into a thin top band. Percentile-clipping like the
+ *  linear axis avoids that. */
+function robustPositiveLogRange(values: number[]): { min: number; max: number } | null {
+  const valid = values.filter((v) => Number.isFinite(v) && v > 0);
+  if (valid.length === 0) return null;
+  let lo: number, hi: number;
+  if (valid.length === 1) {
+    lo = valid[0]; hi = valid[0];
+  } else {
+    const sorted = [...valid].sort((a, b) => a - b);
+    lo = sorted[Math.floor(sorted.length * 0.05)];
+    hi = sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * 0.95) - 1)];
+  }
+  const logLo = Math.log10(lo);
+  const logHi = Math.log10(hi);
+  const logPad = (logHi - logLo) * 0.05 || 0.15;
+  return { min: Math.pow(10, logLo - logPad), max: Math.pow(10, logHi + logPad) };
+}
+
 /** Compute epoch boundaries from per-point resume-aware data when the caller
  *  does not provide them. Returns the last step seen for each epoch. */
 export function computeEpochBoundariesFromPoints(
@@ -133,6 +162,13 @@ export default function SharedMetricChart({
   resumeMarkers,
   headerExtra,
 }: SharedMetricChartProps) {
+  // Unique per-instance id for the plot-area clipPath (multiple charts render
+  // in the same DOM — e.g. Loss + GradNorm + ParamChange stacked in one run's
+  // metrics tab — so a shared/static id would collide and one chart's clip
+  // rect would silently clip a DIFFERENT chart's series). `:` from useId()'s
+  // default format isn't a valid bare SVG id char in older UAs, so strip it.
+  const clipIdRaw = useId();
+  const clipId = `metric-chart-plot-clip-${clipIdRaw.replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [smoothing, setSmoothing] = useState(smoothable ? defaultSmoothing : 0);
@@ -300,24 +336,23 @@ export default function SharedMetricChart({
     () => robustYRange(primaryVals, yMinFloor, mustInclude, bounded),
     [primaryVals, yMinFloor, mustInclude, bounded],
   );
-  // Smallest strictly-positive value across the pooled data — a genuine floor
-  // for the log domain. Requiring `rawYRange.min > 0` (the old guard) meant a
-  // SINGLE zero/unrecorded-period point anywhere in the pooled series (e.g.
-  // GradNorm before logging started for that metric) permanently pinned
-  // rawYRange.min to 0 via yMinFloor clamping, so log mode never activated —
-  // the "log" button looked pressable but silently did nothing. Log mode now
-  // floors on the smallest actual positive value instead, ignoring zero/
-  // negative points for that purpose only; the linear view is unaffected and
-  // still legitimately starts at 0.
-  const positiveFloor = useMemo(() => {
-    let min: number | null = null;
-    for (const v of primaryVals) if (v > 0 && (min === null || v < min)) min = v;
-    for (const v of mustInclude) if (v > 0 && (min === null || v < min)) min = v;
-    return min;
-  }, [primaryVals, mustInclude]);
-  const canLog = allowLogScale && logScale && positiveFloor !== null && rawYRange.max > positiveFloor;
-  const yMin = canLog ? Math.log10(positiveFloor as number) : rawYRange.min;
-  const yMax = canLog ? Math.log10(Math.max(rawYRange.max, positiveFloor as number)) : rawYRange.max;
+  // Log-domain range: a robust (p5-p95, log-space padded) range over the
+  // POSITIVE subset of the pooled data — see robustPositiveLogRange() history
+  // note. Two prior guards were both wrong in different ways:
+  //  - `rawYRange.min > 0`: a single zero/unrecorded point anywhere pinned the
+  //    LINEAR range's min to 0 (via yMinFloor clamping), so log mode never
+  //    activated at all — the button looked pressable but did nothing.
+  //  - absolute min positive value as the log floor: activated log mode, but
+  //    one low transient (e.g. nearzero warm-up point right after a resume)
+  //    pinned the axis low and squeezed the steady-state data into a thin
+  //    band at the top.
+  const logRange = useMemo(
+    () => (allowLogScale ? robustPositiveLogRange([...primaryVals, ...mustInclude]) : null),
+    [allowLogScale, primaryVals, mustInclude],
+  );
+  const canLog = allowLogScale && logScale && logRange !== null;
+  const yMin = canLog && logRange ? Math.log10(logRange.min) : rawYRange.min;
+  const yMax = canLog && logRange ? Math.log10(logRange.max) : rawYRange.max;
   const ySpan = yMax - yMin || 1;
   const yTransform = (v: number) => (canLog ? Math.log10(Math.max(v, 1e-9)) : v);
   const toY = (v: number) => PAD.top + ((yMax - yTransform(v)) / ySpan) * chartH;
@@ -476,9 +511,9 @@ export default function SharedMetricChart({
           {allowLogScale && (
             <button
               onClick={() => setLogScale((v) => !v)}
-              disabled={positiveFloor === null}
+              disabled={logRange === null}
               className={`text-[10px] px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${logScale ? "bg-blue-700 text-blue-100" : "bg-gray-700 hover:bg-gray-600 text-gray-300"}`}
-              title={positiveFloor === null ? "No positive values to log-scale" : "Toggle log Y scale"}
+              title={logRange === null ? "No positive values to log-scale" : "Toggle log Y scale"}
             >log</button>
           )}
           {epochBoundaries && epochBoundaries.length >= 1 && (() => {
@@ -545,6 +580,20 @@ export default function SharedMetricChart({
             onDoubleClick={onDoubleClick}
             style={{ touchAction: "none", cursor: brush ? "ew-resize" : "crosshair" }}
           >
+            {/* Plot-area clip rect: series lines are wrapped in a <g clipPath=...>
+                using this so a value beyond yMin/yMax stops exactly at the plot
+                boundary on BOTH edges. Without it, only the SVG's own edges clip
+                (the root <svg>'s default `overflow: hidden`) — a value below
+                yMin renders into the PAD.bottom strip (X-axis label margin,
+                still inside the SVG) and leaks visibly past the plot frame,
+                while a value above yMax has much less PAD.top margin to leak
+                into before hitting the SVG's own top edge, so the two edges
+                looked inconsistently clipped. */}
+            <defs>
+              <clipPath id={clipId}>
+                <rect x={PAD.left} y={PAD.top} width={chartW} height={chartH} />
+              </clipPath>
+            </defs>
             {/* Y grid + ticks */}
             {yTickValues.map((v, i) => (
               <g key={`y${i}`}>
@@ -582,18 +631,20 @@ export default function SharedMetricChart({
                 across the Y-range boundary and reads as a dense noisy band
                 rather than a legible line — the smoothed dashed line alone is
                 enough context for an overlay metric. */}
-            {smoothing > 0 && visibleSeries.filter((s) => !s.dashed).map((s) => (
-              <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
-                fill="none" stroke={s.color} strokeWidth={1}
-                opacity={0.22} />
-            ))}
-            {visibleSeries.map((s) => {
-              const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
-              return (
-                <path key={s.id} d={buildPath(pts)} fill="none" stroke={s.color} strokeWidth={1.5}
-                  strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
-              );
-            })}
+            <g clipPath={`url(#${clipId})`}>
+              {smoothing > 0 && visibleSeries.filter((s) => !s.dashed).map((s) => (
+                <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
+                  fill="none" stroke={s.color} strokeWidth={1}
+                  opacity={0.22} />
+              ))}
+              {visibleSeries.map((s) => {
+                const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));
+                return (
+                  <path key={s.id} d={buildPath(pts)} fill="none" stroke={s.color} strokeWidth={1.5}
+                    strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.95} />
+                );
+              })}
+            </g>
 
             {/* Brush rect */}
             {brushRect && brushRect.w > 0 && (

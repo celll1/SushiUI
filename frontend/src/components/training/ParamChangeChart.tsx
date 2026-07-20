@@ -151,7 +151,7 @@ export default function ParamChangeChart({ runId, isRunning }: ParamChangeChartP
         title={tab === "update_norm" ? "Param Update Norm" : "Param Cumulative Drift"}
         series={series}
         yMinFloor={0}
-        defaultSmoothing={0.6}
+        defaultSmoothing={0.9}
         epochBoundaries={epochBoundaries}
         resumeMarkers={resumeMarkers}
       />

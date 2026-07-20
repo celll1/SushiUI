@@ -7138,6 +7138,35 @@ components:
                 1.0 (default) = no attenuation = disabled regardless of the
                 radius.
               example: 1.0
+            outpaint_pin_corner_relax_radius_px:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              description: |
+                crop_mask mode only, opt-in (L1 four-corner x0-pin
+                softening): softens the per-step x0-pin composite's
+                keep-weight (a different mechanism from the ControlNet
+                residual gate above) in a disk of this radius (canvas px)
+                around each of the 4 placed-rect vertices, down to
+                `outpaint_pin_corner_relax_min` at the vertex center; the
+                rect edges away from corners keep the full hard pin.
+                Clamped to 25% of the shorter placed-rect side. 0.0
+                (default, paired with `outpaint_pin_corner_relax_min`
+                defaulting to 1.0) = disabled, byte-identical to before this
+                feature existed. The preserved rect always stays byte-exact
+                via the final byte-exact paste, regardless of this setting.
+              example: 0.0
+            outpaint_pin_corner_relax_min:
+              type: number
+              default: 1.0
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                crop_mask mode only: the x0-pin keep-weight value at each
+                rect vertex center (see
+                `outpaint_pin_corner_relax_radius_px`), in [0, 1]. 1.0
+                (default) = no relax = disabled regardless of the radius.
+              example: 1.0
             outpaint_seam_membrane:
               type: boolean
               default: false

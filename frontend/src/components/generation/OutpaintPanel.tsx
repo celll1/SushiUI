@@ -148,6 +148,8 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_controlnet_corner_radius_px: 0.0,
   outpaint_controlnet_corner_gate_radius_px: 0.0,
   outpaint_controlnet_corner_gate_min: 1.0,
+  outpaint_pin_corner_relax_radius_px: 0.0,
+  outpaint_pin_corner_relax_min: 1.0,
   outpaint_seam_membrane: false,
   outpaint_seam_membrane_band: 0,
   outpaint_seam_tone_strength: 0.0,
@@ -305,6 +307,8 @@ const OUTPAINT_OPTIONS_TAB_KEYS: Record<OutpaintOptionsTabId, (keyof OutpaintPan
     "outpaint_controlnet_corner_radius_px",
     "outpaint_controlnet_corner_gate_radius_px",
     "outpaint_controlnet_corner_gate_min",
+    "outpaint_pin_corner_relax_radius_px",
+    "outpaint_pin_corner_relax_min",
   ],
   regional_prompt: [
     "region_prompt",
@@ -1635,6 +1639,25 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                 />
                 <p className="text-xs text-gray-500 sm:col-span-2">
                   Rounds the ControlNet conditioning's known/unknown boundary at each corner instead of a sharp 90-degree vertex. Only takes effect together with a nonzero edge feather. 0 = disabled.
+                </p>
+                <Slider
+                  label="Pin Corner Relax Radius (px)"
+                  min={0}
+                  max={64}
+                  step={2}
+                  value={params.outpaint_pin_corner_relax_radius_px ?? 0.0}
+                  onChange={(e) => setParams({ ...params, outpaint_pin_corner_relax_radius_px: parseFloat(e.target.value) })}
+                />
+                <Slider
+                  label="Pin Corner Relax Min"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={params.outpaint_pin_corner_relax_min ?? 1.0}
+                  onChange={(e) => setParams({ ...params, outpaint_pin_corner_relax_min: parseFloat(e.target.value) })}
+                />
+                <p className="text-xs text-gray-500 sm:col-span-2">
+                  Softens the per-step known-region pin in a disk of this radius around each of the 4 placed-rect corners, down to the min value at the corner center. Edges away from corners keep the full pin. The preserved rect stays byte-exact via the final paste. Radius 0 = disabled.
                 </p>
               </>
             )}

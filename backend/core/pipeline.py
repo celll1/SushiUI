@@ -4579,6 +4579,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             boundary_relax_end=params.get("boundary_relax_end", 0.55),
             boundary_relax_paste=params.get("boundary_relax_paste", "feather"),
             outpaint_controlnet_gate=params.get("outpaint_controlnet_gate"),
+            outpaint_pin_corner_relax=params.get("outpaint_pin_corner_relax"),
             outpaint_preview_unpinned_x0=bool(params.get("outpaint_preview_unpinned_x0", False)),
             paste_feather_px=float(params.get("outpaint_paste_feather_px", 0) or 0),
             outpaint_preserve_mode=str(params.get("outpaint_preserve_mode", "exact") or "exact"),
@@ -5048,6 +5049,41 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                             work["outpaint_controlnet_gate"] = build_corner_gate(
                                 rect, canvas_img.size,
                                 _ocn_corner_gate_radius_px, _ocn_corner_gate_min,
+                            )
+
+                        # L1 four-corner x0-pin softening (independent of the CN
+                        # residual gate above -- this touches the per-step x0-pin
+                        # composite in custom_inpaint_sampling_loop, NOT the CN
+                        # residual). Root cause: image_latents is fixed across all
+                        # steps, so the hard rectangular mask_latent re-stamps the
+                        # same re-entrant 90-degree seed at each rect vertex every
+                        # step; the CN's structure-completion regime extends that
+                        # seed outward and the pin re-enforces it each step (a
+                        # feedback loop). This relaxes the pin's keep-weight to
+                        # outpaint_pin_corner_relax_min (instead of the full 1.0)
+                        # in small radius-px disks at the 4 rect vertices only, so
+                        # the seed seam is blunted while the straight edges (away
+                        # from corners) keep the full pin. The preserved rect
+                        # stays byte-exact regardless: the FINAL byte-exact paste
+                        # (see boundary_relax_paste="exact" above) restores its
+                        # pixels from the untouched input, so relaxing only the
+                        # intermediate latent trajectory near the corners cannot
+                        # leak into the final output. Default radius=0.0 / min=1.0
+                        # leaves work["outpaint_pin_corner_relax"] UNSET (None ->
+                        # inert), exactly as before this feature existed.
+                        _ocn_pin_relax_radius_px = float(work.get(
+                            "outpaint_pin_corner_relax_radius_px",
+                            _OUTPAINT_DEFAULTS["outpaint_pin_corner_relax_radius_px"],
+                        ))
+                        _ocn_pin_relax_min = float(work.get(
+                            "outpaint_pin_corner_relax_min",
+                            _OUTPAINT_DEFAULTS["outpaint_pin_corner_relax_min"],
+                        ))
+                        if _ocn_pin_relax_radius_px > 0.0 and _ocn_pin_relax_min < 1.0:
+                            from core.utils.outpaint_corner_gate import build_corner_gate
+                            work["outpaint_pin_corner_relax"] = build_corner_gate(
+                                rect, canvas_img.size,
+                                _ocn_pin_relax_radius_px, _ocn_pin_relax_min,
                             )
 
                     if str(work.get("boundary_relax_paste", "feather")) != "exact":

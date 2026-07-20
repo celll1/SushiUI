@@ -3974,6 +3974,8 @@ async def generate_outpaint(
     outpaint_controlnet_corner_radius_px: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_corner_radius_px"]),  # crop_mask rounded-corner CN conditioning (canvas px); 0.0 = disabled
     outpaint_controlnet_corner_gate_radius_px: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_corner_gate_radius_px"]),  # crop_mask per-corner residual gate disk radius (canvas px); 0.0 = disabled
     outpaint_controlnet_corner_gate_min: float = Form(OUTPAINT_DEFAULTS["outpaint_controlnet_corner_gate_min"]),  # crop_mask per-corner residual gate min value at vertex; 1.0 = disabled
+    outpaint_pin_corner_relax_radius_px: float = Form(OUTPAINT_DEFAULTS["outpaint_pin_corner_relax_radius_px"]),  # crop_mask L1 four-corner x0-pin softening disk radius (canvas px); 0.0 = disabled
+    outpaint_pin_corner_relax_min: float = Form(OUTPAINT_DEFAULTS["outpaint_pin_corner_relax_min"]),  # crop_mask L1 four-corner x0-pin softening min keep-weight at vertex; 1.0 = disabled
     prompt_chunking_mode: str = Form(OUTPAINT_DEFAULTS["prompt_chunking_mode"]),
     max_prompt_chunks: int = Form(OUTPAINT_DEFAULTS["max_prompt_chunks"]),
     loras: str = Form("[]"),  # JSON string of LoRA configs
@@ -4298,6 +4300,8 @@ async def generate_outpaint(
             "outpaint_controlnet_corner_radius_px": outpaint_controlnet_corner_radius_px,
             "outpaint_controlnet_corner_gate_radius_px": outpaint_controlnet_corner_gate_radius_px,
             "outpaint_controlnet_corner_gate_min": outpaint_controlnet_corner_gate_min,
+            "outpaint_pin_corner_relax_radius_px": outpaint_pin_corner_relax_radius_px,
+            "outpaint_pin_corner_relax_min": outpaint_pin_corner_relax_min,
             "loras": lora_configs,  # FLUX.2 needs this in params
             "controlnet_images": controlnet_images,
             "style_transfer": style_transfer,

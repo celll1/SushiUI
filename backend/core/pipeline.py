@@ -4960,9 +4960,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                         "outpaint_controlnet_edge_feather_px",
                         _OUTPAINT_DEFAULTS["outpaint_controlnet_edge_feather_px"],
                     ))
+                    # Feature #3a (secondary, independent lever to Feature #2 below):
+                    # opt-in rounded-corner CN conditioning geometry. 0.0 default =
+                    # byte-identical (see crop_mask_condition.py docstring).
+                    _ocn_corner_radius_px = float(work.get(
+                        "outpaint_controlnet_corner_radius_px",
+                        _OUTPAINT_DEFAULTS["outpaint_controlnet_corner_radius_px"],
+                    ))
                     _cond_np, _gate_np = build_crop_mask_condition(
                         _np.array(canvas_img.convert("RGB")), rect, canvas_img.size,
                         edge_feather_px=_ocn_edge_feather_px,
+                        corner_radius_px=_ocn_corner_radius_px,
                     )
                     _ocn_result = (_cond_np, _gate_np)
                 else:
@@ -5005,14 +5013,42 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     # IS its mechanism -- confine the untrained edge CN to the
                     # generate region). The trained crop_mask CN was trained
                     # GATELESS (residuals applied over the full field, keep region
-                    # only loss-down-weighted 0.3), so gating it at inference feeds
-                    # the UNet a residual field it never saw in training (keep side
-                    # zeroed + fractional coarse-block cells at the seam). Leave the
-                    # gate UNSET (None -> inert) for crop_mask to match training;
-                    # the keep region stays exact via the mask_latent x0-pin + the
-                    # final byte-exact paste. See outpaint_vae_boundary_alignment.md Q2b.
+                    # only loss-down-weighted 0.3), so a keep/gen gate at inference
+                    # would feed the UNet a residual field it never saw in training
+                    # (keep side zeroed + fractional coarse-block cells at the
+                    # seam). By default the gate stays UNSET (None -> inert) for
+                    # crop_mask to match training; the keep region stays exact via
+                    # the mask_latent x0-pin + the final byte-exact paste. See
+                    # outpaint_vae_boundary_alignment.md Q2b. The ONE opt-in
+                    # exception is Feature #2 below (per-corner residual gate),
+                    # which is a 1.0-base field with only local corner dips, not a
+                    # keep/gen split -- it stays inert (all-1.0, byte-identical) at
+                    # its own defaults.
                     if _ocn_mode != "crop_mask":
                         work["outpaint_controlnet_gate"] = _ocn_gate
+                    else:
+                        # Feature #2 (PRIMARY corner-seam fix; H1 vertex-feature-lock,
+                        # scratchpad/outpaint_seam_diagnosis.md): attenuate the CN
+                        # residual ONLY in small disks at the 4 rect vertices -- NOT
+                        # the flat keep/gen gate above (_ocn_gate, unused here), which
+                        # would zero the whole keep-side residual (strong OOD vs.
+                        # training's gateless flat-1.0 field). Default radius=0.0 /
+                        # g_min=1.0 leaves the gate UNSET (None -> inert), exactly as
+                        # before this feature existed.
+                        _ocn_corner_gate_radius_px = float(work.get(
+                            "outpaint_controlnet_corner_gate_radius_px",
+                            _OUTPAINT_DEFAULTS["outpaint_controlnet_corner_gate_radius_px"],
+                        ))
+                        _ocn_corner_gate_min = float(work.get(
+                            "outpaint_controlnet_corner_gate_min",
+                            _OUTPAINT_DEFAULTS["outpaint_controlnet_corner_gate_min"],
+                        ))
+                        if _ocn_corner_gate_radius_px > 0.0 and _ocn_corner_gate_min < 1.0:
+                            from core.utils.outpaint_corner_gate import build_corner_gate
+                            work["outpaint_controlnet_gate"] = build_corner_gate(
+                                rect, canvas_img.size,
+                                _ocn_corner_gate_radius_px, _ocn_corner_gate_min,
+                            )
 
                     if str(work.get("boundary_relax_paste", "feather")) != "exact":
                         work["boundary_relax_paste"] = "exact"

@@ -145,6 +145,9 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_controlnet_guidance_end: 0.55,
   outpaint_controlnet_depth: 160,
   outpaint_controlnet_taper: 2.0,
+  outpaint_controlnet_corner_radius_px: 0.0,
+  outpaint_controlnet_corner_gate_radius_px: 0.0,
+  outpaint_controlnet_corner_gate_min: 1.0,
   outpaint_seam_membrane: false,
   outpaint_seam_membrane_band: 0,
   outpaint_seam_tone_strength: 0.0,
@@ -299,6 +302,9 @@ const OUTPAINT_OPTIONS_TAB_KEYS: Record<OutpaintOptionsTabId, (keyof OutpaintPan
     "outpaint_controlnet_guidance_end",
     "outpaint_controlnet_depth",
     "outpaint_controlnet_taper",
+    "outpaint_controlnet_corner_radius_px",
+    "outpaint_controlnet_corner_gate_radius_px",
+    "outpaint_controlnet_corner_gate_min",
   ],
   regional_prompt: [
     "region_prompt",
@@ -1598,6 +1604,40 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
               value={params.outpaint_controlnet_taper ?? 2.0}
               onChange={(e) => setParams({ ...params, outpaint_controlnet_taper: parseFloat(e.target.value) })}
             />
+            {params.outpaint_controlnet_mode === "crop_mask" && (
+              <>
+                <Slider
+                  label="Corner Residual Gate Radius (px)"
+                  min={0}
+                  max={64}
+                  step={2}
+                  value={params.outpaint_controlnet_corner_gate_radius_px ?? 0.0}
+                  onChange={(e) => setParams({ ...params, outpaint_controlnet_corner_gate_radius_px: parseFloat(e.target.value) })}
+                />
+                <Slider
+                  label="Corner Residual Gate Min"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={params.outpaint_controlnet_corner_gate_min ?? 1.0}
+                  onChange={(e) => setParams({ ...params, outpaint_controlnet_corner_gate_min: parseFloat(e.target.value) })}
+                />
+                <p className="text-xs text-gray-500 sm:col-span-2">
+                  Attenuates the ControlNet residual in a disk of this radius around each of the 4 placed-rect corners, down to the min value at the corner center. Edges away from corners keep full residual strength. Radius 0 = disabled.
+                </p>
+                <Slider
+                  label="Corner Conditioning Radius (px)"
+                  min={0}
+                  max={64}
+                  step={2}
+                  value={params.outpaint_controlnet_corner_radius_px ?? 0.0}
+                  onChange={(e) => setParams({ ...params, outpaint_controlnet_corner_radius_px: parseFloat(e.target.value) })}
+                />
+                <p className="text-xs text-gray-500 sm:col-span-2">
+                  Rounds the ControlNet conditioning's known/unknown boundary at each corner instead of a sharp 90-degree vertex. Only takes effect together with a nonzero edge feather. 0 = disabled.
+                </p>
+              </>
+            )}
           </div>
         )}
       </div>

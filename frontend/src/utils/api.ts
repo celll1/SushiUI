@@ -416,6 +416,12 @@ export interface OutpaintParams extends GenerationParams {
   outpaint_controlnet_guidance_end?: number;
   outpaint_controlnet_depth?: number;
   outpaint_controlnet_taper?: number;
+  // crop_mask mode only, opt-in. Corner conditioning rounding (Feature #3a,
+  // secondary lever) and per-corner residual gate (Feature #2, primary
+  // corner-seam fix). Defaults (0.0/0.0/1.0) = disabled = byte-identical.
+  outpaint_controlnet_corner_radius_px?: number;
+  outpaint_controlnet_corner_gate_radius_px?: number;
+  outpaint_controlnet_corner_gate_min?: number;
   // Harmonic boundary-offset membrane (post-decode): adjusts generated
   // pixels to meet the preserved boundary exactly; the preserved region
   // remains byte-identical. Distinct from outpaint_seam_fix (a per-edge
@@ -1808,6 +1814,9 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("outpaint_controlnet_guidance_end", String(paramsWithImages.outpaint_controlnet_guidance_end ?? 0.55));
   formData.append("outpaint_controlnet_depth", String(paramsWithImages.outpaint_controlnet_depth ?? 160));
   formData.append("outpaint_controlnet_taper", String(paramsWithImages.outpaint_controlnet_taper ?? 2.0));
+  formData.append("outpaint_controlnet_corner_radius_px", String(paramsWithImages.outpaint_controlnet_corner_radius_px ?? 0.0));
+  formData.append("outpaint_controlnet_corner_gate_radius_px", String(paramsWithImages.outpaint_controlnet_corner_gate_radius_px ?? 0.0));
+  formData.append("outpaint_controlnet_corner_gate_min", String(paramsWithImages.outpaint_controlnet_corner_gate_min ?? 1.0));
   // Harmonic boundary-offset membrane (post-decode); false = off
   formData.append("outpaint_seam_membrane", String(paramsWithImages.outpaint_seam_membrane ?? false));
   formData.append("outpaint_seam_membrane_band", String(paramsWithImages.outpaint_seam_membrane_band ?? 0));

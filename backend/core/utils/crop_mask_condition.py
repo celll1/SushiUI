@@ -58,6 +58,7 @@ def build_crop_mask_condition(
     canvas_size: Tuple[int, int],
     gray: float = 0.5,
     edge_feather_px: float = 0.0,
+    corner_radius_px: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Build the shared 4-ch outpaint conditioning + generate-side residual gate.
 
@@ -99,6 +100,22 @@ def build_crop_mask_condition(
             applied identically in training and inference (the no-skew contract
             this module exists to uphold) -- softening at inference alone against a
             model trained on hard edges is a measured no-op (D2 of the same doc).
+        corner_radius_px: opt-in (default 0.0 = disabled, byte-identical to the
+            pre-existing rectangular inward-distance field). When > 0, the
+            inward-distance field ``din`` used to build the known-mask ramp
+            (and, iff edge_feather_px > 0, the RGB fade) is replaced, ONLY in
+            each of the 4 rect corner squares, with a rounded-rect inward SDF
+            (quarter-circle fillet of this radius) instead of the sharp
+            per-axis min. This softens the geometric 90-degree VERTEX the
+            trained ControlNet conditions on -- a secondary, independent
+            lever to Feature #2's inference-side per-corner residual gate
+            (``outpaint_corner_gate.py``); this one changes what the CN is
+            TOLD, that one changes how much of its OUTPUT is trusted near a
+            corner. Clamped to 0.25 * the shorter rect side, same as
+            ``edge_feather_px``. The ``gate`` return is UNCHANGED (always the
+            hard rect) regardless of this parameter -- only the CN
+            conditioning geometry is rounded, never the self-supervised loss
+            weight map.
 
     Returns:
         (cond, gate):
@@ -142,6 +159,18 @@ def build_crop_mask_condition(
         dxi = np.minimum(xs - x0, (x1 - 1) - xs)      # per-axis inward dist
         dyi = np.minimum(ys - y0, (y1 - 1) - ys)
         din = np.minimum(dxi[None, :], dyi[:, None])  # (H,W); <0 outside rect
+        r = float(corner_radius_px)
+        if r > 0.0:
+            # Rounded-rect inward SDF, applied ONLY within each corner's
+            # r x r square (in the per-axis inward-distance space, i.e. the
+            # 4 quadrants nearest each of the 4 rect vertices). Elsewhere
+            # (edge-adjacent, non-corner) din is unchanged.
+            r = min(r, 0.25 * min(x1 - x0, y1 - y0))
+            DX = dxi[None, :]
+            DY = dyi[:, None]
+            in_corner = (DX < r) & (DY < r)
+            rounded = r - np.sqrt((r - DX) ** 2 + (r - DY) ** 2)
+            din = np.where(in_corner, rounded, din).astype(np.float32)
         feather = min(feather, 0.25 * min(x1 - x0, y1 - y0))  # guarantee a known core for small crops
         known = np.clip(din / max(feather, 1e-6), 0.0, 1.0).astype(np.float32)
 
@@ -218,6 +247,31 @@ def _self_test() -> None:
     # 3) Determinism: same inputs -> exact same output (pure function).
     cond_f2, gate_f2 = build_crop_mask_condition(image, rect, canvas_size, edge_feather_px=feather_px)
     assert np.array_equal(cond_f, cond_f2) and np.array_equal(gate_f, gate_f2), "must be a pure function of its inputs"
+
+    # 4) corner_radius_px=0.0 (default) must be byte-identical to no corner arg at all.
+    cond_f3, gate_f3 = build_crop_mask_condition(
+        image, rect, canvas_size, edge_feather_px=feather_px, corner_radius_px=0.0
+    )
+    assert np.array_equal(cond_f, cond_f3) and np.array_equal(gate_f, gate_f3), "corner_radius_px=0.0 must be a no-op"
+
+    # 5) corner_radius_px>0.0: gate is UNCHANGED (still the hard rect); the mask
+    #    channel ramp differs from the razor-corner version specifically in the
+    #    corner squares, and stays a monotonic rounded fillet (<=1, >=0).
+    corner_r = 6.0
+    cond_r, gate_r = build_crop_mask_condition(
+        image, rect, canvas_size, edge_feather_px=feather_px, corner_radius_px=corner_r
+    )
+    assert np.array_equal(gate_r, gate_ref), "gate must stay tied to the hard rect regardless of corner_radius_px"
+    assert cond_r[:, :, 3].min() >= 0.0 and cond_r[:, :, 3].max() <= 1.0, "rounded-corner mask ramp must stay in [0,1]"
+    # At the exact vertex pixel (din=0 on both axes -> rounded=r-sqrt(2)*r < 0 -> mask 0),
+    # the rounded-corner variant must differ from the sharp-corner variant's ramp there
+    # (evidence the corner override actually engaged).
+    assert not np.array_equal(cond_r[:, :, 3], cond_f[:, :, 3]), "corner_radius_px>0 must change the mask ramp vs the sharp-corner version"
+    # Determinism.
+    cond_r2, gate_r2 = build_crop_mask_condition(
+        image, rect, canvas_size, edge_feather_px=feather_px, corner_radius_px=corner_r
+    )
+    assert np.array_equal(cond_r, cond_r2) and np.array_equal(gate_r, gate_r2), "must be a pure function of its inputs"
 
     print("crop_mask_condition._self_test: OK")
 

@@ -746,6 +746,117 @@ def _offset_prop_taper_weights(n: int) -> np.ndarray:
     return 0.5 * (1.0 + np.cos(np.pi * i / (n - 1)))
 
 
+def _corner_edge_profile(
+    dlf_edge: np.ndarray,
+    dhf_edge: np.ndarray,
+    corner_idx: int,
+    w_lf_padded: np.ndarray,
+    w_hf_padded: np.ndarray,
+) -> np.ndarray:
+    """The 1D per-distance profile an edge strip WOULD have if it were
+    evaluated at a single fixed column/row (``corner_idx``, the sample
+    nearest the vertex shared with the corner quadrant) instead of varying
+    along the seam axis -- i.e. "the vertical/horizontal contribution that
+    edge strip would carry if extended past the rect corner". ``dlf_edge``/
+    ``dhf_edge`` are the edge's own full-length smoothed low/high-frequency
+    arrays (shape ``(rw_or_rh, 3)``); ``corner_idx`` selects the single
+    sample nearest the corner. ``w_lf_padded``/``w_hf_padded`` are
+    ``_offset_prop_taper_weights(n_lf)``/``(n_hf)`` zero-padded out to the
+    shared corner band length ``band_max = max(n_lf, n_hf)`` (mirrors the
+    edge strip's own ``w_lf[i]``/``w_hf[i]`` weighting, just reused at a
+    fixed sample instead of the full per-column/row array). Returns
+    ``(band_max, 3)`` float64.
+    """
+    dlf_c = dlf_edge[corner_idx].astype(np.float64)
+    dhf_c = dhf_edge[corner_idx].astype(np.float64)
+    return w_lf_padded[:, None] * dlf_c[None, :] + w_hf_padded[:, None] * dhf_c[None, :]
+
+
+def _coons_corner_grid(off_h: np.ndarray, off_v: np.ndarray, clamp_f: float) -> np.ndarray:
+    """Bilinear transfinite (Coons patch) interpolation filling a
+    ``(band_c, band_c, 3)`` diagonal corner quadrant from two 1D boundary
+    profiles: ``off_h(i)`` (the vertical continuation of the horizontal
+    edge -- top or bottom -- along the quadrant's shared row, indexed by
+    row-distance ``i`` from the vertex) and ``off_v(j)`` (the horizontal
+    continuation of the vertical edge -- left or right -- along the
+    quadrant's shared column, indexed by column-distance ``j`` from the
+    vertex).
+
+    Construction (standard Coons-patch closed form for a unit square with
+    two of its four boundary curves known and the other two/the far corner
+    approximated as 0, since both ``off_h``/``off_v`` already decay to
+    EXACTLY 0 at their last index by ``_offset_prop_taper_weights``'s
+    raised-cosine construction):
+
+        u = i / (band_c - 1), v = j / (band_c - 1)   (in [0, 1])
+        C0 = 0.5 * (off_h[0] + off_v[0])              (blended vertex value
+                                                         -- off_h[0] and
+                                                         off_v[0] are two
+                                                         INDEPENDENT
+                                                         measurements of the
+                                                         same physical
+                                                         corner, from the
+                                                         two different edge
+                                                         strips; C0 is their
+                                                         average)
+        off_h_adj[0], off_v_adj[0] := C0               (override the two
+                                                         edges' own corner
+                                                         sample with the
+                                                         shared blend, so
+                                                         the two boundary
+                                                         curves AGREE at the
+                                                         vertex -- a Coons
+                                                         patch only
+                                                         reproduces its
+                                                         boundary curves
+                                                         exactly when they
+                                                         agree at shared
+                                                         corners)
+        grid[i, j] = (1-v)*off_h_adj[i] + (1-u)*off_v_adj[j]
+                     - (1-u)*(1-v)*C0
+
+    This satisfies, BY CONSTRUCTION (elementary substitution, independent of
+    the actual data): ``grid[i, 0] == off_h_adj[i]`` for every ``i`` (exact
+    continuity with the horizontal edge's own continuation along the
+    quadrant's shared row) and ``grid[0, j] == off_v_adj[j]`` for every
+    ``j`` (exact continuity with the vertical edge's own continuation along
+    the quadrant's shared column) -- i.e. C0-continuous with BOTH adjacent
+    strips everywhere along the quadrant's two inner edges, with the single
+    unavoidable ambiguity (the two edges' independently-measured corner
+    samples disagreeing) resolved by averaging exactly at that one shared
+    vertex. As ``u, v -> 1`` (the outer corner of the quadrant, farthest
+    from the vertex) every term vanishes since ``off_h_adj``/``off_v_adj``
+    themselves reach 0 there, so the field decays to 0 outward, matching the
+    edges' own taper-to-0 behavior. A defensive final clamp to
+    ``+/- clamp_f`` is applied (the Coons blend is an affine, not convex,
+    combination of already-clamped inputs, so it is not algebraically
+    guaranteed to stay within bounds for all possible input configurations).
+
+    ``band_c == 1`` degenerates to a single cell equal to ``C0`` (the ``u``/
+    ``v`` normalization would divide by zero otherwise).
+    """
+    band_c = int(off_h.shape[0])
+    c0 = 0.5 * (off_h[0].astype(np.float64) + off_v[0].astype(np.float64))
+    if band_c <= 1:
+        grid = np.broadcast_to(c0, (max(band_c, 0), max(band_c, 0), 3)).copy()
+        return np.clip(grid, -clamp_f, clamp_f).astype(np.float32)
+
+    off_h_adj = off_h.astype(np.float64).copy()
+    off_h_adj[0] = c0
+    off_v_adj = off_v.astype(np.float64).copy()
+    off_v_adj[0] = c0
+
+    u = (np.arange(band_c, dtype=np.float64) / (band_c - 1))[:, None, None]  # (band_c, 1, 1), varies with i
+    v = (np.arange(band_c, dtype=np.float64) / (band_c - 1))[None, :, None]  # (1, band_c, 1), varies with j
+
+    grid = (
+        (1.0 - v) * off_h_adj[:, None, :]
+        + (1.0 - u) * off_v_adj[None, :, :]
+        - (1.0 - u) * (1.0 - v) * c0[None, None, :]
+    )
+    return np.clip(grid, -clamp_f, clamp_f).astype(np.float32)
+
+
 def apply_seam_offset_propagation(
     result_arr: np.ndarray,
     placed_arr: np.ndarray,
@@ -756,6 +867,7 @@ def apply_seam_offset_propagation(
     lf_rows: int = OFFSET_PROP_LF_ROWS_DEFAULT,
     hf_rows: int = OFFSET_PROP_HF_ROWS_DEFAULT,
     clamp: float = CLAMP_DEFAULT,
+    fill_corners: bool = False,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     """Apply the G_prop16 boundary-offset propagation to the GENERATED region
     of a decoded outpaint result.
@@ -772,9 +884,26 @@ def apply_seam_offset_propagation(
     -- into the generated pixels adjacent to that edge. Each edge's band
     strip spans only that edge's own extent along the seam axis (bottom/top
     over cols ``[x0, x1)``, left/right over rows ``[y0, y1)``), so the four
-    strips are geometrically disjoint and diagonal corners beyond the rect
+    strips are geometrically disjoint and, by default (``fill_corners=False``,
+    the byte-identical-preserving default), diagonal corners beyond the rect
     corners are not touched (mirrors ``apply_cross_seam_tone``'s edge
     generalization).
+
+    When ``fill_corners`` is True (opt-in), each of the (up to) four diagonal
+    corner quadrants beyond a rect vertex -- present only when BOTH of that
+    vertex's adjacent edges border generated content -- is ALSO filled, using
+    ``_coons_corner_grid`` to bilinearly blend the two adjacent edges' own
+    per-distance offset profiles (each edge's profile evaluated at the fixed
+    sample nearest the vertex, i.e. the vertical/horizontal contribution that
+    edge strip would carry if extended past the corner -- see
+    ``_corner_edge_profile``) so the quadrant is C0-continuous with BOTH
+    adjacent strips along its two inner edges and decays to 0 at its outer
+    corner. Each quadrant is the geometric complement of the four straight
+    edge strips (disjoint rows/cols from every strip and from the other three
+    quadrants by construction -- see the corner placement code below), so the
+    ``+=`` accumulation is never a double write. ``fill_corners=False`` (the
+    default) leaves this function's output bit-identical to its behavior
+    before this parameter existed.
 
     Args:
         result_arr: (H, W, 3) uint8, the DECODED generate result BEFORE the
@@ -794,6 +923,11 @@ def apply_seam_offset_propagation(
             top), exposed as arguments only for the self-test / offline
             sweep reproducibility -- not caller-configurable via the public
             API.
+        fill_corners: opt-in, default False. When True, also fills the
+            diagonal corner-quadrant tonal-step wedge left untreated by the
+            four straight edge strips (see above). Has no effect unless
+            ``strength > 0`` and at least one corner is present (both its
+            adjacent edges border generated content).
 
     Returns:
         ``(out_arr, info)`` where ``out_arr`` is (H, W, 3) uint8 (a copy of
@@ -802,7 +936,9 @@ def apply_seam_offset_propagation(
         pre-strength post-clamp peak |offset| across all processed edges --
         the strength-independent "clamp saturated" signal, mirrors
         ``apply_cross_seam_tone``'s ``max_abs_step``), ``large_correction``
-        (bool, ``max_abs_delta >= 0.9 * clamp``).
+        (bool, ``max_abs_delta >= 0.9 * clamp``), ``corners`` (list[str], the
+        corner quadrants that were filled -- always empty when
+        ``fill_corners`` is False).
 
     Never writes ``rect`` pixels: only band strips OUTSIDE the rect (the
     exact geometric complement) are ever written, and the rect crop is
@@ -816,6 +952,7 @@ def apply_seam_offset_propagation(
         "edges": [],
         "max_abs_delta": 0.0,
         "large_correction": False,
+        "corners": [],
     }
     out = np.array(result_arr, copy=True)
 
@@ -856,6 +993,13 @@ def apply_seam_offset_propagation(
     total_offset = np.zeros((H, W, 3), dtype=np.float32)
     clamped_deltas = []
     edges_applied = []
+    # Per-edge (dlf, dhf) full-length arrays, stashed only when
+    # `fill_corners` is set -- consumed below by the corner-quadrant fill,
+    # which needs each edge's own smoothed low/high-frequency profile at the
+    # single sample nearest a given vertex (see `_corner_edge_profile`).
+    # `None` unless populated, so a corner whose adjacent edge never applied
+    # (e.g. an edge flush with the canvas) is correctly skipped.
+    edge_dlf_dhf: Dict[str, Tuple[np.ndarray, np.ndarray]] = {}
 
     if flags["bottom"] and y1 < H:
         band = min(max(n_lf, n_hf), H - y1)
@@ -869,6 +1013,8 @@ def apply_seam_offset_propagation(
                 total_offset[y1 + i, x0:x1, :] += w_hf[i] * dhf * strength_f
             clamped_deltas.append(delta_c)
             edges_applied.append("bottom")
+            if fill_corners:
+                edge_dlf_dhf["bottom"] = (dlf, dhf)
 
     if flags["top"] and y0 > 0:
         band = min(max(n_lf, n_hf), y0)
@@ -882,6 +1028,8 @@ def apply_seam_offset_propagation(
                 total_offset[y0 - 1 - i, x0:x1, :] += w_hf[i] * dhf * strength_f
             clamped_deltas.append(delta_c)
             edges_applied.append("top")
+            if fill_corners:
+                edge_dlf_dhf["top"] = (dlf, dhf)
 
     if flags["left"] and x0 > 0:
         band = min(max(n_lf, n_hf), x0)
@@ -895,6 +1043,8 @@ def apply_seam_offset_propagation(
                 total_offset[y0:y1, x0 - 1 - i, :] += w_hf[i] * dhf * strength_f
             clamped_deltas.append(delta_c)
             edges_applied.append("left")
+            if fill_corners:
+                edge_dlf_dhf["left"] = (dlf, dhf)
 
     if flags["right"] and x1 < W:
         band = min(max(n_lf, n_hf), W - x1)
@@ -908,9 +1058,91 @@ def apply_seam_offset_propagation(
                 total_offset[y0:y1, x1 + i, :] += w_hf[i] * dhf * strength_f
             clamped_deltas.append(delta_c)
             edges_applied.append("right")
+            if fill_corners:
+                edge_dlf_dhf["right"] = (dlf, dhf)
 
     if not edges_applied:
         return out, info
+
+    corners_applied: list = []
+    if fill_corners:
+        # Corner-quadrant fill (opt-in): the diagonal wedge beyond a rect
+        # vertex, present only when BOTH of that vertex's adjacent edges
+        # applied above. Geometrically disjoint from all four edge strips
+        # and from the other three quadrants by construction (each quadrant's
+        # row range is entirely >= y1 or entirely < y0, and its col range is
+        # entirely >= x1 or entirely < x0, whereas every edge strip's row OR
+        # col range is [y0, y1) / [x0, x1) -- the rect's own extent), so the
+        # `+=` below never double-writes a cell any edge strip (or another
+        # corner) already wrote.
+        band_max = max(n_lf, n_hf)
+        w_lf_padded = np.zeros(band_max, dtype=np.float64)
+        w_lf_padded[:n_lf] = w_lf
+        w_hf_padded = np.zeros(band_max, dtype=np.float64)
+        w_hf_padded[:n_hf] = w_hf
+
+        def _fill_one_corner(
+            name: str,
+            h_edge: str,
+            v_edge: str,
+            h_col_idx: int,
+            v_row_idx: int,
+            avail_rows: int,
+            avail_cols: int,
+            row_base: int,
+            row_step: int,
+            col_base: int,
+            col_step: int,
+        ) -> None:
+            if h_edge not in edge_dlf_dhf or v_edge not in edge_dlf_dhf:
+                return
+            band_c = min(band_max, avail_rows, avail_cols)
+            if band_c <= 0:
+                return
+            dlf_h, dhf_h = edge_dlf_dhf[h_edge]
+            dlf_v, dhf_v = edge_dlf_dhf[v_edge]
+            off_h = _corner_edge_profile(dlf_h, dhf_h, h_col_idx, w_lf_padded[:band_c], w_hf_padded[:band_c])
+            off_v = _corner_edge_profile(dlf_v, dhf_v, v_row_idx, w_lf_padded[:band_c], w_hf_padded[:band_c])
+            corner_grid = _coons_corner_grid(off_h, off_v, clamp_f)  # (band_c, band_c, 3), [i, j] = row/col distance
+            # Row `i` (distance from the vertex row) maps to canvas row
+            # `row_base + row_step * i`; row_step is +1 (bottom corners,
+            # rows increase downward away from y1) or -1 (top corners, rows
+            # decrease upward away from y0). Same pattern for columns.
+            if row_step >= 0:
+                rows = slice(row_base, row_base + band_c)
+                grid_rows = corner_grid
+            else:
+                rows = slice(row_base - band_c + 1, row_base + 1)
+                grid_rows = corner_grid[::-1, :, :]
+            if col_step >= 0:
+                cols = slice(col_base, col_base + band_c)
+                grid_full = grid_rows
+            else:
+                cols = slice(col_base - band_c + 1, col_base + 1)
+                grid_full = grid_rows[:, ::-1, :]
+            total_offset[rows, cols, :] += grid_full * strength_f
+            corners_applied.append(name)
+
+        _fill_one_corner(
+            "bottom_right", "bottom", "right", rw - 1, rh - 1,
+            avail_rows=H - y1, avail_cols=W - x1,
+            row_base=y1, row_step=1, col_base=x1, col_step=1,
+        )
+        _fill_one_corner(
+            "bottom_left", "bottom", "left", 0, rh - 1,
+            avail_rows=H - y1, avail_cols=x0,
+            row_base=y1, row_step=1, col_base=x0 - 1, col_step=-1,
+        )
+        _fill_one_corner(
+            "top_right", "top", "right", rw - 1, 0,
+            avail_rows=y0, avail_cols=W - x1,
+            row_base=y0 - 1, row_step=-1, col_base=x1, col_step=1,
+        )
+        _fill_one_corner(
+            "top_left", "top", "left", 0, 0,
+            avail_rows=y0, avail_cols=x0,
+            row_base=y0 - 1, row_step=-1, col_base=x0 - 1, col_step=-1,
+        )
 
     g = out.astype(np.float32)
     corrected = np.clip(np.round(g + total_offset), 0, 255).astype(np.uint8)
@@ -924,6 +1156,7 @@ def apply_seam_offset_propagation(
 
     info["applied"] = True
     info["edges"] = edges_applied
+    info["corners"] = corners_applied
     if clamped_deltas:
         info["max_abs_delta"] = float(np.max([np.max(np.abs(d)) for d in clamped_deltas]))
         info["large_correction"] = info["max_abs_delta"] >= 0.9 * clamp_f
@@ -1040,3 +1273,65 @@ if __name__ == "__main__":
 
     print(f"[seam_offset_propagation self-test] OK: rect byte-exact, boundary jump "
           f"{op_pre_jump:.3f} -> {op_post_jump:.3f}, meta={op_meta}")
+
+    # --- G_prop16 corner-quadrant fill self-test (opt-in) -------------------
+    # (a) rect byte-exact with corners on; (b) fill_corners=False (the
+    # default) leaves every corner quadrant bit-identical to the untreated
+    # pre-correction result (mirrors the module's pre-existing documented
+    # behavior); (c) a synthetic corner tonal step is reduced with corners
+    # on; (d) the corner fill respects `clamp`.
+    op_band_max = max(OFFSET_PROP_LF_ROWS_DEFAULT, OFFSET_PROP_HF_ROWS_DEFAULT)
+
+    op_out_off, op_meta_off = apply_seam_offset_propagation(
+        op_result, op_placed, op_rect, (op_W, op_H), fill_corners=False,
+    )
+    assert op_meta_off["corners"] == [], "fill_corners=False must leave corners untouched"
+    for _cy, _cx in ((oy1, ox1), (oy1, ox0 - op_band_max), (oy0 - op_band_max, ox1), (oy0 - op_band_max, ox0 - op_band_max)):
+        _region_off = op_out_off[_cy:_cy + op_band_max, _cx:_cx + op_band_max]
+        _region_pre = op_result[_cy:_cy + op_band_max, _cx:_cx + op_band_max]
+        assert np.array_equal(_region_off, _region_pre), \
+            "(b) fill_corners=False must be bit-identical to the untreated corner quadrant (no regression pre-change)"
+
+    op_out_on, op_meta_on = apply_seam_offset_propagation(
+        op_result, op_placed, op_rect, (op_W, op_H), fill_corners=True,
+    )
+    assert np.array_equal(op_out_on[oy0:oy1, ox0:ox1], op_result[oy0:oy1, ox0:ox1]), \
+        "(a) corner fill must never modify rect pixels"
+    assert set(op_meta_on["corners"]) == {"bottom_right", "bottom_left", "top_right", "top_left"}
+
+    # (c) diagonal corner jump reduced: op_result carries a UNIFORM bias
+    # (-10) relative to `placed` everywhere, including the corner-diagonal
+    # pixel immediately beyond the vertex (oy1, ox1) -- a pixel neither the
+    # bottom strip (cols restricted to [x0, x1)) nor the right strip (rows
+    # restricted to [y0, y1)) ever writes, so it stays at the untreated bias
+    # unless the corner fill reaches it.
+    op_corner_pre_jump = float(np.mean(np.abs(
+        op_result[oy1, ox1, :].astype(np.float32) - op_placed[-1, -1, :].astype(np.float32)
+    )))
+    op_corner_off_jump = float(np.mean(np.abs(
+        op_out_off[oy1, ox1, :].astype(np.float32) - op_placed[-1, -1, :].astype(np.float32)
+    )))
+    op_corner_on_jump = float(np.mean(np.abs(
+        op_out_on[oy1, ox1, :].astype(np.float32) - op_placed[-1, -1, :].astype(np.float32)
+    )))
+    assert abs(op_corner_off_jump - op_corner_pre_jump) < 1e-3, \
+        "fill_corners=False must leave the diagonal corner pixel unchanged"
+    assert op_corner_on_jump < op_corner_off_jump, \
+        f"(c) expected corner-diagonal jump reduced: off={op_corner_off_jump} on={op_corner_on_jump}"
+
+    # (d) clamp respected: every corner-quadrant offset actually applied must
+    # stay within +/- CLAMP_DEFAULT (the same bound the edge strips honor).
+    op_corner_diff = np.abs(op_out_on[oy0 - op_band_max:oy1 + op_band_max, ox0 - op_band_max:ox1 + op_band_max].astype(np.int16)
+                             - op_result[oy0 - op_band_max:oy1 + op_band_max, ox0 - op_band_max:ox1 + op_band_max].astype(np.int16))
+    assert op_corner_diff.max() <= CLAMP_DEFAULT + 1, \
+        f"(d) corner fill exceeded the clamp bound: max |delta|={op_corner_diff.max()}"
+
+    op_out_on_zero, op_meta_on_zero = apply_seam_offset_propagation(
+        op_result, op_placed, op_rect, (op_W, op_H), strength=0.0, fill_corners=True,
+    )
+    assert np.array_equal(op_out_on_zero, op_result), "strength=0 must be an exact no-op even with fill_corners=True"
+    assert not op_meta_on_zero["applied"]
+
+    print(f"[seam_offset_propagation corner-fill self-test] OK: rect byte-exact, corners-off matches "
+          f"untreated ({op_corner_off_jump:.3f}), corner-diagonal jump {op_corner_pre_jump:.3f} -> "
+          f"{op_corner_on_jump:.3f} with fill_corners=True, meta={op_meta_on}")

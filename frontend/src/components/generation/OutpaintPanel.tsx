@@ -155,6 +155,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_seam_tone_strength: 0.0,
   outpaint_seam_tone_band: 0,
   outpaint_seam_offset_prop: 1.0,
+  outpaint_seam_offset_prop_corners: false,
   outpaint_boundary_color_strength: 0.25,
   outpaint_resample_count: 1,
   outpaint_jump_length: 4,
@@ -323,6 +324,7 @@ const OUTPAINT_OPTIONS_TAB_KEYS: Record<OutpaintOptionsTabId, (keyof OutpaintPan
     "outpaint_seam_tone_strength",
     "outpaint_seam_tone_band",
     "outpaint_seam_offset_prop",
+    "outpaint_seam_offset_prop_corners",
     "outpaint_paste_feather_px",
     "outpaint_preserve_mode",
   ],
@@ -1822,6 +1824,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
           <p className="text-xs text-gray-500">
             Measures the offset between the preserved rectangle&apos;s own pixels and the decoded reconstruction of that same region, and writes it directly into the generated pixels adjacent to the seam as a low-frequency term plus a short high-frequency residual term, each tapered to zero moving away from the seam.
             Writes only generated-side pixels; the preserved rectangle stays byte-identical. Runs after the cross-seam tone membrane above and before the final unconditional paste.
+            Optionally also fills the diagonal corner quadrants beyond the rectangle's vertices, a wedge the straight-edge propagation never writes on its own.
           </p>
           <Slider
             label="Strength (0 = off)"
@@ -1831,6 +1834,21 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             value={params.outpaint_seam_offset_prop ?? 1.0}
             onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop: parseFloat(e.target.value) })}
           />
+          {(params.outpaint_seam_offset_prop ?? 1.0) > 0 && (
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="outpaint_seam_offset_prop_corners"
+                checked={params.outpaint_seam_offset_prop_corners ?? false}
+                onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop_corners: e.target.checked })}
+                disabled={isGenerating}
+                className="w-4 h-4"
+              />
+              <label htmlFor="outpaint_seam_offset_prop_corners" className="text-sm text-gray-300">
+                Fill corner quadrants
+              </label>
+            </div>
+          )}
         </div>
 
         {/* Paste-band reconciliation feather ("Option E"): at the final

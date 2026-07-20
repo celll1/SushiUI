@@ -1436,7 +1436,7 @@ def _bdr_omega(sigma_i: float, sigma_F: float, sigma_E: float) -> float:
 
 
 def _bdr_apply(x0_hat, mask_latent, image_latents, state, noise, strength, noise_frac,
-               sigma_i, omega, visit_count, strip_floor=False):
+               sigma_i, omega, visit_count, strip_floor=False, pin_corner_w=None):
     """Per-step BDR soft/noised keep-band projection, REPLACING the hard B1
     projection ``x0_proj = (1-M)*K + M*x0_hat``. Keyed on the LOGICAL step via
     the caller's ``omega`` (0 => this reduces to the hard projection). ``noise``
@@ -1448,6 +1448,11 @@ def _bdr_apply(x0_hat, mask_latent, image_latents, state, noise, strength, noise
     soft (>=0.3 of the MEAN-freedom term) even late, so their latent holds the
     model's bridged rendering for the feathered paste (the noise term still
     decays with sigma). Off the strip the per-cell weight is the scalar omega.
+    ``pin_corner_w`` (L1 four-corner x0-pin softening, latent-res [1,1,h,w] or
+    None): additionally scales the OUTER keep/gen split (mask_latent) down in
+    small disks at the 4 rect vertices, on top of BDR's own soft-pin blend
+    (``known``) -- it does not touch BDR's internal soft-pin strength/noise
+    math. None (default) is byte-identical to before this parameter existed.
     """
     b = state["b"]; s_c = state["s_c"]
     vc = max(int(visit_count), 1)
@@ -1467,7 +1472,10 @@ def _bdr_apply(x0_hat, mask_latent, image_latents, state, noise, strength, noise
     dev = known - image_latents
     dev = torch.clamp(dev, -4.0 * s_c, 4.0 * s_c)
     known = image_latents + dev
-    return (1 - mask_latent) * known + mask_latent * x0_hat
+    if pin_corner_w is None:
+        return (1 - mask_latent) * known + mask_latent * x0_hat
+    _bdr_eff_keep = (1 - mask_latent) * pin_corner_w
+    return _bdr_eff_keep * known + (1 - _bdr_eff_keep) * x0_hat
 
 
 # ============================================================================
@@ -4375,6 +4383,15 @@ def custom_inpaint_sampling_loop(
                                         # ControlNet residuals in the CN block below (RESIDUAL MASKING),
                                         # area-resized to each residual's own shape. None (default) = the
                                         # mechanism is fully inert -- byte-identical to before this feature.
+    outpaint_pin_corner_relax: Optional[np.ndarray] = None,  # L1 FOUR-CORNER X0-PIN SOFTENING
+                                        # (scratchpad/outpaint_seam_diagnosis.md): canvas-size [H,W]
+                                        # float32 field (core.utils.outpaint_corner_gate.build_corner_gate)
+                                        # that softens the per-step x0-pin composite's keep-weight in small
+                                        # disks at the 4 rect vertices only, area-resized to latent
+                                        # resolution. None (default) = fully inert -- every pin-composite
+                                        # site below takes the exact original expression, byte-identical to
+                                        # before this feature existed. The preserved rect stays byte-exact
+                                        # regardless via the final byte-exact paste.
     outpaint_preview_unpinned_x0: bool = False,  # HONEST OUTPAINT PREVIEW (display-only; scratchpad/
                                         # outpaint_seam_latent_stage.md section 4.1 Phase 2): when True AND
                                         # outpaint_noise_init is True, the mid-sampling preview callback is
@@ -4767,6 +4784,44 @@ def custom_inpaint_sampling_loop(
         size=(init_latents.shape[-2], init_latents.shape[-1]),
         mode="nearest"
     )
+
+    # L1 FOUR-CORNER X0-PIN SOFTENING (scratchpad/outpaint_seam_diagnosis.md):
+    # area-resize the canvas-pixel corner field to mask_latent's own [-2:]
+    # spatial shape ONCE, matching the outpaint ControlNet gate's own
+    # per-shape resize pattern above. None (default, outpaint_pin_corner_relax
+    # not supplied) leaves _pin_corner_w_latent as None, and every pin-
+    # composite site below takes its exact original expression -- this
+    # mechanism is fully inert and byte-identical unless explicitly enabled.
+    _pin_corner_w_latent = None
+    if outpaint_pin_corner_relax is not None:
+        _pin_corner_w_latent = torch.nn.functional.interpolate(
+            torch.from_numpy(
+                np.ascontiguousarray(outpaint_pin_corner_relax, dtype=np.float32)
+            )[None, None].to(device=mask_latent.device),
+            size=(mask_latent.shape[-2], mask_latent.shape[-1]),
+            mode="area",
+        ).to(dtype=mask_latent.dtype)
+
+    def _pin_relax(keep_mask: torch.Tensor, gen_val: torch.Tensor) -> torch.Tensor:
+        """Shared x0-pin composite for ALL pin-composite call sites below.
+        Default (``_pin_corner_w_latent`` is None) takes the EXACT original
+        expression ``(1 - keep_mask) * image_latents + keep_mask * gen_val``
+        -- byte-identical, no multiply-by-ones. When the corner field is
+        supplied, the keep-weight is additionally scaled down by the field in
+        the 4 corner disks only (``eff_keep = (1 - keep_mask) * corner_w``),
+        which softens the pin there without touching the straight edges
+        (corner_w == 1.0 away from the corners). ``keep_mask`` may be
+        mask_latent itself or a derived keep-mask (e.g. the BDR final-visit
+        ``_fv_mask``); ``gen_val`` is the value pinned INTO the generate
+        region (x0_hat / latents / pred_original_sample). Relies on
+        ``image_latents`` being assigned in the enclosing scope by the time
+        this is first called (it always is -- this closure is only invoked
+        from inside the per-step denoise loop, well after the
+        ``image_latents = init_latents.clone()`` assignment below)."""
+        if _pin_corner_w_latent is None:
+            return (1 - keep_mask) * image_latents + keep_mask * gen_val
+        eff_keep = (1 - keep_mask) * _pin_corner_w_latent
+        return eff_keep * image_latents + (1 - eff_keep) * gen_val
 
     # REGIONAL ADDITIONAL PROMPT (STAGE R1): `region_prompt_requested` is the
     # activation condition (region_prompt_strength > 0 AND at least one region
@@ -6437,11 +6492,12 @@ def custom_inpaint_sampling_loop(
                         boundary_relax_strength, boundary_relax_noise,
                         _bdr_sigma_i, _bdr_om, _bdr_visit_counts.get(i, 1),
                         strip_floor=_bdr_feather,
+                        pin_corner_w=_pin_corner_w_latent,
                     )
                 else:
-                    x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
+                    x0_proj = _pin_relax(mask_latent, x0_hat)
             else:
-                x0_proj = (1 - mask_latent) * image_latents + mask_latent * x0_hat
+                x0_proj = _pin_relax(mask_latent, x0_hat)
 
             if _outpaint_collar_weight_map is not None:
                 # Low-frequency boundary color proximal (design doc section
@@ -6577,9 +6633,9 @@ def custom_inpaint_sampling_loop(
                     _fv_mask = mask_latent
                     if _bdr_state is not None and boundary_relax_paste == "feather" and "strip" in _bdr_state:
                         _fv_mask = torch.maximum(mask_latent, _bdr_state["strip"])
-                    latents = (1 - _fv_mask) * image_latents + _fv_mask * latents
+                    latents = _pin_relax(_fv_mask, latents)
                 if pred_original_sample is not None:
-                    pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
+                    pred_original_sample = _pin_relax(mask_latent, pred_original_sample)
             else:
                 init_latents_proper = image_latents  # Use clean original image latents
 
@@ -6616,7 +6672,11 @@ def custom_inpaint_sampling_loop(
                 # Apply same mask blending to pred_original_sample for consistent x0 preview
                 # Without this, the preview shows unblended generation (incorrect outside mask area)
                 if pred_original_sample is not None:
-                    pred_original_sample = (1 - mask_latent) * image_latents + mask_latent * pred_original_sample
+                    # Exact mirror of the outpaint_noise_init branch's preview-consistency
+                    # pin above -- reachable for outpaint when outpaint_noise_init is
+                    # False (denoising_strength < 1.0), so _pin_relax is applied here too
+                    # for correctness (still byte-identical when the field is None).
+                    pred_original_sample = _pin_relax(mask_latent, pred_original_sample)
 
         # Reset debug flag after first iteration
         if first_iteration_debug:

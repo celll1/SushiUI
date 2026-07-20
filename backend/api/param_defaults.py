@@ -602,6 +602,20 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # (see outpaint_controlnet_corner_gate_radius_px above). 1.0 (default) =
     # no dip = disabled regardless of the radius.
     "outpaint_controlnet_corner_gate_min": 1.0,
+    # "crop_mask" mode only: L1 four-corner x0-pin softening
+    # (scratchpad/outpaint_seam_diagnosis.md). Softens the PER-STEP x0-pin
+    # composite's keep-weight (NOT the CN residual gate above -- a different
+    # mechanism) in a disk of this radius (canvas px) around each of the 4
+    # placed-rect vertices, down to outpaint_pin_corner_relax_min at the
+    # vertex center; the rect EDGES (away from corners) keep the full hard
+    # pin. Blunts the re-entrant-corner latent seed that the hard rectangular
+    # mask re-stamps every step (image_latents is fixed across all steps),
+    # which the CN's structure-completion regime otherwise extends into a
+    # seam line. 0.0/1.0 (default) = disabled = byte-identical; the preserved
+    # rect stays byte-exact regardless via the final byte-exact paste, so this
+    # only relaxes the intermediate latent trajectory near the corners.
+    "outpaint_pin_corner_relax_radius_px": 0.0,
+    "outpaint_pin_corner_relax_min": 1.0,
 }
 
 # ---------------------------------------------------------------------------

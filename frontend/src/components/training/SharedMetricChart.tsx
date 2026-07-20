@@ -253,32 +253,44 @@ export default function SharedMetricChart({
     return out;
   }, [visibleSeries, xRange, xMin, xMax]);
 
-  // Y scale (pool primary series through the percentile calc; rawRange series are
-  // forced fully visible via raw min/max, and dashed-but-not-rawRange series
-  // (secondary/aux-loss overlays, e.g. Recon/Gen region/Known region/Seam on the
-  // Loss chart) are excluded from the pool entirely so the axis tracks the
-  // primary series' own (smoothed) range instead of being diluted by unrelated
-  // aux metrics living on a different scale — they still render, just clipping
-  // out of frame if they exceed the primary-derived range. If NO non-dashed
-  // series remain visible (e.g. the primary was hidden via the legend), fall
-  // back to pooling the dashed series so the axis doesn't collapse to a flat
-  // yMinFloor..yMinFloor+1 default.
+  // Y scale (pool all visible series' SMOOTHED values through the percentile
+  // calc; only rawRange series are forced fully visible via raw min/max).
+  //
+  // Design history / trade-off (do not re-litigate without re-reading this):
+  //  - Pre-82e76105: dashed aux-loss series (Recon/Gen region/Known region/Seam
+  //    on the Loss chart) were forced into `mustInclude` using their RAW spike
+  //    values — that pinned the axis top to the largest raw spike and crushed
+  //    the primary Loss trend into the bottom ~15% of the frame.
+  //  - A same-day follow-up tried excluding dashed series from the pool
+  //    entirely (axis = primary series only). That over-corrected: with the
+  //    axis tight around Loss alone, the aux series (living on a visibly
+  //    higher scale, e.g. ~0.1-0.19 vs Loss's ~0.02-0.07) clip almost
+  //    entirely out of frame, and their un-smoothed noise (see the raw ghost
+  //    line below) repeatedly pokes across the top edge — a dense noisy band
+  //    that buries the Loss curve it was meant to protect.
+  //  - Current: pool every visible series' SMOOTHED values together (dashed
+  //    included, exactly like solid series) — matches what 82e76105 shipped.
+  //    This keeps the axis wide enough that aux series mostly stay in frame
+  //    (so they don't fragment into a noisy clipped band), while still
+  //    tracking the smoothing slider (unlike raw pooling) since every input
+  //    to the percentile calc is smoothed once smoothing > 0. It won't track
+  //    the slider as tightly as a single-series chart (Tagger) — that's the
+  //    accepted trade-off for a 5-series chart with heterogeneous scales.
   const { primaryVals, mustInclude } = useMemo(() => {
     const prim: number[] = [];
-    const dashedFallback: number[] = [];
     const must: number[] = [];
     for (const s of visibleSeries) {
       const sm = visibleSmoothed.get(s.id) ?? [];
       const rw = visibleRaw.get(s.id) ?? [];
       if (s.rawRange) {
         for (const p of rw) must.push(p.value);
-        continue;
+      } else if (smoothing > 0 && sm.length > 0) {
+        for (const p of sm) prim.push(p.value);
+      } else {
+        for (const p of rw) prim.push(p.value);
       }
-      const vals = smoothing > 0 && sm.length > 0 ? sm : rw;
-      const target = s.dashed ? dashedFallback : prim;
-      for (const p of vals) target.push(p.value);
     }
-    return { primaryVals: prim.length > 0 ? prim : dashedFallback, mustInclude: must };
+    return { primaryVals: prim, mustInclude: must };
   }, [visibleSeries, visibleSmoothed, visibleRaw, smoothing]);
 
   // Memoized: robustYRange sorts the pooled array (O(n log n)). Without this,
@@ -545,12 +557,19 @@ export default function SharedMetricChart({
               </g>
             ))}
 
-            {/* Series lines. When smoothing is on, the raw values are drawn faintly
-                behind the smoothed line (so the actual noise is still visible). */}
-            {smoothing > 0 && visibleSeries.map((s) => (
+            {/* Series lines. When smoothing is on, the raw values of PRIMARY
+                (non-dashed) series are drawn faintly behind the smoothed line
+                so the actual noise is still visible. Dashed aux-loss overlays
+                (Recon/Gen region/Known region/Seam on the Loss chart) skip the
+                raw ghost: they typically live on a different scale than the
+                primary series, so their unsmoothed noise repeatedly pokes
+                across the Y-range boundary and reads as a dense noisy band
+                rather than a legible line — the smoothed dashed line alone is
+                enough context for an overlay metric. */}
+            {smoothing > 0 && visibleSeries.filter((s) => !s.dashed).map((s) => (
               <path key={`${s.id}-raw`} d={buildPath(s.points.map((p) => ({ step: p.step, value: p.value })))}
                 fill="none" stroke={s.color} strokeWidth={1}
-                strokeDasharray={s.dashed ? "4 3" : undefined} opacity={0.22} />
+                opacity={0.22} />
             ))}
             {visibleSeries.map((s) => {
               const pts = (smoothing > 0 ? (smoothedSeries.get(s.id) ?? []) : s.points.map((p) => ({ step: p.step, value: p.value })));

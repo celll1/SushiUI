@@ -7240,6 +7240,23 @@ components:
                 unconditional paste. Scales the applied offset; 0 = off (the
                 module is not imported).
               example: 1.0
+            outpaint_seam_offset_prop_corners:
+              type: boolean
+              default: false
+              description: |
+                Corner-quadrant fill for `outpaint_seam_offset_prop` (opt-in).
+                The straight-edge propagation above deliberately never writes
+                the diagonal wedge beyond a rectangle vertex (present only
+                when both of that vertex's adjacent edges border generated
+                content), which can leave a residual tonal step at the four
+                corners. When true, that wedge is also filled with a
+                bilinear blend of the two adjacent edges' own offset
+                profiles, continuous with both along the quadrant's inner
+                edges and decaying to zero outward. Only has an effect when
+                `outpaint_seam_offset_prop` is greater than 0. False
+                (default) = off, byte-identical to the straight-edge-only
+                behavior.
+              example: false
             outpaint_paste_feather_px:
               type: integer
               default: 0

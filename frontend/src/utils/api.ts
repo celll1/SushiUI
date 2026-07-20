@@ -449,6 +449,12 @@ export interface OutpaintParams extends GenerationParams {
   // generated pixels adjacent to the seam. Writes only generated-side
   // pixels; the preserved region is unaffected. 0 = off (byte-identical).
   outpaint_seam_offset_prop?: number;
+  // Corner-quadrant fill for outpaint_seam_offset_prop (opt-in): the
+  // straight-edge propagation above never writes the diagonal wedge beyond
+  // a rect vertex; when true, that wedge is also filled with a bilinear
+  // blend of the two adjacent edges' own offset profiles. Only has an
+  // effect when outpaint_seam_offset_prop > 0. False = off (byte-identical).
+  outpaint_seam_offset_prop_corners?: boolean;
   // B1 continuity fix (SD/SDXL only): weak low-frequency color/illumination
   // correction applied to the generate region only, within a narrow collar
   // near the preserved rect's boundary, active mid/late in the schedule.
@@ -1833,6 +1839,8 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("outpaint_seam_tone_band", String(paramsWithImages.outpaint_seam_tone_band ?? 0));
   // Boundary-offset propagation ("G_prop16", post-decode); 0 = off (byte-identical, generated-side-only)
   formData.append("outpaint_seam_offset_prop", String(paramsWithImages.outpaint_seam_offset_prop ?? 1.0));
+  // Corner-quadrant fill for the boundary-offset propagation above (opt-in); false = off (byte-identical)
+  formData.append("outpaint_seam_offset_prop_corners", String(paramsWithImages.outpaint_seam_offset_prop_corners ?? false));
   // In-loop continuity fixes B1/B2/B3 (SD/SDXL only)
   formData.append("outpaint_boundary_color_strength", String(paramsWithImages.outpaint_boundary_color_strength ?? 0.25));
   formData.append("outpaint_resample_count", String(paramsWithImages.outpaint_resample_count ?? 1));

@@ -577,6 +577,31 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # byte-faithful to it. Flip this to the training-range midpoint (e.g. 12.0)
     # ONLY once an R1-retrained (soft-edge) crop_mask CN becomes the live model.
     "outpaint_controlnet_edge_feather_px": 0.0,
+    # "crop_mask" mode only: opt-in rounded-corner CN conditioning geometry
+    # (Feature #3a, secondary lever). Passed as corner_radius_px to
+    # build_crop_mask_condition; only takes effect when
+    # outpaint_controlnet_edge_feather_px > 0.0 (it rounds the same inward
+    # distance field the feather ramp is built from). Softens the 90-degree
+    # VERTEX the CN's own conditioning shows it -- a companion to the
+    # inference-side outpaint_controlnet_corner_gate_* pair below, which
+    # instead attenuates the CN's OUTPUT near a corner. 0.0 (default) =
+    # byte-identical to before this feature existed.
+    "outpaint_controlnet_corner_radius_px": 0.0,
+    # "crop_mask" mode only: per-corner ControlNet residual gate (Feature #2,
+    # PRIMARY fix for the corner seam line; see H1 vertex-feature-lock,
+    # core.utils.outpaint_corner_gate). Attenuates the CN residual ONLY in a
+    # disk of this radius (canvas px) around each of the 4 placed-rect
+    # vertices, down to outpaint_controlnet_corner_gate_min at the vertex
+    # center; the rect EDGES (away from corners) stay at full CN residual
+    # strength for cross-boundary continuation. 0.0 (default, paired with
+    # outpaint_controlnet_corner_gate_min's default of 1.0) = the gate field
+    # is never built and outpaint_controlnet_gate is left unset (None) for
+    # crop_mask mode, exactly as before this feature existed.
+    "outpaint_controlnet_corner_gate_radius_px": 0.0,
+    # "crop_mask" mode only: the gate VALUE at each vertex center, in [0, 1]
+    # (see outpaint_controlnet_corner_gate_radius_px above). 1.0 (default) =
+    # no dip = disabled regardless of the radius.
+    "outpaint_controlnet_corner_gate_min": 1.0,
 }
 
 # ---------------------------------------------------------------------------

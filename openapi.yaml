@@ -7096,6 +7096,48 @@ components:
                 feather-range midpoint only once an R1-retrained (soft-edge) CN
                 becomes the live model.
               example: 0.0
+            outpaint_controlnet_corner_radius_px:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              description: |
+                crop_mask mode only, opt-in (Feature #3a, secondary lever):
+                rounds the ControlNet conditioning's known/unknown boundary
+                at each of the 4 rect corners with this radius (canvas px)
+                instead of a sharp 90-degree vertex, softening what the
+                ControlNet is TOLD near a corner. Only takes effect when
+                `outpaint_controlnet_edge_feather_px` > 0.0. Clamped to 25%
+                of the shorter placed-rect side. 0.0 (default) = disabled,
+                byte-identical to before this feature existed.
+              example: 0.0
+            outpaint_controlnet_corner_gate_radius_px:
+              type: number
+              default: 0.0
+              minimum: 0.0
+              description: |
+                crop_mask mode only, opt-in (Feature #2, primary fix for the
+                rect-corner seam line): attenuates the ControlNet residual
+                in a disk of this radius (canvas px) around each of the 4
+                placed-rect vertices, down to
+                `outpaint_controlnet_corner_gate_min` at the vertex center;
+                the rect edges away from corners keep full residual
+                strength. Clamped to 25% of the shorter placed-rect side.
+                0.0 (default, paired with `outpaint_controlnet_corner_gate_min`
+                defaulting to 1.0) = disabled, byte-identical to before this
+                feature existed (no gate is applied for crop_mask mode).
+              example: 0.0
+            outpaint_controlnet_corner_gate_min:
+              type: number
+              default: 1.0
+              minimum: 0.0
+              maximum: 1.0
+              description: |
+                crop_mask mode only: the ControlNet residual gate value at
+                each rect vertex center (see
+                `outpaint_controlnet_corner_gate_radius_px`), in [0, 1].
+                1.0 (default) = no attenuation = disabled regardless of the
+                radius.
+              example: 1.0
             outpaint_seam_membrane:
               type: boolean
               default: false

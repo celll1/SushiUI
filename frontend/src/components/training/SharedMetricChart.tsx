@@ -300,9 +300,24 @@ export default function SharedMetricChart({
     () => robustYRange(primaryVals, yMinFloor, mustInclude, bounded),
     [primaryVals, yMinFloor, mustInclude, bounded],
   );
-  const canLog = allowLogScale && logScale && rawYRange.min > 0;
-  const yMin = canLog ? Math.log10(Math.max(rawYRange.min, 1e-9)) : rawYRange.min;
-  const yMax = canLog ? Math.log10(Math.max(rawYRange.max, 1e-9)) : rawYRange.max;
+  // Smallest strictly-positive value across the pooled data — a genuine floor
+  // for the log domain. Requiring `rawYRange.min > 0` (the old guard) meant a
+  // SINGLE zero/unrecorded-period point anywhere in the pooled series (e.g.
+  // GradNorm before logging started for that metric) permanently pinned
+  // rawYRange.min to 0 via yMinFloor clamping, so log mode never activated —
+  // the "log" button looked pressable but silently did nothing. Log mode now
+  // floors on the smallest actual positive value instead, ignoring zero/
+  // negative points for that purpose only; the linear view is unaffected and
+  // still legitimately starts at 0.
+  const positiveFloor = useMemo(() => {
+    let min: number | null = null;
+    for (const v of primaryVals) if (v > 0 && (min === null || v < min)) min = v;
+    for (const v of mustInclude) if (v > 0 && (min === null || v < min)) min = v;
+    return min;
+  }, [primaryVals, mustInclude]);
+  const canLog = allowLogScale && logScale && positiveFloor !== null && rawYRange.max > positiveFloor;
+  const yMin = canLog ? Math.log10(positiveFloor as number) : rawYRange.min;
+  const yMax = canLog ? Math.log10(Math.max(rawYRange.max, positiveFloor as number)) : rawYRange.max;
   const ySpan = yMax - yMin || 1;
   const yTransform = (v: number) => (canLog ? Math.log10(Math.max(v, 1e-9)) : v);
   const toY = (v: number) => PAD.top + ((yMax - yTransform(v)) / ySpan) * chartH;
@@ -461,8 +476,9 @@ export default function SharedMetricChart({
           {allowLogScale && (
             <button
               onClick={() => setLogScale((v) => !v)}
-              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors ${logScale ? "bg-blue-700 text-blue-100" : "bg-gray-700 hover:bg-gray-600 text-gray-300"}`}
-              title="Toggle log Y scale"
+              disabled={positiveFloor === null}
+              className={`text-[10px] px-1.5 py-0.5 rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${logScale ? "bg-blue-700 text-blue-100" : "bg-gray-700 hover:bg-gray-600 text-gray-300"}`}
+              title={positiveFloor === null ? "No positive values to log-scale" : "Toggle log Y scale"}
             >log</button>
           )}
           {epochBoundaries && epochBoundaries.length >= 1 && (() => {

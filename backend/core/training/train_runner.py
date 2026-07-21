@@ -109,6 +109,38 @@ def _update_phase_progress(run_id: int, phase: str, progress: float, detail: str
         print(f"[TrainRunner] Warning: Failed to update phase progress: {e}")
 
 
+def _check_init_stop(output_dir):
+    """Abort a long-running INIT phase (dataset scan / caption processing /
+    bucketing) promptly on a user stop request.
+
+    Mirrors ``BaseTrainer._check_stop_requested()`` (used for the pre-encode
+    phases once training has started), but runs during train_runner.py's
+    dataset-loading stage, which happens BEFORE BaseTrainer.train() is ever
+    called and can take many minutes on multi-million-item datasets. Without
+    this check, ``TrainingProcess.stop()``'s ``.stop_training`` flag file is
+    written but never observed until the scan finishes, so the API's /stop
+    call hangs.
+
+    Uses KeyboardInterrupt deliberately: it is the same stop token
+    BaseTrainer and the SIGINT handler above use, and — being a
+    BaseException, not an Exception — it bypasses main()'s
+    ``except Exception`` handler so an intentional stop is never misreported
+    as a training failure.
+
+    A cheap ``Path.is_file()`` stat; safe to call frequently.
+    """
+    if output_dir is None:
+        return
+    flag = Path(output_dir) / ".stop_training"
+    if flag.is_file():
+        print(f"[TrainRunner] Stop flag detected during initialization, aborting...")
+        try:
+            flag.unlink()
+        except OSError:
+            pass
+        raise KeyboardInterrupt("Training stopped by user during initialization")
+
+
 class TeeOutput:
     """
     Redirects output to both console and file (like Unix tee command).
@@ -363,13 +395,25 @@ def _load_dataset_cache(cache_path: Path) -> dict:
 
 
 def _save_dataset_cache(cache_path: Path, cache_data: dict):
-    """Save dataset cache to disk."""
+    """Save dataset cache to disk.
+
+    Writes to a ``.tmp`` sibling then ``os.replace``s it into place, so a
+    process killed mid-write (e.g. a stop request arriving during the pickle
+    dump) can never leave a truncated/corrupt cache file at ``cache_path`` --
+    ``os.replace`` is atomic on both POSIX and Windows.
+    """
+    tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
     try:
-        with open(cache_path, 'wb') as f:
+        with open(tmp_path, 'wb') as f:
             pickle.dump(cache_data, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp_path, cache_path)
         print(f"[TrainRunner] Dataset cache saved: {cache_path}")
     except Exception as e:
         print(f"[TrainRunner] Warning: Failed to save dataset cache: {e}")
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
 
 
 def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str) -> None:
@@ -418,7 +462,7 @@ def _apply_video_metadata(item_dict: dict, item_type, exif_data, image_path: str
 
 
 def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = None,
-                           run_id: int = None) -> list:
+                           run_id: int = None, output_dir=None) -> list:
     """
     Get all items from dataset using optimized JOIN query.
 
@@ -432,6 +476,10 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
         run_id: Optional training run id — when given, reports phase progress to
             the DB (phase_detail/phase_progress) so the frontend bar updates
             during the (slow, first-epoch) bulk read of large datasets.
+        output_dir: Optional training output dir — when given, checked for a
+            ``.stop_training`` flag so a user stop during this (potentially
+            many-minutes-long) DB read/scan aborts promptly instead of
+            blocking until it finishes.
 
     Returns:
         List of dicts with item data and caption info
@@ -442,6 +490,10 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
     # doesn't look stalled while a multi-million-row dataset is read.
     _update_phase_progress(run_id, "initializing", 0.0,
                            f"Reading dataset {dataset_id} from DB...")
+
+    # Last chance to abort before the blocking .all() materialization below,
+    # which cannot be interrupted mid-flight once started.
+    _check_init_stop(output_dir)
 
     # Single query with JOIN to get all items with their captions
     items = db.query(DatasetItem).filter(
@@ -465,6 +517,7 @@ def get_dataset_items_fast(db: Session, dataset_id: int, caption_types: list = N
                     run_id, "initializing", _pct,
                     f"Reading dataset {dataset_id}: {_idx:,}/{_n_items:,} items",
                 )
+                _check_init_stop(output_dir)
         # Skip items whose image file no longer exists on disk
         if not os.path.exists(item.image_path):
             skipped_missing += 1
@@ -563,6 +616,10 @@ def get_dataset_items_cached(
     import time
     start_time = time.time()
 
+    # Entry check: abort immediately if a stop was requested before this
+    # dataset's load even began (e.g. between datasets in a multi-dataset run).
+    _check_init_stop(output_dir)
+
     # Get dataset info for caption config
     dataset = db.query(Dataset).filter(Dataset.id == dataset_id).first()
     if not dataset:
@@ -594,14 +651,20 @@ def get_dataset_items_cached(
             raw_items = cache_data.get("items", [])
             print(f"[TrainRunner] Loaded {len(raw_items)} items from cache ({cache_path.name})")
 
+    # After the (potentially slow, pickle-deserializing) cache load / cache-miss
+    # decision above, and before we either fetch from DB or process captions.
+    _check_init_stop(output_dir)
+
     # If no cache, fetch from DB with optimized query
     if raw_items is None:
         print(f"[TrainRunner] Fetching dataset {dataset_id} from DB (optimized JOIN query)...")
-        raw_items = get_dataset_items_fast(db, dataset_id, caption_types, run_id=run_id)
+        raw_items = get_dataset_items_fast(db, dataset_id, caption_types, run_id=run_id, output_dir=output_dir)
         print(f"[TrainRunner] Fetched {len(raw_items)} items in {time.time() - start_time:.2f}s")
 
-        # Save to cache
+        # Save to cache. Checked immediately before, so a stop request doesn't
+        # kick off a multi-minute pickle dump of a multi-million-item dataset.
         if use_cache:
+            _check_init_stop(output_dir)
             cache_data = {
                 "dataset_id": dataset_id,
                 "cache_key": cache_key,
@@ -617,6 +680,7 @@ def get_dataset_items_cached(
         epoch_num=epoch_num,
         caption_config=caption_config,
         run_id=run_id,
+        output_dir=output_dir,
     )
 
     elapsed = time.time() - start_time
@@ -630,6 +694,7 @@ def _process_cached_items(
     epoch_num: int,
     caption_config: dict,
     run_id: int = None,
+    output_dir=None,
 ) -> list:
     """
     Apply caption processing to cached raw items.
@@ -639,6 +704,9 @@ def _process_cached_items(
         epoch_num: Current epoch number
         caption_config: Caption processing configuration
         run_id: Training run ID (for progress updates)
+        output_dir: Optional training output dir — when given, checked for a
+            ``.stop_training`` flag so a user stop during caption processing
+            aborts promptly instead of blocking until it finishes.
 
     Returns:
         List of processed items
@@ -760,6 +828,7 @@ def _process_cached_items(
         if (idx + 1) % 1000 == 0:
             progress_pct = ((idx + 1) / total_items) * 100.0
             _update_phase_progress(run_id, "initializing", progress_pct, f"Processing captions: {idx + 1}/{total_items}")
+            _check_init_stop(output_dir)
 
         # Console logging every 10000 items (to reduce log spam)
         if (idx + 1) % 10000 == 0:
@@ -1228,6 +1297,11 @@ def main():
         all_dataset_items = []
         dataset_unique_ids = []  # Collect unique IDs for cache management
         for i, ds_config in enumerate(dataset_configs):
+            # Check for a user stop request before starting each dataset's
+            # (potentially many-minutes-long) scan/load, so a stop between
+            # datasets in a multi-dataset run doesn't wait for the next one.
+            _check_init_stop(run.output_dir)
+
             dataset_id = ds_config["dataset_id"]
             dataset = datasets_db.query(Dataset).filter(Dataset.id == dataset_id).first()
             if not dataset:
@@ -2962,6 +3036,34 @@ def main():
         else:
             print(f"[TrainRunner] ERROR: Unsupported network type: {network_type}")
             sys.exit(1)
+
+    except KeyboardInterrupt:
+        # Distinguish an intentional user stop (SIGTERM/SIGINT from
+        # TrainingProcess.stop(), or a .stop_training flag caught by
+        # _check_init_stop() during dataset scan/caption processing/
+        # bucketing) from an actual failure. KeyboardInterrupt is a
+        # BaseException, not an Exception, so it is never caught by the
+        # `except Exception` below -- an aborted initialization is always
+        # correctly reported as "stopped", never "failed".
+        #
+        # No model/checkpoint exists yet during init, and the dataset scan
+        # is in-memory (plus a tolerant pickle cache) with no incremental DB
+        # writes, so aborting anywhere here is inherently DB-consistent.
+        print(f"[TrainRunner] Training stopped by user during initialization")
+
+        # Reuse the existing long-lived training_db session (same as the
+        # "failed" path below) rather than opening a new one.
+        run = training_db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        if run:
+            run.status = "stopped"
+            run.phase_detail = "Initialization stopped by user"
+            training_db.commit()
+
+        # Non-zero exit so the parent monitor's returncode != 0 / user-stopped
+        # path fires (matches the existing convention for the failed path,
+        # which exits 1; use 2 here so the two outcomes remain distinguishable
+        # in process exit codes if ever inspected).
+        sys.exit(2)
 
     except Exception as e:
         print(f"[TrainRunner] ERROR: {type(e).__name__}: {str(e)}")

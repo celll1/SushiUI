@@ -141,6 +141,24 @@ class TrainingProcess:
         # Add backend directory to PYTHONPATH so imports work
         env["PYTHONPATH"] = str(backend_dir) + os.pathsep + env.get("PYTHONPATH", "")
 
+        # Pre-spawn cleanup: a leftover .stop_training flag from a previous run
+        # in the same output_dir (e.g. a prior stop request that raced with, or
+        # arrived just after, that run's own exit) would otherwise instakill this
+        # fresh run's initialization the moment train_runner.py's new init-phase
+        # stop checks (_check_init_stop) see it. base_trainer.train() already
+        # clears a stale flag once it starts (belt-and-suspenders double-guard,
+        # kept as-is), but that happens well after dataset loading/bucketing, i.e.
+        # after the new checks run -- so clear it here too, before the process
+        # that will actually observe it is even spawned.
+        stale_stop_flag = Path(self.output_dir) / ".stop_training"
+        try:
+            stale_stop_flag.unlink()
+            print(f"[Training] Removed stale stop flag before spawn: {stale_stop_flag}")
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"[Training] WARNING: Failed to remove stale stop flag before spawn: {e}")
+
         # Start asyncio subprocess (non-blocking)
         # Increase buffer limit to handle long tqdm progress bars (default is 64KB)
         self.process = await asyncio.create_subprocess_exec(

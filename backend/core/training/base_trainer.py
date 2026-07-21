@@ -7309,6 +7309,11 @@ class BaseTrainer(ABC):
                     # Throttle UI updates (every ~2000 items) to avoid flooding.
                     if progress_callback and _bucket_done % 2000 == 0:
                         progress_callback(phase="bucketing", step=_bucket_done, total=total_bucket_items)
+                        # This loop runs before train()'s own KeyboardInterrupt
+                        # handler is in scope (see _check_stop_requested's
+                        # docstring), so a stop here propagates all the way up
+                        # to train_runner.py's main() except KeyboardInterrupt.
+                        self._check_stop_requested()
             _bucket_pbar.close()
             if progress_callback:
                 progress_callback(phase="bucketing", step=total_bucket_items, total=total_bucket_items)

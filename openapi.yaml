@@ -7220,7 +7220,7 @@ components:
               example: 0
             outpaint_seam_offset_prop:
               type: number
-              default: 1.0
+              default: 0.0
               minimum: 0.0
               maximum: 2.0
               description: |
@@ -7238,11 +7238,15 @@ components:
                 pixels; the preserved region is unaffected. Runs after
                 `outpaint_seam_tone_strength` and before the final
                 unconditional paste. Scales the applied offset; 0 = off (the
-                module is not imported).
-              example: 1.0
+                module is not imported). Default 0.0: on the trained crop_mask
+                CN the real seam is a hard paste-line (removed by
+                `outpaint_paste_feather_px`) plus a CN-driven generation frame
+                (a training property), which this generated-side propagation
+                does not correct cleanly, so it ships off.
+              example: 0.0
             outpaint_paste_feather_px:
               type: integer
-              default: 0
+              default: 24
               minimum: 0
               description: |
                 Paste-band reconciliation feather ("Option E"): at the final
@@ -7253,11 +7257,13 @@ components:
                 byte-exact. Independent of the boundary relaxation feather
                 paste (`boundary_relax_strength`/`boundary_relax_paste`) and
                 takes precedence over it when both are active; applies to
-                every outpaint ControlNet mode. 0 (default) = off, the
-                preserved rectangle stays byte-identical to the input. Only
-                the N-row/column band loses byte-exactness when > 0; the rest
-                of the preserved rectangle is unaffected.
-              example: 0
+                every outpaint ControlNet mode. Default 24: the tiled-VAE-style
+                blend that removes the hard raw/decoded seam paste-line while
+                keeping the rectangle's deep interior byte-exact. 0 = off, the
+                preserved rectangle stays byte-identical at the edge (the hard
+                seam line returns). Only the N-row/column band loses
+                byte-exactness when > 0; the rest of the rectangle is unaffected.
+              example: 24
             outpaint_preserve_mode:
               type: string
               enum: [exact, vae_reconstruct, vae_reconstruct_hf]

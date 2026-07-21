@@ -10921,6 +10921,17 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
             except Exception as _de:
                 print(f"[Training {run_id}] Drift check failed (proceeding anyway): {_de}")
 
+        # Re-check status after the (potentially long) drift/rescan pre-flight
+        # above: a concurrent /training/runs/{id}/stop request could have set
+        # status="stopped" while we were awaiting the drift walk/rescan. Without
+        # this guard we would spawn a subprocess for a run the user already
+        # cancelled. Uses a fresh query (not the `run` object captured earlier)
+        # since another request/session may have committed the change.
+        _status_recheck = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
+        if _status_recheck and _status_recheck.status == "stopped":
+            print(f"[API] Run {run_id} was stopped during pre-flight; not spawning training process")
+            return {"message": "Training run was stopped before it started", "run": _status_recheck.to_dict()}
+
         # Create training process
         print(f"[API] Creating training process")
         process = training_process_manager.create_process(
@@ -10950,7 +10961,18 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                     db_session.commit()
                     return
                 elif step == -1:
-                    # Process failed with error
+                    # Process failed with error -- unless the child already
+                    # recorded itself as "stopped" (train_runner.py's new
+                    # except KeyboardInterrupt handler, or the -2 branch above
+                    # racing with this one). A stop during initialization
+                    # exits non-zero without is_user_stopped necessarily being
+                    # observed by the monitor in time (e.g. the flag-triggered
+                    # KeyboardInterrupt exits before/around the same time as
+                    # process.stop() sets is_user_stopped), which would
+                    # otherwise mislabel a user-requested stop as a failure.
+                    if current_run.status == "stopped":
+                        print(f"[Training {run_id}] Process exited non-zero but run is already 'stopped' (user stop); not overwriting with 'failed'")
+                        return
                     print(f"[Training {run_id}] Process failed, updating status")
                     current_run.status = "failed"
                     current_run.error_message = "Training process exited with error"

@@ -5176,18 +5176,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # construction -- see param_defaults.py OUTPAINT_DEFAULTS and
         # scratchpad/outpaint_seamless_vae_native.md for the mechanism.
         _seam_offset_prop = float(params.get("outpaint_seam_offset_prop", 0.0) or 0.0)
-        _seam_offset_prop_corners = bool(params.get("outpaint_seam_offset_prop_corners", False))
         if _seam_offset_prop > 0:
             from api.generation_status import add_warning as _sop_warn
             _sop_warn(
                 "Seam offset propagation (G_prop16) modifies generated-side pixels "
                 "near the seam to match the preserved boundary's own tone; the "
-                "preserved region itself is unchanged."
-                + (
-                    " Corner-quadrant fill is also enabled: the diagonal wedge beyond "
-                    "each rect vertex is filled too, not just the straight edges."
-                    if _seam_offset_prop_corners else ""
-                ),
+                "preserved region itself is unchanged.",
                 code="outpaint_seam_offset_prop_engaged",
             )
 
@@ -5235,7 +5229,6 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             seam_tone_strength=float(params.get("outpaint_seam_tone_strength", 0.0) or 0.0),
             seam_tone_band=int(params.get("outpaint_seam_tone_band", 0) or 0),
             seam_offset_prop=_seam_offset_prop,
-            seam_offset_prop_corners=_seam_offset_prop_corners,
             outpaint_preserve_mode=_preserve_mode,
             warn_callback=_seam_membrane_warn,
         )

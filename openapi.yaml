@@ -8232,13 +8232,51 @@ components:
         lr_scheduler:
           type: string
           default: "constant"
-          description: Learning rate scheduler type
+          description: |
+            Learning rate scheduler type. Includes the diffusers scheduler types
+            (`constant`, `linear`, `cosine`, `cosine_with_restarts`, `polynomial`,
+            `constant_with_warmup`, ...) plus `plateau_cosine_floor`: warmup, then a
+            plateau at the base LR, then a cosine decay down to a floor
+            (`lr_floor_ratio` of the base LR) that is held for the remainder of
+            training (see `lr_decay_start_ratio` / `lr_floor_ratio`).
           example: "cosine"
         lr_warmup_steps:
           type: integer
           default: 0
           description: Number of LR warmup steps
           example: 100
+        lr_decay_start_ratio:
+          type: number
+          format: float
+          default: 0.85
+          description: |
+            Only consumed when `lr_scheduler` is `plateau_cosine_floor`. Fraction of
+            total training steps (0-1) at which the plateau ends and the cosine decay
+            to `lr_floor_ratio` begins.
+          example: 0.85
+        lr_floor_ratio:
+          type: number
+          format: float
+          default: 0.25
+          description: |
+            Only consumed when `lr_scheduler` is `plateau_cosine_floor`. Fraction of
+            the base learning rate the cosine decay settles at and holds for the
+            remainder of training (never decays to 0).
+          example: 0.25
+        use_ema:
+          type: boolean
+          default: false
+          description: |
+            Enable an exponential moving average (EMA) of the trainable weights. When
+            enabled, an EMA snapshot is saved alongside (not instead of) each normal
+            checkpoint, with an `_ema` filename suffix.
+          example: false
+        ema_decay:
+          type: number
+          format: float
+          default: 0.9999
+          description: Only consumed when `use_ema` is true. EMA decay factor.
+          example: 0.9999
         # Attention backend selector (training)
         attention_backend:
           type: string

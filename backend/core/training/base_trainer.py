@@ -3215,13 +3215,22 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} ==========================================")
 
         # Setup LR scheduler
-        from diffusers.optimization import get_scheduler as get_diffusers_scheduler
-        self.lr_scheduler = get_diffusers_scheduler(
-            lr_scheduler_type,
-            optimizer=self.optimizer,
-            num_warmup_steps=self.optimizer_warmup_steps,
-            num_training_steps=total_steps,
-        )
+        if str(lr_scheduler_type).lower() == "plateau_cosine_floor":
+            self.lr_scheduler = self._build_plateau_cosine_floor_scheduler(
+                self.optimizer, total_steps
+            )
+        else:
+            from diffusers.optimization import get_scheduler as get_diffusers_scheduler
+            self.lr_scheduler = get_diffusers_scheduler(
+                lr_scheduler_type,
+                optimizer=self.optimizer,
+                num_warmup_steps=self.optimizer_warmup_steps,
+                num_training_steps=total_steps,
+            )
+
+        # Initialize weight EMA (opt-in, default off). Must run after the
+        # optimizer (and therefore the trainable param groups) exists.
+        self._setup_ema()
 
         # Setup fused backward/optimizer groups if Block Swap is enabled
         if self.blocks_to_swap > 0:
@@ -3246,11 +3255,33 @@ class BaseTrainer(ABC):
                         f"(3) disable Block Swap (blocks_to_swap=0)"
                     )
 
+                if getattr(self, "use_ema", False):
+                    raise NotImplementedError(
+                        "use_ema is not yet supported together with Block Swap + Fused "
+                        "Optimizer Groups (num_optimizer_groups>0). The EMA update is "
+                        "attached to the single self.optimizer.step() call site in the "
+                        "main training loop; Fused Optimizer Groups instead update "
+                        "parameters via per-parameter post-accumulate-grad hooks that "
+                        "bypass that call site entirely, so EMA would silently never "
+                        "update. Disable use_ema, or set num_optimizer_groups=0."
+                    )
+
                 # Fused optimizer groups: works with non-8bit optimizers only
                 self._setup_fused_optimizer_groups(optimizer_type, total_steps, lr_scheduler_type)
             elif optimizer_type.lower() in [
                 "adafactor", "adamw8bit", "adamw8bit_ringbuffer", "lion8bit_ringbuffer",
             ]:
+                if getattr(self, "use_ema", False):
+                    raise NotImplementedError(
+                        "use_ema is not yet supported together with the fused backward "
+                        "pass (Block Swap + Adafactor/AdamW8bit/ring-buffer optimizers). "
+                        "The EMA update is attached to the single self.optimizer.step() "
+                        "call site in the main training loop; the fused backward pass "
+                        "instead updates parameters via per-parameter "
+                        "post-accumulate-grad hooks that bypass that call site entirely, "
+                        "so EMA would silently never update. Disable use_ema, disable "
+                        "Block Swap, or use a non-fused optimizer configuration."
+                    )
                 # Fused backward pass: Adafactor / AdamW8bit / ring-buffer optimizers.
                 # The ring-buffer optimizers register their per-parameter post-accumulate-grad
                 # hooks inside _setup_fused_backward_pass, so their updates run before Block Swap
@@ -3408,16 +3439,24 @@ class BaseTrainer(ABC):
         print(f"{self.log_prefix} All {len(optimizers)} optimizers set to train mode")
 
         # Create LR schedulers for all optimizers
-        from diffusers.optimization import get_scheduler as get_diffusers_scheduler
         lr_schedulers = []
-        for optimizer in optimizers:
-            lr_scheduler = get_diffusers_scheduler(
-                lr_scheduler_type,
-                optimizer=optimizer,
-                num_warmup_steps=self.optimizer_warmup_steps,
-                num_training_steps=total_steps,
-            )
-            lr_schedulers.append(lr_scheduler)
+        if str(lr_scheduler_type).lower() == "plateau_cosine_floor":
+            # Same lambda applied independently to each optimizer group so all
+            # groups stay in lockstep (matches the main-path behavior).
+            for optimizer in optimizers:
+                lr_schedulers.append(
+                    self._build_plateau_cosine_floor_scheduler(optimizer, total_steps)
+                )
+        else:
+            from diffusers.optimization import get_scheduler as get_diffusers_scheduler
+            for optimizer in optimizers:
+                lr_scheduler = get_diffusers_scheduler(
+                    lr_scheduler_type,
+                    optimizer=optimizer,
+                    num_warmup_steps=self.optimizer_warmup_steps,
+                    num_training_steps=total_steps,
+                )
+                lr_schedulers.append(lr_scheduler)
 
         # Replace self.lr_scheduler with first scheduler (for compatibility)
         self.lr_scheduler = lr_schedulers[0]
@@ -3436,6 +3475,183 @@ class BaseTrainer(ABC):
 
         print(f"{self.log_prefix} Fused optimizer groups setup complete")
         print(f"{self.log_prefix} Optimizer.step() and zero_grad() will be called by hooks automatically")
+
+    def _build_plateau_cosine_floor_scheduler(self, optimizer, total_steps: int):
+        """Build a warmup -> plateau -> cosine-decay-to-floor LambdaLR.
+
+        multiplier(step):
+          - step < W (warmup): linear ramp step/W, 0 -> 1 (skipped if W == 0)
+          - W <= step < D (plateau): 1.0
+          - D <= step < T (cosine decay): F + 0.5*(1-F)*(1 + cos(pi*(step-D)/(T-D)))
+          - step >= T: F (hold floor forever, never decays to 0)
+
+        W = self.optimizer_warmup_steps, D = round(lr_decay_start_ratio * T),
+        T = total_steps (the same value passed as num_training_steps to
+        diffusers' get_scheduler() at this call site), F = lr_floor_ratio.
+
+        Built as a plain torch.optim.lr_scheduler.LambdaLR (not a diffusers
+        scheduler) so the existing resume fast-forward loop (`for _ in
+        range(global_step): self.lr_scheduler.step()`) advances it correctly
+        via last_epoch, exactly like diffusers' own LambdaLR-based schedulers.
+        """
+        from torch.optim.lr_scheduler import LambdaLR
+
+        W = max(0, int(self.optimizer_warmup_steps))
+        T = max(1, int(total_steps))
+        decay_start_ratio = float(self.config.get("lr_decay_start_ratio", 0.85))
+        floor_ratio = float(self.config.get("lr_floor_ratio", 0.25))
+        D = round(decay_start_ratio * T)
+        # Keep the three segments well-formed even at extreme ratio values.
+        D = max(W, min(D, T))
+
+        def lr_lambda(step: int) -> float:
+            if W > 0 and step < W:
+                return step / float(W)
+            if step < D:
+                return 1.0
+            if step < T:
+                span = max(1, T - D)
+                progress = (step - D) / float(span)
+                return floor_ratio + 0.5 * (1.0 - floor_ratio) * (1.0 + math.cos(math.pi * progress))
+            return floor_ratio
+
+        print(f"{self.log_prefix} LR scheduler: plateau_cosine_floor "
+              f"(warmup={W}, plateau_end={D}, total={T}, floor_ratio={floor_ratio})")
+        return LambdaLR(optimizer, lr_lambda=lr_lambda)
+
+    # ============================================================
+    # Weight EMA (opt-in, default off)
+    # ============================================================
+
+    def _setup_ema(self):
+        """Initialize the weight-EMA shadow (opt-in via config `use_ema`).
+
+        Must be called after self.optimizer exists (i.e. from setup_optimizer,
+        after the optimizer/param groups are built), so the trainable
+        parameter set (LoRA adapter params / full-FT params / ControlNet
+        params -- whatever setup_trainable_parameters() registered into the
+        optimizer) is known.
+
+        Each trainable tensor gets a synthetic, stable-order name
+        ("group{g}.param{i}") so the shadow can be saved/reloaded across
+        process restarts (resume) without depending on Python object
+        identity. The shadow itself is kept as fp32 CPU tensors to avoid
+        adding VRAM overhead.
+        """
+        self.use_ema = bool(self.config.get("use_ema", False))
+        self.ema_decay = float(self.config.get("ema_decay", 0.9999))
+        self.ema_shadow: Dict[str, torch.Tensor] = {}
+        self._ema_param_order: List[Tuple[str, torch.Tensor]] = []
+
+        if not self.use_ema:
+            return
+
+        if self.optimizer is None:
+            print(f"{self.log_prefix} WARNING: use_ema requested but optimizer is not set up; EMA disabled")
+            self.use_ema = False
+            return
+
+        for g_idx, group in enumerate(self.optimizer.param_groups):
+            for p_idx, param in enumerate(group["params"]):
+                if not param.requires_grad:
+                    continue
+                name = f"group{g_idx}.param{p_idx}"
+                self._ema_param_order.append((name, param))
+                self.ema_shadow[name] = param.detach().to(dtype=torch.float32, device="cpu").clone()
+
+        n_params = sum(t.numel() for _, t in self._ema_param_order)
+        print(f"{self.log_prefix} Weight EMA enabled: decay={self.ema_decay}, "
+              f"{len(self._ema_param_order)} tensors ({format_param_count(n_params)} params), shadow on CPU (fp32)")
+
+    def _update_ema(self):
+        """Update the EMA shadow in-place after an optimizer.step().
+
+        No-op unless use_ema is enabled. Cheap: no-grad, done directly on the
+        fp32 CPU shadow tensors.
+        """
+        if not getattr(self, "use_ema", False):
+            return
+        decay = self.ema_decay
+        with torch.no_grad():
+            for name, param in self._ema_param_order:
+                shadow = self.ema_shadow[name]
+                new_val = param.detach().to(dtype=torch.float32, device="cpu")
+                shadow.mul_(decay).add_(new_val, alpha=1.0 - decay)
+
+    def save_ema_state(self, step: int):
+        """Save the EMA shadow (for resume), alongside the optimizer state.
+
+        No-op unless use_ema is enabled.
+        """
+        if not getattr(self, "use_ema", False):
+            return
+        ema_state_file = self.output_dir / f"{self.run_name}_step_{step:06d}_ema_state.pt"
+        torch.save({"decay": self.ema_decay, "shadow": self.ema_shadow}, ema_state_file)
+        print(f"{self.log_prefix} Saved EMA shadow state to {ema_state_file.name}")
+
+    def load_ema_state(self, step: int) -> bool:
+        """Restore the EMA shadow on resume.
+
+        If use_ema is on but no saved shadow is found (e.g. EMA was just
+        enabled on a run that didn't have it before), the shadow stays at its
+        _setup_ema()-time initialization (a fresh copy of the current,
+        already-resumed live weights) instead of crashing.
+        """
+        if not getattr(self, "use_ema", False):
+            return False
+        ema_state_file = self.output_dir / f"{self.run_name}_step_{step:06d}_ema_state.pt"
+        if not ema_state_file.exists():
+            print(f"{self.log_prefix} No saved EMA state found at step {step}; "
+                  f"re-initializing EMA shadow from current weights")
+            return False
+        try:
+            saved = torch.load(ema_state_file, map_location="cpu")
+            shadow = saved.get("shadow", {}) if isinstance(saved, dict) else {}
+            restored = 0
+            for name, _param in self._ema_param_order:
+                if name in shadow:
+                    self.ema_shadow[name] = shadow[name]
+                    restored += 1
+            print(f"{self.log_prefix} Restored EMA shadow ({restored}/{len(self._ema_param_order)} "
+                  f"tensors) from {ema_state_file.name}")
+            return True
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to load EMA state: {e} -- "
+                  f"re-initializing EMA shadow from current weights")
+            return False
+
+    def _save_ema_checkpoint(self, step: int):
+        """Save a comparison snapshot of the EMA-averaged trainable weights.
+
+        Written alongside (never instead of) the normal, arch/method-specific
+        checkpoint produced by save_checkpoint() (LoRA safetensors merge,
+        ControlNet safetensors layout, full-FT state dict, etc.), with an
+        "_ema" filename suffix.
+
+        Scope note: this snapshot uses the same synthetic per-tensor names as
+        the EMA shadow ("group{g}.param{i}") rather than reconstructing each
+        adapter's real checkpoint state_dict key names / merge logic --
+        replicating that per-arch/per-method formatting for EMA specifically
+        is out of scope here (20+ save_checkpoint overrides across
+        adapters/methods). This file is a raw named-tensor dump intended for
+        offline live-vs-EMA weight comparison, not a drop-in replacement
+        checkpoint that can be loaded back for inference.
+        """
+        if not getattr(self, "use_ema", False):
+            return
+        try:
+            from safetensors.torch import save_file
+            ema_path = self.output_dir / f"{self.run_name}_step_{step:06d}_ema.safetensors"
+            tensors = {name: t.contiguous() for name, t in self.ema_shadow.items()}
+            metadata = {
+                "step": str(step),
+                "ema_decay": str(self.ema_decay),
+                "kind": "ema_shadow_raw_named_tensors",
+            }
+            save_file(tensors, ema_path, metadata=metadata)
+            print(f"{self.log_prefix} Saved EMA weight snapshot to {ema_path.name}")
+        except Exception as e:
+            print(f"{self.log_prefix} WARNING: Failed to save EMA checkpoint snapshot: {e}")
 
     # ============================================================
     # Prompt Encoding
@@ -7611,6 +7827,9 @@ class BaseTrainer(ABC):
 
                     # Load optimizer state (momentum, variance, etc.)
                     self.load_optimizer_state(checkpoint_step)
+                    # Restore EMA shadow (no-op unless use_ema; re-inits from
+                    # current weights if no saved shadow is found)
+                    self.load_ema_state(checkpoint_step)
                 else:
                     print(f"{self.log_prefix} No checkpoint found for auto-resume, starting from scratch")
             else:
@@ -7693,6 +7912,9 @@ class BaseTrainer(ABC):
 
                     # Load optimizer state (momentum, variance, etc.)
                     self.load_optimizer_state(checkpoint_step)
+                    # Restore EMA shadow (no-op unless use_ema; re-inits from
+                    # current weights if no saved shadow is found)
+                    self.load_ema_state(checkpoint_step)
                 else:
                     print(f"{self.log_prefix} WARNING: Checkpoint not found: {checkpoint_path}")
                     print(f"{self.log_prefix} Starting from scratch")
@@ -10225,6 +10447,7 @@ class BaseTrainer(ABC):
                                     self.grad_scaler.step(self.optimizer)
                                     self.grad_scaler.update()
                                     self.optimizer.zero_grad()
+                                    self._update_ema()
                                 else:
                                     # Normal flow without GradScaler
                                     grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
@@ -10232,6 +10455,7 @@ class BaseTrainer(ABC):
                                         torch.nn.utils.clip_grad_norm_(self.optimizer.param_groups[0]['params'], max_grad_norm)
                                     self.optimizer.step()
                                     self.optimizer.zero_grad()
+                                    self._update_ema()
                             else:
                                 # Fused backward/groups flow - calculate grad norm (step/zero_grad by hooks)
                                 grad_norm_total, grad_norm_te, grad_norm_te1, grad_norm_te2, grad_norm_unet, grad_norm_ve = self._calculate_grad_norms()
@@ -10347,6 +10571,9 @@ class BaseTrainer(ABC):
                             self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
                             # Save optimizer state (momentum, variance, etc.)
                             self.save_optimizer_state(step=global_step)
+                            # Save EMA shadow state + weight snapshot (no-op unless use_ema)
+                            self.save_ema_state(step=global_step)
+                            self._save_ema_checkpoint(step=global_step)
                             # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
                             if hasattr(self, '_cleanup_old_checkpoints'):
                                 import inspect
@@ -10518,6 +10745,8 @@ class BaseTrainer(ABC):
             optimizer_saved = False
             try:
                 self.save_optimizer_state(step=global_step)
+                self.save_ema_state(step=global_step)
+                self._save_ema_checkpoint(step=global_step)
                 optimizer_saved = True
                 print(f"{self.log_prefix} Optimizer state saved successfully")
             except Exception as e:
@@ -10603,6 +10832,8 @@ class BaseTrainer(ABC):
             optimizer_saved = False
             try:
                 self.save_optimizer_state(step=global_step)
+                self.save_ema_state(step=global_step)
+                self._save_ema_checkpoint(step=global_step)
                 optimizer_saved = True
                 print(f"{self.log_prefix} [EMERGENCY] Optimizer state saved successfully")
             except Exception as opt_error:

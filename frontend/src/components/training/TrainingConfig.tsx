@@ -97,6 +97,10 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   learning_rate: 1e-5,
   lr_scheduler: "constant",
   lr_warmup_steps: 0,
+  lr_decay_start_ratio: 0.85,
+  lr_floor_ratio: 0.25,
+  use_ema: false,
+  ema_decay: 0.9999,
   optimizer: "adamw8bit",
   optimizer_is_paged: false,
   optimizer_cautious: false,
@@ -407,6 +411,11 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const batchSize = params.batch_size ?? 4;
   const learningRate = localLrText;
   const lrScheduler = params.lr_scheduler ?? "constant";
+  const lrWarmupSteps = params.lr_warmup_steps ?? 0;
+  const lrDecayStartRatio = params.lr_decay_start_ratio ?? 0.85;
+  const lrFloorRatio = params.lr_floor_ratio ?? 0.25;
+  const useEma = params.use_ema ?? false;
+  const emaDecay = params.ema_decay ?? 0.9999;
   const optimizer = params.optimizer ?? "adamw8bit";
 
   // Optimizer-specific options (Phase 3c: migrated to params)
@@ -707,6 +716,10 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       learning_rate: parseFloat(localLrText),
       lr_scheduler: params.lr_scheduler,
       lr_warmup_steps: params.lr_warmup_steps,
+      lr_decay_start_ratio: params.lr_decay_start_ratio,
+      lr_floor_ratio: params.lr_floor_ratio,
+      use_ema: params.use_ema,
+      ema_decay: params.ema_decay,
       optimizer: params.optimizer,
       optimizer_is_paged: params.optimizer_is_paged,
       optimizer_cautious: params.optimizer_cautious,
@@ -1008,7 +1021,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     const PARAM_KEYS: (keyof TrainingRunCreateRequest)[] = [
       "lora_rank", "lora_alpha", "lora_dtype",
       "total_steps", "epochs",
-      "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps", "optimizer",
+      "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
+      "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
       "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
@@ -3559,7 +3573,94 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
                 <option value="constant">Constant</option>
                 <option value="cosine">Cosine</option>
                 <option value="linear">Linear</option>
+                <option value="plateau_cosine_floor">Plateau then Cosine Floor</option>
               </select>
+              {lrScheduler === "plateau_cosine_floor" && (
+                <p className="text-xs text-gray-500 mt-1">
+                  Warmup, then holds the base LR flat, then cosine-decays down to a floor
+                  (fraction of base LR) and holds that floor for the rest of training.
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-400 mb-1">LR Warmup Steps</label>
+              <NumberInput
+                value={lrWarmupSteps}
+                onCommit={(v) => updateParam("lr_warmup_steps", v)}
+                defaultValue={0}
+                min={0}
+                step={1}
+                parse="int"
+                className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            {lrScheduler === "plateau_cosine_floor" && (
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Decay Start Ratio</label>
+                  <NumberInput
+                    value={lrDecayStartRatio}
+                    onCommit={(v) => updateParam("lr_decay_start_ratio", v)}
+                    defaultValue={0.85}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    parse="float"
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Fraction of total steps where the plateau ends</p>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">LR Floor Ratio</label>
+                  <NumberInput
+                    value={lrFloorRatio}
+                    onCommit={(v) => updateParam("lr_floor_ratio", v)}
+                    defaultValue={0.25}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    parse="float"
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Floor as a fraction of base LR (held after decay)</p>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="checkbox"
+                  id="use-ema"
+                  checked={useEma}
+                  onChange={(e) => updateParam("use_ema", e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <label htmlFor="use-ema" className="text-xs text-gray-300 cursor-pointer">
+                  Weight EMA
+                </label>
+              </div>
+              <p className="text-xs text-gray-500">
+                Maintains an exponential moving average of the trained weights and saves it
+                alongside each checkpoint (filename suffix &quot;_ema&quot;) for comparison.
+              </p>
+              {useEma && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">EMA Decay</label>
+                  <NumberInput
+                    value={emaDecay}
+                    onCommit={(v) => updateParam("ema_decay", v)}
+                    defaultValue={0.9999}
+                    min={0}
+                    max={1}
+                    step={0.0001}
+                    parse="float"
+                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
             </div>
 
             {/* Optimizer Selection */}

@@ -9740,6 +9740,13 @@ class TrainingRunCreateRequest(BaseModel):
     learning_rate: float = 1e-4
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0  # Linear warmup steps before lr_scheduler kicks in
+    # Plateau-then-cosine-floor LR scheduler ("plateau_cosine_floor"). Only
+    # consumed when lr_scheduler == "plateau_cosine_floor".
+    lr_decay_start_ratio: float = TRAINING_DEFAULTS["lr_decay_start_ratio"]
+    lr_floor_ratio: float = TRAINING_DEFAULTS["lr_floor_ratio"]
+    # Weight EMA (opt-in, default off)
+    use_ema: bool = TRAINING_DEFAULTS["use_ema"]
+    ema_decay: float = TRAINING_DEFAULTS["ema_decay"]
     optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
     optimizer_is_paged: bool = False
     optimizer_cautious: bool = False

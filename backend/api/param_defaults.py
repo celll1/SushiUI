@@ -912,6 +912,16 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     "learning_rate": 1e-4,
     "lr_scheduler": "constant",
     "lr_warmup_steps": 0,
+    # Plateau-then-cosine-floor LR scheduler ("plateau_cosine_floor"). Only
+    # consumed when lr_scheduler == "plateau_cosine_floor"; harmless for all
+    # other scheduler types.
+    "lr_decay_start_ratio": 0.85,
+    "lr_floor_ratio": 0.25,
+    # Weight EMA (opt-in, default off). When enabled, a fp32 CPU shadow copy
+    # of the trainable params is maintained and saved alongside (not instead
+    # of) each normal checkpoint, with an "_ema" filename suffix.
+    "use_ema": False,
+    "ema_decay": 0.9999,
     # Optimizer
     "optimizer": "adamw8bit",
     "optimizer_is_paged": False,

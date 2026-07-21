@@ -83,6 +83,21 @@ def _build_train_section(
     # Conditional optimizer fields
     if p.get("lr_warmup_steps", 0) > 0:
         train["lr_warmup_steps"] = p["lr_warmup_steps"]
+        # FIX (2026-07): the trainer only ever reads `optimizer_warmup_steps`
+        # (base_trainer.py __init__ / train_runner.py `train_config.get(
+        # 'optimizer_warmup_steps', 0)`), never `lr_warmup_steps`. Without this,
+        # the UI's warmup value was a silent no-op. Write both keys — keep
+        # `lr_warmup_steps` for back-compat with anything that reads it.
+        train["optimizer_warmup_steps"] = p["lr_warmup_steps"]
+    if str(p.get("lr_scheduler", "constant")) == "plateau_cosine_floor":
+        # Plateau-then-cosine-floor scheduler knobs. Only meaningful for this
+        # scheduler type; only emitted when selected to keep YAML output for
+        # all other schedulers unchanged.
+        train["lr_decay_start_ratio"] = p.get("lr_decay_start_ratio", 0.85)
+        train["lr_floor_ratio"] = p.get("lr_floor_ratio", 0.25)
+    if p.get("use_ema"):
+        train["use_ema"] = p["use_ema"]
+        train["ema_decay"] = p.get("ema_decay", 0.9999)
     if p.get("optimizer_is_paged"):
         train["optimizer_is_paged"] = p["optimizer_is_paged"]
     if p.get("optimizer_cautious"):

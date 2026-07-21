@@ -1609,7 +1609,6 @@ export default function ImageGrid() {
                             {(selectedImage.parameters?.outpaint_seam_offset_prop ?? 0) > 0 && (
                               <div>
                                 <span className="text-gray-500">Seam Offset Propagation:</span> {selectedImage.parameters.outpaint_seam_offset_prop}
-                                {!!selectedImage.parameters?.outpaint_seam_offset_prop_corners && ` (corners filled)`}
                               </div>
                             )}
                             {(selectedImage.parameters?.outpaint_paste_feather_px ?? 0) > 0 && (

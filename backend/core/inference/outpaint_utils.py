@@ -590,7 +590,6 @@ def reconcile_and_paste(
     seam_tone_strength: float = 0.0,
     seam_tone_band: int = 0,
     seam_offset_prop: float = 0.0,
-    seam_offset_prop_corners: bool = False,
     outpaint_preserve_mode: str = "exact",
     warn_callback: Optional[Any] = None,
 ) -> Image.Image:
@@ -635,15 +634,7 @@ def reconcile_and_paste(
     instead of a Poisson solve -- see ``scratchpad/
     outpaint_seamless_vae_native.md`` sections 2-5 for the measurement this
     replaces (the harmonic membrane's numerics only reach half the achievable
-    seam reduction on the same data). When ``seam_offset_prop_corners`` is
-    also True (opt-in, has no effect unless ``seam_offset_prop > 0``), the
-    same mechanism additionally fills the four diagonal corner quadrants
-    beyond the rect's vertices -- the wedge none of the three seam
-    mechanisms above ever write, since each processes only straight edge
-    strips -- with a bilinear blend of the two adjacent edges' own offset
-    profiles (see ``core.inference.seam_membrane.apply_seam_offset_propagation``
-    and ``_coons_corner_grid`` for the construction). Then, when
-    ``paste_feather_px`` is > 0
+    seam reduction on the same data). Then, when ``paste_feather_px`` is > 0
     (Option E, "paste-band reconciliation feather"
     -- see ``scratchpad/outpaint_seam_latent_stage.md`` section 4.1), a fresh
     ``build_paste_alpha(rect, canvas_size, erode_px=0, feather_px=paste_feather_px)``
@@ -779,7 +770,6 @@ def reconcile_and_paste(
         placed_arr = np.array(placed_img.convert("RGB"))
         out_arr, offset_prop_info = apply_seam_offset_propagation(
             result_arr, placed_arr, rect, canvas_size, strength=seam_offset_prop,
-            fill_corners=bool(seam_offset_prop_corners),
         )
         result_img = Image.fromarray(out_arr, mode="RGB")
         if warn_callback is not None and offset_prop_info.get("large_correction"):

@@ -407,18 +407,6 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # widths, Gaussian sigma, taper shape, clamp) are fixed -- validated
     # against a real decode in scratchpad/outpaint_seamless_vae_native.md.
     "outpaint_seam_offset_prop": 1.0,
-    # Corner-quadrant fill for the boundary-offset propagation above (opt-in,
-    # core.inference.seam_membrane.apply_seam_offset_propagation's
-    # `fill_corners`): the straight-edge propagation above deliberately never
-    # touches the diagonal wedge beyond a rect vertex (present only when BOTH
-    # of that vertex's adjacent edges border generated content), which can
-    # leave a residual tonal step at the four corners. When True, that wedge
-    # is ALSO filled with a bilinear (Coons-patch) blend of the two adjacent
-    # edges' own offset profiles, C0-continuous with both along the
-    # quadrant's inner edges and decaying to 0 outward. Only has an effect
-    # when outpaint_seam_offset_prop > 0. False (default) = off
-    # (byte-identical to the straight-edge-only behavior).
-    "outpaint_seam_offset_prop_corners": False,
     # Paste-band reconciliation feather ("Option E", core.inference.
     # outpaint_utils.reconcile_and_paste's paste_feather_px; see
     # scratchpad/outpaint_seam_latent_stage.md section 4.1): at the FINAL

@@ -406,7 +406,13 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # module is not imported). Internal constants (low/high-frequency band
     # widths, Gaussian sigma, taper shape, clamp) are fixed -- validated
     # against a real decode in scratchpad/outpaint_seamless_vae_native.md.
-    "outpaint_seam_offset_prop": 1.0,
+    # Default 0.0 (off): on the trained crop_mask CN the real boundary seam
+    # decomposes into a hard paste-line (removed by outpaint_paste_feather_px
+    # below) and a CN-driven generation frame (a training property, not
+    # correctable here); this generated-side offset propagation targets
+    # neither cleanly (it clamp-saturated in practice), so it is left off in
+    # the shipped recipe. Set > 0 to re-enable for tone-step seams.
+    "outpaint_seam_offset_prop": 0.0,
     # Paste-band reconciliation feather ("Option E", core.inference.
     # outpaint_utils.reconcile_and_paste's paste_feather_px; see
     # scratchpad/outpaint_seam_latent_stage.md section 4.1): at the FINAL
@@ -418,10 +424,13 @@ OUTPAINT_DEFAULTS: Dict[str, Any] = {
     # gradient. Independent of Boundary Relaxation's own feather paste (BDR
     # Variant B, boundary_relax_strength/boundary_relax_paste above) and takes
     # precedence over it when both are active; applies to every outpaint
-    # ControlNet mode including "crop_mask". 0 (default) = off, byte-identical
-    # to the strict-preservation contract. Only the N-row/column band loses
-    # exactness; the rest of the preserved rect is unaffected.
-    "outpaint_paste_feather_px": 0,
+    # ControlNet mode including "crop_mask". Only the N-row/column band loses
+    # exactness; the rest of the preserved rect is unaffected. Default 24:
+    # this is the "tiled-VAE-style" blend that removes the hard raw/decoded
+    # paste-line at the seam (verified: left-edge 1px luma gradient 21.5 -> 4.4
+    # on the reference case) while keeping the rect's deep interior byte-exact.
+    # Set 0 for the strict byte-exact-at-the-edge paste (reintroduces the line).
+    "outpaint_paste_feather_px": 24,
     # Preserved-region compositing mode (opt-in; SD1.5/SDXL gets the full
     # mechanism, other architectures get the "vae_reconstruct" behavior only
     # -- see per-mode notes below and core.inference.outpaint_utils.

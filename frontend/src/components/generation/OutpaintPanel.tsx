@@ -154,12 +154,12 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   outpaint_seam_membrane_band: 0,
   outpaint_seam_tone_strength: 0.0,
   outpaint_seam_tone_band: 0,
-  outpaint_seam_offset_prop: 1.0,
+  outpaint_seam_offset_prop: 0.0,
   outpaint_boundary_color_strength: 0.25,
   outpaint_resample_count: 1,
   outpaint_jump_length: 4,
   outpaint_reference_strength: 0.0,
-  outpaint_paste_feather_px: 0,
+  outpaint_paste_feather_px: 24,
   outpaint_preserve_mode: "exact",
   outpaint_preview_unpinned_x0: false,
   resize_mode: "image",
@@ -372,9 +372,10 @@ const OUTPAINT_OPTIONS_TAB_KEYS: Record<OutpaintOptionsTabId, (keyof OutpaintPan
 // "Active" means the group is currently doing something to the generation,
 // not just "differs from DEFAULT_PARAMS". Two tabs are legitimately active
 // out of the box because their own default is already "on":
-// outpaint_seam_offset_prop defaults to 1.0 (Boundary-Offset Propagation is
-// enabled by default) and outpaint_boundary_color_strength defaults to 0.25
-// (In-loop Continuity's B1 correction is enabled by default).
+// outpaint_paste_feather_px defaults to 24 (the tiled-VAE-style paste-band
+// blend that removes the hard seam paste-line is enabled by default) and
+// outpaint_boundary_color_strength defaults to 0.25 (In-loop Continuity's B1
+// correction is enabled by default).
 function isOutpaintOptionsTabActive(tabId: OutpaintOptionsTabId, params: OutpaintPanelParams): boolean {
   switch (tabId) {
     case "controlnet":
@@ -383,10 +384,10 @@ function isOutpaintOptionsTabActive(tabId: OutpaintOptionsTabId, params: Outpain
       return !!(params.region_prompt?.trim() || params.region_negative_prompt?.trim());
     case "seam":
       return (
-        (params.outpaint_seam_offset_prop ?? 1.0) > 0 ||
+        (params.outpaint_seam_offset_prop ?? 0.0) > 0 ||
         (params.outpaint_seam_tone_strength ?? 0) > 0 ||
         !!params.outpaint_seam_membrane ||
-        (params.outpaint_paste_feather_px ?? 0) > 0 ||
+        (params.outpaint_paste_feather_px ?? 24) > 0 ||
         (params.outpaint_preserve_mode ?? "exact") !== "exact"
       );
     case "continuity":
@@ -1828,7 +1829,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             min={0}
             max={2.0}
             step={0.05}
-            value={params.outpaint_seam_offset_prop ?? 1.0}
+            value={params.outpaint_seam_offset_prop ?? 0.0}
             onChange={(e) => setParams({ ...params, outpaint_seam_offset_prop: parseFloat(e.target.value) })}
           />
         </div>
@@ -1849,11 +1850,11 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             Independent of the boundary relaxation feather paste and takes precedence over it when both are active; only the N-row/column band loses byte-exactness.
           </p>
           <Slider
-            label="Feather Width (px, 0 = off)"
+            label="Feather Width (px, 0 = off; default 24 removes the hard seam paste-line)"
             min={0}
-            max={8}
+            max={64}
             step={1}
-            value={params.outpaint_paste_feather_px ?? 0}
+            value={params.outpaint_paste_feather_px ?? 24}
             onChange={(e) => setParams({ ...params, outpaint_paste_feather_px: parseInt(e.target.value, 10) })}
           />
         </div>

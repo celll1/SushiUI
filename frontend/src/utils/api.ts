@@ -3720,6 +3720,10 @@ export interface MetricSeriesDef {
   label?: string;
   color?: string;
   dashed?: boolean;
+  /** "right" renders the series on a separate, independently-scaled secondary
+   *  Y-axis instead of pooling it into the primary Y-range (e.g. learning
+   *  rate, which lives orders of magnitude below loss). */
+  axis?: "right";
 }
 
 export interface TrainingMetrics {

@@ -10463,6 +10463,28 @@ class BaseTrainer(ABC):
                         # are already extracted as floats by _forward_backward_with_oom_recovery()
                         mnt_current_lr = self.lr_scheduler.get_last_lr()[0]
 
+                        # Record the ACTUALLY-APPLIED per-step LR (as opposed to
+                        # mnt_current_lr above, which is the scheduler's own view via
+                        # get_last_lr() -- under the resume LR-group remap the group
+                        # actually stepped can diverge from what the scheduler thinks
+                        # it set). optimizer.param_groups[0]['lr'] is what the just-
+                        # completed step actually used, so it's the more truthful
+                        # value to chart, especially now that schedules can be
+                        # non-constant (plateau_cosine_floor). Routed through the
+                        # generic extra-metrics channel (same mechanism as gen_loss/
+                        # seam_loss/known_loss) so it needs no DB column and is
+                        # captured by the _log_metrics_to_db call below, same step.
+                        # This is the single per-step point shared by LoRA, full-FT,
+                        # and ControlNet training (all subclass BaseTrainer.train()),
+                        # so every method gets this series with no extra call sites.
+                        # Defensive: never let a missing/malformed optimizer raise in
+                        # the hot training loop.
+                        try:
+                            if self.optimizer is not None and self.optimizer.param_groups:
+                                self.log_extra_metric("lr", self.optimizer.param_groups[0]["lr"])
+                        except Exception:
+                            pass
+
                         # TensorBoard logging (per-iteration for loss only)
                         self.writer.add_scalar("train/loss", mnt_loss_value, global_step)
                         self.writer.add_scalar("train/pred_loss", mnt_pred_loss_value, global_step)

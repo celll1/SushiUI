@@ -215,6 +215,25 @@ class ControlNetTrainer(BaseTrainer):
                     f"desynchronizes the known-region conditioning from the "
                     f"target latent's actual crop, breaking self-supervision."
                 )
+            # pre_encoded_cache encodes the target latent through
+            # encode_image()'s default bucket_strategy="crop" (center crop),
+            # regardless of the configured bucket_strategy, so for non-square
+            # sources the cached latent is center-cropped while the outpaint
+            # conditioning is a plain resize -- the same cond/latent geometry
+            # desync as above, via the cache path the resize guard cannot see.
+            # The onthefly modes pass bucket_strategy through and stay aligned.
+            _latent_mode = str((self.config or {}).get("latent_encoding_mode", "swap_onthefly") or "swap_onthefly")
+            if _latent_mode == "pre_encoded_cache":
+                raise ValueError(
+                    f"{self.log_prefix} conditioning_mode='outpaint' does not "
+                    f"support latent_encoding_mode='pre_encoded_cache': the disk "
+                    f"latent cache is encoded with bucket_strategy='crop' (center "
+                    f"crop), while outpaint conditioning is built from a plain "
+                    f"resize of the full image; for non-square sources the cached "
+                    f"target latent and the known-region conditioning desynchronize, "
+                    f"breaking self-supervision. Use latent_encoding_mode="
+                    f"'swap_onthefly' or 'onthefly_gpu' instead."
+                )
 
         # Validate model type (only SD1.5/SDXL supported)
         if self.is_zimage or self.is_flux2:

@@ -20,6 +20,11 @@ Fields per entry:
   - dashed: draw as a dashed overlay line (default True for aux losses — they
             typically live on a different scale than the main loss and should
             not dominate the chart's Y-range pooling).
+  - axis:   optional. Set to "right" to render the series against a separate,
+            independently-auto-scaled secondary Y-axis instead of pooling it
+            into the primary (loss-scale) Y-range. Use this for metrics whose
+            magnitude is orders of magnitude away from loss (e.g. learning
+            rate, ~1e-4) and would otherwise be an invisible flat line.
 """
 
 EXTRA_METRIC_DEFS = {
@@ -40,4 +45,11 @@ EXTRA_METRIC_DEFS = {
     # loss_vs_t.jsonl sidecar; see scratchpad "Outpaint ControlNet:
     # loss-vs-timestep instrumentation" design doc).
     "known_loss": {"label": "Known region", "color": "#34d399", "dashed": True},
+    # Actually-applied per-step learning rate (optimizer.param_groups[0]['lr']),
+    # logged for every trainer (LoRA/full-FT/ControlNet share the same
+    # BaseTrainer.train() loop). Schedules can now be non-constant
+    # (plateau_cosine_floor), so this is a real curve, not just a flat line --
+    # but at ~1e-4 it's 3+ orders of magnitude below loss (~0.03), so it needs
+    # its own axis rather than the shared pooled Y-range.
+    "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right"},
 }

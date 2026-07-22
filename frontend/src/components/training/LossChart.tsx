@@ -154,6 +154,7 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
           color: def.color || fallbackColor(key),
           points,
           dashed: def.dashed ?? true,
+          secondaryAxis: def.axis === "right",
         } as ChartSeries;
       });
     return [...base, ...extra].filter((s) => s.points.length > 0);

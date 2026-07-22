@@ -52,4 +52,18 @@ EXTRA_METRIC_DEFS = {
     # but at ~1e-4 it's 3+ orders of magnitude below loss (~0.03), so it needs
     # its own axis rather than the shared pooled Y-range.
     "lr": {"label": "Learning Rate", "color": "#38bdf8", "dashed": False, "axis": "right"},
+    # Per-component actual LRs (only emitted when a run trains more than one
+    # optimizer param group at potentially-different LRs, e.g. UNet+TE1/TE2 or
+    # +VisionEncoder runs -- see base_trainer.py's per-step logging site next
+    # to "lr"). Keys are derived from _build_component_lr_list()'s component
+    # names lowercased/stripped of non-alnum (see that method's docstring for
+    # the exact name strings: "U-Net", "TE1", "TE2", "VisionEncoder",
+    # "ControlNet"). Share the same secondary right axis as "lr" since they're
+    # the same unit and often overlapping magnitude. Any component not listed
+    # here (e.g. lr_controlnet) still renders via the frontend's generic
+    # lr*-prefix -> secondary-axis fallback, just without a curated label.
+    "lr_unet": {"label": "LR (U-Net)", "color": "#38bdf8", "dashed": False, "axis": "right"},
+    "lr_te1": {"label": "LR (TE1)", "color": "#fb923c", "dashed": False, "axis": "right"},
+    "lr_te2": {"label": "LR (TE2)", "color": "#c084fc", "dashed": False, "axis": "right"},
+    "lr_visionencoder": {"label": "LR (Vision Encoder)", "color": "#4ade80", "dashed": False, "axis": "right"},
 }

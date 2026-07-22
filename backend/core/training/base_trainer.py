@@ -18,7 +18,7 @@ import os
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from typing import Optional, Callable, Dict, Any, List, Tuple
+from typing import Optional, Callable, Dict, Any, List, Tuple, Union, Sequence
 from io import BytesIO
 from PIL import Image, PngImagePlugin
 from tqdm import tqdm
@@ -110,24 +110,49 @@ def _checkpoint_aux_base(entry_path: Path) -> str:
     return entry_path.stem
 
 
-def _list_checkpoint_entries(output_dir: Path, exclude_substr: Optional[str] = None) -> List[Path]:
+# Marker inserted into the run_name for weight-EMA checkpoint saves
+# (base_trainer._save_ema_checkpoint temporarily sets self.run_name to
+# f"{run_name}{EMA_RUN_NAME_SUFFIX}" before calling the normal
+# save_checkpoint()). Every EMA checkpoint entry therefore contains the
+# literal substring "_ema_step_" (suffix + the "_step_" checkpoint-naming
+# separator), which _list_checkpoint_entries() callers exclude so EMA
+# checkpoints are never mistaken for live-weight checkpoints by resume
+# detection or counted against the live-checkpoint rotation limit.
+EMA_RUN_NAME_SUFFIX = "_ema"
+EMA_ENTRY_MARKER = "_ema_step_"
+
+
+def _list_checkpoint_entries(
+    output_dir: Path,
+    exclude_substr: Optional[Union[str, Sequence[str]]] = None,
+) -> List[Path]:
     """Return the checkpoint *entry* files under ``output_dir``.
 
     An entry is either a single-file ``*_step_*.safetensors`` save or a sharded
     ``*_step_*.safetensors.index.json`` save. Shard MEMBER files
     (``-NNNNN-of-NNNNN.safetensors``) are excluded — they belong to their index.
     ``exclude_substr`` drops entries whose name contains it (e.g.
-    ``vision_encoder``).
+    ``vision_encoder``); a string or a sequence of strings may be passed.
     """
+    if exclude_substr is None:
+        excludes: Tuple[str, ...] = ()
+    elif isinstance(exclude_substr, str):
+        excludes = (exclude_substr,)
+    else:
+        excludes = tuple(exclude_substr)
+
+    def _is_excluded(name: str) -> bool:
+        return any(sub in name for sub in excludes)
+
     entries: List[Path] = []
     for p in output_dir.glob("*_step_*.safetensors.index.json"):
-        if exclude_substr and exclude_substr in p.name:
+        if _is_excluded(p.name):
             continue
         entries.append(p)
     for p in output_dir.glob("*_step_*.safetensors"):
         if _is_shard_member(p.name):
             continue
-        if exclude_substr and exclude_substr in p.name:
+        if _is_excluded(p.name):
             continue
         entries.append(p)
     return entries
@@ -1116,7 +1141,11 @@ class BaseTrainer(ABC):
             if self.resume_from_checkpoint.lower() == "latest":
                 # Find latest checkpoint in output directory (single-file OR
                 # sharded index; shard members are excluded as entries).
-                checkpoint_files = _list_checkpoint_entries(self.output_dir)
+                # EMA snapshot checkpoints (a full, separately loadable
+                # save under a "_ema"-suffixed run_name) are excluded so
+                # resume can never silently pick up EMA-averaged weights
+                # in place of the live training weights.
+                checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr=EMA_ENTRY_MARKER)
                 if checkpoint_files:
                     # Get latest checkpoint by step number
                     def get_step(path):
@@ -2847,7 +2876,8 @@ class BaseTrainer(ABC):
         """
         # Search for checkpoint entries (single-file or sharded index; shard
         # members excluded) with pattern: {run_name}_step_{step}.safetensors[.index.json]
-        checkpoint_files = _list_checkpoint_entries(self.output_dir)
+        # EMA snapshot checkpoints are excluded (see EMA_ENTRY_MARKER).
+        checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr=EMA_ENTRY_MARKER)
 
         # Search for training state files with pattern: {run_name}_step_{step}_state.json
         state_files = list(self.output_dir.glob("*_step_*_state.json"))
@@ -2909,7 +2939,9 @@ class BaseTrainer(ABC):
             List of (checkpoint_path, step_number) tuples, sorted newest first.
             Empty list if no checkpoints exist.
         """
-        checkpoint_files = _list_checkpoint_entries(self.output_dir)
+        # EMA snapshot checkpoints are excluded (see EMA_ENTRY_MARKER) so they
+        # are never offered as fallback/resume candidates.
+        checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr=EMA_ENTRY_MARKER)
 
         if not checkpoint_files:
             return []
@@ -3027,8 +3059,11 @@ class BaseTrainer(ABC):
 
         # Find main checkpoint entries only (single-file or sharded index; shard
         # members are grouped under their index, VE checkpoints excluded to avoid
-        # double-counting).
-        checkpoint_files = _list_checkpoint_entries(self.output_dir, exclude_substr="vision_encoder")
+        # double-counting; EMA snapshot checkpoints excluded -- they are rotated
+        # separately below, paired 1:1 with their live-weight counterpart).
+        checkpoint_files = _list_checkpoint_entries(
+            self.output_dir, exclude_substr=("vision_encoder", EMA_ENTRY_MARKER)
+        )
         if len(checkpoint_files) <= max_step_saves_to_keep:
             return
 
@@ -3069,6 +3104,22 @@ class BaseTrainer(ABC):
             for ve_file in checkpoint_path.parent.glob(ve_pattern):
                 print(f"{self.log_prefix} Deleting old VE checkpoint: {ve_file.name}")
                 self._safe_unlink(ve_file)
+
+            # Also delete the paired EMA snapshot checkpoint for this step, if
+            # any (use_ema writes it under run_name + EMA_RUN_NAME_SUFFIX, so
+            # it is never itself picked up by the entry listing above -- prune
+            # it here in lockstep with its live counterpart instead of letting
+            # it accumulate indefinitely).
+            ema_run_name = f"{self.run_name}{EMA_RUN_NAME_SUFFIX}"
+            ema_index_path = checkpoint_path.parent / f"{ema_run_name}_step_{step_num:06d}.safetensors.index.json"
+            if ema_index_path.exists():
+                for member in _checkpoint_member_files(ema_index_path):
+                    print(f"{self.log_prefix} Deleting old EMA checkpoint: {member.name}")
+                    self._safe_unlink(member)
+            else:
+                for ema_file in checkpoint_path.parent.glob(f"{ema_run_name}_step_{step_num:06d}*.safetensors"):
+                    print(f"{self.log_prefix} Deleting old EMA checkpoint: {ema_file.name}")
+                    self._safe_unlink(ema_file)
 
     # ============================================================
     # Optimizer Setup
@@ -3523,6 +3574,31 @@ class BaseTrainer(ABC):
     # Weight EMA (opt-in, default off)
     # ============================================================
 
+    def _build_ema_param_name_map(self) -> Dict[int, str]:
+        """Map ``id(param) -> real dotted parameter name`` for the EMA shadow.
+
+        Scans this trainer instance's own attributes for ``nn.Module``
+        values (e.g. ``self.unet``, ``self.text_encoder``, ``self.controlnet``)
+        and dict-of-``nn.Module`` containers (e.g. ``self.lora_layers:
+        Dict[str, nn.Module]``), and builds names from each container's own
+        ``named_parameters()``. This is deliberately generic (no per-arch/
+        per-adapter special-casing) so it works uniformly across every
+        trainer subclass without maintenance as new adapters are added, and
+        the names it returns are genuine dotted parameter names inside the
+        real model objects -- not synthetic group/index placeholders.
+        """
+        name_map: Dict[int, str] = {}
+        for attr_name, attr_val in vars(self).items():
+            if isinstance(attr_val, torch.nn.Module):
+                for pname, p in attr_val.named_parameters():
+                    name_map.setdefault(id(p), f"{attr_name}.{pname}")
+            elif isinstance(attr_val, dict):
+                for key, sub_val in attr_val.items():
+                    if isinstance(sub_val, torch.nn.Module):
+                        for pname, p in sub_val.named_parameters():
+                            name_map.setdefault(id(p), f"{attr_name}.{key}.{pname}")
+        return name_map
+
     def _setup_ema(self):
         """Initialize the weight-EMA shadow (opt-in via config `use_ema`).
 
@@ -3532,16 +3608,32 @@ class BaseTrainer(ABC):
         params -- whatever setup_trainable_parameters() registered into the
         optimizer) is known.
 
-        Each trainable tensor gets a synthetic, stable-order name
-        ("group{g}.param{i}") so the shadow can be saved/reloaded across
-        process restarts (resume) without depending on Python object
-        identity. The shadow itself is kept as fp32 CPU tensors to avoid
-        adding VRAM overhead.
+        Each trainable tensor is keyed by its REAL dotted parameter name
+        (via _build_ema_param_name_map(), which walks the actual model
+        object(s) this trainer owns), not a synthetic "group{g}.param{i}"
+        placeholder -- this is what lets _save_ema_checkpoint() swap EMA
+        values directly into the live model objects and reuse the normal,
+        arch-specific save_checkpoint() to produce a real, loadable
+        checkpoint (see _save_ema_checkpoint).
+
+        Config knobs:
+        - ema_decay (float, default 0.9999): per-*applied-update* decay.
+        - ema_update_every (int, default 1): only apply the EMA update every
+          N optimizer steps (see _update_ema for the decay-power correction
+          this implies).
+        - ema_device ("cpu" default | "cuda"): where the shadow tensors live.
+          "cpu" avoids extra VRAM (adds one GPU->CPU sync per applied
+          update); "cuda" keeps the shadow on the parameter's own device
+          (no sync, costs ~one extra copy of the trainable params in VRAM).
         """
         self.use_ema = bool(self.config.get("use_ema", False))
         self.ema_decay = float(self.config.get("ema_decay", 0.9999))
+        self.ema_update_every = max(1, int(self.config.get("ema_update_every", 1)))
+        ema_device = str(self.config.get("ema_device", "cpu")).lower()
+        self.ema_device = ema_device if ema_device in ("cpu", "cuda") else "cpu"
         self.ema_shadow: Dict[str, torch.Tensor] = {}
         self._ema_param_order: List[Tuple[str, torch.Tensor]] = []
+        self._ema_step_counter = 0
 
         if not self.use_ema:
             return
@@ -3551,31 +3643,63 @@ class BaseTrainer(ABC):
             self.use_ema = False
             return
 
+        name_map = self._build_ema_param_name_map()
+        unnamed = 0
+        seen_names: set = set()
         for g_idx, group in enumerate(self.optimizer.param_groups):
             for p_idx, param in enumerate(group["params"]):
                 if not param.requires_grad:
                     continue
-                name = f"group{g_idx}.param{p_idx}"
+                name = name_map.get(id(param))
+                if name is None:
+                    unnamed += 1
+                    name = f"_unnamed.group{g_idx}.param{p_idx}"
+                if name in seen_names:
+                    # Extremely unlikely (two distinct containers reusing the
+                    # same dotted name) -- disambiguate rather than silently
+                    # overwrite a shadow slot.
+                    name = f"{name}#g{g_idx}p{p_idx}"
+                seen_names.add(name)
                 self._ema_param_order.append((name, param))
-                self.ema_shadow[name] = param.detach().to(dtype=torch.float32, device="cpu").clone()
+                shadow_device = param.device if self.ema_device == "cuda" else torch.device("cpu")
+                self.ema_shadow[name] = param.detach().to(dtype=torch.float32, device=shadow_device).clone()
+
+        if unnamed:
+            print(f"{self.log_prefix} WARNING: {unnamed} trainable EMA tensor(s) could not be matched "
+                  f"to a real parameter name; using fallback synthetic names for those only")
 
         n_params = sum(t.numel() for _, t in self._ema_param_order)
         print(f"{self.log_prefix} Weight EMA enabled: decay={self.ema_decay}, "
-              f"{len(self._ema_param_order)} tensors ({format_param_count(n_params)} params), shadow on CPU (fp32)")
+              f"update_every={self.ema_update_every}, shadow_device={self.ema_device}, "
+              f"{len(self._ema_param_order)} tensors ({format_param_count(n_params)} params)")
 
     def _update_ema(self):
         """Update the EMA shadow in-place after an optimizer.step().
 
-        No-op unless use_ema is enabled. Cheap: no-grad, done directly on the
-        fp32 CPU shadow tensors.
+        No-op unless use_ema is enabled. No-grad, in-place, fp32
+        accumulation. Only actually applies every `ema_update_every`
+        optimizer steps (default 1 = every step); when skipping steps, the
+        decay used for the applied update is raised to the power of
+        `ema_update_every` so the EMA's effective averaging horizon
+        (~1/(1-decay) steps) stays approximately constant regardless of how
+        often the update runs -- e.g. decay=0.9999 with update_every=1 has
+        the same ~10,000-step horizon as decay=0.9999**10=0.999 applied
+        every 10th step.
         """
         if not getattr(self, "use_ema", False):
             return
-        decay = self.ema_decay
+        self._ema_step_counter += 1
+        if self._ema_step_counter % self.ema_update_every != 0:
+            return
+        decay = self.ema_decay ** self.ema_update_every
+        cuda_shadow = (self.ema_device == "cuda")
         with torch.no_grad():
             for name, param in self._ema_param_order:
                 shadow = self.ema_shadow[name]
-                new_val = param.detach().to(dtype=torch.float32, device="cpu")
+                if cuda_shadow:
+                    new_val = param.detach().to(dtype=torch.float32, non_blocking=True)
+                else:
+                    new_val = param.detach().to(dtype=torch.float32, device="cpu", non_blocking=True)
                 shadow.mul_(decay).add_(new_val, alpha=1.0 - decay)
 
     def save_ema_state(self, step: int):
@@ -3592,9 +3716,21 @@ class BaseTrainer(ABC):
     def load_ema_state(self, step: int) -> bool:
         """Restore the EMA shadow on resume.
 
+        Design choice: the EMA shadow is resumed from its own dedicated
+        state file (`*_ema_state.pt`, written by save_ema_state next to the
+        optimizer state), keyed by the same real parameter names
+        _setup_ema() just built -- NOT by re-parsing the `_ema`-suffixed
+        checkpoint written by _save_ema_checkpoint(). This is the simpler,
+        more robust option: the shadow-state file is a flat name->tensor
+        dict that trivially round-trips through _ema_param_order, whereas
+        reloading a full arch-specific checkpoint would require re-running
+        each adapter's load path a second time (once for live weights, once
+        for the shadow) purely to recover tensors this dedicated file
+        already stores directly.
+
         If use_ema is on but no saved shadow is found (e.g. EMA was just
-        enabled on a run that didn't have it before), the shadow stays at its
-        _setup_ema()-time initialization (a fresh copy of the current,
+        enabled on a run that didn't have it before), the shadow stays at
+        its _setup_ema()-time initialization (a fresh copy of the current,
         already-resumed live weights) instead of crashing.
         """
         if not getattr(self, "use_ema", False):
@@ -3608,9 +3744,10 @@ class BaseTrainer(ABC):
             saved = torch.load(ema_state_file, map_location="cpu")
             shadow = saved.get("shadow", {}) if isinstance(saved, dict) else {}
             restored = 0
-            for name, _param in self._ema_param_order:
+            for name, param in self._ema_param_order:
                 if name in shadow:
-                    self.ema_shadow[name] = shadow[name]
+                    shadow_device = param.device if self.ema_device == "cuda" else torch.device("cpu")
+                    self.ema_shadow[name] = shadow[name].to(device=shadow_device)
                     restored += 1
             print(f"{self.log_prefix} Restored EMA shadow ({restored}/{len(self._ema_param_order)} "
                   f"tensors) from {ema_state_file.name}")
@@ -3620,38 +3757,60 @@ class BaseTrainer(ABC):
                   f"re-initializing EMA shadow from current weights")
             return False
 
-    def _save_ema_checkpoint(self, step: int):
-        """Save a comparison snapshot of the EMA-averaged trainable weights.
+    def _save_ema_checkpoint(self, step: int, epoch: int):
+        """Save a REAL, loadable checkpoint of the EMA-averaged weights.
 
-        Written alongside (never instead of) the normal, arch/method-specific
-        checkpoint produced by save_checkpoint() (LoRA safetensors merge,
-        ControlNet safetensors layout, full-FT state dict, etc.), with an
-        "_ema" filename suffix.
+        Reuses the trainer's own save_checkpoint() (the exact same
+        arch/method-specific format used for the live checkpoint -- LoRA
+        safetensors merge, ControlNet layout, full-FT state dict, sharding,
+        etc.) instead of reimplementing any of the 20+ per-arch/per-method
+        save formats. Mechanism:
 
-        Scope note: this snapshot uses the same synthetic per-tensor names as
-        the EMA shadow ("group{g}.param{i}") rather than reconstructing each
-        adapter's real checkpoint state_dict key names / merge logic --
-        replicating that per-arch/per-method formatting for EMA specifically
-        is out of scope here (20+ save_checkpoint overrides across
-        adapters/methods). This file is a raw named-tensor dump intended for
-        offline live-vs-EMA weight comparison, not a drop-in replacement
-        checkpoint that can be loaded back for inference.
+          1. Stash each live trainable parameter's `.data` (clone).
+          2. Copy the EMA shadow value into that SAME nn.Parameter object's
+             `.data`, in place. These are the exact objects registered with
+             the optimizer (see _setup_ema / _build_ema_param_name_map) and
+             owned by whatever module save_checkpoint() actually reads from
+             (self.lora_layers / self.controlnet / self.unet / ...), so the
+             swap is visible to save_checkpoint() with no extra plumbing.
+          3. Temporarily set self.run_name to f"{run_name}{EMA_RUN_NAME_SUFFIX}"
+             and call self.save_checkpoint(step, epoch) -- every trainer's
+             save_checkpoint() builds its output path from self.run_name, so
+             this produces a fully separate, fully loadable checkpoint file
+             (see EMA_ENTRY_MARKER / EMA_RUN_NAME_SUFFIX for how resume
+             detection and rotation cleanup avoid ever picking it up as a
+             live checkpoint).
+          4. Restore both self.run_name and the live parameter data in a
+             `finally`, so a failure anywhere in the save (including inside
+             save_checkpoint()) can never leave live training weights
+             EMA-corrupted or the run_name permanently altered.
         """
         if not getattr(self, "use_ema", False):
             return
+        if not self._ema_param_order:
+            return
+
+        stash: Dict[str, torch.Tensor] = {}
+        with torch.no_grad():
+            for name, param in self._ema_param_order:
+                stash[name] = param.data.detach().clone()
+
+        original_run_name = self.run_name
         try:
-            from safetensors.torch import save_file
-            ema_path = self.output_dir / f"{self.run_name}_step_{step:06d}_ema.safetensors"
-            tensors = {name: t.contiguous() for name, t in self.ema_shadow.items()}
-            metadata = {
-                "step": str(step),
-                "ema_decay": str(self.ema_decay),
-                "kind": "ema_shadow_raw_named_tensors",
-            }
-            save_file(tensors, ema_path, metadata=metadata)
-            print(f"{self.log_prefix} Saved EMA weight snapshot to {ema_path.name}")
+            with torch.no_grad():
+                for name, param in self._ema_param_order:
+                    ema_val = self.ema_shadow[name].to(dtype=param.dtype, device=param.device, non_blocking=True)
+                    param.data.copy_(ema_val)
+            self.run_name = f"{original_run_name}{EMA_RUN_NAME_SUFFIX}"
+            self.save_checkpoint(step, epoch)
+            print(f"{self.log_prefix} Saved EMA-averaged checkpoint (loadable, run_name={self.run_name})")
         except Exception as e:
-            print(f"{self.log_prefix} WARNING: Failed to save EMA checkpoint snapshot: {e}")
+            print(f"{self.log_prefix} WARNING: Failed to save EMA checkpoint: {e}")
+        finally:
+            self.run_name = original_run_name
+            with torch.no_grad():
+                for name, param in self._ema_param_order:
+                    param.data.copy_(stash[name])
 
     # ============================================================
     # Prompt Encoding
@@ -10573,7 +10732,7 @@ class BaseTrainer(ABC):
                             self.save_optimizer_state(step=global_step)
                             # Save EMA shadow state + weight snapshot (no-op unless use_ema)
                             self.save_ema_state(step=global_step)
-                            self._save_ema_checkpoint(step=global_step)
+                            self._save_ema_checkpoint(step=global_step, epoch=epoch)
                             # Cleanup old checkpoints (LoRA uses 3-arg version, Full FT uses 1-arg version)
                             if hasattr(self, '_cleanup_old_checkpoints'):
                                 import inspect
@@ -10746,7 +10905,7 @@ class BaseTrainer(ABC):
             try:
                 self.save_optimizer_state(step=global_step)
                 self.save_ema_state(step=global_step)
-                self._save_ema_checkpoint(step=global_step)
+                self._save_ema_checkpoint(step=global_step, epoch=epoch)
                 optimizer_saved = True
                 print(f"{self.log_prefix} Optimizer state saved successfully")
             except Exception as e:
@@ -10833,7 +10992,7 @@ class BaseTrainer(ABC):
             try:
                 self.save_optimizer_state(step=global_step)
                 self.save_ema_state(step=global_step)
-                self._save_ema_checkpoint(step=global_step)
+                self._save_ema_checkpoint(step=global_step, epoch=epoch)
                 optimizer_saved = True
                 print(f"{self.log_prefix} [EMERGENCY] Optimizer state saved successfully")
             except Exception as opt_error:

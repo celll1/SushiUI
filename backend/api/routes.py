@@ -10511,26 +10511,15 @@ async def get_training_run_params(
     # Otherwise keep job from config.job
     datasets_config = process_config.get("datasets", [])
 
-    # Build dataset_configs from YAML
+    # Build dataset_configs from YAML using the shared dataset_id-first
+    # resolver (same semantics as train_runner.py and the write-boundary
+    # column sync) so the edit-form, the dataset_configs column, and the
+    # trainer never disagree about which dataset a YAML entry refers to.
     dataset_start = time.time()
-    dataset_configs = []
+    from core.training.dataset_params import resolve_dataset_configs_from_yaml
+    dataset_configs = resolve_dataset_configs_from_yaml(run.config_yaml, datasets_db) or []
     cache_latents_to_disk = False  # Default
     for ds_config in datasets_config:
-        # Try to find dataset by path
-        dataset_path = ds_config.get("folder_path", ds_config.get("path", ""))
-        print(f"[get_training_run_params] Looking for dataset with path: {dataset_path}")
-        dataset = datasets_db.query(Dataset).filter(Dataset.path == dataset_path).first()
-        if dataset:
-            print(f"[get_training_run_params] Found dataset: id={dataset.id}, name={dataset.name}")
-            from core.training.dataset_params import read_dataset_params
-            entry = {
-                "dataset_id": dataset.id,
-                "filters": {},
-                **read_dataset_params(ds_config),
-            }
-            dataset_configs.append(entry)
-        else:
-            print(f"[get_training_run_params] Dataset not found in database for path: {dataset_path}")
         # Extract cache_latents_to_disk from first dataset
         if ds_config.get("cache_latents_to_disk") is not None:
             cache_latents_to_disk = ds_config.get("cache_latents_to_disk", False)
@@ -10645,6 +10634,15 @@ async def update_training_run(
         # Update config_yaml and base_model_path in database
         run.config_yaml = config_yaml
         run.base_model_path = request.base_model_path
+
+        # Keep the (denormalized) dataset_configs column in sync with the
+        # YAML we just wrote -- config_yaml is the source of truth that the
+        # trainer actually reads; the column is a derived cache used by the
+        # pre-flight rescan and list views. Never clobber with an empty
+        # derivation (resolve_dataset_configs_from_yaml returns None in
+        # that case, so we fall back to whatever the column already holds).
+        from core.training.dataset_params import resolve_dataset_configs_from_yaml
+        run.dataset_configs = resolve_dataset_configs_from_yaml(config_yaml, datasets_db) or run.dataset_configs
 
         # Calculate total_steps for database (required by NOT NULL constraint)
         if request.total_steps:
@@ -10762,12 +10760,36 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
                 from database import DatasetsSessionLocal
                 from database.models import Dataset as _Dataset
 
+                ddb = DatasetsSessionLocal()
+
+                # Self-heal: config_yaml is the source of truth for which
+                # datasets this run trains on (it's what the trainer
+                # subprocess actually reads -- see train_runner.py). The
+                # dataset_configs column is a denormalized cache that can
+                # drift from it (e.g. old runs from before write-boundary
+                # syncing was added, or a since-fixed bug where the PUT
+                # endpoint never persisted the column). Re-derive from YAML
+                # here so the pre-flight rescan below always targets the
+                # same datasets the trainer will actually load.
+                try:
+                    from core.training.dataset_params import resolve_dataset_configs_from_yaml
+                    _derived_cfgs = resolve_dataset_configs_from_yaml(run.config_yaml, ddb)
+                    if _derived_cfgs is not None:
+                        _current_ids = {int(c["dataset_id"]) for c in (run.dataset_configs or []) if c.get("dataset_id")}
+                        _derived_ids = {c["dataset_id"] for c in _derived_cfgs}
+                        if _derived_ids != _current_ids:
+                            print(f"[API] Self-heal: run {run_id} dataset_configs column ({sorted(_current_ids)}) "
+                                  f"diverged from config_yaml ({sorted(_derived_ids)}); syncing column from YAML")
+                            run.dataset_configs = _derived_cfgs
+                            db.commit()
+                except Exception as _heal_err:
+                    print(f"[API] WARNING: dataset_configs self-heal failed for run {run_id}: {_heal_err}")
+
                 ds_cfgs = run.dataset_configs or []
                 ds_ids = [int(c["dataset_id"]) for c in ds_cfgs if c.get("dataset_id")]
                 if not ds_ids and run.dataset_id:
                     ds_ids = [int(run.dataset_id)]
 
-                ddb = DatasetsSessionLocal()
                 try:
                     from core.training.rescan_control import rescan_skip_controller, RescanSkipped
                     import asyncio as _asyncio
@@ -11079,7 +11101,12 @@ async def skip_training_rescan(run_id: int, request: SkipRescanRequest = SkipRes
     }
 
 @router.patch("/training/runs/{run_id}/config")
-async def update_training_config(run_id: int, config_data: dict, db: Session = Depends(get_training_db)):
+async def update_training_config(
+    run_id: int,
+    config_data: dict,
+    db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db),
+):
     """Update training configuration (only allowed when not running)"""
     print(f"[Training] Updating config for run_id={run_id}")
     print(f"[Training] config_data keys: {config_data.keys()}")
@@ -11098,6 +11125,11 @@ async def update_training_config(run_id: int, config_data: dict, db: Session = D
 
         # Update config_yaml in database
         run.config_yaml = config_yaml
+
+        # Keep dataset_configs column in sync with the newly-saved YAML
+        # (config_yaml is the source of truth; see resolve_dataset_configs_from_yaml).
+        from core.training.dataset_params import resolve_dataset_configs_from_yaml
+        run.dataset_configs = resolve_dataset_configs_from_yaml(config_yaml, datasets_db) or run.dataset_configs
 
         # Update the original config file on disk ({run_name}_config.yaml)
         import yaml
@@ -11119,7 +11151,11 @@ async def update_training_config(run_id: int, config_data: dict, db: Session = D
         raise HTTPException(status_code=500, detail=f"Failed to update config: {str(e)}")
 
 @router.post("/training/runs/{run_id}/config/reload")
-async def reload_training_config(run_id: int, db: Session = Depends(get_training_db)):
+async def reload_training_config(
+    run_id: int,
+    db: Session = Depends(get_training_db),
+    datasets_db: Session = Depends(get_datasets_db),
+):
     """Reload training configuration from disk (for external YAML edits)"""
     print(f"[Training] Reloading config from disk for run_id={run_id}")
     run = db.query(TrainingRun).filter(TrainingRun.id == run_id).first()
@@ -11143,6 +11179,12 @@ async def reload_training_config(run_id: int, db: Session = Depends(get_training
 
         # Update database with disk content
         run.config_yaml = config_yaml
+
+        # Keep dataset_configs column in sync with the reloaded YAML
+        # (config_yaml is the source of truth; see resolve_dataset_configs_from_yaml).
+        from core.training.dataset_params import resolve_dataset_configs_from_yaml
+        run.dataset_configs = resolve_dataset_configs_from_yaml(config_yaml, datasets_db) or run.dataset_configs
+
         db.commit()
 
         print(f"[Training] Reloaded config from disk: {config_path}")

@@ -9747,6 +9747,8 @@ class TrainingRunCreateRequest(BaseModel):
     # Weight EMA (opt-in, default off)
     use_ema: bool = TRAINING_DEFAULTS["use_ema"]
     ema_decay: float = TRAINING_DEFAULTS["ema_decay"]
+    ema_update_every: int = TRAINING_DEFAULTS["ema_update_every"]
+    ema_device: str = TRAINING_DEFAULTS["ema_device"]
     optimizer: str = "adamw8bit"  # Options: adamw, adamw8bit, paged_adamw, paged_adamw8bit, adafactor, lion8bit, paged_lion8bit
     optimizer_is_paged: bool = False
     optimizer_cautious: bool = False

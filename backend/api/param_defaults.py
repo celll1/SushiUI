@@ -917,11 +917,20 @@ TRAINING_DEFAULTS: Dict[str, Any] = {
     # other scheduler types.
     "lr_decay_start_ratio": 0.85,
     "lr_floor_ratio": 0.25,
-    # Weight EMA (opt-in, default off). When enabled, a fp32 CPU shadow copy
-    # of the trainable params is maintained and saved alongside (not instead
-    # of) each normal checkpoint, with an "_ema" filename suffix.
+    # Weight EMA (opt-in, default off). When enabled, a fp32 shadow copy of
+    # the trainable params is maintained and saved as a separate, fully
+    # loadable checkpoint alongside (not instead of) each normal checkpoint,
+    # under a run_name with an "_ema" suffix.
     "use_ema": False,
     "ema_decay": 0.9999,
+    # Only apply the EMA update every N optimizer steps (default: every
+    # step). Decay is raised to the power N for the applied update so the
+    # EMA's effective averaging horizon stays ~constant regardless of N.
+    "ema_update_every": 1,
+    # Where the EMA shadow tensors live: "cpu" (default, no extra VRAM, one
+    # GPU->CPU sync per applied update) or "cuda" (no sync, costs ~one extra
+    # copy of the trainable params in VRAM).
+    "ema_device": "cpu",
     # Optimizer
     "optimizer": "adamw8bit",
     "optimizer_is_paged": False,

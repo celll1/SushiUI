@@ -98,6 +98,8 @@ def _build_train_section(
     if p.get("use_ema"):
         train["use_ema"] = p["use_ema"]
         train["ema_decay"] = p.get("ema_decay", 0.9999)
+        train["ema_update_every"] = p.get("ema_update_every", 1)
+        train["ema_device"] = p.get("ema_device", "cpu")
     if p.get("optimizer_is_paged"):
         train["optimizer_is_paged"] = p["optimizer_is_paged"]
     if p.get("optimizer_cautious"):

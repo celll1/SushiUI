@@ -8268,8 +8268,9 @@ components:
           default: false
           description: |
             Enable an exponential moving average (EMA) of the trainable weights. When
-            enabled, an EMA snapshot is saved alongside (not instead of) each normal
-            checkpoint, with an `_ema` filename suffix.
+            enabled, a separate, fully loadable checkpoint of the EMA-averaged weights
+            is saved alongside (not instead of) each normal checkpoint, under a
+            run_name with an `_ema` suffix.
           example: false
         ema_decay:
           type: number
@@ -8277,6 +8278,26 @@ components:
           default: 0.9999
           description: Only consumed when `use_ema` is true. EMA decay factor.
           example: 0.9999
+        ema_update_every:
+          type: integer
+          default: 1
+          minimum: 1
+          description: |
+            Only consumed when `use_ema` is true. Apply the EMA update every N
+            optimizer steps instead of every step (reduces per-step overhead). The
+            decay used for each applied update is raised to the power N, so the EMA's
+            effective averaging horizon stays approximately constant regardless of N.
+          example: 1
+        ema_device:
+          type: string
+          enum: ["cpu", "cuda"]
+          default: "cpu"
+          description: |
+            Only consumed when `use_ema` is true. Where the EMA shadow tensors live.
+            `cpu` avoids extra VRAM usage (one GPU->CPU sync per applied update);
+            `cuda` keeps the shadow on the parameter's own device (no sync, uses
+            roughly one extra copy of the trainable parameters in VRAM).
+          example: "cpu"
         # Attention backend selector (training)
         attention_backend:
           type: string

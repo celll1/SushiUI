@@ -101,6 +101,8 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   lr_floor_ratio: 0.25,
   use_ema: false,
   ema_decay: 0.9999,
+  ema_update_every: 1,
+  ema_device: "cpu",
   optimizer: "adamw8bit",
   optimizer_is_paged: false,
   optimizer_cautious: false,
@@ -416,6 +418,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const lrFloorRatio = params.lr_floor_ratio ?? 0.25;
   const useEma = params.use_ema ?? false;
   const emaDecay = params.ema_decay ?? 0.9999;
+  const emaUpdateEvery = params.ema_update_every ?? 1;
+  const emaDevice = params.ema_device ?? "cpu";
   const optimizer = params.optimizer ?? "adamw8bit";
 
   // Optimizer-specific options (Phase 3c: migrated to params)
@@ -720,6 +724,8 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       lr_floor_ratio: params.lr_floor_ratio,
       use_ema: params.use_ema,
       ema_decay: params.ema_decay,
+      ema_update_every: params.ema_update_every,
+      ema_device: params.ema_device,
       optimizer: params.optimizer,
       optimizer_is_paged: params.optimizer_is_paged,
       optimizer_cautious: params.optimizer_cautious,
@@ -1022,7 +1028,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "lora_rank", "lora_alpha", "lora_dtype",
       "total_steps", "epochs",
       "batch_size", "gradient_accumulation_steps", "max_grad_norm", "learning_rate", "lr_scheduler", "lr_warmup_steps",
-      "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "optimizer",
+      "lr_decay_start_ratio", "lr_floor_ratio", "use_ema", "ema_decay", "ema_update_every", "ema_device", "optimizer",
       "optimizer_beta1", "optimizer_beta2", "optimizer_epsilon", "optimizer_weight_decay",
       "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
@@ -3644,21 +3650,48 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               </div>
               <p className="text-xs text-gray-500">
                 Maintains an exponential moving average of the trained weights and saves it
-                alongside each checkpoint (filename suffix &quot;_ema&quot;) for comparison.
+                as a separate, loadable checkpoint alongside each normal checkpoint
+                (run name suffix &quot;_ema&quot;).
               </p>
               {useEma && (
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1">EMA Decay</label>
-                  <NumberInput
-                    value={emaDecay}
-                    onCommit={(v) => updateParam("ema_decay", v)}
-                    defaultValue={0.9999}
-                    min={0}
-                    max={1}
-                    step={0.0001}
-                    parse="float"
-                    className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
-                  />
+                <div className="grid grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">EMA Decay</label>
+                    <NumberInput
+                      value={emaDecay}
+                      onCommit={(v) => updateParam("ema_decay", v)}
+                      defaultValue={0.9999}
+                      min={0}
+                      max={1}
+                      step={0.0001}
+                      parse="float"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Update Every N Steps</label>
+                    <NumberInput
+                      value={emaUpdateEvery}
+                      onCommit={(v) => updateParam("ema_update_every", Math.max(1, Math.round(v)))}
+                      defaultValue={1}
+                      min={1}
+                      step={1}
+                      parse="int"
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Decay is raised to the power N to keep the averaging horizon constant.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-400 mb-1">Shadow Device</label>
+                    <select
+                      value={emaDevice}
+                      onChange={(e) => updateParam("ema_device", e.target.value)}
+                      className="w-full px-2 py-1.5 bg-gray-900 border border-gray-700 rounded text-sm focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="cpu">CPU (no extra VRAM)</option>
+                      <option value="cuda">CUDA (no sync, uses VRAM)</option>
+                    </select>
+                  </div>
                 </div>
               )}
             </div>

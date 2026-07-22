@@ -10482,6 +10482,23 @@ class BaseTrainer(ABC):
                         try:
                             if self.optimizer is not None and self.optimizer.param_groups:
                                 self.log_extra_metric("lr", self.optimizer.param_groups[0]["lr"])
+
+                                # Also log each param group's ACTUAL LR labeled by
+                                # component, when the run trains more than one
+                                # component (e.g. UNet + TE1/TE2, or +VE) at
+                                # potentially-different LRs. Single-group runs
+                                # (e.g. ControlNet) keep only the "lr" series
+                                # above -- do not duplicate it here.
+                                # _build_component_lr_list() is only called
+                                # once per step (cached in a local) and is
+                                # itself best-effort: any mismatch/exception
+                                # just falls back to the single "lr" series.
+                                if len(self.optimizer.param_groups) > 1:
+                                    _component_lrs, _component_names = self._build_component_lr_list()
+                                    for _i, _pg in enumerate(self.optimizer.param_groups):
+                                        _name = _component_names[_i] if _i < len(_component_names) else f"g{_i}"
+                                        _key = "lr_" + re.sub(r'[^a-z0-9]+', '', _name.lower())
+                                        self.log_extra_metric(_key, float(_pg["lr"]))
                         except Exception:
                             pass
 

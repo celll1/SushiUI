@@ -148,13 +148,19 @@ export default function LossChart({ runId, isRunning }: LossChartProps) {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([key, points]) => {
         const def = extraDefs[key] || {};
+        // Any lr/lr_* series (e.g. per-component actual LRs logged by
+        // base_trainer for multi-group runs) belongs on the secondary axis
+        // even if it isn't in the registry yet -- e.g. the g{i}/lr_controlnet
+        // fallback keys base_trainer emits for components not covered by
+        // metric_registry.py's curated entries.
+        const isLrSeries = /^lr(_|$)/.test(key);
         return {
           id: `extra:${key}`,
           label: def.label || key,
           color: def.color || fallbackColor(key),
           points,
           dashed: def.dashed ?? true,
-          secondaryAxis: def.axis === "right",
+          secondaryAxis: def.axis === "right" || isLrSeries,
         } as ChartSeries;
       });
     return [...base, ...extra].filter((s) => s.points.length > 0);

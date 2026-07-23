@@ -10722,6 +10722,7 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         # Update status to "starting" immediately
         print(f"[API] Updating status to 'starting'")
         run.status = "starting"
+        run.error_message = None  # Clear stale error from a prior crash on (re)start/resume
 
         # Set started_at on first start, last_resumed_at and resumed_from_step on resume
         current_time = datetime.utcnow()

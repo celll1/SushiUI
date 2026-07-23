@@ -125,6 +125,7 @@ const DEFAULT_PARAMS: TrainingRunCreateRequest = {
   optimizer_pruning_ratio: 0.9,
   save_every: 100,
   save_every_unit: "steps",
+  max_step_saves_to_keep: null,
   sample_every: 100,
   sample_prompts: [{ positive: "", negative: "" }],
   resume_from_checkpoint: "latest",
@@ -452,6 +453,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
   const [availableCheckpoints, setAvailableCheckpoints] = useState<Array<{step: number, filename: string}>>([]);
   const saveEvery = params.save_every ?? 100;
   const saveEveryUnit = (params.save_every_unit ?? "steps") as "steps" | "epochs";
+  const maxStepSavesToKeep = params.max_step_saves_to_keep ?? null;
   const sampleEvery = params.sample_every ?? 100;
   const resumeFromCheckpoint = params.resume_from_checkpoint ?? null;
 
@@ -750,6 +752,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       } : {}),
       save_every: params.save_every,
       save_every_unit: params.save_every_unit,
+      max_step_saves_to_keep: params.max_step_saves_to_keep,
       sample_every: params.sample_every,
       sample_prompts: params.sample_prompts,
       sample_width: params.sample_width,
@@ -1033,7 +1036,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       "optimizer_is_paged", "optimizer_cautious", "optimizer_schedule_free",
       "optimizer_schedule_free_r", "optimizer_schedule_free_weight_lr_power",
       "optimizer_use_radam", "optimizer_stochastic_rounding",
-      "save_every", "save_every_unit", "resume_from_checkpoint",
+      "save_every", "save_every_unit", "max_step_saves_to_keep", "resume_from_checkpoint",
       "train_unet", "train_text_encoder", "train_image_encoder",
       "unet_lr", "text_encoder_lr", "text_encoder_1_lr", "text_encoder_2_lr", "image_encoder_lr",
       "weight_dtype", "training_dtype", "output_dtype", "vae_dtype",
@@ -1682,6 +1685,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
       loraDtype: params.lora_dtype,
       saveEvery,
       saveEveryUnit,
+      maxStepSavesToKeep,
       sampleEvery,
       resumeFromCheckpoint,
       samplePrompts,
@@ -1839,6 +1843,7 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
     if (config.loraDtype !== undefined) updateParam("lora_dtype", config.loraDtype);
     if (config.saveEvery !== undefined) updateParam("save_every", config.saveEvery);
     if (config.saveEveryUnit !== undefined) updateParam("save_every_unit", config.saveEveryUnit);
+    if (config.maxStepSavesToKeep !== undefined) updateParam("max_step_saves_to_keep", config.maxStepSavesToKeep);
     if (config.sampleEvery !== undefined) updateParam("sample_every", config.sampleEvery);
     if (config.resumeFromCheckpoint !== undefined) updateParam("resume_from_checkpoint", config.resumeFromCheckpoint);
     if (config.samplePrompts !== undefined) updateParam("sample_prompts", config.samplePrompts);
@@ -5491,6 +5496,23 @@ export default function TrainingConfig({ onClose, onRunCreated, editRunId, onRun
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
               placeholder={saveEveryUnit === "steps" ? "e.g., 100" : "e.g., 1"}
             />
+          </div>
+
+          {/* Max Checkpoints to Keep */}
+          <div>
+            <label className="block text-sm text-gray-400 mb-2">Max Checkpoints to Keep</label>
+            <input
+              type="number"
+              min="1"
+              value={maxStepSavesToKeep ?? ""}
+              onChange={(e) => updateParam("max_step_saves_to_keep", e.target.value === '' ? null : parseInt(e.target.value))}
+              onBlur={(e) => { if (e.target.value !== '' && isNaN(parseInt(e.target.value))) updateParam("max_step_saves_to_keep", null); }}
+              className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded text-sm focus:outline-none focus:border-blue-500"
+              placeholder="Method default (LoRA: 10, Full-FT: 3, ControlNet: 5)"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Number of most recent checkpoints to keep on disk (older ones are pruned). Leave empty to use the training method default.
+            </p>
           </div>
 
           {/* Resume from Checkpoint */}

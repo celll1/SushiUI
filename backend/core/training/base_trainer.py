@@ -11193,6 +11193,17 @@ class BaseTrainer(ABC):
                 except Exception as opt_error:
                     print(f"{self.log_prefix} [EMERGENCY] Failed to save optimizer state: {opt_error}")
 
+                # Try to cleanup old checkpoints (only if this emergency save actually
+                # wrote a new checkpoint -- mirrors the KeyboardInterrupt handler above).
+                # Wrapped so a cleanup failure can never mask the original emergency.
+                if checkpoint_saved:
+                    try:
+                        self._cleanup_old_checkpoints(max_step_saves_to_keep)
+                    except Exception as cleanup_error:
+                        print(f"{self.log_prefix} [EMERGENCY] Failed to cleanup old checkpoints: {cleanup_error}")
+                        import traceback
+                        traceback.print_exc()
+
             # Summary
             if checkpoint_saved or state_saved or optimizer_saved:
                 saved_items = []

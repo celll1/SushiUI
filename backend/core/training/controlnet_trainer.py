@@ -318,28 +318,77 @@ class ControlNetTrainer(BaseTrainer):
 
         print(f"{self.log_prefix} ControlNet created successfully")
 
+    def _is_complete_controlnet_checkpoint(self, p: "Path") -> bool:
+        """True if ``p`` contains actual weights, not just an mkdir'd shell.
+
+        A ``save_pretrained`` call that gets interrupted mid-write (e.g. a
+        dying/dead CUDA context during an emergency save -- see
+        ``controlnet_sdxl_adapter._save_standard_checkpoint``, which mkdirs the
+        directory BEFORE writing any weights) leaves an empty or partial
+        directory on disk. Resume-selection must skip those, or it would try
+        to load a checkpoint with no weights (or silently succeed on garbage).
+
+        Standard CN (directory): valid if it has the single-shard weights
+        file, OR the sharded index + every shard file it references (diffusers
+        ``save_pretrained`` writes ``diffusion_pytorch_model.safetensors`` when
+        the model fits in one shard, else
+        ``diffusion_pytorch_model.safetensors.index.json`` +
+        ``diffusion_pytorch_model-NNNNN-of-MMMMM.safetensors`` shards).
+        LLLite (single file): valid if the file exists and is non-empty.
+        """
+        try:
+            if p.is_dir():
+                single = p / "diffusion_pytorch_model.safetensors"
+                if single.exists() and single.stat().st_size > 0:
+                    return True
+                index_file = p / "diffusion_pytorch_model.safetensors.index.json"
+                if not index_file.exists():
+                    return False
+                import json
+                with open(index_file, "r", encoding="utf-8") as f:
+                    index = json.load(f)
+                shard_names = set(index.get("weight_map", {}).values())
+                if not shard_names:
+                    return False
+                for shard_name in shard_names:
+                    shard_path = p / shard_name
+                    if not shard_path.exists() or shard_path.stat().st_size == 0:
+                        return False
+                return True
+            else:
+                return p.exists() and p.stat().st_size > 0
+        except Exception:
+            return False
+
     def _find_latest_controlnet_checkpoint(self) -> "Optional[Path]":
-        """Return the highest-step ControlNet checkpoint under output_dir, or None.
+        """Return the highest-step COMPLETE ControlNet checkpoint under
+        output_dir, or None.
 
         Standard CN saves DIRECTORY checkpoints (``{run}_controlnet_step_NNNNNN/``);
         LLLite saves single ``{run}_lllite_step_NNNNNN.safetensors`` files. Mirrors
-        the naming in save_checkpoint().
+        the naming in save_checkpoint(). Candidates are walked highest-step-first
+        and the first one that passes ``_is_complete_controlnet_checkpoint`` wins,
+        so a broken/partial emergency-save directory (weights-less mkdir shell)
+        is transparently skipped in favor of the last good periodic checkpoint.
         """
         import re
         if self.controlnet_type == "standard":
             candidates = [p for p in self.output_dir.glob(f"{self.run_name}_controlnet_step_*") if p.is_dir()]
         else:
             candidates = list(self.output_dir.glob(f"{self.run_name}_lllite_step_*.safetensors"))
-        best = None
-        best_step = -1
+        steps = []
         for p in candidates:
             m = re.search(r"_step_(\d+)", p.stem)
             if not m:
                 continue
-            step = int(m.group(1))
-            if step > best_step:
-                best_step, best = step, p
-        return best
+            steps.append((int(m.group(1)), p))
+        steps.sort(key=lambda t: t[0], reverse=True)
+        for step, p in steps:
+            if self._is_complete_controlnet_checkpoint(p):
+                return p
+            print(f"{self.log_prefix} Resume: skipping incomplete checkpoint "
+                  f"{p.name} (step {step}, no weights found)")
+        return None
 
     def _resume_controlnet_weights(self):
         """Load ControlNet adapter weights for resume and record the checkpoint

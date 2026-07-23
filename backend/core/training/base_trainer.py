@@ -42,6 +42,16 @@ from core.attention import (
 )
 
 
+class FatalCudaError(RuntimeError):
+    """Raised when a CUDA error is classified as "fatal" (context presumed
+    dead: e.g. cudaErrorLaunchFailure / illegal memory access). Subclasses
+    RuntimeError so pre-existing ``except RuntimeError`` sites (including
+    third-party/library code) still catch it, but callers that specifically
+    want to distinguish it from a recoverable OOM can ``except FatalCudaError``.
+    """
+    pass
+
+
 def _vramdiag(tag: str):
     """Compact CUDA-memory snapshot print (used behind the debug_vram flag)."""
     try:
@@ -4556,11 +4566,99 @@ class BaseTrainer(ABC):
     # OOM Recovery: Batch Splitting
     # ============================================================
 
+    # Substrings that unambiguously indicate a recoverable allocation failure
+    # (retrying with a smaller batch / offload can succeed).
+    _CUDA_OOM_MARKERS = (
+        "out of memory", "cannot allocate memory", "cublas_status_alloc_failed",
+        "cudnn_status_alloc_failed", "cufft_alloc_failed",
+    )
+    # Substrings that indicate the CUDA context itself is corrupted (sticky --
+    # every subsequent CUDA call on this process will keep failing). Retrying
+    # is futile; only CPU-side/host state can still be salvaged.
+    _CUDA_FATAL_MARKERS = (
+        "unspecified launch failure", "illegal memory access", "device-side assert",
+        "misaligned address", "uncorrectable ecc", "ecc error", "launch timed out",
+        "invalid device context", "driver shutting down",
+    )
+
     @staticmethod
-    def _is_cuda_oom(e: Exception) -> bool:
+    def _cuda_context_alive() -> bool:
+        """Cheap canary probe: can we still issue CUDA ops on this process?
+
+        Used to resolve AMBIGUOUS CUDA error strings (bare "cuda error",
+        "cublas_status_execution_failed", or bare cudnn/cusparse/cufft mentions
+        without an alloc-failure marker) that could be either a transient OOM
+        or a dead context. Side-effect-free beyond a tiny allocation.
+        """
+        try:
+            if not torch.cuda.is_available():
+                return False
+            return bool((torch.zeros(8, device="cuda") + 1).sum().item() == 8)
+        except Exception:
+            return False
+
+    @classmethod
+    def _classify_cuda_error(cls, e: Exception) -> str:
+        """Classify an exception as "oom" (recoverable), "fatal" (CUDA context
+        presumed dead, do not retry), or "not_cuda" (unrelated to CUDA).
+
+        IMPORTANT: this is the single source of truth for CUDA-error triage --
+        every call site (proactive/reactive OOM recovery, the outer safety
+        net, the emergency-save handler) must go through this classifier so
+        "oom" behavior stays byte-for-byte identical to before this change.
+        """
+        try:
+            if isinstance(e, torch.OutOfMemoryError):
+                return "oom"
+        except Exception:
+            pass
         s = str(e).lower()
-        return ("out of memory" in s or "cuda error" in s or "cublas" in s
-                or "cudnn" in s or "cusparse" in s or "cufft" in s)
+        if any(m in s for m in cls._CUDA_OOM_MARKERS):
+            return "oom"
+        if any(m in s for m in cls._CUDA_FATAL_MARKERS):
+            return "fatal"
+        # Ambiguous residue: a CUDA-flavored message with neither an explicit
+        # alloc-failure nor a known-fatal marker (e.g. bare "cuda error",
+        # "cublas_status_execution_failed", or bare cudnn/cusparse/cufft).
+        is_ambiguous_cuda = (
+            "cuda error" in s or "cublas" in s or "cudnn" in s or "cusparse" in s or "cufft" in s
+        )
+        if not is_ambiguous_cuda:
+            return "not_cuda"
+        return "oom" if cls._cuda_context_alive() else "fatal"
+
+    @classmethod
+    def _is_cuda_oom(cls, e: Exception) -> bool:
+        """Back-compat wrapper: True only for the recoverable "oom" class."""
+        return cls._classify_cuda_error(e) == "oom"
+
+    def _cleanup_incomplete_step_checkpoint_dir(self, step: int) -> None:
+        """Best-effort: remove a DIRECTORY-style checkpoint for ``step`` if it
+        exists but has no weights file (e.g. diffusers ``save_pretrained``
+        mkdir'd the directory but a dead/erroring CUDA context aborted the
+        write before any weights were serialized -- see
+        ``controlnet_sdxl_adapter._save_standard_checkpoint``).
+
+        Only directories are considered; single-file checkpoints
+        (``*.safetensors``) are effectively atomic writes and are left alone.
+        Silently no-ops if nothing needs cleaning or on any error -- this is
+        a hygiene step for resume, never allowed to mask the original error.
+        """
+        try:
+            pattern = f"{self.run_name}*_step_{step:06d}"
+            for p in self.output_dir.glob(pattern):
+                if not p.is_dir():
+                    continue
+                has_weights = (
+                    (p / "diffusion_pytorch_model.safetensors").exists()
+                    or (p / "diffusion_pytorch_model.safetensors.index.json").exists()
+                )
+                if not has_weights:
+                    import shutil
+                    shutil.rmtree(p, ignore_errors=True)
+                    print(f"{self.log_prefix} [EMERGENCY] Removed incomplete checkpoint dir: {p.name}")
+        except Exception:
+            pass
 
     def _oom_recovery_cleanup(self) -> None:
         """Release tensors/cache after a CUDA OOM so a retry starts clean."""
@@ -4776,8 +4874,15 @@ class BaseTrainer(ABC):
                 return loss, pred_loss, recon_loss, False  # success
 
             except RuntimeError as e:
-                if not self._is_cuda_oom(e):
+                _cls = self._classify_cuda_error(e)
+                if _cls == "not_cuda":
                     raise
+                if _cls == "fatal":
+                    # Sticky CUDA-context corruption -- retrying (offload / micro-batch)
+                    # is futile and would just burn time before the same error recurs.
+                    # Do NOT set _actdispatch_oom / _batch_was_unfittable: those are
+                    # OOM-only signals that must not be poisoned by a dying context.
+                    raise FatalCudaError(str(e)) from e
                 self._actdispatch_oom = True  # tell dispatch_end to flag this bucket
                 # REACTIVE recovery. With the memory-fraction cap an over-budget
                 # allocation RAISES here instead of silently spilling to shared host
@@ -4814,8 +4919,11 @@ class BaseTrainer(ABC):
                             _disp_info[3] = "offload"
                             return loss, pred_loss, recon_loss, False
                         except RuntimeError as e_off:
-                            if not self._is_cuda_oom(e_off):
+                            _cls_off = self._classify_cuda_error(e_off)
+                            if _cls_off == "not_cuda":
                                 raise
+                            if _cls_off == "fatal":
+                                raise FatalCudaError(str(e_off)) from e_off
                             e = e_off
                             self._oom_recovery_cleanup()
                 for _retry_micro in (max(1, batch_size // 2), 1):
@@ -4827,8 +4935,11 @@ class BaseTrainer(ABC):
                         loss, pred_loss, recon_loss = self._microbatch_two_stage(_retry_micro, eff_bs, _batch)
                         return loss, pred_loss, recon_loss, False
                     except RuntimeError as e2:
-                        if not self._is_cuda_oom(e2):
+                        _cls2 = self._classify_cuda_error(e2)
+                        if _cls2 == "not_cuda":
                             raise
+                        if _cls2 == "fatal":
+                            raise FatalCudaError(str(e2)) from e2
                         e = e2
                         self._oom_recovery_cleanup()
                 # Even micro-batch=1 OOMs -> the bucket can't fit a single sample.
@@ -10388,16 +10499,22 @@ class BaseTrainer(ABC):
                                 mnt_time_ids=mnt_time_ids,
                                 loss_weight_maps_batch=loss_weight_maps_batch,
                             )
+                        except FatalCudaError:
+                            # Sticky CUDA-context corruption, already classified by the
+                            # inner recovery path -- do not swallow it here. Re-raise so
+                            # the outer emergency-save handler gets a chance to save
+                            # whatever CPU-side state is still salvageable and exit.
+                            raise
                         except Exception as batch_error:
                             # Final safety net: if all OOM recovery attempts failed,
-                            # skip this batch and continue training
-                            error_str = str(batch_error).lower()
-                            is_cuda_error = (
-                                "out of memory" in error_str or
-                                "cuda error" in error_str or
-                                "cublas" in error_str or
-                                "cudnn" in error_str
-                            )
+                            # skip this batch and continue training. Use the single
+                            # classifier so this stays in lockstep with the inner
+                            # recovery path -- only a genuinely recoverable OOM is
+                            # swallowed here; a fatal CUDA error is re-raised.
+                            _cls_outer = self._classify_cuda_error(batch_error)
+                            if _cls_outer == "fatal":
+                                raise FatalCudaError(str(batch_error)) from batch_error
+                            is_cuda_error = _cls_outer == "oom"
                             if is_cuda_error:
                                 print(f"{self.log_prefix} [FATAL CUDA Error] All recovery attempts failed, SKIPPING BATCH")
                                 print(f"{self.log_prefix} [FATAL CUDA Error] {str(batch_error)[:200]}")
@@ -10988,54 +11105,93 @@ class BaseTrainer(ABC):
             print(f"\n{self.log_prefix} [EMERGENCY] Training failed with error: {type(e).__name__}: {str(e)[:200]}")
             print(f"{self.log_prefix} [EMERGENCY] Attempting to save emergency checkpoint at step {global_step}, epoch {epoch}...")
 
-            # For CUDA errors, first try to move model to CPU to free GPU memory
-            try:
-                print(f"{self.log_prefix} [EMERGENCY] Moving model to CPU to free GPU memory...")
-                self.move_main_model_to_cpu()
-                self.move_text_encoder_to_cpu()
-                self.move_vae_to_cpu()
-            except Exception as move_error:
-                print(f"{self.log_prefix} [EMERGENCY] Failed to move model to CPU: {move_error}")
+            # Probe FIRST: a "fatal" CUDA error (FatalCudaError) means the context is
+            # presumed dead, but even a plain Exception could be a fatal CUDA error
+            # that unwound through non-RuntimeError frames, so always probe rather
+            # than trusting the exception type alone.
+            _ctx_alive = self._cuda_context_alive() if torch.cuda.is_available() else True
 
-            # Try to clear CUDA cache (may fail if context is corrupted)
-            try:
-                import gc
-                gc.collect()
-                torch.cuda.synchronize()
-                torch.cuda.empty_cache()
-            except Exception:
-                pass  # Ignore - CUDA may be in bad state
+            if not _ctx_alive:
+                print(f"{self.log_prefix} [EMERGENCY] CUDA context corrupted; weights at step "
+                      f"{global_step} are unrecoverable -- resume from the last periodic checkpoint")
+                # Every CUDA-touching step below is skipped: moving modules to CPU,
+                # cuda.synchronize/empty_cache, save_checkpoint (model weights),
+                # save_optimizer_state / save_ema_state (optimizer/EMA tensors are on
+                # CUDA), all require a working CUDA context and would themselves raise
+                # (this is exactly how run112's emergency save cascade-failed).
+                checkpoint_saved = False
+                optimizer_saved = False
+                # Do NOT write a training-state JSON here either: it would record
+                # global_step/epoch/batch_idx with NO matching model checkpoint
+                # (checkpoint_saved=False above), and a mid-epoch resume pairs
+                # state.json's batch_idx with the model weights of the SAME step --
+                # writing it would actively mislead resume into either failing to
+                # find weights at that step or (worse) silently resuming from an
+                # older checkpoint's weights with a newer/mismatched batch_idx.
+                # Skipping it here means resume cleanly falls back to the last
+                # periodic checkpoint + its own (paired, valid) state.json.
+                state_saved = False
+                print(f"{self.log_prefix} [EMERGENCY] Skipping model/optimizer/state save "
+                      f"(dead CUDA context) -- only closing CPU-side resources")
+                # Best-effort: remove a directory-style checkpoint for THIS step if
+                # some earlier stage (e.g. a periodic save racing the same failure)
+                # left an incomplete one (mkdir'd but never populated with weights --
+                # see controlnet_sdxl_adapter._save_standard_checkpoint). File-style
+                # checkpoints (.safetensors) are not touched; they aren't at risk of
+                # this partial-mkdir failure mode.
+                self._cleanup_incomplete_step_checkpoint_dir(global_step)
+            else:
+                # For CUDA errors, first try to move model to CPU to free GPU memory
+                try:
+                    print(f"{self.log_prefix} [EMERGENCY] Moving model to CPU to free GPU memory...")
+                    self.move_main_model_to_cpu()
+                    self.move_text_encoder_to_cpu()
+                    self.move_vae_to_cpu()
+                except Exception as move_error:
+                    print(f"{self.log_prefix} [EMERGENCY] Failed to move model to CPU: {move_error}")
 
-            # Try to save checkpoint
-            checkpoint_saved = False
-            try:
-                self.save_checkpoint(step=global_step, epoch=epoch)
-                checkpoint_saved = True
-                print(f"{self.log_prefix} [EMERGENCY] Checkpoint saved successfully")
-            except Exception as save_error:
-                print(f"{self.log_prefix} [EMERGENCY] Failed to save checkpoint: {save_error}")
-                import traceback
-                traceback.print_exc()
+                # Try to clear CUDA cache (may fail if context is corrupted)
+                try:
+                    import gc
+                    gc.collect()
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass  # Ignore - CUDA may be in bad state
 
-            # Try to save training state
-            state_saved = False
-            try:
-                self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
-                state_saved = True
-                print(f"{self.log_prefix} [EMERGENCY] Training state saved successfully")
-            except Exception as state_error:
-                print(f"{self.log_prefix} [EMERGENCY] Failed to save training state: {state_error}")
+                # Try to save checkpoint
+                checkpoint_saved = False
+                try:
+                    self.save_checkpoint(step=global_step, epoch=epoch)
+                    checkpoint_saved = True
+                    print(f"{self.log_prefix} [EMERGENCY] Checkpoint saved successfully")
+                except Exception as save_error:
+                    print(f"{self.log_prefix} [EMERGENCY] Failed to save checkpoint: {save_error}")
+                    import traceback
+                    traceback.print_exc()
+                    # The save may have mkdir'd a directory-style checkpoint before
+                    # failing mid-write; don't leave it for resume to trip over.
+                    self._cleanup_incomplete_step_checkpoint_dir(global_step)
 
-            # Try to save optimizer state
-            optimizer_saved = False
-            try:
-                self.save_optimizer_state(step=global_step)
-                self.save_ema_state(step=global_step)
-                self._save_ema_checkpoint(step=global_step, epoch=epoch)
-                optimizer_saved = True
-                print(f"{self.log_prefix} [EMERGENCY] Optimizer state saved successfully")
-            except Exception as opt_error:
-                print(f"{self.log_prefix} [EMERGENCY] Failed to save optimizer state: {opt_error}")
+                # Try to save training state
+                state_saved = False
+                try:
+                    self.save_training_state(step=global_step, epoch=epoch, batch_idx=batch_idx + 1, multi_noise_timesteps=multi_noise_timesteps)
+                    state_saved = True
+                    print(f"{self.log_prefix} [EMERGENCY] Training state saved successfully")
+                except Exception as state_error:
+                    print(f"{self.log_prefix} [EMERGENCY] Failed to save training state: {state_error}")
+
+                # Try to save optimizer state
+                optimizer_saved = False
+                try:
+                    self.save_optimizer_state(step=global_step)
+                    self.save_ema_state(step=global_step)
+                    self._save_ema_checkpoint(step=global_step, epoch=epoch)
+                    optimizer_saved = True
+                    print(f"{self.log_prefix} [EMERGENCY] Optimizer state saved successfully")
+                except Exception as opt_error:
+                    print(f"{self.log_prefix} [EMERGENCY] Failed to save optimizer state: {opt_error}")
 
             # Summary
             if checkpoint_saved or state_saved or optimizer_saved:

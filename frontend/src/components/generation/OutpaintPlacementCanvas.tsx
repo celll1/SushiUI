@@ -14,6 +14,9 @@ const clamp = (value: number, min: number, max: number): number => Math.min(Math
 
 const MIN_PLACE_SIZE = 8;
 const PREVIEW_MAX_DIM = 480;
+// Minimum on-screen separation (px) two fingers must reach before a pinch
+// gesture "starts" (snapshots dist/axis/place) -- see maybeStartPinch.
+const MIN_PINCH_DIST = 12;
 
 // Resolves the backend's "input_crop_w/h <= 0 means to the input's edge"
 // sentinel (see validate_and_snap_placement in outpaint_utils.py) to a
@@ -53,6 +56,12 @@ interface OutpaintPlacementCanvasProps {
   inputImageSize: { width: number; height: number } | null;
   params: OutpaintPlacementParams;
   onChange: (patch: Partial<OutpaintPlacementParams>) => void;
+  // Lifted to the parent panel (was local state here) so panel-level
+  // handlers -- new-image reset, "Reset Placement" -- can also drive it.
+  // Governs Ctrl+drag RESIZE mode AND the default no-Ctrl CROP-drag mode
+  // (see onPointerMove); Shift inverts it for the current drag either way.
+  maintainAspect: boolean;
+  onMaintainAspectChange: (value: boolean) => void;
 }
 
 type DragMode = "move" | "resize-nw" | "resize-ne" | "resize-sw" | "resize-se" | null;
@@ -86,6 +95,8 @@ export default function OutpaintPlacementCanvas({
   inputImageSize,
   params,
   onChange,
+  maintainAspect,
+  onMaintainAspectChange,
 }: OutpaintPlacementCanvasProps) {
   const {
     canvas_width: canvasWidth,
@@ -103,9 +114,8 @@ export default function OutpaintPlacementCanvas({
   } = params;
 
   const [snapEnabled, setSnapEnabled] = useState(true);
-  // Governs Ctrl+drag RESIZE mode only (normal drag is always a
-  // non-distorting crop -- see onPointerMove). Default ON per spec.
-  const [maintainAspect, setMaintainAspect] = useState(true);
+  // maintainAspect/onMaintainAspectChange are now props (lifted to
+  // OutpaintPanel) -- see OutpaintPlacementCanvasProps above.
   const [dragMode, setDragMode] = useState<DragMode>(null);
   const dragStartRef = useRef<DragStart | null>(null);
   // The ACTUAL kind of change last applied by onPointerMove during the
@@ -166,10 +176,127 @@ export default function OutpaintPlacementCanvas({
     onChange(patch);
   };
 
+  // --- Two-finger pinch resize (touch) -------------------------------------
+  // Desktop mouse/Ctrl-drag is entirely untouched by this: a mouse only ever
+  // produces a single simultaneous pointer, so activePointersRef never
+  // reaches size 2 for it and none of the pinch branches below ever engage.
+  const pts = (map: Map<number, { x: number; y: number }>) => Array.from(map.entries());
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStartRef = useRef<{
+    dist: number;
+    axis: "both" | "w" | "h";
+    place: { x: number; y: number; w: number; h: number };
+    pointerIds: [number, number];
+  } | null>(null);
+
+  // Registers every pointer that goes down, from BOTH the container-level
+  // background pointerdown AND startDrag (rect/move + the 4 corner handles)
+  // -- a pinch may land its 2nd finger on either. A 2nd finger landing
+  // always aborts whatever single-pointer move/resize/crop drag was in
+  // progress (dragMode/dragStartRef nulled here); the actual pinch-start
+  // SNAPSHOT (dist/axis/place) is deferred to maybeStartPinch below until
+  // the fingers have spread apart enough to read a stable axis. A 3rd+
+  // pointer is registered (so its later pointerup is a correctly-ignored
+  // no-op) but otherwise has zero effect -- handlePinchMove/maybeStartPinch
+  // only ever look at the first two REGISTERED pointer ids.
+  const registerPointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointersRef.current.size === 2) {
+      setDragMode(null);
+      dragStartRef.current = null;
+      lastDragKindRef.current = null;
+      pinchStartRef.current = null;
+    }
+  };
+
+  const maybeStartPinch = () => {
+    const entries = pts(activePointersRef.current);
+    if (entries.length < 2) return;
+    const [[idA, a], [idB, b]] = entries; // first two REGISTERED pointers only (3rd+ ignored)
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const distNow = Math.hypot(dx, dy);
+    if (distNow < MIN_PINCH_DIST) return; // still too close together -- defer
+
+    // Axis decided ONCE here (not re-evaluated per-move, to avoid jitter):
+    // "maintainAspect" pinches both axes together; otherwise the angle of
+    // the line BETWEEN the two fingers picks which single axis the pinch
+    // targets (near-horizontal spread -> width, near-vertical -> height,
+    // diagonal -> both).
+    const axis: "both" | "w" | "h" = maintainAspect
+      ? "both"
+      : (() => {
+          const thetaDeg = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
+          if (thetaDeg < 30) return "w";
+          if (thetaDeg > 60) return "h";
+          return "both";
+        })();
+
+    pinchStartRef.current = {
+      dist: distNow,
+      axis,
+      place: { x: placeX, y: placeY, w: placeWidth, h: placeHeight },
+      pointerIds: [idA, idB],
+    };
+  };
+
+  const handlePinchMove = () => {
+    const start = pinchStartRef.current;
+    if (!start || start.dist <= 0) return;
+    const a = activePointersRef.current.get(start.pointerIds[0]);
+    const b = activePointersRef.current.get(start.pointerIds[1]);
+    if (!a || !b) return; // one of the 2 pinch pointers isn't tracked (shouldn't happen mid-pinch)
+
+    const curDist = Math.hypot(b.x - a.x, b.y - a.y);
+    const r = curDist / start.dist;
+    const { w, h, x, y } = start.place;
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+
+    let newW = w;
+    let newH = h;
+    if (start.axis === "both") {
+      const rMin = MIN_PLACE_SIZE / Math.min(w, h);
+      const rMax = Math.min(canvasWidth / w, canvasHeight / h);
+      const rClamped = clamp(r, rMin, Math.max(rMin, rMax));
+      newW = w * rClamped;
+      newH = h * rClamped;
+    } else if (start.axis === "w") {
+      newW = clamp(w * r, MIN_PLACE_SIZE, canvasWidth);
+    } else {
+      newH = clamp(h * r, MIN_PLACE_SIZE, canvasHeight);
+    }
+
+    const newX = clamp(Math.round(cx - newW / 2), 0, Math.max(0, canvasWidth - newW));
+    const newY = clamp(Math.round(cy - newH / 2), 0, Math.max(0, canvasHeight - newH));
+
+    lastDragKindRef.current = "resize";
+    onChange({
+      place_x: newX,
+      place_y: newY,
+      place_width: Math.round(newW),
+      place_height: Math.round(newH),
+    });
+  };
+
+  const handleContainerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    registerPointer(e);
+  };
+  // --- end two-finger pinch resize ------------------------------------------
+
   const startDrag = (mode: DragMode) => (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    registerPointer(e);
+    if (activePointersRef.current.size >= 2) {
+      // A 2nd (or 3rd+) finger landing directly on the rect/handle -- a
+      // pinch takes over (registerPointer already aborted any in-progress
+      // single-pointer drag above); never start a new one for this pointer.
+      return;
+    }
     setDragMode(mode);
     const resolvedCrop = resolveCropRect(inputCropX, inputCropY, inputCropW, inputCropH, inputNativeW, inputNativeH);
     dragStartRef.current = {
@@ -187,6 +314,24 @@ export default function OutpaintPlacementCanvas({
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Keep this pointer's live position current for pinch distance/axis math
+    // (a harmless no-op for any pointer not involved in a pinch).
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    if (pinchStartRef.current) {
+      handlePinchMove();
+      return;
+    }
+    if (activePointersRef.current.size === 2) {
+      // 2 fingers down but not yet spread past MIN_PINCH_DIST -- crop/move
+      // never runs mid-(pending-)pinch; just check whether it's time to
+      // snapshot the pinch start now.
+      maybeStartPinch();
+      return;
+    }
+
     if (!dragMode || !dragStartRef.current) return;
     const start = dragStartRef.current;
     const dx = (e.clientX - start.mouseX) / scale;
@@ -221,15 +366,44 @@ export default function OutpaintPlacementCanvas({
       // interaction pattern as most image editors' free-transform tools.
       const effectiveAspectLock = maintainAspect !== e.shiftKey;
       if (effectiveAspectLock && start.placeHeight > 0) {
-        const aspect = start.placeWidth / start.placeHeight;
-        newH = newW / aspect;
-        if (dragMode.includes("n")) newY = start.placeY + start.placeHeight - newH;
-      }
+        // Width is always the driver axis here (matches the pre-existing
+        // newH = newW / aspect derivation); what's new is that ALL bounds
+        // (both axes, plus the anchored-edge limits) are intersected in
+        // W-space BEFORE deriving H, so a corner drag that would have hit an
+        // H-axis bound can no longer silently distort the ratio the way an
+        // independent per-axis clamp would.
+        const aspect = start.placeWidth / start.placeHeight; // W:H, preserved exactly
+        let minW = MIN_PLACE_SIZE;
+        let maxW = canvasWidth;
+        // H-bounds [MIN_PLACE_SIZE, canvasHeight], expressed in W-space (W = H * aspect).
+        minW = Math.max(minW, MIN_PLACE_SIZE * aspect);
+        maxW = Math.min(maxW, canvasHeight * aspect);
 
-      newW = clamp(newW, MIN_PLACE_SIZE, canvasWidth);
-      newH = clamp(newH, MIN_PLACE_SIZE, canvasHeight);
-      newX = clamp(newX, 0, canvasWidth - newW);
-      newY = clamp(newY, 0, canvasHeight - newH);
+        if (dragMode.includes("e")) {
+          // Left edge anchored at start.placeX -- newX stays start.placeX.
+          maxW = Math.min(maxW, canvasWidth - start.placeX);
+        } else if (dragMode.includes("w")) {
+          // Right edge anchored at start.placeX + start.placeWidth.
+          maxW = Math.min(maxW, start.placeX + start.placeWidth);
+        }
+        if (dragMode.includes("s")) {
+          // Top edge anchored at start.placeY (H-bound, in W-space).
+          maxW = Math.min(maxW, (canvasHeight - start.placeY) * aspect);
+        } else if (dragMode.includes("n")) {
+          // Bottom edge anchored at start.placeY + start.placeHeight.
+          maxW = Math.min(maxW, (start.placeY + start.placeHeight) * aspect);
+        }
+
+        newW = clamp(newW, minW, Math.max(minW, maxW));
+        newH = newW / aspect;
+        newX = dragMode.includes("w") ? start.placeX + start.placeWidth - newW : start.placeX;
+        newY = dragMode.includes("n") ? start.placeY + start.placeHeight - newH : start.placeY;
+      } else {
+        newW = clamp(newW, MIN_PLACE_SIZE, canvasWidth);
+        newH = clamp(newH, MIN_PLACE_SIZE, canvasHeight);
+        newX = clamp(newX, 0, canvasWidth - newW);
+        newY = clamp(newY, 0, canvasHeight - newH);
+      }
 
       onChange({
         place_x: Math.round(newX),
@@ -269,32 +443,96 @@ export default function OutpaintPlacementCanvas({
     const minCropW = Math.max(1, MIN_PLACE_SIZE / sx);
     const minCropH = Math.max(1, MIN_PLACE_SIZE / sy);
 
-    let newCropW = start.cropW;
-    let newCropX = start.cropX;
-    if (dragMode.includes("e")) {
-      const maxCropW = Math.min(inW - start.cropX, (canvasWidth - start.placeX) / sx);
-      newCropW = clamp(start.cropW + dx / sx, minCropW, Math.max(minCropW, maxCropW));
-      newCropX = start.cropX;
-    } else if (dragMode.includes("w")) {
-      const rightEdgeInput = start.cropX + start.cropW;
-      const rightEdgeCanvas = start.placeX + start.placeWidth;
-      const maxCropW = Math.min(rightEdgeInput, rightEdgeCanvas / sx);
-      newCropW = clamp(start.cropW - dx / sx, minCropW, Math.max(minCropW, maxCropW));
-      newCropX = rightEdgeInput - newCropW;
-    }
+    // "Maintain aspect ratio" (same Shift-invertible flag as the Ctrl-resize
+    // branch above) also governs this default crop-drag now -- there are no
+    // separate side handles (only the 4 corner handles: nw/ne/sw/se, see
+    // `handles` below), so every crop-drag here always touches BOTH axes
+    // and a lock is meaningful. When locked, the crop rect's aspect ratio
+    // (start.cropW / start.cropH) is preserved exactly; place is then
+    // derived from crop at the fixed sx/sy scale as before, so place's
+    // aspect ends up exactly preserved too. Unlocked keeps the original,
+    // fully independent per-axis crop math (byte-identical).
+    const effectiveAspectLock = maintainAspect !== e.shiftKey;
 
-    let newCropH = start.cropH;
-    let newCropY = start.cropY;
-    if (dragMode.includes("s")) {
-      const maxCropH = Math.min(inH - start.cropY, (canvasHeight - start.placeY) / sy);
-      newCropH = clamp(start.cropH + dy / sy, minCropH, Math.max(minCropH, maxCropH));
+    let newCropW: number;
+    let newCropX: number;
+    let newCropH: number;
+    let newCropY: number;
+
+    if (effectiveAspectLock && start.cropW > 0 && start.cropH > 0) {
+      const ar = start.cropW / start.cropH; // crop-space W:H, preserved exactly
+
+      // Desired (unclamped) size along each dragged axis independently --
+      // used ONLY to pick the DRIVER axis (whichever the user moved further,
+      // relative to its own start size), so a diagonal drag doesn't
+      // arbitrarily prefer one axis over the other.
+      let desiredW = start.cropW;
+      if (dragMode.includes("e")) desiredW = start.cropW + dx / sx;
+      else if (dragMode.includes("w")) desiredW = start.cropW - dx / sx;
+      let desiredH = start.cropH;
+      if (dragMode.includes("s")) desiredH = start.cropH + dy / sy;
+      else if (dragMode.includes("n")) desiredH = start.cropH - dy / sy;
+
+      const relW = Math.abs(desiredW - start.cropW) / start.cropW;
+      const relH = Math.abs(desiredH - start.cropH) / start.cropH;
+      const wantW = relH > relW ? desiredH * ar : desiredW;
+
+      // Joint-clamp in W-space: intersect the W-axis's own bounds with the
+      // H-axis's bounds converted through `ar` (mirrors the Ctrl-resize
+      // branch's W-space joint clamp), using the SAME per-edge input/canvas
+      // bounds as the unlocked branch below.
+      let minW = Math.max(minCropW, minCropH * ar);
+      let maxW = inW;
+
+      if (dragMode.includes("e")) {
+        maxW = Math.min(maxW, inW - start.cropX, (canvasWidth - start.placeX) / sx);
+      } else if (dragMode.includes("w")) {
+        const rightEdgeInput = start.cropX + start.cropW;
+        const rightEdgeCanvas = start.placeX + start.placeWidth;
+        maxW = Math.min(maxW, rightEdgeInput, rightEdgeCanvas / sx);
+      }
+      if (dragMode.includes("s")) {
+        const maxCropH = Math.min(inH - start.cropY, (canvasHeight - start.placeY) / sy);
+        maxW = Math.min(maxW, maxCropH * ar);
+      } else if (dragMode.includes("n")) {
+        const bottomEdgeInput = start.cropY + start.cropH;
+        const bottomEdgeCanvas = start.placeY + start.placeHeight;
+        const maxCropH = Math.min(bottomEdgeInput, bottomEdgeCanvas / sy);
+        maxW = Math.min(maxW, maxCropH * ar);
+      }
+
+      newCropW = clamp(wantW, minW, Math.max(minW, maxW));
+      newCropH = newCropW / ar;
+      newCropX = dragMode.includes("w") ? start.cropX + start.cropW - newCropW : start.cropX;
+      newCropY = dragMode.includes("n") ? start.cropY + start.cropH - newCropH : start.cropY;
+    } else {
+      newCropW = start.cropW;
+      newCropX = start.cropX;
+      if (dragMode.includes("e")) {
+        const maxCropW = Math.min(inW - start.cropX, (canvasWidth - start.placeX) / sx);
+        newCropW = clamp(start.cropW + dx / sx, minCropW, Math.max(minCropW, maxCropW));
+        newCropX = start.cropX;
+      } else if (dragMode.includes("w")) {
+        const rightEdgeInput = start.cropX + start.cropW;
+        const rightEdgeCanvas = start.placeX + start.placeWidth;
+        const maxCropW = Math.min(rightEdgeInput, rightEdgeCanvas / sx);
+        newCropW = clamp(start.cropW - dx / sx, minCropW, Math.max(minCropW, maxCropW));
+        newCropX = rightEdgeInput - newCropW;
+      }
+
+      newCropH = start.cropH;
       newCropY = start.cropY;
-    } else if (dragMode.includes("n")) {
-      const bottomEdgeInput = start.cropY + start.cropH;
-      const bottomEdgeCanvas = start.placeY + start.placeHeight;
-      const maxCropH = Math.min(bottomEdgeInput, bottomEdgeCanvas / sy);
-      newCropH = clamp(start.cropH - dy / sy, minCropH, Math.max(minCropH, maxCropH));
-      newCropY = bottomEdgeInput - newCropH;
+      if (dragMode.includes("s")) {
+        const maxCropH = Math.min(inH - start.cropY, (canvasHeight - start.placeY) / sy);
+        newCropH = clamp(start.cropH + dy / sy, minCropH, Math.max(minCropH, maxCropH));
+        newCropY = start.cropY;
+      } else if (dragMode.includes("n")) {
+        const bottomEdgeInput = start.cropY + start.cropH;
+        const bottomEdgeCanvas = start.placeY + start.placeHeight;
+        const maxCropH = Math.min(bottomEdgeInput, bottomEdgeCanvas / sy);
+        newCropH = clamp(start.cropH - dy / sy, minCropH, Math.max(minCropH, maxCropH));
+        newCropY = bottomEdgeInput - newCropH;
+      }
     }
 
     // Place is derived FROM the (already fully clamped) crop at the locked
@@ -317,16 +555,31 @@ export default function OutpaintPlacementCanvas({
   };
 
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!dragMode) return;
-    // The ACTUAL applied kind for this drag (not just "which handle was
-    // grabbed" -- dragMode alone can't distinguish Ctrl-resize from a
-    // no-Ctrl crop-drag on the same handle). null if pointerup fired
-    // without any pointermove (a plain click) -- nothing changed, so no
-    // snap-driven patch is needed either way.
+    // A pinch pointer lifting always ENDS the whole pinch gesture (never
+    // downgrades to a single-pointer drag with whichever finger remains) --
+    // all fingers must be lifted before any new gesture can begin. An
+    // ignored 3rd+ finger's pointerup (its id isn't one of the pinch's own
+    // 2 pointerIds) intentionally falls through to the `!dragMode` bail
+    // below and changes nothing.
+    const pinchStart = pinchStartRef.current;
+    const isPinchPointer = !!pinchStart && (e.pointerId === pinchStart.pointerIds[0] || e.pointerId === pinchStart.pointerIds[1]);
+    activePointersRef.current.delete(e.pointerId);
+
+    if (!dragMode && !isPinchPointer) return;
+    // The ACTUAL applied kind for this drag/gesture (not just "which handle
+    // was grabbed" -- dragMode alone can't distinguish Ctrl-resize from a
+    // no-Ctrl crop-drag on the same handle, and a pinch gesture never sets
+    // dragMode at all -- handlePinchMove sets this to "resize" on every
+    // pinch move instead, so this release-time snap is shared verbatim).
+    // null if pointerup fired without any pointermove (a plain click) --
+    // nothing changed, so no snap-driven patch is needed either way.
     const kind = lastDragKindRef.current;
     setDragMode(null);
     dragStartRef.current = null;
     lastDragKindRef.current = null;
+    if (isPinchPointer) {
+      pinchStartRef.current = null;
+    }
     if (snapEnabled && kind) {
       const patch: Partial<OutpaintPlacementParams> = {
         place_x: roundToN(placeX, 8),
@@ -383,6 +636,67 @@ export default function OutpaintPlacementCanvas({
       place_height: baseH,
       place_x: Math.max(0, Math.round((newCanvasW - baseW) / 2)),
       place_y: Math.max(0, Math.round((newCanvasH - baseH) / 2)),
+    });
+  };
+
+  // Reuses handleFit15x's canvas/place math (native size, centered, 1.5x
+  // canvas) but ALSO clears input_crop_* (a fresh "use full input" state)
+  // and re-enables the aspect lock -- a single-click "start over" for the
+  // whole placement, narrower in scope than the panel-level resetToDefault
+  // (which also resets prompt/generation params; this never does).
+  const handleResetPlacement = () => {
+    const baseW = inputImageSize?.width || placeWidth || 1024;
+    const baseH = inputImageSize?.height || placeHeight || 1024;
+    const newCanvasW = Math.max(64, roundToN(baseW * 1.5, 16));
+    const newCanvasH = Math.max(64, roundToN(baseH * 1.5, 16));
+    onChange({
+      canvas_width: newCanvasW,
+      canvas_height: newCanvasH,
+      place_width: baseW,
+      place_height: baseH,
+      place_x: Math.max(0, Math.round((newCanvasW - baseW) / 2)),
+      place_y: Math.max(0, Math.round((newCanvasH - baseH) / 2)),
+      input_crop_x: 0,
+      input_crop_y: 0,
+      input_crop_w: 0,
+      input_crop_h: 0,
+    });
+    onMaintainAspectChange(true);
+  };
+
+  // Re-fits place_width:place_height to the CURRENT effective crop rect's
+  // aspect ratio (without touching the crop itself), keeping place_width
+  // and the rect's center fixed -- a one-click fix for a placement rect
+  // that's drifted out of sync with its source crop (e.g. after unlocked
+  // drags, or Place Width/Height slider edits). Touches ONLY place_* --
+  // never prompt, crop, or the aspect-lock checkbox itself.
+  const handleRestoreAspect = () => {
+    const resolved = resolveCropRect(inputCropX, inputCropY, inputCropW, inputCropH, inputNativeW, inputNativeH);
+    const ar = resolved.h > 0 ? resolved.w / resolved.h : 0;
+    if (!Number.isFinite(ar) || ar <= 0) return;
+
+    const cx = placeX + placeWidth / 2;
+    const cy = placeY + placeHeight / 2;
+
+    let newW = placeWidth;
+    let newH = newW / ar;
+    // Joint-clamp: if the height derived from the current place_width falls
+    // outside the canvas, clamp height first, then RE-derive width from the
+    // clamped height (via the same `ar`) so the ratio stays exact -- an
+    // independent per-axis clamp here could silently distort it again.
+    if (newH < MIN_PLACE_SIZE || newH > canvasHeight) {
+      newH = clamp(newH, MIN_PLACE_SIZE, canvasHeight);
+      newW = newH * ar;
+    }
+
+    const newX = clamp(Math.round(cx - newW / 2), 0, Math.max(0, canvasWidth - newW));
+    const newY = clamp(Math.round(cy - newH / 2), 0, Math.max(0, canvasHeight - newH));
+
+    onChange({
+      place_x: newX,
+      place_y: newY,
+      place_width: Math.round(newW),
+      place_height: Math.round(newH),
     });
   };
 
@@ -451,6 +765,8 @@ export default function OutpaintPlacementCanvas({
       <div className="flex flex-wrap gap-2">
         <Button onClick={handleCenter} variant="secondary" size="sm">Center</Button>
         <Button onClick={handleFit15x} variant="secondary" size="sm">Fit 1.5x</Button>
+        <Button onClick={handleResetPlacement} variant="secondary" size="sm" disabled={!inputImageSize}>Reset Placement</Button>
+        <Button onClick={handleRestoreAspect} variant="secondary" size="sm" disabled={!inputImageSize}>Restore Aspect</Button>
         <Button onClick={() => handleExpand("left")} variant="secondary" size="sm">Expand Left</Button>
         <Button onClick={() => handleExpand("right")} variant="secondary" size="sm">Expand Right</Button>
         <Button onClick={() => handleExpand("top")} variant="secondary" size="sm">Expand Top</Button>
@@ -476,14 +792,14 @@ export default function OutpaintPlacementCanvas({
           type="checkbox"
           id="outpaint_maintain_aspect"
           checked={maintainAspect}
-          onChange={(e) => setMaintainAspect(e.target.checked)}
+          onChange={(e) => onMaintainAspectChange(e.target.checked)}
           className="rounded"
         />
         <label htmlFor="outpaint_maintain_aspect" className="text-sm text-gray-300">
-          Maintain aspect ratio when resizing (Ctrl+drag)
+          Maintain aspect ratio when resizing
         </label>
         <span className="text-xs text-gray-500">
-          (normal drag crops the input at native scale; Ctrl+drag scales/stretches the placed input -- this checkbox controls whether that scale is proportional)
+          (applies to both crop-drag and Ctrl+drag resize, and to pinch-resize on touch; Shift inverts it for the current drag)
         </span>
       </div>
 
@@ -492,6 +808,10 @@ export default function OutpaintPlacementCanvas({
         <div
           className="relative bg-gray-800 border border-gray-600 rounded overflow-hidden touch-none select-none"
           style={{ width: previewW, height: previewH }}
+          onPointerDown={handleContainerPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
         >
           {/* Fill-mode backdrop hint */}
           <div className="absolute inset-0 bg-[repeating-linear-gradient(45deg,rgba(255,255,255,0.03)_0,rgba(255,255,255,0.03)_6px,transparent_6px,transparent_12px)]" />
@@ -509,7 +829,7 @@ export default function OutpaintPlacementCanvas({
               height: Math.max(1, placeHeight * scale),
               ...previewBackgroundStyle,
             }}
-            title="Drag to move. Drag edges/corners to CROP the input (native scale, never stretches). Hold Ctrl while dragging edges/corners to RESIZE/scale the placed input instead (Shift inverts the 'Maintain aspect ratio' checkbox for that drag)."
+            title="Drag to move. Drag edges/corners to CROP the input (native scale, never stretches). Hold Ctrl while dragging edges/corners to RESIZE/scale the placed input instead. 'Maintain aspect ratio' locks both drag modes to the current ratio (Shift inverts it for the current drag); on touch, pinch with two fingers to resize."
           >
             {handles.map((h) => (
               <div

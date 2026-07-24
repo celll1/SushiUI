@@ -492,9 +492,26 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
   // Txt2ImgPanel/Img2ImgPanel/InpaintPanel's isMobileControlsOpen).
   const [isMobileControlsOpen, setIsMobileControlsOpen] = useState(true);
 
+  // Lifted from OutpaintPlacementCanvas (was local child state) so panel-level
+  // handlers (Send-to-Outpaint / new-image reset, "Reset Placement" button)
+  // can also drive it -- see initializePlacementForImage / handleInputUpdate /
+  // processImageFile. Deliberately NOT part of `params` -- must not persist to
+  // the outpaint_params localStorage blob (it's a UI/session-only toggle).
+  const [maintainAspect, setMaintainAspect] = useState(true);
+
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Set synchronously (before any async image decode) by any "new input
+  // image" entry point (Send-to-Outpaint's outpaint_input_updated listener,
+  // local upload/drop via processImageFile) so that if a same-tick
+  // outpaint_params_updated event also fires (the Gallery sender dispatches
+  // both), handleParamsUpdate knows to force the placement-reset sentinel
+  // fields onto the incoming params instead of trusting whatever place_*
+  // values happened to be saved under STORAGE_KEY. Cleared by
+  // initializePlacementForImage once it actually re-initializes placement
+  // for the new image (i.e. once the reset has "landed").
+  const placementInitPendingRef = useRef(false);
 
   const isGeneratingRef = useRef(isGenerating);
   useEffect(() => {
@@ -685,10 +702,26 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     const handleInputUpdate = () => {
       const newInput = localStorage.getItem(INPUT_IMAGE_STORAGE_KEY);
       if (newInput) {
+        // Set synchronously, BEFORE the async loadTempImage() below, so that if
+        // the sender's paired outpaint_params_updated event fires in the same
+        // tick (see handleParamsUpdate), it reliably sees the flag set and
+        // preserves this reset instead of letting the incoming saved params
+        // clobber it with stale place_*/crop_* geometry from a previous image.
+        // Gated on `newInput` so a missing/failed temp image can't leave the ref
+        // stuck-true and later wrongly zero placement on a params-only send.
+        placementInitPendingRef.current = true;
         loadTempImage(newInput).then((imageData) => {
           if (imageData) {
             setInputImagePreview(imageData);
-            setParams(prev => ({ ...prev, place_width: 0, place_height: 0 }));
+            setParams(prev => ({
+              ...prev,
+              place_width: 0,
+              place_height: 0,
+              input_crop_x: 0,
+              input_crop_y: 0,
+              input_crop_w: 0,
+              input_crop_h: 0,
+            }));
             const img = new Image();
             img.onload = () => {
               setInputImageSize({ width: img.width, height: img.height });
@@ -764,6 +797,23 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
         try {
           const parsed = JSON.parse(saved);
           const merged = { ...DEFAULT_PARAMS, ...parsed };
+          // If a new-input-image event (Send-to-Outpaint / upload / drop) is
+          // pending in this same dispatch batch, force the placement-reset
+          // sentinel fields regardless of what the sender's saved params
+          // blob contains -- otherwise a "params + image" send would restore
+          // the SOURCE panel's stale place_*/crop_* geometry (wrong aspect
+          // for the new image) and initializePlacementForImage's
+          // place_width>0 guard would then never re-run.
+          if (placementInitPendingRef.current) {
+            merged.place_width = 0;
+            merged.place_height = 0;
+            merged.place_x = 0;
+            merged.place_y = 0;
+            merged.input_crop_x = 0;
+            merged.input_crop_y = 0;
+            merged.input_crop_w = 0;
+            merged.input_crop_h = 0;
+          }
           setParams(fixFloatingPointParams(merged));
         } catch (error) {
           console.error("[Outpaint] Failed to parse params update:", error);
@@ -783,6 +833,10 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
       const roundTo16 = (v: number) => Math.max(64, Math.round(v / 16) * 16);
       const canvasW = roundTo16(width * 1.5);
       const canvasH = roundTo16(height * 1.5);
+      // This branch is the actual "landing" of a pending new-image reset
+      // (see placementInitPendingRef) -- clear the flag now that placement
+      // has been re-initialized for the new image.
+      placementInitPendingRef.current = false;
       return {
         ...prev,
         canvas_width: canvasW,
@@ -892,8 +946,18 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
     }
 
     setInputImage(file);
-    // A brand-new image resets the placement so it re-centers at native size.
-    setParams(prev => ({ ...prev, place_width: 0, place_height: 0 }));
+    // A brand-new image resets the placement so it re-centers at native size
+    // (mirrors handleInputUpdate's reset for the Send-to-Outpaint path).
+    placementInitPendingRef.current = true;
+    setParams(prev => ({
+      ...prev,
+      place_width: 0,
+      place_height: 0,
+      input_crop_x: 0,
+      input_crop_y: 0,
+      input_crop_w: 0,
+      input_crop_h: 0,
+    }));
 
     const reader = new FileReader();
     reader.onload = async (event) => {
@@ -2569,6 +2633,8 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
             inputImageSize={inputImageSize}
             params={placementParams}
             onChange={handlePlacementChange}
+            maintainAspect={maintainAspect}
+            onMaintainAspectChange={setMaintainAspect}
           />
         </Card>
         )}

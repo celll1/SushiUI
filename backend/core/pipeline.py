@@ -1515,10 +1515,22 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
 
         The THRESHOLD (image size above which tiling kicks in) is configurable via
         self._vae_tile_threshold (px). diffusers couples the threshold and the tile
-        size through tile_latent_min_size, so we set both to the threshold: below it
-        the decode runs whole (bit-identical, no quality/speed cost), above it the
-        image is split into threshold-sized tiles -- i.e. tiles as big as the size
-        you're comfortable decoding un-tiled. 0 -> auto = VAE sample_size * 1.5.
+        size, so we set both to the threshold: below it the decode runs whole
+        (bit-identical, no quality/speed cost), above it the image is split into
+        threshold-sized tiles -- i.e. tiles as big as the size you're comfortable
+        decoding un-tiled.
+
+        Two diffusers autoencoder APIs express this differently and BOTH must be
+        handled -- only wiring the first silently ignored the threshold on the
+        Qwen-family VAEs (Anima / Krea2), which then tiled at the diffusers
+        default 256px regardless of the user's setting:
+          * square API (AutoencoderKL, AutoencoderKLFlux2 -- SD1.5/SDXL/Z-Image/
+            Lens/Ideogram4/FLUX.2): tile_sample_min_size + tile_latent_min_size,
+            overlap via tile_overlap_factor. 0 -> auto = VAE sample_size * 1.5.
+          * height/width API (AutoencoderKLQwenImage -- Anima/Krea2):
+            tile_sample_min_{height,width} + tile_sample_stride_{height,width},
+            where the stride is the tile advance and (min - stride) is the blend
+            band. 0 -> auto = leave the class defaults untouched.
         """
         if vae is None:
             return
@@ -1548,8 +1560,40 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                     t.tile_latent_min_size = max(1, int(thr / scale))
                 except Exception as e:
                     print(f"[VAE Tiling] threshold setup failed: {e}")
+            elif enabled and hasattr(t, "tile_sample_min_height"):
+                # Qwen-family API. Snapshot the as-loaded values once so a later
+                # request with threshold=0 (auto) restores them instead of
+                # inheriting the previous request's tile size -- these live on
+                # the VAE object, and this method's contract is to honour the
+                # per-request option every time.
+                try:
+                    if not hasattr(t, "_sushi_tile_defaults"):
+                        t._sushi_tile_defaults = (
+                            int(t.tile_sample_min_height), int(t.tile_sample_min_width),
+                            int(t.tile_sample_stride_height), int(t.tile_sample_stride_width),
+                        )
+                    if threshold_px > 0:
+                        scale = int(getattr(t, "spatial_compression_ratio", 8) or 8)
+                        # Tile size and stride must be whole latent cells, else
+                        # the // in tiled_decode truncates them apart.
+                        # Floor at 2 cells: this API blends over (min - stride),
+                        # so a 1-cell tile would leave no blend band at all.
+                        thr = max(2 * scale, (int(threshold_px) // scale) * scale)
+                        # Keep the class's 192/256 = 0.75 stride ratio so the
+                        # blend band scales with the tile instead of vanishing.
+                        stride = max(scale, (int(thr * 0.75) // scale) * scale)
+                        stride = min(stride, thr - scale)
+                        t.tile_sample_min_height = thr
+                        t.tile_sample_min_width = thr
+                        t.tile_sample_stride_height = stride
+                        t.tile_sample_stride_width = stride
+                    else:
+                        (t.tile_sample_min_height, t.tile_sample_min_width,
+                         t.tile_sample_stride_height, t.tile_sample_stride_width) = t._sushi_tile_defaults
+                except Exception as e:
+                    print(f"[VAE Tiling] threshold setup failed: {e}")
         if enabled:
-            _thr = threshold_px if threshold_px > 0 else "auto(sample_size*1.5)"
+            _thr = threshold_px if threshold_px > 0 else "auto(per-VAE default)"
             print(f"[VAE Tiling] enabled (tiles when image > {_thr}px; tile size = threshold)")
 
     def _log_component_devices(self, pipeline, context: str):

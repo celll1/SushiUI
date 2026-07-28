@@ -2860,7 +2860,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
               onCommit={(v) => setParams({ ...params, vae_tile_threshold: v })}
               className="w-24"
             />
-            <span className="text-xs text-gray-500">0 = auto (VAE sample_size × 1.5)</span>
+            <span className="text-xs text-gray-500">0 = auto (per-VAE default; 256px on Anima/Krea2)</span>
           </div>
         )}
 

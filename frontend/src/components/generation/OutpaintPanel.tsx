@@ -192,6 +192,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   keep_models_hot: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
+  vae_tile_mode: "blend",
   color_flatten_strength: 0,
   flatten_in_loop: false,
   flatten_in_loop_last_steps: 3,
@@ -3111,6 +3112,7 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                   <span className="text-xs text-gray-500">(tiled decode for large canvases, saves VRAM)</span>
                 </div>
                 {params.vae_tiling && (
+                  <>
                   <div className="flex items-center gap-2 ml-6">
                     <label htmlFor="outpaint_vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
                     <NumberInput
@@ -3123,6 +3125,19 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       className="w-24"
                     />
                   </div>
+                  <div className="flex items-center gap-2 ml-6 mt-1">
+                    <label htmlFor="outpaint_vae_tile_mode" className="text-xs text-gray-400">Tile join</label>
+                    <select
+                      id="outpaint_vae_tile_mode"
+                      value={params.vae_tile_mode ?? "blend"}
+                      onChange={(e) => setParams({ ...params, vae_tile_mode: e.target.value })}
+                      className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+                    >
+                      <option value="blend">Blend (overlapping tiles, cross-faded together)</option>
+                      <option value="context">Context margin (16 latent cells of real neighbouring context, discarded after decode)</option>
+                    </select>
+                  </div>
+                  </>
                 )}
 
                 {developerMode && (

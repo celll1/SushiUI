@@ -1531,18 +1531,56 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             tile_sample_min_{height,width} + tile_sample_stride_{height,width},
             where the stride is the tile advance and (min - stride) is the blend
             band. 0 -> auto = leave the class defaults untouched.
+
+        MODE (self._vae_tile_mode):
+          * "blend"   -- diffusers' own overlap + linear cross-fade, as above.
+          * "context" -- core/inference/context_tiled_decode.py: each tile is
+            decoded with a real neighbouring-latent margin that is discarded
+            afterwards, so tiles abut exactly with no blending. Installed as an
+            instance-level `decode` override on the object whose decode actually
+            runs the decoder (the inner AutoencoderKL behind SDXLVAEWrapper /
+            FluxVAEWrapper, never PidVaeWrapper -- PiD is a 4-step pixel
+            diffusion decoder with its own tiling, not an autoencoder decode).
+            diffusers' own use_tiling is turned OFF in this mode so the latent
+            is not tiled twice.
         """
         if vae is None:
             return
+        from core.inference.context_tiled_decode import (
+            DEFAULT_MARGIN_CELLS,
+            install_context_tiled_decode,
+            supports_context_tiling,
+            uninstall_context_tiled_decode,
+        )
         threshold_px = int(getattr(self, "_vae_tile_threshold", 0) or 0)
+        mode = str(getattr(self, "_vae_tile_mode", "blend") or "blend").lower()
+        if mode not in ("blend", "context"):
+            # Unknown value falls back to the DEFAULT mode, not to "context" --
+            # otherwise a typo would silently opt a user into the non-default
+            # decode path.
+            mode = "blend"
         targets = [vae]
-        inner = getattr(vae, "vae", None)
-        if inner is not None and inner is not vae:
-            targets.append(inner)
+        # Wrapper objects hold their real autoencoder under different names:
+        # SDXLVAEWrapper / FluxVAEWrapper use `.vae`, PidVaeWrapper uses
+        # `.real_vae`. BOTH must be walked, and specifically for uninstall:
+        # PidVaeWrapper.decode delegates straight to `real_vae.decode`, and that
+        # object is the same one a previous non-PiD generation may have patched.
+        # If discovery cannot reach it, the stale override survives a switch to
+        # PiD (or to tiling off) and silently keeps running with the previous
+        # request's threshold. Unlike a plain VAE swap this does not self-heal.
+        for attr in ("vae", "real_vae"):
+            inner = getattr(vae, attr, None)
+            if inner is not None and inner is not vae and inner not in targets:
+                targets.append(inner)
+        context_mode = enabled and mode == "context"
         for t in targets:
-            for on_name, off_name in (("enable_tiling", "disable_tiling"),
-                                      ("enable_slicing", "disable_slicing")):
-                method = on_name if enabled else off_name
+            # diffusers' own tiling stays OFF in context mode (otherwise the
+            # padded tiles we hand it would be tiled a second time).
+            for on_name, off_name, want_on in (
+                ("enable_tiling", "disable_tiling", enabled and not context_mode),
+                ("enable_slicing", "disable_slicing", enabled),
+            ):
+                method = on_name if want_on else off_name
                 if hasattr(t, method):
                     try:
                         getattr(t, method)()
@@ -1592,9 +1630,40 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                          t.tile_sample_stride_height, t.tile_sample_stride_width) = t._sushi_tile_defaults
                 except Exception as e:
                     print(f"[VAE Tiling] threshold setup failed: {e}")
+
+            # Context-margin mode: install/uninstall the decode override.
+            # Reversible and idempotent -- uninstall runs on every non-context
+            # call so switching modes or disabling tiling restores the original
+            # bound method, and install always rebuilds from the snapshot so
+            # wrappers never stack. Only lands on the object whose decode
+            # actually runs the decoder (see supports_context_tiling).
+            if context_mode and supports_context_tiling(t):
+                try:
+                    # Resolve the decode-area budget from whatever the threshold
+                    # setup above landed on, so "auto" means the same thing in
+                    # both modes.
+                    resolved = 0
+                    if hasattr(t, "tile_sample_min_size"):
+                        resolved = int(t.tile_sample_min_size or 0)
+                    elif hasattr(t, "tile_sample_min_height"):
+                        resolved = int(t.tile_sample_min_height or 0)
+                    if resolved <= 0:
+                        resolved = threshold_px if threshold_px > 0 else 1536
+                    install_context_tiled_decode(t, resolved, DEFAULT_MARGIN_CELLS)
+                except Exception as e:
+                    print(f"[VAE Tiling] context-mode install failed: {e}")
+                    uninstall_context_tiled_decode(t)
+            else:
+                uninstall_context_tiled_decode(t)
         if enabled:
             _thr = threshold_px if threshold_px > 0 else "auto(per-VAE default)"
-            print(f"[VAE Tiling] enabled (tiles when image > {_thr}px; tile size = threshold)")
+            if context_mode:
+                print(f"[VAE Tiling] enabled, mode=context (decode-area budget "
+                      f"{_thr}px; {DEFAULT_MARGIN_CELLS}-cell real-context margin "
+                      f"decoded then discarded; no blending)")
+            else:
+                print(f"[VAE Tiling] enabled, mode=blend (tiles when image > {_thr}px; "
+                      f"tile size = threshold)")
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""
@@ -2603,6 +2672,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         # per-architecture handlers dispatched just below).
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
+        self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
         # Color Flatten (chroma smoothing) strength for this request; read by all
         # decode funnels via getattr(self, "_color_flatten_strength", 0). <=0 is a no-op.
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
@@ -3306,6 +3376,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
+        self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
         # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
         self._flatten_in_loop = bool(params.get("flatten_in_loop", False))
@@ -4049,6 +4120,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         """
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
+        self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
         # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
         self._flatten_in_loop = bool(params.get("flatten_in_loop", False))

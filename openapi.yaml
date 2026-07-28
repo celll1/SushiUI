@@ -5325,7 +5325,35 @@ components:
             above it, split into threshold-sized tiles. Values are rounded down to
             a whole latent cell and floored at 2 cells. Raise it if mid-size
             images decode fine un-tiled.
+
+            In `vae_tile_mode: context` this value is the decode-area budget —
+            the size of the latent block actually pushed through the decoder —
+            and the output tile is `threshold - 2 * margin`, so the decode
+            memory peak matches `blend` mode at the same threshold.
           example: 0
+        vae_tile_mode:
+          type: string
+          enum: [blend, context]
+          default: blend
+          description: |
+            How a tiled VAE decode joins its tiles. Only has an effect when
+            `vae_tiling` is true and the image exceeds `vae_tile_threshold`.
+
+            - `blend` (default): tiles overlap by 25% of the tile size and the
+              overlapping bands are cross-faded into each other.
+            - `context`: each output tile is decoded together with a margin of
+              real neighbouring latent cells (16 latent cells) around it, and
+              that margin is cropped off after the decode. Tiles then join
+              without a cross-fade. The margin is clamped at the latent edge,
+              where a whole-image decode also has no neighbour.
+
+            Measured differences at a 1536px image, one image per architecture:
+            `context` has a lower decode memory peak at the same threshold
+            (2.67 vs 3.35 GB on SDXL, 5.73 vs 7.28 GB on Qwen-family at
+            threshold 1024), and issues more decoder calls at small thresholds
+            (36 vs 16 at threshold 512). Pixel differences between the two modes
+            were below 0.5/255 in mean on both families.
+          example: blend
         color_flatten_strength:
           type: integer
           minimum: 0

@@ -91,6 +91,7 @@ export const LOOP_GENRE_FIELDS = {
     "use_torch_compile",
     "vae_tiling",
     "vae_tile_threshold",
+    "vae_tile_mode",
     "attention_type",
     "enable_block_swap",
     "blocks_to_swap",

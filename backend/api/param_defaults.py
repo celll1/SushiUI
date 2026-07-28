@@ -73,6 +73,20 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # = VAE sample_size * 1.5 (e.g. ~1536px for SDXL). Below the threshold the decode
     # runs whole (no quality/speed cost); above it, split into threshold-sized tiles.
     "vae_tile_threshold": 0,
+    # How tiled VAE decode joins its tiles.
+    #   "blend"   = diffusers' own overlapping tiles + linear cross-fade of the
+    #               overlap band (the historical behavior, and the default).
+    #   "context" = each tile is decoded with a margin of real neighbouring
+    #               latent cells which is then discarded, so tiles join without
+    #               a cross-fade. The threshold above is the decode-area budget
+    #               in this mode (output tile = threshold - 2*margin), which
+    #               keeps the decode peak bounded by the same block size.
+    # Default is "blend": measured on one 1536px image per family, the two modes
+    # differ by <0.5/255 in mean, and on the GroupNorm-bearing decoders (SDXL
+    # family) the dominant tiling artifact is a per-tile tint that blend's
+    # cross-fade ramps rather than steps. See scratchpad/vae_training/results_4a1.md
+    # and core/inference/context_tiled_decode.py.
+    "vae_tile_mode": "blend",
     # Color Flatten (chroma smoothing): RGB-guided guided filter applied to the
     # decoded image's YCoCg chroma (luma untouched) right after VAE decode. Removes
     # low-frequency color mottling while preserving luminance detail. 0-100; 0 = off

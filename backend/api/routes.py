@@ -265,6 +265,7 @@ class GenerationParams(BaseModel):
     keep_models_hot: bool = GENERATION_DEFAULTS["keep_models_hot"]
     vae_tiling: bool = GENERATION_DEFAULTS["vae_tiling"]  # Tiled VAE decode for large images
     vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (per-VAE default)
+    vae_tile_mode: str = GENERATION_DEFAULTS["vae_tile_mode"]  # "blend" | "context"
     color_flatten_strength: int = GENERATION_DEFAULTS["color_flatten_strength"]  # 0-100 chroma smoothing; 0=off
     flatten_in_loop: bool = GENERATION_DEFAULTS["flatten_in_loop"]  # in-loop hard-flatten of flat bg (SD1.5/SDXL)
     flatten_in_loop_last_steps: int = GENERATION_DEFAULTS["flatten_in_loop_last_steps"]  # inject on last N actual steps
@@ -459,6 +460,7 @@ async def generate_txt2img(
     keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    vae_tile_mode: str = Form(GENERATION_DEFAULTS["vae_tile_mode"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
     flatten_in_loop: bool = Form(GENERATION_DEFAULTS["flatten_in_loop"]),
     flatten_in_loop_last_steps: int = Form(GENERATION_DEFAULTS["flatten_in_loop_last_steps"]),
@@ -664,6 +666,7 @@ async def generate_txt2img(
             "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "vae_tile_mode": vae_tile_mode,
             "color_flatten_strength": color_flatten_strength,
             "flatten_in_loop": flatten_in_loop,
             "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
@@ -1404,6 +1407,7 @@ async def generate_img2img(
     keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    vae_tile_mode: str = Form(GENERATION_DEFAULTS["vae_tile_mode"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
     flatten_in_loop: bool = Form(GENERATION_DEFAULTS["flatten_in_loop"]),
     flatten_in_loop_last_steps: int = Form(GENERATION_DEFAULTS["flatten_in_loop_last_steps"]),
@@ -1636,6 +1640,7 @@ async def generate_img2img(
             "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "vae_tile_mode": vae_tile_mode,
             "color_flatten_strength": color_flatten_strength,
             "flatten_in_loop": flatten_in_loop,
             "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
@@ -3378,6 +3383,7 @@ async def generate_inpaint(
     keep_models_hot: bool = Form(GENERATION_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(GENERATION_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(GENERATION_DEFAULTS["vae_tile_threshold"]),
+    vae_tile_mode: str = Form(GENERATION_DEFAULTS["vae_tile_mode"]),
     color_flatten_strength: int = Form(GENERATION_DEFAULTS["color_flatten_strength"]),
     flatten_in_loop: bool = Form(GENERATION_DEFAULTS["flatten_in_loop"]),
     flatten_in_loop_last_steps: int = Form(GENERATION_DEFAULTS["flatten_in_loop_last_steps"]),
@@ -3645,6 +3651,7 @@ async def generate_inpaint(
             "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "vae_tile_mode": vae_tile_mode,
             "color_flatten_strength": color_flatten_strength,
             "flatten_in_loop": flatten_in_loop,
             "flatten_in_loop_last_steps": flatten_in_loop_last_steps,
@@ -4003,6 +4010,7 @@ async def generate_outpaint(
     keep_models_hot: bool = Form(OUTPAINT_DEFAULTS["keep_models_hot"]),
     vae_tiling: bool = Form(OUTPAINT_DEFAULTS["vae_tiling"]),
     vae_tile_threshold: int = Form(OUTPAINT_DEFAULTS["vae_tile_threshold"]),
+    vae_tile_mode: str = Form(OUTPAINT_DEFAULTS["vae_tile_mode"]),
     color_flatten_strength: int = Form(OUTPAINT_DEFAULTS["color_flatten_strength"]),
     flatten_in_loop: bool = Form(OUTPAINT_DEFAULTS["flatten_in_loop"]),
     flatten_in_loop_last_steps: int = Form(OUTPAINT_DEFAULTS["flatten_in_loop_last_steps"]),
@@ -4333,6 +4341,7 @@ async def generate_outpaint(
             "keep_models_hot": keep_models_hot,
             "vae_tiling": vae_tiling,
             "vae_tile_threshold": vae_tile_threshold,
+            "vae_tile_mode": vae_tile_mode,
             "color_flatten_strength": color_flatten_strength,
             "flatten_in_loop": flatten_in_loop,
             "flatten_in_loop_last_steps": flatten_in_loop_last_steps,

@@ -374,6 +374,17 @@ def _build_train_section(
     # Resume
     train["resume_from_checkpoint"] = p.get("resume_from_checkpoint")
 
+    # Pre-flight dataset rescan mode. Not read by the trainer subprocess; it is
+    # persisted here because config_yaml is the only per-run config store for
+    # model training (TrainingRun has no JSON config column, unlike
+    # TaggerTrainingRun) and the /training/runs/{id}/start handler reads it back
+    # from the YAML before spawning the trainer.
+    # No literal fallback here: param_defaults.py owns the default (the API
+    # request model supplies it), and a missing key normalizes to "off" in
+    # normalize_rescan_mode() anyway. Importing api.param_defaults from this
+    # module would be a circular import (api/__init__ -> api.routes -> here).
+    train["rescan_before_training"] = p.get("rescan_before_training")
+
     # Regularization
     if p.get("regularization_type"):
         train["regularization_type"] = p["regularization_type"]

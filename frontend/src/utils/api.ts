@@ -211,6 +211,9 @@ export interface GenerationParams {
   use_torch_compile?: boolean;
   vae_tiling?: boolean;
   vae_tile_threshold?: number;
+  // "blend" (diffusers overlap + cross-fade) | "context" (real-context margin,
+  // decoded then discarded; tiles abut exactly)
+  vae_tile_mode?: string;
   // Color Flatten (chroma-smoothing baked into the saved image at generation time)
   color_flatten_strength?: number;
   // In-loop background hard-flatten (detects flat background region during
@@ -887,6 +890,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
   // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
@@ -1247,6 +1251,7 @@ export const generateImg2Img = async (
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
   // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
@@ -1652,6 +1657,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
   // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
@@ -1883,6 +1889,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("use_torch_compile", String(paramsWithImages.use_torch_compile ?? false));
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
+  formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));

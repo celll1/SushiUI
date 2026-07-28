@@ -73,6 +73,7 @@ const DEFAULT_PARAMS: GenerationParams = {
   keep_models_hot: false,
   vae_tiling: false,
   vae_tile_threshold: 0,
+  vae_tile_mode: "blend",
   color_flatten_strength: 0,
   flatten_in_loop: false,
   flatten_in_loop_last_steps: 3,
@@ -213,6 +214,7 @@ const TXT2IMG_OPTIONS_TAB_KEYS: Record<Txt2ImgOptionsTabId, (keyof GenerationPar
     "cpu_text_encoding",
     "vae_tiling",
     "vae_tile_threshold",
+    "vae_tile_mode",
     "use_torch_compile",
     "enable_block_swap",
     "blocks_to_swap",
@@ -1487,6 +1489,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
         keep_models_hot: mainParams.keep_models_hot, // Inherited default; queue dispatch overrides based on hasNext
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
+        vae_tile_mode: mainParams.vae_tile_mode, // Inherit VAE tile join mode
         color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
         flatten_in_loop: mainParams.flatten_in_loop, // Inherit in-loop background flatten setting
         flatten_in_loop_last_steps: mainParams.flatten_in_loop_last_steps,
@@ -2848,6 +2851,7 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
           <span className="text-xs text-gray-500">(tiled decode for large images, saves VRAM)</span>
         </div>
         {params.vae_tiling && (
+          <>
           <div className="flex items-center gap-2 mt-1 ml-6">
             <label htmlFor="vae_tile_threshold" className="text-xs text-gray-400">Tile threshold (px)</label>
             <NumberInput
@@ -2862,6 +2866,23 @@ export default function Txt2ImgPanel({ onTabChange, onImageGenerated }: Txt2ImgP
             />
             <span className="text-xs text-gray-500">0 = auto (per-VAE default; 256px on Anima/Krea2)</span>
           </div>
+          <div className="flex items-center gap-2 mt-1 ml-6">
+            <label htmlFor="vae_tile_mode" className="text-xs text-gray-400">Tile join</label>
+            <select
+              id="vae_tile_mode"
+              value={params.vae_tile_mode ?? "blend"}
+              onChange={(e) => setParams({ ...params, vae_tile_mode: e.target.value })}
+              className="px-2 py-1 bg-gray-700 border border-gray-600 rounded text-xs"
+            >
+              <option value="blend">Blend (overlapping tiles, cross-faded together)</option>
+              <option value="context">Context margin (16 latent cells of real neighbouring context, discarded after decode)</option>
+            </select>
+            <span className="text-xs text-gray-500">
+              blend: tiles overlap and are cross-faded. context: tiles join without a cross-fade;
+              lower decode memory peak at the same threshold, more decoder calls at small thresholds
+            </span>
+          </div>
+        </>
         )}
 
         {developerMode && (

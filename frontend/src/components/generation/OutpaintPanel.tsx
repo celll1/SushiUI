@@ -193,6 +193,7 @@ const DEFAULT_PARAMS: OutpaintPanelParams = {
   vae_tiling: false,
   vae_tile_threshold: 0,
   vae_tile_mode: "blend",
+  vae_tile_global_norm: false,
   color_flatten_strength: 0,
   flatten_in_loop: false,
   flatten_in_loop_last_steps: 3,
@@ -3136,6 +3137,23 @@ export default function OutpaintPanel({ onTabChange, onImageGenerated }: Outpain
                       <option value="blend">Blend (overlapping tiles, cross-faded together)</option>
                       <option value="context">Context margin (16 latent cells of real neighbouring context, discarded after decode)</option>
                     </select>
+                  </div>
+                  <div className="flex items-center gap-2 ml-6 mt-1">
+                    <input
+                      type="checkbox"
+                      id="outpaint_vae_tile_global_norm"
+                      checked={params.vae_tile_global_norm || false}
+                      onChange={(e) => setParams({ ...params, vae_tile_global_norm: e.target.checked })}
+                      className="rounded"
+                    />
+                    <label htmlFor="outpaint_vae_tile_global_norm" className="text-xs text-gray-400">Global GroupNorm statistics</label>
+                    <span className="text-xs text-gray-500">
+                      decodes twice (whole-image GroupNorm statistics instead of per-tile);
+                      measured on SDXL: per-tile offset 1.32 &rarr; 0.037 /255, decode time x2,
+                      peak memory unchanged. The x2 applies to every VAE decode in the request,
+                      including the in-loop decodes of In-Loop Flatten and VAE Drift Correction.
+                      No effect on Anima/Krea2
+                    </span>
                   </div>
                   </>
                 )}

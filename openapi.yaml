@@ -5354,6 +5354,45 @@ components:
             (36 vs 16 at threshold 512). Pixel differences between the two modes
             were below 0.5/255 in mean on both families.
           example: blend
+        vae_tile_global_norm:
+          type: boolean
+          default: false
+          description: |
+            Use whole-image GroupNorm statistics for a tiled VAE decode. Only has
+            an effect when `vae_tiling` is true and the image exceeds
+            `vae_tile_threshold`; applies to both `vae_tile_mode` values.
+
+            A tiled decode normalises each tile with that tile's own per-group
+            mean and variance, which offsets whole tiles against each other. With
+            this enabled the decode runs twice: the first pass records every
+            decoder GroupNorm's per-group statistics across all tiles, and the
+            second pass re-decodes with the accumulated whole-image statistics.
+
+            Measured cost and effect (SDXL autoencoder, `blend` join, 512px tile
+            budget, one 1536px image): the per-tile offset falls from 1.32 to
+            0.037 /255 peak-to-peak in fp32 and from 1.35 to 0.038 in fp16;
+            decode wall time is 2.0x; peak decode memory is unchanged (measured
+            +0.00003 GB — only per-group scalars are retained), so the tiling
+            memory bound still holds.
+
+            In bf16 the same measurement gives 1.36 to 0.18 /255 (and 2.6x-16x
+            across tile sizes and join modes) rather than 35x: the statistics are
+            accumulated in fp32/fp64, but the correction has to be applied
+            through the normalization's own weight/bias, which the kernel
+            requires in the activation dtype, and bf16 carries 8 mantissa bits.
+            The result improves in every case measured; the size of the
+            improvement depends on the dtype the autoencoder runs in.
+
+            The doubling applies to EVERY VAE decode in the request, not only the
+            final one. On SD1.5/SDXL that includes the in-loop decodes performed
+            by `flatten_in_loop` (one per injected step, 3 by default) and by
+            `vae_drift_correction`, so enabling those together with this flag
+            doubles each of them as well.
+
+            Has no effect on autoencoders whose decoder contains no GroupNorm —
+            which includes the Qwen-family autoencoder used by Anima and Krea2.
+            On those the second pass is skipped, so the flag costs nothing there.
+          example: false
         color_flatten_strength:
           type: integer
           minimum: 0

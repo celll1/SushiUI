@@ -1543,6 +1543,17 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             diffusion decoder with its own tiling, not an autoencoder decode).
             diffusers' own use_tiling is turned OFF in this mode so the latent
             is not tiled twice.
+
+        GLOBAL GROUPNORM (self._vae_tile_global_norm, opt-in, default off):
+          core/inference/global_group_norm.py wraps the WHOLE decode (whichever
+          mode is active) in two passes -- one recording every decoder
+          GroupNorm's per-group statistics across the tiles, one re-decoding with
+          the accumulated whole-image statistics forced. Removes the per-tile
+          tint that neither join mode addresses (measured 1.32 -> 0.037 /255
+          peak-to-peak on SDXL, blend, 512px budget) for one extra decoder pass
+          and +0.02-0.03 GB peak. Skipped entirely when the decoder has no
+          GroupNorm (Qwen-family: Anima / Krea2) or when the latent fits the
+          budget un-tiled.
         """
         if vae is None:
             return
@@ -1552,8 +1563,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             supports_context_tiling,
             uninstall_context_tiled_decode,
         )
+        from core.inference.global_group_norm import (
+            install_global_group_norm_decode,
+            supports_global_group_norm,
+            uninstall_global_group_norm_decode,
+        )
         threshold_px = int(getattr(self, "_vae_tile_threshold", 0) or 0)
         mode = str(getattr(self, "_vae_tile_mode", "blend") or "blend").lower()
+        global_norm = bool(getattr(self, "_vae_tile_global_norm", False))
         if mode not in ("blend", "context"):
             # Unknown value falls back to the DEFAULT mode, not to "context" --
             # otherwise a typo would silently opt a user into the non-default
@@ -1574,6 +1591,12 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 targets.append(inner)
         context_mode = enabled and mode == "context"
         for t in targets:
+            # The two-pass global-GroupNorm override WRAPS whichever decode is
+            # installed below it, so it must come off FIRST: otherwise the
+            # context install/uninstall below would snapshot (or strip) this
+            # wrapper as if it were the VAE's original bound decode, and the two
+            # would stack. Re-installed last, after the mode is settled.
+            uninstall_global_group_norm_decode(t)
             # diffusers' own tiling stays OFF in context mode (otherwise the
             # padded tiles we hand it would be tiled a second time).
             for on_name, off_name, want_on in (
@@ -1631,6 +1654,21 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
                 except Exception as e:
                     print(f"[VAE Tiling] threshold setup failed: {e}")
 
+            # Resolve the decode budget from whatever the threshold setup above
+            # landed on, so "auto" means the same thing in every mode. Shared by
+            # the context install and the global-GroupNorm install (the latter
+            # uses it only to decide whether this decode is actually tiled).
+            resolved = 0
+            try:
+                if hasattr(t, "tile_sample_min_size"):
+                    resolved = int(t.tile_sample_min_size or 0)
+                elif hasattr(t, "tile_sample_min_height"):
+                    resolved = int(t.tile_sample_min_height or 0)
+            except Exception:
+                resolved = 0
+            if resolved <= 0:
+                resolved = threshold_px if threshold_px > 0 else 1536
+
             # Context-margin mode: install/uninstall the decode override.
             # Reversible and idempotent -- uninstall runs on every non-context
             # call so switching modes or disabling tiling restores the original
@@ -1639,22 +1677,36 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             # actually runs the decoder (see supports_context_tiling).
             if context_mode and supports_context_tiling(t):
                 try:
-                    # Resolve the decode-area budget from whatever the threshold
-                    # setup above landed on, so "auto" means the same thing in
-                    # both modes.
-                    resolved = 0
-                    if hasattr(t, "tile_sample_min_size"):
-                        resolved = int(t.tile_sample_min_size or 0)
-                    elif hasattr(t, "tile_sample_min_height"):
-                        resolved = int(t.tile_sample_min_height or 0)
-                    if resolved <= 0:
-                        resolved = threshold_px if threshold_px > 0 else 1536
                     install_context_tiled_decode(t, resolved, DEFAULT_MARGIN_CELLS)
                 except Exception as e:
                     print(f"[VAE Tiling] context-mode install failed: {e}")
                     uninstall_context_tiled_decode(t)
+                    # Context mode turned diffusers' own tiling OFF above, so
+                    # without this the fallback would run a WHOLE un-tiled decode
+                    # -- on the code path a user enabled tiling to avoid an OOM.
+                    # Mirrors context_tiled_decode._fallback_to_blend.
+                    try:
+                        if hasattr(t, "enable_tiling"):
+                            t.enable_tiling()
+                    except Exception as e2:
+                        print(f"[VAE Tiling] could not re-enable blend tiling "
+                              f"for the fallback: {e2}")
             else:
                 uninstall_context_tiled_decode(t)
+
+            # Two-pass global GroupNorm statistics (opt-in). Installed LAST so it
+            # wraps the mode-specific decode chosen just above, and only when
+            # tiling is on -- with tiling off there is nothing to correct.
+            # supports_global_group_norm() is the mandatory GroupNorm gate: on a
+            # decoder without any (Qwen family) the second pass is a bit-exact
+            # no-op that would still cost a full extra decode, so it is skipped
+            # silently rather than warned about.
+            if enabled and global_norm and supports_global_group_norm(t):
+                try:
+                    install_global_group_norm_decode(t, resolved)
+                except Exception as e:
+                    print(f"[VAE Tiling] global-GroupNorm install failed: {e}")
+                    uninstall_global_group_norm_decode(t)
         if enabled:
             _thr = threshold_px if threshold_px > 0 else "auto(per-VAE default)"
             if context_mode:
@@ -1664,6 +1716,14 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
             else:
                 print(f"[VAE Tiling] enabled, mode=blend (tiles when image > {_thr}px; "
                       f"tile size = threshold)")
+            if global_norm:
+                _gn_on = [t for t in targets if supports_global_group_norm(t)]
+                if _gn_on:
+                    print("[VAE Tiling] global GroupNorm statistics: ON "
+                          "(decode runs twice when the image is actually tiled)")
+                else:
+                    print("[VAE Tiling] global GroupNorm statistics: not applicable "
+                          "(this decoder has no GroupNorm) - single pass")
 
     def _log_component_devices(self, pipeline, context: str):
         """Log the device placement of all pipeline components"""
@@ -2673,6 +2733,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
+        self._vae_tile_global_norm = bool(params.get("vae_tile_global_norm", False))
         # Color Flatten (chroma smoothing) strength for this request; read by all
         # decode funnels via getattr(self, "_color_flatten_strength", 0). <=0 is a no-op.
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
@@ -3377,6 +3438,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
+        self._vae_tile_global_norm = bool(params.get("vae_tile_global_norm", False))
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
         # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
         self._flatten_in_loop = bool(params.get("flatten_in_loop", False))
@@ -4121,6 +4183,7 @@ class DiffusionPipelineManager(ZImageMixin, Flux2Mixin, AnimaMixin, LensMixin, I
         self._vae_tiling = bool(params.get("vae_tiling", False))
         self._vae_tile_threshold = int(params.get("vae_tile_threshold", 0) or 0)
         self._vae_tile_mode = str(params.get("vae_tile_mode", "blend") or "blend")
+        self._vae_tile_global_norm = bool(params.get("vae_tile_global_norm", False))
         self._color_flatten_strength = int(params.get("color_flatten_strength", 0) or 0)
         # In-loop hard-flatten (SD1.5/SDXL): master switch + last-N steps + region gate.
         self._flatten_in_loop = bool(params.get("flatten_in_loop", False))

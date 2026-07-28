@@ -171,6 +171,7 @@ const DEFAULT_PARAMS: Img2ImgParams = {
   vae_tiling: false,
   vae_tile_threshold: 0,
   vae_tile_mode: "blend",
+  vae_tile_global_norm: false,
   color_flatten_strength: 0,
   flatten_in_loop: false,
   flatten_in_loop_last_steps: 3,
@@ -318,6 +319,7 @@ const IMG2IMG_OPTIONS_TAB_KEYS: Record<Img2ImgOptionsTabId, (keyof Img2ImgParams
     "vae_tiling",
     "vae_tile_threshold",
     "vae_tile_mode",
+    "vae_tile_global_norm",
     "use_torch_compile",
     "enable_block_swap",
     "blocks_to_swap",
@@ -1905,6 +1907,7 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
         vae_tiling: mainParams.vae_tiling, // Inherit VAE tiling setting
         vae_tile_threshold: mainParams.vae_tile_threshold, // Inherit VAE tile threshold
         vae_tile_mode: mainParams.vae_tile_mode, // Inherit VAE tile join mode
+        vae_tile_global_norm: mainParams.vae_tile_global_norm, // Inherit two-pass global GroupNorm stats
         color_flatten_strength: mainParams.color_flatten_strength, // Inherit Color Flatten setting
         flatten_in_loop: mainParams.flatten_in_loop, // Inherit in-loop background flatten setting
         flatten_in_loop_last_steps: mainParams.flatten_in_loop_last_steps,
@@ -3198,6 +3201,25 @@ export default function Img2ImgPanel({ onTabChange, onImageGenerated }: Img2ImgP
             <span className="text-xs text-gray-500">
               blend: tiles overlap and are cross-faded. context: tiles join without a cross-fade;
               lower decode memory peak at the same threshold, more decoder calls at small thresholds
+            </span>
+          </div>
+          <div className="flex items-center gap-2 mt-1 ml-6">
+            <input
+              type="checkbox"
+              id="vae_tile_global_norm"
+              checked={params.vae_tile_global_norm || false}
+              onChange={(e) => setParams({ ...params, vae_tile_global_norm: e.target.checked })}
+              className="w-4 h-4"
+            />
+            <label htmlFor="vae_tile_global_norm" className="text-xs text-gray-400">Global GroupNorm statistics</label>
+            <span className="text-xs text-gray-500">
+              decodes twice: the first pass measures the decoder&apos;s GroupNorm statistics across
+              all tiles, the second re-decodes using the whole-image values, so no tile is
+              normalized against itself. Measured on SDXL (blend, 512px tiles): per-tile offset
+              1.32 &rarr; 0.037 /255, decode wall time x2, peak decode memory unchanged. The x2
+              applies to every VAE decode in the request, including the in-loop decodes of
+              In-Loop Flatten and VAE Drift Correction when those are on. No effect on
+              Anima/Krea2 (their decoder contains no GroupNorm)
             </span>
           </div>
         </>

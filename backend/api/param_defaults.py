@@ -87,6 +87,26 @@ GENERATION_DEFAULTS: Dict[str, Any] = {
     # cross-fade ramps rather than steps. See scratchpad/vae_training/results_4a1.md
     # and core/inference/context_tiled_decode.py.
     "vae_tile_mode": "blend",
+    # Two-pass global GroupNorm statistics for a tiled VAE decode (opt-in).
+    # A tiled decode normalises each tile with that tile's own per-group
+    # statistics, which offsets whole tiles against each other. With this on, the
+    # decode runs twice: pass 1 records every decoder GroupNorm's per-group
+    # statistics across the tiles, pass 2 re-decodes forcing the accumulated
+    # whole-image statistics. Independent of vae_tile_mode (it wraps the whole
+    # decode, so it applies to both "blend" and "context").
+    # Measured on SDXL, blend join, 512px budget: per-tile offset peak-to-peak
+    # 1.32 -> 0.037 /255 (fp32) and 1.35 -> 0.038 (fp16); 1.36 -> 0.18 in bf16,
+    # where the folded correction is limited by bf16's 8 mantissa bits.
+    # Peak VRAM +0.00003 GB; decode wall time x2.
+    # The x2 applies to EVERY decode in the request: on SD1.5/SDXL the override is
+    # installed before the sampling loop, so the in-loop decodes of
+    # flatten_in_loop (one per injected step) and vae_drift_correction are
+    # doubled too.
+    # No effect (and no second pass) when the decoder contains no GroupNorm --
+    # which includes the Qwen-family autoencoder used by Anima and Krea2 -- or
+    # when the image is below the tile threshold. Off by default.
+    # See core/inference/global_group_norm.py.
+    "vae_tile_global_norm": False,
     # Color Flatten (chroma smoothing): RGB-guided guided filter applied to the
     # decoded image's YCoCg chroma (luma untouched) right after VAE decode. Removes
     # low-frequency color mottling while preserving luminance detail. 0-100; 0 = off

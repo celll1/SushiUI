@@ -264,7 +264,7 @@ class GenerationParams(BaseModel):
     # Keep-models-hot (queue optimization; SD1.5/SDXL only in this phase)
     keep_models_hot: bool = GENERATION_DEFAULTS["keep_models_hot"]
     vae_tiling: bool = GENERATION_DEFAULTS["vae_tiling"]  # Tiled VAE decode for large images
-    vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (sample_size*1.5)
+    vae_tile_threshold: int = GENERATION_DEFAULTS["vae_tile_threshold"]  # px; 0=auto (per-VAE default)
     color_flatten_strength: int = GENERATION_DEFAULTS["color_flatten_strength"]  # 0-100 chroma smoothing; 0=off
     flatten_in_loop: bool = GENERATION_DEFAULTS["flatten_in_loop"]  # in-loop hard-flatten of flat bg (SD1.5/SDXL)
     flatten_in_loop_last_steps: int = GENERATION_DEFAULTS["flatten_in_loop_last_steps"]  # inject on last N actual steps

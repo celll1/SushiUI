@@ -9211,8 +9211,19 @@ components:
           minimum: 0.0
           example: 0.0
         rescan_before_training:
-          type: 'object'
-          additionalProperties: true
+          description: |
+            Pre-flight dataset drift check / rescan mode, run before the trainer
+            subprocess starts. Persisted into the run's config YAML under
+            config.process[0].train.rescan_before_training.
+            "off" skips it; "path" detects added/missing files; "smart" adds a
+            caption sidecar mtime check; "force" always rescans.
+            Legacy booleans are accepted (true -> "path", false -> "off").
+          oneOf:
+            - type: string
+              enum: [off, path, smart, force]
+            - type: boolean
+          default: "off"
+          example: "off"
     TaggerTrainingRunCreateRequest:
       type: object
       properties:
@@ -9382,8 +9393,17 @@ components:
           type: integer
           default: 10
         rescan_before_training:
-          type: object
-          additionalProperties: true
+          description: |
+            Pre-flight dataset drift check / rescan mode, run before tagger
+            training starts. "off" skips it; "path" detects added/missing files;
+            "smart" adds a caption sidecar mtime check; "force" always rescans.
+            Legacy booleans are accepted (true -> "path", false -> "off").
+          oneOf:
+            - type: string
+              enum: [off, path, smart, force]
+            - type: boolean
+          default: "off"
+          example: "off"
         train_f1_eval_every_n_steps:
           type: integer
           default: 100

@@ -10050,7 +10050,7 @@ class TrainingRunCreateRequest(BaseModel):
     #   "smart" — path drift + caption sidecar mtime check (full coverage)
     #   "force" — always rescan, no drift detection (most expensive)
     # Legacy bool also accepted: True→"path", False→"off".
-    rescan_before_training: Any = "off"
+    rescan_before_training: Any = TRAINING_DEFAULTS["rescan_before_training"]
 
 @router.post("/training/runs", status_code=201)
 async def create_training_run(
@@ -10739,19 +10739,33 @@ async def start_training_run(run_id: int, db: Session = Depends(get_training_db)
         print(f"[API] Status updated and committed")
 
         # ----- Pre-flight: dataset drift detection / optional rescan -----
-        # Opt-in via run.config["rescan_before_training"] (stored when
-        # the run was created).  Walks each dataset's root and compares
+        # Opt-in via config.process[0].train.rescan_before_training in the run's
+        # config_yaml (written by TrainingConfigGenerator when the run was
+        # created / updated).  TrainingRun has no JSON `config` column -- only
+        # config_yaml -- so the YAML is the single per-run config store here.
+        # Runs created before this key existed simply resolve to "off".
+        # Walks each dataset's root and compares
         # against datasets.db; if drift is found, runs a full rescan
         # via the existing /datasets/{id}/scan handler so the trainer
         # subprocess sees the freshest state.  Also clears orphan
         # latent-cache files so we don't waste training time on stale
         # cache entries that point at missing images.
+        _rescan_raw = None
         try:
-            run_cfg = run.config or {}
-        except Exception:
-            run_cfg = {}
+            import yaml as _yaml
+            # safe_load(None) raises; a run with no YAML simply has no key.
+            _cfg_doc = _yaml.safe_load(run.config_yaml or "") or {}
+            # Accept both the generated shape (config.process[]) and the flat
+            # top-level `process[]` shape a hand-supplied YAML can carry --
+            # same tolerance as GET /training/runs/{id}/params.
+            _root = _cfg_doc.get("config") or _cfg_doc
+            _proc = (_root.get("process") or [{}])[0] or {}
+            _rescan_raw = (_proc.get("train") or {}).get("rescan_before_training")
+        except Exception as _cfg_err:
+            print(f"[API] WARNING: could not read rescan_before_training from config_yaml "
+                  f"for run {run_id}: {_cfg_err}")
         from core.training.dataset_drift import normalize_rescan_mode
-        _rescan_mode = normalize_rescan_mode(run_cfg.get("rescan_before_training"))
+        _rescan_mode = normalize_rescan_mode(_rescan_raw)
         if _rescan_mode != "off":
             try:
                 from core.training.dataset_drift import (
@@ -12509,7 +12523,7 @@ class TaggerTrainingRunCreateRequest(BaseModel):
     #   "smart" — path drift + caption sidecar mtime check
     #   "force" — always rescan, no drift detection
     # Legacy bool accepted (True→"path", False→"off").
-    rescan_before_training:    Any   = "off"
+    rescan_before_training:    Any   = TAGGER_TRAINING_DEFAULTS["rescan_before_training"]
     # Training F1: rolling buffer + periodic threshold search.
     # N2 (eval_every) < N1 (search_every).  0 disables the feature.
     train_f1_eval_every_n_steps:             int   = 100

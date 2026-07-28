@@ -92,6 +92,7 @@ export const LOOP_GENRE_FIELDS = {
     "vae_tiling",
     "vae_tile_threshold",
     "vae_tile_mode",
+    "vae_tile_global_norm",
     "attention_type",
     "enable_block_swap",
     "blocks_to_swap",

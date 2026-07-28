@@ -214,6 +214,10 @@ export interface GenerationParams {
   // "blend" (diffusers overlap + cross-fade) | "context" (real-context margin,
   // decoded then discarded; tiles abut exactly)
   vae_tile_mode?: string;
+  // Two-pass whole-image GroupNorm statistics for a tiled decode (opt-in).
+  // Decode runs twice when tiling is actually engaged; no effect on decoders
+  // without GroupNorm (Qwen-family VAE used by Anima/Krea2).
+  vae_tile_global_norm?: boolean;
   // Color Flatten (chroma-smoothing baked into the saved image at generation time)
   color_flatten_strength?: number;
   // In-loop background hard-flatten (detects flat background region during
@@ -891,6 +895,7 @@ export const generateTxt2Img = async (params: GenerationParams) => {
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
+  formData.append("vae_tile_global_norm", String(paramsWithImages.vae_tile_global_norm ?? false));
   // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
@@ -1252,6 +1257,7 @@ export const generateImg2Img = async (
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
+  formData.append("vae_tile_global_norm", String(paramsWithImages.vae_tile_global_norm ?? false));
   // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
@@ -1658,6 +1664,7 @@ export const generateInpaint = async (params: InpaintParams, image: File | strin
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
+  formData.append("vae_tile_global_norm", String(paramsWithImages.vae_tile_global_norm ?? false));
   // Keep model components GPU-resident for the next queued generation (set by the queue dispatcher)
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   // Color Flatten: chroma-smoothing baked into the saved image at generation time
@@ -1890,6 +1897,7 @@ export const generateOutpaint = async (params: OutpaintParams, image: File | str
   formData.append("vae_tiling", String(paramsWithImages.vae_tiling ?? false));
   formData.append("vae_tile_threshold", String(paramsWithImages.vae_tile_threshold ?? 0));
   formData.append("vae_tile_mode", String(paramsWithImages.vae_tile_mode ?? "blend"));
+  formData.append("vae_tile_global_norm", String(paramsWithImages.vae_tile_global_norm ?? false));
   formData.append("keep_models_hot", String(paramsWithImages.keep_models_hot ?? false));
   formData.append("color_flatten_strength", String(paramsWithImages.color_flatten_strength ?? 0));
   formData.append("vae_drift_correction", String(paramsWithImages.vae_drift_correction ?? false));

@@ -31,7 +31,13 @@
    Advanced CFG, and spectrum guidance as configured.
 6. **VAE decode** and **`backend/utils/image_utils.py`** — decodes the final
    latent (skipped for pixel-space architectures) and saves a PNG with
-   generation parameters embedded as metadata.
+   generation parameters embedded as metadata. Decode-side options
+   (`vae_tiling`, `vae_tile_threshold`, `vae_tile_mode`,
+   `vae_tile_global_norm`) are installed onto the VAE by
+   `PipelineManager._apply_vae_tiling` **before** the sampling loop, not at the
+   final decode — so they also apply to any in-loop `vae.decode` (SD1.5/SDXL
+   `flatten_in_loop`, `vae_drift_correction`). See
+   `docs/guides/VAE_DECODE_BEHAVIOR.md`.
 7. **Database** — a `GeneratedImage` row is inserted into `gallery.db` with
    the same parameters (`backend/database/models.py`).
 8. **Response / gallery** — the API response returns the image path/id; the

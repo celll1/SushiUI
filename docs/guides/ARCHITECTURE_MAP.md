@@ -43,8 +43,11 @@ webui_cl/
 | `backend/core/pipeline_backends/` | One file per architecture (`zimage.py`, `flux2.py`, `anima.py`, `lens.py`, `krea2.py`, `ideogram4.py`, `minit2i.py`; SD1.5/SDXL are handled by the base `pipeline.py` path) — architecture-specific generation logic as mixins. |
 | `backend/core/keep_hot.py` | Arch-agnostic `keep_models_hot` state (model_key computation, VRAM guard, resident-set tracking); wired into `pipeline.py` (SD1.5/SDXL) and all 7 DiT `pipeline_backends/*.py` files. Not wired into `ltx2.py`. |
 | `backend/core/training/` | `base_trainer.py` (shared loop, block-swap, optimizer wiring), `lora_trainer.py` / `full_parameter_trainer.py`, `adapters/` (per-architecture training adapters — text encoding, conditioning, time-ids), `optimizers/`, `losses/`, `bucketing.py`, `latent_cache.py`. |
+| `backend/core/training/vae/` | Decoder-only VAE fine-tuning (`network.type: vae_decoder`), reached from `train_runner.py`. Standalone — does **not** subclass `BaseTrainer` (that class is a diffusion spine, and its `encode_image` wraps the VAE forward in `no_grad`). See `docs/guides/VAE_TRAINING.md`. |
+| `backend/core/inference/context_tiled_decode.py` | `vae_tile_mode: "context"` — tiled decode with a discarded real-context margin instead of an overlap cross-fade. |
+| `backend/core/inference/global_group_norm.py` | `vae_tile_global_norm` — opt-in two-pass whole-image GroupNorm statistics for a tiled decode. Both are installed by `PipelineManager._apply_vae_tiling`; see `docs/guides/VAE_DECODE_BEHAVIOR.md`. |
 | `backend/api/routes.py` | All FastAPI endpoints; generation endpoints (`/generate/txt2img|img2img|inpaint`) are `multipart/form-data` (`Form(...)` params), not JSON. |
-| `backend/api/param_defaults.py` | Single source of truth for every default value (`GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, `TAGGER_TRAINING_DEFAULTS`), exposed via `/schema/*`. |
+| `backend/api/param_defaults.py` | Single source of truth for every default value (`GENERATION_DEFAULTS`, `TRAINING_DEFAULTS`, `TAGGER_TRAINING_DEFAULTS`, `VAE_TRAINING_DEFAULTS`), exposed via `/schema/*`. |
 | `backend/api/websocket.py` | Progress-streaming WebSocket implementation (protocol documented in `backend/api/WS_PROTOCOL.md`). |
 | `backend/utils/image_utils.py` | Saves generated images with embedded PNG metadata (generation parameters). |
 | `backend/database/models.py` | SQLAlchemy models: `UserSettings`, `GeneratedImage`, `Dataset`/`DatasetItem`/`DatasetCaption`, `TrainingRun`/`TrainingMetrics`/`TrainingCheckpoint`, `TaggerTrainingRun`, etc. |
@@ -57,7 +60,7 @@ webui_cl/
 | `frontend/src/components/generation/LoopGenerationPanel.tsx` | Loop-generation queue configuration UI. |
 | `frontend/src/components/viewer/ImageGrid.tsx` | Gallery grid; reads generation metadata off each `GeneratedImage`. |
 | `frontend/src/components/training/` | Training run configuration and monitoring UI. |
-| `frontend/src/contexts/StartupContext.tsx` | Fetches and holds `generationDefaults`/`trainingDefaults`/`taggerTrainingDefaults` from `/schema/*` at startup. |
+| `frontend/src/contexts/StartupContext.tsx` | Fetches and holds `generationDefaults`/`trainingDefaults`/`taggerTrainingDefaults`/`vaeTrainingDefaults` from `/schema/*` at startup. |
 | `frontend/src/contexts/GenerationQueueContext.tsx` | Client-side generation/loop queue state. |
 | `frontend/src/utils/api.ts` | Typed API client: request/response interfaces, FormData construction for img2img/inpaint, JSON body for txt2img. |
 
@@ -75,5 +78,6 @@ webui_cl/
 - API contract (request/response schemas, examples): `openapi.yaml`, kept in
   sync with `backend/api/routes.py`.
 - Runtime schema fetched by the frontend: `GET /api/v1/schema/generation-defaults`,
-  `/schema/training-defaults`, `/schema/tagger-training-defaults`.
+  `/schema/training-defaults`, `/schema/tagger-training-defaults`,
+  `/schema/vae-training-defaults`.
 - Full parameter-addition checklist: `docs/guides/ADD_A_PARAMETER.md`.

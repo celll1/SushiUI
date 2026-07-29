@@ -30,7 +30,7 @@ These only read state and are safe for an agent to call without asking:
 - `GET /images` (gallery listing, `skip`/`limit` pagination) and
   `GET /images/{image_id}`
 - `GET /schema/generation-defaults`, `/schema/training-defaults`,
-  `/schema/tagger-training-defaults`
+  `/schema/tagger-training-defaults`, `/schema/vae-training-defaults`
 - `GET /generation/status`
 - `GET /training/active`
 

@@ -76,6 +76,35 @@ reused verbatim by SD1.5/SDXL (`pipeline.py`) and all 7 DiT image archs
   strand the transformer on GPU); this brings them in line with the other
   archs, which already offloaded in a `finally`-guarded cleanup.
 
+## VAE decoder facts per family
+
+Properties that decide which decode-side features apply to an architecture.
+Measurements, the non-locality decomposition and the two tiling options are in
+`docs/guides/VAE_DECODE_BEHAVIOR.md`; only the structural facts are here.
+
+| VAE class | Used by | latent ndim | `nn.GroupNorm` in decoder | mid-block attention | decoder-only fine-tune (`vae_decoder`) |
+|---|---|---|---|---|---|
+| `AutoencoderKL` (4ch) | sd15, sdxl, zimage-when-`in_ch==4` | 4-D | **30** | 1 | supported (the exercised path) |
+| `AutoencoderKL` (16ch, FLUX.1) | zimage | 4-D | **30** | 1 | supported (untested) |
+| `AutoencoderKLFlux2` | flux2, lens, ideogram4 (32ch) | 4-D | **30** | 1 | supported (untested); 2×2 patchify + latent BatchNorm live *outside* `decode` |
+| `AutoencoderKLQwenImage` (16ch) | anima, krea2 | **5-D** `(B,C,T,H,W)` | **0** (RMSNorm over channels) | 1 | **not offered** for `vae_source: "model"` (5-D `_encode` vs a 4-D pixel batch) |
+| `AutoencoderKLLTXVideo` | ltx2 | **5-D** | n/a (video VAE, not measured) | n/a | **not offered** |
+| none | minit2i (default variants) | pixel-space | n/a | n/a | **not offered** (no VAE) |
+
+Consequences:
+
+- `vae_tile_global_norm` is a **bit-exact no-op** on the Qwen-family
+  autoencoder (zero GroupNorms) and is gated off there rather than costing 2×
+  decode time for an identical image.
+- The decoder receptive-field term is extinguished by **14–16 latent cells
+  (112–128 px)** of real, discarded context (`vae_tile_mode: "context"` margin
+  default 16). For FLUX.2's packed grid the equivalent is inferred, not
+  measured; the module carries a runtime scale-mismatch guard.
+- Wrapper objects (`SDXLVAEWrapper` / `FluxVAEWrapper` / `PidVaeWrapper`) have
+  no `.decoder` of their own; both decode features install on the inner
+  autoencoder. `_apply_vae_tiling` walks `vae` **and** `real_vae` for this
+  reason (`backend/core/pipeline.py:1506`).
+
 ## Style transfer: training-free reference-image KV-injection (opt-in, off by default)
 
 Reference-image style transfer (StyleAligned / Visual-Style-Prompting family):
@@ -222,6 +251,10 @@ a generation without style transfer.
   — TE-frozen policies, dual-transformer training, LLM-Adapter-only mode.
 - `backend/core/training/MODEL_ARCHITECTURES.md` — SD1.5/SDXL/Z-Image component
   specs, forward-pass signatures, schedulers.
+- `backend/core/inference/context_tiled_decode.py`,
+  `backend/core/inference/global_group_norm.py` — the two tiled-decode options
+  (`vae_tile_mode`, `vae_tile_global_norm`); install/uninstall via
+  `PipelineManager._apply_vae_tiling`.
 - `backend/core/keep_hot.py` — `keep_models_hot` model_key computation, VRAM
   guard, resident-set tracking, shared by `pipeline.py` and the 7 DiT
   `pipeline_backends/*.py` files (not `ltx2.py`).

@@ -318,7 +318,27 @@ class VaeRefusalMatrixTest(unittest.TestCase):
     # ── base VAE selection ───────────────────────────────────────────────
     def test_vae_source_enum(self):
         self.assertEqual(set(VALID_SOURCES), {"model", "path", "store"})
-        self._assert_refused("vae_source", vae={"vae_source": "checkpoint"})
+        # Assert the enum guard's OWN wording, not just "vae_source". With the
+        # bare key name, deleting this guard still passed: an unknown source
+        # falls through to the vae_path branch, whose message also contains
+        # "vae_source=..." (mutation-tested 2026-07-29). Same failure shape as
+        # the row-4 collision -- a refusal row must pin the rule that refused.
+        self._assert_refused("must be one of", vae={"vae_source": "checkpoint"})
+
+    def test_non_mapping_vae_section_is_refused(self):
+        """``process.vae`` must be a mapping.
+
+        Nothing else validates the section's TYPE, so without this the keys are
+        silently ignored and the run trains with defaults it was never given.
+        """
+        for bad in ([], "vae_source: model", 42):
+            with self.subTest(vae_section=type(bad).__name__):
+                with self.assertRaises(VaeConfigError) as ctx:
+                    resolve_vae_training_config(
+                        {"vae": bad, "train": {"steps": 10}, "save": {}},
+                        base_model_path=_BASE_MODEL,
+                    )
+                self.assertIn("must be a mapping", str(ctx.exception))
 
     def test_explicit_path_without_a_path_is_refused(self):
         self._assert_refused("vae_path", vae={"vae_source": "path", "vae_path": ""})
